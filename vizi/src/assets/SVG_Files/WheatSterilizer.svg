@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="0.255in"
+   height="0.34799999in"
+   viewBox="0 0 6.4770006 8.8391997"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4 (86a8ad7, 2024-10-11)"
+   sodipodi:docname="WheatSterilizer.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="true"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="5.8511222"
+     inkscape:cx="39.821421"
+     inkscape:cy="50.161318"
+     inkscape:window-width="1920"
+     inkscape:window-height="1009"
+     inkscape:window-x="-8"
+     inkscape:window-y="145"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="g5147-3-6-1"
+     inkscape:clip-to-page="false" />
+  <defs
+     id="defs1">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect4"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,1.7725819,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,2.4137014,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect3"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect2"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,0.96380459,0,1 @ F,0,0,1,0,1.3203894,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,1.2130815,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect1"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,1.0021809,0,1 @ F,0,0,1,0,0.86819698,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0.87194763,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+    <linearGradient
+       id="swatch1"
+       inkscape:swatch="solid">
+      <stop
+         style="stop-color:#ffffff;stop-opacity:1;"
+         offset="0"
+         id="stop1" />
+    </linearGradient>
+  </defs>
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(-9.5230745,-2.6853174)">
+    <g
+       id="g5147-3-6-1"
+       onclick="this.visualization.click(event)"
+       Library="Library: v3.1"
+       Symbol="Symbol: v1.0"
+       transform="matrix(0.28449928,0,0,0.30437851,-582.5419,-149.48629)">
+      <desc
+         id="desc1704-7-9-5">[Visualization]
+name=A2097_MXZ01;
+type=GcObject;
+backgroundColor=ptype.color.$'name'.Ptype:$'name'.StCode(Byte00);
+display=true;
+state=$'name'.StCode;</desc>
+      <g
+         class="dynShape"
+         style="fill:#ededed;fill-rule:evenodd;stroke:#00324b;stroke-width:0.899114px;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none"
+         id="g5140-8-93-7">
+        <path
+           inkscape:connector-curvature="0"
+           id="2-4-3-0-9-7"
+           d="m 1197.5,235.5 h -2 v -14 h -1 v 4 h -2 v -4 h -1 l -4,9 h -5 l -5,-9 v 14 h -2 v -20 h 11.24 10.75 v 6 h -22 22 v 0 z"
+           sodipodi:nodetypes="ccccccccccccccccccccc"
+           style="stroke-width:0.899114"
+           transform="translate(906,293)" />
+        <path
+           inkscape:connector-curvature="0"
+           id="3-1-0-9-2"
+           d="m 1177.5,215.5 v -8 h 18 v 8 h -4 v -8 8 z"
+           sodipodi:nodetypes="cccccccc"
+           style="stroke-width:0.899114"
+           transform="translate(906,293)" />
+      </g>
+    </g>
+  </g>
+</svg>
