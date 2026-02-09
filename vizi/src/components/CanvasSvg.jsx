@@ -1,6 +1,6 @@
 // src/components/CanvasSvg.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GRID, pointsToAttr } from "../utils/geometry";
+import { GRID, pointsToAttr, bboxOfPoints } from "../utils/geometry";
 
 const RULER = 24; // ruler thickness (px)
 
@@ -15,7 +15,13 @@ export default function CanvasSvg({
   shapes,
   setShapes, // ✅ ADD: pass from App.jsx
   selectedIds,
+  setSelectedIds,
+  setSelectedOverlayIds,
+  inlineEditId,
+  selectedSegment,
   editingId,
+  showTagPaths,
+  showGrid,
   onSvgMouseDown,
   onMouseMove,
   onMouseUp,
@@ -25,6 +31,8 @@ export default function CanvasSvg({
   onEditPolylineClick,
   onHandleMouseDown,
   onHandleDoubleClick,
+  onHandleContextMenu,
+  onSegmentMouseDown,
   vbW,
   vbH,
   svgOverlays,
@@ -33,6 +41,7 @@ export default function CanvasSvg({
   singleSelectedOverlayId,
   setOverlayRef,
   onOverlayMouseDown,
+  onOverlayDoubleClick,
   overlaySelectionUI,
   overlayLocalBBox,
   importAnchor,
@@ -188,6 +197,21 @@ export default function CanvasSvg({
       e.preventDefault();
 
       if (hasShapeSel && typeof setShapes === "function") {
+        if (selectedSegment?.id && selectedIds.includes(selectedSegment.id) && selectedSegment.kind === "point") {
+          const ptIndex = selectedSegment.index;
+          setShapes((prev) =>
+            prev.map((s) => {
+              if (s.id !== selectedSegment.id) return s;
+              if (!Array.isArray(s.points)) return s;
+              if (ptIndex < 0 || ptIndex >= s.points.length) return s;
+              const pts = s.points.map((pt) => ({ ...pt }));
+              pts[ptIndex] = { x: pts[ptIndex].x + dx, y: pts[ptIndex].y + dy };
+              return { ...s, points: pts };
+            })
+          );
+          return;
+        }
+
         setShapes((prev) =>
           prev.map((s) => {
             if (!selectedIds.includes(s.id)) return s;
@@ -221,7 +245,7 @@ export default function CanvasSvg({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedIds, selectedOverlayIds, zoom, setShapes, setSvgOverlays]);
+  }, [selectedIds, selectedOverlayIds, selectedSegment, zoom, setShapes, setSvgOverlays]);
 
   /* ============================
      RULERS (SCREEN-PIXEL)
@@ -284,6 +308,15 @@ export default function CanvasSvg({
           MozUserSelect: "none",
         }}
         onDoubleClick={(e) => {
+          const target = e.target;
+          const hit = target?.closest?.("[data-overlay-id]");
+          if (hit) {
+            const id = hit.getAttribute("data-overlay-id");
+            if (id) {
+              onOverlayDoubleClick?.(e, id);
+              return;
+            }
+          }
           if (e.target !== e.currentTarget) return;
           onSvgDoubleClick?.(e);
         }}
@@ -482,6 +515,15 @@ export default function CanvasSvg({
           onMouseUp={onMouseUp}
           // ✅ NEW: forward dblclick on main svg (finish line in App)
           onDoubleClick={(e) => {
+            const target = e.target;
+            const hit = target?.closest?.("[data-overlay-id]");
+            if (hit) {
+              const id = hit.getAttribute("data-overlay-id");
+              if (id) {
+                onOverlayDoubleClick?.(e, id);
+                return;
+              }
+            }
             onSvgDoubleClick?.(e);
           }}
           onContextMenu={(e) => {
@@ -518,14 +560,16 @@ export default function CanvasSvg({
           </defs>
 
           <g transform={`translate(${panX} ${panY}) scale(${z})`}>
-            <path
-              d={gridPathD}
-              fill="none"
-              stroke="#d0d0d0"
-              strokeWidth={1}
-              vectorEffect="non-scaling-stroke"
-              pointerEvents="none"
-            />
+            {showGrid && (
+              <path
+                d={gridPathD}
+                fill="none"
+                stroke="#d0d0d0"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+            )}
 
             {importAnchor && (
               <g pointerEvents="none">
@@ -574,23 +618,87 @@ export default function CanvasSvg({
               if (s.type === "text") {
                 const selected = selectedIds.includes(s.id);
                 const isEditing = editingId === s.id;
+                const isInline = inlineEditId === s.id;
 
                 return (
                   <g
                     key={s.id}
                     onMouseDown={(e) => onShapeMouseDown(e, s.id)}
                     onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
-                    style={{ cursor: tool === "select" ? "move" : "default" }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (tool === "select") {
+                        setSelectedIds?.([s.id]);
+                        setSelectedOverlayIds?.([]);
+                      }
+                      onContextMenu?.(e);
+                    }}
+                    style={{ cursor: tool === "select" ? "move" : "crosshair" }}
                   >
+                    {/* Invisible hitbox so right-click works anywhere over text bounds */}
+                    {(() => {
+                      const fontSize = s.fontSize || 24;
+                      const text = s.text || "";
+                      const estW = Math.max(40, text.length * fontSize * 0.6);
+                      const estH = Math.max(24, fontSize * 1.2);
+                      const anchor = s.anchor || "start";
+                      const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+                      const onCtx = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (tool === "select") {
+                          setSelectedIds?.([s.id]);
+                          setSelectedOverlayIds?.([]);
+                        }
+                        onContextMenu?.(e);
+                      };
+                      return (
+                        <rect
+                          x={s.x + ax - 6}
+                          y={s.y - estH - 6}
+                          width={estW + 12}
+                          height={estH + 12}
+                          fill="rgba(0,0,0,0.001)"
+                          pointerEvents="all"
+                          onMouseDown={(e) => {
+                            if (tool !== "select") return;
+                            onShapeMouseDown(e, s.id);
+                          }}
+                          onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (tool === "select") {
+                              setSelectedIds?.([s.id]);
+                              setSelectedOverlayIds?.([]);
+                            }
+                            onContextMenu?.(e);
+                          }}
+                        />
+                      );
+                    })()}
                     <text
                       x={s.x}
                       y={s.y}
-                      fill={s.fill || "#111"}
+                      fill={s.fill || "#808080"}
                       fontSize={s.fontSize || 24}
                       fontFamily={s.fontFamily || "system-ui"}
+                      fontWeight={s.fontWeight || "400"}
                       textAnchor={s.anchor || "start"}
                       dominantBaseline="text-before-edge"
-                      style={{ userSelect: "none" }}
+                      style={{ userSelect: "none", visibility: isInline ? "hidden" : "visible" }}
+                      onMouseDown={(e) => onShapeMouseDown(e, s.id)}
+                      onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (tool === "select") {
+                          setSelectedIds?.([s.id]);
+                          setSelectedOverlayIds?.([]);
+                        }
+                        onContextMenu?.(e);
+                      }}
                     >
                       {s.text || ""}
                     </text>
@@ -615,6 +723,16 @@ export default function CanvasSvg({
 
               return (
                 <g key={s.id}>
+                  {(() => {
+                    const onPolyDbl = (e) => {
+                      if (isEditing) {
+                        onEditPolylineClick?.(e, s.id);
+                      } else {
+                        onShapeDoubleClick(e, s.id);
+                      }
+                    };
+                    return null;
+                  })()}
                   <polyline
                     points={pointsToAttr(s.points)}
                     fill="none"
@@ -623,8 +741,41 @@ export default function CanvasSvg({
                     strokeLinejoin="round"
                     strokeLinecap="round"
                     onMouseDown={(e) => onShapeMouseDown(e, s.id)}
-                    onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
+                    onDoubleClick={(e) => {
+                      if (isEditing) {
+                        onEditPolylineClick?.(e, s.id);
+                      } else {
+                        onShapeDoubleClick(e, s.id);
+                      }
+                    }}
+                    pointerEvents="auto"
+                    style={{ cursor: tool === "select" ? "move" : "crosshair" }}
                   />
+
+                  {isEditing && (
+                    <>
+                      {selectedSegment?.id === s.id &&
+                        selectedSegment.kind === "point" &&
+                        Array.isArray(s.points) && (
+                          (() => {
+                            const idx = selectedSegment.index;
+                            if (idx < 0 || idx >= s.points.length) return null;
+                            const p = s.points[idx];
+                            return (
+                              <circle
+                                cx={p.x}
+                                cy={p.y}
+                                r={Math.max(10, (s.strokeWidth || 3) * 3)}
+                                fill="rgba(43,108,255,0.18)"
+                                stroke="#2b6cff"
+                                strokeWidth={2}
+                                pointerEvents="none"
+                              />
+                            );
+                          })()
+                        )}
+                    </>
+                  )}
 
                   <polyline
                     points={pointsToAttr(ptsForDisplay)}
@@ -638,29 +789,32 @@ export default function CanvasSvg({
                     markerStart={markerForStart(arrowStart)}
                     markerEnd={markerForEnd(arrowEnd)}
                     onMouseDown={(e) => onShapeMouseDown(e, s.id)}
-                    onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
+                    onDoubleClick={(e) => {
+                      if (isEditing) {
+                        onEditPolylineClick?.(e, s.id);
+                      } else {
+                        onShapeDoubleClick(e, s.id);
+                      }
+                    }}
+                    pointerEvents="auto"
+                    style={{ cursor: tool === "select" ? "move" : "crosshair" }}
                   />
 
                   {isEditing && (
                     <>
-                      <polyline
-                        points={pointsToAttr(s.points)}
-                        fill="none"
-                        stroke="transparent"
-                        strokeWidth={Math.max(18, (s.strokeWidth || 3) * 6)}
-                        strokeLinejoin="round"
-                        strokeLinecap="round"
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onClick={(e) => onEditPolylineClick(e, s.id)}
-                      />
-
                       {s.points.map((pt, idx) => (
                         <g key={`${s.id}-h-${idx}`}>
                           <circle
                             cx={pt.x}
                             cy={pt.y}
                             r={HANDLE_R}
-                            fill="white"
+                            fill={
+                              selectedSegment?.id === s.id &&
+                              selectedSegment.kind === "point" &&
+                              selectedSegment.index === idx
+                                ? "#e8f0ff"
+                                : "white"
+                            }
                             stroke="#2b6cff"
                             strokeWidth={HANDLE_STROKE}
                           />
@@ -672,6 +826,7 @@ export default function CanvasSvg({
                             fill="transparent"
                             onMouseDown={(e) => onHandleMouseDown(e, s.id, idx)}
                             onDoubleClick={(e) => onHandleDoubleClick(e, s.id, idx)}
+                            onContextMenu={(e) => onHandleContextMenu?.(e, s.id, idx)}
                             style={{ cursor: "grab" }}
                           />
                         </g>
@@ -687,17 +842,26 @@ export default function CanvasSvg({
               const showHandles = singleSelectedOverlayId === o.id;
 
               return (
-                <g key={o.id}>
+                <g
+                  key={o.id}
+                  data-overlay-id={o.id}
+                  onDoubleClick={(e) => onOverlayDoubleClick?.(e, o.id)}
+                >
                   <g
                     ref={(node) => setOverlayRef(o.id, node)}
                     transform={`translate(${o.tx} ${o.ty}) scale(${o.scale})`}
                     onMouseDown={(e) => onOverlayMouseDown(e, o.id)}
-                    style={{ cursor: "move" }}
+                    onDoubleClick={(e) => onOverlayDoubleClick?.(e, o.id)}
+                    style={{
+                      cursor: tool === "select" ? "move" : "crosshair",
+                      pointerEvents: "visiblePainted",
+                    }}
                   >
                     <g
                       style={{
                         fill: o.fill ?? "none",
                         stroke: o.stroke ?? "none",
+                        pointerEvents: "visiblePainted",
                       }}
                       dangerouslySetInnerHTML={{ __html: o.inner }}
                     />
@@ -733,6 +897,49 @@ export default function CanvasSvg({
                 </g>
               );
             })}
+
+            {showTagPaths && (
+              <g pointerEvents="none">
+                {shapes.map((s) => {
+                  const text = String(s.tagPath || "").trim();
+                  if (!text) return null;
+                  if (s.type === "text") {
+                    const x = Number(s.x ?? 0);
+                    const y = Number(s.y ?? 0) - 6;
+                    return (
+                      <text key={`tag-${s.id}`} x={x} y={y} fontSize={12} fill="#b400ff">
+                        {text}
+                      </text>
+                    );
+                  }
+                  if (Array.isArray(s.points)) {
+                    const bb = bboxOfPoints(s.points);
+                    if (!bb) return null;
+                    const x = bb.minX + bb.w / 2;
+                    const y = bb.minY - 6;
+                    return (
+                      <text key={`tag-${s.id}`} x={x} y={y} fontSize={12} fill="#b400ff" textAnchor="middle">
+                        {text}
+                      </text>
+                    );
+                  }
+                  return null;
+                })}
+                {svgOverlays.map((o) => {
+                  const text = String(o.tagPath || "").trim();
+                  if (!text) return null;
+                  const bb = overlayLocalBBox(o.id);
+                  if (!bb) return null;
+                  const x = o.tx + o.scale * (bb.x + bb.width / 2);
+                  const y = o.ty + o.scale * bb.y - 6;
+                  return (
+                    <text key={`tag-${o.id}`} x={x} y={y} fontSize={12} fill="#b400ff" textAnchor="middle">
+                      {text}
+                    </text>
+                  );
+                })}
+              </g>
+            )}
 
             {marqueeRect && (
               <rect

@@ -31,11 +31,25 @@ import { exportToIgnitionJson, downloadIgnitionJson } from "./utils/ignitionExpo
 const SVG_LIBRARY = import.meta.glob("./assets/SVG_Files/**/*.svg", { as: "raw" });
 // (no eager:true)
 
+function getFolderFromKey(key) {
+  const parts = String(key).split("/");
+  const i = parts.findIndex((p) => p === "SVG_Files" || p === "SVG Files");
+  if (i >= 0) {
+    const rest = parts.slice(i + 1);
+    if (rest.length <= 1) return "Root";
+    return rest.slice(0, -1).join(" / ");
+  }
+  if (parts.length <= 2) return "Root";
+  return parts.slice(0, -1).slice(-1)[0] || "Root";
+}
+
 
 
 
 export default function App() {
   const [tool, setTool] = useState("select"); // "select" | "polyline"
+  const DEFAULT_STROKE = "#808080";
+  const DEFAULT_FILL = "#cccccc";
   const [shapes, setShapes] = useState([]); // polylines only
 
   // Multi-selection
@@ -44,6 +58,7 @@ export default function App() {
 
   // drawing = { mode:"draw-poly", id }
   const [drawing, setDrawing] = useState(null);
+  const [inlineEdit, setInlineEdit] = useState(null); // { id, value }
 
   // unified drag for moving ALL selected items
   // { startWorld, polylines:[{id, origPoints}], overlays:[{id, origTx, origTy}] }
@@ -52,9 +67,21 @@ export default function App() {
   // editing a polyline
   const [editingId, setEditingId] = useState(null); // double-click line to edit
   const [dragHandle, setDragHandle] = useState(null); // { id, index }
+  const [selectedSegment, setSelectedSegment] = useState(null); // { id, index, kind: "point" }
 
   // Import picker UI
   const [importOpen, setImportOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [lastContextPoint, setLastContextPoint] = useState(null);
+  const [panelCursor, setPanelCursor] = useState(null);
+  const [contextImportQuery, setContextImportQuery] = useState("");
+  const [contextSvgMenuOpen, setContextSvgMenuOpen] = useState(false);
+  const [contextSvgMenuPos, setContextSvgMenuPos] = useState({ x: 0, y: 0 });
+  const contextSvgMenuTimerRef = useRef(null);
+  const svgMenuInputRef = useRef(null);
+  const [duplicateOffset, setDuplicateOffset] = useState(20);
+  const duplicateOffsetRef = useRef(20);
+  const [polyHandleMenu, setPolyHandleMenu] = useState(null);
 
   // SVG overlays (imported files): { id, name, inner, tx, ty, scale, fill, stroke, tagPath }
   const [svgOverlays, setSvgOverlays] = useState([]);
@@ -66,6 +93,8 @@ export default function App() {
   const [exportVB, setExportVB] = useState({ x: 0, y: 0, w: 1600, h: 900 });
   const [exportBasis, setExportBasis] = useState({ w: 1600, h: 900 }); // affects Perspective "basis"
   const [showZoom, setShowZoom] = useState(true);
+  const [showGrid, setShowGrid] = useState(true);
+  const [showTagPaths, setShowTagPaths] = useState(false);
   const [marquee, setMarquee] = useState(null);
 
   const [vbW, setVbW] = useState(1600);
@@ -77,6 +106,7 @@ export default function App() {
 
   const overlayRefs = useRef(new Map()); // id -> <g> element containing imported inner
   const svgRef = useRef(null);
+  const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
 
   const shapesRef = useRef(shapes);
   const overlaysRef = useRef(svgOverlays);
@@ -93,6 +123,13 @@ export default function App() {
   useEffect(() => { overlaysRef.current = svgOverlays; }, [svgOverlays]);
   useEffect(() => { selPolyRef.current = selectedIds; }, [selectedIds]);
   useEffect(() => { selOverRef.current = selectedOverlayIds; }, [selectedOverlayIds]);
+  useEffect(() => { duplicateOffsetRef.current = Number(duplicateOffset) || 0; }, [duplicateOffset]);
+  useEffect(() => {
+    if (!selectedSegment) return;
+    if (!selectedIds.includes(selectedSegment.id) || editingId !== selectedSegment.id) {
+      setSelectedSegment(null);
+    }
+  }, [selectedIds, editingId, selectedSegment]);
 
   // ---- Project file handle (for Save / Save As) ----
   const projectHandleRef = useRef(null);
@@ -241,6 +278,71 @@ export default function App() {
     const savedName = localStorage.getItem("vizi_project_name");
     if (savedName) setProjectName(savedName);
   }, []);
+
+  useEffect(() => {
+    function isTypingTarget(t) {
+      if (!t) return false;
+      const tag = (t.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || t.isContentEditable;
+    }
+
+    function onKeyDown(e) {
+      if (isTypingTarget(e.target)) return;
+      const key = (e.key || "").toLowerCase();
+      const isMac = navigator.platform.toLowerCase().includes("mac");
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) return;
+
+      if (key === "c") {
+        e.preventDefault();
+        copySelection();
+      } else if (key === "v") {
+        e.preventDefault();
+        pasteClipboard();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
+
+  useEffect(() => {
+    function onDown() {
+      if (contextMenu) setContextMenu(null);
+      if (polyHandleMenu) setPolyHandleMenu(null);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") setContextMenu(null);
+    }
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [contextMenu]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      setContextSvgMenuOpen(false);
+    }
+  }, [contextMenu]);
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (!contextSvgMenuOpen) return;
+      const t = e.target;
+      const tag = (t?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || t?.isContentEditable) return;
+      const input = svgMenuInputRef.current;
+      if (!input) return;
+      if (e.key.length === 1 || e.key === "Backspace") {
+        input.focus();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [contextSvgMenuOpen]);
   useEffect(() => {
     localStorage.setItem("vizi_project_name", projectName || "Untitled");
   }, [projectName]);
@@ -319,8 +421,40 @@ export default function App() {
 
   // Floating panel visibility
   const [showToolbar, setShowToolbar] = useState(true);
+  const [toolbarPos, setToolbarPos] = useState({ x: 16, y: 50 });
   const [showHUD, setShowHUD] = useState(true);
-  const [showHelp, setShowHelp] = useState(true);
+  const [showHelp, setShowHelp] = useState(false);
+  const [altDown, setAltDown] = useState(false);
+  useEffect(() => {
+    if (!showHUD) setPanelCursor(null);
+  }, [showHUD]);
+  useEffect(() => {
+    if (importOpen) setShowHUD(false);
+  }, [importOpen]);
+
+  useEffect(() => {
+    if (tool === "polyline") setShowHUD(false);
+  }, [tool]);
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "Alt") setAltDown(true);
+    }
+    function onKeyUp(e) {
+      if (e.key === "Alt") setAltDown(false);
+    }
+    function onBlur() {
+      setAltDown(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
 
 
   // ✅ ZOOM (main svg)
@@ -349,12 +483,166 @@ export default function App() {
     );
   };
 
+  const applySingleFontWeight = (v) => {
+    if (!isSingle || singleKind !== "Text" || !singleId) return;
+    const next = String(v ?? "").trim();
+    if (!next) return;
+    setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, fontWeight: next } : s)));
+  };
+
   const applySingleTextAlign = (v) => {
     if (!isSingle || singleKind !== "Text" || !singleId) return;
     const a = v === "middle" || v === "end" ? v : "start";
     setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, anchor: a } : s)));
   };
 
+  function lineStyleToStrokeProps(style, strokeWidth) {
+    const sw = Math.max(1, Number(strokeWidth) || 1);
+    switch (style) {
+      case "dashed":
+        return { dasharray: `${sw * 4} ${sw * 2}` };
+      case "dotted":
+        return { dasharray: `${sw} ${sw * 2}`, linecap: "round" };
+      case "wavy":
+        return { dasharray: `${sw * 1.5} ${sw * 1.5}`, linecap: "round", linejoin: "round" };
+      default:
+        return {};
+    }
+  }
+
+  function convertSelectedPolylinesToSvg() {
+    const ids = selectedIds || [];
+    if (!ids.length) return;
+
+    const selectedShapes = shapes.filter((s) => ids.includes(s.id));
+    if (!selectedShapes.length) return;
+
+    const escapeXml = (v) =>
+      String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    const polyParts = [];
+    const textParts = [];
+
+    for (const s of selectedShapes) {
+      if (s.type === "polyline" || Array.isArray(s.points)) {
+        if (!Array.isArray(s.points) || s.points.length < 2) continue;
+        const bb = bboxOfPoints(s.points);
+        if (!bb) continue;
+
+        minX = Math.min(minX, bb.minX);
+        minY = Math.min(minY, bb.minY);
+        maxX = Math.max(maxX, bb.maxX);
+        maxY = Math.max(maxY, bb.maxY);
+
+        polyParts.push(s);
+        continue;
+      }
+
+      if (s.type === "text") {
+        const fontSize = Number(s.fontSize ?? 24);
+        const text = String(s.text ?? "");
+        const estW = Math.max(10, text.length * fontSize * 0.6);
+        const estH = Math.max(10, fontSize * 1.2);
+        const anchor = s.anchor || "start";
+        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+
+        minX = Math.min(minX, Number(s.x ?? 0) + ax);
+        minY = Math.min(minY, Number(s.y ?? 0));
+        maxX = Math.max(maxX, Number(s.x ?? 0) + ax + estW);
+        maxY = Math.max(maxY, Number(s.y ?? 0) + estH);
+
+        textParts.push({
+          ...s,
+          _estW: estW,
+          _estH: estH,
+          _anchor: anchor,
+        });
+      }
+    }
+
+    if ((!polyParts.length && !textParts.length) || !Number.isFinite(minX)) return;
+
+    const width = maxX - minX;
+    const height = maxY - minY;
+
+    const polyInner = polyParts
+      .map((s) => {
+        const localPoints = s.points.map((p) => ({
+          x: Number(p.x) - minX,
+          y: Number(p.y) - minY,
+        }));
+
+        const pointsAttr = localPoints.map((p) => `${p.x},${p.y}`).join(" ");
+        const stroke = s.stroke || DEFAULT_STROKE;
+        const fill = s.fill || DEFAULT_FILL;
+        const strokeWidth = Number(s.strokeWidth) || 3;
+        const style = lineStyleToStrokeProps(s.lineStyle ?? "solid", strokeWidth);
+
+        const dashAttr = style.dasharray ? ` stroke-dasharray="${style.dasharray}"` : "";
+        const linecap = style.linecap ?? "round";
+        const linejoin = style.linejoin ?? "round";
+
+        return `<polyline points="${pointsAttr}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${linecap}" stroke-linejoin="${linejoin}"${dashAttr} />`;
+      })
+      .join("");
+
+    const textInner = textParts
+      .map((t) => {
+        const x = Number(t.x ?? 0) - minX;
+        const y = Number(t.y ?? 0) - minY;
+        const fill = t.fill || "#808080";
+        const fontSize = Number(t.fontSize ?? 24);
+        const fontFamily = t.fontFamily || "system-ui";
+        const fontWeight = t.fontWeight || "400";
+        const textAnchor = t._anchor || "start";
+        const text = escapeXml(t.text ?? "");
+
+        return `<text x="${x}" y="${y}" fill="${fill}" font-size="${fontSize}" font-family="${fontFamily}" font-weight="${fontWeight}" text-anchor="${textAnchor}" dominant-baseline="text-before-edge">${text}</text>`;
+      })
+      .join("");
+
+    // Ensure text is always on top
+    const inner = `${polyInner}${textInner}`;
+
+    const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">${inner}</svg>`;
+    const genKey = addGeneratedSvg(`Selection-Group-${polyParts.length + textParts.length}`, raw);
+    const stroke = polyParts[0]?.stroke || DEFAULT_STROKE;
+    const fill = polyParts[0]?.fill || textParts[0]?.fill || DEFAULT_FILL;
+    const tagPath =
+      selectedShapes.length === 1 ? (selectedShapes[0]?.tagPath || "") : "";
+
+    const overlaysToAdd = [
+      {
+        id: uid(),
+        sourceKey: genKey,
+        name: genKey.split("/").pop() || "Selection-Group",
+        inner,
+        tx: minX,
+        ty: minY,
+        scale: 1,
+        fill,
+        stroke,
+        tagPath,
+        bbox: { x: 0, y: 0, width, height },
+      },
+    ];
+
+    pushHistory();
+    setShapes((prev) => prev.filter((x) => !ids.includes(x.id)));
+    setSvgOverlays((prev) => [...prev, ...overlaysToAdd]);
+    setSelectedIds([]);
+    setSelectedOverlayIds(overlaysToAdd.map((o) => o.id));
+    setEditingId(null);
+  }
 
 
   const applyViewBox = ({ w, h }) => {
@@ -741,15 +1029,102 @@ export default function App() {
 
 
 
-  const svgFiles = useMemo(() => {
-    return Object.keys(SVG_LIBRARY)
-      .map((k) => ({ key: k, name: k.split("/").pop() || k }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+  const [generatedSvgs, setGeneratedSvgs] = useState([]);
+  const persistSvgMeta = async (w, h) => {
+    if (!isSingle || singleKind !== "SVG" || !singleId) return;
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+    const o = svgOverlays.find((x) => x.id === singleId);
+    if (!o?.sourceKey) return;
+    if (String(o.sourceKey).startsWith("__generated__/")) return;
+    try {
+      await fetch("/__vizi__/set-svg-meta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileKey: o.sourceKey,
+          kewidth: w,
+          keheight: h,
+        }),
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("viziGeneratedSvgs");
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (Array.isArray(data)) setGeneratedSvgs(data);
+    } catch {
+      // ignore
+    }
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("viziGeneratedSvgs", JSON.stringify(generatedSvgs));
+    } catch {
+      // ignore
+    }
+  }, [generatedSvgs]);
+
+  const generatedSvgMap = useMemo(() => {
+    const map = new Map();
+    for (const g of generatedSvgs) {
+      if (!g?.key || !g?.raw) continue;
+      map.set(g.key, g.raw);
+    }
+    return map;
+  }, [generatedSvgs]);
+
+  const svgFiles = useMemo(() => {
+    const base = Object.keys(SVG_LIBRARY).map((k) => ({ key: k, name: k.split("/").pop() || k }));
+    const generated = generatedSvgs.map((g) => ({
+      key: g.key,
+      name: g.name || g.key.split("/").pop() || g.key,
+    }));
+    return [...base, ...generated].sort((a, b) => a.name.localeCompare(b.name));
+  }, [generatedSvgs]);
+
+  const contextGrouped = useMemo(() => {
+    const q = String(contextImportQuery || "").trim().toLowerCase();
+    const list = Array.isArray(svgFiles) ? svgFiles : [];
+
+    const filtered = list.filter((f) => {
+      if (!q) return true;
+      const name = String(f?.name || "").toLowerCase();
+      const key = String(f?.key || "").toLowerCase();
+      return name.includes(q) || key.includes(q);
+    });
+
+    const map = new Map();
+    for (const f of filtered) {
+      const folder = getFolderFromKey(f.key);
+      if (!map.has(folder)) map.set(folder, []);
+      map.get(folder).push(f);
+    }
+
+    const folders = Array.from(map.keys()).sort((a, b) => {
+      if (a === "Root") return -1;
+      if (b === "Root") return 1;
+      const da = a.split(" / ").length;
+      const db = b.split(" / ").length;
+      if (da !== db) return da - db;
+      return a.localeCompare(b);
+    });
+
+    return folders.map((folder) => ({
+      folder,
+      files: map.get(folder).slice().sort((a, b) => a.name.localeCompare(b.name)),
+    }));
+  }, [svgFiles, contextImportQuery]);
 
   const selCount = selectedIds.length + selectedOverlayIds.length;
   const isSingle = selCount === 1;
-
+  const singleSelectedOverlayId =
+    selectedOverlayIds.length === 1 && selectedIds.length === 0 ? selectedOverlayIds[0] : null;
   const singleKind = useMemo(() => {
     if (!isSingle) return null;
 
@@ -767,6 +1142,19 @@ export default function App() {
     if (selectedOverlayIds.length === 1) return "SVG";
     return null;
   }, [isSingle, selectedIds, selectedOverlayIds, shapes]);
+
+  const singleOverlay = useMemo(
+    () => svgOverlays.find((o) => o.id === singleSelectedOverlayId),
+    [svgOverlays, singleSelectedOverlayId]
+  );
+  const singleSvgTemplateKey =
+    singleOverlay?.sourceKey ||
+    svgFiles.find((f) => f.name === (singleOverlay?.name ?? ""))?.key ||
+    "";
+  const singleGeneratedTemplate = useMemo(
+    () => generatedSvgs.find((g) => g.key === singleSvgTemplateKey),
+    [generatedSvgs, singleSvgTemplateKey]
+  );
 
 
 
@@ -827,15 +1215,17 @@ export default function App() {
       y: p.y,
       text: "Text",
       fontSize: 24,
-      fill: "#111111",
+      fill: "#808080",
       fontFamily: "system-ui",
+      fontWeight: "400",
       anchor: "start", // start | middle | end
     };
 
     setShapes((prev) => [...prev, t]);
     setSelectedIds([id]);
     setSelectedOverlayIds([]);
-    setEditingId(id); // reuse editingId for text too
+    setEditingId(null);
+    setShowHUD(false);
     setTool("select"); // place once, go back to select
   }
 
@@ -843,6 +1233,19 @@ export default function App() {
   function exitEditMode() {
     setEditingId(null);
     setDragHandle(null);
+  }
+
+  function toggleEditMode() {
+    if (editingId) {
+      exitEditMode();
+      return;
+    }
+
+    if (selectedIds.length !== 1) return;
+    const id = selectedIds[0];
+    const s = shapes.find((x) => x.id === id);
+    if (!s || (s.type !== "polyline" && !Array.isArray(s.points))) return;
+    setEditingId(id);
   }
 
   // ---------- Overlay bbox helpers ----------
@@ -896,12 +1299,318 @@ export default function App() {
 
 
   // ---------- Duplicate ----------
+  function getDupOffset() {
+    return Math.max(0, Number(duplicateOffsetRef.current) || 0);
+  }
+
+  function getSvgEntry(fileKey) {
+    if (generatedSvgMap.has(fileKey)) return generatedSvgMap.get(fileKey);
+    return SVG_LIBRARY[fileKey];
+  }
+
+  function ensureGeneratedKey(name) {
+    const clean = String(name || "Generated.svg").replace(/[\\/:*?"<>|]/g, "_");
+    const base = clean.toLowerCase().endsWith(".svg") ? clean : `${clean}.svg`;
+    let key = `__generated__/${base}`;
+    let i = 2;
+    while (generatedSvgMap.has(key) || SVG_LIBRARY[key]) {
+      const stem = base.replace(/\.svg$/i, "");
+      key = `__generated__/${stem}-${i}.svg`;
+      i += 1;
+    }
+    return key;
+  }
+
+  function addGeneratedSvg(name, raw) {
+    const key = ensureGeneratedKey(name);
+    setGeneratedSvgs((prev) => [
+      ...prev,
+      { key, name: name || key.split("/").pop(), raw, createdAt: Date.now() },
+    ]);
+    return key;
+  }
+
+  function renameGeneratedSvg(key, nextName) {
+    const name = String(nextName || "").trim();
+    if (!name) return;
+    setGeneratedSvgs((prev) =>
+      prev.map((g) => (g.key === key ? { ...g, name } : g))
+    );
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.sourceKey === key ? { ...o, name } : o))
+    );
+  }
+
+  async function buildOverlayFromKey(fileKey, center, targetW) {
+    const entry = getSvgEntry(fileKey);
+    if (!entry) {
+      const w = Math.max(40, Number(targetW) || 120);
+      const h = Math.max(30, w * 0.6);
+      return {
+        id: uid(),
+        sourceKey: fileKey || "__unknown__",
+        name: fileKey ? fileKey.split("/").pop() || fileKey : "Unknown",
+        inner: `<rect x="0" y="0" width="${w}" height="${h}" fill="${DEFAULT_FILL}" stroke="${DEFAULT_STROKE}" stroke-width="2" />`,
+        tx: center.x - w / 2,
+        ty: center.y - h / 2,
+        scale: 1,
+        fill: DEFAULT_FILL,
+        stroke: DEFAULT_STROKE,
+        tagPath: "",
+        bbox: { x: 0, y: 0, width: w, height: h },
+      };
+    }
+
+    const raw = typeof entry === "function" ? await entry() : entry;
+    if (typeof raw !== "string") {
+      const w = Math.max(40, Number(targetW) || 120);
+      const h = Math.max(30, w * 0.6);
+      return {
+        id: uid(),
+        sourceKey: fileKey || "__unknown__",
+        name: fileKey ? fileKey.split("/").pop() || fileKey : "Unknown",
+        inner: `<rect x="0" y="0" width="${w}" height="${h}" fill="${DEFAULT_FILL}" stroke="${DEFAULT_STROKE}" stroke-width="2" />`,
+        tx: center.x - w / 2,
+        ty: center.y - h / 2,
+        scale: 1,
+        fill: DEFAULT_FILL,
+        stroke: DEFAULT_STROKE,
+        tagPath: "",
+        bbox: { x: 0, y: 0, width: w, height: h },
+      };
+    }
+
+    const parsed = stripOuterSvg(raw);
+    if (!parsed) {
+      const w = Math.max(40, Number(targetW) || 120);
+      const h = Math.max(30, w * 0.6);
+      return {
+        id: uid(),
+        sourceKey: fileKey || "__unknown__",
+        name: fileKey ? fileKey.split("/").pop() || fileKey : "Unknown",
+        inner: `<rect x="0" y="0" width="${w}" height="${h}" fill="${DEFAULT_FILL}" stroke="${DEFAULT_STROKE}" stroke-width="2" />`,
+        tx: center.x - w / 2,
+        ty: center.y - h / 2,
+        scale: 1,
+        fill: DEFAULT_FILL,
+        stroke: DEFAULT_STROKE,
+        tagPath: "",
+        bbox: { x: 0, y: 0, width: w, height: h },
+      };
+    }
+
+    const key = extractKeySize(raw);
+    const hasKey = !!(key && key.w > 0 && key.h > 0);
+    const baseVb = parsed.vb;
+    let localVb = key ? { x: 0, y: 0, w: key.w, h: key.h } : baseVb;
+    if (!localVb || !Number.isFinite(localVb.w) || !Number.isFinite(localVb.h) || localVb.w <= 0 || localVb.h <= 0) {
+      localVb = { x: 0, y: 0, w: 100, h: 100 };
+    }
+
+    let inner = parsed.inner;
+    if (key && baseVb?.w > 0 && baseVb?.h > 0) {
+      const sx = key.w / baseVb.w;
+      const sy = key.h / baseVb.h;
+      inner = `
+      <g transform="translate(${-baseVb.x},${-baseVb.y}) scale(${sx},${sy})">
+        ${parsed.inner}
+      </g>
+    `;
+    }
+
+    const srcW = Math.max(localVb.w, 1);
+    const scale = hasKey ? 1 : targetW ? Math.max(0.01, targetW / srcW) : 1;
+    const srcCx = localVb.x + localVb.w / 2;
+    const srcCy = localVb.y + localVb.h / 2;
+    const tx = center.x - scale * srcCx;
+    const ty = center.y - scale * srcCy;
+
+    return {
+      id: uid(),
+      sourceKey: fileKey,
+      name: fileKey.split("/").pop() || fileKey,
+      inner,
+      tx,
+      ty,
+      scale,
+      fill: DEFAULT_FILL,
+      stroke: DEFAULT_STROKE,
+      tagPath: "",
+      bbox: { x: localVb.x, y: localVb.y, width: localVb.w, height: localVb.h },
+    };
+  }
+
+  function layoutPoint(p, origin, scale) {
+    return { x: origin.x + p.x * scale, y: origin.y + p.y * scale };
+  }
+
+  async function autoLayoutPage1(targetRect) {
+    const baseW = 1600;
+    const baseH = 900;
+    const scale = targetRect
+      ? Math.min(targetRect.w / baseW, targetRect.h / baseH)
+      : 1;
+    const origin = targetRect ? { x: targetRect.x, y: targetRect.y } : { x: 0, y: 0 };
+
+    const placements = [];
+    const leftStartX = 200;
+    const leftY = 360;
+    const leftGap = 90;
+    const leftW = 70;
+    const leftBins = [
+      "Terra_Bin_Skinny.svg",
+      "Terra_Bin_Skinny.svg",
+      "Terra_Bin_Skinny.svg",
+      "Terra_Bin_Skinny.svg",
+      "Terra_Bin_Skinny.svg",
+      "Terra_Bin_Skinny.svg",
+    ];
+
+    leftBins.forEach((key, i) => {
+      placements.push({
+        key: `./assets/SVG_Files/${key}`,
+        center: layoutPoint({ x: leftStartX + i * leftGap, y: leftY }, origin, scale),
+        w: leftW * scale,
+      });
+    });
+
+    // right top bins (51/52)
+    placements.push({
+      key: "./assets/SVG_Files/Terra_Bin_Skinny.svg",
+      center: layoutPoint({ x: 1080, y: 260 }, origin, scale),
+      w: 90 * scale,
+    });
+    placements.push({
+      key: "./assets/SVG_Files/Terra_Bin_Skinny.svg",
+      center: layoutPoint({ x: 1180, y: 260 }, origin, scale),
+      w: 90 * scale,
+    });
+
+    // right bottom bank
+    const rightStartX = 980;
+    const rightY = 560;
+    const rightGap = 70;
+    const rightW = 60;
+    for (let i = 0; i < 8; i++) {
+      placements.push({
+        key: "./assets/SVG_Files/Terra_Bin_Skinny.svg",
+        center: layoutPoint({ x: rightStartX + i * rightGap, y: rightY }, origin, scale),
+        w: rightW * scale,
+      });
+    }
+
+    // center equipment column (approximate)
+    placements.push({
+      key: "./assets/SVG_Files/BlowerSimple.svg",
+      center: layoutPoint({ x: 740, y: 700 }, origin, scale),
+      w: 80 * scale,
+    });
+    placements.push({
+      key: "./assets/SVG_Files/Cyclone.svg",
+      center: layoutPoint({ x: 720, y: 520 }, origin, scale),
+      w: 90 * scale,
+    });
+    placements.push({
+      key: "./assets/SVG_Files/FilterBinTop.svg",
+      center: layoutPoint({ x: 740, y: 420 }, origin, scale),
+      w: 90 * scale,
+    });
+
+    const overlays = (await Promise.all(
+      placements.map((p) => buildOverlayFromKey(p.key, p.center, p.w))
+    )).filter(Boolean);
+
+    if (!overlays.length) return;
+
+    pushHistory();
+    setSvgOverlays((prev) => [...prev, ...overlays]);
+    setSelectedIds([]);
+    setSelectedOverlayIds(overlays.map((o) => o.id));
+    setShowHUD(false);
+
+    const line = (pts) => ({
+      id: uid(),
+      type: "polyline",
+      points: pts,
+      stroke: DEFAULT_STROKE,
+      strokeWidth: 3,
+      lineStyle: "solid",
+      arrowStart: "none",
+      arrowEnd: "none",
+    });
+
+    const newLines = [
+      line([layoutPoint({ x: 160, y: 240 }, origin, scale), layoutPoint({ x: 700, y: 240 }, origin, scale), layoutPoint({ x: 700, y: 520 }, origin, scale)]),
+      line([layoutPoint({ x: 700, y: 520 }, origin, scale), layoutPoint({ x: 900, y: 520 }, origin, scale)]),
+      line([layoutPoint({ x: 900, y: 520 }, origin, scale), layoutPoint({ x: 1470, y: 520 }, origin, scale)]),
+      line([layoutPoint({ x: 980, y: 320 }, origin, scale), layoutPoint({ x: 1180, y: 320 }, origin, scale)]),
+      line([layoutPoint({ x: 980, y: 320 }, origin, scale), layoutPoint({ x: 980, y: 500 }, origin, scale)]),
+      line([layoutPoint({ x: 1180, y: 320 }, origin, scale), layoutPoint({ x: 1180, y: 500 }, origin, scale)]),
+      line([layoutPoint({ x: 160, y: 300 }, origin, scale), layoutPoint({ x: 700, y: 300 }, origin, scale)]),
+    ];
+
+    setShapes((prev) => [...prev, ...newLines]);
+  }
+
+
+  function getSelectionBoxes(curShapes, curOverlays, selShapes, selOvers) {
+    const items = [];
+
+    for (const id of selShapes) {
+      const s = curShapes.find((x) => x.id === id);
+      if (!s) continue;
+
+      if (s.type === "text") {
+        const fontSize = Number(s.fontSize ?? 24);
+        const txt = String(s.text ?? "");
+        const estW = Math.max(10, txt.length * fontSize * 0.6);
+        const estH = Math.max(10, fontSize * 1.2);
+        const anchor = s.anchor ?? "start";
+        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+        items.push({
+          x: Number(s.x ?? 0) + ax,
+          y: Number(s.y ?? 0) - estH,
+          w: estW,
+          h: estH,
+        });
+        continue;
+      }
+
+      if (Array.isArray(s.points)) {
+        const bb = bboxOfPoints(s.points);
+        if (!bb) continue;
+        items.push({ x: bb.minX, y: bb.minY, w: bb.w, h: bb.h });
+      }
+    }
+
+    for (const id of selOvers) {
+      const o = curOverlays.find((x) => x.id === id);
+      if (!o) continue;
+      const bb = overlayLocalBBox(id);
+      if (!bb) continue;
+      items.push({
+        x: o.tx + o.scale * bb.x,
+        y: o.ty + o.scale * bb.y,
+        w: o.scale * bb.width,
+        h: o.scale * bb.height,
+      });
+    }
+
+    return items;
+  }
+
   function duplicateSelected() {
-    const pad = 20;
+    const pad = getDupOffset();
     if (!selectedIds.length && !selectedOverlayIds.length) return;
     if (!selectedBBox) return;
 
-    const dx = Math.max(0, selectedBBox.w) + pad;
+    const items = getSelectionBoxes(shapes, svgOverlays, selectedIds, selectedOverlayIds);
+    let refW = Math.max(0, selectedBBox.w);
+    if (items.length) {
+      const leftmost = items.reduce((a, b) => (b.x < a.x ? b : a), items[0]);
+      refW = Math.max(0, leftmost.w);
+    }
+    const dx = refW + pad;
 
     pushHistory();
 
@@ -948,7 +1657,7 @@ export default function App() {
 
 
   function duplicateSelectedStable() {
-    const pad = 20;
+    const pad = getDupOffset();
 
     const curShapes = shapesRef.current;
     const curOverlays = overlaysRef.current;
@@ -957,55 +1666,7 @@ export default function App() {
 
     if (!curSelShapes.length && !curSelOvers.length) return;
 
-    // compute GROUP bbox from current selection (so multi-select works)
-    const boxes = [];
-
-    for (const id of curSelShapes) {
-      const s = curShapes.find((x) => x.id === id);
-      if (!s) continue;
-
-      // ✅ Text
-      if (s.type === "text") {
-        const fontSize = Number(s.fontSize ?? 24);
-        const txt = String(s.text ?? "");
-        const estW = Math.max(10, txt.length * fontSize * 0.6);
-        const estH = Math.max(10, fontSize * 1.2);
-
-        const anchor = s.anchor ?? "start";
-        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
-
-        boxes.push({
-          x: Number(s.x ?? 0) + ax,
-          y: Number(s.y ?? 0) - estH, // baseline -> top
-          w: estW,
-          h: estH,
-        });
-        continue;
-      }
-
-      // ✅ Polyline / any points-based shape
-      if (Array.isArray(s.points)) {
-        const bb = bboxOfPoints(s.points);
-        if (!bb) continue;
-        boxes.push({ x: bb.minX, y: bb.minY, w: bb.w, h: bb.h });
-      }
-    }
-
-    for (const id of curSelOvers) {
-      const o = curOverlays.find((x) => x.id === id);
-      if (!o) continue;
-
-      const bb = overlayLocalBBox(id);
-      if (!bb) continue;
-
-      boxes.push({
-        x: o.tx + o.scale * bb.x,
-        y: o.ty + o.scale * bb.y,
-        w: o.scale * bb.width,
-        h: o.scale * bb.height,
-      });
-    }
-
+    const boxes = getSelectionBoxes(curShapes, curOverlays, curSelShapes, curSelOvers);
     if (!boxes.length) return;
 
     let minX = Infinity,
@@ -1021,7 +1682,13 @@ export default function App() {
     }
 
     const groupW = Math.max(0, maxX - minX);
-    const dx = groupW + pad; // ✅ width of group + pad
+    let refW = groupW;
+    if (boxes.length) {
+      const leftmost = boxes.reduce((a, b) => (b.x < a.x ? b : a), boxes[0]);
+      refW = Math.max(0, leftmost.w);
+    }
+
+    const dx = refW + pad; // ✅ width of leftmost element + offset
 
     // build duplicates
     pushHistory();
@@ -1070,6 +1737,117 @@ export default function App() {
     setTool("select");
   }
 
+  function handleDuplicate() {
+    duplicateSelectedStable();
+  }
+
+  function copySelection() {
+    const curShapes = shapesRef.current;
+    const curOverlays = overlaysRef.current;
+    const curSelShapes = selPolyRef.current;
+    const curSelOvers = selOverRef.current;
+
+    const shapesCopy = curShapes
+      .filter((s) => curSelShapes.includes(s.id))
+      .map((s) => deepClone(s));
+
+    const overlaysCopy = curOverlays
+      .filter((o) => curSelOvers.includes(o.id))
+      .map((o) => deepClone(o));
+
+    if (!shapesCopy.length && !overlaysCopy.length) return;
+
+    clipboardRef.current = { shapes: shapesCopy, overlays: overlaysCopy, pasteCount: 0 };
+  }
+
+  function pasteClipboard() {
+    const clip = clipboardRef.current;
+    if (!clip || (!clip.shapes.length && !clip.overlays.length)) return;
+
+    const n = (clip.pasteCount ?? 0) + 1;
+    const dx = lastContextPoint ? 0 : 20 * n;
+    const dy = lastContextPoint ? 0 : 20 * n;
+
+    pushHistory();
+
+    let offsetX = dx;
+    let offsetY = dy;
+    if (lastContextPoint) {
+      const boxes = [];
+      for (const s of clip.shapes) {
+        if (s.type === "text") {
+          const fontSize = Number(s.fontSize ?? 24);
+          const txt = String(s.text ?? "");
+          const estW = Math.max(10, txt.length * fontSize * 0.6);
+          const estH = Math.max(10, fontSize * 1.2);
+          const anchor = s.anchor ?? "start";
+          const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+          boxes.push({
+            x: Number(s.x ?? 0) + ax,
+            y: Number(s.y ?? 0) - estH,
+            w: estW,
+            h: estH,
+          });
+        } else if (Array.isArray(s.points)) {
+          const bb = bboxOfPoints(s.points);
+          if (bb) boxes.push({ x: bb.minX, y: bb.minY, w: bb.w, h: bb.h });
+        }
+      }
+      for (const o of clip.overlays) {
+        const bb = o.bbox || overlayLocalBBox(o.id);
+        if (!bb) continue;
+        boxes.push({
+          x: o.tx + o.scale * bb.x,
+          y: o.ty + o.scale * bb.y,
+          w: o.scale * bb.width,
+          h: o.scale * bb.height,
+        });
+      }
+      if (boxes.length) {
+        let minX = Infinity, minY = Infinity;
+        for (const b of boxes) {
+          minX = Math.min(minX, b.x);
+          minY = Math.min(minY, b.y);
+        }
+        offsetX = lastContextPoint.x - minX;
+        offsetY = lastContextPoint.y - minY;
+      }
+    }
+
+    const shapeDups = clip.shapes
+      .map((s) => {
+        const id = uid();
+        if (s.type === "text") {
+          return { ...s, id, x: Number(s.x ?? 0) + offsetX, y: Number(s.y ?? 0) + offsetY };
+        }
+        if (Array.isArray(s.points)) {
+          return {
+            ...s,
+            id,
+            points: clonePoints(s.points).map((p) => ({ x: p.x + offsetX, y: p.y + offsetY })),
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+    const overlayDups = clip.overlays.map((o) => {
+      const id = uid();
+      return { ...o, id, tx: o.tx + offsetX, ty: o.ty + offsetY };
+    });
+
+    if (shapeDups.length) setShapes((prev) => [...prev, ...shapeDups]);
+    if (overlayDups.length) setSvgOverlays((prev) => [...prev, ...overlayDups]);
+
+    setSelectedIds(shapeDups.map((s) => s.id));
+    setSelectedOverlayIds(overlayDups.map((o) => o.id));
+
+    clip.pasteCount = n;
+    exitEditMode();
+    setDrawing(null);
+    setTool("select");
+  }
+
 
 
   // ---------- Polyline drawing/editing ----------
@@ -1081,7 +1859,7 @@ export default function App() {
       type: "polyline",
       tagPath: "", // ✅ NEW
       points: [p, { x: p.x, y: p.y }], // last is preview
-      stroke: "#111",
+      stroke: "#808080",
       strokeWidth: 3,
       lineStyle: "solid",
     };
@@ -1091,6 +1869,7 @@ export default function App() {
     setSelectedOverlayIds([]);
     setEditingId(null);
     setDrawing({ mode: "draw-poly", id });
+    setShowHUD(false);
   }
 
   function addPolylinePoint(p) {
@@ -1104,9 +1883,15 @@ export default function App() {
 
         const fixed = s.points.slice(0, -1);
         const lastFixed = fixed[fixed.length - 1];
+        const firstFixed = fixed[0];
+        const SNAP_DIST = 12;
+        let nextP = p;
+        if (firstFixed && distance(p, firstFixed) <= SNAP_DIST) {
+          nextP = { x: firstFixed.x, y: firstFixed.y };
+        }
 
         const newFixed =
-          lastFixed && lastFixed.x === p.x && lastFixed.y === p.y ? fixed : [...fixed, p];
+          lastFixed && lastFixed.x === nextP.x && lastFixed.y === nextP.y ? fixed : [...fixed, nextP];
 
         const tail = newFixed[newFixed.length - 1];
         return { ...s, points: [...newFixed, { x: tail.x, y: tail.y }] };
@@ -1137,7 +1922,6 @@ export default function App() {
     );
 
     setDrawing(null);
-    setTool("select");
     clearSelection();
   }
 
@@ -1207,13 +1991,10 @@ export default function App() {
     if (s?.type === "text") {
       setSelectedIds([id]);
       setSelectedOverlayIds([]);
-      setEditingId(id);
-
-      const next = window.prompt("Edit text:", s.text ?? "");
-      if (next != null) {
-        pushHistory();
-        setShapes((prev) => prev.map((x) => (x.id === id ? { ...x, text: String(next) } : x)));
-      }
+      setEditingId(null);
+      setInlineEdit(null);
+      setPanelCursor({ x: e.clientX, y: e.clientY });
+      setShowHUD(true);
       return;
     }
 
@@ -1283,6 +2064,7 @@ export default function App() {
     setSelectedOverlayIds([]);
     setEditingId(id);
     setDragHandle({ id, index });
+    setSelectedSegment({ id, index, kind: "point" });
   }
 
 
@@ -1291,6 +2073,20 @@ export default function App() {
     e.stopPropagation();
     e.preventDefault();
     removeVertex(id, index);
+    setSelectedSegment(null);
+  }
+
+  function onHandleContextMenu(e, id, index) {
+    if (tool !== "select") return;
+    e.stopPropagation();
+    e.preventDefault();
+    setPolyHandleMenu({
+      x: e.clientX,
+      y: e.clientY,
+      id,
+      index,
+    });
+    setContextMenu(null);
   }
 
   function onEditPolylineClick(e, id) {
@@ -1299,6 +2095,23 @@ export default function App() {
     e.stopPropagation();
     const p = svgPoint(e);
     insertPointOnPolyline(id, p);
+    setSelectedSegment(null);
+  }
+
+  function onSegmentMouseDown(e, id, index) {
+    if (tool !== "select") return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (e.altKey) {
+      const p = svgPoint(e);
+      insertPointOnPolyline(id, p);
+      setSelectedSegment(null);
+      return;
+    }
+    setSelectedIds([id]);
+    setSelectedOverlayIds([]);
+    setEditingId(id);
+    setSelectedSegment({ id, index, kind: "point" });
   }
 
   // ---------- Overlay selection / move / resize ----------
@@ -1331,10 +2144,34 @@ export default function App() {
     beginDragAll(p, nextPoly, nextOver);
   }
 
+  function onOverlayDoubleClick(e, id) {
+    if (tool !== "select") return;
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedOverlayIds([id]);
+    setSelectedIds([]);
+    setEditingId(null);
+    setInlineEdit(null);
+    setPanelCursor({ x: e.clientX, y: e.clientY });
+    setShowHUD(true);
+  }
+
   function onOverlayHandleDown(e, id, corner) {
     if (tool !== "select") return;
     e.stopPropagation();
     e.preventDefault();
+
+    if (e.altKey) {
+      // Alt = move overlay instead of resize
+      setSelectedOverlayIds([id]);
+      setSelectedIds([]);
+      exitEditMode();
+      setDrawing(null);
+
+      const p = svgPoint(e);
+      beginDragAll(p, [], [id]);
+      return;
+    }
 
     setSelectedOverlayIds([id]);
     setSelectedIds([]);
@@ -1420,8 +2257,8 @@ export default function App() {
 
 
   // ✅ Lazy/eager compatible SVG import
-  async function onPickSvg(fileKey) {
-    const entry = SVG_LIBRARY[fileKey];
+  async function onPickSvg(fileKey, anchorOverride) {
+    const entry = getSvgEntry(fileKey);
     if (!entry) return;
 
     // entry is a function in lazy mode, string in eager mode
@@ -1442,7 +2279,10 @@ export default function App() {
     const baseVb = parsed.vb; // {x,y,w,h}
 
     // ✅ If key exists, overlay local coords become 0..key.w / 0..key.h
-    const localVb = key ? { x: 0, y: 0, w: key.w, h: key.h } : baseVb;
+    let localVb = key ? { x: 0, y: 0, w: key.w, h: key.h } : baseVb;
+    if (!localVb || !Number.isFinite(localVb.w) || !Number.isFinite(localVb.h) || localVb.w <= 0 || localVb.h <= 0) {
+      localVb = { x: 0, y: 0, w: 100, h: 100 };
+    }
 
     // ✅ Normalize inner so geometry matches localVb
     let inner = parsed.inner;
@@ -1462,12 +2302,13 @@ export default function App() {
     const srcH = Math.max(localVb.h, 1);
 
     // ✅ If kewidth/keheight exists, import at EXACT size (1 world unit = 1 key unit)
-    const scale = key ? 1 : Math.min(availW / srcW, availH / srcH);
+    // Otherwise default to 350 width.
+    const scale = key ? 1 : Math.min(350 / srcW, vbH / srcH);
 
     const srcCx = localVb.x + localVb.w / 2;
     const srcCy = localVb.y + localVb.h / 2;
 
-    const anchor = importAnchor ?? { x: vbW / 2, y: vbH / 2 };
+    const anchor = anchorOverride ?? importAnchor ?? { x: vbW / 2, y: vbH / 2 };
 
     const tx = anchor.x - scale * srcCx;
     const ty = anchor.y - scale * srcCy;
@@ -1480,13 +2321,14 @@ export default function App() {
       ...prev,
       {
         id,
+        sourceKey: fileKey,
         name: fileKey.split("/").pop() || fileKey,
         inner,
         tx,
         ty,
         scale,
-        fill: "#ffffff",
-        stroke: "#111111",
+        fill: DEFAULT_FILL,
+        stroke: DEFAULT_STROKE,
         tagPath: "",
         bbox,
       },
@@ -1496,8 +2338,38 @@ export default function App() {
     setSelectedIds([]);
     setImportOpen(false);
     exitEditMode();
-    setShowHUD(true);
+    setShowHUD(false);
     setImportAnchor(null);
+  }
+
+  async function swapOverlayTemplate(overlayId, fileKey) {
+    const o = overlaysRef.current.find((x) => x.id === overlayId);
+    if (!o) return;
+    const bb = overlayLocalBBox(overlayId);
+    if (!bb) return;
+
+    const worldX = o.tx + o.scale * bb.x;
+    const worldY = o.ty + o.scale * bb.y;
+    const worldW = o.scale * bb.width;
+    const worldH = o.scale * bb.height;
+    const center = { x: worldX + worldW / 2, y: worldY + worldH / 2 };
+
+    const nextOverlay = await buildOverlayFromKey(fileKey, center, worldW || undefined);
+    if (!nextOverlay) return;
+
+    setSvgOverlays((prev) =>
+      prev.map((x) => {
+        if (x.id !== overlayId) return x;
+        return {
+          ...x,
+          ...nextOverlay,
+          id: x.id,
+          tagPath: x.tagPath,
+          fill: x.fill,
+          stroke: x.stroke,
+        };
+      })
+    );
   }
 
 
@@ -1584,8 +2456,8 @@ export default function App() {
   const [hudFields, setHudFields] = useState({
     id: "",
     tagPath: "",
-    fill: "#ffffff",
-    stroke: "#111111",
+    fill: DEFAULT_FILL,
+    stroke: DEFAULT_STROKE,
     arrowStart: "none",
     arrowEnd: "none",
     lineStyle: "solid",   // ✅ NEW
@@ -1596,6 +2468,7 @@ export default function App() {
     text: "",
     fontSize: "24",
     fontFamily: "system-ui",
+    fontWeight: "400",
     textAlign: "start",
   });
 
@@ -1605,8 +2478,8 @@ export default function App() {
       setHudFields({
         id: "",
         tagPath: "",
-        fill: "#ffffff",
-        stroke: "#111111",
+        fill: DEFAULT_FILL,
+        stroke: DEFAULT_STROKE,
         arrowStart: "none",
         arrowEnd: "none",
         x: "",
@@ -1617,6 +2490,7 @@ export default function App() {
         text: "",
         fontSize: "24",
         fontFamily: "system-ui",
+        fontWeight: "400",
         textAlign: "start",
       });
       return;
@@ -1624,8 +2498,8 @@ export default function App() {
 
     let idText = "";
     let tagPath = "";
-    let fill = "#ffffff";
-    let stroke = "#111111";
+    let fill = DEFAULT_FILL;
+    let stroke = DEFAULT_STROKE;
     let arrowStart = "none";
     let arrowEnd = "none";
     let lineStyle = "solid"; // ✅ NEW
@@ -1635,7 +2509,7 @@ export default function App() {
       if (s) {
         idText = s.id;
         tagPath = s.tagPath || "";
-        stroke = s.stroke || "#111111";
+        stroke = s.stroke || DEFAULT_STROKE;
         arrowStart = s.arrowStart ?? "none";
         arrowEnd = s.arrowEnd ?? "none";
         lineStyle = s.lineStyle ?? "solid"; // ✅ NEW
@@ -1645,16 +2519,16 @@ export default function App() {
       if (o) {
         idText = o.id;
         tagPath = o.tagPath || "";
-        fill = o.fill ?? "#ffffff";
-        stroke = o.stroke ?? "#111111";
+        fill = !o.fill || o.fill === "none" ? DEFAULT_FILL : o.fill;
+        stroke = !o.stroke || o.stroke === "none" ? DEFAULT_STROKE : o.stroke;
       }
     } else if (isSingle && singleKind === "Text") {
       const t = shapes.find((x) => x.id === singleId);
       if (t) {
         idText = t.id;
         tagPath = t.tagPath || "";
-        fill = t.fill ?? "#111111";
-        stroke = t.stroke ?? "#111111"; // optional if you support stroke on text
+        fill = t.fill ?? "#808080";
+        stroke = t.stroke ?? "#808080"; // optional if you support stroke on text
 
         setHudFields({
           id: idText,
@@ -1671,6 +2545,7 @@ export default function App() {
           text: String(t.text ?? ""),
           fontSize: String(t.fontSize ?? 24),
           fontFamily: String(t.fontFamily ?? "system-ui"),
+          fontWeight: String(t.fontWeight ?? "400"),
           textAlign: String(t.anchor ?? "start"),
         });
         return;
@@ -1693,6 +2568,7 @@ export default function App() {
       text: "",
       fontSize: "24",
       fontFamily: "system-ui",
+      fontWeight: "400",
       textAlign: "start",
     });
 
@@ -1745,6 +2621,50 @@ export default function App() {
     setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, lineStyle: v } : s)));
   };
 
+  function updateSvgInnerStroke(inner, stroke) {
+    if (!inner) return inner;
+
+    let next = inner;
+
+    // Replace attribute form: stroke="..."
+    next = next.replace(/stroke=['"][^'"]*['"]/gi, `stroke="${stroke}"`);
+
+    // Replace style form: style="...; stroke: ...; ..."
+    next = next.replace(/stroke:\s*[^;\"']+/gi, `stroke:${stroke}`);
+
+    // If no stroke attribute present, inject into first shape element.
+    if (!/stroke=['"][^'"]*['"]/i.test(next)) {
+      next = next.replace(
+        /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*)>/i,
+        `<$1$2 stroke="${stroke}">`
+      );
+    }
+
+    return next;
+  }
+
+  function updateSvgInnerFill(inner, fill) {
+    if (!inner) return inner;
+
+    let next = inner;
+
+    // Replace attribute form: fill="..."
+    next = next.replace(/fill=['"][^'"]*['"]/gi, `fill="${fill}"`);
+
+    // Replace style form: style="...; fill: ...; ..."
+    next = next.replace(/fill:\s*[^;\"']+/gi, `fill:${fill}`);
+
+    // If no fill attribute present, inject into first shape element.
+    if (!/fill=['"][^'"]*['"]/i.test(next)) {
+      next = next.replace(
+        /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*)>/i,
+        `<$1$2 fill="${fill}">`
+      );
+    }
+
+    return next;
+  }
+
   function applySingleStroke(nextStroke) {
     if (!isSingle || !singleId) return;
     const c = String(nextStroke || "").trim();
@@ -1753,7 +2673,11 @@ export default function App() {
     if (singleKind === "Polyline") {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, stroke: c } : s)));
     } else if (singleKind === "SVG") {
-      setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, stroke: c } : o)));
+      setSvgOverlays((prev) =>
+        prev.map((o) =>
+          o.id === singleId ? { ...o, stroke: c, inner: updateSvgInnerStroke(o.inner, c) } : o
+        )
+      );
     }
   }
 
@@ -1763,7 +2687,11 @@ export default function App() {
     if (!c) return;
 
     if (singleKind === "SVG") {
-      setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, fill: c } : o)));
+      setSvgOverlays((prev) =>
+        prev.map((o) =>
+          o.id === singleId ? { ...o, fill: c, inner: updateSvgInnerFill(o.inner, c) } : o
+        )
+      );
     } else if (singleKind === "Text") {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, fill: c } : s)));
     }
@@ -1892,11 +2820,14 @@ export default function App() {
     editingId,
     importOpen,
     selCount,
-    duplicateSelected,
+    duplicateSelected: handleDuplicate,
     cancelPolyline,
     exitEditMode,
+    toggleEditMode,
+    setTool,
     closeImport: () => setImportOpen(false),
     clearSelection,
+    clearImportAnchor: () => setImportAnchor(null),
     deleteSelected,
   });
 
@@ -1949,6 +2880,26 @@ export default function App() {
     // (optional) keep your non-drawing dblclick behavior here if you want later
   }
 
+  useEffect(() => {
+    function isTypingTarget(t) {
+      if (!t) return false;
+      const tag = (t.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || t.isContentEditable;
+    }
+
+    function onKeyDown(e) {
+      if (isTypingTarget(e.target)) return;
+      if (e.key !== "Enter") return;
+      if (tool !== "polyline" || !drawing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      finishPolyline();
+    }
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [tool, drawing]);
+
 
   function onContextMenu(e) {
     e.preventDefault();
@@ -1986,7 +2937,88 @@ export default function App() {
     if (dt > 0 && dt < RIGHT_DBL_MS) {
       const p = svgPoint(e);
       setImportAnchor(p);
+      setContextMenu(null);
+      return;
     }
+
+    if (importOpen) return;
+
+    const p = svgPoint(e);
+    function pointInRect(pt, r) {
+      return pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h;
+    }
+
+    let hit = false;
+    let hitShapeId = null;
+    let hitOverlayId = null;
+
+    for (const s of shapesRef.current || []) {
+      if (s.type === "text") {
+        const fontSize = Number(s.fontSize ?? 24);
+        const txt = String(s.text ?? "");
+        const estW = Math.max(10, txt.length * fontSize * 0.6);
+        const estH = Math.max(10, fontSize * 1.2);
+        const anchor = s.anchor ?? "start";
+        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+        const pad = 8;
+        const r = {
+          x: Number(s.x ?? 0) + ax - pad,
+          y: Number(s.y ?? 0) - pad,
+          w: Math.max(estW + pad * 2, 60),
+          h: Math.max(estH + pad * 2, 28),
+        };
+        if (pointInRect(p, r)) { hit = true; hitShapeId = s.id; break; }
+      } else if (Array.isArray(s.points)) {
+        const bb = bboxOfPoints(s.points);
+        if (bb) {
+          const r = { x: bb.minX, y: bb.minY, w: bb.w, h: bb.h };
+          if (pointInRect(p, r)) { hit = true; hitShapeId = s.id; break; }
+        }
+      }
+    }
+
+    if (!hit) {
+      for (const o of overlaysRef.current || []) {
+        const bb = o.bbox || overlayLocalBBox(o.id);
+        if (!bb) continue;
+        const r = {
+          x: o.tx + o.scale * bb.x,
+          y: o.ty + o.scale * bb.y,
+          w: o.scale * bb.width,
+          h: o.scale * bb.height,
+        };
+        if (pointInRect(p, r)) { hit = true; hitOverlayId = o.id; break; }
+      }
+    }
+
+    // ✅ If nothing directly hit, allow right-click on current group bbox
+    if (!hit && selectedBBox) {
+      const r = { x: selectedBBox.x, y: selectedBBox.y, w: selectedBBox.w, h: selectedBBox.h };
+      if (pointInRect(p, r)) {
+        hit = true;
+      }
+    }
+
+    const curSelShapes = selPolyRef.current || [];
+    const curSelOvers = selOverRef.current || [];
+    const curSelCount = curSelShapes.length + curSelOvers.length;
+
+    if (hitShapeId) {
+      if (!(curSelCount > 1 && curSelShapes.includes(hitShapeId))) {
+        setSelectedIds([hitShapeId]);
+        setSelectedOverlayIds([]);
+      }
+    } else if (hitOverlayId) {
+      if (!(curSelCount > 1 && curSelOvers.includes(hitOverlayId))) {
+        setSelectedOverlayIds([hitOverlayId]);
+        setSelectedIds([]);
+      }
+    }
+
+    setContextMenu({ x: e.clientX, y: e.clientY, mode: hit ? "element" : "empty" });
+    setLastContextPoint(p);
+    if (!hit) setContextImportQuery("");
+    setContextSvgMenuOpen(false);
   }
 
 
@@ -2018,6 +3050,12 @@ export default function App() {
           // ✅ ALT = straight line (horizontal/vertical) from last fixed point
           if (e.altKey && last) {
             nextP = constrainHV(last, nextP);
+          }
+
+          const first = fixed[0];
+          const SNAP_DIST = 12;
+          if (first && distance(nextP, first) <= SNAP_DIST) {
+            nextP = { x: first.x, y: first.y };
           }
 
           pts[pts.length - 1] = { x: nextP.x, y: nextP.y };
@@ -2223,13 +3261,13 @@ export default function App() {
 
         {corners.map((c) => (
           <g key={c.key}>
-            <circle cx={c.cx} cy={c.cy} r={7} fill="white" stroke="#2b6cff" strokeWidth={2} />
+            <circle cx={c.cx} cy={c.cy} r={3} fill="white" stroke="#2b6cff" strokeWidth={2} />
             <circle
               cx={c.cx}
               cy={c.cy}
               r={16}
               fill="transparent"
-              style={{ cursor: "nwse-resize" }}
+              style={{ cursor: altDown ? "move" : "nwse-resize" }}
               onMouseDown={(e) => onOverlayHandleDown(e, o.id, c.key)}
             />
           </g>
@@ -2238,8 +3276,60 @@ export default function App() {
     );
   }
 
-  const singleSelectedOverlayId =
-    selectedOverlayIds.length === 1 && selectedIds.length === 0 ? selectedOverlayIds[0] : null;
+  const inlineEditPos = useMemo(() => {
+    if (!inlineEdit?.id || !svgRef.current) return null;
+    const s = shapes.find((x) => x.id === inlineEdit.id);
+    if (!s) return null;
+    const rect = svgRef.current.getBoundingClientRect();
+    const z = zoom || 1;
+    const x = rect.left + (pan?.x || 0) + Number(s.x ?? 0) * z;
+    const y = rect.top + (pan?.y || 0) + Number(s.y ?? 0) * z;
+    const fontSize = Math.max(10, Number(s.fontSize ?? 24) * z);
+    const fontFamily = s.fontFamily || "system-ui";
+    const fontWeight = s.fontWeight || "400";
+    const anchor = s.anchor || "start";
+    const text = String(s.text ?? "");
+    const estW = Math.max(10, text.length * Number(s.fontSize ?? 24) * 0.6 * z);
+    const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+    return { x: x + ax, y: y + 2, fontSize, fontFamily, fontWeight, width: Math.max(120, estW + 12) };
+  }, [inlineEdit?.id, shapes, pan, zoom]);
+
+  const panelAnchor = useMemo(() => {
+    if (!selectedBBox || !svgRef.current) return null;
+    const rect = svgRef.current.getBoundingClientRect();
+    const z = zoom || 1;
+    const px = rect.left + (pan?.x || 0) + (selectedBBox.x || 0) * z;
+    const py = rect.top + (pan?.y || 0) + (selectedBBox.y || 0) * z;
+    const pw = (selectedBBox.w || 0) * z;
+    const ph = (selectedBBox.h || 0) * z;
+    return { x: px, y: py, w: pw, h: ph };
+  }, [selectedBBox, pan, zoom]);
+
+  const panelAnchorKey = useMemo(() => {
+    if (!selectedBBox) return "";
+    return `${selectedBBox.x}-${selectedBBox.y}-${selectedBBox.w}-${selectedBBox.h}-${selCount}-${singleKind}`;
+  }, [selectedBBox, selCount, singleKind]);
+
+  const freezePanel = !!(dragAll || dragHandle || overlayResize);
+  const isEmptyMenu = contextMenu?.mode === "empty";
+  const menuSize = isEmptyMenu ? { w: 210, h: 260 } : { w: 190, h: 240 };
+  const winW = typeof window !== "undefined" ? window.innerWidth : 0;
+  const winH = typeof window !== "undefined" ? window.innerHeight : 0;
+  const menuLeft = contextMenu
+    ? Math.min(Math.max(12, contextMenu.x), Math.max(12, winW - menuSize.w - 12))
+    : 0;
+  const menuTop = contextMenu
+    ? Math.min(Math.max(12, contextMenu.y), Math.max(12, winH - menuSize.h - 12))
+    : 0;
+  const subMenuSize = { w: 260, h: 360 };
+  const subMenuLeft = Math.min(
+    Math.max(12, contextSvgMenuPos.x),
+    Math.max(12, winW - subMenuSize.w - 12)
+  );
+  const subMenuTop = Math.min(
+    Math.max(12, contextSvgMenuPos.y),
+    Math.max(12, winH - subMenuSize.h - 12)
+  );
 
   return (
     <div
@@ -2261,6 +3351,9 @@ export default function App() {
         exportSVG={exportSVG}
         exportIgnitionJson={exportIgnitionJson}
         editingId={editingId}
+        toggleEditMode={toggleEditMode}
+        toolbarPos={toolbarPos}
+        setToolbarPos={setToolbarPos}
         selectedIds={selectedIds}
         selectedOverlayIds={selectedOverlayIds}
         setEditingId={setEditingId}
@@ -2294,6 +3387,19 @@ export default function App() {
         selCount={selCount}
         isSingle={isSingle}
         singleKind={singleKind}
+        selectedIds={selectedIds}
+        singleOverlayId={singleSelectedOverlayId}
+        svgFiles={svgFiles}
+        svgTemplateKey={singleSvgTemplateKey}
+        swapSvgTemplate={swapOverlayTemplate}
+        svgTemplateName={singleGeneratedTemplate?.name || ""}
+        isGeneratedTemplate={!!singleGeneratedTemplate}
+        renameSvgTemplate={renameGeneratedSvg}
+        persistSvgMeta={persistSvgMeta}
+        panelAnchor={panelAnchor}
+        panelAnchorKey={panelAnchorKey}
+        panelCursor={panelCursor}
+        freezePanel={freezePanel}
         hudFields={hudFields}
         setHudFields={setHudFields}
         applySingleId={applySingleId}
@@ -2307,7 +3413,11 @@ export default function App() {
         applySingleTextValue={applySingleTextValue}
         applySingleFontSize={applySingleFontSize}
         applySingleFontFamily={applySingleFontFamily}
+        applySingleFontWeight={applySingleFontWeight}
         applySingleTextAlign={applySingleTextAlign}
+        duplicateOffset={duplicateOffset}
+        setDuplicateOffset={setDuplicateOffset}
+        convertPolylinesToSvg={convertSelectedPolylinesToSvg}
       />
 
       <ImportModal importOpen={importOpen}
@@ -2317,16 +3427,22 @@ export default function App() {
         onPickSvg={onPickSvg}
       />
 
-      <CanvasSvg
-        svgRef={svgRef}
-        zoom={zoom}          // ✅ NEW
-        onWheel={onWheelZoom} // ✅ NEW
-        vbW={vbW}
-        vbH={vbH}
-        tool={tool}
-        shapes={shapes}
-        selectedIds={selectedIds}
-        editingId={editingId}
+        <CanvasSvg
+          svgRef={svgRef}
+          zoom={zoom}          // ✅ NEW
+          onWheel={onWheelZoom} // ✅ NEW
+          vbW={vbW}
+          vbH={vbH}
+          tool={tool}
+          shapes={shapes}
+          selectedIds={selectedIds}
+          setSelectedIds={setSelectedIds}
+          setSelectedOverlayIds={setSelectedOverlayIds}
+          inlineEditId={inlineEdit?.id || null}
+          selectedSegment={selectedSegment}
+          editingId={editingId}
+        showTagPaths={showTagPaths}
+        showGrid={showGrid}
         onSvgMouseDown={onSvgMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
@@ -2336,6 +3452,8 @@ export default function App() {
         onEditPolylineClick={onEditPolylineClick}
         onHandleMouseDown={onHandleMouseDown}
         onHandleDoubleClick={onHandleDoubleClick}
+        onHandleContextMenu={onHandleContextMenu}
+        onSegmentMouseDown={onSegmentMouseDown}
         setShapes={setShapes}
         svgOverlays={svgOverlays}
         setSvgOverlays={setSvgOverlays}
@@ -2343,6 +3461,7 @@ export default function App() {
         singleSelectedOverlayId={singleSelectedOverlayId}
         setOverlayRef={setOverlayRef}
         onOverlayMouseDown={onOverlayMouseDown}
+        onOverlayDoubleClick={onOverlayDoubleClick}
         overlaySelectionUI={overlaySelectionUI}
         overlayLocalBBox={overlayLocalBBox}
         marquee={marquee}
@@ -2350,6 +3469,51 @@ export default function App() {
         importAnchor={importAnchor}
         onSvgDoubleClick={onSvgDoubleClick}
       />
+
+      {inlineEdit && inlineEditPos && (
+        <input
+          autoFocus
+          value={inlineEdit.value}
+          onChange={(e) => setInlineEdit((p) => ({ ...p, value: e.target.value }))}
+          onBlur={() => {
+            const next = inlineEdit.value;
+            if (next != null) {
+              pushHistory();
+              setShapes((prev) =>
+                prev.map((x) => (x.id === inlineEdit.id ? { ...x, text: String(next) } : x))
+              );
+            }
+            setInlineEdit(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.blur();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setInlineEdit(null);
+            }
+          }}
+          style={{
+            position: "fixed",
+            left: inlineEditPos.x,
+            top: inlineEditPos.y,
+            transform: "translateY(0)",
+            fontSize: inlineEditPos.fontSize,
+            fontFamily: inlineEditPos.fontFamily,
+            fontWeight: inlineEditPos.fontWeight,
+            color: "#111",
+            border: "1px solid #2b6cff",
+            borderRadius: 6,
+            padding: "2px 6px",
+            background: "white",
+            zIndex: 200,
+            outline: "none",
+            minWidth: inlineEditPos.width,
+          }}
+        />
+      )}
 
       <input
         ref={projectFileRef}
@@ -2419,7 +3583,7 @@ export default function App() {
         <div
           style={{
             position: "absolute",
-            left: 16,
+            left: toolbarPos.x,
             bottom: 16,
             zIndex: 80,
             boxShadow: "0 12px 30px rgba(0,0,0,0.4)",
@@ -2479,6 +3643,56 @@ export default function App() {
             {Math.round((zoom || 1) * 100)}%
           </div>
 
+          <button
+            title="Toggle Tag Paths"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setShowTagPaths((v) => !v)}
+            style={{
+              width: 38,
+              height: 32,
+              marginTop: 4,
+              borderRadius: 10,
+              border: showTagPaths ? "2px solid #2b6cff" : "1px solid #d6d6d6",
+              background: showTagPaths ? "linear-gradient(180deg, #eef3ff 0%, #e2ecff 100%)" : "white",
+              cursor: "pointer",
+              boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
+              color: showTagPaths ? "#1f56cc" : "#111",
+              display: "grid",
+              placeItems: "center",
+              padding: 0,
+              fontSize: 12,
+              fontWeight: 700,
+              lineHeight: 1,
+            }}
+          >
+            Tag
+          </button>
+
+          <button
+            title="Toggle Grid"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setShowGrid((v) => !v)}
+            style={{
+              width: 38,
+              height: 32,
+              marginTop: 4,
+              borderRadius: 10,
+              border: showGrid ? "2px solid #2b6cff" : "1px solid #d6d6d6",
+              background: showGrid ? "linear-gradient(180deg, #eef3ff 0%, #e2ecff 100%)" : "white",
+              cursor: "pointer",
+              boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
+              color: showGrid ? "#1f56cc" : "#111",
+              display: "grid",
+              placeItems: "center",
+              padding: 0,
+              fontSize: 12,
+              fontWeight: 700,
+              lineHeight: 1,
+            }}
+          >
+            Grid
+          </button>
+
           {/* ❌ Hide button (toolbar style, bottom) */}
           <button
             title="Hide Zoom"
@@ -2506,99 +3720,476 @@ export default function App() {
         </div>
       )}
 
+      {contextMenu && (
+        <div
+          style={{
+            position: "fixed",
+            left: menuLeft,
+            top: menuTop,
+            zIndex: 200,
+            background: "white",
+            border: "1px solid rgba(0,0,0,0.12)",
+            borderRadius: 10,
+            boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
+            padding: isEmptyMenu ? 0 : "6px 0",
+            minWidth: isEmptyMenu ? menuSize.w : 160,
+            maxHeight: isEmptyMenu ? menuSize.h : undefined,
+            overflow: isEmptyMenu ? "hidden" : "visible",
+          }}
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+          }}
+          onMouseLeave={() => {
+            if (contextSvgMenuTimerRef.current) clearTimeout(contextSvgMenuTimerRef.current);
+            contextSvgMenuTimerRef.current = setTimeout(() => {
+              setContextSvgMenuOpen(false);
+            }, 120);
+          }}
+        >
+          {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
+            <div
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              onClick={() => {
+                copySelection();
+                setContextMenu(null);
+              }}
+            >
+              Copy
+            </div>
+          )}
+
+          {contextMenu.mode === "element" &&
+            (clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
+            <div
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              onClick={() => {
+                pasteClipboard();
+                setContextMenu(null);
+              }}
+            >
+              Paste
+            </div>
+          )}
+
+          {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
+            <div
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              onClick={() => {
+                handleDuplicate();
+                setContextMenu(null);
+              }}
+            >
+              Duplicate
+            </div>
+          )}
+
+          {contextMenu.mode === "element" && selectedIds.length === 1 && (() => {
+            const s = shapes.find((x) => x.id === selectedIds[0]);
+            return s && (s.type === "polyline" || Array.isArray(s.points));
+          })() && (
+            <div
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              onClick={() => {
+                const id = selectedIds[0];
+                setEditingId(id);
+                setDrawing(null);
+                setContextMenu(null);
+              }}
+            >
+              Edit Polyline
+            </div>
+          )}
+
+          {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
+            <div
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#b00020" }}
+              onClick={() => {
+                deleteSelected();
+                setContextMenu(null);
+              }}
+            >
+              Delete
+            </div>
+          )}
+
+          {contextMenu.mode === "empty" && (
+            <>
+              {(clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
+                <div
+                  style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+                  onClick={() => {
+                    pasteClipboard();
+                    setContextMenu(null);
+                  }}
+                >
+                  Paste
+                </div>
+              )}
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+                onClick={() => {
+                  undo();
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↶</span>
+                Undo
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+                onClick={() => {
+                  redo();
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↷</span>
+                Redo
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+                onClick={() => {
+                  setTool("polyline");
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>／</span>
+                Polyline
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+                onClick={() => {
+                  setTool("text");
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>T</span>
+                Text
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+                onClick={() => {
+                  setTool("select");
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↔</span>
+                Move
+              </div>
+              <div
+                style={{
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  color: "#111",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+                onMouseEnter={(e) => {
+                  if (contextSvgMenuTimerRef.current) {
+                    clearTimeout(contextSvgMenuTimerRef.current);
+                    contextSvgMenuTimerRef.current = null;
+                  }
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setContextSvgMenuPos({ x: rect.right + 6, y: rect.top });
+                  setContextSvgMenuOpen(true);
+                }}
+                onMouseLeave={() => {
+                  contextSvgMenuTimerRef.current = setTimeout(() => {
+                    setContextSvgMenuOpen(false);
+                  }, 120);
+                }}
+              >
+                SVG's
+                <span style={{ color: "#999" }}>▸</span>
+              </div>
+            </>
+          )}
+
+          {contextMenu.mode === "element" && selectedBBox && !showHUD && (
+            <div
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              onClick={() => {
+                setPanelCursor({ x: contextMenu.x, y: contextMenu.y });
+                setShowHUD(true);
+                setContextMenu(null);
+              }}
+            >
+              Show Properties
+            </div>
+          )}
+          {contextMenu.mode === "element" && showHUD && (
+            <div
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              onClick={() => {
+                setShowHUD(false);
+                setContextMenu(null);
+              }}
+            >
+              Hide Properties
+            </div>
+          )}
+          {contextMenu.mode === "element" && !selectedBBox && (
+            <div style={{ padding: "8px 12px", fontSize: 13, color: "#888" }}>
+              No selection
+            </div>
+          )}
+        </div>
+      )}
+
+      {polyHandleMenu && (
+        <div
+          style={{
+            position: "fixed",
+            left: polyHandleMenu.x,
+            top: polyHandleMenu.y,
+            zIndex: 210,
+            background: "white",
+            border: "1px solid rgba(0,0,0,0.12)",
+            borderRadius: 10,
+            boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
+            padding: "6px 0",
+            minWidth: 160,
+          }}
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+          }}
+        >
+          <div
+            style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#b00020" }}
+            onClick={() => {
+              removeVertex(polyHandleMenu.id, polyHandleMenu.index);
+              setSelectedSegment(null);
+              setPolyHandleMenu(null);
+            }}
+          >
+            Delete Segment
+          </div>
+          <div
+            style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+            onClick={() => setPolyHandleMenu(null)}
+          >
+            Cancel
+          </div>
+        </div>
+      )}
+
+      {contextMenu && isEmptyMenu && contextSvgMenuOpen && (
+        <div
+          style={{
+            position: "fixed",
+            left: subMenuLeft,
+            top: subMenuTop,
+            zIndex: 210,
+            width: subMenuSize.w,
+            maxHeight: subMenuSize.h,
+            background: "white",
+            border: "1px solid rgba(0,0,0,0.12)",
+            borderRadius: 10,
+            boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
+            overflow: "hidden",
+          }}
+          onMouseEnter={() => {
+            if (contextSvgMenuTimerRef.current) {
+              clearTimeout(contextSvgMenuTimerRef.current);
+              contextSvgMenuTimerRef.current = null;
+            }
+            setContextSvgMenuOpen(true);
+          }}
+          onMouseLeave={() => {
+            contextSvgMenuTimerRef.current = setTimeout(() => {
+              setContextSvgMenuOpen(false);
+            }, 120);
+          }}
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+          }}
+        >
+          <div style={{ padding: "8px 10px", borderBottom: "1px solid #f0f0f0", background: "white" }}>
+            <div style={{ fontWeight: 800, fontSize: 12, color: "#111" }}>SVG Files</div>
+                <div
+                  style={{ marginTop: 6, position: "relative" }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+              <input
+                ref={svgMenuInputRef}
+                value={contextImportQuery}
+                onChange={(e) => setContextImportQuery(e.target.value)}
+                placeholder="Search..."
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  width: "100%",
+                  border: "1px solid #e6e6e6",
+                  background: "white",
+                  borderRadius: 8,
+                  padding: "7px 26px 7px 8px",
+                  color: "#111",
+                  outline: "none",
+                  fontSize: 12,
+                  boxSizing: "border-box",
+                }}
+              />
+                  {contextImportQuery && (
+                    <button
+                      type="button"
+                      title="Clear"
+                      onClick={() => setContextImportQuery("")}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      style={{
+                    position: "absolute",
+                    right: 6,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    width: 18,
+                    height: 18,
+                    borderRadius: 6,
+                    border: "1px solid #e6e6e6",
+                    background: "white",
+                    cursor: "pointer",
+                    lineHeight: 1,
+                    color: "#111",
+                    padding: 0,
+                    fontSize: 11,
+                  }}
+                >
+                      X
+                    </button>
+                  )}
+                </div>
+          </div>
+
+          <div
+            className="vizi-scroll"
+            style={{
+              maxHeight: subMenuSize.h - 86,
+              overflow: "auto",
+              padding: "8px 10px 10px",
+            }}
+          >
+            {contextGrouped.length === 0 ? (
+              <div style={{ color: "#888", fontSize: 12 }}>No matches.</div>
+            ) : (
+              contextGrouped.map((group) => (
+                <div key={group.folder} style={{ display: "grid", gap: 6 }}>
+                  <div style={{ color: "#808080", fontSize: 11, fontWeight: 800, padding: "2px 2px" }}>
+                    {group.folder}
+                  </div>
+                  {group.files.map((f) => (
+                    <button
+                      key={f.key}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onPickSvg(f.key, lastContextPoint);
+                        setContextMenu(null);
+                      }}
+                      style={{
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid #e6e6e6",
+                        background: "white",
+                        cursor: "pointer",
+                        color: "#111",
+                        fontSize: 12,
+                      }}
+                      title={f.key}
+                    >
+                      {f.name}
+                    </button>
+                  ))}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
       <HelpPanel showHelp={showHelp} setShowHelp={setShowHelp} />
 
-      <div
-        style={{
-          position: "fixed",
-          left: 125,
-          bottom: 16,
-          zIndex: 60,
-          display: "flex",
-          gap: 8,
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {!showToolbar && (
-          <button
-            style={{
-              border: "1px solid #e6e6e6",
-              background: "white",
-              borderRadius: 10,
-              padding: "6px 10px",
-              cursor: "pointer",
-              color: "#111",
-            }}
-            onClick={() => setShowToolbar(true)}
-          >
-            Show Toolbar
-          </button>
-        )}
-        {!showHUD && (
-          <button
-            style={{
-              border: "1px solid #e6e6e6",
-              background: "white",
-              borderRadius: 10,
-              padding: "6px 10px",
-              boxShadow: "0 6px 18px rgba(0,0,0,0.25)",
-              cursor: "pointer",
-              color: "#111",
-            }}
-            onClick={() => setShowHUD(true)}
-          >
-            Show Properties
-          </button>
-        )}
+      {!showHelp && (
+        <button
+          title="Show Help"
+          onClick={() => setShowHelp(true)}
+          style={{
+            position: "fixed",
+            right: 60,
+            top: 60,
+            zIndex: 90,
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(0,0,0,0.12)",
+            background: "white",
+            cursor: "pointer",
+            boxShadow: "0 6px 14px rgba(0,0,0,0.10)",
+            color: "#111",
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: "0.02em",
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          Help
+        </button>
+      )}
 
-        {!showZoom && (
-          <button
-            style={{
-              border: "1px solid #e6e6e6",
-              background: "white",
-              borderRadius: 10,
-              padding: "6px 10px",
-              boxShadow: "0 6px 18px rgba(0,0,0,0.25)",
-              cursor: "pointer",
-              color: "#111",
-            }}
-            onClick={() => setShowZoom(true)}
-          >
-            Show Zoom
-          </button>
-        )}
-      </div>
 
-      <div
-        style={{
-          position: "fixed",
-          right: 125,
-          bottom: 16,
-          zIndex: 60,
-          display: "flex",
-          gap: 8,
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+      {!showToolbar && (
+        <button
+          title="Show Toolbar"
+          onClick={() => setShowToolbar(true)}
+          style={{
+            position: "fixed",
+            left: toolbarPos.x,
+            top: toolbarPos.y,
+            zIndex: 92,
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(0,0,0,0.12)",
+            background: "white",
+            cursor: "pointer",
+            boxShadow: "0 6px 14px rgba(0,0,0,0.10)",
+            color: "#111",
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: "0.02em",
+          }}
+        >
+          Toolbar
+        </button>
+      )}
 
-        {!showHelp && (
-          <button
-            style={{
-              border: "1px solid #e6e6e6",
-              background: "white",
-              borderRadius: 10,
-              padding: "6px 10px",
-              boxShadow: "0 6px 18px rgba(0,0,0,0.25)",
-              cursor: "pointer",
-              color: "#111",
-            }}
-            onClick={() => setShowHelp(true)}
-          >
-            Show Help
-          </button>
-        )}
-
-      </div>
+      {!showZoom && (
+        <button
+          title="Show Zoom"
+          onClick={() => setShowZoom(true)}
+          style={{
+            position: "fixed",
+            left: toolbarPos.x,
+            bottom: 16,
+            zIndex: 92,
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid rgba(0,0,0,0.12)",
+            background: "white",
+            cursor: "pointer",
+            boxShadow: "0 6px 14px rgba(0,0,0,0.10)",
+            color: "#111",
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: "0.02em",
+          }}
+        >
+          Zoom
+        </button>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-const closeBtnStyle = {
+﻿const closeBtnStyle = {
   border: "1px solid #e6e6e6",
   background: "white",
   borderRadius: 10,
@@ -8,15 +8,52 @@ const closeBtnStyle = {
   color: "#111",
 };
 
+import { useState } from "react";
+
 export default function HelpPanel({ showHelp, setShowHelp }) {
   if (!showHelp) return null;
+
+  const [open, setOpen] = useState({
+    selection: false,
+    polylines: false,
+    text: false,
+    overlays: false,
+    props: false,
+    shortcuts: false,
+  });
+
+  function Toggle({ id, title }) {
+    const isOpen = !!open[id];
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen((p) => ({ ...p, [id]: !p[id] }))}
+        style={{
+          width: "100%",
+          textAlign: "left",
+          background: "transparent",
+          border: "none",
+          padding: "6px 0",
+          cursor: "pointer",
+          color: "#111",
+          fontWeight: 700,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <span>{title}</span>
+        <span style={{ opacity: 0.6 }}>{isOpen ? "-" : "+"}</span>
+      </button>
+    );
+  }
 
   return (
     <div
       style={{
         position: "fixed",
         right: 60,
-        bottom: 60,
+        top: 60,
         background: "rgba(255,255,255,0.9)",
         border: "1px solid #e6e6e6",
         borderRadius: 12,
@@ -33,20 +70,71 @@ export default function HelpPanel({ showHelp, setShowHelp }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontWeight: 800, color: "#111" }}>Controls</div>
         <button title="Close" onClick={() => setShowHelp(false)} style={closeBtnStyle}>
-          ✕
+          X
         </button>
       </div>
 
       <div style={{ marginTop: 6 }}>
-        <div>• <b>Shift-click</b> to multi-select</div>
-        <div>• Drag any selected item to move the whole selection</div>
-        <div>• Delete/Backspace deletes all selected</div>
-        <div>• X/Y/W/H edits one item or a whole group (overlays keep aspect ratio)</div>
-        <div>• ID editable only for single selection</div>
-        <div>• Fill editable for single SVG overlay; Stroke editable for single item</div>
-        <div>• Double-click a polyline to edit points; click line to insert; double-click point to remove</div>
-        <div>• Right-click while drawing a polyline to finish; ESC cancels drawing / exits edit</div>
-        <div style={{ marginTop: 6, opacity: 0.9 }}>Tip: hold Shift while placing points to snap to grid.</div>
+        <Toggle id="selection" title="Selection & Move" />
+        {open.selection && (
+          <div style={{ paddingLeft: 6 }}>
+            <div>- <b>Shift-click</b> to multi-select</div>
+            <div>- Drag any selected item to move the whole selection</div>
+            <div>- Arrow keys nudge selection (Shift = 10x)</div>
+            <div>- Delete/Backspace deletes all selected</div>
+            <div>- Right-click empty space for tools (Polyline/Text/Move)</div>
+          </div>
+        )}
+
+        <Toggle id="polylines" title="Polylines" />
+        {open.polylines && (
+          <div style={{ paddingLeft: 6 }}>
+            <div>- Double-click a polyline to enter edit mode</div>
+            <div>- Click a point handle to move that point with arrow keys</div>
+            <div>- Right-click a point handle to delete (menu)</div>
+            <div>- Double-click the line while editing to add a new segment</div>
+            <div>- While drawing: <b>Enter</b> or double-click to finish</div>
+            <div>- Right-click while drawing removes the last segment</div>
+            <div>- Hold <b>Alt</b> while drawing to lock horizontal/vertical</div>
+          </div>
+        )}
+
+        <Toggle id="text" title="Text" />
+        {open.text && (
+          <div style={{ paddingLeft: 6 }}>
+            <div>- Double-click text to open Properties</div>
+          </div>
+        )}
+
+        <Toggle id="overlays" title="SVG Overlays" />
+        {open.overlays && (
+          <div style={{ paddingLeft: 6 }}>
+            <div>- Drag to move; drag corner handles to resize</div>
+            <div>- Hold <b>Alt</b> while dragging a resize handle to move instead of scale</div>
+            <div>- Double-click SVG to open Properties</div>
+          </div>
+        )}
+
+        <Toggle id="props" title="Properties Panel" />
+        {open.props && (
+          <div style={{ paddingLeft: 6 }}>
+            <div>- X/Y/W/H edits one item or a whole group</div>
+            <div>- Use <b>Apply</b> to commit all fields</div>
+            <div>- For polylines, use <b>Convert</b> to turn into SVG overlays</div>
+            <div>- SVG Template can be swapped while keeping position & tag path</div>
+            <div>- Dup Offset controls duplicate spacing</div>
+          </div>
+        )}
+
+        <Toggle id="shortcuts" title="Shortcuts" />
+        {open.shortcuts && (
+          <div style={{ paddingLeft: 6 }}>
+            <div>- ESC closes import, cancels drawing, exits edit, clears selection, and clears import anchor</div>
+            <div>- Ctrl/Cmd + D duplicates selection</div>
+            <div>- Right-double-click sets the import anchor</div>
+            <div>- Zoom popup has a Tag toggle to show Tag Path overlays</div>
+          </div>
+        )}
       </div>
     </div>
   );

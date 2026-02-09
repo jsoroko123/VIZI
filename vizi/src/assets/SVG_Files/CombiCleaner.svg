@@ -13,7 +13,7 @@
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg"><sodipodi:namedview
+   xmlns:svg="http://www.w3.org/2000/svg" kewidth="90.909" keheight="100"><sodipodi:namedview
      id="namedview1"
      pagecolor="#ffffff"
      bordercolor="#000000"
@@ -138,3 +138,5 @@ state=$'name'.StCode;</desc><g
            id="path10950-3-9"
            style="fill:none;stroke-width:1;enable-background:accumulate"
            d="m 1897.5,292.5 v 23 h -16 v -3 h -2 v 5 h 21 v -25 h 5" /></g></g></g></svg>
+
+

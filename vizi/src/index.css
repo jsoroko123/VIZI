@@ -51,7 +51,12 @@ button:hover {
 }
 button:focus,
 button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  outline: none;
+}
+
+button:active {
+  outline: 2px solid #2b6cff;
+  outline-offset: 2px;
 }
 
 @media (prefers-color-scheme: light) {
@@ -65,4 +70,28 @@ button:focus-visible {
   button {
     background-color: #f9f9f9;
   }
+}
+
+/* Stylish scrollbars (WebKit) */
+.vizi-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.vizi-scroll::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 999px;
+  margin: 10px 0;
+}
+.vizi-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(43, 108, 255, 0.6), rgba(0, 0, 0, 0.25));
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.8);
+}
+.vizi-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(43, 108, 255, 0.75), rgba(0, 0, 0, 0.35));
+}
+
+/* Firefox */
+.vizi-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(43, 108, 255, 0.55) rgba(0, 0, 0, 0.04);
 }

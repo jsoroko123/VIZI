@@ -5,8 +5,6 @@
    width="0.081721775in"
    height="0.39372551in"
    viewBox="0 0 2.0757333 10.000627"
-   keheight="140"
-   kewidth="35"
    version="1.1"
    id="svg1"
    inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
@@ -14,7 +12,7 @@
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg">
+   xmlns:svg="http://www.w3.org/2000/svg" kewidth="20.756" keheight="100">
   <sodipodi:namedview
      id="namedview1"
      pagecolor="#ffffff"
@@ -169,3 +167,5 @@
     </g>
   </g>
 </svg>
+
+

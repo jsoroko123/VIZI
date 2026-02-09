@@ -43,25 +43,68 @@ const btnStyle = {
   boxShadow: "0 6px 18px rgba(0,0,0,0.08)",
 };
 
-function Row({ label, value, onChange, onBlur, placeholder }) {
+function Row({
+  label,
+  value,
+  onChange,
+  onBlur,
+  placeholder,
+  type = "text",
+  showHex = false,
+}) {
+  const textValue = value ?? "";
+  const isColor = type === "color";
+
+  const commit = () => onBlur?.();
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+      e.currentTarget.blur();
+    }
+  };
+
   return (
     <>
       <div style={labelStyle}>{label}</div>
-      <input
-        type="text"
-        value={value ?? ""}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            onBlur?.();
-            e.currentTarget.blur();
-          }
-        }}
-        style={controlStyle}
-      />
+      {isColor && showHex ? (
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            type="color"
+            value={textValue || "#000000"}
+            onChange={(e) => onChange(e.target.value)}
+            onBlur={commit}
+            style={{
+              width: 44,
+              height: 34,
+              padding: 0,
+              borderRadius: 10,
+              border: "1px solid #d6d6d6",
+              background: "#fff",
+              cursor: "pointer",
+            }}
+          />
+          <input
+            type="text"
+            value={textValue}
+            placeholder={placeholder}
+            onChange={(e) => onChange(e.target.value)}
+            onBlur={commit}
+            onKeyDown={handleKeyDown}
+            style={controlStyle}
+          />
+        </div>
+      ) : (
+        <input
+          type={type}
+          value={textValue}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={commit}
+          onKeyDown={handleKeyDown}
+          style={controlStyle}
+        />
+      )}
     </>
   );
 }
@@ -97,6 +140,19 @@ export default function PropertiesPanel({
   selCount,
   isSingle,
   singleKind,
+  selectedIds,
+  singleOverlayId,
+  svgFiles,
+  svgTemplateKey,
+  swapSvgTemplate,
+  svgTemplateName,
+  isGeneratedTemplate,
+  renameSvgTemplate,
+  persistSvgMeta,
+  panelAnchor,
+  panelAnchorKey,
+  panelCursor,
+  freezePanel,
   hudFields,
   setHudFields,
   applySingleId,
@@ -110,14 +166,27 @@ export default function PropertiesPanel({
 
   // polyline
   applySingleLineStyle,
+  convertPolylinesToSvg,
 
   // ✅ NEW (text)
   applySingleTextValue,
   applySingleFontSize,
   applySingleFontFamily,
+  applySingleFontWeight,
   applySingleTextAlign,
+
+  duplicateOffset,
+  setDuplicateOffset,
 }) {
   const [bboxDraft, setBboxDraft] = useState({ x: "", y: "", w: "", h: "" });
+  const [panelPos, setPanelPos] = useState({ x: 16, y: 16 });
+  const [userMoved, setUserMoved] = useState(false);
+  const [btnPulse, setBtnPulse] = useState({ apply: false, convert: false });
+  const [dupDraft, setDupDraft] = useState(String(duplicateOffset ?? 20));
+  const [templateNameDraft, setTemplateNameDraft] = useState(svgTemplateName || "");
+  const dragRef = useRef({ dragging: false, ox: 0, oy: 0 });
+  const panelRef = useRef(null);
+  const skipAutoPosRef = useRef(false);
 
   // keep latest fns for Apply (avoid stale closure)
   const latest = useRef({});
@@ -136,6 +205,7 @@ export default function PropertiesPanel({
     applySingleTextValue,
     applySingleFontSize,
     applySingleFontFamily,
+    applySingleFontWeight,
     applySingleTextAlign,
   };
 
@@ -150,6 +220,14 @@ export default function PropertiesPanel({
     });
   }, [showHUD, selectedBBox, hudFields?.x, hudFields?.y, hudFields?.w, hudFields?.h]);
 
+  useEffect(() => {
+    setTemplateNameDraft(svgTemplateName || "");
+  }, [svgTemplateName]);
+
+  useEffect(() => {
+    setDupDraft(String(duplicateOffset ?? 20));
+  }, [duplicateOffset, showHUD]);
+
   // ESC closes panel
   useEffect(() => {
     if (!showHUD) return;
@@ -159,6 +237,79 @@ export default function PropertiesPanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [showHUD, setShowHUD]);
+
+  useEffect(() => {
+    if (!showHUD) {
+      setUserMoved(false);
+    }
+  }, [showHUD]);
+
+  useEffect(() => {
+    if (panelAnchorKey) setUserMoved(false);
+  }, [panelAnchorKey]);
+
+  useEffect(() => {
+    if (!showHUD) return;
+    if (freezePanel) return;
+    if (userMoved) return;
+    if (skipAutoPosRef.current) {
+      skipAutoPosRef.current = false;
+      return;
+    }
+    const rect = panelRef.current?.getBoundingClientRect();
+    const panelW = rect?.width ?? 320;
+    const panelH = rect?.height ?? 200;
+    const maxX = Math.max(8, window.innerWidth - panelW - 8);
+    const maxY = Math.max(8, window.innerHeight - panelH - 8);
+
+    if (panelCursor) {
+      setPanelPos({
+        x: Math.min(Math.max(8, panelCursor.x), maxX),
+        y: Math.min(Math.max(8, panelCursor.y), maxY),
+      });
+      return;
+    }
+
+    if (!panelAnchor) return;
+
+    const sel = {
+      x: panelAnchor.x,
+      y: panelAnchor.y,
+      w: Math.max(panelAnchor.w ?? 0, 40),
+      h: Math.max(panelAnchor.h ?? 0, 40),
+    };
+
+    const gap = 16;
+    let x = sel.x + sel.w + gap;
+    let y = sel.y;
+
+    x = Math.min(Math.max(8, x), maxX);
+    y = Math.min(Math.max(8, y), maxY);
+
+    setPanelPos({ x, y });
+  }, [panelAnchorKey, panelAnchor, panelCursor, showHUD, freezePanel]);
+
+  useEffect(() => {
+    function onMove(e) {
+      if (!dragRef.current.dragging) return;
+      const rect = panelRef.current?.getBoundingClientRect();
+      const maxX = rect ? Math.max(8, window.innerWidth - rect.width - 8) : window.innerWidth;
+      const maxY = rect ? Math.max(8, window.innerHeight - rect.height - 8) : window.innerHeight;
+      setPanelPos({
+        x: Math.min(Math.max(8, e.clientX - dragRef.current.ox), maxX),
+        y: Math.min(Math.max(8, e.clientY - dragRef.current.oy), maxY),
+      });
+    }
+    function onUp() {
+      dragRef.current.dragging = false;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
 
   if (!showHUD || !selectedBBox) return null;
 
@@ -185,6 +336,14 @@ export default function PropertiesPanel({
     { value: "end", label: "Right" },
   ];
 
+  const textWeightOptions = [
+    { value: "300", label: "Light" },
+    { value: "400", label: "Regular" },
+    { value: "500", label: "Medium" },
+    { value: "600", label: "SemiBold" },
+    { value: "700", label: "Bold" },
+  ];
+
   const arrowStartVal = hudFields?.arrowStart ?? "none";
   const arrowEndVal = hudFields?.arrowEnd ?? "none";
   const lineStyleVal = hudFields?.lineStyle ?? "solid";
@@ -192,13 +351,26 @@ export default function PropertiesPanel({
   const textAlignVal = hudFields?.textAlign ?? hudFields?.anchor ?? "start";
   const fontSizeVal = hudFields?.fontSize ?? "24";
   const fontFamilyVal = hudFields?.fontFamily ?? "system-ui";
+  const fontWeightVal = hudFields?.fontWeight ?? "400";
   const textVal = hudFields?.text ?? "Text";
-  const textFillVal = hudFields?.fill ?? "#111111"; // ✅ text uses fill
+  const textFillVal = hudFields?.fill ?? "#808080"; // ✅ text uses fill
+  const duplicateOffsetVal = dupDraft;
+  const svgTemplateOptions = (svgFiles || []).map((f) => ({
+    value: f.key,
+    label: f.name,
+  }));
 
   const commitBBox = () => {
     const next = { ...hudFields, ...bboxDraft };
     setHudFields(next);
     applyBBoxFromHud(next);
+  };
+
+  const pulseButton = (key) => {
+    setBtnPulse((p) => ({ ...p, [key]: true }));
+    setTimeout(() => {
+      setBtnPulse((p) => ({ ...p, [key]: false }));
+    }, 140);
   };
 
   const applyAll = () => {
@@ -222,8 +394,11 @@ export default function PropertiesPanel({
       a.applySingleTagPath?.(next.tagPath);
 
       if (isSvg) {
-        a.applySingleFill?.(next.fill);
-        a.applySingleStroke?.(next.stroke);
+        const w = Number.parseFloat(next.w);
+        const h = Number.parseFloat(next.h);
+        if (Number.isFinite(w) && Number.isFinite(h)) {
+          persistSvgMeta?.(w, h);
+        }
         return;
       }
 
@@ -239,6 +414,7 @@ export default function PropertiesPanel({
         a.applySingleTextValue?.(next.text ?? "");
         a.applySingleFontSize?.(next.fontSize);
         a.applySingleFontFamily?.(next.fontFamily);
+        a.applySingleFontWeight?.(next.fontWeight);
         a.applySingleFill?.(next.fill); // ✅ text color
         a.applySingleTextAlign?.(next.textAlign ?? "start");
       }
@@ -247,10 +423,11 @@ export default function PropertiesPanel({
 
   return (
     <div
+      ref={panelRef}
       style={{
         position: "fixed",
-        right: 16,
-        top: 16,
+        left: panelPos.x,
+        top: panelPos.y,
         background: "rgba(255,255,255,0.9)",
         border: "1px solid #e6e6e6",
         borderRadius: 12,
@@ -264,144 +441,264 @@ export default function PropertiesPanel({
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "move" }}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dragRef.current.dragging = true;
+          dragRef.current.ox = e.clientX - panelPos.x;
+          dragRef.current.oy = e.clientY - panelPos.y;
+          setUserMoved(true);
+        }}
+      >
         <div style={{ fontWeight: 800 }}>
           Selected: {selCount === 1 ? singleKind : `Group (${selCount})`}
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button title="Apply" onClick={applyAll} style={btnStyle}>
+          <button
+            title="Apply"
+            onClick={() => {
+              skipAutoPosRef.current = true;
+              setUserMoved(true);
+              pulseButton("apply");
+              applyAll();
+            }}
+            style={{
+              ...btnStyle,
+              transform: btnPulse.apply ? "scale(0.97)" : "scale(1)",
+              boxShadow: btnPulse.apply ? "0 3px 10px rgba(0,0,0,0.12)" : btnStyle.boxShadow,
+              transition: "transform 120ms ease, box-shadow 120ms ease",
+            }}
+          >
             Apply
           </button>
+          <button
+            title="Apply and Close"
+            onClick={() => {
+              skipAutoPosRef.current = true;
+              setUserMoved(true);
+              pulseButton("apply");
+              applyAll();
+              setShowHUD(false);
+            }}
+            style={{
+              ...btnStyle,
+              background: "#f7f7f7",
+            }}
+          >
+            Apply & Close
+          </button>
+          {selectedIds?.length > 0 && (
+            <button
+              title="Convert to SVG"
+              onClick={() => {
+                pulseButton("convert");
+                convertPolylinesToSvg();
+              }}
+              style={{
+                ...btnStyle,
+                transform: btnPulse.convert ? "scale(0.97)" : "scale(1)",
+                boxShadow: btnPulse.convert ? "0 3px 10px rgba(0,0,0,0.12)" : btnStyle.boxShadow,
+                transition: "transform 120ms ease, box-shadow 120ms ease",
+              }}
+            >
+              {selectedIds.length > 1 ? "Convert Selected" : "Convert"}
+            </button>
+          )}
           <button title="Close" onClick={() => setShowHUD(false)} style={closeBtnStyle}>
             ✕
           </button>
         </div>
       </div>
 
-      {isSingle && (
-        <div
-          style={{
-            marginTop: 10,
-            display: "grid",
-            gridTemplateColumns: "92px 1fr",
-            columnGap: 8,
-            rowGap: 6,
-          }}
-        >
-          <Row
-            label="ID"
-            value={hudFields.id}
-            onChange={(v) => setHudFields((p) => ({ ...p, id: v }))}
-            onBlur={() => applySingleId(hudFields.id)}
-            placeholder="Element ID"
-          />
+      <div
+        style={{
+          marginTop: 10,
+          display: "grid",
+          gridTemplateColumns: "92px 1fr",
+          columnGap: 8,
+          rowGap: 6,
+        }}
+      >
+        {isSingle && (
+          <>
+            <Row
+              label="ID"
+              value={hudFields.id}
+              onChange={(v) => setHudFields((p) => ({ ...p, id: v }))}
+              onBlur={() => applySingleId(hudFields.id)}
+              placeholder="Element ID"
+            />
 
-          <Row
-            label="Tag Path"
-            value={hudFields.tagPath}
-            onChange={(v) => setHudFields((p) => ({ ...p, tagPath: v }))}
-            onBlur={() => applySingleTagPath(hudFields.tagPath)}
-            placeholder="e.g. Area/Equip/Device"
-          />
+            <Row
+              label="Tag Path"
+              value={hudFields.tagPath}
+              onChange={(v) => setHudFields((p) => ({ ...p, tagPath: v }))}
+              onBlur={() => applySingleTagPath(hudFields.tagPath)}
+              placeholder="e.g. Area/Equip/Device"
+            />
 
           {/* SVG */}
           {isSvg && (
-            <Row
-              label="Fill"
-              value={hudFields.fill}
-              onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
-              onBlur={() => applySingleFill(hudFields.fill)}
-              placeholder="#ffffff"
-            />
-          )}
-
-          {/* Stroke (SVG + Polyline) */}
-          {(isSvg || isPoly) && (
-            <Row
-              label="Stroke"
-              value={hudFields.stroke}
-              onChange={(v) => setHudFields((p) => ({ ...p, stroke: v }))}
-              onBlur={() => applySingleStroke(hudFields.stroke)}
-              placeholder="#111111"
-            />
-          )}
-
-          {/* Polyline controls */}
-          {isPoly && (
             <>
               <SelectRow
-                label="Line Style"
-                value={lineStyleVal}
-                onChange={(v) => setHudFields((p) => ({ ...p, lineStyle: v }))}
-                onBlur={() => applySingleLineStyle?.(lineStyleVal)}
-                options={lineStyleOptions}
+                label="Template"
+                value={svgTemplateKey || svgTemplateOptions?.[0]?.value || ""}
+                onChange={(v) => {
+                  if (!singleOverlayId) return;
+                  swapSvgTemplate?.(singleOverlayId, v);
+                }}
+                onBlur={() => {}}
+                options={svgTemplateOptions}
               />
-
-              <SelectRow
-                label="Arrow Start"
-                value={arrowStartVal}
-                onChange={(v) => setHudFields((p) => ({ ...p, arrowStart: v }))}
-                onBlur={() => applySingleArrowStart?.(arrowStartVal)}
-                options={arrowOptions}
-              />
-
-              <SelectRow
-                label="Arrow End"
-                value={arrowEndVal}
-                onChange={(v) => setHudFields((p) => ({ ...p, arrowEnd: v }))}
-                onBlur={() => applySingleArrowEnd?.(arrowEndVal)}
-                options={arrowOptions}
+              {isGeneratedTemplate && (
+                <Row
+                  label="Template Name"
+                  value={templateNameDraft}
+                  onChange={(v) => setTemplateNameDraft(v)}
+                  onBlur={() => {
+                    const next = String(templateNameDraft || "").trim();
+                    if (!next) {
+                      setTemplateNameDraft(svgTemplateName || "");
+                      return;
+                    }
+                    renameSvgTemplate?.(svgTemplateKey, next);
+                  }}
+                  placeholder="Generated.svg"
+                />
+              )}
+              <Row
+                label="Fill"
+                type="color"
+                showHex
+                value={hudFields.fill}
+                onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
+                onBlur={() => {}}
+                placeholder="#ffffff"
               />
             </>
           )}
 
-          {/* ✅ Text controls */}
-          {isText && (
-            <>
+            {/* Stroke (SVG + Polyline) */}
+            {(isSvg || isPoly) && (
               <Row
-                label="Text"
-                value={textVal}
-                onChange={(v) => setHudFields((p) => ({ ...p, text: v }))}
-                onBlur={() => applySingleTextValue?.(hudFields.text)}
-                placeholder="Label"
-              />
-
-              <Row
-                label="Font Size"
-                value={String(fontSizeVal ?? "")}
-                onChange={(v) => setHudFields((p) => ({ ...p, fontSize: v }))}
-                onBlur={() => applySingleFontSize?.(hudFields.fontSize)}
-                placeholder="24"
-              />
-
-              <Row
-                label="Color"
-                value={textFillVal}
-                onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
-                onBlur={() => applySingleFill?.(hudFields.fill)}
+                label="Stroke"
+                type="color"
+                showHex
+                value={hudFields.stroke}
+                onChange={(v) => setHudFields((p) => ({ ...p, stroke: v }))}
+                onBlur={() => {
+                  if (!isSvg) applySingleStroke(hudFields.stroke);
+                }}
                 placeholder="#111111"
               />
+            )}
 
-              <Row
-                label="Font"
-                value={fontFamilyVal}
-                onChange={(v) => setHudFields((p) => ({ ...p, fontFamily: v }))}
-                onBlur={() => applySingleFontFamily?.(hudFields.fontFamily)}
-                placeholder="system-ui"
-              />
+            {/* Polyline controls */}
+            {isPoly && (
+              <>
+                <SelectRow
+                  label="Line Style"
+                  value={lineStyleVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, lineStyle: v }))}
+                  onBlur={() => applySingleLineStyle?.(lineStyleVal)}
+                  options={lineStyleOptions}
+                />
 
-              <SelectRow
-                label="Align"
-                value={textAlignVal}
-                onChange={(v) => setHudFields((p) => ({ ...p, textAlign: v }))}
-                onBlur={() => applySingleTextAlign?.(hudFields.textAlign)}
-                options={textAlignOptions}
-              />
-            </>
-          )}
-        </div>
-      )}
+                <SelectRow
+                  label="Arrow Start"
+                  value={arrowStartVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, arrowStart: v }))}
+                  onBlur={() => applySingleArrowStart?.(arrowStartVal)}
+                  options={arrowOptions}
+                />
+
+                <SelectRow
+                  label="Arrow End"
+                  value={arrowEndVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, arrowEnd: v }))}
+                  onBlur={() => applySingleArrowEnd?.(arrowEndVal)}
+                  options={arrowOptions}
+                />
+              </>
+            )}
+
+            {/* ✅ Text controls */}
+            {isText && (
+              <>
+                <Row
+                  label="Text"
+                  value={textVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, text: v }))}
+                  onBlur={() => applySingleTextValue?.(hudFields.text)}
+                  placeholder="Label"
+                />
+
+                <Row
+                  label="Font Size"
+                  value={String(fontSizeVal ?? "")}
+                  onChange={(v) => setHudFields((p) => ({ ...p, fontSize: v }))}
+                  onBlur={() => applySingleFontSize?.(hudFields.fontSize)}
+                  placeholder="24"
+                />
+
+                <Row
+                  label="Color"
+                  type="color"
+                  showHex
+                  value={textFillVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
+                  onBlur={() => applySingleFill?.(hudFields.fill)}
+                  placeholder="#111111"
+                />
+
+                <Row
+                  label="Font"
+                  value={fontFamilyVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, fontFamily: v }))}
+                  onBlur={() => applySingleFontFamily?.(hudFields.fontFamily)}
+                  placeholder="system-ui"
+                />
+
+                <SelectRow
+                  label="Weight"
+                  value={fontWeightVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, fontWeight: v }))}
+                  onBlur={() => applySingleFontWeight?.(hudFields.fontWeight)}
+                  options={textWeightOptions}
+                />
+
+                <SelectRow
+                  label="Align"
+                  value={textAlignVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, textAlign: v }))}
+                  onBlur={() => applySingleTextAlign?.(hudFields.textAlign)}
+                  options={textAlignOptions}
+                />
+              </>
+            )}
+          </>
+        )}
+
+        {/* Duplicate Offset (always visible, including groups) */}
+        <Row
+          label="Dup Offset"
+          value={duplicateOffsetVal}
+          onChange={(v) => {
+            setDupDraft(v);
+            const n = Number(v);
+            if (Number.isFinite(n)) setDuplicateOffset?.(n);
+          }}
+          onBlur={() => {
+            const n = Math.max(0, Number(duplicateOffsetVal) || 0);
+            setDupDraft(String(n));
+            setDuplicateOffset?.(n);
+          }}
+          placeholder="20"
+        />
+      </div>
 
       {/* bbox always visible */}
       <div

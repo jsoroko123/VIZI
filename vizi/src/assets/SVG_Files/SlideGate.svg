@@ -12,7 +12,7 @@
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg">
+   xmlns:svg="http://www.w3.org/2000/svg" kewidth="100" keheight="25">
   <sodipodi:namedview
      id="namedview1"
      pagecolor="#ffffff"
@@ -77,3 +77,5 @@
        ry="7.2847122e-08" />
   </g>
 </svg>
+
+

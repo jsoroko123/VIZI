@@ -1,5 +1,5 @@
 // src/components/Toolbar.jsx
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 function IconButton({ title, active, onClick, children }) {
   return (
@@ -14,19 +14,23 @@ function IconButton({ title, active, onClick, children }) {
       style={{
         width: 38,
         height: 38,
-        borderRadius: 12,
-        border: active ? "2px solid #2b6cff" : "1px solid #d6d6d6",
-        background: active ? "#e8f0ff" : "white",
+        borderRadius: 10,
+        border: active ? "2px solid #2b6cff" : "1px solid rgba(0,0,0,0.08)",
+        background: active
+          ? "linear-gradient(180deg, #eef3ff 0%, #e2ecff 100%)"
+          : "linear-gradient(180deg, #ffffff 0%, #f7f7f7 100%)",
         cursor: "pointer",
-        boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
-        color: active ? "#2b6cff" : "#111",
+        boxShadow: active
+          ? "0 8px 20px rgba(43,108,255,0.25)"
+          : "0 6px 18px rgba(0,0,0,0.08)",
+        color: active ? "#1f56cc" : "#111",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         padding: 0,
         boxSizing: "border-box",
-        outline: "none",
         WebkitTapHighlightColor: "transparent",
+        transition: "transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease",
       }}
     >
       <span style={{ width: 20, height: 20, display: "grid", placeItems: "center" }}>
@@ -130,6 +134,17 @@ const Icons = {
       />
     </svg>
   ),
+  edit: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+      <path
+        d="M4 20h4l10-10-4-4L4 16v4z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path d="M14 6l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  ),
   save: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
       <path
@@ -169,6 +184,48 @@ const Icons = {
 ),
 };
 
+function Divider({ vertical = false }) {
+  return (
+    <div
+      style={
+        vertical
+          ? {
+              width: 1,
+              alignSelf: "stretch",
+              background:
+                "linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.18) 50%, rgba(0,0,0,0) 100%)",
+              margin: "0 6px",
+            }
+          : {
+              height: 1,
+              width: "100%",
+              background:
+                "linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.18) 50%, rgba(0,0,0,0) 100%)",
+              margin: "6px 0",
+            }
+      }
+    />
+  );
+}
+
+function GroupLabel({ children }) {
+  return (
+    <div
+      style={{
+        fontSize: 10,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        color: "rgba(0,0,0,0.45)",
+        marginBottom: 4,
+        marginLeft: 2,
+        userSelect: "none",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function Toolbar({
   tool,
   setTool,
@@ -176,6 +233,10 @@ export default function Toolbar({
   setImportOpen,
   exportSVG,
   exportIgnitionJson,
+  editingId,
+  toggleEditMode,
+  toolbarPos,
+  setToolbarPos,
 
   // ✅ project save/load
   exportProjectJson,
@@ -191,94 +252,149 @@ export default function Toolbar({
 }) {
   if (!showToolbar) return null;
 
+  const dragRef = useRef({ dragging: false, ox: 0, oy: 0 });
+  const posRef = useRef(toolbarPos);
+
+  useEffect(() => {
+    posRef.current = toolbarPos;
+  }, [toolbarPos]);
+
+  useEffect(() => {
+    function onMove(e) {
+      if (!dragRef.current.dragging) return;
+      setToolbarPos?.({
+        x: Math.max(8, e.clientX - dragRef.current.ox),
+        y: Math.max(8, e.clientY - dragRef.current.oy),
+      });
+    }
+
+    function onUp() {
+      dragRef.current.dragging = false;
+    }
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
   return (
     <div
       style={{
         position: "fixed",
-        left: 16,
-        top: 35,
+        left: toolbarPos?.x ?? 16,
+        top: toolbarPos?.y ?? 50,
         display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        padding: 8,
+        flexDirection: "row",
+        gap: 12,
+        padding: "10px 12px",
         borderRadius: 14,
-        background: "rgba(255,255,255,0.9)",
-        border: "1px solid #e6e6e6",
-        backdropFilter: "blur(8px)",
-        boxShadow: "0 12px 30px rgba(0,0,0,0.4)",
-        zIndex: 30,
-        alignItems: "center",
+        background: "linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(247,247,247,0.94) 100%)",
+        border: "1px solid rgba(0,0,0,0.08)",
+        backdropFilter: "blur(10px)",
+        boxShadow: "0 16px 34px rgba(0,0,0,0.22)",
+        zIndex: 31,
+        alignItems: "flex-start",
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <IconButton
-        title="Select / Move (Shift-click for multi-select)"
-        active={tool === "select"}
-        onClick={() => {
-          setTool("select");
-          setDrawing?.(null);
+      <div
+        style={{ display: "flex", flexDirection: "column" }}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dragRef.current.dragging = true;
+          dragRef.current.ox = e.clientX - (posRef.current?.x ?? 16);
+          dragRef.current.oy = e.clientY - (posRef.current?.y ?? 50);
         }}
       >
-        {Icons.select}
-      </IconButton>
+        <GroupLabel>File</GroupLabel>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <IconButton title="Export SVG" active={false} onClick={exportSVG}>
+            {Icons.export}
+          </IconButton>
+          <IconButton title="Export Ignition JSON" active={false} onClick={exportIgnitionJson}>
+            {Icons.json}
+          </IconButton>
+          <IconButton title="Save Project" active={false} onClick={exportProjectJson}>
+            {Icons.save}
+          </IconButton>
+          <IconButton title="Save Project As..." active={false} onClick={exportProjectJsonAs}>
+            {Icons.saveAs}
+          </IconButton>
+          <IconButton title="Load Project (JSON)" active={false} onClick={importProjectJson}>
+            {Icons.load}
+          </IconButton>
+        </div>
+      </div>
 
-      <IconButton
-        title="Multi-segment line"
-        active={tool === "polyline"}
-        onClick={() => {
-          setTool("polyline");
-          setDrawing?.(null);
-          exitEditMode?.();
-          setSelectedOverlayIds?.([]);
-        }}
-      >
-        {Icons.poly}
-      </IconButton>
+      <Divider vertical />
 
-      <IconButton
-        title="Text (click to place)"
-        active={tool === "text"}
-        onClick={() => {
-          setTool("text");
-          setDrawing?.(null);
-          exitEditMode?.();
-          setSelectedOverlayIds?.([]);
-        }}
-      >
-        {Icons.text}
-      </IconButton>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        <GroupLabel>Tools</GroupLabel>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <IconButton title="Add SVG" active={importOpen} onClick={() => setImportOpen?.(true)}>
+            {Icons.import}
+          </IconButton>
+          <IconButton
+            title="Select / Move (Shift-click for multi-select)"
+            active={tool === "select" && !editingId}
+            onClick={() => {
+              setTool("select");
+              setDrawing?.(null);
+            }}
+          >
+            {Icons.select}
+          </IconButton>
+          <IconButton
+            title="Multi-segment line"
+            active={tool === "polyline"}
+            onClick={() => {
+              setTool("polyline");
+              setDrawing?.(null);
+              exitEditMode?.();
+              setSelectedOverlayIds?.([]);
+            }}
+          >
+            {Icons.poly}
+          </IconButton>
+          <IconButton
+            title="Text (click to place)"
+            active={tool === "text"}
+            onClick={() => {
+              setTool("text");
+              setDrawing?.(null);
+              exitEditMode?.();
+              setSelectedOverlayIds?.([]);
+            }}
+          >
+            {Icons.text}
+          </IconButton>
+        </div>
+      </div>
 
-      <IconButton title="Import SVG" active={importOpen} onClick={() => setImportOpen?.(true)}>
-        {Icons.import}
-      </IconButton>
+      <Divider vertical />
 
-      <IconButton title="Export SVG" active={false} onClick={exportSVG}>
-        {Icons.export}
-      </IconButton>
-
-      <IconButton title="Export Ignition JSON" active={false} onClick={exportIgnitionJson}>
-        {Icons.json}
-      </IconButton>
-
-      <IconButton title="Save Project" active={false} onClick={exportProjectJson}>
-        {Icons.save}
-      </IconButton>
-
-      <IconButton title="Save Project As..." active={false} onClick={exportProjectJsonAs}>
-        {Icons.saveAs}
-      </IconButton>
-
-      <IconButton title="Load Project (JSON)" active={false} onClick={importProjectJson}>
-        {Icons.load}
-      </IconButton>
-
-      <IconButton title="Delete selected" active={false} onClick={deleteSelected}>
-        {Icons.trash}
-      </IconButton>
-
-      <IconButton title="Close toolbar" active={false} onClick={() => setShowToolbar?.(false)}>
-        {Icons.close}
-      </IconButton>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        <GroupLabel>Edit</GroupLabel>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <IconButton title="Delete selected" active={false} onClick={deleteSelected}>
+            {Icons.trash}
+          </IconButton>
+          <IconButton
+            title={editingId ? "Exit Edit Mode" : "Enter Edit Mode"}
+            active={!!editingId}
+            onClick={toggleEditMode}
+          >
+            {Icons.edit}
+          </IconButton>
+          <IconButton title="Close toolbar" active={false} onClick={() => setShowToolbar?.(false)}>
+            {Icons.close}
+          </IconButton>
+        </div>
+      </div>
     </div>
   );
 }

@@ -9,8 +9,11 @@ export function useKeyboardShortcuts({
   duplicateSelected,
   cancelPolyline,
   exitEditMode,
+  toggleEditMode,
+  setTool,
   closeImport,
   clearSelection,
+  clearImportAnchor,
   deleteSelected,
 }) {
   useEffect(() => {
@@ -47,6 +50,9 @@ export function useKeyboardShortcuts({
           return;
         }
 
+        if (clearImportAnchor) {
+          clearImportAnchor();
+        }
         clearSelection?.();
         return;
       }
@@ -69,6 +75,44 @@ export function useKeyboardShortcuts({
         return;
       }
 
+      // ✅ MOVE TOOL: Ctrl/Cmd + M
+      if (mod && key === "m") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (drawing) cancelPolyline?.();
+        exitEditMode?.();
+        setTool?.("select");
+        return;
+      }
+
+      // ✅ EDIT MODE: Ctrl/Cmd + E
+      if (mod && key === "e") {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleEditMode?.();
+        return;
+      }
+
+      // ✅ POLYLINE TOOL: Ctrl/Cmd + P
+      if (mod && key === "p") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (drawing) cancelPolyline?.();
+        exitEditMode?.();
+        setTool?.("polyline");
+        return;
+      }
+
+      // ✅ TEXT TOOL: Alt + T
+      if (e.altKey && key === "t") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (drawing) cancelPolyline?.();
+        exitEditMode?.();
+        setTool?.("text");
+        return;
+      }
+
       // Optional: Ctrl/Cmd+A select all (if you want)
       // if (mod && key === "a") { e.preventDefault(); /* your select all */ }
     }
@@ -84,6 +128,8 @@ export function useKeyboardShortcuts({
     duplicateSelected,
     cancelPolyline,
     exitEditMode,
+    toggleEditMode,
+    setTool,
     closeImport,
     clearSelection,
     deleteSelected,

@@ -1,4 +1,4 @@
-﻿// src/components/ImportModal.jsx
+// src/components/ImportModal.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { stripOuterSvg } from "../utils/svgSanitize"; // ✅ for clean preview
 
@@ -38,7 +38,6 @@ export default function ImportModal({
       setHoverKey(null);
       setPreview(null);
       setPreviewLoading(false);
-      setQuery("");
     }
   }, [importOpen]);
 
@@ -182,140 +181,89 @@ export default function ImportModal({
       <div
         style={{
           width: "min(560px, 92vw)",
-          minHeight: "min(520px, 80vh)",
           maxHeight: "min(520px, 80vh)",
+          overflow: "auto",
           background: "white",
           borderRadius: 16,
           border: "1px solid #e6e6e6",
           boxShadow: "0 14px 50px rgba(0,0,0,0.22)",
+          padding: 12,
           position: "relative",
-          overflow: "hidden",
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div
-          className="vizi-scroll"
-          style={{
-            maxHeight: "min(520px, 80vh)",
-            overflow: "auto",
-            paddingRight: 26,
-            marginRight: -26,
-            boxSizing: "border-box",
-          }}
-        >
-          <div
-          style={{
-            position: "sticky",
-            top: 0,
-            zIndex: 2,
-            background: "white",
-            padding: 16,
-            borderBottom: "1px solid #f0f0f0",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-            <div style={{ fontWeight: 800 }}>Import SVG</div>
-            <button title="Close" onClick={() => setImportOpen(false)} style={closeBtnStyle}>
-              X
-            </button>
-          </div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ fontWeight: 800 }}>Import SVG</div>
+          <button title="Close" onClick={() => setImportOpen(false)} style={closeBtnStyle}>
+            ✕
+          </button>
+        </div>
 
-          <div style={{ marginTop: 8, color: "#808080", fontSize: 16, fontWeight: "bold" }}>
-            SVG Templates
-          </div>
+        <div style={{ marginTop: 8, color: "#808080", fontSize: 16, fontWeight: "bold" }}>
+          SVG Templates
+        </div>
 
-          <div style={{ marginTop: 10 }}>
-            <div style={{ position: "relative" }}>
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search..."
-                style={{
-                  width: "100%",
-                  border: "1px solid #e6e6e6",
-                  background: "white",
-                  borderRadius: 12,
-                  padding: "10px 34px 10px 12px",
-                  color: "#111",
-                  outline: "none",
-                  fontSize: 13,
-                  boxSizing: "border-box",
-                }}
-              />
-              {query && (
-                <button
-                  type="button"
-                  title="Clear"
-                  onClick={() => setQuery("")}
-                  style={{
-                    position: "absolute",
-                    right: 6,
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    width: 22,
-                    height: 22,
-                    borderRadius: 8,
-                    border: "1px solid #e6e6e6",
-                    background: "white",
-                    cursor: "pointer",
-                    lineHeight: 1,
-                    color: "#111",
-                    padding: 0,
-                  }}
-                >
-                  X
-                </button>
-              )}
+        <div style={{ marginTop: 10 }}>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search…"
+            style={{
+              width: "95%",
+              border: "1px solid #e6e6e6",
+              background: "white",
+              borderRadius: 12,
+              padding: "10px 12px",
+              color: "#111",
+              outline: "none",
+              fontSize: 13,
+            }}
+          />
+        </div>
+
+        <div style={{ marginTop: 12, display: "grid", gap: 8, color: "#808080" }}>
+          {list.length === 0 ? (
+            <div style={{ color: "#808080" }}>
+              No SVGs found. Put files in <b>src/assets/SVG Files</b>.
             </div>
-          </div>
-        </div>
-
-        <div style={{ padding: "18px 22px 22px 18px" }}>
-          <div style={{ marginTop: 0, display: "grid", gap: 8, color: "#808080" }}>
-            {list.length === 0 ? (
-              <div style={{ color: "#808080" }}>
-                No SVGs found. Put files in <b>src/assets/SVG Files</b>.
-              </div>
-            ) : grouped.length === 0 ? (
-              <div style={{ color: "#808080" }}>No matches.</div>
-            ) : (
-              grouped.map((group) => (
-                <div key={group.folder} style={{ display: "grid", gap: 8 }}>
-                  <div style={{ color: "#808080", fontSize: 13, fontWeight: 800, padding: "4px 2px" }}>
-                    {group.folder}
-                  </div>
-
-                  {group.files.map((f) => (
-                    <button
-                      key={f.key}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        onPickSvg(f.key);
-                      }}
-                      onMouseEnter={(e) => onItemEnter(e, f.key)}
-                      onMouseMove={onItemMove}
-                      onMouseLeave={onItemLeave}
-                      style={{
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "10px 12px",
-                        borderRadius: 12,
-                        border: "1px solid #e6e6e6",
-                        background: "white",
-                        cursor: "pointer",
-                        color: "#808080",
-                      }}
-                      title={f.key}
-                    >
-                      {f.name}
-                    </button>
-                  ))}
+          ) : grouped.length === 0 ? (
+            <div style={{ color: "#808080" }}>No matches.</div>
+          ) : (
+            grouped.map((group) => (
+              <div key={group.folder} style={{ display: "grid", gap: 8 }}>
+                <div style={{ color: "#808080", fontSize: 13, fontWeight: 800, padding: "4px 2px" }}>
+                  {group.folder}
                 </div>
-              ))
-            )}
-          </div>
-        </div>
+
+                {group.files.map((f) => (
+                  <button
+                    key={f.key}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onPickSvg(f.key);
+                    }}
+                    onMouseEnter={(e) => onItemEnter(e, f.key)}
+                    onMouseMove={onItemMove}
+                    onMouseLeave={onItemLeave}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      padding: "10px 12px",
+                      borderRadius: 12,
+                      border: "1px solid #e6e6e6",
+                      background: "white",
+                      cursor: "pointer",
+                      color: "#808080",
+                    }}
+                    title={f.key}
+                  >
+                    {f.name}
+                  </button>
+                ))}
+              </div>
+            ))
+          )}
         </div>
 
         {/* ✅ Hover preview tooltip (only appears when hovering an item) */}
@@ -354,7 +302,7 @@ export default function ImportModal({
               }}
             >
               {previewLoading ? (
-                <div style={{ fontSize: 12, color: "#888" }}>Loading...</div>
+                <div style={{ fontSize: 12, color: "#888" }}>Loading…</div>
               ) : preview?.inner ? (
                 <svg
                   width="190"
@@ -373,3 +321,4 @@ export default function ImportModal({
     </div>
   );
 }
+
