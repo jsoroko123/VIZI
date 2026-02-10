@@ -1,0 +1,42 @@
+{
+  "plcs": [
+    {
+      "name": "PLC1",
+      "host": "10.0.0.39",
+      "slot": 0,
+      "pollMs": 500
+    }
+  ],
+  "tags": [
+    {
+      "name": "HO_7700_PELLET_MILL.i_MonTime",
+      "uaType": "Float",
+      "plcType": "REAL",
+      "tagPath": "HO_7700_PELLET_MILL.i_MonTime",
+      "topic": "PLC1"
+    },
+    {
+      "name": "HO_7700_PELLET_MILL.HMI_State",
+      "uaType": "Float",
+      "enabled": true,
+      "plcType": "REAL",
+      "tagPath": "HO_7700_PELLET_MILL.HMI_State",
+      "topic": "PLC1"
+    }
+  ],
+  "opcua": {
+    "name": "ControlLogix",
+    "port": 4840,
+    "resourcePath": "/UA/ControlLogix"
+  },
+  "pollMs": 500,
+  "topics": [
+    {
+      "name": "PLC1",
+      "prefix": "Test",
+      "plcName": "PLC1",
+      "samplingInterval": 500,
+      "enabled": true
+    }
+  ]
+}

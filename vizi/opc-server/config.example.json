@@ -1,0 +1,31 @@
+{
+  "plcs": [
+    {
+      "name": "PLC-1",
+      "host": "192.168.1.10",
+      "slot": 0,
+      "pollMs": 500
+    }
+  ],
+  "opcua": {
+    "port": 4840,
+    "resourcePath": "/UA/ControlLogix",
+    "name": "ControlLogix"
+  },
+  "pollMs": 500,
+  "topics": [
+    {
+      "name": "Main",
+      "prefix": "",
+      "plcName": "PLC-1",
+      "samplingInterval": 500,
+      "enabled": true
+    }
+  ],
+  "tags": [
+    { "name": "My Bool", "tagPath": "MyBool", "plcType": "BOOL", "uaType": "Boolean", "topic": "Main" },
+    { "name": "My Int", "tagPath": "MyInt", "plcType": "INT", "uaType": "Int16", "topic": "Main" },
+    { "name": "My Dint", "tagPath": "MyDint", "plcType": "DINT", "uaType": "Int32", "topic": "Main", "samplingInterval": 250 },
+    { "name": "My Real", "tagPath": "MyReal", "plcType": "REAL", "uaType": "Float", "topic": "Main" }
+  ]
+}

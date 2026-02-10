@@ -6,6 +6,7 @@ import HelpPanel from "./components/HelpPanel";
 import ImportModal from "./components/ImportModal";
 import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
+import OpcConfig from "./components/OpcConfig";
 
 import { uid } from "./utils/ids";
 import { stripOuterSvg } from "./utils/svgSanitize";
@@ -423,7 +424,8 @@ export default function App() {
   const [showToolbar, setShowToolbar] = useState(true);
   const [toolbarPos, setToolbarPos] = useState({ x: 16, y: 50 });
   const [showHUD, setShowHUD] = useState(true);
-  const [showHelp, setShowHelp] = useState(false);
+  const [showMainDrawer, setShowMainDrawer] = useState(false);
+  const [drawerView, setDrawerView] = useState("ai");
   const [altDown, setAltDown] = useState(false);
   useEffect(() => {
     if (!showHUD) setPanelCursor(null);
@@ -455,6 +457,11 @@ export default function App() {
       window.removeEventListener("blur", onBlur);
     };
   }, []);
+
+  function openDrawer(view) {
+    setDrawerView(view || "ai");
+    setShowMainDrawer(true);
+  }
 
 
   // ✅ ZOOM (main svg)
@@ -4112,33 +4119,148 @@ export default function App() {
         </div>
       )}
 
-      <HelpPanel showHelp={showHelp} setShowHelp={setShowHelp} />
-
-      {!showHelp && (
-        <button
-          title="Show Help"
-          onClick={() => setShowHelp(true)}
+      {showMainDrawer && (
+        <div
           style={{
             position: "fixed",
-            right: 60,
-            top: 60,
-            zIndex: 90,
-            padding: "6px 10px",
-            borderRadius: 8,
-            border: "1px solid rgba(0,0,0,0.12)",
-            background: "white",
-            cursor: "pointer",
-            boxShadow: "0 6px 14px rgba(0,0,0,0.10)",
-            color: "#111",
-            fontSize: 12,
-            fontWeight: 600,
-            letterSpacing: "0.02em",
+            inset: 0,
+            zIndex: 220,
           }}
-          onMouseDown={(e) => e.stopPropagation()}
         >
-          Help
-        </button>
+          <div
+            onClick={() => setShowMainDrawer(false)}
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,0,0,0.35)",
+            }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              right: 0,
+              top: 0,
+              height: "100%",
+              width: "min(900px, 96vw)",
+              background: "#f7f8fb",
+              boxShadow: "-16px 0 40px rgba(0,0,0,0.18)",
+              display: "flex",
+              flexDirection: "column",
+              borderLeft: "1px solid rgba(0,0,0,0.08)",
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "12px 16px",
+                borderBottom: "1px solid #e4e7ec",
+                background: "white",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>
+                {drawerView === "ai"
+                  ? "AI"
+                  : drawerView === "data"
+                  ? "Data"
+                  : drawerView === "tags"
+                  ? "Tags"
+                  : drawerView === "opc"
+                  ? "OPC Configuration"
+                  : "Help"}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                {[
+                  { key: "ai", label: "AI" },
+                  { key: "data", label: "Data" },
+                  { key: "tags", label: "Tags" },
+                  { key: "opc", label: "OPC" },
+                  { key: "help", label: "Help" },
+                ].map((item) => (
+                  <button
+                    key={`drawer-nav-${item.key}`}
+                    onClick={() => setDrawerView(item.key)}
+                    style={{
+                      border: "1px solid #d0d7e2",
+                      background: drawerView === item.key ? "#2b6cff" : "white",
+                      color: drawerView === item.key ? "white" : "#111",
+                      borderRadius: 999,
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setShowMainDrawer(false)}
+                  style={{
+                    border: "1px solid #d0d7e2",
+                    background: "white",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    cursor: "pointer",
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div style={{ flex: "1 1 auto", overflow: "hidden" }}>
+              {drawerView === "tags" ? (
+                <div style={{ height: "100%", overflow: "auto" }}>
+                  <OpcConfig embedded mode="tags" />
+                </div>
+              ) : drawerView === "opc" ? (
+                <div style={{ height: "100%", overflow: "auto" }}>
+                  <OpcConfig embedded />
+                </div>
+              ) : drawerView === "help" ? (
+                <div style={{ height: "100%", overflow: "auto", padding: 16 }}>
+                  <HelpPanel inline onClose={() => setShowMainDrawer(false)} />
+                </div>
+              ) : (
+                <iframe
+                  title={drawerView === "data" ? "Data" : "AI"}
+                  src={drawerView === "data" ? "/data" : "/ai"}
+                  style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
       )}
+
+      <button
+        title="Menu"
+        onClick={() => openDrawer("ai")}
+        style={{
+          position: "fixed",
+          right: 60,
+          top: 60,
+          zIndex: 90,
+          padding: "8px 12px",
+          borderRadius: 10,
+          border: "1px solid rgba(0,0,0,0.12)",
+          background: "white",
+          cursor: "pointer",
+          boxShadow: "0 8px 20px rgba(0,0,0,0.12)",
+          color: "#111",
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: "0.04em",
+          textTransform: "uppercase",
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        Menu
+      </button>
 
 
       {!showToolbar && (

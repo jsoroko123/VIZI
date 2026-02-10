@@ -78,4 +78,12 @@ function setSvgMetaPlugin() {
 
 export default defineConfig({
   plugins: [react(), setSvgMetaPlugin()],
+  server: {
+    proxy: {
+      "/api": {
+        target: "http://localhost:5055",
+        changeOrigin: true,
+      },
+    },
+  },
 });

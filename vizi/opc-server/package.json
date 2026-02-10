@@ -1,0 +1,14 @@
+{
+  "name": "vizi-opc-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "start:watchdog": "node watchdog.js"
+  },
+  "dependencies": {
+    "node-logix": "^1.0.8",
+    "node-opcua": "^2.127.0"
+  }
+}

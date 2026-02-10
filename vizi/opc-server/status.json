@@ -1,0 +1,13 @@
+{
+  "at": 1770763634085,
+  "connected": true,
+  "connections": {
+    "RSLogix": true
+  },
+  "lastPollAt": 1770763633977,
+  "values": {
+    "PLC1.Test": 10000,
+    "PLC1.HO_7700_PELLET_MILL.State": 1
+  },
+  "errors": {}
+}

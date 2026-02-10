@@ -10,8 +10,8 @@
 
 import { useState } from "react";
 
-export default function HelpPanel({ showHelp, setShowHelp }) {
-  if (!showHelp) return null;
+export default function HelpPanel({ showHelp = true, setShowHelp, inline = false, onClose }) {
+  if (!inline && !showHelp) return null;
 
   const [open, setOpen] = useState({
     selection: false,
@@ -48,9 +48,20 @@ export default function HelpPanel({ showHelp, setShowHelp }) {
     );
   }
 
-  return (
-    <div
-      style={{
+  const containerStyle = inline
+    ? {
+        position: "relative",
+        background: "white",
+        border: "1px solid #e6e6e6",
+        borderRadius: 12,
+        padding: "10px 12px",
+        fontSize: 13,
+        lineHeight: 1.35,
+        maxWidth: 760,
+        boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
+        color: "#808080",
+      }
+    : {
         position: "fixed",
         right: 60,
         top: 60,
@@ -64,12 +75,23 @@ export default function HelpPanel({ showHelp, setShowHelp }) {
         boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
         color: "#808080",
         zIndex: 20,
-      }}
+      };
+
+  return (
+    <div
+      style={containerStyle}
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontWeight: 800, color: "#111" }}>Controls</div>
-        <button title="Close" onClick={() => setShowHelp(false)} style={closeBtnStyle}>
+        <button
+          title="Close"
+          onClick={() => {
+            if (onClose) onClose();
+            if (setShowHelp) setShowHelp(false);
+          }}
+          style={closeBtnStyle}
+        >
           X
         </button>
       </div>
