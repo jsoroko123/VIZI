@@ -1,10 +1,10 @@
 {
-  "at": 1770817811923,
+  "at": 1770817841718,
   "connected": true,
   "connections": {
     "RSLogix": true
   },
-  "lastPollAt": 1770817798264,
+  "lastPollAt": 1770817828310,
   "values": {
     "PLC1.HO_7700_PELLET_MILL.State": 1,
     "PLC1.HO_7700_PELLET_MILL.RouteId": 2,
