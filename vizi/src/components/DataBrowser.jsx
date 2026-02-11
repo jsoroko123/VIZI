@@ -9,6 +9,14 @@ export default function DataBrowser() {
   const [rows, setRows] = useState([]);
   const [primaryKey, setPrimaryKey] = useState(null);
   const [listFields, setListFields] = useState([]);
+  const [tableColumnOrder, setTableColumnOrder] = useState([]);
+  const [dragColumn, setDragColumn] = useState("");
+  const [detailFieldOrder, setDetailFieldOrder] = useState([]);
+  const [dragDetailField, setDragDetailField] = useState("");
+  const [projects, setProjects] = useState([]);
+  const [activeProjectId, setActiveProjectId] = useState(() => {
+    return localStorage.getItem("vizi_active_project_id") || "";
+  });
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [formDraft, setFormDraft] = useState({});
@@ -30,21 +38,44 @@ export default function DataBrowser() {
     String(value || "")
       .replace(/_/g, " ")
       .replace(/\b\w/g, (m) => m.toUpperCase());
+  const isHiddenColumn = (name) => {
+    const key = String(name || "");
+    if (!key) return false;
+    if (key === "id") return true;
+    return primaryKey ? key === primaryKey : false;
+  };
+  const getVisibleFields = (rowSample) => {
+    let base = tableColumnOrder.length
+      ? tableColumnOrder
+      : listFields.length
+        ? listFields
+      : primaryKey
+        ? [primaryKey]
+        : Object.keys(rowSample || {}).filter((f) => !isHiddenColumn(f)).slice(0, 2);
+    let visible = base.filter((f) => !isHiddenColumn(f));
+    if (!visible.length) {
+      const keys = Object.keys(rowSample || {}).filter((f) => !isHiddenColumn(f));
+      visible = keys.slice(0, 2);
+    }
+    return visible;
+  };
 
   const pageStyle = {
     position: "fixed",
     inset: 0,
-    background:
-      "radial-gradient(1200px 700px at 20% -10%, #eef2ff 0%, transparent 60%), radial-gradient(1000px 600px at 120% 0%, #e8f7ff 0%, transparent 55%), #f7f8fb",
+    background: "#f7f8fb",
     color: "#0b1220",
-    overflow: "auto",
+    overflow: "hidden",
   };
   const shellStyle = {
     width: "100%",
     height: "100%",
     margin: 0,
-    padding: "28px 28px 80px",
+    padding: 0,
     boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    paddingBottom: 30,
   };
   const cardStyle = {
     background: "rgba(255,255,255,0.9)",
@@ -58,22 +89,8 @@ export default function DataBrowser() {
   const headerStyle = {
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 16,
-  };
-  const titlePillStyle = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "6px 12px",
-    borderRadius: 999,
-    border: "1px solid rgba(43,108,255,0.25)",
-    background: "rgba(43,108,255,0.08)",
-    color: "#1f3b8a",
-    fontSize: 12,
-    fontWeight: 700,
-    letterSpacing: "0.04em",
-    textTransform: "uppercase",
+    justifyContent: "flex-start",
+    marginBottom: 0,
   };
   const sectionTitleStyle = {
     fontSize: 13,
@@ -113,6 +130,11 @@ export default function DataBrowser() {
     ...buttonBase,
     background: "transparent",
   };
+  const noticeStyle = {
+    minHeight: 16,
+    marginBottom: 6,
+    fontSize: 12,
+  };
 
   useEffect(() => {
     async function loadTables() {
@@ -129,6 +151,35 @@ export default function DataBrowser() {
   }, []);
 
   useEffect(() => {
+    function handleStorage(event) {
+      if (event.key === "vizi_active_project_id") {
+        setActiveProjectId(event.newValue || "");
+      }
+    }
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    localStorage.setItem("vizi_active_project_id", activeProjectId);
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    async function loadProjects() {
+      try {
+        const res = await fetch("/api/projects");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load projects.");
+        setProjects(data.projects || []);
+      } catch {
+        // ignore
+      }
+    }
+    loadProjects();
+  }, []);
+
+  useEffect(() => {
     async function loadMeta() {
       if (!currentTable) return;
       setError("");
@@ -136,6 +187,8 @@ export default function DataBrowser() {
       setRows([]);
       setPrimaryKey(null);
       setListFields([]);
+      setTableColumnOrder([]);
+      setDetailFieldOrder([]);
       setSelectedId(null);
       setDetail(null);
       setTypeMap({});
@@ -163,18 +216,28 @@ export default function DataBrowser() {
     async function loadRows() {
       if (!currentTable) return;
       try {
-        const res = await fetch(`/api/db/${currentTable}?limit=100`);
+        const projectParam =
+          currentTable === "routes" && activeProjectId
+            ? `&project_id=${encodeURIComponent(activeProjectId)}`
+            : "";
+        const res = await fetch(`/api/db/${currentTable}?limit=100${projectParam}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
         setRows(data.rows || []);
         if (data.primaryKey) setPrimaryKey(data.primaryKey);
-        if (Array.isArray(data.listFields)) setListFields(data.listFields);
+        if (Array.isArray(data.listFields)) {
+          setListFields(data.listFields);
+          setTableColumnOrder(data.listFields);
+        }
+        if (Array.isArray(data.detailFields)) {
+          setDetailFieldOrder(data.detailFields);
+        }
       } catch (err) {
         setError(err?.message || "Failed to load rows.");
       }
     }
     loadRows();
-  }, [currentTable]);
+  }, [currentTable, activeProjectId]);
 
   useEffect(() => {
     if (detailId) {
@@ -213,12 +276,22 @@ export default function DataBrowser() {
   async function reloadRows() {
     if (!currentTable) return;
     try {
-      const res = await fetch(`/api/db/${currentTable}?limit=100`);
+      const projectParam =
+        currentTable === "routes" && activeProjectId
+          ? `&project_id=${encodeURIComponent(activeProjectId)}`
+          : "";
+      const res = await fetch(`/api/db/${currentTable}?limit=100${projectParam}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
       setRows(data.rows || []);
       if (data.primaryKey) setPrimaryKey(data.primaryKey);
-      if (Array.isArray(data.listFields)) setListFields(data.listFields);
+      if (Array.isArray(data.listFields)) {
+        setListFields(data.listFields);
+        setTableColumnOrder(data.listFields);
+      }
+      if (Array.isArray(data.detailFields)) {
+        setDetailFieldOrder(data.detailFields);
+      }
     } catch (err) {
       setError(err?.message || "Failed to load rows.");
     }
@@ -228,6 +301,9 @@ export default function DataBrowser() {
     if (!currentTable) return;
     setError("");
     const payload = buildPayload(formDraft);
+    if (currentTable === "routes" && activeProjectId && !payload.project_id) {
+      payload.project_id = activeProjectId;
+    }
     try {
       if (selectedId) {
         const pk = primaryKey ? `?pk=${encodeURIComponent(primaryKey)}` : "";
@@ -252,6 +328,7 @@ export default function DataBrowser() {
         setFormDraft(data.row || {});
       }
       await reloadRows();
+      await saveDetailFields();
       setFormEnabled(false);
     } catch (err) {
       setError(err?.message || "Save failed.");
@@ -313,6 +390,20 @@ export default function DataBrowser() {
     return value;
   }
 
+  function formatValue(columnName, value) {
+    if (value == null) return "";
+    const t = typeMap[columnName] || "";
+    if (t.includes("date") || t.includes("time")) {
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) {
+        return t.includes("date") && !t.includes("time")
+          ? date.toLocaleDateString()
+          : date.toLocaleString();
+      }
+    }
+    return String(value);
+  }
+
   function buildPayload(draft) {
     const out = {};
     Object.keys(draft || {}).forEach((k) => {
@@ -326,10 +417,13 @@ export default function DataBrowser() {
     setError("");
     setStatus("");
     try {
+      const visibleListFields = (tableColumnOrder.length ? tableColumnOrder : listFields || []).filter(
+        (f) => !isHiddenColumn(f)
+      );
       const res = await fetch(`/api/db/${currentTable}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ list_fields: listFields }),
+        body: JSON.stringify({ list_fields: visibleListFields }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to save list config.");
@@ -339,28 +433,45 @@ export default function DataBrowser() {
     }
   }
 
+  async function saveDetailFields() {
+    if (!currentTable) return;
+    setError("");
+    setStatus("");
+    try {
+      const visibleDetailFields = (detailFieldOrder || []).filter((f) => !isHiddenColumn(f));
+      const res = await fetch(`/api/db/${currentTable}/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ list_fields: listFields || [], detail_fields: visibleDetailFields }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to save detail config.");
+      setStatus("Detail fields saved.");
+    } catch (err) {
+      setError(err?.message || "Failed to save detail config.");
+    }
+  }
+
   return (
     <div style={pageStyle}>
       <div style={shellStyle}>
-        <div style={headerStyle}>
-          <div style={titlePillStyle}>Data</div>
-          {currentTable && (
-            <div style={{ fontSize: 12, color: "#667085" }}>{tableTitle}</div>
-          )}
-        </div>
 
-        {error && <div style={{ marginBottom: 12, color: "#b42318" }}>{error}</div>}
+        <div style={noticeStyle}>
+          {error ? <div style={{ color: "#b42318" }}>{error}</div> : null}
+        </div>
 
         <div
           style={{
             display: "grid",
             gridTemplateColumns: "1fr",
-            gridTemplateRows: "minmax(160px, 20%) 16px minmax(420px, 1fr)",
-            rowGap: 18,
-            minHeight: "calc(100vh - 120px)",
+            gridTemplateRows: "auto minmax(0, 1fr)",
+            rowGap: 12,
+            flex: 1,
+            height: "100%",
+            minHeight: 0,
           }}
         >
-          <div style={{ ...cardStyle, height: "100%" }}>
+          <div style={{ ...cardStyle }}>
             <div style={sectionTitleStyle}>Tables</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "stretch" }}>
               {tableList.map((t) => (
@@ -388,18 +499,21 @@ export default function DataBrowser() {
             </div>
           </div>
 
-          <div
-            style={{
-              height: 1,
-              background: "rgba(17, 24, 39, 0.12)",
-              margin: "0 8px",
-            }}
-          />
 
           {detailId ? (
-            <div style={{ ...cardStyle, minHeight: 420 }}>
+            <div
+              style={{
+                ...cardStyle,
+                minHeight: 0,
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                marginBottom: 0,
+                overflow: "hidden",
+              }}
+            >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={sectionTitleStyle}>Details</div>
+                <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Details</div>
                 <button onClick={() => navigate(`/data/${currentTable}`)} style={ghostButton}>
                   Back to List
                 </button>
@@ -408,56 +522,172 @@ export default function DataBrowser() {
                 <div style={{ color: "#98a2b3", fontSize: 12 }}>Select a table to begin.</div>
               ) : (
                 <>
-                  <div style={{ display: "grid", gap: 6 }}>
-                    {columns.map((c) => (
+                  <div
+                    style={{
+                      display: "grid",
+                      rowGap: 12,
+                      columnGap: 10,
+                      overflowY: "auto",
+                      padding: 12,
+                      borderRadius: 12,
+                      border: "1px solid #e4e7ec",
+                      background: "#f9fafb",
+                      flex: 1,
+                      minHeight: 0,
+                      alignContent: "start",
+                      marginBottom: 10,
+                    }}
+                  >
+                    {(detailFieldOrder.length
+                      ? detailFieldOrder
+                      : columns.filter((c) => !isHiddenColumn(c.column_name)).map((c) => c.column_name)
+                    )
+                      .filter((name) => !isHiddenColumn(name))
+                      .map((columnName) => {
+                        const c = columns.find((col) => col.column_name === columnName);
+                        if (!c) return null;
+                        return (
+                      (() => {
+                        const isProjectField =
+                          currentTable === "routes" && c.column_name === "project_id";
+                        return (
                       <label
                         key={`form-${c.column_name}`}
+                        draggable={formEnabled}
+                        onDragStart={(e) => {
+                          if (!formEnabled) return;
+                          setDragDetailField(c.column_name);
+                          e.dataTransfer.effectAllowed = "move";
+                        }}
+                        onDragEnd={() => setDragDetailField("")}
+                        onDragOver={(e) => {
+                          if (!formEnabled) return;
+                          if (!dragDetailField || dragDetailField === c.column_name) return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                        }}
+                        onDrop={(e) => {
+                          if (!formEnabled) return;
+                          if (!dragDetailField || dragDetailField === c.column_name) return;
+                          e.preventDefault();
+                          const current = detailFieldOrder.length
+                            ? detailFieldOrder
+                            : columns.filter((col) => !isHiddenColumn(col.column_name)).map((col) => col.column_name);
+                          const from = current.indexOf(dragDetailField);
+                          const to = current.indexOf(c.column_name);
+                          if (from < 0 || to < 0) return;
+                          const next = [...current];
+                          next.splice(from, 1);
+                          next.splice(to, 0, dragDetailField);
+                          setDetailFieldOrder(next);
+                          setDragDetailField("");
+                        }}
                         style={{
                           display: "grid",
-                          gap: 4,
+                          gridTemplateColumns: "180px 1fr",
+                          alignItems: "center",
+                          gap: 10,
                           fontSize: 12,
-                          color: "#475467",
+                          color: "#344054",
+                          fontWeight: 600,
+                          paddingBottom: 2,
+                          cursor: formEnabled ? "grab" : "default",
                         }}
                       >
-                        {labelize(c.column_name)}
-                        <input
-                          type={inputTypeFor(c.column_name)}
-                          checked={
-                            inputTypeFor(c.column_name) === "checkbox"
-                              ? Boolean(formDraft?.[c.column_name])
-                              : undefined
-                          }
-                          value={
-                            inputTypeFor(c.column_name) === "checkbox"
-                              ? undefined
-                              : formDraft?.[c.column_name] != null
-                                ? String(formDraft[c.column_name])
-                                : ""
-                          }
-                          onChange={(e) =>
-                            setFormDraft((p) => ({
-                              ...p,
-                              [c.column_name]:
-                                inputTypeFor(c.column_name) === "checkbox"
-                                  ? e.target.checked
-                                  : e.target.value,
-                            }))
-                          }
-                          disabled={!formEnabled}
+                        <span style={{ textAlign: "left" }}>{labelize(c.column_name)}</span>
+                        <div
                           style={{
-                            border: "1px solid #d0d7e2",
-                            borderRadius: 8,
-                            padding: "6px 8px",
-                            fontSize: 12,
-                            outline: "none",
-                            background: formEnabled ? "white" : "#f8fafc",
+                            display: "flex",
+                            alignItems: "center",
+                            height: 30,
                           }}
-                        />
+                        >
+                          {isProjectField ? (
+                            <select
+                              value={formDraft?.[c.column_name] || ""}
+                              onChange={(e) =>
+                                setFormDraft((p) => ({
+                                  ...p,
+                                  [c.column_name]: e.target.value || null,
+                                }))
+                              }
+                              disabled={!formEnabled}
+                              style={{
+                                border: "1px solid #d0d7e2",
+                                borderRadius: 8,
+                                padding: "4px 8px",
+                                fontSize: 12,
+                                outline: "none",
+                                background: formEnabled ? "white" : "#f8fafc",
+                                height: 28,
+                                width: "100%",
+                              }}
+                            >
+                              <option value="">Unassigned</option>
+                              {projects.map((p) => (
+                                <option key={`proj-${p.id}`} value={p.id}>
+                                  {p.name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type={inputTypeFor(c.column_name)}
+                              checked={
+                                inputTypeFor(c.column_name) === "checkbox"
+                                  ? Boolean(formDraft?.[c.column_name])
+                                  : undefined
+                              }
+                              value={
+                                inputTypeFor(c.column_name) === "checkbox"
+                                  ? undefined
+                                  : formDraft?.[c.column_name] != null
+                                    ? String(formDraft[c.column_name])
+                                    : ""
+                              }
+                              onChange={(e) =>
+                                setFormDraft((p) => ({
+                                  ...p,
+                                  [c.column_name]:
+                                    inputTypeFor(c.column_name) === "checkbox"
+                                      ? e.target.checked
+                                      : e.target.value,
+                                }))
+                              }
+                              disabled={!formEnabled}
+                              style={{
+                                border: "1px solid #d0d7e2",
+                                borderRadius: 8,
+                                padding: inputTypeFor(c.column_name) === "checkbox" ? 0 : "4px 8px",
+                                fontSize: 12,
+                                outline: "none",
+                                background: formEnabled ? "white" : "#f8fafc",
+                                height: inputTypeFor(c.column_name) === "checkbox" ? 16 : 28,
+                                width: inputTypeFor(c.column_name) === "checkbox" ? 16 : "100%",
+                              }}
+                            />
+                          )}
+                        </div>
                       </label>
-                    ))}
+                        );
+                      })()
+                        );
+                      })}
                   </div>
 
-                  <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      marginTop: "auto",
+                      justifyContent: "flex-end",
+                      background: "white",
+                      paddingTop: 12,
+                      paddingBottom: 16,
+                      borderTop: "1px solid #e4e7ec",
+                      flexShrink: 0,
+                    }}
+                  >
                     <button
                       onClick={() => {
                         if (detail) {
@@ -529,9 +759,17 @@ export default function DataBrowser() {
               )}
             </div>
           ) : (
-            <div style={{ ...cardStyle, minHeight: 420 }}>
+            <div
+              style={{
+                ...cardStyle,
+                minHeight: 0,
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                marginBottom: 0,
+              }}
+            >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <div style={sectionTitleStyle}>{tableTitle || "No Table Selected"}</div>
                 {currentTable ? (
                   <button
                     onClick={() => {
@@ -553,8 +791,8 @@ export default function DataBrowser() {
                   {columns.length > 0 && (
                     <div style={{ marginBottom: 8, ...subtleText }}>
                       List fields:
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                        {columns.map((c) => {
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                        {columns.filter((c) => !isHiddenColumn(c.column_name)).map((c) => {
                           const checked = listFields.includes(c.column_name);
                           return (
                             <label
@@ -578,6 +816,17 @@ export default function DataBrowser() {
                                     ? [...listFields, c.column_name]
                                     : listFields.filter((f) => f !== c.column_name);
                                   setListFields(next);
+                                  if (e.target.checked) {
+                                    setTableColumnOrder((prev) => {
+                                      if (!prev.length) return next;
+                                      if (prev.includes(c.column_name)) return prev;
+                                      return [...prev, c.column_name];
+                                    });
+                                  } else {
+                                    setTableColumnOrder((prev) =>
+                                      prev.length ? prev.filter((f) => f !== c.column_name) : prev
+                                    );
+                                  }
                                 }}
                               />
                               {labelize(c.column_name)}
@@ -594,7 +843,7 @@ export default function DataBrowser() {
                     </div>
                   )}
                   <div style={{ ...subtleText, marginBottom: 8 }}>Primary key: {primaryKey || "none"}</div>
-                  <div style={{ overflow: "auto", maxHeight: 520 }}>
+                  <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
                     {rows.length === 0 ? (
                       <div style={{ color: "#98a2b3", fontSize: 12 }}>No rows.</div>
                     ) : (
@@ -608,14 +857,33 @@ export default function DataBrowser() {
                       >
                         <thead>
                           <tr>
-                            {(listFields.length
-                              ? listFields
-                              : primaryKey
-                                ? [primaryKey]
-                                : Object.keys(rows[0] || {}).slice(0, 2)
-                            ).map((f) => (
+                            {getVisibleFields(rows[0] || {}).map((f) => (
                               <th
                                 key={`head-${f}`}
+                                draggable
+                                onDragStart={(e) => {
+                                  setDragColumn(f);
+                                  e.dataTransfer.effectAllowed = "move";
+                                }}
+                                onDragEnd={() => setDragColumn("")}
+                                onDragOver={(e) => {
+                                  if (!dragColumn || dragColumn === f) return;
+                                  e.preventDefault();
+                                  e.dataTransfer.dropEffect = "move";
+                                }}
+                                onDrop={(e) => {
+                                  if (!dragColumn || dragColumn === f) return;
+                                  e.preventDefault();
+                                  const current = getVisibleFields(rows[0] || {});
+                                  const from = current.indexOf(dragColumn);
+                                  const to = current.indexOf(f);
+                                  if (from < 0 || to < 0) return;
+                                  const next = [...current];
+                                  next.splice(from, 1);
+                                  next.splice(to, 0, dragColumn);
+                                  setTableColumnOrder(next);
+                                  setDragColumn("");
+                                }}
                                 style={{
                                   textAlign: "left",
                                   padding: "6px 8px",
@@ -625,6 +893,7 @@ export default function DataBrowser() {
                                   top: 0,
                                   background: "#fff",
                                   zIndex: 1,
+                                  cursor: "grab",
                                 }}
                               >
                                 {labelize(f)}
@@ -635,11 +904,7 @@ export default function DataBrowser() {
                         <tbody>
                           {rows.map((r, i) => {
                             const rowId = primaryKey ? r[primaryKey] : i;
-                            const fields = listFields.length
-                              ? listFields
-                              : primaryKey
-                                ? [primaryKey]
-                                : Object.keys(r || {}).slice(0, 2);
+                            const visibleFields = getVisibleFields(r || {});
                             return (
                               <tr
                                 key={`${rowId}-${i}`}
@@ -649,7 +914,7 @@ export default function DataBrowser() {
                                   cursor: "pointer",
                                 }}
                               >
-                                {fields.map((f) => (
+                                {visibleFields.map((f) => (
                                   <td
                                     key={`${rowId}-${f}`}
                                     style={{
@@ -660,10 +925,10 @@ export default function DataBrowser() {
                                       maxWidth: 200,
                                       textOverflow: "ellipsis",
                                       overflow: "hidden",
-                                      width: fields[0] === f ? 100 : undefined,
+                                    width: visibleFields[0] === f ? 100 : undefined,
                                     }}
                                   >
-                                    {r?.[f] != null ? String(r[f]) : ""}
+                                    {formatValue(f, r?.[f])}
                                   </td>
                                 ))}
                               </tr>

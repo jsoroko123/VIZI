@@ -46,11 +46,13 @@ export default function CanvasSvg({
   overlayLocalBBox,
   importAnchor,
   onCanvasDoubleClick,
+  tagStateColorsByPath,
   onSvgDoubleClick, // ✅ used in TopRuler + main svg
 }) {
   const vb = useMemo(() => `0 0 ${vbW} ${vbH}`, [vbW, vbH]);
   const isLineMode = tool === "polyline";
   const isCrosshair = isLineMode || marquee;
+  const [hoverOverlayId, setHoverOverlayId] = useState(null);
 
   // wrapper size for rulers
   const wrapRef = useRef(null);
@@ -76,6 +78,50 @@ export default function CanvasSvg({
     const h = Math.abs(marquee.cur.y - marquee.start.y);
     return { x, y, w, h };
   }, [marquee]);
+
+  const getTagColor = (tagPath) => {
+    if (!tagStateColorsByPath) return "";
+    const key = String(tagPath || "").replace(/\r?\n/g, "").trim();
+    if (!key) return "";
+    return tagStateColorsByPath.get(key) || "";
+  };
+
+  const lastTagColorRef = useRef(new Map());
+
+  const overrideSvgColors = (inner, color) => {
+    if (!inner || !color) return inner;
+    const fillRe = /fill\s*=\s*["'][^"']*["']/gi;
+    const strokeRe = /stroke\s*=\s*["'][^"']*["']/gi;
+    const styleRe = /style\s*=\s*["']([^"']*)["']/gi;
+    let out = inner.replace(fillRe, "").replace(strokeRe, "");
+    out = out.replace(styleRe, (match, styleBody) => {
+      let next = styleBody
+        .replace(/fill\s*:\s*[^;]+;?/gi, "")
+        .replace(/stroke\s*:\s*[^;]+;?/gi, "")
+        .trim();
+      if (!next) return "";
+      return `style="${next}"`;
+    });
+    return out;
+  };
+
+  const getOverlayColorAtPoint = (pt) => {
+    if (!pt || !svgOverlays?.length) return "";
+    for (const o of svgOverlays) {
+      const color = getTagColor(o.tagPath);
+      if (!color) continue;
+      const bb = overlayLocalBBox(o.id);
+      if (!bb) continue;
+      const x = o.tx + o.scale * bb.x;
+      const y = o.ty + o.scale * bb.y;
+      const w = o.scale * bb.width;
+      const h = o.scale * bb.height;
+      if (pt.x >= x && pt.x <= x + w && pt.y >= y && pt.y <= y + h) {
+        return color;
+      }
+    }
+    return "";
+  };
 
   // current transform values (WORLD -> SCREEN)
   const z = zoom || 1;
@@ -606,6 +652,7 @@ export default function CanvasSvg({
             {shapes.map((s) => {
               const isSelected = selectedIds.includes(s.id);
               const isEditing = s.id === editingId;
+              const dynamicColor = getTagColor(s.tagPath);
 
               const lineStyle = s.lineStyle ?? "solid";
               const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
@@ -614,6 +661,9 @@ export default function CanvasSvg({
               const arrowEnd = s.arrowEnd ?? "none";
 
               const ptsForDisplay = pointsForMarker(s.points);
+              const startPoint =
+                Array.isArray(s.points) && s.points.length ? s.points[0] : null;
+              const touchColor = startPoint ? getOverlayColorAtPoint(startPoint) : "";
 
               if (s.type === "text") {
                 const selected = selectedIds.includes(s.id);
@@ -681,7 +731,7 @@ export default function CanvasSvg({
                     <text
                       x={s.x}
                       y={s.y}
-                      fill={s.fill || "#808080"}
+                      fill={dynamicColor || s.fill || "#808080"}
                       fontSize={s.fontSize || 24}
                       fontFamily={s.fontFamily || "system-ui"}
                       fontWeight={s.fontWeight || "400"}
@@ -780,7 +830,7 @@ export default function CanvasSvg({
                   <polyline
                     points={pointsToAttr(ptsForDisplay)}
                     fill="none"
-                    stroke={isSelected ? "#2b6cff" : s.stroke}
+                    stroke={isSelected ? "#2b6cff" : touchColor || dynamicColor || s.stroke}
                     strokeWidth={s.strokeWidth}
                     // ✅ Apply styleProps FIRST so our explicit defaults don’t overwrite it
                     {...styleProps}
@@ -852,20 +902,60 @@ export default function CanvasSvg({
                     transform={`translate(${o.tx} ${o.ty}) scale(${o.scale})`}
                     onMouseDown={(e) => onOverlayMouseDown(e, o.id)}
                     onDoubleClick={(e) => onOverlayDoubleClick?.(e, o.id)}
+                    onMouseEnter={() => setHoverOverlayId(o.id)}
+                    onMouseLeave={() => setHoverOverlayId((prev) => (prev === o.id ? null : prev))}
                     style={{
                       cursor: tool === "select" ? "move" : "crosshair",
                       pointerEvents: "visiblePainted",
                     }}
                   >
-                    <g
-                      style={{
-                        fill: o.fill ?? "none",
-                        stroke: o.stroke ?? "none",
-                        pointerEvents: "visiblePainted",
-                      }}
-                      dangerouslySetInnerHTML={{ __html: o.inner }}
-                    />
+                    {(() => {
+                      const tagFill = getTagColor(o.tagPath);
+                      if (tagFill) {
+                        const key = String(o.tagPath || o.id || "");
+                        const prev = lastTagColorRef.current.get(key);
+                        if (prev !== tagFill) {
+                          // eslint-disable-next-line no-console
+                          console.log("SVG tag color changed", { tagPath: o.tagPath, color: tagFill });
+                          lastTagColorRef.current.set(key, tagFill);
+                        }
+                      }
+                      const inner = tagFill ? overrideSvgColors(o.inner, tagFill) : o.inner;
+                      return (
+                        <g
+                          style={{
+                            fill: tagFill || o.fill || "none",
+                            stroke: o.stroke ?? "none",
+                            pointerEvents: "visiblePainted",
+                          }}
+                          dangerouslySetInnerHTML={{ __html: inner }}
+                        />
+                      );
+                    })()}
                   </g>
+
+                  {isLineMode && (() => {
+                    const bb = overlayLocalBBox(o.id);
+                    if (!bb) return null;
+                    const x = o.tx + o.scale * bb.x;
+                    const y = o.ty + o.scale * bb.y;
+                    const w = o.scale * bb.width;
+                    const h = o.scale * bb.height;
+                    const cx = x + w / 2;
+                    const cy = y + h / 2;
+                    const snapR = 4 * inv;
+                    const isHover = hoverOverlayId === o.id;
+                    const stroke = isHover ? "#f79009" : "#2b6cff";
+                    const fill = isHover ? "rgba(247,144,9,0.18)" : "white";
+                    return (
+                      <g pointerEvents="none">
+                        <circle cx={cx} cy={y} r={snapR} fill={fill} stroke={stroke} strokeWidth={2 * inv} />
+                        <circle cx={x + w} cy={cy} r={snapR} fill={fill} stroke={stroke} strokeWidth={2 * inv} />
+                        <circle cx={cx} cy={y + h} r={snapR} fill={fill} stroke={stroke} strokeWidth={2 * inv} />
+                        <circle cx={x} cy={cy} r={snapR} fill={fill} stroke={stroke} strokeWidth={2 * inv} />
+                      </g>
+                    );
+                  })()}
 
                   {isSel && showHandles && overlaySelectionUI(o, z)}
                   {isSel && !showHandles && (
@@ -900,44 +990,97 @@ export default function CanvasSvg({
 
             {showTagPaths && (
               <g pointerEvents="none">
-                {shapes.map((s) => {
+                {(() => {
+                  const offsets = [0, 1, -1, 2, -2, 3, -3];
+                  let labelIndex = 0;
+                  const nextOffset = () => {
+                    const offset = offsets[labelIndex % offsets.length] * (12 * inv);
+                    labelIndex += 1;
+                    return offset;
+                  };
+                  return shapes.map((s) => {
                   const text = String(s.tagPath || "").trim();
                   if (!text) return null;
+                  const yOffset = nextOffset();
                   if (s.type === "text") {
                     const x = Number(s.x ?? 0);
-                    const y = Number(s.y ?? 0) - 6;
+                    const y = Number(s.y ?? 0) - 6 + yOffset;
+                    const anchorY = Number(s.y ?? 0);
                     return (
-                      <text key={`tag-${s.id}`} x={x} y={y} fontSize={12} fill="#b400ff">
-                        {text}
-                      </text>
+                      <g key={`tag-${s.id}`}>
+                        <line
+                          x1={x}
+                          y1={y + 2}
+                          x2={x}
+                          y2={anchorY - 2}
+                          stroke="#111"
+                          strokeWidth={1 * inv}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <text x={x} y={y} fontSize={10 * inv} fill="#111">
+                          {text}
+                        </text>
+                      </g>
                     );
                   }
-                  if (Array.isArray(s.points)) {
+                  if (Array.isArray(s.points) && s.type !== "polyline") {
                     const bb = bboxOfPoints(s.points);
                     if (!bb) return null;
                     const x = bb.minX + bb.w / 2;
-                    const y = bb.minY - 6;
+                    const y = bb.minY - 6 + yOffset;
                     return (
-                      <text key={`tag-${s.id}`} x={x} y={y} fontSize={12} fill="#b400ff" textAnchor="middle">
-                        {text}
-                      </text>
+                      <g key={`tag-${s.id}`}>
+                        <line
+                          x1={x}
+                          y1={y + 2}
+                          x2={x}
+                          y2={bb.minY - 2}
+                          stroke="#111"
+                          strokeWidth={1 * inv}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <text x={x} y={y} fontSize={10 * inv} fill="#111" textAnchor="middle">
+                          {text}
+                        </text>
+                      </g>
                     );
                   }
                   return null;
-                })}
-                {svgOverlays.map((o) => {
+                });
+                })()}
+                {(() => {
+                  const offsets = [0, 1, -1, 2, -2, 3, -3];
+                  let labelIndex = 0;
+                  const nextOffset = () => {
+                    const offset = offsets[labelIndex % offsets.length] * (12 * inv);
+                    labelIndex += 1;
+                    return offset;
+                  };
+                  return svgOverlays.map((o) => {
                   const text = String(o.tagPath || "").trim();
                   if (!text) return null;
                   const bb = overlayLocalBBox(o.id);
                   if (!bb) return null;
                   const x = o.tx + o.scale * (bb.x + bb.width / 2);
-                  const y = o.ty + o.scale * bb.y - 6;
+                  const y = o.ty + o.scale * bb.y - 6 + nextOffset();
                   return (
-                    <text key={`tag-${o.id}`} x={x} y={y} fontSize={12} fill="#b400ff" textAnchor="middle">
-                      {text}
-                    </text>
+                    <g key={`tag-${o.id}`}>
+                      <line
+                        x1={x}
+                        y1={y + 2}
+                        x2={x}
+                        y2={o.ty + o.scale * bb.y - 2}
+                        stroke="#111"
+                        strokeWidth={1 * inv}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                      <text x={x} y={y} fontSize={10 * inv} fill="#111" textAnchor="middle">
+                        {text}
+                      </text>
+                    </g>
                   );
-                })}
+                });
+                })()}
               </g>
             )}
 

@@ -1,5 +1,5 @@
 // src/components/PropertiesPanel.jsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const closeBtnStyle = {
   border: "1px solid #e6e6e6",
@@ -110,6 +110,15 @@ function Row({
 }
 
 function SelectRow({ label, value, onChange, onBlur, options }) {
+  const hasGroups = options?.some((opt) => opt.group);
+  const grouped = hasGroups
+    ? options.reduce((acc, opt) => {
+        const key = opt.group || "Other";
+        if (!acc.has(key)) acc.set(key, []);
+        acc.get(key).push(opt);
+        return acc;
+      }, new Map())
+    : null;
   return (
     <>
       <div style={labelStyle}>{label}</div>
@@ -123,11 +132,21 @@ function SelectRow({ label, value, onChange, onBlur, options }) {
           lineHeight: "normal",
         }}
       >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
+        {hasGroups
+          ? Array.from(grouped.entries()).map(([group, opts]) => (
+              <optgroup key={group} label={group}>
+                {opts.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))
+          : options.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
       </select>
     </>
   );
@@ -175,8 +194,10 @@ export default function PropertiesPanel({
   applySingleFontWeight,
   applySingleTextAlign,
 
+  opcTags,
   duplicateOffset,
   setDuplicateOffset,
+  bounds,
 }) {
   const [bboxDraft, setBboxDraft] = useState({ x: "", y: "", w: "", h: "" });
   const [panelPos, setPanelPos] = useState({ x: 16, y: 16 });
@@ -187,6 +208,30 @@ export default function PropertiesPanel({
   const dragRef = useRef({ dragging: false, ox: 0, oy: 0 });
   const panelRef = useRef(null);
   const skipAutoPosRef = useRef(false);
+  const safeBounds = useMemo(() => {
+    const left = Number.isFinite(bounds?.left) ? bounds.left : 8;
+    const top = Number.isFinite(bounds?.top) ? bounds.top : 8;
+    const right = Number.isFinite(bounds?.right) ? bounds.right : 8;
+    const bottom = Number.isFinite(bounds?.bottom) ? bounds.bottom : 8;
+    return { left, top, right, bottom };
+  }, [bounds]);
+
+  const tagOptions = useMemo(() => {
+    const options = [];
+    options.push({ value: "", label: "Select tag" });
+    (opcTags || []).forEach((tag) => {
+      const topic = String(tag?.topic || "Default");
+      const raw = String(tag?.tagPath || tag?.name || "").trim();
+      if (!raw) return;
+      const name = String(tag?.name || raw).trim();
+      const group = topic;
+      options.push({ value: raw, label: name || raw, group });
+    });
+    if (hudFields.tagPath && !options.some((opt) => opt.value === hudFields.tagPath)) {
+      options.push({ value: hudFields.tagPath, label: hudFields.tagPath, group: "Custom" });
+    }
+    return options;
+  }, [opcTags, hudFields.tagPath]);
 
   // keep latest fns for Apply (avoid stale closure)
   const latest = useRef({});
@@ -259,13 +304,15 @@ export default function PropertiesPanel({
     const rect = panelRef.current?.getBoundingClientRect();
     const panelW = rect?.width ?? 320;
     const panelH = rect?.height ?? 200;
-    const maxX = Math.max(8, window.innerWidth - panelW - 8);
-    const maxY = Math.max(8, window.innerHeight - panelH - 8);
+    const minX = safeBounds.left;
+    const minY = safeBounds.top;
+    const maxX = Math.max(minX, window.innerWidth - panelW - safeBounds.right);
+    const maxY = Math.max(minY, window.innerHeight - panelH - safeBounds.bottom);
 
     if (panelCursor) {
       setPanelPos({
-        x: Math.min(Math.max(8, panelCursor.x), maxX),
-        y: Math.min(Math.max(8, panelCursor.y), maxY),
+        x: Math.min(Math.max(minX, panelCursor.x), maxX),
+        y: Math.min(Math.max(minY, panelCursor.y), maxY),
       });
       return;
     }
@@ -283,8 +330,8 @@ export default function PropertiesPanel({
     let x = sel.x + sel.w + gap;
     let y = sel.y;
 
-    x = Math.min(Math.max(8, x), maxX);
-    y = Math.min(Math.max(8, y), maxY);
+    x = Math.min(Math.max(minX, x), maxX);
+    y = Math.min(Math.max(minY, y), maxY);
 
     setPanelPos({ x, y });
   }, [panelAnchorKey, panelAnchor, panelCursor, showHUD, freezePanel]);
@@ -293,11 +340,17 @@ export default function PropertiesPanel({
     function onMove(e) {
       if (!dragRef.current.dragging) return;
       const rect = panelRef.current?.getBoundingClientRect();
-      const maxX = rect ? Math.max(8, window.innerWidth - rect.width - 8) : window.innerWidth;
-      const maxY = rect ? Math.max(8, window.innerHeight - rect.height - 8) : window.innerHeight;
+      const minX = safeBounds.left;
+      const minY = safeBounds.top;
+      const maxX = rect
+        ? Math.max(minX, window.innerWidth - rect.width - safeBounds.right)
+        : window.innerWidth;
+      const maxY = rect
+        ? Math.max(minY, window.innerHeight - rect.height - safeBounds.bottom)
+        : window.innerHeight;
       setPanelPos({
-        x: Math.min(Math.max(8, e.clientX - dragRef.current.ox), maxX),
-        y: Math.min(Math.max(8, e.clientY - dragRef.current.oy), maxY),
+        x: Math.min(Math.max(minX, e.clientX - dragRef.current.ox), maxX),
+        y: Math.min(Math.max(minY, e.clientY - dragRef.current.oy), maxY),
       });
     }
     function onUp() {
@@ -532,12 +585,15 @@ export default function PropertiesPanel({
               placeholder="Element ID"
             />
 
-            <Row
+            <SelectRow
               label="Tag Path"
               value={hudFields.tagPath}
-              onChange={(v) => setHudFields((p) => ({ ...p, tagPath: v }))}
-              onBlur={() => applySingleTagPath(hudFields.tagPath)}
-              placeholder="e.g. Area/Equip/Device"
+              onChange={(v) => {
+                setHudFields((p) => ({ ...p, tagPath: v }));
+                applySingleTagPath(v);
+              }}
+              onBlur={() => {}}
+              options={tagOptions}
             />
 
           {/* SVG */}

@@ -24,10 +24,18 @@ export default function AiTableBuilder() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [applyStatus, setApplyStatus] = useState("");
+  const chatScrollRef = useRef(null);
 
   useEffect(() => {
     hydratedRef.current = true;
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "chat") return;
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [activeTab, messages.length]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;
@@ -218,6 +226,7 @@ export default function AiTableBuilder() {
               </div>
             </div>
             <div
+              ref={chatScrollRef}
               style={{
                 flex: 1,
                 overflow: "auto",

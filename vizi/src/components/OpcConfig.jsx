@@ -15,6 +15,12 @@ function makeId() {
   return `plc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function formatLiveNumber(value, decimals = 4) {
+  if (value == null || value === "") return "";
+  if (!Number.isFinite(Number(value))) return String(value);
+  return Number(value).toFixed(decimals);
+}
+
 function parseCsv(text) {
   const lines = String(text || "")
     .split(/\r?\n/)
@@ -80,11 +86,26 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
   const [restartPending, setRestartPending] = useState(false);
   const [templates, setTemplates] = useState([]);
   const [templateName, setTemplateName] = useState("");
-  const [templateFieldRows, setTemplateFieldRows] = useState([{ name: "", tagPath: "" }]);
+  const [templateFieldRows, setTemplateFieldRows] = useState([
+    { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 },
+  ]);
+  const [templateStateMappings, setTemplateStateMappings] = useState([
+    { field: "", state: "", color: "" },
+  ]);
   const [templateParent, setTemplateParent] = useState("");
+  const [editTemplate, setEditTemplate] = useState("");
+  const [templateOriginalName, setTemplateOriginalName] = useState("");
+  const [templateEditing, setTemplateEditing] = useState(true);
+  const [tagMappings, setTagMappings] = useState([]);
+  const [manualTagMappings, setManualTagMappings] = useState([{ field: "", state: "", color: "" }]);
+  const [mappingSets, setMappingSets] = useState([]);
+  const [mappingSetName, setMappingSetName] = useState("");
+  const [mappingSetOriginalName, setMappingSetOriginalName] = useState("");
+  const [mappingSetRows, setMappingSetRows] = useState([{ field: "", state: "", color: "" }]);
   const [applyTemplate, setApplyTemplate] = useState("");
   const [applyTopic, setApplyTopic] = useState("");
   const [applyPrefix, setApplyPrefix] = useState("");
+  const [applyMappingSet, setApplyMappingSet] = useState("");
   const [expandedPrefixes, setExpandedPrefixes] = useState({});
   const [tagSectionTab, setTagSectionTab] = useState("tags");
   const [showTagsDrawer, setShowTagsDrawer] = useState(false);
@@ -97,8 +118,12 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     samplingInterval: "",
     topic: "",
     enabled: true,
+    mappingSet: "",
+    groupName: "",
   });
-  const [showManualTagForm, setShowManualTagForm] = useState(false);
+  const [tagTableEditing, setTagTableEditing] = useState(false);
+  const [editingTagIndex, setEditingTagIndex] = useState(null);
+  const [activeTagGroup, setActiveTagGroup] = useState({ topic: "", groupName: "" });
   const [showTopicForm, setShowTopicForm] = useState(false);
   const [manualTopic, setManualTopic] = useState({
     name: "",
@@ -114,9 +139,49 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     slot: "",
     pollMs: "",
   });
+  const tagEditRowRefs = useRef(new Map());
+  const tagColumnKeys = [
+    "enabled",
+    "name",
+    "topic",
+    "tagPath",
+    "uaType",
+    "pollMs",
+    "samplingInterval",
+    "mappingSet",
+    "scale",
+    "decimals",
+    "liveValue",
+    "actions",
+  ];
+  const tagColumnLabels = {
+    enabled: "Enabled",
+    name: "Name",
+    topic: "Topic",
+    tagPath: "Tag Path",
+    uaType: "UA Type",
+    pollMs: "Poll (ms)",
+    samplingInterval: "Sampling (ms)",
+    mappingSet: "Mapping Set",
+    scale: "Scale",
+    decimals: "Decimals",
+    liveValue: "Live Value",
+    actions: "",
+  };
+  const [tagVisibleColumns, setTagVisibleColumns] = useState(() => {
+    try {
+      const saved = localStorage.getItem("vizi_tag_columns");
+      const parsed = saved ? JSON.parse(saved) : null;
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // ignore
+    }
+    return {};
+  });
   const autoSaveTimerRef = useRef(null);
   const autoSaveReadyRef = useRef(false);
   const lastSavedRef = useRef("");
+  const mappingSetAutoSelectedRef = useRef(false);
   const drawerMenuRef = useRef(null);
   const drawerMenuBtnRef = useRef(null);
 
@@ -134,7 +199,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
             const samplingInterval = Number.isFinite(Number(t?.samplingInterval))
               ? Number(t.samplingInterval)
               : "";
-            return { ...t, name, tagPath, topic, samplingInterval };
+            return { ...t, name, tagPath, topic, samplingInterval, mappingSet: t?.mappingSet || "" };
           })
           .filter((t) => t.name);
         const cleanedPlcs = Array.isArray(data.plcs) && data.plcs.length
@@ -227,6 +292,100 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
   }, []);
 
   useEffect(() => {
+    async function loadMappingSets() {
+      try {
+        const res = await fetch("/api/opc/mapping-sets");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load mapping sets.");
+        setMappingSets(data.sets || []);
+      } catch (err) {
+        setError(err?.message || "Failed to load mapping sets.");
+      }
+    }
+    loadMappingSets();
+  }, []);
+
+  useEffect(() => {
+    async function loadTagMappings() {
+      try {
+        const res = await fetch("/api/opc/tag-mappings");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load mappings.");
+        setTagMappings(data.mappings || []);
+      } catch (err) {
+        setError(err?.message || "Failed to load mappings.");
+      }
+    }
+    loadTagMappings();
+  }, []);
+
+  useEffect(() => {
+    if (!editTemplate) return;
+    const tmpl = templates.find((t) => t.name === editTemplate);
+    if (!tmpl) return;
+    setTemplateName(tmpl.name || "");
+    setTemplateOriginalName(tmpl.name || "");
+    setTemplateParent(tmpl.parent_name || "");
+    setTemplateEditing(false);
+    const nextFields = Array.isArray(tmpl.fields)
+      ? tmpl.fields.map((f) => {
+          if (typeof f === "string") {
+            return {
+              name: f,
+              tagPath: f,
+              uaType: "",
+              pollMs: "",
+              samplingInterval: "",
+              topic: "",
+              enabled: true,
+              mappingSet: "",
+              scale: 1,
+              decimals: 4,
+            };
+          }
+          return {
+            name: f?.name || "",
+            tagPath: f?.tagPath || "",
+            uaType: f?.uaType || "",
+            pollMs: f?.pollMs ?? "",
+            samplingInterval: f?.samplingInterval ?? "",
+            topic: f?.topic || "",
+            enabled: f?.enabled !== false,
+            mappingSet: String(f?.mappingSet || ""),
+            scale: Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1,
+            decimals: Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 4,
+          };
+        })
+      : [];
+    setTemplateFieldRows(
+      nextFields.length
+        ? nextFields
+        : [{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 }]
+    );
+    const nextMappings = Array.isArray(tmpl.state_mappings)
+      ? tmpl.state_mappings.map((m) => ({
+          field: String(m?.field ?? ""),
+          state: String(m?.state ?? ""),
+          color: String(m?.color ?? ""),
+        }))
+      : [];
+    setTemplateStateMappings(
+      nextMappings.length ? nextMappings : [{ field: "", state: "", color: "" }]
+    );
+  }, [editTemplate, templates]);
+
+  useEffect(() => {
+    const name = String(manualTag.name || "").trim();
+    if (!name) return;
+    setManualTagMappings((prev) =>
+      prev.map((row) => ({
+        ...row,
+        field: row.field || name,
+      }))
+    );
+  }, [manualTag.name]);
+
+  useEffect(() => {
     let alive = true;
     async function poll() {
       try {
@@ -284,13 +443,35 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     const groups = new Map();
     (tags || []).forEach((tag, idx) => {
       const name = normalizeTagName(tag?.name || "");
-      if (!name) return;
-      const groupKey = normalizeTagName(tag?.topic || "") || "No Topic";
-      if (!groups.has(groupKey)) groups.set(groupKey, []);
-      groups.get(groupKey).push({ tag: { ...tag, name }, idx });
+      const tagPath = normalizeTagName(tag?.tagPath || "");
+      const groupRaw = normalizeTagName(tag?.groupName || "");
+      if (!name && !tagPath && !groupRaw) return;
+      const topicKey = normalizeTagName(tag?.topic || "") || "No Topic";
+      const fallbackGroup = name && name.includes(".") ? name.split(".")[0] : "";
+      const groupKey = groupRaw || fallbackGroup || "Ungrouped";
+      if (!groups.has(topicKey)) groups.set(topicKey, new Map());
+      const topicMap = groups.get(topicKey);
+      if (!topicMap.has(groupKey)) {
+        topicMap.set(groupKey, { groupName: groupKey, items: [] });
+      }
+      topicMap.get(groupKey).items.push({ tag: { ...tag, name }, idx });
     });
-    return Array.from(groups.entries());
+    return Array.from(groups.entries()).map(([topic, tagMap]) => ({
+      topic,
+      groups: Array.from(tagMap.values()),
+    }));
   }, [tags]);
+
+  const groupNameOptions = useMemo(() => {
+    const topic = String(manualTag.topic || "").trim();
+    const names = new Set();
+    (tags || []).forEach((t) => {
+      if (topic && String(t.topic || "").trim() !== topic) return;
+      const group = String(t.groupName || "").trim();
+      if (group) names.add(group);
+    });
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [tags, manualTag.topic]);
 
   const templateMap = useMemo(() => {
     const map = new Map();
@@ -308,9 +489,140 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     return map;
   }, [topics]);
 
+  const visibleTagColumnCount = useMemo(() => {
+    const count = tagColumnKeys.filter((key) => tagVisibleColumns[key] !== false).length;
+    return count || 1;
+  }, [tagVisibleColumns, tagColumnKeys]);
+
+  function showTagColumn(key) {
+    return tagVisibleColumns[key] !== false;
+  }
+
   function getTagKey(tag) {
     const topicName = normalizeTagName(tag?.topic || "");
-    return topicName ? `${topicName}.${tag?.name || ""}` : tag?.name || "";
+    const name = String(tag?.name || "").trim();
+    if (!name) return "";
+    const resolvedTopic = topicName || "Default";
+    return `${resolvedTopic}.${name}`;
+  }
+
+  const tagMappingMap = useMemo(() => {
+    const map = new Map();
+    (tagMappings || []).forEach((m) => {
+      const key = String(m.tag_key || "").trim();
+      if (!key) return;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push({
+        field: String(m.field ?? ""),
+        state: String(m.state ?? ""),
+        color: String(m.color ?? ""),
+      });
+    });
+    return map;
+  }, [tagMappings]);
+
+  useEffect(() => {
+    if (!mappingSetAutoSelectedRef.current && !mappingSetName && mappingSets.length) {
+      mappingSetAutoSelectedRef.current = true;
+      const nextName = mappingSets[0]?.name || "";
+      setMappingSetName(nextName);
+      setMappingSetOriginalName(nextName);
+      return;
+    }
+    if (mappingSetOriginalName && mappingSetName && mappingSetName !== mappingSetOriginalName) {
+      return;
+    }
+    const set = mappingSets.find((s) => s.name === mappingSetName);
+    const rows = Array.isArray(set?.mappings)
+      ? set.mappings.map((m) => ({
+          field: String(m?.field ?? "State Text"),
+          state: String(m?.state ?? ""),
+          color: String(m?.color ?? ""),
+        }))
+      : [];
+    setMappingSetRows(rows.length ? rows : [{ field: "", state: "", color: "" }]);
+  }, [mappingSetName, mappingSets]);
+
+  function resolveTemplateStateMappings(name) {
+    const visited = new Set();
+    const map = new Map();
+    function walk(n) {
+      if (!n || visited.has(n)) return;
+      visited.add(n);
+      const tmpl = templateMap.get(n);
+      if (!tmpl) return;
+      if (tmpl.parent_name) {
+        walk(tmpl.parent_name);
+      }
+      if (Array.isArray(tmpl.state_mappings)) {
+        tmpl.state_mappings.forEach((m) => {
+          const fieldVal = String(m?.field ?? "").trim();
+          const stateVal = String(m?.state ?? "").trim();
+          if (!stateVal) return;
+          const key = `${fieldVal}::${stateVal}`;
+          map.set(key, String(m?.color || "").trim());
+        });
+      }
+    }
+    walk(name);
+    return Array.from(map.entries()).map(([key, color]) => {
+      const [field, state] = key.split("::");
+      return { field, state, color };
+    });
+  }
+
+  function getStateColorForTag(tag) {
+    const mappingSetName = String(tag?.mappingSet || "").trim();
+    const templateName = String(tag?.plcType || "").trim();
+    const rawValue = liveValues?.[getTagKey(tag)];
+    const scale = Number.isFinite(Number(tag?.scale)) ? Number(tag.scale) : 1;
+    const value =
+      rawValue != null && rawValue !== "" && !Number.isNaN(Number(rawValue))
+        ? Number(rawValue) * scale
+        : rawValue;
+    if (value == null || value === "") return "";
+    const valStr = String(value).trim();
+    const valNum = Number(value);
+    const valLower = valStr.toLowerCase();
+    const valBool =
+      valLower === "true" || valLower === "1"
+        ? true
+        : valLower === "false" || valLower === "0"
+        ? false
+        : null;
+    const fieldName = String(tag?.name || "").trim();
+    const tagKey = getTagKey(tag);
+    const tagMappingsForKey = tagMappingMap.get(tagKey) || [];
+    const setMappings = mappingSetName
+      ? (mappingSets.find((s) => s.name === mappingSetName)?.mappings || [])
+      : [];
+    const normalizedSetMappings = (setMappings || []).map((m) => ({
+      field: String(m?.field ?? ""),
+      state: String(m?.state ?? ""),
+      color: String(m?.color ?? ""),
+    }));
+    const allMappings = tagMappingsForKey.length
+      ? tagMappingsForKey
+      : normalizedSetMappings.length
+      ? normalizedSetMappings
+      : resolveTemplateStateMappings(templateName);
+    if (!allMappings.length) return "";
+    const match = allMappings.find((m) => {
+        const stateStr = String(m.state ?? "").trim();
+        if (!stateStr) return false;
+        const stateLower = stateStr.toLowerCase();
+        const numeric = Number(stateStr);
+        if (Number.isFinite(valNum) && Number.isFinite(numeric) && numeric === valNum) return true;
+        const stateBool =
+          stateLower === "true" || stateLower === "1"
+            ? true
+            : stateLower === "false" || stateLower === "0"
+            ? false
+            : null;
+        if (valBool !== null && stateBool !== null && valBool === stateBool) return true;
+        return stateLower === valLower;
+    });
+    return match?.color || "";
   }
 
   function resolveTemplateFields(name) {
@@ -330,15 +642,44 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
             const key = String(f || "").trim();
             if (!key) return;
             fields = fields.filter((x) => (x.tagPath || x.name) !== key);
-            fields.push({ name: key, tagPath: key });
+            fields.push({
+              name: key,
+              tagPath: key,
+              uaType: "",
+              pollMs: "",
+              samplingInterval: "",
+              topic: "",
+              enabled: true,
+              mappingSet: "",
+              scale: 1,
+            });
             return;
           }
           const nameVal = String(f?.name || "").trim();
           const tagPathVal = String(f?.tagPath || "").trim();
+          const mappingSetVal = String(f?.mappingSet || "").trim();
+          const uaTypeVal = String(f?.uaType || "").trim();
+          const topicVal = String(f?.topic || "").trim();
+          const pollMsVal = f?.pollMs ?? "";
+          const samplingVal = f?.samplingInterval ?? "";
+          const enabledVal = f?.enabled !== false;
+          const scaleVal = Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1;
+          const decimalsVal = Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 4;
           const key = tagPathVal || nameVal;
           if (!key) return;
           fields = fields.filter((x) => (x.tagPath || x.name) !== key);
-          fields.push({ name: nameVal || key, tagPath: tagPathVal || nameVal || key });
+          fields.push({
+            name: nameVal || key,
+            tagPath: tagPathVal || nameVal || key,
+            uaType: uaTypeVal,
+            pollMs: pollMsVal,
+            samplingInterval: samplingVal,
+            topic: topicVal,
+            enabled: enabledVal,
+            mappingSet: mappingSetVal,
+            scale: scaleVal,
+            decimals: decimalsVal,
+          });
         });
       }
     }
@@ -368,10 +709,23 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         const name = normalizeTagName(t.name);
         const tagPath = normalizeTagName(t.tagPath || name);
         const topic = normalizeTagName(t.topic || "");
+        const groupName = normalizeTagName(t.groupName || "");
         const samplingInterval = Number.isFinite(Number(t?.samplingInterval))
           ? Number(t.samplingInterval)
           : "";
-        return { ...t, name, tagPath, topic, samplingInterval };
+        const scale = Number.isFinite(Number(t?.scale)) ? Number(t.scale) : 1;
+        const decimals = Number.isFinite(Number(t?.decimals)) ? Number(t.decimals) : 4;
+        return {
+          ...t,
+          name,
+          tagPath,
+          topic,
+          groupName,
+          scale,
+          decimals,
+          samplingInterval,
+          mappingSet: t?.mappingSet || "",
+        };
       })
       .filter((t) => t.name);
   }
@@ -414,10 +768,11 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     setStatus(successMessage);
   }
 
-  function addManualTag() {
+  async function addManualTag() {
     const name = String(manualTag.name || "").trim();
     const tagPath = String(manualTag.tagPath || name).trim();
     const topic = String(manualTag.topic || "").trim();
+    const groupName = String(manualTag.groupName || "").trim();
     const samplingInterval =
       manualTag.samplingInterval === "" || manualTag.samplingInterval === null
         ? undefined
@@ -437,20 +792,46 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         name,
         tagPath,
         topic,
+        groupName,
         uaType: String(manualTag.uaType || "").trim(),
         pollMs: manualTag.pollMs !== "" ? Number(manualTag.pollMs) : undefined,
         samplingInterval: Number.isFinite(Number(samplingInterval)) ? Number(samplingInterval) : undefined,
         enabled: manualTag.enabled !== false,
+        mappingSet: String(manualTag.mappingSet || "").trim(),
       },
     ];
     const cleanedTags = buildCleanedTags(nextTags);
     const nextConfig = { ...config, tags: cleanedTags };
     setConfig(nextConfig);
-    persistConfig(nextConfig, "Tag saved.").catch((err) => {
+    try {
+      await persistConfig(nextConfig, "Tag saved.");
+      const tagKey = getTagKey({ name, topic });
+      const cleanedMappings = (manualTagMappings || [])
+        .map((row) => ({
+          field: String(row?.field ?? "State Text").trim() || "State Text",
+          state: String(row?.state ?? "").trim(),
+          color: String(row?.color ?? "").trim(),
+        }))
+        .filter((row) => row.state && row.color);
+      if (tagKey && cleanedMappings.length) {
+        const res = await fetch("/api/opc/tag-mappings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tag_key: tagKey, mappings: cleanedMappings }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to save mappings.");
+        const reload = await fetch("/api/opc/tag-mappings");
+        const payload = await reload.json();
+        if (reload.ok) setTagMappings(payload.mappings || []);
+      }
+    } catch (err) {
       setError(err?.message || "Save failed.");
-    });
-    setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true });
-    setShowManualTagForm(false);
+    }
+    setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", groupName: "" });
+    setManualTagMappings([{ field: "", state: "", color: "" }]);
+    setTagTableEditing(false);
+    setEditingTagIndex(null);
   }
 
   function removeTag(idx) {
@@ -524,8 +905,26 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
       .map((row) => ({
         name: String(row?.name || "").trim(),
         tagPath: String(row?.tagPath || row?.name || "").trim(),
+        uaType: String(row?.uaType || "").trim(),
+        pollMs: row?.pollMs === "" || row?.pollMs == null ? "" : Number(row.pollMs),
+        samplingInterval:
+          row?.samplingInterval === "" || row?.samplingInterval == null
+            ? ""
+            : Number(row.samplingInterval),
+        topic: String(row?.topic || "").trim(),
+        enabled: row?.enabled !== false,
+        mappingSet: String(row?.mappingSet || "").trim(),
+        scale: Number.isFinite(Number(row?.scale)) ? Number(row.scale) : 1,
+        decimals: Number.isFinite(Number(row?.decimals)) ? Number(row.decimals) : 4,
       }))
       .filter((row) => row.name || row.tagPath);
+    const stateMappings = (templateStateMappings || [])
+      .map((row) => ({
+        field: String(row?.field ?? "").trim(),
+        state: String(row?.state ?? "").trim(),
+        color: String(row?.color ?? "").trim(),
+      }))
+      .filter((row) => row.state && row.color);
     const parentName = String(templateParent || "").trim();
     if (!name || !fields.length) {
       setError("Template name and fields required.");
@@ -539,14 +938,31 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
       const res = await fetch("/api/opc/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, fields, parent_name: parentName || null }),
+        body: JSON.stringify({
+          name,
+          fields,
+          parent_name: parentName || null,
+          group_name: name,
+          state_mappings: stateMappings,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Save failed.");
+      if (templateOriginalName && templateOriginalName !== name) {
+        try {
+          await fetch(`/api/opc/templates/${encodeURIComponent(templateOriginalName)}`, {
+            method: "DELETE",
+          });
+        } catch {
+          // ignore delete failure
+        }
+      }
       setStatus("Template saved.");
       const reload = await fetch("/api/opc/templates");
       const payload = await reload.json();
       if (reload.ok) setTemplates(payload.templates || []);
+      setEditTemplate(name);
+      setTemplateOriginalName(name);
     } catch (err) {
       setError(err?.message || "Save failed.");
     }
@@ -589,13 +1005,31 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
       const fieldPath = String(f?.tagPath || f?.name || "").trim();
       const name = prefix ? `${prefix}.${fieldName}` : fieldName;
       const tagPath = prefix ? `${prefix}.${fieldPath}` : fieldPath;
+      const fieldMappingSet = String(f?.mappingSet || "").trim();
+      const fieldUaType = String(f?.uaType || "").trim();
+      const fieldTopic = String(f?.topic || "").trim();
+      const fieldPollMs =
+        f?.pollMs === "" || f?.pollMs == null ? "" : Number(f.pollMs);
+      const fieldSampling =
+        f?.samplingInterval === "" || f?.samplingInterval == null
+          ? ""
+          : Number(f.samplingInterval);
+      const fieldEnabled = f?.enabled !== false;
+      const fieldScale = Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1;
+      const fieldDecimals = Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 4;
       return {
         name,
         tagPath,
-        topic: applyTopic,
-        plcType: "",
-        uaType: "",
-        enabled: true,
+        topic: fieldTopic || applyTopic,
+        groupName: prefix,
+        plcType: applyTemplate,
+        uaType: fieldUaType,
+        pollMs: fieldPollMs,
+        samplingInterval: fieldSampling,
+        enabled: fieldEnabled,
+        mappingSet: fieldMappingSet || String(applyMappingSet || "").trim(),
+        scale: fieldScale,
+        decimals: fieldDecimals,
       };
     });
     const nextTags = [...(config.tags || []), ...newTags];
@@ -631,8 +1065,8 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     ? { width: "100%", height: "100%", background: "transparent", color: "#111" }
     : { minHeight: "100vh", background: "#f7f8fb", color: "#111" };
   const innerStyle = embedded
-    ? { width: "100%", height: "100%", padding: 16, boxSizing: "border-box", display: "flex", flexDirection: "column" }
-    : { width: "100%", minHeight: "100vh", padding: "24px 24px 24px", boxSizing: "border-box", display: "flex", flexDirection: "column" };
+    ? { width: "100%", height: "100%", padding: 0, boxSizing: "border-box", display: "flex", flexDirection: "column" }
+    : { width: "100%", minHeight: "100vh", padding: 16, boxSizing: "border-box", display: "flex", flexDirection: "column" };
   const contentStyle = embedded
     ? { width: "100%" }
     : { width: "100%", maxWidth: 1400, margin: "0 auto" };
@@ -654,9 +1088,69 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     };
     return (
       <div style={{ flex: "1 1 auto", overflow: "auto", padding: 16 }}>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#344054" }}>Tags</div>
-          <div style={{ fontSize: 12, color: "#667085" }}>Manage tag lists and templates for the OPC server.</div>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 0, flexWrap: "wrap" }}>
+            <div
+              style={{
+                padding: "4px 8px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 700,
+                background:
+                  restartPending
+                    ? "#fff6ed"
+                    : opcConnected === true
+                    ? "#ecfdf3"
+                    : opcConnected === false
+                    ? "#fef3f2"
+                    : "#f2f4f7",
+                color:
+                  restartPending
+                    ? "#b54708"
+                    : opcConnected === true
+                    ? "#027a48"
+                    : opcConnected === false
+                    ? "#b42318"
+                    : "#667085",
+                border:
+                  restartPending
+                    ? "1px solid #fed7aa"
+                    : opcConnected === true
+                    ? "1px solid #abefc6"
+                    : opcConnected === false
+                    ? "1px solid #fecdca"
+                    : "1px solid #e4e7ec",
+              }}
+            >
+              {restartPending
+                ? "Restarting..."
+                : opcConnected === true
+                ? "Connected"
+                : opcConnected === false
+                ? "Disconnected"
+                : "Status Unknown"}
+            </div>
+            {Object.keys(liveErrors || {}).length > 0 ? (
+              <div
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: 999,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  background: "#fef3f2",
+                  color: "#b42318",
+                  border: "1px solid #fecdca",
+                }}
+              >
+                {Object.keys(liveErrors || {}).length} Errors
+              </div>
+            ) : null}
+            {opcLastPollAt ? (
+              <div style={{ fontSize: 11, color: "#667085" }}>
+                Last poll {new Date(opcLastPollAt).toLocaleTimeString()}
+              </div>
+            ) : null}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           <button
@@ -687,40 +1181,62 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
           >
             Templates
           </button>
+          <button
+            onClick={() => setTagSectionTab("mappings")}
+            style={{
+              ...drawerButtonStyle,
+              border: "1px solid #d0d7e2",
+              background: tagSectionTab === "mappings" ? "#2b6cff" : "#f9fafb",
+              color: tagSectionTab === "mappings" ? "white" : "#111",
+              borderRadius: 999,
+              padding: "6px 12px",
+              fontWeight: 600,
+            }}
+          >
+            Mappings
+          </button>
         </div>
         {tagSectionTab === "tags" ? (
           <>
-            <div style={{ ...sectionCardStyle, display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
-              <button
-                onClick={() => setShowManualTagForm((v) => !v)}
-                style={{
-                  ...drawerButtonStyle,
-                  border: "1px solid #d0d7e2",
-                  background: showManualTagForm ? "#2b6cff" : "white",
-                  color: showManualTagForm ? "white" : "#111",
-                  borderRadius: 8,
-                  padding: "6px 10px",
-                }}
-              >
-                {showManualTagForm ? "Hide New Tag" : "New Tag"}
-              </button>
-              <label
-                style={{
-                  border: "1px solid #d0d7e2",
-                  background: "white",
-                  borderRadius: 8,
-                  padding: "6px 10px",
-                  cursor: "pointer",
-                  fontSize: 12,
-                }}
-              >
-                Upload CSV
-                <input type="file" accept=".csv" onChange={onCsvFile} style={{ display: "none" }} />
-              </label>
+            <div style={{ ...sectionCardStyle, marginBottom: 10, background: "#fbfcff" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Columns</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {tagColumnKeys.map((key) => (
+                  <label
+                    key={`tag-col-${key}`}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "4px 8px",
+                      borderRadius: 999,
+                      border: "1px solid #e4e7ec",
+                      background: showTagColumn(key) ? "#f0f5ff" : "white",
+                      fontSize: 12,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={showTagColumn(key)}
+                      onChange={(e) => {
+                        const next = { ...tagVisibleColumns, [key]: e.target.checked };
+                        setTagVisibleColumns(next);
+                        try {
+                          localStorage.setItem("vizi_tag_columns", JSON.stringify(next));
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                    />
+                    {tagColumnLabels[key] || key}
+                  </label>
+                ))}
+              </div>
             </div>
-            {showManualTagForm ? (
+            {false ? (
               <div style={{ ...sectionCardStyle, marginBottom: 10, background: "#fbfcff" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "end" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
                     Name
                     <input
@@ -738,6 +1254,21 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                    Group Name
+                    <input
+                      value={manualTag.groupName}
+                      onChange={(e) => setManualTag((prev) => ({ ...prev, groupName: e.target.value }))}
+                      placeholder="Optional"
+                      list="opc-group-names"
+                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                    />
+                  </label>
+                  <datalist id="opc-group-names">
+                    {groupNameOptions.map((name) => (
+                      <option key={`group-${name}`} value={name} />
+                    ))}
+                  </datalist>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
                     Topic
                     <select
@@ -774,6 +1305,21 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     </select>
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                    Mapping Set
+                    <select
+                      value={manualTag.mappingSet || ""}
+                      onChange={(e) => setManualTag((prev) => ({ ...prev, mappingSet: e.target.value }))}
+                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                    >
+                      <option value="">None</option>
+                      {mappingSets.map((s) => (
+                        <option key={`map-set-${s.name}`} value={s.name}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
                     Poll (ms)
                     <input
                       type="number"
@@ -796,6 +1342,108 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     />
                   </label>
                 </div>
+                <div style={{ fontSize: 12, marginTop: 10, marginBottom: 6 }}>Tag Mappings</div>
+                <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflow: "hidden", padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
+                  <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
+                    <colgroup>
+                      <col style={{ width: "27%" }} />
+                      <col style={{ width: "18%" }} />
+                      <col style={{ width: "41%" }} />
+                      <col style={{ width: "14%" }} />
+                    </colgroup>
+                    <thead>
+                      <tr style={{ background: "#f8fafc" }}>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>State Text</th>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>PLC Value</th>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>Color</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {manualTagMappings.map((row, idx) => (
+                        <tr key={`manual-map-${idx}`}>
+                          <td style={{ padding: "8px 16px 8px 10px" }}>
+                            <input
+                              value={row.field || "State Text"}
+                              placeholder="State Text"
+                              style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                              disabled
+                            />
+                          </td>
+                          <td style={{ padding: "8px 16px 8px 10px" }}>
+                            <input
+                              value={row.state ?? ""}
+                              onChange={(e) =>
+                                setManualTagMappings((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = { ...next[idx], state: e.target.value };
+                                  return next;
+                                })
+                              }
+                              placeholder="Value"
+                              style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 16px 8px 10px" }}>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", marginLeft: 8 }}>
+                              <input
+                                type="color"
+                                value={row.color || "#000000"}
+                                onChange={(e) =>
+                                  setManualTagMappings((prev) => {
+                                    const next = [...prev];
+                                    next[idx] = { ...next[idx], color: e.target.value };
+                                    return next;
+                                  })
+                                }
+                                style={{ width: 36, height: 28, padding: 0, border: "none", background: "transparent" }}
+                              />
+                              <input
+                                value={row.color ?? ""}
+                                onChange={(e) =>
+                                  setManualTagMappings((prev) => {
+                                    const next = [...prev];
+                                    next[idx] = { ...next[idx], color: e.target.value };
+                                    return next;
+                                  })
+                                }
+                                placeholder="#12b76a"
+                                style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                              />
+                            </div>
+                          </td>
+                          <td style={{ padding: "8px 10px 8px 14px" }}>
+                            <button
+                              onClick={() =>
+                                setManualTagMappings((prev) => prev.filter((_, i) => i !== idx))
+                              }
+                              style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
+                            >
+                              X
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {manualTagMappings.length === 0 && (
+                        <tr>
+                          <td colSpan={3} style={{ padding: "8px", color: "#98a2b3" }}>
+                            No mappings yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button
+                    onClick={() =>
+                      setManualTagMappings((prev) => [...prev, { field: "State Text", state: "", color: "" }])
+                    }
+                    style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                  >
+                    Add Mapping
+                  </button>
+                </div>
                 <div style={{ display: "flex", gap: 12, marginTop: 10, alignItems: "center" }}>
                   <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
                     <input
@@ -810,7 +1458,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 </button>
                 <button
                   onClick={() => {
-                    setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true });
+                    setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "" });
                     setShowManualTagForm(false);
                   }}
                   style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
@@ -852,7 +1500,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 </select>
               </label>
               <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                Prefix (e.g., Motor1)
+                Tag Name (e.g., Motor1)
                 <input
                   value={applyPrefix}
                   onChange={(e) => setApplyPrefix(e.target.value)}
@@ -863,37 +1511,81 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 Add From Template
               </button>
             </div>
-            <div style={{ ...sectionCardStyle, marginTop: 10, maxHeight: 360, overflow: "auto" }}>
+            <div style={{ ...sectionCardStyle, marginTop: 10, maxHeight: 520, overflow: "auto" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 8 }}>
+                <button
+                  onClick={addTagFromToolbar}
+                  style={{
+                    ...drawerButtonStyle,
+                    border: "1px solid #2b6cff",
+                    background: "white",
+                    color: "#2b6cff",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                  }}
+                >
+                  Add Tag
+                </button>
+              </div>
               {tags.length === 0 ? (
                 <div style={{ color: "#98a2b3", fontSize: 12 }}>No tags.</div>
               ) : (
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12, tableLayout: "auto" }}>
                   <thead>
                     <tr>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Enabled</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Topic</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Tag Path</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>UA Type</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Poll (ms)</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Sampling (ms)</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Live Value</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }} />
+                      {showTagColumn("enabled") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Enabled</th>
+                      ) : null}
+                      {showTagColumn("name") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
+                      ) : null}
+                      {showTagColumn("topic") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Topic</th>
+                      ) : null}
+                      {showTagColumn("tagPath") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Tag Path</th>
+                      ) : null}
+                      {showTagColumn("uaType") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>UA Type</th>
+                      ) : null}
+                      {showTagColumn("pollMs") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Poll (ms)</th>
+                      ) : null}
+                      {showTagColumn("samplingInterval") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Sampling (ms)</th>
+                      ) : null}
+                      {showTagColumn("mappingSet") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Mapping Set</th>
+                      ) : null}
+                      {showTagColumn("scale") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Scale</th>
+                      ) : null}
+                      {showTagColumn("decimals") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Decimals</th>
+                      ) : null}
+                      {showTagColumn("liveValue") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }}>Live Value</th>
+                      ) : null}
+                      {showTagColumn("actions") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }} />
+                      ) : null}
                     </tr>
                   </thead>
                   <tbody>
-                    {groupedTags.map(([groupKey, items]) => {
-                      const key = groupKey ?? "";
-                      const isExpanded = expandedPrefixes[key] ?? true;
-                      const label = groupKey || "";
-                      const topicMeta = topicMap.get(label);
+                    {groupedTags.map((group) => {
+                      const topicKey = group.topic ?? "";
+                      const topicExpanded = expandedPrefixes[`topic:${topicKey}`] ?? true;
+                      const topicMeta = topicMap.get(topicKey);
                       return (
-                        <Fragment key={"group-" + label}>
+                        <Fragment key={`topic-${topicKey}`}>
                           <tr style={{ borderTop: "1px solid #eef2f6", background: "#f8fafc" }}>
-                            <td colSpan={9} style={{ padding: "6px 8px" }}>
+                            <td colSpan={visibleTagColumnCount} style={{ padding: "6px 8px" }}>
                               <button
                                 onClick={() =>
-                                  setExpandedPrefixes((prev) => ({ ...prev, [key]: !isExpanded }))
+                                  setExpandedPrefixes((prev) => ({
+                                    ...prev,
+                                    [`topic:${topicKey}`]: !topicExpanded,
+                                  }))
                                 }
                                 style={{
                                   ...drawerButtonStyle,
@@ -904,55 +1596,400 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                   marginRight: 8,
                                 }}
                               >
-                                {isExpanded ? "-" : "+"}
+                                {topicExpanded ? "-" : "+"}
                               </button>
-                              <span style={{ fontWeight: 600 }}>{label}</span>
+                              <span style={{ fontWeight: 600 }}>{topicKey}</span>
                               {topicMeta?.plcName ? (
                                 <span style={{ color: "#667085", marginLeft: 8 }}>
                                   PLC {topicMeta.plcName}
                                 </span>
                               ) : null}
                               <span style={{ color: "#667085", marginLeft: 8 }}>
-                                {items.length} tags
+                                {group.groups.reduce((sum, t) => sum + t.items.length, 0)} tags
                               </span>
+                              <button
+                                onClick={() => addTagToGroup(topicKey, "Custom")}
+                                style={{
+                                  ...drawerButtonStyle,
+                                  border: "1px solid #2b6cff",
+                                  background: "white",
+                                  color: "#2b6cff",
+                                  borderRadius: 6,
+                                  padding: "4px 8px",
+                                  marginLeft: 10,
+                                }}
+                              >
+                                Add Tag
+                              </button>
                             </td>
                           </tr>
-                          {isExpanded
-                            ? items.map(({ tag: t, idx }) => (
-                                <tr key={t.name + "-" + idx} style={{ borderTop: "1px solid #eef2f6" }}>
-                                  <td style={{ padding: "6px 8px", color: t.enabled === false ? "#b42318" : "#12b76a" }}>
-                                    {t.enabled === false ? "Disabled" : "Enabled"}
-                                  </td>
-                                  <td style={{ padding: "6px 8px", color: "#111" }}>{t.name || ""}</td>
-                                  <td style={{ padding: "6px 8px", color: "#475467" }}>{t.topic || ""}</td>
-                                  <td style={{ padding: "6px 8px", color: "#111" }}>{t.tagPath || ""}</td>
-                                  <td style={{ padding: "6px 8px", color: "#111" }}>{t.uaType || ""}</td>
-                                  <td style={{ padding: "6px 8px", color: "#111" }}>
-                                    {Number.isFinite(Number(t.pollMs)) ? Number(t.pollMs) : ""}
-                                  </td>
-                                  <td style={{ padding: "6px 8px", color: "#111" }}>
-                                    {Number.isFinite(Number(t.samplingInterval)) ? Number(t.samplingInterval) : ""}
-                                  </td>
-                                  <td style={{ padding: "6px 8px", color: "#111", fontSize: 12 }}>
-                                    {t.enabled === false
-                                      ? "Disabled"
-                                      : String(liveValues?.[getTagKey(t)] ?? "")}
-                                    {liveErrors?.[getTagKey(t)] ? (
-                                      <span style={{ color: "#b42318", marginLeft: 8 }}>
-                                        (err {liveErrors[getTagKey(t)]})
-                                      </span>
-                                    ) : null}
-                                  </td>
-                                  <td style={{ padding: "6px 8px" }}>
-                                    <button
-                                      onClick={() => removeTag(idx)}
-                                      style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
+                          {topicExpanded
+                            ? group.groups.map((tagGroup) => {
+                                const groupName = tagGroup.groupName ?? "Ungrouped";
+                                const groupExpanded =
+                                  expandedPrefixes[`topic:${topicKey}::group:${groupName}`] ?? true;
+                                return (
+                                  <Fragment key={`group-${topicKey}-${groupName}`}>
+                                    <tr
+                                      style={{ borderTop: "1px solid #eef2f6", background: "#f2f4f7" }}
+                                      onMouseDown={() => {
+                                        setActiveTagGroup({ topic: topicKey, groupName });
+                                      }}
                                     >
-                                      X
-                                    </button>
-                                  </td>
-                                </tr>
-                              ))
+                                      <td colSpan={visibleTagColumnCount} style={{ padding: "6px 28px" }}>
+                                        <button
+                                          onClick={() =>
+                                            setExpandedPrefixes((prev) => ({
+                                              ...prev,
+                                              [`topic:${topicKey}::group:${groupName}`]: !groupExpanded,
+                                            }))
+                                          }
+                                          onMouseDown={() => setActiveTagGroup({ topic: topicKey, groupName })}
+                                          style={{
+                                            ...drawerButtonStyle,
+                                            border: "1px solid #d0d7e2",
+                                            background: "white",
+                                            borderRadius: 6,
+                                            padding: "4px 8px",
+                                            marginRight: 8,
+                                          }}
+                                        >
+                                          {groupExpanded ? "-" : "+"}
+                                        </button>
+                                        <span style={{ fontWeight: 600 }}>{groupName}</span>
+                                        <span style={{ color: "#667085", marginLeft: 8 }}>
+                                          {tagGroup.items.length} tags
+                                        </span>
+                                        <button
+                                          onClick={() => {
+                                            setActiveTagGroup({ topic: topicKey, groupName });
+                                            addTagToGroup(topicKey, groupName);
+                                          }}
+                                          style={{
+                                            ...drawerButtonStyle,
+                                            border: "1px solid #2b6cff",
+                                            background: "white",
+                                            color: "#2b6cff",
+                                            borderRadius: 6,
+                                            padding: "4px 8px",
+                                            marginLeft: 10,
+                                          }}
+                                        >
+                                          Add Tag
+                                        </button>
+                                      </td>
+                                    </tr>
+                                    {groupExpanded
+                                      ? tagGroup.items.map(({ tag: t, idx }) => {
+                                          const rowEditing = tagTableEditing && editingTagIndex === idx;
+                                        return (
+                                          <Fragment key={`tag-row-${idx}`}>
+                                          <tr style={{ borderTop: "1px solid #eef2f6" }}>
+                                            {showTagColumn("enabled") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px" }}>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={t.enabled !== false}
+                                                  onChange={(e) => updateTag(idx, "enabled", e.target.checked)}
+                                                  disabled={!rowEditing}
+                                                />
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("name") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                                {(() => {
+                                                  const group = String(t.groupName || "").trim();
+                                                  const name = String(t.name || "").trim();
+                                                  if (group && name.startsWith(`${group}.`)) {
+                                                    return name.slice(group.length + 1);
+                                                  }
+                                                  return name;
+                                                })()}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("topic") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#475467" }}>
+                                                {t.topic || ""}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("tagPath") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                                {t.tagPath || ""}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("uaType") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                                {t.uaType || ""}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("pollMs") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                                {Number.isFinite(Number(t.pollMs)) ? Number(t.pollMs) : ""}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("samplingInterval") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                                {Number.isFinite(Number(t.samplingInterval)) ? Number(t.samplingInterval) : ""}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("mappingSet") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                                {t.mappingSet || ""}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("scale") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                                {Number.isFinite(Number(t.scale)) ? Number(t.scale) : 1}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("decimals") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                                {Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 4}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("liveValue")
+                                              ? (() => {
+                                                  const liveColor =
+                                                    t.enabled === false ? "" : getStateColorForTag(t) || "";
+                                                  const scale = Number.isFinite(Number(t.scale)) ? Number(t.scale) : 1;
+                                                  const decimals = Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 4;
+                                                  const rawValue = liveValues?.[getTagKey(t)];
+                                                  const scaledValue =
+                                                    rawValue != null && rawValue !== "" && !Number.isNaN(Number(rawValue))
+                                                      ? Number(rawValue) * scale
+                                                      : rawValue;
+                                                  return (
+                                                    <td
+                                                      style={{
+                                                        padding: "6px 8px",
+                                                        color: "#111",
+                                                        fontSize: 12,
+                                                        background: liveColor || "transparent",
+                                                        borderRadius: 4,
+                                                      }}
+                                                    >
+                                                      <span
+                                                        style={{
+                                                          color:
+                                                            t.enabled === false
+                                                              ? "#b42318"
+                                                              : "#111",
+                                                        }}
+                                                      >
+                                                        {t.enabled === false
+                                                          ? "Disabled"
+                                                          : formatLiveNumber(scaledValue, decimals)}
+                                                      </span>
+                                                  {liveErrors?.[getTagKey(t)] ? (
+                                                    <span style={{ color: "#b42318", marginLeft: 8 }}>
+                                                      (err {liveErrors[getTagKey(t)]})
+                                                    </span>
+                                                  ) : null}
+                                                    </td>
+                                                  );
+                                                })()
+                                              : null}
+                                            {showTagColumn("actions") ? (
+                                              <td style={{ padding: "8px 10px" }}>
+                                                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                                                  <button
+                                                    onClick={() => {
+                                                      setTagTableEditing(true);
+                                                      setEditingTagIndex(idx);
+                                                    }}
+                                                    style={{
+                                                      ...drawerButtonStyle,
+                                                      width: 28,
+                                                      height: 28,
+                                                      border: "1px solid #2b6cff",
+                                                      background: rowEditing ? "#2b6cff" : "white",
+                                                      color: rowEditing ? "white" : "#2b6cff",
+                                                      borderRadius: 8,
+                                                    }}
+                                                  >
+                                                    ✎
+                                                  </button>
+                                                  <span />
+                                                </div>
+                                              </td>
+                                            ) : null}
+                                          </tr>
+                                          {rowEditing ? (
+                                            <tr ref={(el) => tagEditRowRefs.current.set(idx, el)}>
+                                              <td colSpan={visibleTagColumnCount} style={{ padding: "8px 12px 12px 12px" }}>
+                                                <div
+                                                  style={{
+                                                    border: "1px solid #e4e7ec",
+                                                    borderRadius: 10,
+                                                    padding: 12,
+                                                    background: "#fbfcff",
+                                                  }}
+                                                >
+                                                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Name
+                                                      <input
+                                                        value={(() => {
+                                                          const group = String(t.groupName || "").trim();
+                                                          const name = String(t.name || "").trim();
+                                                          if (group && name.startsWith(`${group}.`)) {
+                                                            return name.slice(group.length + 1);
+                                                          }
+                                                          return name;
+                                                        })()}
+                                                        onChange={(e) => {
+                                                          const group = String(t.groupName || "").trim();
+                                                          const nextName = String(e.target.value || "").trim();
+                                                          const fullName = group ? `${group}.${nextName}` : nextName;
+                                                          updateTag(idx, "name", fullName);
+                                                        }}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                      />
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Topic
+                                                      <select
+                                                        value={t.topic || ""}
+                                                        onChange={(e) => updateTag(idx, "topic", e.target.value)}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                      >
+                                                        <option value="">Select topic</option>
+                                                        {(topics || []).map((topic) => (
+                                                          <option key={`row-topic-${topic.name}`} value={topic.name}>
+                                                            {topic.name}
+                                                          </option>
+                                                        ))}
+                                                      </select>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Tag Path
+                                                      <input
+                                                        value={t.tagPath || ""}
+                                                        onChange={(e) => updateTag(idx, "tagPath", e.target.value)}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                      />
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      UA Type
+                                                      <select
+                                                        value={t.uaType || ""}
+                                                        onChange={(e) => updateTag(idx, "uaType", e.target.value)}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                      >
+                                                        <option value="">Select UA type</option>
+                                                        <option value="Boolean">Boolean</option>
+                                                        <option value="Int16">Int16</option>
+                                                        <option value="Int32">Int32</option>
+                                                        <option value="Int64">Int64</option>
+                                                        <option value="UInt16">UInt16</option>
+                                                        <option value="UInt32">UInt32</option>
+                                                        <option value="UInt64">UInt64</option>
+                                                        <option value="Float">Float</option>
+                                                        <option value="Double">Double</option>
+                                                        <option value="String">String</option>
+                                                      </select>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Poll (ms)
+                                                      <input
+                                                        type="number"
+                                                        min="0"
+                                                        value={t.pollMs ?? ""}
+                                                        onChange={(e) => updateTag(idx, "pollMs", e.target.value)}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                      />
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Sampling (ms)
+                                                      <input
+                                                        type="number"
+                                                        min="0"
+                                                        value={t.samplingInterval ?? ""}
+                                                        onChange={(e) => updateTag(idx, "samplingInterval", e.target.value)}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                      />
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Mapping Set
+                                                      <select
+                                                        value={t.mappingSet || ""}
+                                                        onChange={(e) => updateTag(idx, "mappingSet", e.target.value)}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                      >
+                                                        <option value="">None</option>
+                                                        {mappingSets.map((s) => (
+                                                          <option key={`tag-map-${s.name}`} value={s.name}>
+                                                            {s.name}
+                                                          </option>
+                                                        ))}
+                                                      </select>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Scale
+                                                      <input
+                                                        type="number"
+                                                        step="any"
+                                                        value={t.scale ?? 1}
+                                                        onChange={(e) => updateTag(idx, "scale", e.target.value)}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 120 }}
+                                                      />
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Decimals
+                                                      <input
+                                                        type="number"
+                                                        min="0"
+                                                        step="1"
+                                                        value={t.decimals ?? 4}
+                                                        onChange={(e) => updateTag(idx, "decimals", e.target.value)}
+                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 120 }}
+                                                      />
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Enabled
+                                                      <div>
+                                                        <input
+                                                          type="checkbox"
+                                                          checked={t.enabled !== false}
+                                                          onChange={(e) => updateTag(idx, "enabled", e.target.checked)}
+                                                        />
+                                                      </div>
+                                                    </label>
+                                                  </div>
+                                                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+                                                    <button
+                                                      onClick={saveTagRow}
+                                                      style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px" }}
+                                                    >
+                                                      Save
+                                                    </button>
+                                                    <button
+                                                      onClick={() => removeTag(idx)}
+                                                      style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
+                                                    >
+                                                      Delete
+                                                    </button>
+                                                    <button
+                                                      onClick={() => {
+                                                        setEditingTagIndex(null);
+                                                        reloadConfig();
+                                                      }}
+                                                      style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                                                    >
+                                                      Cancel
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              </td>
+                                            </tr>
+                                          ) : null}
+                                          </Fragment>
+                                          );
+                                        })
+                                      : null}
+                                  </Fragment>
+                                );
+                              })
                             : null}
                         </Fragment>
                       );
@@ -962,25 +1999,89 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               )}
             </div>
           </>
-        ) : (
+        ) : tagSectionTab === "templates" ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
             <div style={sectionCardStyle}>
               <div style={{ fontWeight: 600, marginBottom: 8 }}>Create / Edit Template</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
-                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 14, marginBottom: 12, alignItems: "end" }}>
+                <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                  Edit Existing
+                  <select
+                    value={editTemplate}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setEditTemplate(next);
+                      if (!next) {
+                        setTemplateOriginalName("");
+                        setTemplateName("");
+                        setTemplateParent("");
+                    setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 }]);
+                    setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+                    setTemplateEditing(true);
+                  }
+                }}
+                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                  >
+                    <option value="">New template</option>
+                    {templates.map((t) => (
+                      <option key={`edit-${t.name}`} value={t.name}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button
+                    onClick={() => {
+                      setEditTemplate("");
+                      setTemplateOriginalName("");
+                      setTemplateName("");
+                      setTemplateParent("");
+                      setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 }]);
+                      setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+                      setTemplateEditing(true);
+                    }}
+                    style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                  >
+                    New
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const target = templateOriginalName || editTemplate || templateName;
+                      if (!target) return;
+                      await deleteTemplate(target);
+                      setEditTemplate("");
+                      setTemplateOriginalName("");
+                      setTemplateName("");
+                      setTemplateParent("");
+                      setTemplateFieldRows([{ name: "", tagPath: "", mappingSet: "", scale: 1, decimals: 4 }]);
+                      setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+                      setTemplateEditing(true);
+                    }}
+                    style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
+                    disabled={!editTemplate && !templateOriginalName}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 12 }}>
+                <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
                   Template Name
                   <input
                     value={templateName}
                     onChange={(e) => setTemplateName(e.target.value)}
-                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                    disabled={!templateEditing}
                   />
                 </label>
-                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
                   Parent Template
                   <select
                     value={templateParent}
                     onChange={(e) => setTemplateParent(e.target.value)}
-                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                    disabled={!templateEditing}
                   >
                     <option value="">None</option>
                     {templates
@@ -993,25 +2094,40 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   </select>
                 </label>
               </div>
-              <div style={{ fontSize: 12, marginBottom: 6 }}>Fields</div>
-              <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflow: "hidden" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <div style={{ fontSize: 12, marginBottom: 8 }}>Fields</div>
+              <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflowX: "auto", overflowY: "auto", maxHeight: 320, padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
+                <table style={{ width: 1200, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
                   <colgroup>
-                    <col style={{ width: "45%" }} />
-                    <col style={{ width: "45%" }} />
-                    <col style={{ width: 48 }} />
+                    <col style={{ width: "13%" }} />
+                    <col style={{ width: "15%" }} />
+                    <col style={{ width: "15%" }} />
+                    <col style={{ width: "9%" }} />
+                    <col style={{ width: "9%" }} />
+                    <col style={{ width: "11%" }} />
+                    <col style={{ width: "6%" }} />
+                    <col style={{ width: "8%" }} />
+                    <col style={{ width: "10%" }} />
+                    <col style={{ width: "4%" }} />
                   </colgroup>
                   <thead>
                     <tr style={{ background: "#f8fafc" }}>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Tag Path</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Name</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Tag Path</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>UA Type</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Poll</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Sampling</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Topic</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Enabled</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Scale</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Decimals</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Mapping Set</th>
                       <th />
                     </tr>
                   </thead>
                   <tbody>
                     {templateFieldRows.map((row, idx) => (
-                      <tr key={`field-${idx}`} style={{ borderTop: "1px solid #eef2f6" }}>
-                        <td style={{ padding: "6px 8px" }}>
+                      <tr key={`field-${idx}`}>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
                           <input
                             value={row.name || ""}
                             onChange={(e) =>
@@ -1022,10 +2138,11 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               })
                             }
                             placeholder="Display name"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
                           />
                         </td>
-                        <td style={{ padding: "6px 8px" }}>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
                           <input
                             value={row.tagPath || ""}
                             onChange={(e) =>
@@ -1036,13 +2153,378 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               })
                             }
                             placeholder="Controller tag path"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
                           />
                         </td>
-                        <td style={{ padding: "6px 8px" }}>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <select
+                            value={row.uaType || ""}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], uaType: e.target.value };
+                                return next;
+                              })
+                            }
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
+                          >
+                            <option value="">Select UA type</option>
+                            <option value="Boolean">Boolean</option>
+                            <option value="Int16">Int16</option>
+                            <option value="Int32">Int32</option>
+                            <option value="Int64">Int64</option>
+                            <option value="UInt16">UInt16</option>
+                            <option value="UInt32">UInt32</option>
+                            <option value="UInt64">UInt64</option>
+                            <option value="Float">Float</option>
+                            <option value="Double">Double</option>
+                            <option value="String">String</option>
+                          </select>
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <input
+                            value={row.pollMs ?? ""}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], pollMs: e.target.value };
+                                return next;
+                              })
+                            }
+                            placeholder="ms"
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
+                          />
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <input
+                            value={row.samplingInterval ?? ""}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], samplingInterval: e.target.value };
+                                return next;
+                              })
+                            }
+                            placeholder="ms"
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
+                          />
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <input
+                            value={row.topic || ""}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], topic: e.target.value };
+                                return next;
+                              })
+                            }
+                            placeholder="Optional"
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
+                          />
+                        </td>
+                        <td style={{ padding: "8px 10px 8px 10px" }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={row.enabled !== false}
+                              onChange={(e) =>
+                                setTemplateFieldRows((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = { ...next[idx], enabled: e.target.checked };
+                                  return next;
+                                })
+                              }
+                              disabled={!templateEditing}
+                            />
+                          </label>
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <input
+                            type="number"
+                            step="any"
+                            value={row.scale ?? 1}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], scale: e.target.value };
+                                return next;
+                              })
+                            }
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
+                          />
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={row.decimals ?? 4}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], decimals: e.target.value };
+                                return next;
+                              })
+                            }
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
+                          />
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <select
+                            value={row.mappingSet || ""}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], mappingSet: e.target.value };
+                                return next;
+                              })
+                            }
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing}
+                          >
+                            <option value="">None</option>
+                            {mappingSets.map((s) => (
+                              <option key={`tmpl-map-${s.name}`} value={s.name}>
+                                {s.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td style={{ padding: "8px 10px 8px 14px" }}>
+                          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                            <button
+                              onClick={() =>
+                                setTemplateFieldRows((prev) => prev.filter((_, i) => i !== idx))
+                              }
+                              style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
+                              disabled={!templateEditing}
+                            >
+                              X
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {templateFieldRows.length === 0 && (
+                      <tr>
+                        <td colSpan={10} style={{ padding: "8px", color: "#98a2b3" }}>
+                          No fields yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                <button
+                  onClick={() =>
+                    setTemplateFieldRows((prev) => [
+                      ...prev,
+                      { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 },
+                    ])
+                  }
+                  style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                >
+                  Add Tag
+                </button>
+                <button
+                  onClick={saveTemplate}
+                  style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px" }}
+                  disabled={!templateEditing}
+                >
+                  Save Template
+                </button>
+                <button
+                  onClick={async () => {
+                    const target = templateOriginalName || templateName;
+                    if (!target) return;
+                    await deleteTemplate(target);
+                    setEditTemplate("");
+                    setTemplateOriginalName("");
+                    setTemplateName("");
+                    setTemplateParent("");
+                    setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 }]);
+                    setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+                    setTemplateEditing(true);
+                  }}
+                  style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
+                  disabled={!templateOriginalName && !templateName}
+                >
+                  Delete
+                </button>
+                <button
+                  onClick={() => setTemplateEditing((v) => !v)}
+                  style={{
+                    ...drawerButtonStyle,
+                    border: "1px solid #2b6cff",
+                    background: templateEditing ? "#2b6cff" : "white",
+                    color: templateEditing ? "white" : "#2b6cff",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                  }}
+                >
+                  {templateEditing ? "Editing" : "Edit"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+            <div style={sectionCardStyle}>
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>Mapping Sets</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, marginBottom: 12, alignItems: "end" }}>
+                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                  Select Set
+                  <select
+                    value={mappingSetOriginalName || ""}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setMappingSetOriginalName(next);
+                      setMappingSetName(next);
+                      if (!next) {
+                        setMappingSetRows([{ field: "", state: "", color: "" }]);
+                      }
+                    }}
+                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                  >
+                    <option value="">New set</option>
+                    {mappingSets.map((s) => (
+                      <option key={`map-set-${s.name}`} value={s.name}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button
+                    onClick={() => {
+                      setMappingSetName("");
+                      setMappingSetOriginalName("");
+                      setMappingSetRows([{ field: "", state: "", color: "" }]);
+                    }}
+                    style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                  >
+                    New Set
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!mappingSetName) return;
+                      setError("");
+                      setStatus("");
+                      try {
+                        const res = await fetch(`/api/opc/mapping-sets/${encodeURIComponent(mappingSetName)}`, {
+                          method: "DELETE",
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data?.error || "Delete failed.");
+                        const reload = await fetch("/api/opc/mapping-sets");
+                        const payload = await reload.json();
+                        if (reload.ok) setMappingSets(payload.sets || []);
+                        setMappingSetName("");
+                        setMappingSetOriginalName("");
+                        setMappingSetRows([{ field: "", state: "", color: "" }]);
+                        setStatus("Mapping set deleted.");
+                      } catch (err) {
+                        setError(err?.message || "Delete failed.");
+                      }
+                    }}
+                    style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
+                    disabled={!mappingSetName}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+              <label style={{ display: "grid", gap: 6, fontSize: 12, marginBottom: 12 }}>
+                Set Name
+                <input
+                  value={mappingSetName}
+                  onChange={(e) => setMappingSetName(e.target.value)}
+                  placeholder="e.g. Motor States"
+                  style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                />
+              </label>
+              <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflow: "hidden", padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
+                <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
+                  <colgroup>
+                    <col style={{ width: "27%" }} />
+                    <col style={{ width: "18%" }} />
+                    <col style={{ width: "41%" }} />
+                    <col style={{ width: "14%" }} />
+                  </colgroup>
+                  <thead>
+                    <tr style={{ background: "#f8fafc" }}>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>State Text</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>PLC Value</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Color</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mappingSetRows.map((row, idx) => (
+                      <tr key={`map-set-row-${idx}`}>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <input
+                            value={row.field || "State Text"}
+                            placeholder="State Text"
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            disabled
+                          />
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <input
+                            value={row.state ?? ""}
+                            onChange={(e) =>
+                              setMappingSetRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], state: e.target.value };
+                                return next;
+                              })
+                            }
+                            placeholder="1"
+                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                          />
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", marginLeft: 8 }}>
+                            <input
+                              type="color"
+                              value={row.color || "#000000"}
+                              onChange={(e) =>
+                                setMappingSetRows((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = { ...next[idx], color: e.target.value };
+                                  return next;
+                                })
+                              }
+                              style={{ width: 36, height: 28, padding: 0, border: "none", background: "transparent" }}
+                            />
+                            <input
+                              value={row.color ?? ""}
+                              onChange={(e) =>
+                                setMappingSetRows((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = { ...next[idx], color: e.target.value };
+                                  return next;
+                                })
+                              }
+                              placeholder="#12b76a"
+                              style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            />
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 10px 8px 14px" }}>
                           <button
                             onClick={() =>
-                              setTemplateFieldRows((prev) => prev.filter((_, i) => i !== idx))
+                              setMappingSetRows((prev) => prev.filter((_, i) => i !== idx))
                             }
                             style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
                           >
@@ -1051,95 +2533,86 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                         </td>
                       </tr>
                     ))}
-                    {templateFieldRows.length === 0 && (
+                    {mappingSetRows.length === 0 && (
                       <tr>
-                        <td colSpan={3} style={{ padding: "8px", color: "#98a2b3" }}>
-                          No fields yet.
+                        <td colSpan={4} style={{ padding: "8px", color: "#98a2b3" }}>
+                          No mappings yet.
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
                 <button
-                  onClick={() => setTemplateFieldRows((prev) => [...prev, { name: "", tagPath: "" }])}
+                  onClick={() =>
+                    setMappingSetRows((prev) => [
+                      ...prev,
+                      { field: "State Text", state: "", color: "" },
+                    ])
+                  }
                   style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
                 >
-                  Add Field
+                  Add Mapping
                 </button>
                 <button
-                  onClick={saveTemplate}
+                  onClick={async () => {
+                    setError("");
+                    setStatus("");
+                    const name = String(mappingSetName || "").trim();
+                    if (!name) {
+                      setError("Mapping set name is required.");
+                      return;
+                    }
+                    const cleaned = (mappingSetRows || [])
+                      .map((row) => ({
+                        field: String(row?.field ?? "State Text").trim() || "State Text",
+                        state: String(row?.state ?? "").trim(),
+                        color: String(row?.color ?? "").trim(),
+                      }))
+                      .filter((row) => row.state && row.color);
+                    try {
+                      const res = await fetch("/api/opc/mapping-sets", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ name, mappings: cleaned }),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) throw new Error(data?.error || "Save failed.");
+                      setMappingSets((prev) => {
+                        const next = Array.isArray(prev) ? [...prev] : [];
+                        const idx = next.findIndex((s) => s.name === name);
+                        const entry = { name, mappings: cleaned };
+                        if (idx >= 0) next[idx] = entry;
+                        else next.push(entry);
+                        return next.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+                      });
+                      setMappingSetRows(
+                        cleaned.length ? cleaned : [{ field: "", state: "", color: "" }]
+                      );
+                      if (mappingSetOriginalName && mappingSetOriginalName !== name) {
+                        try {
+                          await fetch(`/api/opc/mapping-sets/${encodeURIComponent(mappingSetOriginalName)}`, {
+                            method: "DELETE",
+                          });
+                        } catch {
+                          // ignore delete failure
+                        }
+                      }
+                      const reload = await fetch("/api/opc/mapping-sets");
+                      const payload = await reload.json();
+                      if (reload.ok) setMappingSets(payload.sets || []);
+                      setMappingSetName(name);
+                      setMappingSetOriginalName(name);
+                      setStatus("Mapping set saved.");
+                    } catch (err) {
+                      setError(err?.message || "Save failed.");
+                    }
+                  }}
                   style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px" }}
                 >
-                  Save Template
+                  Save Mapping Set
                 </button>
-              </div>
-            </div>
-            <div style={sectionCardStyle}>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>Existing Templates</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
-                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                  Select Template
-                  <select
-                    value={applyTemplate}
-                    onChange={(e) => setApplyTemplate(e.target.value)}
-                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
-                  >
-                    <option value="">Select template</option>
-                    {templates.map((t) => (
-                      <option key={`opt-${t.name}`} value={t.name}>
-                        {t.parent_name ? `${t.name} (extends ${t.parent_name})` : t.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  onClick={() => deleteTemplate(applyTemplate)}
-                  disabled={!applyTemplate}
-                  style={{
-                    ...drawerButtonStyle,
-                    border: "1px solid #f04438",
-                    background: applyTemplate ? "#f04438" : "#f2f4f7",
-                    color: applyTemplate ? "white" : "#98a2b3",
-                    borderRadius: 6,
-                    padding: "6px 10px",
-                    height: 32,
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
-              {templates.length === 0 && <div style={{ color: "#98a2b3", fontSize: 12, marginBottom: 10 }}>No templates.</div>}
-              <div style={{ fontSize: 12, color: "#667085", marginBottom: 6 }}>Fields Preview</div>
-              <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflow: "hidden", maxHeight: 200, overflowY: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <colgroup>
-                    <col style={{ width: "45%" }} />
-                    <col style={{ width: "55%" }} />
-                  </colgroup>
-                  <thead>
-                    <tr style={{ background: "#f8fafc" }}>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
-                      <th style={{ textAlign: "left", padding: "6px 8px" }}>Tag Path</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(applyTemplate ? resolveTemplateFields(applyTemplate) : []).map((f, idx) => (
-                      <tr key={`tmpl-field-${idx}`} style={{ borderTop: "1px solid #eef2f6" }}>
-                        <td style={{ padding: "6px 8px" }}>{f.name || f.tagPath}</td>
-                        <td style={{ padding: "6px 8px", color: "#475467" }}>{f.tagPath || f.name}</td>
-                      </tr>
-                    ))}
-                    {!applyTemplate ? (
-                      <tr>
-                        <td colSpan={2} style={{ padding: "8px", color: "#98a2b3" }}>
-                          Select a template to preview fields.
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
               </div>
             </div>
           </div>
@@ -1148,6 +2621,109 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     );
   }
 
+  async function reloadConfig() {
+    try {
+      const res = await fetch("/api/opc/config");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to load.");
+      const cleanedTags = (data.tags || [])
+        .map((t) => {
+          const name = normalizeTagName(t.name);
+          const tagPath = normalizeTagName(t.tagPath || name);
+          const topic = normalizeTagName(t.topic || "");
+          const samplingInterval = Number.isFinite(Number(t?.samplingInterval))
+            ? Number(t.samplingInterval)
+            : "";
+          return { ...t, name, tagPath, topic, samplingInterval, mappingSet: t?.mappingSet || "" };
+        })
+        .filter((t) => t.name);
+      const cleanedTopics = buildCleanedTopics(data.topics || []);
+      const cleanedPlcs = buildCleanedPlcs(data.plcs || []);
+      const loadedConfig = { ...data, tags: cleanedTags, topics: cleanedTopics, plcs: cleanedPlcs };
+      setConfig(loadedConfig);
+      lastSavedRef.current = JSON.stringify(loadedConfig);
+    } catch (err) {
+      setError(err?.message || "Failed to reload config.");
+    }
+  }
+
+  async function saveTagsInline() {
+    setError("");
+    setStatus("");
+    try {
+      const cleanedTags = buildCleanedTags(config.tags);
+      const cleanedTopics = buildCleanedTopics(config.topics);
+      const cleanedPlcs = buildCleanedPlcs(config.plcs);
+      const nextConfig = { ...config, tags: cleanedTags, topics: cleanedTopics, plcs: cleanedPlcs };
+      setConfig(nextConfig);
+      await persistConfig(nextConfig, "Tags saved.");
+      setTagTableEditing(false);
+      setEditingTagIndex(null);
+    } catch (err) {
+      setError(err?.message || "Save failed.");
+    }
+  }
+
+  async function saveTagRow() {
+    setError("");
+    setStatus("");
+    try {
+      const cleanedTags = buildCleanedTags(config.tags);
+      const cleanedTopics = buildCleanedTopics(config.topics);
+      const cleanedPlcs = buildCleanedPlcs(config.plcs);
+      const nextConfig = { ...config, tags: cleanedTags, topics: cleanedTopics, plcs: cleanedPlcs };
+      setConfig(nextConfig);
+      await persistConfig(nextConfig, "Tags saved.");
+      setEditingTagIndex(null);
+    } catch (err) {
+      setError(err?.message || "Save failed.");
+    }
+  }
+
+  function addTagToGroup(topicKey, groupName) {
+    const newIndex = (config.tags || []).length;
+    setConfig((prev) => {
+      const next = [...(prev.tags || [])];
+      next.push({
+        name: "",
+        tagPath: "",
+        uaType: "",
+        pollMs: "",
+        samplingInterval: "",
+        topic: topicKey,
+        enabled: true,
+        mappingSet: "",
+        groupName,
+        scale: 1,
+        decimals: 4,
+      });
+      return { ...prev, tags: next };
+    });
+    setExpandedPrefixes((prev) => ({
+      ...prev,
+      [`topic:${topicKey}`]: true,
+      [`topic:${topicKey}::group:${groupName}`]: true,
+    }));
+    setTagTableEditing(true);
+    setEditingTagIndex(newIndex);
+    setTimeout(() => {
+      const el = tagEditRowRefs.current.get(newIndex);
+      if (el?.scrollIntoView) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 0);
+  }
+
+  function addTagFromToolbar() {
+    const topicKey =
+      activeTagGroup.topic ||
+      String(applyTopic || "").trim() ||
+      (topics || [])[0]?.name ||
+      "No Topic";
+    const groupName = "Custom";
+    setActiveTagGroup({ topic: topicKey, groupName });
+    addTagToGroup(topicKey, groupName);
+  }
   function addTopic() {
     const name = normalizeTopicValue(manualTopic.name);
     const prefix = normalizeTopicValue(manualTopic.prefix);
@@ -1265,7 +2841,6 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         <div style={contentStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16, alignItems: "center" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ fontWeight: 800, fontSize: 18 }}>OPC Configuration</div>
             <div
               style={{
                 padding: "4px 8px",
@@ -1704,6 +3279,19 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 >
                   <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>Tags</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
+                    <label
+                      style={{
+                        border: "1px solid #d0d7e2",
+                        background: "white",
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        cursor: "pointer",
+                        fontSize: 12,
+                      }}
+                    >
+                      Upload CSV
+                      <input type="file" accept=".csv" onChange={onCsvFile} style={{ display: "none" }} />
+                    </label>
                     <button
                       ref={drawerMenuBtnRef}
                       onClick={() => setShowDrawerMenu((v) => !v)}
@@ -1800,3 +3388,4 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
   </div>
   );
 }
+

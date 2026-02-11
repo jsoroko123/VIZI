@@ -134,6 +134,26 @@ const Icons = {
       />
     </svg>
   ),
+  tag: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+      <path
+        d="M4 12l8-8h6l2 2v6l-8 8-8-8z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <circle cx="16" cy="8" r="1.5" fill="currentColor" />
+    </svg>
+  ),
+  grid: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+      <path
+        d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+    </svg>
+  ),
   edit: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
       <path
@@ -249,11 +269,17 @@ export default function Toolbar({
   deleteSelected,
   showToolbar,
   setShowToolbar,
+  showTagPaths,
+  setShowTagPaths,
+  showGrid,
+  setShowGrid,
+  bounds = { top: 8, left: 8, right: 8, bottom: 8 },
 }) {
   if (!showToolbar) return null;
 
   const dragRef = useRef({ dragging: false, ox: 0, oy: 0 });
   const posRef = useRef(toolbarPos);
+  const panelRef = useRef(null);
 
   useEffect(() => {
     posRef.current = toolbarPos;
@@ -262,9 +288,15 @@ export default function Toolbar({
   useEffect(() => {
     function onMove(e) {
       if (!dragRef.current.dragging) return;
+      const panelW = dragRef.current.panelW || panelRef.current?.getBoundingClientRect()?.width || 260;
+      const panelH = dragRef.current.panelH || panelRef.current?.getBoundingClientRect()?.height || 100;
+      const nextLeft = Math.max(bounds.left, e.clientX - dragRef.current.ox);
+      const maxLeft = Math.max(bounds.left, window.innerWidth - panelW - bounds.right);
+      const nextTop = Math.max(bounds.top, e.clientY - dragRef.current.oy);
+      const maxTop = Math.max(bounds.top, window.innerHeight - panelH - bounds.bottom);
       setToolbarPos?.({
-        x: Math.max(8, e.clientX - dragRef.current.ox),
-        y: Math.max(8, e.clientY - dragRef.current.oy),
+        x: Math.min(nextLeft, maxLeft),
+        y: Math.min(nextTop, maxTop),
       });
     }
 
@@ -282,6 +314,7 @@ export default function Toolbar({
 
   return (
     <div
+      ref={panelRef}
       style={{
         position: "fixed",
         left: toolbarPos?.x ?? 16,
@@ -305,9 +338,12 @@ export default function Toolbar({
         onMouseDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
+          const rect = panelRef.current?.getBoundingClientRect();
           dragRef.current.dragging = true;
           dragRef.current.ox = e.clientX - (posRef.current?.x ?? 16);
           dragRef.current.oy = e.clientY - (posRef.current?.y ?? 50);
+          dragRef.current.panelW = rect?.width || 260;
+          dragRef.current.panelH = rect?.height || 100;
         }}
       >
         <GroupLabel>File</GroupLabel>
@@ -392,6 +428,28 @@ export default function Toolbar({
           </IconButton>
           <IconButton title="Close toolbar" active={false} onClick={() => setShowToolbar?.(false)}>
             {Icons.close}
+          </IconButton>
+        </div>
+      </div>
+
+      <Divider vertical />
+
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        <GroupLabel>Display</GroupLabel>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <IconButton
+            title="Toggle Tag Paths"
+            active={!!showTagPaths}
+            onClick={() => setShowTagPaths?.((v) => !v)}
+          >
+            {Icons.tag}
+          </IconButton>
+          <IconButton
+            title="Toggle Grid"
+            active={!!showGrid}
+            onClick={() => setShowGrid?.((v) => !v)}
+          >
+            {Icons.grid}
           </IconButton>
         </div>
       </div>

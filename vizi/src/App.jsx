@@ -7,6 +7,7 @@ import ImportModal from "./components/ImportModal";
 import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
 import OpcConfig from "./components/OpcConfig";
+import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
 import { stripOuterSvg } from "./utils/svgSanitize";
@@ -44,10 +45,17 @@ function getFolderFromKey(key) {
   return parts.slice(0, -1).slice(-1)[0] || "Root";
 }
 
+function normalizeTagValue(value) {
+  return String(value || "")
+    .replace(/\r?\n/g, "")
+    .trim();
+}
+
 
 
 
 export default function App() {
+  const { user, logout, updateProfile, changePassword } = useAuth();
   const [tool, setTool] = useState("select"); // "select" | "polyline"
   const DEFAULT_STROKE = "#808080";
   const DEFAULT_FILL = "#cccccc";
@@ -104,6 +112,12 @@ export default function App() {
 
   const [importAnchor, setImportAnchor] = useState(null);
 
+  const [opcTags, setOpcTags] = useState([]);
+  const [opcTemplates, setOpcTemplates] = useState([]);
+  const [opcLiveValues, setOpcLiveValues] = useState({});
+  const [opcTagMappings, setOpcTagMappings] = useState([]);
+  const [opcMappingSets, setOpcMappingSets] = useState([]);
+
 
   const overlayRefs = useRef(new Map()); // id -> <g> element containing imported inner
   const svgRef = useRef(null);
@@ -116,6 +130,240 @@ export default function App() {
   const projectFileRef = useRef(null);
   const [projectHandle, setProjectHandle] = useState(null);
   const [projectName, setProjectName] = useState("Untitled");
+  const [projects, setProjects] = useState([]);
+  const [activeProjectId, setActiveProjectId] = useState("");
+  const [projectStatus, setProjectStatus] = useState("");
+  const [showProjectNameInput, setShowProjectNameInput] = useState(false);
+  const autoLoadedProjectRef = useRef(false);
+
+  useEffect(() => {
+    let alive = true;
+    async function loadConfig() {
+      try {
+        const res = await fetch("/api/opc/config");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load OPC config.");
+        if (!alive) return;
+        const tags = Array.isArray(data?.tags) ? data.tags : [];
+        setOpcTags(tags);
+      } catch {
+        // ignore
+      }
+    }
+    async function loadTemplates() {
+      try {
+        const res = await fetch("/api/opc/templates");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load templates.");
+        if (!alive) return;
+        setOpcTemplates(data.templates || []);
+      } catch {
+        // ignore
+      }
+    }
+    async function loadTagMappings() {
+      try {
+        const res = await fetch("/api/opc/tag-mappings");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load mappings.");
+        if (!alive) return;
+        setOpcTagMappings(data.mappings || []);
+      } catch {
+        // ignore
+      }
+    }
+    async function loadMappingSets() {
+      try {
+        const res = await fetch("/api/opc/mapping-sets");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load mapping sets.");
+        if (!alive) return;
+        setOpcMappingSets(data.sets || []);
+      } catch {
+        // ignore
+      }
+    }
+    loadConfig();
+    loadTemplates();
+    loadTagMappings();
+    loadMappingSets();
+    const configId = setInterval(loadConfig, 5000);
+    const templateId = setInterval(loadTemplates, 10000);
+    const mappingId = setInterval(loadTagMappings, 10000);
+    const mappingSetId = setInterval(loadMappingSets, 10000);
+    return () => {
+      alive = false;
+      clearInterval(configId);
+      clearInterval(templateId);
+      clearInterval(mappingId);
+      clearInterval(mappingSetId);
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    async function pollStatus() {
+      try {
+        const res = await fetch("/api/opc/status");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load status.");
+        if (!alive) return;
+        setOpcLiveValues(data.values || {});
+      } catch {
+        // ignore
+      }
+    }
+    pollStatus();
+    const id = setInterval(pollStatus, 1000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  const lastOpcValuesRef = useRef({});
+  useEffect(() => {
+    const prev = lastOpcValuesRef.current || {};
+    const next = opcLiveValues || {};
+    const changes = [];
+    Object.keys(next).forEach((k) => {
+      if (prev[k] !== next[k]) changes.push({ key: k, prev: prev[k], next: next[k] });
+    });
+    if (changes.length) {
+      // eslint-disable-next-line no-console
+      console.log("OPC values changed", changes.slice(0, 10));
+    }
+    lastOpcValuesRef.current = next;
+  }, [opcLiveValues]);
+
+  const opcTemplateMap = useMemo(() => {
+    const map = new Map();
+    (opcTemplates || []).forEach((t) => map.set(t.name, t));
+    return map;
+  }, [opcTemplates]);
+
+  const opcTagMappingMap = useMemo(() => {
+    const map = new Map();
+    (opcTagMappings || []).forEach((m) => {
+      const key = String(m.tag_key || "").trim();
+      if (!key) return;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push({
+        field: String(m.field ?? ""),
+        state: String(m.state ?? ""),
+        color: String(m.color ?? ""),
+      });
+    });
+    return map;
+  }, [opcTagMappings]);
+
+  const opcMappingSetMap = useMemo(() => {
+    const map = new Map();
+    (opcMappingSets || []).forEach((set) => {
+      const name = String(set?.name || "").trim();
+      if (!name) return;
+      map.set(name, set);
+    });
+    return map;
+  }, [opcMappingSets]);
+
+  const resolveTemplateStateMappings = (name) => {
+    const visited = new Set();
+    const map = new Map();
+    function walk(n) {
+      if (!n || visited.has(n)) return;
+      visited.add(n);
+      const tmpl = opcTemplateMap.get(n);
+      if (!tmpl) return;
+      if (tmpl.parent_name) {
+        walk(tmpl.parent_name);
+      }
+      if (Array.isArray(tmpl.state_mappings)) {
+        tmpl.state_mappings.forEach((m) => {
+          const fieldVal = String(m?.field ?? "").trim();
+          const stateVal = String(m?.state ?? "").trim();
+          if (!stateVal) return;
+          const key = `${fieldVal}::${stateVal}`;
+          map.set(key, String(m?.color || "").trim());
+        });
+      }
+    }
+    walk(name);
+    return Array.from(map.entries()).map(([key, color]) => {
+      const [field, state] = key.split("::");
+      return { field, state, color };
+    });
+  };
+
+  const tagStateColorsByPath = useMemo(() => {
+    const map = new Map();
+    (opcTags || []).forEach((tag) => {
+      const tagPath = normalizeTagValue(tag?.tagPath || "");
+      const tagName = normalizeTagValue(tag?.name || "");
+      const topicName = normalizeTagValue(tag?.topic || "");
+      const keyCandidates = [
+        tagPath,
+        topicName && tagName ? `${topicName}.${tagName}` : "",
+        topicName && tagPath ? `${topicName}.${tagPath}` : "",
+      ].filter(Boolean);
+      if (!keyCandidates.length) return;
+      const key = topicName ? `${topicName}.${tag?.name || ""}` : tag?.name || "";
+      const rawValue = opcLiveValues?.[key];
+      const scale = Number.isFinite(Number(tag?.scale)) ? Number(tag.scale) : 1;
+      const value =
+        rawValue != null && rawValue !== "" && !Number.isNaN(Number(rawValue))
+          ? Number(rawValue) * scale
+          : rawValue;
+      const templateName = String(tag?.plcType || "").trim();
+      const mappingSetName = String(tag?.mappingSet || "").trim();
+      if (value == null || value === "") return;
+      const tagMappings = opcTagMappingMap.get(key) || [];
+      const setMappings = mappingSetName
+        ? (opcMappingSetMap.get(mappingSetName)?.mappings || [])
+        : [];
+      const normalizedSetMappings = (setMappings || []).map((m) => ({
+        field: String(m?.field ?? ""),
+        state: String(m?.state ?? ""),
+        color: String(m?.color ?? ""),
+      }));
+      const mappings = tagMappings.length
+        ? tagMappings
+        : normalizedSetMappings.length
+        ? normalizedSetMappings
+        : resolveTemplateStateMappings(templateName);
+      if (!mappings.length) return;
+      const fieldName = String(tag?.name || "").trim();
+      const valStr = String(value).trim();
+      const valNum = Number(value);
+      const valLower = valStr.toLowerCase();
+      const valBool =
+        valLower === "true" || valLower === "1"
+          ? true
+          : valLower === "false" || valLower === "0"
+          ? false
+          : null;
+      const match = mappings.find((m) => {
+        const stateStr = String(m?.state ?? "").trim();
+        if (!stateStr) return false;
+        const stateLower = stateStr.toLowerCase();
+        const numeric = Number(stateStr);
+        if (Number.isFinite(valNum) && Number.isFinite(numeric) && numeric === valNum) return true;
+        const stateBool =
+          stateLower === "true" || stateLower === "1"
+            ? true
+            : stateLower === "false" || stateLower === "0"
+            ? false
+            : null;
+        if (valBool !== null && stateBool !== null && valBool === stateBool) return true;
+        return stateLower === valLower;
+      });
+      if (match?.color) {
+        const color = String(match.color);
+        keyCandidates.forEach((k) => map.set(k, color));
+      }
+    });
+    return map;
+  }, [opcTags, opcLiveValues, opcTemplateMap, opcTagMappingMap, opcMappingSetMap]);
 
 
   const PAN_SPEED = 0.05; // 🔥 adjust this to taste
@@ -150,6 +398,33 @@ export default function App() {
       pan,
       zoom,
     };
+  }
+
+  function applyProjectPayload(data) {
+    const nextShapes = Array.isArray(data?.shapes) ? data.shapes : [];
+    const nextOverlays = Array.isArray(data?.svgOverlays) ? data.svgOverlays : [];
+
+    pushHistory();
+    setShapes(nextShapes);
+    setSvgOverlays(nextOverlays);
+
+    if (Number.isFinite(data?.vbW)) setVbW(data.vbW);
+    if (Number.isFinite(data?.vbH)) setVbH(data.vbH);
+
+    if (data?.pan && Number.isFinite(data.pan.x) && Number.isFinite(data.pan.y)) {
+      setPan({ x: data.pan.x, y: data.pan.y });
+    }
+    if (Number.isFinite(data?.zoom)) setZoom(data.zoom);
+
+    setSelectedIds([]);
+    setSelectedOverlayIds([]);
+    setEditingId(null);
+    setDrawing(null);
+    setDragAll(null);
+    setDragHandle(null);
+    setOverlayResize(null);
+    setMarquee(null);
+    setImportAnchor(null);
   }
 
   function downloadTextFile(filename, text, mime = "application/json;charset=utf-8") {
@@ -235,33 +510,7 @@ export default function App() {
         return;
       }
 
-      // ✅ basic validation + fallbacks
-      const nextShapes = Array.isArray(data.shapes) ? data.shapes : [];
-      const nextOverlays = Array.isArray(data.svgOverlays) ? data.svgOverlays : [];
-
-      pushHistory();
-
-      setShapes(nextShapes);
-      setSvgOverlays(nextOverlays);
-
-      if (Number.isFinite(data.vbW)) setVbW(data.vbW);
-      if (Number.isFinite(data.vbH)) setVbH(data.vbH);
-
-      if (data.pan && Number.isFinite(data.pan.x) && Number.isFinite(data.pan.y)) {
-        setPan({ x: data.pan.x, y: data.pan.y });
-      }
-      if (Number.isFinite(data.zoom)) setZoom(data.zoom);
-
-      // clear transient editor state
-      setSelectedIds([]);
-      setSelectedOverlayIds([]);
-      setEditingId(null);
-      setDrawing(null);
-      setDragAll(null);
-      setDragHandle(null);
-      setOverlayResize(null);
-      setMarquee(null);
-      setImportAnchor(null);
+      applyProjectPayload(data);
 
       // ✅ remember this file so Save overwrites it next time
       projectHandleRef.current = handle;
@@ -279,6 +528,125 @@ export default function App() {
     const savedName = localStorage.getItem("vizi_project_name");
     if (savedName) setProjectName(savedName);
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    async function loadProjects() {
+      try {
+        const res = await fetch("/api/projects");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load projects.");
+        if (!alive) return;
+        setProjects(data.projects || []);
+      } catch {
+        // ignore
+      }
+    }
+    loadProjects();
+    const id = setInterval(loadProjects, 15000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("vizi_active_project_id") || "";
+    if (stored && !activeProjectId) {
+      setActiveProjectId(stored);
+    }
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    if (activeProjectId) {
+      localStorage.setItem("vizi_active_project_id", activeProjectId);
+    } else {
+      localStorage.removeItem("vizi_active_project_id");
+    }
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    if (autoLoadedProjectRef.current) return;
+    if (!activeProjectId) return;
+    autoLoadedProjectRef.current = true;
+    openProjectFromDb(activeProjectId);
+  }, [activeProjectId, projects.length]);
+
+  async function saveProjectToDb() {
+    try {
+      setProjectStatus("");
+      const payload = getProjectPayload();
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: activeProjectId || undefined,
+          name: payload.name,
+          data: payload,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Save failed.");
+      const next = data.project;
+      if (next?.id) setActiveProjectId(next.id);
+      setProjectStatus("Saved");
+      setShowProjectNameInput(false);
+      const reload = await fetch("/api/projects");
+      const payloadList = await reload.json();
+      if (reload.ok) setProjects(payloadList.projects || []);
+    } catch (err) {
+      setProjectStatus(err?.message || "Save failed.");
+    }
+  }
+
+  async function openProjectFromDb(id) {
+    if (!id) return;
+    try {
+      setProjectStatus("");
+      const res = await fetch(`/api/projects/${id}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Load failed.");
+      applyProjectPayload(data?.data || {});
+      setProjectName(data?.name || "Untitled");
+      setActiveProjectId(data?.id || "");
+      projectHandleRef.current = null;
+      setProjectStatus("Loaded");
+      setShowProjectNameInput(false);
+    } catch (err) {
+      setProjectStatus(err?.message || "Load failed.");
+    }
+  }
+
+  async function deleteProjectFromDb(id) {
+    if (!id) return;
+    try {
+      setProjectStatus("");
+      const res = await fetch(`/api/projects/${id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Delete failed.");
+      setProjects((prev) => prev.filter((p) => p.id !== id));
+      if (activeProjectId === id) setActiveProjectId("");
+      setProjectStatus("Deleted");
+    } catch (err) {
+      setProjectStatus(err?.message || "Delete failed.");
+    }
+  }
+
+  function newProjectFromDb() {
+    applyProjectPayload({
+      shapes: [],
+      svgOverlays: [],
+      vbW: 1600,
+      vbH: 900,
+      pan: { x: 0, y: 0 },
+      zoom: 1,
+    });
+    setProjectName("");
+    setActiveProjectId("");
+    projectHandleRef.current = null;
+    setProjectStatus("");
+    setShowProjectNameInput(true);
+  }
 
   useEffect(() => {
     function isTypingTarget(t) {
@@ -421,11 +789,21 @@ export default function App() {
 
 
   // Floating panel visibility
+  const TOP_BAR_H = 56;
+  const RULER_SIZE = 24;
   const [showToolbar, setShowToolbar] = useState(true);
-  const [toolbarPos, setToolbarPos] = useState({ x: 16, y: 50 });
+  const [toolbarPos, setToolbarPos] = useState({
+    x: 16,
+    y: TOP_BAR_H + RULER_SIZE + 16,
+  });
   const [showHUD, setShowHUD] = useState(true);
   const [showMainDrawer, setShowMainDrawer] = useState(false);
   const [drawerView, setDrawerView] = useState("ai");
+  const [showUserDrawer, setShowUserDrawer] = useState(false);
+  const [profileDraft, setProfileDraft] = useState({ username: "", display_name: "", avatar_url: "" });
+  const [passwordDraft, setPasswordDraft] = useState({ current: "", next: "" });
+  const [profileStatus, setProfileStatus] = useState("");
+  const [profileError, setProfileError] = useState("");
   const [altDown, setAltDown] = useState(false);
   useEffect(() => {
     if (!showHUD) setPanelCursor(null);
@@ -462,6 +840,23 @@ export default function App() {
     setDrawerView(view || "ai");
     setShowMainDrawer(true);
   }
+
+  useEffect(() => {
+    if (!user) return;
+    setProfileDraft({
+      username: user.username || "",
+      display_name: user.display_name || "",
+      avatar_url: user.avatar_url || "",
+    });
+  }, [user]);
+
+  const avatarLabel = useMemo(() => {
+    const name = String(user?.display_name || user?.username || "").trim();
+    if (!name) return "U";
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }, [user]);
 
 
   // ✅ ZOOM (main svg)
@@ -1198,6 +1593,42 @@ export default function App() {
 
     let x = (p.x - (pan?.x || 0)) / (zoom || 1);
     let y = (p.y - (pan?.y || 0)) / (zoom || 1);
+
+    if (tool === "polyline" && !evt.altKey) {
+      const snapRadius = 10 / (zoom || 1);
+      let best = null;
+      let bestDist = Infinity;
+      for (const o of svgOverlays) {
+        const bb = overlayLocalBBox(o.id);
+        if (!bb) continue;
+        const ox = o.tx + o.scale * bb.x;
+        const oy = o.ty + o.scale * bb.y;
+        const ow = o.scale * bb.width;
+        const oh = o.scale * bb.height;
+        const cx = ox + ow / 2;
+        const cy = oy + oh / 2;
+        const candidates = [
+          { x: cx, y: oy },
+          { x: ox + ow, y: cy },
+          { x: cx, y: oy + oh },
+          { x: ox, y: cy },
+        ];
+        for (const c of candidates) {
+          const dx = x - c.x;
+          const dy = y - c.y;
+          const d = Math.hypot(dx, dy);
+          if (d < bestDist) {
+            bestDist = d;
+            best = c;
+          }
+        }
+      }
+      if (best && bestDist <= snapRadius) {
+        x = best.x;
+        y = best.y;
+        return { x, y };
+      }
+    }
 
     // ✅ SNAP LOGIC (final)
     // - no modifier → free
@@ -3348,13 +3779,15 @@ export default function App() {
         fontFamily: "system-ui",
         userSelect: "none",
         WebkitUserSelect: "none",
+        paddingTop: TOP_BAR_H,
+        boxSizing: "border-box",
       }}
     >
-      <Toolbar
-        tool={tool}
-        setTool={setTool}
-        importOpen={importOpen}
-        setImportOpen={setImportOpen}
+        <Toolbar
+          tool={tool}
+          setTool={setTool}
+          importOpen={importOpen}
+          setImportOpen={setImportOpen}
         exportSVG={exportSVG}
         exportIgnitionJson={exportIgnitionJson}
         editingId={editingId}
@@ -3370,11 +3803,16 @@ export default function App() {
         deleteSelected={deleteSelected}
         showToolbar={showToolbar}
         setShowToolbar={setShowToolbar}
+        showTagPaths={showTagPaths}
+        setShowTagPaths={setShowTagPaths}
+        showGrid={showGrid}
+        setShowGrid={setShowGrid}
         resetView={resetView}
         openViewBox={() => setViewBoxOpen(true)}
         exportProjectJson={saveProject}     // Save
         exportProjectJsonAs={saveProjectAs} // Save As (NEW PROP)
         importProjectJson={loadProjectViaPicker} // Load
+        bounds={{ top: TOP_BAR_H + RULER_SIZE + 8, left: 8, right: RULER_SIZE + 8, bottom: 8 }}
 
 
       />
@@ -3422,9 +3860,16 @@ export default function App() {
         applySingleFontFamily={applySingleFontFamily}
         applySingleFontWeight={applySingleFontWeight}
         applySingleTextAlign={applySingleTextAlign}
+        opcTags={opcTags}
         duplicateOffset={duplicateOffset}
         setDuplicateOffset={setDuplicateOffset}
         convertPolylinesToSvg={convertSelectedPolylinesToSvg}
+        bounds={{
+          top: TOP_BAR_H + RULER_SIZE + 8,
+          left: RULER_SIZE + 8,
+          right: RULER_SIZE + 8,
+          bottom: 8,
+        }}
       />
 
       <ImportModal importOpen={importOpen}
@@ -3475,6 +3920,7 @@ export default function App() {
         pan={pan}
         importAnchor={importAnchor}
         onSvgDoubleClick={onSvgDoubleClick}
+        tagStateColorsByPath={tagStateColorsByPath}
       />
 
       {inlineEdit && inlineEditPos && (
@@ -3590,7 +4036,7 @@ export default function App() {
         <div
           style={{
             position: "absolute",
-            left: toolbarPos.x,
+            left: Math.max(toolbarPos.x, 8),
             bottom: 16,
             zIndex: 80,
             boxShadow: "0 12px 30px rgba(0,0,0,0.4)",
@@ -3649,56 +4095,6 @@ export default function App() {
           >
             {Math.round((zoom || 1) * 100)}%
           </div>
-
-          <button
-            title="Toggle Tag Paths"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => setShowTagPaths((v) => !v)}
-            style={{
-              width: 38,
-              height: 32,
-              marginTop: 4,
-              borderRadius: 10,
-              border: showTagPaths ? "2px solid #2b6cff" : "1px solid #d6d6d6",
-              background: showTagPaths ? "linear-gradient(180deg, #eef3ff 0%, #e2ecff 100%)" : "white",
-              cursor: "pointer",
-              boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
-              color: showTagPaths ? "#1f56cc" : "#111",
-              display: "grid",
-              placeItems: "center",
-              padding: 0,
-              fontSize: 12,
-              fontWeight: 700,
-              lineHeight: 1,
-            }}
-          >
-            Tag
-          </button>
-
-          <button
-            title="Toggle Grid"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => setShowGrid((v) => !v)}
-            style={{
-              width: 38,
-              height: 32,
-              marginTop: 4,
-              borderRadius: 10,
-              border: showGrid ? "2px solid #2b6cff" : "1px solid #d6d6d6",
-              background: showGrid ? "linear-gradient(180deg, #eef3ff 0%, #e2ecff 100%)" : "white",
-              cursor: "pointer",
-              boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
-              color: showGrid ? "#1f56cc" : "#111",
-              display: "grid",
-              placeItems: "center",
-              padding: 0,
-              fontSize: 12,
-              fontWeight: 700,
-              lineHeight: 1,
-            }}
-          >
-            Grid
-          </button>
 
           {/* ❌ Hide button (toolbar style, bottom) */}
           <button
@@ -4123,7 +4519,10 @@ export default function App() {
         <div
           style={{
             position: "fixed",
-            inset: 0,
+            top: TOP_BAR_H,
+            left: 0,
+            right: 0,
+            bottom: 0,
             zIndex: 220,
           }}
         >
@@ -4173,44 +4572,18 @@ export default function App() {
                   ? "OPC Configuration"
                   : "Help"}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                {[
-                  { key: "ai", label: "AI" },
-                  { key: "data", label: "Data" },
-                  { key: "tags", label: "Tags" },
-                  { key: "opc", label: "OPC" },
-                  { key: "help", label: "Help" },
-                ].map((item) => (
-                  <button
-                    key={`drawer-nav-${item.key}`}
-                    onClick={() => setDrawerView(item.key)}
-                    style={{
-                      border: "1px solid #d0d7e2",
-                      background: drawerView === item.key ? "#2b6cff" : "white",
-                      color: drawerView === item.key ? "white" : "#111",
-                      borderRadius: 999,
-                      padding: "4px 10px",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-                <button
-                  onClick={() => setShowMainDrawer(false)}
-                  style={{
-                    border: "1px solid #d0d7e2",
-                    background: "white",
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    cursor: "pointer",
-                  }}
-                >
-                  Close
-                </button>
-              </div>
+              <button
+                onClick={() => setShowMainDrawer(false)}
+                style={{
+                  border: "1px solid #d0d7e2",
+                  background: "white",
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                }}
+              >
+                Close
+              </button>
             </div>
             <div style={{ flex: "1 1 auto", overflow: "hidden" }}>
               {drawerView === "tags" ? (
@@ -4218,17 +4591,31 @@ export default function App() {
                   <OpcConfig embedded mode="tags" />
                 </div>
               ) : drawerView === "opc" ? (
-                <div style={{ height: "100%", overflow: "auto" }}>
+                <div style={{ height: "100%", overflow: "auto", padding: 16, boxSizing: "border-box" }}>
                   <OpcConfig embedded />
                 </div>
               ) : drawerView === "help" ? (
                 <div style={{ height: "100%", overflow: "auto", padding: 16 }}>
                   <HelpPanel inline onClose={() => setShowMainDrawer(false)} />
                 </div>
+              ) : drawerView === "data" ? (
+                <div
+                  style={{
+                    height: "100%",
+                    padding: "0 16px 30px",
+                    boxSizing: "border-box",
+                  }}
+                >
+                  <iframe
+                    title="Data"
+                    src="/data"
+                    style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+                  />
+                </div>
               ) : (
                 <iframe
-                  title={drawerView === "data" ? "Data" : "AI"}
-                  src={drawerView === "data" ? "/data" : "/ai"}
+                  title="AI"
+                  src="/ai"
                   style={{ width: "100%", height: "100%", border: "none", display: "block" }}
                 />
               )}
@@ -4237,30 +4624,439 @@ export default function App() {
         </div>
       )}
 
-      <button
-        title="Menu"
-        onClick={() => openDrawer("ai")}
+      {showUserDrawer && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 230,
+          }}
+        >
+          <div
+            onClick={() => setShowUserDrawer(false)}
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,0,0,0.35)",
+            }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              right: 0,
+              top: 0,
+              height: "100%",
+              width: "min(520px, 94vw)",
+              background: "#f7f8fb",
+              boxShadow: "-16px 0 40px rgba(0,0,0,0.18)",
+              display: "flex",
+              flexDirection: "column",
+              borderLeft: "1px solid rgba(0,0,0,0.08)",
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "12px 16px",
+                borderBottom: "1px solid #e4e7ec",
+                background: "white",
+                gap: 12,
+              }}
+            >
+              <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>
+                User Settings
+              </div>
+              <button
+                onClick={() => setShowUserDrawer(false)}
+                style={{
+                  border: "1px solid #d0d7e2",
+                  background: "white",
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div style={{ flex: "1 1 auto", overflow: "auto", padding: 16, display: "grid", gap: 16 }}>
+              <div
+                style={{
+                  background: "white",
+                  border: "1px solid #e4e7ec",
+                  borderRadius: 14,
+                  padding: 16,
+                  display: "grid",
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ fontWeight: 800, fontSize: 13 }}>Profile</div>
+                  <div style={{ fontSize: 11, color: "#667085" }}>Public info</div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                    Display Name
+                    <input
+                      value={profileDraft.display_name}
+                      onChange={(e) =>
+                        setProfileDraft((p) => ({ ...p, display_name: e.target.value }))
+                      }
+                      style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                    Username
+                    <input
+                      value={profileDraft.username}
+                      onChange={(e) => setProfileDraft((p) => ({ ...p, username: e.target.value }))}
+                      style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                    />
+                  </label>
+                </div>
+                <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                  Avatar URL
+                  <input
+                    value={profileDraft.avatar_url}
+                    onChange={(e) =>
+                      setProfileDraft((p) => ({ ...p, avatar_url: e.target.value }))
+                    }
+                    placeholder="https://..."
+                    style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                  />
+                </label>
+                {profileError && <div style={{ color: "#b42318", fontSize: 12 }}>{profileError}</div>}
+                {profileStatus && <div style={{ color: "#12b76a", fontSize: 12 }}>{profileStatus}</div>}
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  <button
+                    onClick={async () => {
+                      setProfileError("");
+                      setProfileStatus("");
+                      try {
+                        await updateProfile({
+                          username: profileDraft.username,
+                          display_name: profileDraft.display_name,
+                          avatar_url: profileDraft.avatar_url,
+                        });
+                        setProfileStatus("Profile updated.");
+                      } catch (err) {
+                        setProfileError(err?.message || "Update failed.");
+                      }
+                    }}
+                    style={{
+                      border: "1px solid #2b6cff",
+                      background: "#2b6cff",
+                      color: "white",
+                      borderRadius: 10,
+                      padding: "8px 14px",
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Save Changes
+                  </button>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: "white",
+                  border: "1px solid #e4e7ec",
+                  borderRadius: 14,
+                  padding: 16,
+                  display: "grid",
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ fontWeight: 800, fontSize: 13 }}>Security</div>
+                  <div style={{ fontSize: 11, color: "#667085" }}>Update password</div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                    Current Password
+                    <input
+                      type="password"
+                      value={passwordDraft.current}
+                      onChange={(e) => setPasswordDraft((p) => ({ ...p, current: e.target.value }))}
+                      style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                    New Password
+                    <input
+                      type="password"
+                      value={passwordDraft.next}
+                      onChange={(e) => setPasswordDraft((p) => ({ ...p, next: e.target.value }))}
+                      style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                    />
+                  </label>
+                </div>
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  <button
+                    onClick={async () => {
+                      setProfileError("");
+                      setProfileStatus("");
+                      try {
+                        await changePassword(passwordDraft.current, passwordDraft.next);
+                        setPasswordDraft({ current: "", next: "" });
+                        setProfileStatus("Password updated.");
+                      } catch (err) {
+                        setProfileError(err?.message || "Password update failed.");
+                      }
+                    }}
+                    style={{
+                      border: "1px solid #111827",
+                      background: "#111827",
+                      color: "white",
+                      borderRadius: 10,
+                      padding: "8px 14px",
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Update Password
+                  </button>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  background: "white",
+                  border: "1px solid #f2c6c2",
+                  borderRadius: 14,
+                  padding: "12px 16px",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 12, color: "#b42318" }}>Sign out</div>
+                  <div style={{ fontSize: 11, color: "#667085" }}>End your current session.</div>
+                </div>
+                <button
+                  onClick={async () => {
+                    await logout();
+                  }}
+                  style={{
+                    border: "1px solid #f04438",
+                    background: "#f04438",
+                    color: "white",
+                    borderRadius: 10,
+                    padding: "8px 14px",
+                    cursor: "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  Logout
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div
         style={{
           position: "fixed",
-          right: 60,
-          top: 60,
-          zIndex: 90,
-          padding: "8px 12px",
-          borderRadius: 10,
-          border: "1px solid rgba(0,0,0,0.12)",
-          background: "white",
-          cursor: "pointer",
-          boxShadow: "0 8px 20px rgba(0,0,0,0.12)",
-          color: "#111",
-          fontSize: 12,
-          fontWeight: 700,
-          letterSpacing: "0.04em",
-          textTransform: "uppercase",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 56,
+          zIndex: 95,
+          background:
+            "linear-gradient(90deg, rgba(14, 165, 233, 0.18) 0%, rgba(59, 130, 246, 0.12) 45%, rgba(16, 185, 129, 0.14) 100%), rgba(255,255,255,0.92)",
+          borderBottom: "1px solid rgba(15, 23, 42, 0.12)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 16px",
+          backdropFilter: "blur(8px)",
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        Menu
-      </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ fontWeight: 900, letterSpacing: "-0.02em", color: "#0b1220" }}>Vizi</div>
+          <div style={{ width: 1, height: 18, background: "rgba(15, 23, 42, 0.2)" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <select
+              value={activeProjectId}
+              onChange={(e) => {
+                setActiveProjectId(e.target.value);
+                setShowProjectNameInput(false);
+              }}
+              style={{
+                border: "1px solid rgba(15, 23, 42, 0.15)",
+                background: "rgba(255,255,255,0.9)",
+                borderRadius: 8,
+                padding: "4px 8px",
+                fontSize: 11,
+                fontWeight: 600,
+                minWidth: 220,
+              }}
+            >
+              <option value="">Select Project</option>
+              {projects.map((p) => (
+                <option key={`proj-${p.id}`} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            {showProjectNameInput ? (
+              <input
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder="Project name"
+                style={{
+                  border: "1px solid rgba(15, 23, 42, 0.15)",
+                  background: "rgba(255,255,255,0.9)",
+                  borderRadius: 8,
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  minWidth: 160,
+                }}
+              />
+            ) : null}
+            <button
+              onClick={() => openProjectFromDb(activeProjectId)}
+              disabled={!activeProjectId}
+              style={{
+                border: "1px solid rgba(15, 23, 42, 0.15)",
+                background: "rgba(255,255,255,0.85)",
+                borderRadius: 8,
+                padding: "4px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: activeProjectId ? "pointer" : "not-allowed",
+                opacity: activeProjectId ? 1 : 0.6,
+              }}
+            >
+              Open
+            </button>
+            <button
+              onClick={saveProjectToDb}
+              style={{
+                border: "1px solid rgba(15, 23, 42, 0.15)",
+                background: "rgba(255,255,255,0.85)",
+                borderRadius: 8,
+                padding: "4px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Save
+            </button>
+            <button
+              onClick={newProjectFromDb}
+              style={{
+                border: "1px solid rgba(15, 23, 42, 0.15)",
+                background: "rgba(255,255,255,0.85)",
+                borderRadius: 8,
+                padding: "4px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              New
+            </button>
+            <button
+              onClick={() => deleteProjectFromDb(activeProjectId)}
+              disabled={!activeProjectId}
+              style={{
+                border: "1px solid #f04438",
+                background: activeProjectId ? "#f04438" : "rgba(244,68,56,0.25)",
+                color: "white",
+                borderRadius: 8,
+                padding: "4px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: activeProjectId ? "pointer" : "not-allowed",
+                opacity: activeProjectId ? 1 : 0.6,
+              }}
+            >
+              Delete
+            </button>
+            {projectStatus ? (
+              <div style={{ fontSize: 11, color: "#667085", marginLeft: 4 }}>{projectStatus}</div>
+            ) : null}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {[
+              { key: "ai", label: "AI" },
+              { key: "data", label: "Data" },
+              { key: "tags", label: "Tags" },
+              { key: "opc", label: "OPC" },
+              { key: "help", label: "Help" },
+            ].map((item) => (
+              <button
+                key={`top-nav-${item.key}`}
+                onClick={() => openDrawer(item.key)}
+                style={{
+                  border: "1px solid rgba(15, 23, 42, 0.15)",
+                  background: "rgba(255,255,255,0.85)",
+                  borderRadius: 999,
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  boxShadow: "0 6px 16px rgba(15, 23, 42, 0.08)",
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => setShowUserDrawer(true)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              border: "1px solid rgba(15, 23, 42, 0.12)",
+              background: "rgba(255,255,255,0.9)",
+              borderRadius: 999,
+              padding: "4px 10px",
+              cursor: "pointer",
+            }}
+          >
+            {user?.avatar_url ? (
+              <img
+                src={user.avatar_url}
+                alt="avatar"
+                style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: "50%",
+                  background: "#111827",
+                  color: "white",
+                  display: "grid",
+                  placeItems: "center",
+                  fontSize: 12,
+                  fontWeight: 800,
+                }}
+              >
+                {avatarLabel}
+              </div>
+            )}
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#111" }}>
+              {user?.display_name || user?.username || "User"}
+            </div>
+          </button>
+        </div>
+      </div>
 
 
       {!showToolbar && (
@@ -4269,8 +5065,8 @@ export default function App() {
           onClick={() => setShowToolbar(true)}
           style={{
             position: "fixed",
-            left: toolbarPos.x,
-            top: toolbarPos.y,
+            left: Math.max(toolbarPos.x, 8),
+            top: Math.max(toolbarPos.y, TOP_BAR_H + RULER_SIZE + 8),
             zIndex: 92,
             padding: "6px 10px",
             borderRadius: 8,
@@ -4294,7 +5090,7 @@ export default function App() {
           onClick={() => setShowZoom(true)}
           style={{
             position: "fixed",
-            left: toolbarPos.x,
+            left: Math.max(toolbarPos.x, 8),
             bottom: 16,
             zIndex: 92,
             padding: "6px 10px",

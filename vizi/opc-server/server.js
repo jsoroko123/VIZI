@@ -13,12 +13,14 @@ const require = createRequire(import.meta.url);
 const PLC = require("node-logix").default;
 
 const AI_SERVER_URL = process.env.AI_SERVER_URL || "http://localhost:5055";
+const OPC_SERVER_KEY = process.env.OPC_SERVER_KEY || "";
 const RESTART_PATH = path.resolve(process.cwd(), "restart.requested");
 const STATUS_PATH = process.env.OPC_STATUS_PATH || path.resolve(process.cwd(), "status.json");
 
 async function loadConfig() {
   try {
-    const res = await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/config`);
+    const headers = OPC_SERVER_KEY ? { "x-opc-key": OPC_SERVER_KEY } : undefined;
+    const res = await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/config`, { headers });
     if (res.ok) {
       return await res.json();
     }
@@ -112,10 +114,14 @@ async function main() {
         .filter((t) => t.name)
     : [];
 
-  if (!plcs.length || !tags.length) {
+  if (!plcs.length) {
     // eslint-disable-next-line no-console
-    console.error("Config missing PLC instances or tags list.");
+    console.error("Config missing PLC instances.");
     process.exit(1);
+  }
+  if (!tags.length) {
+    // eslint-disable-next-line no-console
+    console.warn("Config has no enabled tags yet. Waiting for tags to be added.");
   }
 
   const defaultPlcName = plcs[0].name;
@@ -211,6 +217,33 @@ async function main() {
     topicNodes.set(t.name, node);
   });
 
+  const numericTypes = new Set([
+    DataType.SByte,
+    DataType.Byte,
+    DataType.Int16,
+    DataType.UInt16,
+    DataType.Int32,
+    DataType.UInt32,
+    DataType.Int64,
+    DataType.UInt64,
+    DataType.Float,
+    DataType.Double,
+  ]);
+
+  function normalizeVariantValue(uaType, raw) {
+    if (uaType === DataType.Boolean) return Boolean(raw);
+    if (uaType === DataType.String) return raw == null ? "" : String(raw);
+    if (uaType === DataType.DateTime) {
+      const date = raw instanceof Date ? raw : new Date(raw);
+      return Number.isNaN(date.getTime()) ? new Date(0) : date;
+    }
+    if (numericTypes.has(uaType)) {
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : 0;
+    }
+    return raw ?? null;
+  }
+
   function createVariable(tag) {
     const uaType = tag.uaType
       ? DataType[String(tag.uaType)]
@@ -219,12 +252,13 @@ async function main() {
     namespace.addVariable({
       componentOf: node,
       browseName: tag.name,
+      minimumSamplingInterval: tag.samplingInterval || tag.pollMs || 1000,
       dataType: uaType,
       value: {
         get: () =>
           new Variant({
             dataType: uaType,
-            value: tagValues.get(tag.tagKey),
+            value: normalizeVariantValue(uaType, tagValues.get(tag.tagKey)),
           }),
         set: async (variant) => {
           try {
