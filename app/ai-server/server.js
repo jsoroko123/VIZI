@@ -14,7 +14,6 @@ const PORT = Number(process.env.PORT || 5055);
 const DEBUG_ROUTES = process.env.DEBUG_ROUTES === "1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 const REPO_ROOT = process.env.VIZI_ROOT || path.resolve(process.cwd(), "..");
-const OPC_STATUS_PATH = path.resolve(REPO_ROOT, "opc-server", "status.json");
 const OPC_CONFIG_PATH = path.resolve(REPO_ROOT, "opc-server", "config.json");
 
 const app = express();
@@ -129,6 +128,18 @@ async function requireAuth(req, res, next) {
         }
       }
     }
+    if (req.path === "/api/opc/status" && req.method === "POST") {
+      const opcKey = process.env.OPC_SERVER_KEY;
+      const headerKey = String(req.headers["x-opc-key"] || "");
+      if (opcKey) {
+        if (headerKey === opcKey) return next();
+      } else {
+        const ip = req.ip || req.socket?.remoteAddress || "";
+        if (ip === "127.0.0.1" || ip === "::1" || ip.endsWith("127.0.0.1")) {
+          return next();
+        }
+      }
+    }
     const user = await getUserFromRequest(req);
     if (!user) {
       res.status(401).json({ error: "Unauthorized" });
@@ -210,6 +221,7 @@ async function verifySchemaCoverage() {
     opc_tag_state_mappings: ["tag_key", "field", "state", "color", "updated_at"],
     opc_mapping_sets: ["name", "mappings", "updated_at"],
     opc_config: ["id", "config", "updated_at"],
+    opc_status: ["id", "status", "updated_at"],
     projects: ["id", "name", "data", "created_at", "updated_at", "updated_by"],
     equipment: [
       "id",
@@ -884,16 +896,40 @@ app.post("/api/opc/restart", (_req, res) => {
   }
 });
 
-app.get("/api/opc/status", (_req, res) => {
+app.get("/api/opc/status", async (_req, res) => {
   try {
-    if (!fs.existsSync(OPC_STATUS_PATH)) {
-      res.json({ values: {}, errors: {}, at: null });
+    const { rows } = await pool.query(
+      "SELECT status FROM opc_status WHERE id = 1 LIMIT 1"
+    );
+    if (!rows.length || !rows[0]?.status) {
+      res.json({ values: {}, errors: {}, qualities: {}, diagnostics: {}, at: null });
       return;
     }
-    const raw = fs.readFileSync(OPC_STATUS_PATH, "utf-8");
-    res.json(JSON.parse(raw));
+    res.json(rows[0].status);
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load OPC status." });
+  }
+});
+
+app.post("/api/opc/status", async (req, res) => {
+  try {
+    const status = req.body;
+    if (!status || typeof status !== "object" || Array.isArray(status)) {
+      res.status(400).json({ error: "status object required." });
+      return;
+    }
+    await pool.query(
+      `
+      INSERT INTO opc_status (id, status, updated_at)
+      VALUES (1, $1::jsonb, now())
+      ON CONFLICT (id)
+      DO UPDATE SET status = EXCLUDED.status, updated_at = now()
+      `,
+      [JSON.stringify(status)]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to save OPC status." });
   }
 });
 
@@ -1756,6 +1792,21 @@ async function start() {
       config JSONB NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS opc_status (
+      id INT PRIMARY KEY,
+      status JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE opc_status
+    ADD COLUMN IF NOT EXISTS status JSONB NOT NULL DEFAULT '{}'::jsonb;
+  `);
+  await pool.query(`
+    ALTER TABLE opc_status
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (

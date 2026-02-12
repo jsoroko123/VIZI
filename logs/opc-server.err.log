@@ -1,0 +1,16 @@
+Error: listen EADDRINUSE: address already in use :::4840
+    at Server.setupListenHandle [as _listen2] (node:net:1940:16)
+    at listenInCluster (node:net:1997:12)
+    at Server.listen (node:net:2102:7)
+    at OPCUAServerEndPoint.listen (C:\Projects\Vizi\app\opc-server\node_modules\node-opcua-server\dist\server_end_point.js:340:22)
+    at OPCUAServerEndPoint.start (C:\Projects\Vizi\app\opc-server\node_modules\node-opcua-server\dist\server_end_point.js:418:14)
+    at C:\Projects\Vizi\app\opc-server\node_modules\node-opcua-server\dist\base_server.js:210:69
+    at new Promise (<anonymous>)
+    at OPCUAServer.startAsync (C:\Projects\Vizi\app\opc-server\node_modules\node-opcua-server\dist\base_server.js:210:27)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 4840
+}

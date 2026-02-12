@@ -15,7 +15,6 @@ const PLC = require("node-logix").default;
 const AI_SERVER_URL = process.env.AI_SERVER_URL || "http://localhost:5055";
 const OPC_SERVER_KEY = process.env.OPC_SERVER_KEY || "";
 const RESTART_PATH = path.resolve(process.cwd(), "restart.requested");
-const STATUS_PATH = process.env.OPC_STATUS_PATH || path.resolve(process.cwd(), "status.json");
 
 async function loadConfig() {
   try {
@@ -222,6 +221,8 @@ async function main() {
   const tagQuality = new Map();
   const tagEffectiveInterval = new Map();
   const tagNextDueAt = new Map();
+  let statusPublishInFlight = false;
+  let pendingStatusPayload = null;
 
   function getLegacyTagKey(tag) {
     const topicName = tag.topic || "";
@@ -403,6 +404,28 @@ async function main() {
     tagsByPlc.get(t.plcName).push(t);
   });
 
+  async function flushStatusPublishQueue() {
+    if (statusPublishInFlight) return;
+    statusPublishInFlight = true;
+    try {
+      while (pendingStatusPayload) {
+        const payload = pendingStatusPayload;
+        pendingStatusPayload = null;
+        const headers = { "content-type": "application/json" };
+        if (OPC_SERVER_KEY) headers["x-opc-key"] = OPC_SERVER_KEY;
+        await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/status`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        });
+      }
+    } catch {
+      // ignore status publish errors
+    } finally {
+      statusPublishInFlight = false;
+    }
+  }
+
   function writeStatus() {
     try {
       const snapshot = {};
@@ -441,35 +464,29 @@ async function main() {
       });
       const allConnected = Array.from(plcConnected.values()).every(Boolean);
       const lastPollAt = Math.max(0, ...Array.from(plcLastPollAt.values()), 0);
-      fs.writeFileSync(
-        STATUS_PATH,
-        JSON.stringify(
-          {
-            at: Date.now(),
-            connected: allConnected,
-            connections: Object.fromEntries(plcConnected.entries()),
-            lastPollAt: lastPollAt || null,
-            values: snapshot,
-            errors,
-            qualities,
-            diagnostics,
-            runtime: {
-              readTimeoutMs,
-              errorBackoffEnabled,
-              errorBackoffBaseMs,
-              errorBackoffMaxMs,
-              errorBackoffThreshold,
-              pollJitterMs,
-              deadbandDefault,
-              reconnectDelayMs,
-              reconnectMaxAttempts,
-              heartbeatMs,
-            },
-          },
-          null,
-          2
-        )
-      );
+      pendingStatusPayload = {
+        at: Date.now(),
+        connected: allConnected,
+        connections: Object.fromEntries(plcConnected.entries()),
+        lastPollAt: lastPollAt || null,
+        values: snapshot,
+        errors,
+        qualities,
+        diagnostics,
+        runtime: {
+          readTimeoutMs,
+          errorBackoffEnabled,
+          errorBackoffBaseMs,
+          errorBackoffMaxMs,
+          errorBackoffThreshold,
+          pollJitterMs,
+          deadbandDefault,
+          reconnectDelayMs,
+          reconnectMaxAttempts,
+          heartbeatMs,
+        },
+      };
+      void flushStatusPublishQueue();
     } catch {
       // ignore status write errors
     }

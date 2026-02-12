@@ -1,0 +1,5 @@
+
+> vizi-opc-server@0.1.0 start
+> node server.js
+
+Connected to PLC RSLogix

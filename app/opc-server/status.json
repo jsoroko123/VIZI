@@ -1,10 +1,10 @@
 {
-  "at": 1770896416888,
+  "at": 1770896775722,
   "connected": true,
   "connections": {
     "RSLogix": true
   },
-  "lastPollAt": 1770896416389,
+  "lastPollAt": 1770896775664,
   "values": {
     "PLC1.HO_7700_PELLET_MILL.HMI_State": 1,
     "PLC1.HO_7700_PELLET_MILL.State": 1,
@@ -36,11 +36,11 @@
       "deadband": 0,
       "errorStreak": 0,
       "effectiveIntervalMs": 500,
-      "lastReadAt": 1770896416389,
-      "lastSuccessAt": 1770896416389,
+      "lastReadAt": 1770896775664,
+      "lastSuccessAt": 1770896775664,
       "lastErrorAt": 1770894204228,
       "lastErrorMessage": "Read timeout after 2000ms",
-      "nextDueAt": 1770896416889
+      "nextDueAt": 1770896776164
     },
     "PLC1.HO_7700_PELLET_MILL.State": {
       "topic": "PLC1",
@@ -51,11 +51,11 @@
       "deadband": 0,
       "errorStreak": 0,
       "effectiveIntervalMs": 500,
-      "lastReadAt": 1770896416389,
-      "lastSuccessAt": 1770896416389,
+      "lastReadAt": 1770896775664,
+      "lastSuccessAt": 1770896775664,
       "lastErrorAt": 1770894204228,
       "lastErrorMessage": "Read timeout after 2000ms",
-      "nextDueAt": 1770896416889
+      "nextDueAt": 1770896776164
     },
     "PLC1.HO_7700_PELLET_MILL.i_RouteID": {
       "topic": "PLC1",
@@ -66,11 +66,11 @@
       "deadband": 0,
       "errorStreak": 0,
       "effectiveIntervalMs": 1000,
-      "lastReadAt": 1770896416389,
-      "lastSuccessAt": 1770896416389,
+      "lastReadAt": 1770896775150,
+      "lastSuccessAt": 1770896775150,
       "lastErrorAt": 1770862863797,
       "lastErrorMessage": "Read timeout after 2000ms",
-      "nextDueAt": 1770896417389
+      "nextDueAt": 1770896776150
     },
     "PLC1.HO_7700_PELLET_MILL.RouteId": {
       "topic": "PLC1",
@@ -81,11 +81,11 @@
       "deadband": 0,
       "errorStreak": 0,
       "effectiveIntervalMs": 1000,
-      "lastReadAt": 1770896416389,
-      "lastSuccessAt": 1770896416389,
+      "lastReadAt": 1770896775150,
+      "lastSuccessAt": 1770896775150,
       "lastErrorAt": 1770862863797,
       "lastErrorMessage": "Read timeout after 2000ms",
-      "nextDueAt": 1770896417389
+      "nextDueAt": 1770896776150
     },
     "PLC1.HO_3000_PELLET_MILL.HMI_State": {
       "topic": "PLC1",
@@ -96,11 +96,11 @@
       "deadband": 0,
       "errorStreak": 0,
       "effectiveIntervalMs": 1000,
-      "lastReadAt": 1770896416389,
-      "lastSuccessAt": 1770896416389,
+      "lastReadAt": 1770896775150,
+      "lastSuccessAt": 1770896775150,
       "lastErrorAt": 1770862863283,
       "lastErrorMessage": "Read timeout after 2000ms",
-      "nextDueAt": 1770896417389
+      "nextDueAt": 1770896776150
     },
     "PLC1.HO_3000_PELLET_MILL.State": {
       "topic": "PLC1",
@@ -111,11 +111,11 @@
       "deadband": 0,
       "errorStreak": 0,
       "effectiveIntervalMs": 1000,
-      "lastReadAt": 1770896416389,
-      "lastSuccessAt": 1770896416389,
+      "lastReadAt": 1770896775150,
+      "lastSuccessAt": 1770896775150,
       "lastErrorAt": 1770862863283,
       "lastErrorMessage": "Read timeout after 2000ms",
-      "nextDueAt": 1770896417389
+      "nextDueAt": 1770896776150
     },
     "PLC1.HO_3000_PELLET_MILL.i_RouteID": {
       "topic": "PLC1",
@@ -126,11 +126,11 @@
       "deadband": 0,
       "errorStreak": 0,
       "effectiveIntervalMs": 1000,
-      "lastReadAt": 1770896416389,
-      "lastSuccessAt": 1770896416389,
+      "lastReadAt": 1770896775150,
+      "lastSuccessAt": 1770896775150,
       "lastErrorAt": 1770862861240,
       "lastErrorMessage": "Read timeout after 2000ms",
-      "nextDueAt": 1770896417389
+      "nextDueAt": 1770896776150
     },
     "PLC1.HO_3000_PELLET_MILL.RouteId": {
       "topic": "PLC1",
@@ -141,11 +141,11 @@
       "deadband": 0,
       "errorStreak": 0,
       "effectiveIntervalMs": 1000,
-      "lastReadAt": 1770896416389,
-      "lastSuccessAt": 1770896416389,
+      "lastReadAt": 1770896775150,
+      "lastSuccessAt": 1770896775150,
       "lastErrorAt": 1770862861240,
       "lastErrorMessage": "Read timeout after 2000ms",
-      "nextDueAt": 1770896417389
+      "nextDueAt": 1770896776150
     }
   },
   "runtime": {
