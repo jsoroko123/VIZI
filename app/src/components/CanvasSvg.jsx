@@ -47,10 +47,18 @@ export default function CanvasSvg({
   importAnchor,
   onCanvasDoubleClick,
   tagStateColorsByPath,
+  routeColorsBySvgKey,
+  routeStrokeColorByGroupPath,
+  svgLiveValuesByGroupPath,
+  opcLiveValues,
+  hiddenTagBubbleIds,
+  onHideTagBubble,
   onSvgDoubleClick, // ✅ used in TopRuler + main svg
+  collaboratorCursors,
+  theme,
 }) {
   const vb = useMemo(() => `0 0 ${vbW} ${vbH}`, [vbW, vbH]);
-  const isLineMode = tool === "polyline";
+  const isLineMode = tool === "polyline" || tool === "rect";
   const isCrosshair = isLineMode || marquee;
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
 
@@ -86,6 +94,164 @@ export default function CanvasSvg({
     return tagStateColorsByPath.get(key) || "";
   };
 
+  const getRouteColorForOverlay = (overlay) => {
+    if (!routeColorsBySvgKey) return "";
+    const lookup = (raw) => {
+      const key = String(raw || "").replace(/\r?\n/g, "").trim();
+      if (!key) return "";
+      const base = (key.split("/").pop() || "").trim();
+      return (
+        routeColorsBySvgKey.get(key) ||
+        routeColorsBySvgKey.get(key.toLowerCase()) ||
+        (base ? routeColorsBySvgKey.get(base) : "") ||
+        (base ? routeColorsBySvgKey.get(base.toLowerCase()) : "") ||
+        ""
+      );
+    };
+    return lookup(overlay?.tagPath) || lookup(overlay?.name) || lookup(overlay?.id) || "";
+  };
+
+  const getRouteStrokeColorForOverlay = (overlay) => {
+    if (!routeStrokeColorByGroupPath) return "";
+    const key = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
+    if (!key) return "";
+    return (
+      routeStrokeColorByGroupPath.get(key) ||
+      routeStrokeColorByGroupPath.get(key.toLowerCase()) ||
+      ""
+    );
+  };
+
+  const getLiveValuesForOverlay = (overlay) => {
+    if (!svgLiveValuesByGroupPath) return null;
+    const key = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
+    if (!key) return null;
+    return (
+      svgLiveValuesByGroupPath.get(key) ||
+      svgLiveValuesByGroupPath.get(key.toLowerCase()) ||
+      null
+    );
+  };
+
+  const getOverlayGroupLabel = (overlay) => {
+    const raw = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
+    if (!raw) return "";
+    const parts = raw.split(".").map((x) => x.trim()).filter(Boolean);
+    if (parts.length >= 2) return parts.slice(1).join(".");
+    return raw;
+  };
+
+  const liveLookup = useMemo(() => {
+    const map = new Map();
+    const src = opcLiveValues || {};
+    Object.entries(src).forEach(([key, value]) => {
+      const k = String(key || "").replace(/\r?\n/g, "").trim();
+      if (!k) return;
+      map.set(k, value);
+      map.set(k.toLowerCase(), value);
+    });
+    return map;
+  }, [opcLiveValues]);
+
+  const getLiveValueForTagPath = (rawTagPath) => {
+    const tagPath = String(rawTagPath || "").replace(/\r?\n/g, "").trim();
+    if (!tagPath) return "";
+
+    const candidates = [tagPath];
+    const parts = tagPath.split(".").map((x) => x.trim()).filter(Boolean);
+    for (let i = 1; i < parts.length; i += 1) {
+      candidates.push(parts.slice(i).join("."));
+    }
+    candidates.push(`Default.${tagPath}`);
+
+    for (const key of candidates) {
+      const direct = liveLookup.get(key);
+      if (direct != null && direct !== "") return String(direct);
+      const lower = liveLookup.get(String(key).toLowerCase());
+      if (lower != null && lower !== "") return String(lower);
+    }
+
+    // Fallback: overlay tagPath may be a group path (e.g. Default.Group).
+    // In that case, find a live value under that group key prefix.
+    for (const groupKey of candidates) {
+      const prefix = `${String(groupKey).toLowerCase()}.`;
+      const preferred = [
+        `${prefix}state`,
+        `${prefix}stcode`,
+        `${prefix}status`,
+        `${prefix}routeid`,
+        `${prefix}routenumber`,
+        `${prefix}value`,
+      ];
+      for (const k of preferred) {
+        const v = liveLookup.get(k);
+        if (v != null && v !== "") return String(v);
+      }
+      for (const [k, v] of liveLookup.entries()) {
+        if (typeof k !== "string") continue;
+        if (!k.startsWith(prefix)) continue;
+        if (v != null && v !== "") return String(v);
+      }
+    }
+    return "";
+  };
+
+  const getGroupRouteStateForTagPath = (rawTagPath) => {
+    const tagPath = String(rawTagPath || "").replace(/\r?\n/g, "").trim();
+    if (!tagPath) return { routeId: "", state: "" };
+
+    const candidates = [tagPath];
+    const parts = tagPath.split(".").map((x) => x.trim()).filter(Boolean);
+    for (let i = 1; i < parts.length; i += 1) {
+      candidates.push(parts.slice(i).join("."));
+    }
+    candidates.push(`Default.${tagPath}`);
+
+    const findBySuffixes = (suffixes) => {
+      for (const groupKey of candidates) {
+        const prefix = `${String(groupKey).toLowerCase()}.`;
+        for (const suffix of suffixes) {
+          const v = liveLookup.get(`${prefix}${suffix}`);
+          if (v != null && v !== "") return String(v);
+        }
+      }
+      return "";
+    };
+
+    return {
+      routeId: findBySuffixes(["routeid", "routenumber", "routeno", "route"]),
+      state: findBySuffixes(["state", "stcode", "status", "stat"]),
+    };
+  };
+
+  const userColor = (value) => {
+    const raw = String(value || "");
+    let hash = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      hash = (hash * 31 + raw.charCodeAt(i)) >>> 0;
+    }
+    const hue = hash % 360;
+    return `hsl(${hue} 75% 45%)`;
+  };
+
+  const collabCursors = useMemo(() => {
+    if (!Array.isArray(collaboratorCursors)) return [];
+    return collaboratorCursors
+      .map((entry) => {
+        const x = Number(entry?.x);
+        const y = Number(entry?.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        const username = String(entry?.username || "User").trim() || "User";
+        const userId = String(entry?.user_id || username);
+        return { userId, username, x, y, color: userColor(userId) };
+      })
+      .filter(Boolean);
+  }, [collaboratorCursors]);
+  const hiddenBubbleSet = useMemo(
+    () => new Set(Array.isArray(hiddenTagBubbleIds) ? hiddenTagBubbleIds : []),
+    [hiddenTagBubbleIds]
+  );
+
   const lastTagColorRef = useRef(new Map());
 
   const overrideSvgColors = (inner, color) => {
@@ -105,10 +271,23 @@ export default function CanvasSvg({
     return out;
   };
 
+  const overrideSvgStrokeOnly = (inner) => {
+    if (!inner) return inner;
+    const strokeRe = /stroke\s*=\s*["'][^"']*["']/gi;
+    const styleRe = /style\s*=\s*["']([^"']*)["']/gi;
+    let out = inner.replace(strokeRe, "");
+    out = out.replace(styleRe, (match, styleBody) => {
+      let next = styleBody.replace(/stroke\s*:\s*[^;]+;?/gi, "").trim();
+      if (!next) return "";
+      return `style="${next}"`;
+    });
+    return out;
+  };
+
   const getOverlayColorAtPoint = (pt) => {
     if (!pt || !svgOverlays?.length) return "";
     for (const o of svgOverlays) {
-      const color = getTagColor(o.tagPath);
+      const color = getRouteColorForOverlay(o) || getTagColor(o.tagPath);
       if (!color) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
@@ -122,6 +301,7 @@ export default function CanvasSvg({
     }
     return "";
   };
+
 
   // current transform values (WORLD -> SCREEN)
   const z = zoom || 1;
@@ -315,7 +495,7 @@ export default function CanvasSvg({
           y1={H}
           x2={x + 0.5}
           y2={H - len}
-          stroke="#666"
+          stroke="var(--ruler-line)"
           strokeWidth={1}
         />
       );
@@ -327,7 +507,7 @@ export default function CanvasSvg({
             x={x + 2}
             y={12}
             fontSize={10}
-            fill="#333"
+            fill="var(--ruler-text)"
             style={{ userSelect: "none" }}
           >
             {x}px
@@ -345,8 +525,8 @@ export default function CanvasSvg({
           position: "absolute",
           left: 0,
           top: 0,
-          background: "#f3f3f3",
-          borderBottom: "1px solid #cfcfcf",
+          background: "var(--bg-soft)",
+          borderBottom: "1px solid var(--border)",
           pointerEvents: "none",
           zIndex: 10,
           userSelect: "none",
@@ -367,7 +547,7 @@ export default function CanvasSvg({
           onSvgDoubleClick?.(e);
         }}
       >
-        <rect x={0} y={0} width={W} height={H} fill="#f3f3f3" />
+        <rect x={0} y={0} width={W} height={H} fill="var(--bg-soft)" />
         {ticks}
       </svg>
     );
@@ -403,7 +583,7 @@ export default function CanvasSvg({
           y1={sy + 0.5}
           x2={len}
           y2={sy + 0.5}
-          stroke="#666"
+          stroke="var(--ruler-line)"
           strokeWidth={1}
         />
       );
@@ -415,7 +595,7 @@ export default function CanvasSvg({
             x={4}
             y={sy + 10}
             fontSize={10}
-            fill="#333"
+            fill="var(--ruler-text)"
             style={{ userSelect: "none" }}
           >
             {Math.round(wy)}
@@ -433,13 +613,13 @@ export default function CanvasSvg({
           position: "absolute",
           right: 0,
           top: RULER,
-          background: "#f3f3f3",
-          borderLeft: "1px solid #cfcfcf",
+          background: "var(--bg-soft)",
+          borderLeft: "1px solid var(--border)",
           pointerEvents: "none",
           zIndex: 10,
         }}
       >
-        <rect x={0} y={0} width={W} height={H} fill="#f3f3f3" />
+        <rect x={0} y={0} width={W} height={H} fill="var(--bg-soft)" />
         {ticks}
       </svg>
     );
@@ -501,6 +681,73 @@ export default function CanvasSvg({
     return undefined;
   };
 
+  const renderTagBubble = ({ key, bubbleId, x, anchorY, lines, anchor = "middle" }) => {
+    if (!Array.isArray(lines) || lines.length === 0) return null;
+    const fontSize = 8 * inv;
+    const lineH = 9.5 * inv;
+    const padX = 4 * inv;
+    const padY = 3.5 * inv;
+    const radius = 7 * inv;
+    const maxChars = lines.reduce((m, line) => Math.max(m, String(line || "").length), 0);
+    const textW = Math.max(22 * inv, maxChars * 5.4 * inv);
+    const w = textW + padX * 2;
+    const h = lineH * lines.length + padY * 2;
+    const top = anchorY - h - 8 * inv;
+    const left = anchor === "start" ? x : x - w / 2;
+    const textX = anchor === "start" ? x + padX : x;
+    const textAnchor = anchor === "start" ? "start" : "middle";
+
+    return (
+      <g key={key}>
+        <line
+          x1={x}
+          y1={top + h}
+          x2={x}
+          y2={anchorY - 2}
+          stroke="#0f172a"
+          strokeWidth={1 * inv}
+          vectorEffect="non-scaling-stroke"
+        />
+        <rect
+          x={left}
+          y={top}
+          width={w}
+          height={h}
+          rx={radius}
+          ry={radius}
+          fill="rgba(255,255,255,0.92)"
+          stroke="rgba(15,23,42,0.35)"
+          strokeWidth={1 * inv}
+          vectorEffect="non-scaling-stroke"
+          style={{ cursor: onHideTagBubble ? "pointer" : "default" }}
+          onClick={
+            onHideTagBubble
+              ? (e) => {
+                  e.stopPropagation();
+                  if (bubbleId) onHideTagBubble(bubbleId);
+                }
+              : undefined
+          }
+        />
+        <text
+          x={textX}
+          y={top + padY}
+          fontSize={fontSize}
+          fill="#0f172a"
+          textAnchor={textAnchor}
+          dominantBaseline="hanging"
+          pointerEvents="none"
+        >
+          {lines.map((line, idx) => (
+            <tspan key={`${key}-${idx}`} x={textX} dy={idx === 0 ? 0 : lineH}>
+              {line}
+            </tspan>
+          ))}
+        </text>
+      </g>
+    );
+  };
+
   return (
     <div
       ref={wrapRef}
@@ -525,9 +772,9 @@ export default function CanvasSvg({
           top: 0,
           width: RULER,
           height: RULER,
-          background: "#f3f3f3",
-          borderLeft: "1px solid #cfcfcf",
-          borderBottom: "1px solid #cfcfcf",
+          background: "var(--bg-soft)",
+          borderLeft: "1px solid var(--border)",
+          borderBottom: "1px solid var(--border)",
           pointerEvents: "none",
           zIndex: 11,
         }}
@@ -551,7 +798,7 @@ export default function CanvasSvg({
           tabIndex={0}
           style={{
             display: "block",
-            background: "#fff",
+            background: "var(--canvas-bg)",
             outline: "none",
             cursor: isCrosshair ? "crosshair" : "default",
           }}
@@ -654,17 +901,6 @@ export default function CanvasSvg({
               const isEditing = s.id === editingId;
               const dynamicColor = getTagColor(s.tagPath);
 
-              const lineStyle = s.lineStyle ?? "solid";
-              const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
-
-              const arrowStart = s.arrowStart ?? "none";
-              const arrowEnd = s.arrowEnd ?? "none";
-
-              const ptsForDisplay = pointsForMarker(s.points);
-              const startPoint =
-                Array.isArray(s.points) && s.points.length ? s.points[0] : null;
-              const touchColor = startPoint ? getOverlayColorAtPoint(startPoint) : "";
-
               if (s.type === "text") {
                 const selected = selectedIds.includes(s.id);
                 const isEditing = editingId === s.id;
@@ -731,7 +967,12 @@ export default function CanvasSvg({
                     <text
                       x={s.x}
                       y={s.y}
-                      fill={dynamicColor || s.fill || "#808080"}
+                      fill={
+                        dynamicColor ||
+                        (theme === "dark" && (!s.fill || String(s.fill).toLowerCase() === "#808080")
+                          ? "#ffffff"
+                          : s.fill || "#808080")
+                      }
                       fontSize={s.fontSize || 24}
                       fontFamily={s.fontFamily || "system-ui"}
                       fontWeight={s.fontWeight || "400"}
@@ -770,6 +1011,80 @@ export default function CanvasSvg({
                   </g>
                 );
               }
+
+              if (s.type === "rect") {
+                const rx = Number(s.x ?? 0);
+                const ry = Number(s.y ?? 0);
+                const rw = Math.max(0, Number(s.width ?? 0));
+                const rh = Math.max(0, Number(s.height ?? 0));
+                const lineStyle = s.lineStyle ?? "solid";
+                const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
+                const stroke =
+                  isSelected
+                    ? "#2b6cff"
+                    : dynamicColor || (theme === "dark" ? "#ffffff" : s.stroke || "#111111");
+                const fill = s.fill ?? "transparent";
+
+                return (
+                  <g key={s.id}>
+                    <rect
+                      x={rx - 6}
+                      y={ry - 6}
+                      width={rw + 12}
+                      height={rh + 12}
+                      fill="rgba(0,0,0,0.001)"
+                      pointerEvents="all"
+                      onMouseDown={(e) => onShapeMouseDown(e, s.id)}
+                      onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (tool === "select") {
+                          setSelectedIds?.([s.id]);
+                          setSelectedOverlayIds?.([]);
+                        }
+                        onContextMenu?.(e);
+                      }}
+                      style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+                    />
+                    <rect
+                      x={rx}
+                      y={ry}
+                      width={rw}
+                      height={rh}
+                      fill={fill}
+                      stroke={stroke}
+                      strokeWidth={s.strokeWidth}
+                      {...styleProps}
+                      strokeLinejoin={styleProps.strokeLinejoin ?? "round"}
+                      strokeLinecap={styleProps.strokeLinecap ?? "round"}
+                      vectorEffect="non-scaling-stroke"
+                      pointerEvents="auto"
+                      onMouseDown={(e) => onShapeMouseDown(e, s.id)}
+                      onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (tool === "select") {
+                          setSelectedIds?.([s.id]);
+                          setSelectedOverlayIds?.([]);
+                        }
+                        onContextMenu?.(e);
+                      }}
+                      style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+                    />
+                  </g>
+                );
+              }
+
+              const lineStyle = s.lineStyle ?? "solid";
+              const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
+              const arrowStart = s.arrowStart ?? "none";
+              const arrowEnd = s.arrowEnd ?? "none";
+              const ptsForDisplay = pointsForMarker(s.points);
+              const startPoint =
+                Array.isArray(s.points) && s.points.length ? s.points[0] : null;
+              const touchColor = startPoint ? getOverlayColorAtPoint(startPoint) : "";
 
               return (
                 <g key={s.id}>
@@ -830,7 +1145,11 @@ export default function CanvasSvg({
                   <polyline
                     points={pointsToAttr(ptsForDisplay)}
                     fill="none"
-                    stroke={isSelected ? "#2b6cff" : touchColor || dynamicColor || s.stroke}
+                    stroke={
+                      isSelected
+                        ? "#2b6cff"
+                        : touchColor || dynamicColor || (theme === "dark" ? "#ffffff" : s.stroke)
+                    }
                     strokeWidth={s.strokeWidth}
                     // ✅ Apply styleProps FIRST so our explicit defaults don’t overwrite it
                     {...styleProps}
@@ -911,6 +1230,7 @@ export default function CanvasSvg({
                   >
                     {(() => {
                       const tagFill = getTagColor(o.tagPath);
+                      const routeStroke = getRouteStrokeColorForOverlay(o);
                       if (tagFill) {
                         const key = String(o.tagPath || o.id || "");
                         const prev = lastTagColorRef.current.get(key);
@@ -920,12 +1240,16 @@ export default function CanvasSvg({
                           lastTagColorRef.current.set(key, tagFill);
                         }
                       }
-                      const inner = tagFill ? overrideSvgColors(o.inner, tagFill) : o.inner;
+                      const inner = tagFill
+                        ? overrideSvgColors(o.inner, tagFill)
+                        : routeStroke
+                        ? overrideSvgStrokeOnly(o.inner)
+                        : o.inner;
                       return (
                         <g
                           style={{
                             fill: tagFill || o.fill || "none",
-                            stroke: o.stroke ?? "none",
+                            stroke: routeStroke || (o.stroke ?? "none"),
                             pointerEvents: "visiblePainted",
                           }}
                           dangerouslySetInnerHTML={{ __html: inner }}
@@ -988,97 +1312,117 @@ export default function CanvasSvg({
               );
             })}
 
-            {showTagPaths && (
+            {collabCursors.length > 0 && (
               <g pointerEvents="none">
+                {collabCursors.map((c) => {
+                  const label = c.username.length > 24 ? `${c.username.slice(0, 24)}...` : c.username;
+                  const labelW = Math.max(44, label.length * 7 + 12);
+                  return (
+                    <g
+                      key={`cursor-${c.userId}`}
+                      transform={`translate(${c.x} ${c.y}) scale(${1 / (z || 1)})`}
+                    >
+                      <path
+                        d="M0 0 L0 17 L4.5 12.8 L8 20 L11 18.7 L7.7 11.8 L14 11.8 Z"
+                        fill={c.color}
+                        stroke="#ffffff"
+                        strokeWidth={1.1}
+                      />
+                      <rect
+                        x={16}
+                        y={-4}
+                        width={labelW}
+                        height={18}
+                        rx={6}
+                        ry={6}
+                        fill={c.color}
+                        opacity={0.9}
+                      />
+                      <text x={22} y={8.5} fill="#fff" fontSize={11} fontWeight={600}>
+                        {label}
+                      </text>
+                    </g>
+                  );
+                })}
+              </g>
+            )}
+
+            {showTagPaths && (
+              <g>
                 {(() => {
-                  const offsets = [0, 1, -1, 2, -2, 3, -3];
-                  let labelIndex = 0;
-                  const nextOffset = () => {
-                    const offset = offsets[labelIndex % offsets.length] * (12 * inv);
-                    labelIndex += 1;
-                    return offset;
-                  };
                   return shapes.map((s) => {
                   const text = String(s.tagPath || "").trim();
                   if (!text) return null;
-                  const yOffset = nextOffset();
+                  if (hiddenBubbleSet.has(s.id)) return null;
+                  const lines = [text];
+                  const yOffset = 0;
                   if (s.type === "text") {
                     const x = Number(s.x ?? 0);
-                    const y = Number(s.y ?? 0) - 6 + yOffset;
                     const anchorY = Number(s.y ?? 0);
-                    return (
-                      <g key={`tag-${s.id}`}>
-                        <line
-                          x1={x}
-                          y1={y + 2}
-                          x2={x}
-                          y2={anchorY - 2}
-                          stroke="#111"
-                          strokeWidth={1 * inv}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                        <text x={x} y={y} fontSize={10 * inv} fill="#111">
-                          {text}
-                        </text>
-                      </g>
-                    );
+                    return renderTagBubble({
+                      key: `tag-${s.id}`,
+                      bubbleId: s.id,
+                      x,
+                      anchorY: anchorY + yOffset,
+                      lines,
+                      anchor: "start",
+                    });
+                  }
+                  if (s.type === "rect") {
+                    const x = Number(s.x ?? 0) + Math.max(0, Number(s.width ?? 0)) / 2;
+                    const anchorY = Number(s.y ?? 0) + yOffset;
+                    return renderTagBubble({
+                      key: `tag-${s.id}`,
+                      bubbleId: s.id,
+                      x,
+                      anchorY,
+                      lines,
+                      anchor: "middle",
+                    });
                   }
                   if (Array.isArray(s.points) && s.type !== "polyline") {
                     const bb = bboxOfPoints(s.points);
                     if (!bb) return null;
                     const x = bb.minX + bb.w / 2;
-                    const y = bb.minY - 6 + yOffset;
-                    return (
-                      <g key={`tag-${s.id}`}>
-                        <line
-                          x1={x}
-                          y1={y + 2}
-                          x2={x}
-                          y2={bb.minY - 2}
-                          stroke="#111"
-                          strokeWidth={1 * inv}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                        <text x={x} y={y} fontSize={10 * inv} fill="#111" textAnchor="middle">
-                          {text}
-                        </text>
-                      </g>
-                    );
+                    return renderTagBubble({
+                      key: `tag-${s.id}`,
+                      bubbleId: s.id,
+                      x,
+                      anchorY: bb.minY + yOffset,
+                      lines,
+                      anchor: "middle",
+                    });
                   }
                   return null;
                 });
                 })()}
                 {(() => {
-                  const offsets = [0, 1, -1, 2, -2, 3, -3];
-                  let labelIndex = 0;
-                  const nextOffset = () => {
-                    const offset = offsets[labelIndex % offsets.length] * (12 * inv);
-                    labelIndex += 1;
-                    return offset;
-                  };
                   return svgOverlays.map((o) => {
-                  const text = String(o.tagPath || "").trim();
-                  if (!text) return null;
-                  const bb = overlayLocalBBox(o.id);
+                  if (hiddenBubbleSet.has(o.id)) return null;
+                  const text = getOverlayGroupLabel(o);
+                  const live = getLiveValuesForOverlay(o);
+                  const groupLive = getGroupRouteStateForTagPath(o?.tagPath);
+                  const lines = [];
+                  if (text) lines.push(text);
+                  if (live?.routeId || groupLive.routeId) {
+                    lines.push(`RouteID: ${live?.routeId || groupLive.routeId}`);
+                  }
+                  if (live?.state || groupLive.state) {
+                    lines.push(`State: ${live?.state || groupLive.state}`);
+                  }
+                  if (!lines.length) return null;
+                  const bb = o?.bbox || overlayLocalBBox(o.id);
                   if (!bb) return null;
                   const x = o.tx + o.scale * (bb.x + bb.width / 2);
-                  const y = o.ty + o.scale * bb.y - 6 + nextOffset();
-                  return (
-                    <g key={`tag-${o.id}`}>
-                      <line
-                        x1={x}
-                        y1={y + 2}
-                        x2={x}
-                        y2={o.ty + o.scale * bb.y - 2}
-                        stroke="#111"
-                        strokeWidth={1 * inv}
-                        vectorEffect="non-scaling-stroke"
-                      />
-                      <text x={x} y={y} fontSize={10 * inv} fill="#111" textAnchor="middle">
-                        {text}
-                      </text>
-                    </g>
-                  );
+                  const anchorY = o.ty + o.scale * bb.y;
+                  return renderTagBubble({
+                    key: `tag-${o.id}`,
+                    bubbleId: o.id,
+                    x,
+                    anchorY,
+                    lines,
+                    anchor: "middle",
+                  });
                 });
                 })()}
               </g>

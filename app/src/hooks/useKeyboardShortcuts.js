@@ -13,6 +13,7 @@ export function useKeyboardShortcuts({
   setTool,
   closeImport,
   clearSelection,
+  selectAll,
   clearImportAnchor,
   deleteSelected,
 }) {
@@ -113,8 +114,12 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // Optional: Ctrl/Cmd+A select all (if you want)
-      // if (mod && key === "a") { e.preventDefault(); /* your select all */ }
+      // Ctrl/Cmd + A => Select all
+      if (mod && key === "a") {
+        e.preventDefault();
+        e.stopPropagation();
+        selectAll?.();
+      }
     }
 
     // ✅ Capture=true so we get the shortcut even if something else is listening
@@ -132,6 +137,7 @@ export function useKeyboardShortcuts({
     setTool,
     closeImport,
     clearSelection,
+    selectAll,
     deleteSelected,
   ]);
 }

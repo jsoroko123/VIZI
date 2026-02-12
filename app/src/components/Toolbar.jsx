@@ -1,5 +1,5 @@
 // src/components/Toolbar.jsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 
 function IconButton({ title, active, onClick, children }) {
   return (
@@ -61,6 +61,11 @@ const Icons = {
       <circle cx="19" cy="12" r="2" fill="currentColor" />
     </svg>
   ),
+  rect: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+      <rect x="5" y="6" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  ),
   text: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
       <path
@@ -82,6 +87,13 @@ const Icons = {
       />
       <path d="M5 7h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       <path d="M7 7V4h10v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  ),
+  widget: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+      <rect x="3" y="12" width="4" height="8" rx="1" stroke="currentColor" strokeWidth="2" />
+      <rect x="10" y="8" width="4" height="12" rx="1" stroke="currentColor" strokeWidth="2" />
+      <rect x="17" y="5" width="4" height="15" rx="1" stroke="currentColor" strokeWidth="2" />
     </svg>
   ),
   export: (
@@ -235,7 +247,7 @@ function GroupLabel({ children }) {
         fontSize: 10,
         letterSpacing: "0.08em",
         textTransform: "uppercase",
-        color: "rgba(0,0,0,0.45)",
+        color: "#ffffff",
         marginBottom: 4,
         marginLeft: 2,
         userSelect: "none",
@@ -251,6 +263,8 @@ export default function Toolbar({
   setTool,
   importOpen,
   setImportOpen,
+  widgetOpen,
+  setWidgetOpen,
   exportSVG,
   exportIgnitionJson,
   editingId,
@@ -267,16 +281,12 @@ export default function Toolbar({
   exitEditMode,
   setSelectedOverlayIds,
   deleteSelected,
-  showToolbar,
-  setShowToolbar,
   showTagPaths,
   setShowTagPaths,
   showGrid,
   setShowGrid,
   bounds = { top: 8, left: 8, right: 8, bottom: 8 },
 }) {
-  if (!showToolbar) return null;
-
   const dragRef = useRef({ dragging: false, ox: 0, oy: 0 });
   const posRef = useRef(toolbarPos);
   const panelRef = useRef(null);
@@ -312,6 +322,19 @@ export default function Toolbar({
     };
   }, []);
 
+  function startToolbarDrag(e) {
+    if (e.button !== 0) return;
+    if (e.target instanceof Element && e.target.closest("button")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = panelRef.current?.getBoundingClientRect();
+    dragRef.current.dragging = true;
+    dragRef.current.ox = e.clientX - (posRef.current?.x ?? 16);
+    dragRef.current.oy = e.clientY - (posRef.current?.y ?? 50);
+    dragRef.current.panelW = rect?.width || 260;
+    dragRef.current.panelH = rect?.height || 100;
+  }
+
   return (
     <div
       ref={panelRef}
@@ -323,29 +346,19 @@ export default function Toolbar({
         flexDirection: "row",
         gap: 12,
         padding: "10px 12px",
+        paddingRight: 34,
         borderRadius: 14,
-        background: "linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(247,247,247,0.94) 100%)",
-        border: "1px solid rgba(0,0,0,0.08)",
+        background:
+          "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 98%, white 2%) 0%, color-mix(in srgb, var(--bg-elev) 92%, black 8%) 100%)",
+        border: "1px solid var(--border)",
         backdropFilter: "blur(10px)",
-        boxShadow: "0 16px 34px rgba(0,0,0,0.22)",
+        boxShadow: "0 16px 34px color-mix(in srgb, var(--text) 24%, transparent)",
         zIndex: 31,
         alignItems: "flex-start",
       }}
-      onMouseDown={(e) => e.stopPropagation()}
+      onMouseDown={startToolbarDrag}
     >
-      <div
-        style={{ display: "flex", flexDirection: "column" }}
-        onMouseDown={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const rect = panelRef.current?.getBoundingClientRect();
-          dragRef.current.dragging = true;
-          dragRef.current.ox = e.clientX - (posRef.current?.x ?? 16);
-          dragRef.current.oy = e.clientY - (posRef.current?.y ?? 50);
-          dragRef.current.panelW = rect?.width || 260;
-          dragRef.current.panelH = rect?.height || 100;
-        }}
-      >
+      <div style={{ display: "flex", flexDirection: "column" }}>
         <GroupLabel>File</GroupLabel>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <IconButton title="Export SVG" active={false} onClick={exportSVG}>
@@ -353,15 +366,6 @@ export default function Toolbar({
           </IconButton>
           <IconButton title="Export Ignition JSON" active={false} onClick={exportIgnitionJson}>
             {Icons.json}
-          </IconButton>
-          <IconButton title="Save Project" active={false} onClick={exportProjectJson}>
-            {Icons.save}
-          </IconButton>
-          <IconButton title="Save Project As..." active={false} onClick={exportProjectJsonAs}>
-            {Icons.saveAs}
-          </IconButton>
-          <IconButton title="Load Project (JSON)" active={false} onClick={importProjectJson}>
-            {Icons.load}
           </IconButton>
         </div>
       </div>
@@ -374,9 +378,12 @@ export default function Toolbar({
           <IconButton title="Add SVG" active={importOpen} onClick={() => setImportOpen?.(true)}>
             {Icons.import}
           </IconButton>
+          <IconButton title="Add Widget" active={widgetOpen} onClick={() => setWidgetOpen?.(true)}>
+            {Icons.widget}
+          </IconButton>
           <IconButton
             title="Select / Move (Shift-click for multi-select)"
-            active={tool === "select" && !editingId}
+            active={tool === "select"}
             onClick={() => {
               setTool("select");
               setDrawing?.(null);
@@ -395,6 +402,18 @@ export default function Toolbar({
             }}
           >
             {Icons.poly}
+          </IconButton>
+          <IconButton
+            title="Rectangle"
+            active={tool === "rect"}
+            onClick={() => {
+              setTool("rect");
+              setDrawing?.(null);
+              exitEditMode?.();
+              setSelectedOverlayIds?.([]);
+            }}
+          >
+            {Icons.rect}
           </IconButton>
           <IconButton
             title="Text (click to place)"
@@ -425,9 +444,6 @@ export default function Toolbar({
             onClick={toggleEditMode}
           >
             {Icons.edit}
-          </IconButton>
-          <IconButton title="Close toolbar" active={false} onClick={() => setShowToolbar?.(false)}>
-            {Icons.close}
           </IconButton>
         </div>
       </div>

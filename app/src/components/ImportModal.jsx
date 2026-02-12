@@ -43,13 +43,13 @@ export default function ImportModal({
   }, [importOpen]);
 
   const closeBtnStyle = {
-    border: "1px solid #e6e6e6",
-    background: "white",
+    border: "1px solid var(--border)",
+    background: "var(--bg-elev)",
     borderRadius: 10,
     padding: "4px 8px",
     cursor: "pointer",
     lineHeight: 1,
-    color: "#111",
+    color: "var(--text)",
   };
 
   const grouped = useMemo(() => {
@@ -184,9 +184,9 @@ export default function ImportModal({
           width: "min(560px, 92vw)",
           minHeight: "min(520px, 80vh)",
           maxHeight: "min(520px, 80vh)",
-          background: "white",
+          background: "var(--bg-elev)",
           borderRadius: 16,
-          border: "1px solid #e6e6e6",
+          border: "1px solid var(--border)",
           boxShadow: "0 14px 50px rgba(0,0,0,0.22)",
           position: "relative",
           overflow: "hidden",
@@ -208,9 +208,9 @@ export default function ImportModal({
             position: "sticky",
             top: 0,
             zIndex: 2,
-            background: "white",
+            background: "var(--bg-elev)",
             padding: 16,
-            borderBottom: "1px solid #f0f0f0",
+            borderBottom: "1px solid var(--border)",
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
@@ -220,7 +220,7 @@ export default function ImportModal({
             </button>
           </div>
 
-          <div style={{ marginTop: 8, color: "#808080", fontSize: 16, fontWeight: "bold" }}>
+          <div style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 16, fontWeight: "bold" }}>
             SVG Templates
           </div>
 
@@ -232,11 +232,11 @@ export default function ImportModal({
                 placeholder="Search..."
                 style={{
                   width: "100%",
-                  border: "1px solid #e6e6e6",
-                  background: "white",
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
                   borderRadius: 12,
                   padding: "10px 34px 10px 12px",
-                  color: "#111",
+                  color: "var(--text)",
                   outline: "none",
                   fontSize: 13,
                   boxSizing: "border-box",
@@ -255,11 +255,11 @@ export default function ImportModal({
                     width: 22,
                     height: 22,
                     borderRadius: 8,
-                    border: "1px solid #e6e6e6",
-                    background: "white",
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
                     cursor: "pointer",
                     lineHeight: 1,
-                    color: "#111",
+                    color: "var(--text)",
                     padding: 0,
                   }}
                 >
@@ -271,17 +271,17 @@ export default function ImportModal({
         </div>
 
         <div style={{ padding: "18px 22px 22px 18px" }}>
-          <div style={{ marginTop: 0, display: "grid", gap: 8, color: "#808080" }}>
+          <div style={{ marginTop: 0, display: "grid", gap: 8, color: "var(--text-muted)" }}>
             {list.length === 0 ? (
-              <div style={{ color: "#808080" }}>
+              <div style={{ color: "var(--text-muted)" }}>
                 No SVGs found. Put files in <b>src/assets/SVG Files</b>.
               </div>
             ) : grouped.length === 0 ? (
-              <div style={{ color: "#808080" }}>No matches.</div>
+              <div style={{ color: "var(--text-muted)" }}>No matches.</div>
             ) : (
               grouped.map((group) => (
                 <div key={group.folder} style={{ display: "grid", gap: 8 }}>
-                  <div style={{ color: "#808080", fontSize: 13, fontWeight: 800, padding: "4px 2px" }}>
+                  <div style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 800, padding: "4px 2px" }}>
                     {group.folder}
                   </div>
 
@@ -301,10 +301,10 @@ export default function ImportModal({
                         textAlign: "left",
                         padding: "10px 12px",
                         borderRadius: 12,
-                        border: "1px solid #e6e6e6",
-                        background: "white",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
                         cursor: "pointer",
-                        color: "#808080",
+                        color: "var(--text)",
                       }}
                       title={f.key}
                     >
@@ -328,8 +328,8 @@ export default function ImportModal({
               width: tipW,
               height: tipH,
               zIndex: 9999,
-              background: "rgba(255,255,255,0.98)",
-              border: "1px solid #e6e6e6",
+              background: "color-mix(in srgb, var(--bg-elev) 96%, transparent)",
+              border: "1px solid var(--border)",
               borderRadius: 14,
               boxShadow: "0 14px 50px rgba(0,0,0,0.18)",
               padding: 10,
@@ -339,22 +339,22 @@ export default function ImportModal({
               gap: 8,
             }}
           >
-            <div style={{ fontSize: 12, color: "#666", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {hoverKey.split("/").pop()}
             </div>
 
             <div
               style={{
-                border: "1px solid #f0f0f0",
+                border: "1px solid var(--border)",
                 borderRadius: 12,
-                background: "white",
+                background: "var(--bg-elev)",
                 display: "grid",
                 placeItems: "center",
                 overflow: "hidden",
               }}
             >
               {previewLoading ? (
-                <div style={{ fontSize: 12, color: "#888" }}>Loading...</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Loading...</div>
               ) : preview?.inner ? (
                 <svg
                   width="190"
@@ -364,7 +364,7 @@ export default function ImportModal({
                   dangerouslySetInnerHTML={{ __html: preview.inner }}
                 />
               ) : (
-                <div style={{ fontSize: 12, color: "#888" }}>No preview</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No preview</div>
               )}
             </div>
           </div>

@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 const { Pool } = pkg;
 
 const PORT = Number(process.env.PORT || 5055);
+const DEBUG_ROUTES = process.env.DEBUG_ROUTES === "1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 const REPO_ROOT = process.env.VIZI_ROOT || path.resolve(process.cwd(), "..");
 const OPC_STATUS_PATH = path.resolve(REPO_ROOT, "opc-server", "status.json");
@@ -198,6 +199,75 @@ async function buildSchemaContext() {
   }
 
   return lines.join("\n");
+}
+
+async function verifySchemaCoverage() {
+  const expected = {
+    ui_table_config: ["table_name", "list_fields", "detail_fields"],
+    users: ["id", "username", "password_hash", "password_salt", "created_at", "display_name", "avatar_url"],
+    user_sessions: ["id", "user_id", "token_hash", "created_at", "expires_at"],
+    opc_tag_templates: ["name", "fields", "parent_name", "state_mappings", "group_name"],
+    opc_tag_state_mappings: ["tag_key", "field", "state", "color", "updated_at"],
+    opc_mapping_sets: ["name", "mappings", "updated_at"],
+    opc_config: ["id", "config", "updated_at"],
+    projects: ["id", "name", "data", "created_at", "updated_at", "updated_by"],
+    equipment: [
+      "id",
+      "name",
+      "description",
+      "type",
+      "floor",
+      "groupNumber",
+      "visible",
+      "new",
+      "notes",
+      "tag_path",
+    ],
+    ai_reports: ["id", "user_id", "name", "description", "sql", "created_at", "updated_at"],
+  };
+
+  for (const [table, cols] of Object.entries(expected)) {
+    const { rows } = await pool.query(
+      `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = $1
+      `,
+      [table]
+    );
+    const existing = new Set(rows.map((r) => r.column_name));
+    if (!existing.size) {
+      throw new Error(`Schema verification failed: missing table "${table}"`);
+    }
+    const missing = cols.filter((c) => !existing.has(c));
+    if (missing.length) {
+      throw new Error(
+        `Schema verification failed: table "${table}" missing column(s): ${missing.join(", ")}`
+      );
+    }
+  }
+
+  const { rows: routesTable } = await pool.query(
+    `
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'routes'
+    LIMIT 1
+    `
+  );
+  if (routesTable.length) {
+    const { rows: routeCols } = await pool.query(
+      `
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'routes' AND column_name = 'project_id'
+      LIMIT 1
+      `
+    );
+    if (!routeCols.length) {
+      throw new Error(`Schema verification failed: table "routes" missing column "project_id"`);
+    }
+  }
 }
 
 const client = new OpenAI({
@@ -470,6 +540,79 @@ function validateSql(sql) {
   return statements;
 }
 
+function mergeByIdArray(base, incoming) {
+  const out = new Map();
+  (Array.isArray(base) ? base : []).forEach((item, idx) => {
+    const key = item && typeof item === "object" && item.id ? `id:${item.id}` : `base:${idx}`;
+    out.set(key, item);
+  });
+  (Array.isArray(incoming) ? incoming : []).forEach((item, idx) => {
+    const key = item && typeof item === "object" && item.id ? `id:${item.id}` : `inc:${idx}`;
+    out.set(key, item);
+  });
+  return Array.from(out.values());
+}
+
+function mergeProjectData(current, incoming) {
+  const base = current && typeof current === "object" ? current : {};
+  const next = incoming && typeof incoming === "object" ? incoming : {};
+  return {
+    ...base,
+    ...next,
+    shapes: mergeByIdArray(base.shapes, next.shapes),
+    svgOverlays: mergeByIdArray(base.svgOverlays, next.svgOverlays),
+  };
+}
+
+const PROJECT_CURSOR_TTL_MS = 10_000;
+const projectCursorPresence = new Map();
+
+function cleanupProjectCursors(projectId) {
+  const now = Date.now();
+  const key = String(projectId || "");
+  const byUser = projectCursorPresence.get(key);
+  if (!byUser) return;
+  for (const [userId, entry] of byUser.entries()) {
+    if (!entry || now - Number(entry.at || 0) > PROJECT_CURSOR_TTL_MS) {
+      byUser.delete(userId);
+    }
+  }
+  if (!byUser.size) {
+    projectCursorPresence.delete(key);
+  }
+}
+
+function sanitizeReadOnlyQuery(sql) {
+  let text = String(sql || "").trim();
+  if (!text) throw new Error("Empty query.");
+  if (text.endsWith(";")) text = text.slice(0, -1).trim();
+  if (!text) throw new Error("Empty query.");
+  if (text.includes(";")) throw new Error("Only one SQL statement is allowed.");
+  if (!/^(select|with)\b/i.test(text)) {
+    throw new Error("Only read-only SELECT queries are allowed.");
+  }
+  if (
+    /\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|comment|copy|call|execute|do)\b/i.test(
+      text
+    )
+  ) {
+    throw new Error("Only read-only SELECT queries are allowed.");
+  }
+  if (!/\blimit\s+\d+\b/i.test(text)) {
+    text = `${text} LIMIT 100`;
+  }
+  return text;
+}
+
+function extractSimpleFromTable(sql) {
+  const text = String(sql || "");
+  const m = text.match(/\bfrom\s+("?[\w]+"?)(?:\s+\w+)?/i);
+  if (!m) return null;
+  const raw = String(m[1] || "").replace(/"/g, "");
+  if (!/^[a-zA-Z0-9_]+$/.test(raw)) return null;
+  return raw;
+}
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -515,7 +658,12 @@ app.post("/api/opc/config", async (req, res) => {
 app.get("/api/projects", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT id, name, updated_at FROM projects ORDER BY updated_at DESC"
+      `
+      SELECT p.id, p.name, p.updated_at, p.updated_by, u.username AS updated_by_username
+      FROM projects p
+      LEFT JOIN users u ON u.id = p.updated_by
+      ORDER BY p.updated_at DESC
+      `
     );
     res.json({ projects: rows });
   } catch (err) {
@@ -531,7 +679,12 @@ app.get("/api/projects/:id", async (req, res) => {
       return;
     }
     const { rows } = await pool.query(
-      "SELECT id, name, data, updated_at FROM projects WHERE id = $1",
+      `
+      SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
+      FROM projects p
+      LEFT JOIN users u ON u.id = p.updated_by
+      WHERE p.id = $1
+      `,
       [id]
     );
     if (!rows.length) {
@@ -544,11 +697,82 @@ app.get("/api/projects/:id", async (req, res) => {
   }
 });
 
+app.post("/api/projects/:id/cursor", async (req, res) => {
+  try {
+    const projectId = String(req.params.id || "").trim();
+    if (!projectId) {
+      res.status(400).json({ error: "Project id required." });
+      return;
+    }
+    const userId = req.user?.id;
+    const username = String(req.user?.username || "").trim() || "User";
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const x = Number(req.body?.x);
+    const y = Number(req.body?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      res.status(400).json({ error: "x and y must be finite numbers." });
+      return;
+    }
+
+    cleanupProjectCursors(projectId);
+    let byUser = projectCursorPresence.get(projectId);
+    if (!byUser) {
+      byUser = new Map();
+      projectCursorPresence.set(projectId, byUser);
+    }
+    byUser.set(String(userId), {
+      user_id: userId,
+      username,
+      x,
+      y,
+      at: Date.now(),
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to update cursor." });
+  }
+});
+
+app.get("/api/projects/:id/cursors", async (req, res) => {
+  try {
+    const projectId = String(req.params.id || "").trim();
+    if (!projectId) {
+      res.status(400).json({ error: "Project id required." });
+      return;
+    }
+    const currentUserId = String(req.user?.id || "");
+    cleanupProjectCursors(projectId);
+    const byUser = projectCursorPresence.get(projectId);
+    if (!byUser) {
+      res.json({ cursors: [] });
+      return;
+    }
+    const cursors = Array.from(byUser.values())
+      .filter((entry) => String(entry.user_id || "") !== currentUserId)
+      .map((entry) => ({
+        user_id: entry.user_id,
+        username: entry.username,
+        x: entry.x,
+        y: entry.y,
+        at: entry.at,
+      }));
+    res.json({ cursors });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load cursors." });
+  }
+});
+
 app.post("/api/projects", async (req, res) => {
   try {
+    const userId = req.user?.id || null;
     const incomingId = String(req.body?.id || "").trim();
     const name = String(req.body?.name || "").trim();
     const data = req.body?.data;
+    const teamMerge = req.body?.teamMerge !== false;
     if (!name) {
       res.status(400).json({ error: "Project name required." });
       return;
@@ -567,33 +791,66 @@ app.post("/api/projects", async (req, res) => {
         res.status(409).json({ error: "Project name already exists." });
         return;
       }
+      const { rows: existingRows } = await pool.query(
+        "SELECT data FROM projects WHERE id = $1 LIMIT 1",
+        [id]
+      );
+      const mergedData =
+        existingRows.length && teamMerge
+          ? mergeProjectData(existingRows[0]?.data || {}, data || {})
+          : data;
       await pool.query(
         `
-        INSERT INTO projects (id, name, data)
-        VALUES ($1, $2, $3::jsonb)
+        INSERT INTO projects (id, name, data, updated_by)
+        VALUES ($1, $2, $3::jsonb, $4)
         ON CONFLICT (id)
-        DO UPDATE SET name = EXCLUDED.name, data = EXCLUDED.data, updated_at = now()
+        DO UPDATE SET
+          name = EXCLUDED.name,
+          data = EXCLUDED.data,
+          updated_by = EXCLUDED.updated_by,
+          updated_at = now()
         `,
-        [id, name, JSON.stringify(data)]
+        [id, name, JSON.stringify(mergedData), userId]
       );
       const { rows } = await pool.query(
-        "SELECT id, name, updated_at FROM projects WHERE id = $1",
+        `
+        SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
+        FROM projects p
+        LEFT JOIN users u ON u.id = p.updated_by
+        WHERE p.id = $1
+        `,
         [id]
       );
       res.json({ project: rows[0] });
       return;
     }
+    const { rows: existingByName } = await pool.query(
+      "SELECT data FROM projects WHERE name = $1 LIMIT 1",
+      [name]
+    );
+    const mergedByName =
+      existingByName.length && teamMerge
+        ? mergeProjectData(existingByName[0]?.data || {}, data || {})
+        : data;
     await pool.query(
       `
-      INSERT INTO projects (id, name, data)
-      VALUES ($1, $2, $3::jsonb)
+      INSERT INTO projects (id, name, data, updated_by)
+      VALUES ($1, $2, $3::jsonb, $4)
       ON CONFLICT (name)
-      DO UPDATE SET data = EXCLUDED.data, updated_at = now()
+      DO UPDATE SET
+        data = EXCLUDED.data,
+        updated_by = EXCLUDED.updated_by,
+        updated_at = now()
       `,
-      [id, name, JSON.stringify(data)]
+      [id, name, JSON.stringify(mergedByName), userId]
     );
     const { rows } = await pool.query(
-      "SELECT id, name, updated_at FROM projects WHERE name = $1",
+      `
+      SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
+      FROM projects p
+      LEFT JOIN users u ON u.id = p.updated_by
+      WHERE p.name = $1
+      `,
       [name]
     );
     res.json({ project: rows[0] });
@@ -832,6 +1089,35 @@ app.get("/api/db/tables", async (_req, res) => {
   }
 });
 
+app.get("/api/db/schema", async (_req, res) => {
+  try {
+    const tablesSql = `
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      ORDER BY table_name;
+    `;
+    const { rows: tables } = await pool.query(tablesSql);
+    const schema = {};
+    for (const row of tables) {
+      const table = row.table_name;
+      const { rows: cols } = await pool.query(
+        `
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = $1
+        ORDER BY ordinal_position;
+        `,
+        [table]
+      );
+      schema[table] = cols;
+    }
+    res.json({ schema });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load schema." });
+  }
+});
+
 app.get("/api/db/:table/meta", async (req, res) => {
   try {
     const table = String(req.params.table || "");
@@ -870,6 +1156,17 @@ app.get("/api/db/:table/meta", async (req, res) => {
       const sql = `SELECT * FROM ${safeIdent(table)} ${where} ${order} LIMIT $1 OFFSET $2`;
       const params = projectId ? [limit, offset, projectId] : [limit, offset];
       const { rows } = await pool.query(sql, params);
+      if (DEBUG_ROUTES && table === "routes") {
+        // eslint-disable-next-line no-console
+        console.log("[routes api] query", {
+          limit,
+          offset,
+          project_id: projectId || null,
+          count: rows.length,
+        });
+        // eslint-disable-next-line no-console
+        console.log("[routes api] sample", rows.slice(0, 5));
+      }
     const cfg = await pool.query(
       "SELECT list_fields, detail_fields FROM ui_table_config WHERE table_name = $1",
       [table]
@@ -1024,6 +1321,145 @@ app.delete("/api/db/:table/:id", async (req, res) => {
   }
 });
 
+app.get("/api/reports", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT id, name, description, sql, created_at, updated_at
+      FROM ai_reports
+      WHERE user_id = $1
+      ORDER BY updated_at DESC
+      `,
+      [userId]
+    );
+    res.json({ reports: rows });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load reports." });
+  }
+});
+
+app.post("/api/reports", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const incomingId = String(req.body?.id || "").trim();
+    const name = String(req.body?.name || "").trim();
+    const description = String(req.body?.description || "").trim();
+    const sql = sanitizeReadOnlyQuery(String(req.body?.sql || ""));
+    if (!name) {
+      res.status(400).json({ error: "Report name required." });
+      return;
+    }
+    const id = incomingId || crypto.randomUUID();
+    if (incomingId) {
+      const { rowCount } = await pool.query(
+        `
+        UPDATE ai_reports
+        SET name = $1, description = $2, sql = $3, updated_at = now()
+        WHERE id = $4 AND user_id = $5
+        `,
+        [name, description || null, sql, id, userId]
+      );
+      if (!rowCount) {
+        res.status(404).json({ error: "Report not found." });
+        return;
+      }
+    } else {
+      await pool.query(
+        `
+        INSERT INTO ai_reports (id, user_id, name, description, sql)
+        VALUES ($1, $2, $3, $4, $5)
+        `,
+        [id, userId, name, description || null, sql]
+      );
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT id, name, description, sql, created_at, updated_at
+      FROM ai_reports
+      WHERE id = $1 AND user_id = $2
+      LIMIT 1
+      `,
+      [id, userId]
+    );
+    res.json({ report: rows[0] || null });
+  } catch (err) {
+    if (String(err?.message || "").includes("ai_reports_user_name_idx")) {
+      res.status(409).json({ error: "Report name already exists." });
+      return;
+    }
+    res.status(500).json({ error: err?.message || "Failed to save report." });
+  }
+});
+
+app.post("/api/reports/:id/run", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const id = String(req.params.id || "").trim();
+    if (!id) {
+      res.status(400).json({ error: "Report id required." });
+      return;
+    }
+    const { rows } = await pool.query(
+      "SELECT id, name, description, sql FROM ai_reports WHERE id = $1 AND user_id = $2 LIMIT 1",
+      [id, userId]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: "Report not found." });
+      return;
+    }
+    const report = rows[0];
+    const sql = sanitizeReadOnlyQuery(report.sql);
+    const result = await pool.query(sql);
+    const columns = (result.fields || []).map((f) => f.name);
+    const dataRows = Array.isArray(result.rows) ? result.rows : [];
+    res.json({
+      report: {
+        id: report.id,
+        name: report.name,
+        description: report.description || "",
+        sql,
+      },
+      columns,
+      rows: dataRows,
+      rowCount: dataRows.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to run report." });
+  }
+});
+
+app.delete("/api/reports/:id", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const id = String(req.params.id || "").trim();
+    if (!id) {
+      res.status(400).json({ error: "Report id required." });
+      return;
+    }
+    await pool.query("DELETE FROM ai_reports WHERE id = $1 AND user_id = $2", [id, userId]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to delete report." });
+  }
+});
+
 app.post("/api/ai/table-preview", async (req, res) => {
   try {
     const { prompt, history } = req.body || {};
@@ -1040,8 +1476,15 @@ app.post("/api/ai/table-preview", async (req, res) => {
     }
 
     const system = [
-      "You are a PostgreSQL expert.",
-      "Output ONLY JSON with keys: sql, summary.",
+      "You are a PostgreSQL expert assistant.",
+      "Output ONLY valid JSON with keys: mode, sql, summary, report_name.",
+      "mode must be one of: ddl, query, report, answer.",
+      "Use mode=ddl for CREATE/ALTER-style schema requests.",
+      "Use mode=query when user asks to show/list/find/read records from tables.",
+      "Use mode=report when user asks to build a reusable report.",
+      "Use mode=answer for non-SQL conversational replies (sql can be empty).",
+      "For mode=query and mode=report, generate exactly one safe read-only SELECT (or WITH ... SELECT) statement.",
+      "For mode=query, include a LIMIT clause unless user explicitly asks for a different reasonable limit.",
       "Do not include code fences or extra text.",
       "Use lower_snake_case for table and column names unless user specifies otherwise.",
     ].join(" ");
@@ -1082,10 +1525,11 @@ app.post("/api/ai/table-preview", async (req, res) => {
 
     let text = await getModelText(input);
     let json = extractJson(text) || repairJson(text);
-    if (!json?.sql) {
+    if (!json) {
       const strictSystem = [
         "Return ONLY valid JSON. No prose.",
-        "Keys: sql, summary.",
+        "Keys: mode, sql, summary, report_name.",
+        "mode must be ddl, query, report, or answer.",
         "Do not include markdown or code fences.",
       ].join(" ");
       const retryInput = [
@@ -1095,17 +1539,81 @@ app.post("/api/ai/table-preview", async (req, res) => {
       text = await getModelText(retryInput);
       json = extractJson(text) || repairJson(text);
     }
-    if (!json?.sql) {
+    if (!json) {
       res.json({
-        sql: text.trim(),
+        mode: "answer",
+        sql: "",
         summary: "Model response did not return JSON; showing raw output.",
+        answer: text.trim(),
+      });
+      return;
+    }
+    const modeRaw = String(json.mode || "").trim().toLowerCase();
+    const mode = ["ddl", "query", "report", "answer"].includes(modeRaw) ? modeRaw : "answer";
+    const sqlText = String(json.sql || "").trim();
+    const summaryText = String(json.summary || "").trim();
+    const reportName = String(json.report_name || "").trim();
+
+    if (mode === "query" || mode === "report") {
+      if (!sqlText) {
+        res.status(400).json({ error: "Query mode returned no SQL." });
+        return;
+      }
+      const safeQuery = sanitizeReadOnlyQuery(sqlText);
+      let result = await pool.query(safeQuery);
+      let columns = (result.fields || []).map((f) => f.name);
+      let rows = Array.isArray(result.rows) ? result.rows : [];
+      let usedFallback = false;
+
+      // If AI over-filters and returns 0 rows, try a safe unfiltered table preview.
+      if (rows.length === 0 && /\bwhere\b/i.test(safeQuery)) {
+        const table = extractSimpleFromTable(safeQuery);
+        if (table) {
+          const fallbackSql = `SELECT * FROM ${safeIdent(table)} LIMIT 100`;
+          const fallback = await pool.query(fallbackSql);
+          const fallbackRows = Array.isArray(fallback.rows) ? fallback.rows : [];
+          if (fallbackRows.length > 0) {
+            result = fallback;
+            columns = (fallback.fields || []).map((f) => f.name);
+            rows = fallbackRows;
+            usedFallback = true;
+          }
+        }
+      }
+      res.json({
+        mode,
+        sql: safeQuery,
+        summary:
+          summaryText ||
+          (usedFallback
+            ? `No rows matched the filter. Showing ${rows.length} row(s) from the table.`
+            : `Returned ${rows.length} row(s).`),
+        columns,
+        rows,
+        rowCount: rows.length,
+        usedFallback,
+        reportName,
+      });
+      return;
+    }
+
+    if (mode === "ddl") {
+      if (!sqlText) {
+        res.status(400).json({ error: "DDL mode returned no SQL." });
+        return;
+      }
+      res.json({
+        mode,
+        sql: sqlText,
+        summary: summaryText,
       });
       return;
     }
 
     res.json({
-      sql: String(json.sql || "").trim(),
-      summary: String(json.summary || "").trim(),
+      mode: "answer",
+      sql: "",
+      summary: summaryText || text.trim(),
     });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Server error." });
@@ -1259,7 +1767,103 @@ async function start() {
     );
   `);
   await pool.query(`
+    ALTER TABLE projects
+    ADD COLUMN IF NOT EXISTS updated_by INT;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'projects_updated_by_fkey'
+      ) THEN
+        ALTER TABLE projects
+        ADD CONSTRAINT projects_updated_by_fkey
+        FOREIGN KEY (updated_by) REFERENCES users(id)
+        ON DELETE SET NULL;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS projects_name_idx ON projects(name);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS equipment (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      type TEXT NOT NULL DEFAULT '',
+      floor TEXT NOT NULL DEFAULT '',
+      "groupNumber" INTEGER,
+      visible BOOLEAN NOT NULL DEFAULT true,
+      "new" BOOLEAN NOT NULL DEFAULT false,
+      notes TEXT NOT NULL DEFAULT '',
+      tag_path TEXT
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS floor TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS "groupNumber" INTEGER;
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS visible BOOLEAN NOT NULL DEFAULT true;
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS "new" BOOLEAN NOT NULL DEFAULT false;
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS tag_path TEXT;
+  `);
+  await pool.query(
+    `
+    INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
+    VALUES (
+      'equipment',
+      $1::jsonb,
+      $2::jsonb
+    )
+    ON CONFLICT (table_name) DO NOTHING
+    `,
+    [
+      JSON.stringify(["name", "type", "floor", "groupNumber", "visible", "new", "tag_path"]),
+      JSON.stringify(["name", "description", "type", "floor", "groupNumber", "visible", "new", "notes", "tag_path"]),
+    ]
+  );
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_reports (
+      id TEXT PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      sql TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ai_reports_user_name_idx ON ai_reports(user_id, name);
   `);
   await pool.query(`
     DO $$
@@ -1301,6 +1905,7 @@ async function start() {
     ALTER TABLE opc_tag_templates
     ADD COLUMN IF NOT EXISTS group_name TEXT;
   `);
+  await verifySchemaCoverage();
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`AI server listening on http://localhost:${PORT}`);

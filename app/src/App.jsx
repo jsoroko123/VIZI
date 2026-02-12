@@ -1,9 +1,9 @@
 // src/App.jsx
 import { useMemo, useRef, useState, useEffect } from "react";
-import Toolbar from "./components/Toolbar";
 import PropertiesPanel from "./components/PropertiesPanel";
 import HelpPanel from "./components/HelpPanel";
 import ImportModal from "./components/ImportModal";
+import WidgetSelectorModal from "./components/WidgetSelectorModal";
 import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
 import OpcConfig from "./components/OpcConfig";
@@ -31,6 +31,7 @@ import { exportToIgnitionJson, downloadIgnitionJson } from "./utils/ignitionExpo
 
 // Vite: put SVGs in src/assets/SVG Files/*.svg
 const SVG_LIBRARY = import.meta.glob("./assets/SVG_Files/**/*.svg", { as: "raw" });
+const THEME_KEY = "vizi_theme";
 // (no eager:true)
 
 function getFolderFromKey(key) {
@@ -51,21 +52,70 @@ function normalizeTagValue(value) {
     .trim();
 }
 
+function normalizeRouteTagKey(value) {
+  return normalizeTagValue(value).replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function isRouteIdTagKey(value) {
+  const key = normalizeRouteTagKey(value);
+  return (
+    key === "routeid" ||
+    key === "routenumber" ||
+    key === "routeno" ||
+    key === "route"
+  );
+}
+
+function isStateTagKey(value) {
+  const key = normalizeRouteTagKey(value);
+  return key === "state" || key === "stcode" || key === "status" || key === "stat";
+}
+
+function widgetTemplate(widgetKey) {
+  const templates = {
+    lineChart: {
+      name: "Widget-LineChart.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Line Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><line x1="36" y1="42" x2="36" y2="142" stroke="#475569" stroke-width="2"/><polyline points="42,130 92,108 136,118 180,84 232,98 286,60" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    },
+    barChart: {
+      name: "Widget-BarChart.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Bar Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><rect x="58" y="96" width="30" height="46" rx="4" fill="#22c55e"/><rect x="104" y="76" width="30" height="66" rx="4" fill="#38bdf8"/><rect x="150" y="52" width="30" height="90" rx="4" fill="#f59e0b"/><rect x="196" y="88" width="30" height="54" rx="4" fill="#a78bfa"/><rect x="242" y="66" width="30" height="76" rx="4" fill="#fb7185"/></svg>`,
+    },
+    areaChart: {
+      name: "Widget-AreaChart.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Area Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><path d="M42,128 L90,102 L138,114 L186,80 L234,96 L286,70 L286,142 L42,142 Z" fill="#22c55e55" stroke="#22c55e" stroke-width="3"/></svg>`,
+    },
+    gauge: {
+      name: "Widget-Gauge.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 180"><rect x="1" y="1" width="258" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Gauge</text><path d="M46 132a84 84 0 0 1 168 0" fill="none" stroke="#334155" stroke-width="16" stroke-linecap="round"/><path d="M46 132a84 84 0 0 1 126 -72" fill="none" stroke="#22c55e" stroke-width="16" stroke-linecap="round"/><line x1="130" y1="132" x2="192" y2="88" stroke="#e2e8f0" stroke-width="4" stroke-linecap="round"/><circle cx="130" cy="132" r="6" fill="#e2e8f0"/></svg>`,
+    },
+    kpi: {
+      name: "Widget-KPI.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 140"><rect x="1" y="1" width="238" height="138" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">KPI</text><text x="20" y="84" fill="#22c55e" font-size="42" font-family="system-ui" font-weight="700">98.7%</text><text x="20" y="112" fill="#94a3b8" font-size="12" font-family="system-ui">Target: 95%</text></svg>`,
+    },
+    statusTable: {
+      name: "Widget-StatusTable.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 190"><rect x="1" y="1" width="338" height="188" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Status Table</text><rect x="16" y="40" width="308" height="28" rx="6" fill="#1e293b"/><text x="28" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Tag</text><text x="170" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">State</text><text x="252" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Quality</text><rect x="16" y="74" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="108" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="142" width="308" height="30" rx="6" fill="#111827"/></svg>`,
+    },
+  };
+  return templates[widgetKey] || templates.lineChart;
+}
+
 
 
 
 export default function App() {
   const { user, logout, updateProfile, changePassword } = useAuth();
-  const [tool, setTool] = useState("select"); // "select" | "polyline"
+  const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect"
   const DEFAULT_STROKE = "#808080";
   const DEFAULT_FILL = "#cccccc";
-  const [shapes, setShapes] = useState([]); // polylines only
+  const [shapes, setShapes] = useState([]); // polyline | rect | text
 
   // Multi-selection
   const [selectedIds, setSelectedIds] = useState([]); // polyline ids
   const [selectedOverlayIds, setSelectedOverlayIds] = useState([]); // overlay ids
 
-  // drawing = { mode:"draw-poly", id }
+  // drawing = { mode:"draw-poly"|"draw-rect", id, start?:{x,y} }
   const [drawing, setDrawing] = useState(null);
   const [inlineEdit, setInlineEdit] = useState(null); // { id, value }
 
@@ -80,10 +130,12 @@ export default function App() {
 
   // Import picker UI
   const [importOpen, setImportOpen] = useState(false);
+  const [widgetOpen, setWidgetOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   const [lastContextPoint, setLastContextPoint] = useState(null);
   const [panelCursor, setPanelCursor] = useState(null);
   const [contextImportQuery, setContextImportQuery] = useState("");
+  const [contextSvgTagQuery, setContextSvgTagQuery] = useState("");
   const [contextSvgMenuOpen, setContextSvgMenuOpen] = useState(false);
   const [contextSvgMenuPos, setContextSvgMenuPos] = useState({ x: 0, y: 0 });
   const contextSvgMenuTimerRef = useRef(null);
@@ -104,10 +156,13 @@ export default function App() {
   const [showZoom, setShowZoom] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showTagPaths, setShowTagPaths] = useState(false);
+  const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
   const [marquee, setMarquee] = useState(null);
 
   const [vbW, setVbW] = useState(1600);
   const [vbH, setVbH] = useState(900);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
   const [viewBoxOpen, setViewBoxOpen] = useState(false);
 
   const [importAnchor, setImportAnchor] = useState(null);
@@ -132,9 +187,20 @@ export default function App() {
   const [projectName, setProjectName] = useState("Untitled");
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState("");
+  const [projectRouteRows, setProjectRouteRows] = useState([]);
   const [projectStatus, setProjectStatus] = useState("");
+  const [activeProjectUpdatedAt, setActiveProjectUpdatedAt] = useState("");
+  const [activeProjectUpdatedBy, setActiveProjectUpdatedBy] = useState("");
+  const [projectCursors, setProjectCursors] = useState([]);
   const [showProjectNameInput, setShowProjectNameInput] = useState(false);
-  const autoLoadedProjectRef = useRef(false);
+  const [showProjectDrawer, setShowProjectDrawer] = useState(false);
+  const [projectSearch, setProjectSearch] = useState("");
+  const lastProjectSignatureRef = useRef("");
+  const projectSaveInFlightRef = useRef(false);
+  const autoSaveTimerRef = useRef(null);
+  const pendingSilentSaveRef = useRef(false);
+  const queuedSaveAfterFlightRef = useRef(null); // null | "silent" | "manual"
+  const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
 
   useEffect(() => {
     let alive = true;
@@ -301,10 +367,13 @@ export default function App() {
       const tagPath = normalizeTagValue(tag?.tagPath || "");
       const tagName = normalizeTagValue(tag?.name || "");
       const topicName = normalizeTagValue(tag?.topic || "");
+      const groupName = normalizeTagValue(tag?.groupName || "");
       const keyCandidates = [
         tagPath,
         topicName && tagName ? `${topicName}.${tagName}` : "",
         topicName && tagPath ? `${topicName}.${tagPath}` : "",
+        groupName,
+        topicName && groupName ? `${topicName}.${groupName}` : "",
       ].filter(Boolean);
       if (!keyCandidates.length) return;
       const key = topicName ? `${topicName}.${tag?.name || ""}` : tag?.name || "";
@@ -365,8 +434,302 @@ export default function App() {
     return map;
   }, [opcTags, opcLiveValues, opcTemplateMap, opcTagMappingMap, opcMappingSetMap]);
 
+  const routeColorsBySvgKey = useMemo(() => {
+    const map = new Map();
+    const pickRouteColor = (row) => {
+      if (!row || typeof row !== "object") return "";
+      const direct =
+        row?.routecolor ??
+        row?.route_color ??
+        row?.routeColor ??
+        row?.color ??
+        "";
+      const directColor = normalizeTagValue(direct);
+      if (directColor) return directColor;
+      for (const [field, value] of Object.entries(row)) {
+        const f = String(field || "").toLowerCase();
+        if (!f.includes("color")) continue;
+        const c = normalizeTagValue(value);
+        if (c) return c;
+      }
+      return "";
+    };
+
+    const addKey = (raw, color) => {
+      const key = normalizeTagValue(raw);
+      if (!key || !color) return;
+      map.set(key, color);
+      map.set(key.toLowerCase(), color);
+      const base = key.split("/").pop() || "";
+      const baseTrim = normalizeTagValue(base);
+      if (baseTrim) {
+        map.set(baseTrim, color);
+        map.set(baseTrim.toLowerCase(), color);
+        const noExt = baseTrim.replace(/\.svg$/i, "");
+        if (noExt && noExt !== baseTrim) {
+          map.set(noExt, color);
+          map.set(noExt.toLowerCase(), color);
+        }
+      }
+    };
+
+    const addRowKeys = (row, color) => {
+      if (!row || typeof row !== "object") return;
+      Object.entries(row).forEach(([field, value]) => {
+        const fieldKey = String(field || "").toLowerCase();
+        if (!fieldKey) return;
+        if (fieldKey.includes("color")) return;
+        if (fieldKey === "project_id" || fieldKey === "projectid") return;
+        if (value == null) return;
+        if (typeof value === "string" || typeof value === "number") {
+          addKey(value, color);
+        }
+      });
+    };
+
+    (projectRouteRows || []).forEach((row) => {
+      const color = pickRouteColor(row);
+      if (!color) return;
+
+      addKey(row?.tag_path, color);
+      addKey(row?.tagPath, color);
+      addKey(row?.svg_tag_path, color);
+      addKey(row?.svgTagPath, color);
+      addKey(row?.svg_path, color);
+      addKey(row?.svgPath, color);
+      addKey(row?.svg_name, color);
+      addKey(row?.svgName, color);
+      addKey(row?.route, color);
+      addKey(row?.route_name, color);
+      addKey(row?.routeName, color);
+      addKey(row?.name, color);
+      addKey(row?.path, color);
+      addKey(row?.id, color);
+      addRowKeys(row, color);
+    });
+
+    return map;
+  }, [projectRouteRows]);
+
+  const routeColorByRouteNumber = useMemo(() => {
+    const map = new Map();
+    const pickRouteColor = (row) => {
+      if (!row || typeof row !== "object") return "";
+      const direct =
+        row?.routecolor ??
+        row?.route_color ??
+        row?.routeColor ??
+        row?.color ??
+        "";
+      const directColor = normalizeTagValue(direct);
+      if (directColor) return directColor;
+      for (const [field, value] of Object.entries(row)) {
+        if (!String(field || "").toLowerCase().includes("color")) continue;
+        const c = normalizeTagValue(value);
+        if (c) return c;
+      }
+      return "";
+    };
+    const pickRouteNumber = (row) => {
+      if (!row || typeof row !== "object") return "";
+      const direct =
+        row?.["Route Number"] ??
+        row?.route_number ??
+        row?.routeNumber ??
+        row?.routenumber ??
+        "";
+      const d = normalizeTagValue(direct);
+      if (d) return d;
+      for (const [field, value] of Object.entries(row)) {
+        const f = String(field || "").toLowerCase();
+        if (!f.includes("route")) continue;
+        if (!f.includes("number") && f !== "route" && f !== "routeid") continue;
+        const v = normalizeTagValue(value);
+        if (v) return v;
+      }
+      return "";
+    };
+
+    (projectRouteRows || []).forEach((row) => {
+      const routeNum = pickRouteNumber(row);
+      const color = pickRouteColor(row);
+      if (!routeNum || !color) return;
+      map.set(routeNum, color);
+      map.set(routeNum.toLowerCase(), color);
+    });
+    return map;
+  }, [projectRouteRows]);
+
+  const routeStrokeColorByGroupPath = useMemo(() => {
+    const map = new Map();
+    const live = opcLiveValues || {};
+
+    const readLiveTagValue = (tag, topic) => {
+      const group = normalizeTagValue(tag?.groupName || "");
+      const cands = [
+        topic && group && tag?.name ? `${topic}.${group}.${tag.name}` : "",
+        topic && group && tag?.tagPath ? `${topic}.${group}.${tag.tagPath}` : "",
+        topic && tag?.name ? `${topic}.${tag.name}` : "",
+        topic && tag?.tagPath ? `${topic}.${tag.tagPath}` : "",
+        group && tag?.name ? `${group}.${tag.name}` : "",
+        group && tag?.tagPath ? `${group}.${tag.tagPath}` : "",
+        tag?.name || "",
+        tag?.tagPath || "",
+      ]
+        .map((x) => normalizeTagValue(x))
+        .filter(Boolean);
+      for (const k of cands) {
+        if (Object.prototype.hasOwnProperty.call(live, k)) return live[k];
+        const lower = k.toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(live, lower)) return live[lower];
+      }
+      return null;
+    };
+
+    (opcTags || []).forEach((tag) => {
+      const topic = normalizeTagValue(tag?.topic || "");
+      const group = normalizeTagValue(tag?.groupName || "");
+      if (!topic || !group) return;
+
+      const tagKeyA = tag?.name || "";
+      const tagKeyB = tag?.tagPath || "";
+      if (!isRouteIdTagKey(tagKeyA) && !isRouteIdTagKey(tagKeyB)) return;
+
+      const routeValueRaw = readLiveTagValue(tag, topic);
+      const routeValue = normalizeTagValue(routeValueRaw);
+      if (!routeValue) return;
+      const color =
+        routeColorByRouteNumber.get(routeValue) ||
+        routeColorByRouteNumber.get(routeValue.toLowerCase()) ||
+        "";
+      if (!color) return;
+
+      const groupPath = `${topic}.${group}`;
+      map.set(groupPath, color);
+      map.set(groupPath.toLowerCase(), color);
+      map.set(group, color);
+      map.set(group.toLowerCase(), color);
+    });
+
+    return map;
+  }, [opcTags, opcLiveValues, routeColorByRouteNumber]);
+
+  const svgLiveValuesByGroupPath = useMemo(() => {
+    const map = new Map();
+    const live = opcLiveValues || {};
+
+    const readLiveTagValue = (tag, topic) => {
+      const group = normalizeTagValue(tag?.groupName || "");
+      const candidates = [
+        topic && group && tag?.tagPath ? `${topic}.${group}.${tag.tagPath}` : "",
+        topic && group && tag?.name ? `${topic}.${group}.${tag.name}` : "",
+        topic && tag?.tagPath ? `${topic}.${tag.tagPath}` : "",
+        topic && tag?.name ? `${topic}.${tag.name}` : "",
+        group && tag?.tagPath ? `${group}.${tag.tagPath}` : "",
+        group && tag?.name ? `${group}.${tag.name}` : "",
+        tag?.tagPath || "",
+        tag?.name || "",
+      ]
+        .map((x) => normalizeTagValue(x))
+        .filter(Boolean);
+
+      for (const key of candidates) {
+        if (live[key] != null && live[key] !== "") return live[key];
+        const lower = key.toLowerCase();
+        if (live[lower] != null && live[lower] !== "") return live[lower];
+      }
+      return "";
+    };
+
+    const groups = new Map();
+    (opcTags || []).forEach((tag) => {
+      const topic = normalizeTagValue(tag?.topic || "Default") || "Default";
+      const group = normalizeTagValue(tag?.groupName || "");
+      if (!group) return;
+
+      const groupPath = `${topic}.${group}`;
+      const routeKeyA = tag?.name || "";
+      const routeKeyB = tag?.tagPath || "";
+      const value = normalizeTagValue(readLiveTagValue(tag, topic));
+      if (!value) return;
+
+      const entry = groups.get(groupPath) || { routeId: "", state: "" };
+      if (!entry.routeId && (isRouteIdTagKey(routeKeyA) || isRouteIdTagKey(routeKeyB))) {
+        entry.routeId = value;
+      }
+      if (!entry.state && (isStateTagKey(routeKeyA) || isStateTagKey(routeKeyB))) {
+        entry.state = value;
+      }
+      groups.set(groupPath, entry);
+    });
+
+    groups.forEach((entry, groupPath) => {
+      if (!entry?.routeId && !entry?.state) return;
+      const group = normalizeTagValue(groupPath.split(".").slice(1).join("."));
+      map.set(groupPath, entry);
+      map.set(groupPath.toLowerCase(), entry);
+      if (group) {
+        map.set(group, entry);
+        map.set(group.toLowerCase(), entry);
+      }
+    });
+
+    return map;
+  }, [opcTags, opcLiveValues]);
+
+  const svgTagGroupMenuOptions = useMemo(() => {
+    const options = [{ value: "", label: "Select tag group" }];
+    const seen = new Set();
+    (opcTags || []).forEach((tag) => {
+      const topic = normalizeTagValue(tag?.topic || "Default") || "Default";
+      const group = normalizeTagValue(tag?.groupName || "");
+      if (!group) return;
+      const value = `${topic}.${group}`;
+      const dedupe = value.toLowerCase();
+      if (seen.has(dedupe)) return;
+      seen.add(dedupe);
+      options.push({ value, label: group, group: topic });
+    });
+
+    const currentOverlay =
+      selectedOverlayIds.length === 1 && selectedIds.length === 0
+        ? svgOverlays.find((o) => o.id === selectedOverlayIds[0]) || null
+        : null;
+    const current = normalizeTagValue(currentOverlay?.tagPath || "");
+    if (current && !options.some((opt) => opt.value === current)) {
+      options.push({ value: current, label: current, group: "Custom" });
+    }
+    return options;
+  }, [opcTags, selectedOverlayIds, selectedIds, svgOverlays]);
+
 
   const PAN_SPEED = 0.05; // 🔥 adjust this to taste
+
+  const svgTagGroupMenuFilteredOptions = useMemo(() => {
+    const q = normalizeTagValue(contextSvgTagQuery).toLowerCase();
+    if (!q) return svgTagGroupMenuOptions;
+
+    const filtered = svgTagGroupMenuOptions.filter((opt) =>
+      `${opt?.group || ""} ${opt?.label || ""} ${opt?.value || ""}`.toLowerCase().includes(q)
+    );
+
+    const currentOverlay =
+      selectedOverlayIds.length === 1 && selectedIds.length === 0
+        ? svgOverlays.find((o) => o.id === selectedOverlayIds[0]) || null
+        : null;
+    const current = normalizeTagValue(currentOverlay?.tagPath || "");
+    if (current && !filtered.some((opt) => opt.value === current)) {
+      const selected = svgTagGroupMenuOptions.find((opt) => opt.value === current);
+      if (selected) return [selected, ...filtered];
+    }
+    return filtered;
+  }, [
+    contextSvgTagQuery,
+    selectedOverlayIds,
+    selectedIds,
+    svgOverlays,
+    svgTagGroupMenuOptions,
+  ]);
 
   useEffect(() => { shapesRef.current = shapes; }, [shapes]);
   useEffect(() => { overlaysRef.current = svgOverlays; }, [svgOverlays]);
@@ -398,6 +761,37 @@ export default function App() {
       pan,
       zoom,
     };
+  }
+
+  function projectPayloadSignature(payload) {
+    if (!payload || typeof payload !== "object") return "";
+    const compact = {
+      name: payload.name || "",
+      vbW: payload.vbW,
+      vbH: payload.vbH,
+      pan: payload.pan || { x: 0, y: 0 },
+      zoom: payload.zoom,
+      shapes: Array.isArray(payload.shapes) ? payload.shapes : [],
+      svgOverlays: Array.isArray(payload.svgOverlays) ? payload.svgOverlays : [],
+    };
+    try {
+      return JSON.stringify(compact);
+    } catch {
+      return "";
+    }
+  }
+
+  function applyRemoteProjectPayload(data) {
+    const nextShapes = Array.isArray(data?.shapes) ? data.shapes : [];
+    const nextOverlays = Array.isArray(data?.svgOverlays) ? data.svgOverlays : [];
+    setShapes(nextShapes);
+    setSvgOverlays(nextOverlays);
+    if (Number.isFinite(data?.vbW)) setVbW(data.vbW);
+    if (Number.isFinite(data?.vbH)) setVbH(data.vbH);
+    if (data?.pan && Number.isFinite(data.pan.x) && Number.isFinite(data.pan.y)) {
+      setPan({ x: data.pan.x, y: data.pan.y });
+    }
+    if (Number.isFinite(data?.zoom)) setZoom(data.zoom);
   }
 
   function applyProjectPayload(data) {
@@ -552,9 +946,63 @@ export default function App() {
 
   useEffect(() => {
     const stored = localStorage.getItem("vizi_active_project_id") || "";
-    if (stored && !activeProjectId) {
-      setActiveProjectId(stored);
+    if (!stored) return;
+    setActiveProjectId(stored);
+    openProjectFromDb(stored);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    const filterRowsForActiveProject = (rows) => {
+      const list = Array.isArray(rows) ? rows : [];
+      const pid = normalizeTagValue(activeProjectId);
+      if (!pid) return list;
+      const hasProjectField = list.some(
+        (row) =>
+          row &&
+          typeof row === "object" &&
+          (Object.prototype.hasOwnProperty.call(row, "project_id") ||
+            Object.prototype.hasOwnProperty.call(row, "projectId"))
+      );
+      if (!hasProjectField) return list;
+      return list.filter((row) => {
+        const rowPid = normalizeTagValue(row?.project_id ?? row?.projectId ?? "");
+        return rowPid === pid;
+      });
+    };
+
+    async function loadProjectRoutes() {
+      if (!activeProjectId) {
+        if (alive) setProjectRouteRows([]);
+        return;
+      }
+      try {
+        const pid = encodeURIComponent(normalizeTagValue(activeProjectId));
+        const res = await fetch(`/api/db/routes?limit=2000&project_id=${pid}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load routes.");
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        if (rows.length > 0) {
+          if (alive) setProjectRouteRows(filterRowsForActiveProject(rows));
+          return;
+        }
+
+        // Fallback for schemas/endpoints that do not support project_id filtering.
+        const allRes = await fetch("/api/db/routes?limit=2000");
+        const allData = await allRes.json();
+        if (!allRes.ok) throw new Error(allData?.error || "Failed to load routes.");
+        const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
+        if (alive) setProjectRouteRows(filterRowsForActiveProject(allRows));
+      } catch {
+        if (alive) setProjectRouteRows([]);
+      }
     }
+
+    loadProjectRoutes();
+    return () => {
+      alive = false;
+    };
   }, [activeProjectId]);
 
   useEffect(() => {
@@ -565,39 +1013,90 @@ export default function App() {
     }
   }, [activeProjectId]);
 
-  useEffect(() => {
-    if (autoLoadedProjectRef.current) return;
-    if (!activeProjectId) return;
-    autoLoadedProjectRef.current = true;
-    openProjectFromDb(activeProjectId);
-  }, [activeProjectId, projects.length]);
-
-  async function saveProjectToDb() {
+  async function saveProjectToDb(options = {}) {
     try {
-      setProjectStatus("");
+      const silent = options?.silent === true;
+      if (projectSaveInFlightRef.current) {
+        const nextMode = silent ? "silent" : "manual";
+        const prevMode = queuedSaveAfterFlightRef.current;
+        if (prevMode !== "manual") queuedSaveAfterFlightRef.current = nextMode;
+        if (!silent) setProjectStatus("Saving...");
+        return;
+      }
+      projectSaveInFlightRef.current = true;
+      if (!silent) setProjectStatus("");
       const payload = getProjectPayload();
+      const trimmedName = String(payload?.name || "").trim();
+      const effectiveName = trimmedName || "Untitled";
+      if (!trimmedName && projectName !== effectiveName) {
+        setProjectName(effectiveName);
+      }
       const res = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: activeProjectId || undefined,
-          name: payload.name,
-          data: payload,
+          name: effectiveName,
+          data: { ...payload, name: effectiveName },
+          teamMerge: false,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Save failed.");
       const next = data.project;
+      if (next?.data) {
+        applyRemoteProjectPayload(next.data);
+        lastProjectSignatureRef.current = projectPayloadSignature(next.data);
+      } else {
+        lastProjectSignatureRef.current = projectPayloadSignature(payload);
+      }
       if (next?.id) setActiveProjectId(next.id);
-      setProjectStatus("Saved");
+      if (next?.updated_at) setActiveProjectUpdatedAt(String(next.updated_at));
+      setActiveProjectUpdatedBy(String(next?.updated_by_username || ""));
+      if (!silent) {
+        const by = String(next?.updated_by_username || "").trim();
+        setProjectStatus(by ? `Saved (by ${by})` : "Saved");
+      }
       setShowProjectNameInput(false);
       const reload = await fetch("/api/projects");
       const payloadList = await reload.json();
       if (reload.ok) setProjects(payloadList.projects || []);
     } catch (err) {
-      setProjectStatus(err?.message || "Save failed.");
+      if (!options?.silent) setProjectStatus(err?.message || "Save failed.");
+    } finally {
+      projectSaveInFlightRef.current = false;
+      const queued = queuedSaveAfterFlightRef.current;
+      if (queued) {
+        queuedSaveAfterFlightRef.current = null;
+        setTimeout(() => {
+          saveProjectToDb({ silent: queued !== "manual" });
+        }, 0);
+      }
     }
   }
+
+  function flushScheduledProjectSave() {
+    if (!pendingSilentSaveRef.current) return;
+    if (projectSaveInFlightRef.current) {
+      autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, 350);
+      return;
+    }
+    pendingSilentSaveRef.current = false;
+    saveProjectToDb({ silent: true });
+  }
+
+  function scheduleProjectAutoSave(delayMs = 450) {
+    pendingSilentSaveRef.current = true;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, delayMs);
+  }
+
+  useEffect(
+    () => () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    },
+    []
+  );
 
   async function openProjectFromDb(id) {
     if (!id) return;
@@ -609,8 +1108,12 @@ export default function App() {
       applyProjectPayload(data?.data || {});
       setProjectName(data?.name || "Untitled");
       setActiveProjectId(data?.id || "");
+      setActiveProjectUpdatedAt(String(data?.updated_at || ""));
+      setActiveProjectUpdatedBy(String(data?.updated_by_username || ""));
+      lastProjectSignatureRef.current = projectPayloadSignature(data?.data || {});
       projectHandleRef.current = null;
-      setProjectStatus("Loaded");
+      const by = String(data?.updated_by_username || "").trim();
+      setProjectStatus(by ? `Loaded (last update by ${by})` : "Loaded");
       setShowProjectNameInput(false);
     } catch (err) {
       setProjectStatus(err?.message || "Load failed.");
@@ -641,12 +1144,100 @@ export default function App() {
       pan: { x: 0, y: 0 },
       zoom: 1,
     });
-    setProjectName("");
+    setProjectName("Untitled");
     setActiveProjectId("");
+    localStorage.removeItem("vizi_active_project_id");
+    setActiveProjectUpdatedAt("");
+    setActiveProjectUpdatedBy("");
+    lastProjectSignatureRef.current = projectPayloadSignature({
+      name: "Untitled",
+      vbW: 1600,
+      vbH: 900,
+      pan: { x: 0, y: 0 },
+      zoom: 1,
+      shapes: [],
+      svgOverlays: [],
+    });
     projectHandleRef.current = null;
     setProjectStatus("");
     setShowProjectNameInput(true);
   }
+
+  function cancelNewProjectInput() {
+    setShowProjectNameInput(false);
+    if (!activeProjectId) setProjectName("Untitled");
+  }
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    let alive = true;
+    async function pollProject() {
+      try {
+        const res = await fetch(`/api/projects/${activeProjectId}`);
+        const data = await res.json();
+        if (!res.ok || !alive) return;
+        const remoteUpdatedAt = String(data?.updated_at || "");
+        if (!remoteUpdatedAt || remoteUpdatedAt === activeProjectUpdatedAt) return;
+        const remoteSig = projectPayloadSignature(data?.data || {});
+        const localSig = projectPayloadSignature(getProjectPayload());
+        const localDirty = localSig !== lastProjectSignatureRef.current;
+        if (localDirty) {
+          setProjectStatus("Remote update detected. Auto-merging...");
+          await saveProjectToDb({ silent: true });
+          return;
+        }
+        applyRemoteProjectPayload(data?.data || {});
+        lastProjectSignatureRef.current = remoteSig;
+        setActiveProjectUpdatedAt(remoteUpdatedAt);
+        const by = String(data?.updated_by_username || "");
+        setActiveProjectUpdatedBy(by);
+        setProjectStatus(by ? `Synced (updated by ${by})` : "Synced");
+      } catch {
+        // ignore sync failures
+      }
+    }
+    const id = setInterval(pollProject, 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [activeProjectId, activeProjectUpdatedAt]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const id = setInterval(() => {
+      const sig = projectPayloadSignature(getProjectPayload());
+      if (!sig) return;
+      if (sig === lastProjectSignatureRef.current) return;
+      saveProjectToDb({ silent: true });
+    }, 2500);
+    return () => clearInterval(id);
+  }, [activeProjectId, projectName, vbW, vbH, pan, zoom, shapes, svgOverlays]);
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      setProjectCursors([]);
+      lastCursorSentRef.current = { at: 0, x: NaN, y: NaN };
+      return;
+    }
+    let alive = true;
+    async function pollCursors() {
+      try {
+        const res = await fetch(`/api/projects/${activeProjectId}/cursors`);
+        const data = await res.json();
+        if (!res.ok || !alive) return;
+        setProjectCursors(Array.isArray(data?.cursors) ? data.cursors : []);
+      } catch {
+        // ignore cursor polling failures
+      }
+    }
+    pollCursors();
+    const id = setInterval(pollCursors, 1000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [activeProjectId]);
 
   useEffect(() => {
     function isTypingTarget(t) {
@@ -694,6 +1285,7 @@ export default function App() {
   useEffect(() => {
     if (!contextMenu) {
       setContextSvgMenuOpen(false);
+      setContextSvgTagQuery("");
     }
   }, [contextMenu]);
 
@@ -791,26 +1383,90 @@ export default function App() {
   // Floating panel visibility
   const TOP_BAR_H = 56;
   const RULER_SIZE = 24;
-  const [showToolbar, setShowToolbar] = useState(true);
-  const [toolbarPos, setToolbarPos] = useState({
+  const [zoomPos, setZoomPos] = useState({
     x: 16,
-    y: TOP_BAR_H + RULER_SIZE + 16,
+    y: TOP_BAR_H + RULER_SIZE + 140,
   });
+  const zoomDragRef = useRef({ dragging: false, ox: 0, oy: 0, panelW: 64, panelH: 240 });
+  const zoomPosRef = useRef(zoomPos);
+  const zoomPanelRef = useRef(null);
   const [showHUD, setShowHUD] = useState(true);
   const [showMainDrawer, setShowMainDrawer] = useState(false);
   const [drawerView, setDrawerView] = useState("ai");
   const [showUserDrawer, setShowUserDrawer] = useState(false);
+  const [theme, setTheme] = useState(() => {
+    try {
+      const stored = localStorage.getItem(THEME_KEY);
+      if (stored === "dark" || stored === "light") return stored;
+    } catch {
+      // ignore
+    }
+    return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  });
   const [profileDraft, setProfileDraft] = useState({ username: "", display_name: "", avatar_url: "" });
   const [passwordDraft, setPasswordDraft] = useState({ current: "", next: "" });
   const [profileStatus, setProfileStatus] = useState("");
   const [profileError, setProfileError] = useState("");
   const [altDown, setAltDown] = useState(false);
   useEffect(() => {
+    zoomPosRef.current = zoomPos;
+  }, [zoomPos]);
+
+  useEffect(() => {
+    function onMove(e) {
+      if (!zoomDragRef.current.dragging) return;
+      const minTop = TOP_BAR_H + RULER_SIZE + 8;
+      const panelW = zoomDragRef.current.panelW || zoomPanelRef.current?.getBoundingClientRect()?.width || 64;
+      const panelH = zoomDragRef.current.panelH || zoomPanelRef.current?.getBoundingClientRect()?.height || 240;
+      const nextLeft = Math.max(8, e.clientX - zoomDragRef.current.ox);
+      const maxLeft = Math.max(8, window.innerWidth - panelW - 8);
+      const nextTop = Math.max(minTop, e.clientY - zoomDragRef.current.oy);
+      const maxTop = Math.max(minTop, window.innerHeight - panelH - 8);
+      setZoomPos({
+        x: Math.min(nextLeft, maxLeft),
+        y: Math.min(nextTop, maxTop),
+      });
+    }
+
+    function onUp() {
+      zoomDragRef.current.dragging = false;
+    }
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [TOP_BAR_H, RULER_SIZE]);
+
+  function startZoomDrag(e) {
+    if (e.button !== 0) return;
+    if (e.target instanceof Element && e.target.closest("button")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = zoomPanelRef.current?.getBoundingClientRect();
+    zoomDragRef.current.dragging = true;
+    zoomDragRef.current.ox = e.clientX - (zoomPosRef.current?.x ?? 16);
+    zoomDragRef.current.oy = e.clientY - (zoomPosRef.current?.y ?? TOP_BAR_H + RULER_SIZE + 140);
+    zoomDragRef.current.panelW = rect?.width || 64;
+    zoomDragRef.current.panelH = rect?.height || 240;
+  }
+
+  useEffect(() => {
     if (!showHUD) setPanelCursor(null);
   }, [showHUD]);
   useEffect(() => {
+    if (!showTagPaths && hiddenTagBubbleIds.length) {
+      setHiddenTagBubbleIds([]);
+    }
+  }, [showTagPaths, hiddenTagBubbleIds.length]);
+  useEffect(() => {
     if (importOpen) setShowHUD(false);
   }, [importOpen]);
+  useEffect(() => {
+    if (widgetOpen) setShowHUD(false);
+  }, [widgetOpen]);
 
   useEffect(() => {
     if (tool === "polyline") setShowHUD(false);
@@ -850,6 +1506,17 @@ export default function App() {
     });
   }, [user]);
 
+  useEffect(() => {
+    const next = theme === "dark" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", next);
+    document.body.setAttribute("data-theme", next);
+    try {
+      localStorage.setItem(THEME_KEY, next);
+    } catch {
+      // ignore
+    }
+  }, [theme]);
+
   const avatarLabel = useMemo(() => {
     const name = String(user?.display_name || user?.username || "").trim();
     if (!name) return "U";
@@ -860,7 +1527,6 @@ export default function App() {
 
 
   // ✅ ZOOM (main svg)
-  const [zoom, setZoom] = useState(1);
   const ZOOM_MIN = 0.25;
   const ZOOM_MAX = 8;
   const ZOOM_STEP = 1.15;
@@ -932,6 +1598,7 @@ export default function App() {
       maxX = -Infinity,
       maxY = -Infinity;
     const polyParts = [];
+    const rectParts = [];
     const textParts = [];
 
     for (const s of selectedShapes) {
@@ -946,6 +1613,21 @@ export default function App() {
         maxY = Math.max(maxY, bb.maxY);
 
         polyParts.push(s);
+        continue;
+      }
+
+      if (s.type === "rect") {
+        const x = Number(s.x ?? 0);
+        const y = Number(s.y ?? 0);
+        const w = Math.max(0, Number(s.width ?? 0));
+        const h = Math.max(0, Number(s.height ?? 0));
+        if (w <= 0 || h <= 0) continue;
+
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + w);
+        maxY = Math.max(maxY, y + h);
+        rectParts.push(s);
         continue;
       }
 
@@ -971,7 +1653,9 @@ export default function App() {
       }
     }
 
-    if ((!polyParts.length && !textParts.length) || !Number.isFinite(minX)) return;
+    if ((!polyParts.length && !rectParts.length && !textParts.length) || !Number.isFinite(minX)) {
+      return;
+    }
 
     const width = maxX - minX;
     const height = maxY - minY;
@@ -997,6 +1681,24 @@ export default function App() {
       })
       .join("");
 
+    const rectInner = rectParts
+      .map((s) => {
+        const x = Number(s.x ?? 0) - minX;
+        const y = Number(s.y ?? 0) - minY;
+        const width = Math.max(0, Number(s.width ?? 0));
+        const height = Math.max(0, Number(s.height ?? 0));
+        const stroke = s.stroke || DEFAULT_STROKE;
+        const fill = s.fill || "transparent";
+        const strokeWidth = Number(s.strokeWidth) || 3;
+        const style = lineStyleToStrokeProps(s.lineStyle ?? "solid", strokeWidth);
+        const dashAttr = style.dasharray ? ` stroke-dasharray="${style.dasharray}"` : "";
+        const linecap = style.linecap ?? "round";
+        const linejoin = style.linejoin ?? "round";
+
+        return `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${linecap}" stroke-linejoin="${linejoin}"${dashAttr} />`;
+      })
+      .join("");
+
     const textInner = textParts
       .map((t) => {
         const x = Number(t.x ?? 0) - minX;
@@ -1013,12 +1715,15 @@ export default function App() {
       .join("");
 
     // Ensure text is always on top
-    const inner = `${polyInner}${textInner}`;
+    const inner = `${polyInner}${rectInner}${textInner}`;
 
     const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">${inner}</svg>`;
-    const genKey = addGeneratedSvg(`Selection-Group-${polyParts.length + textParts.length}`, raw);
-    const stroke = polyParts[0]?.stroke || DEFAULT_STROKE;
-    const fill = polyParts[0]?.fill || textParts[0]?.fill || DEFAULT_FILL;
+    const genKey = addGeneratedSvg(
+      `Selection-Group-${polyParts.length + rectParts.length + textParts.length}`,
+      raw
+    );
+    const stroke = polyParts[0]?.stroke || rectParts[0]?.stroke || DEFAULT_STROKE;
+    const fill = polyParts[0]?.fill || rectParts[0]?.fill || textParts[0]?.fill || DEFAULT_FILL;
     const tagPath =
       selectedShapes.length === 1 ? (selectedShapes[0]?.tagPath || "") : "";
 
@@ -1052,8 +1757,6 @@ export default function App() {
     setVbH(h);
     // resetView?.(); // if you want
   };
-
-  const [pan, setPan] = useState({ x: 0, y: 0 });
 
   const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
 
@@ -1536,6 +2239,7 @@ export default function App() {
       if (!s) return null;
 
       if (s.type === "text") return "Text";
+      if (s.type === "rect") return "Polyline";
       if (s.type === "polyline" || Array.isArray(s.points)) return "Polyline";
 
       return "Shape";
@@ -1570,6 +2274,16 @@ export default function App() {
   function clearSelection() {
     setSelectedIds([]);
     setSelectedOverlayIds([]);
+  }
+
+  function selectAll() {
+    const allShapeIds = (shapesRef.current || []).map((s) => s.id);
+    const allOverlayIds = (overlaysRef.current || []).map((o) => o.id);
+    setSelectedIds(allShapeIds);
+    setSelectedOverlayIds(allOverlayIds);
+    setTool("select");
+    setEditingId(null);
+    setSelectedSegment(null);
   }
 
   function setOverlayRef(id, node) {
@@ -1653,7 +2367,7 @@ export default function App() {
       y: p.y,
       text: "Text",
       fontSize: 24,
-      fill: "#808080",
+      fill: theme === "dark" ? "#ffffff" : "#808080",
       fontFamily: "system-ui",
       fontWeight: "400",
       anchor: "start", // start | middle | end
@@ -1664,7 +2378,33 @@ export default function App() {
     setSelectedOverlayIds([]);
     setEditingId(null);
     setShowHUD(false);
-    setTool("select"); // place once, go back to select
+    scheduleProjectAutoSave();
+  }
+
+  function startRectAt(p) {
+    pushHistory();
+    const id = uid();
+    const rect = {
+      id,
+      type: "rect",
+      x: p.x,
+      y: p.y,
+      width: 0,
+      height: 0,
+      stroke: "#808080",
+      strokeWidth: 3,
+      fill: "transparent",
+      lineStyle: "solid",
+      tagPath: "",
+    };
+
+    setShapes((prev) => [...prev, rect]);
+    setSelectedIds([id]);
+    setSelectedOverlayIds([]);
+    setEditingId(null);
+    setDrawing({ mode: "draw-rect", id, start: { x: p.x, y: p.y } });
+    setShowHUD(false);
+    scheduleProjectAutoSave();
   }
 
 
@@ -1716,6 +2456,16 @@ export default function App() {
       .map((s) => {
         if (s?.type === "text") {
           return { id: s.id, kind: "text", origX: Number(s.x ?? 0), origY: Number(s.y ?? 0) };
+        }
+        if (s?.type === "rect") {
+          return {
+            id: s.id,
+            kind: "rect",
+            origX: Number(s.x ?? 0),
+            origY: Number(s.y ?? 0),
+            origW: Number(s.width ?? 0),
+            origH: Number(s.height ?? 0),
+          };
         }
         if (Array.isArray(s?.points)) {
           return { id: s.id, kind: "poly", origPoints: s.points.map((p) => ({ ...p })) };
@@ -2014,6 +2764,16 @@ export default function App() {
         continue;
       }
 
+      if (s.type === "rect") {
+        items.push({
+          x: Number(s.x ?? 0),
+          y: Number(s.y ?? 0),
+          w: Math.max(0, Number(s.width ?? 0)),
+          h: Math.max(0, Number(s.height ?? 0)),
+        });
+        continue;
+      }
+
       if (Array.isArray(s.points)) {
         const bb = bboxOfPoints(s.points);
         if (!bb) continue;
@@ -2059,6 +2819,10 @@ export default function App() {
 
         // text
         if (s.type === "text") {
+          return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
+        }
+
+        if (s.type === "rect") {
           return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
         }
 
@@ -2138,6 +2902,10 @@ export default function App() {
 
         // ✅ Text duplicate (shift right only)
         if (s.type === "text") {
+          return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
+        }
+
+        if (s.type === "rect") {
           return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
         }
 
@@ -2226,6 +2994,13 @@ export default function App() {
             w: estW,
             h: estH,
           });
+        } else if (s.type === "rect") {
+          boxes.push({
+            x: Number(s.x ?? 0),
+            y: Number(s.y ?? 0),
+            w: Math.max(0, Number(s.width ?? 0)),
+            h: Math.max(0, Number(s.height ?? 0)),
+          });
         } else if (Array.isArray(s.points)) {
           const bb = bboxOfPoints(s.points);
           if (bb) boxes.push({ x: bb.minX, y: bb.minY, w: bb.w, h: bb.h });
@@ -2256,6 +3031,9 @@ export default function App() {
       .map((s) => {
         const id = uid();
         if (s.type === "text") {
+          return { ...s, id, x: Number(s.x ?? 0) + offsetX, y: Number(s.y ?? 0) + offsetY };
+        }
+        if (s.type === "rect") {
           return { ...s, id, x: Number(s.x ?? 0) + offsetX, y: Number(s.y ?? 0) + offsetY };
         }
         if (Array.isArray(s.points)) {
@@ -2308,6 +3086,7 @@ export default function App() {
     setEditingId(null);
     setDrawing({ mode: "draw-poly", id });
     setShowHUD(false);
+    scheduleProjectAutoSave();
   }
 
   function addPolylinePoint(p) {
@@ -2361,6 +3140,7 @@ export default function App() {
 
     setDrawing(null);
     clearSelection();
+    scheduleProjectAutoSave();
   }
 
 
@@ -2406,18 +3186,15 @@ export default function App() {
       return;
     }
 
-    let nextPoly = selectedIds;
-    let nextOver = selectedOverlayIds;
-
-    if (!selectedIds.includes(id)) {
-      nextPoly = [id];
-      nextOver = [];
-      setSelectedIds(nextPoly);
-      setSelectedOverlayIds(nextOver);
+    const isAlreadySelected = selectedIds.includes(id);
+    if (!isAlreadySelected) {
+      setSelectedIds([id]);
+      setSelectedOverlayIds([]);
+      return;
     }
 
     const p = svgPoint(e);
-    beginDragAll(p, nextPoly, nextOver);
+    beginDragAll(p, selectedIds, selectedOverlayIds);
   }
 
   function onShapeDoubleClick(e, id) {
@@ -2565,21 +3342,20 @@ export default function App() {
       return;
     }
 
-    let nextPoly = selectedIds;
-    let nextOver = selectedOverlayIds;
-
-    if (!selectedOverlayIds.includes(id)) {
-      nextOver = [id];
-      nextPoly = [];
-      setSelectedOverlayIds(nextOver);
-      setSelectedIds(nextPoly);
+    const isAlreadySelected = selectedOverlayIds.includes(id);
+    if (!isAlreadySelected) {
+      setSelectedOverlayIds([id]);
+      setSelectedIds([]);
+      exitEditMode();
+      setDrawing(null);
+      return;
     }
 
     exitEditMode();
     setDrawing(null);
 
     const p = svgPoint(e);
-    beginDragAll(p, nextPoly, nextOver);
+    beginDragAll(p, selectedIds, selectedOverlayIds);
   }
 
   function onOverlayDoubleClick(e, id) {
@@ -2778,6 +3554,29 @@ export default function App() {
     exitEditMode();
     setShowHUD(false);
     setImportAnchor(null);
+    scheduleProjectAutoSave();
+  }
+
+  function finishRectDrawing(rectId) {
+    if (!rectId) return;
+    setShapes((prev) =>
+      prev.filter((s) => {
+        if (s.id !== rectId) return true;
+        const w = Math.max(0, Number(s.width ?? 0));
+        const h = Math.max(0, Number(s.height ?? 0));
+        return w >= 2 && h >= 2;
+      })
+    );
+    setDrawing(null);
+    scheduleProjectAutoSave();
+  }
+
+  async function onPickWidget(widgetKey, anchorOverride) {
+    const tmpl = widgetTemplate(widgetKey);
+    const key = addGeneratedSvg(tmpl.name, tmpl.raw);
+    await onPickSvg(key, anchorOverride ?? lastContextPoint ?? undefined);
+    setWidgetOpen(false);
+    setContextMenu(null);
   }
 
   async function swapOverlayTemplate(overlayId, fileKey) {
@@ -2850,6 +3649,17 @@ export default function App() {
         });
         continue;
       }
+
+      // ✅ Rectangle
+      if (s.type === "rect") {
+        boxes.push({
+          x: Number(s.x ?? 0),
+          y: Number(s.y ?? 0),
+          w: Math.max(0, Number(s.width ?? 0)),
+          h: Math.max(0, Number(s.height ?? 0)),
+        });
+        continue;
+      }
     }
 
     for (const id of selectedOverlayIds) {
@@ -2896,6 +3706,7 @@ export default function App() {
     tagPath: "",
     fill: DEFAULT_FILL,
     stroke: DEFAULT_STROKE,
+    strokeWidth: "2",
     arrowStart: "none",
     arrowEnd: "none",
     lineStyle: "solid",   // ✅ NEW
@@ -2918,6 +3729,7 @@ export default function App() {
         tagPath: "",
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
+        strokeWidth: "2",
         arrowStart: "none",
         arrowEnd: "none",
         x: "",
@@ -2938,6 +3750,7 @@ export default function App() {
     let tagPath = "";
     let fill = DEFAULT_FILL;
     let stroke = DEFAULT_STROKE;
+    let strokeWidth = "2";
     let arrowStart = "none";
     let arrowEnd = "none";
     let lineStyle = "solid"; // ✅ NEW
@@ -2959,6 +3772,11 @@ export default function App() {
         tagPath = o.tagPath || "";
         fill = !o.fill || o.fill === "none" ? DEFAULT_FILL : o.fill;
         stroke = !o.stroke || o.stroke === "none" ? DEFAULT_STROKE : o.stroke;
+        strokeWidth = String(
+          Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0
+            ? Number(o.strokeWidth)
+            : 2
+        );
       }
     } else if (isSingle && singleKind === "Text") {
       const t = shapes.find((x) => x.id === singleId);
@@ -2973,6 +3791,7 @@ export default function App() {
           tagPath,
           fill,
           stroke,
+          strokeWidth: "2",
           arrowStart: "none",
           arrowEnd: "none",
           lineStyle: "solid",
@@ -2996,6 +3815,7 @@ export default function App() {
       tagPath,
       fill,
       stroke,
+      strokeWidth,
       arrowStart,
       arrowEnd,
       lineStyle, // ✅ NEW
@@ -3042,6 +3862,7 @@ export default function App() {
     } else if (singleKind === "SVG") {
       setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, tagPath: v } : o)));
     }
+    scheduleProjectAutoSave();
   }
 
   const applySingleArrowStart = (v) => {
@@ -3103,6 +3924,30 @@ export default function App() {
     return next;
   }
 
+  function updateSvgInnerStrokeWidth(inner, strokeWidth) {
+    if (!inner) return inner;
+    const sw = Number.parseFloat(strokeWidth);
+    if (!Number.isFinite(sw) || sw <= 0) return inner;
+    const value = String(sw);
+
+    let next = inner;
+    next = next.replace(/stroke-width\s*=\s*['"][^'"]*['"]/gi, `stroke-width="${value}"`);
+    next = next.replace(/stroke-width\s*:\s*[^;\"']+/gi, `stroke-width:${value}`);
+
+    next = next.replace(
+      /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*?)(\/?)>/gi,
+      (match, tag, attrs, selfClose) => {
+        const hasStroke = /stroke\s*=|stroke\s*:/i.test(attrs);
+        const strokeIsNone = /stroke\s*=\s*['"]\s*none\s*['"]|stroke\s*:\s*none/i.test(attrs);
+        if (!hasStroke || strokeIsNone) return match;
+        if (/stroke-width\s*=|stroke-width\s*:/i.test(attrs)) return match;
+        return `<${tag}${attrs} stroke-width="${value}"${selfClose}>`;
+      }
+    );
+
+    return next;
+  }
+
   function applySingleStroke(nextStroke) {
     if (!isSingle || !singleId) return;
     const c = String(nextStroke || "").trim();
@@ -3133,6 +3978,26 @@ export default function App() {
     } else if (singleKind === "Text") {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, fill: c } : s)));
     }
+  }
+
+  function applySingleSvgStrokeWidth(nextStrokeWidth) {
+    if (!isSingle || singleKind !== "SVG" || !singleId) return;
+    const sw = Number.parseFloat(nextStrokeWidth);
+    if (!Number.isFinite(sw) || sw <= 0) return;
+    const clamped = Math.max(0.1, sw);
+
+    setSvgOverlays((prev) =>
+      prev.map((o) =>
+        o.id === singleId
+          ? {
+              ...o,
+              strokeWidth: clamped,
+              inner: updateSvgInnerStrokeWidth(o.inner, clamped),
+            }
+          : o
+      )
+    );
+    scheduleProjectAutoSave();
   }
 
   function applyBBoxFromHud(next) {
@@ -3228,6 +4093,28 @@ export default function App() {
             return { ...s, x: newX, y: newY, fontSize: newFontSize };
           }
 
+          if (s.type === "rect") {
+            const x0 = Number(s.x ?? 0);
+            const y0 = Number(s.y ?? 0);
+            const w0 = Math.max(0, Number(s.width ?? 0));
+            const h0 = Math.max(0, Number(s.height ?? 0));
+            const x1 = x0 + w0;
+            const y1 = y0 + h0;
+
+            const nx0 = base.x + (x0 - base.x) * sx + dx;
+            const ny0 = base.y + (y0 - base.y) * sy + dy;
+            const nx1 = base.x + (x1 - base.x) * sx + dx;
+            const ny1 = base.y + (y1 - base.y) * sy + dy;
+
+            return {
+              ...s,
+              x: Math.min(nx0, nx1),
+              y: Math.min(ny0, ny1),
+              width: Math.abs(nx1 - nx0),
+              height: Math.abs(ny1 - ny0),
+            };
+          }
+
           // unknown shape type: just move by dx/dy
           return s;
         })
@@ -3265,6 +4152,7 @@ export default function App() {
     setTool,
     closeImport: () => setImportOpen(false),
     clearSelection,
+    selectAll,
     clearImportAnchor: () => setImportAnchor(null),
     deleteSelected,
   });
@@ -3272,6 +4160,7 @@ export default function App() {
   function onSvgMouseDown(e) {
     if (e.button === 2) return;
     if (importOpen) return;
+    if (showProjectNameInput) cancelNewProjectInput();
 
     const p = svgPoint(e);
 
@@ -3297,9 +4186,13 @@ export default function App() {
       return;
     }
 
-    if (tool === "select" && !e.shiftKey) {
-      setMarquee({ start: p, cur: p });
-      clearSelection();
+    if (tool === "rect") {
+      startRectAt(p);
+      return;
+    }
+
+    if (tool === "select") {
+      setMarquee({ start: p, cur: p, additive: !!e.shiftKey });
       exitEditMode();
       setDrawing(null);
     }
@@ -3328,15 +4221,26 @@ export default function App() {
     function onKeyDown(e) {
       if (isTypingTarget(e.target)) return;
       if (e.key !== "Enter") return;
-      if (tool !== "polyline" || !drawing) return;
       e.preventDefault();
       e.stopPropagation();
-      finishPolyline();
+      if (editingId) {
+        setSelectedSegment(null);
+        exitEditMode();
+        return;
+      }
+      if (!drawing) return;
+      if (drawing.mode === "draw-poly") {
+        finishPolyline();
+        return;
+      }
+      if (drawing.mode === "draw-rect") {
+        finishRectDrawing(drawing.id);
+      }
     }
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [tool, drawing]);
+  }, [tool, drawing, editingId]);
 
 
   function onContextMenu(e) {
@@ -3406,6 +4310,14 @@ export default function App() {
           h: Math.max(estH + pad * 2, 28),
         };
         if (pointInRect(p, r)) { hit = true; hitShapeId = s.id; break; }
+      } else if (s.type === "rect") {
+        const r = {
+          x: Number(s.x ?? 0),
+          y: Number(s.y ?? 0),
+          w: Math.max(0, Number(s.width ?? 0)),
+          h: Math.max(0, Number(s.height ?? 0)),
+        };
+        if (pointInRect(p, r)) { hit = true; hitShapeId = s.id; break; }
       } else if (Array.isArray(s.points)) {
         const bb = bboxOfPoints(s.points);
         if (bb) {
@@ -3462,11 +4374,31 @@ export default function App() {
 
 
 
+  async function publishProjectCursor(point) {
+    if (!activeProjectId || !point) return;
+    const now = Date.now();
+    const last = lastCursorSentRef.current || { at: 0, x: NaN, y: NaN };
+    const dx = Math.abs(Number(point.x) - Number(last.x));
+    const dy = Math.abs(Number(point.y) - Number(last.y));
+    if (now - Number(last.at || 0) < 120 && dx < 0.5 && dy < 0.5) return;
+    lastCursorSentRef.current = { at: now, x: Number(point.x), y: Number(point.y) };
+    try {
+      await fetch(`/api/projects/${activeProjectId}/cursor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ x: Number(point.x), y: Number(point.y) }),
+      });
+    } catch {
+      // ignore cursor publish failures
+    }
+  }
+
   function onMouseMove(e) {
     const p =
       drawing?.mode === "draw-poly"
         ? svgPoint(e, { snapToGrid: true })
         : svgPoint(e, { snapToGrid: false });
+    publishProjectCursor(p);
     if (marquee) {
       setMarquee((m) => (m ? { ...m, cur: p } : m));
       return;
@@ -3547,6 +4479,16 @@ export default function App() {
               return { ...s, x: rec.origX + dx, y: rec.origY + dy };
             }
 
+            if (rec.kind === "rect" && s.type === "rect") {
+              return {
+                ...s,
+                x: rec.origX + dx,
+                y: rec.origY + dy,
+                width: rec.origW,
+                height: rec.origH,
+              };
+            }
+
             if (rec.kind === "poly" && Array.isArray(s.points)) {
               return { ...s, points: rec.origPoints.map((pt) => ({ x: pt.x + dx, y: pt.y + dy })) };
             }
@@ -3568,13 +4510,27 @@ export default function App() {
       return;
     }
 
+    if (drawing?.mode === "draw-rect" && drawing.id) {
+      const sx = Number(drawing.start?.x ?? p.x);
+      const sy = Number(drawing.start?.y ?? p.y);
+      const x = Math.min(sx, p.x);
+      const y = Math.min(sy, p.y);
+      const width = Math.abs(p.x - sx);
+      const height = Math.abs(p.y - sy);
+      setShapes((prev) =>
+        prev.map((s) => (s.id === drawing.id ? { ...s, x, y, width, height } : s))
+      );
+      return;
+    }
+
   }
 
   function onMouseUp() {
+    const hadDragHandle = !!dragHandle;
     if (marquee) {
       const r = rectFrom2Points(marquee.start, marquee.cur);
 
-      // ✅ Shapes (polylines + text) in rect
+      // ✅ Shapes (polylines + text + rect) in rect
       const hitShapeIds = shapes
         .filter((s) => {
           // Polyline bbox
@@ -3604,6 +4560,16 @@ export default function App() {
             return rectsIntersect(r, br);
           }
 
+          if (s.type === "rect") {
+            const br = {
+              x: Number(s.x ?? 0),
+              y: Number(s.y ?? 0),
+              w: Math.max(0, Number(s.width ?? 0)),
+              h: Math.max(0, Number(s.height ?? 0)),
+            };
+            return rectsIntersect(r, br);
+          }
+
           return false;
         })
         .map((s) => s.id);
@@ -3623,8 +4589,17 @@ export default function App() {
         })
         .map((o) => o.id);
 
-      setSelectedIds(hitShapeIds);
-      setSelectedOverlayIds(hitOvers);
+      if (marquee.additive) {
+        if (hitShapeIds.length || hitOvers.length) {
+          setSelectedIds((prev) => Array.from(new Set([...(prev || []), ...hitShapeIds])));
+          setSelectedOverlayIds((prev) => Array.from(new Set([...(prev || []), ...hitOvers])));
+        }
+      } else if (hitShapeIds.length || hitOvers.length) {
+        setSelectedIds(hitShapeIds);
+        setSelectedOverlayIds(hitOvers);
+      } else {
+        clearSelection();
+      }
 
       setMarquee(null);
       setDragAll(null);
@@ -3633,9 +4608,16 @@ export default function App() {
       return;
     }
 
+    const movedSomething = !!(dragAll || dragHandle || overlayResize);
     setDragAll(null);
     setDragHandle(null);
     setOverlayResize(null);
+    if (hadDragHandle) {
+      setSelectedSegment(null);
+      exitEditMode();
+    }
+    if (movedSomething) scheduleProjectAutoSave();
+    if (drawing?.mode === "draw-rect" && drawing.id) finishRectDrawing(drawing.id);
   }
 
 
@@ -3745,8 +4727,10 @@ export default function App() {
 
   const panelAnchorKey = useMemo(() => {
     if (!selectedBBox) return "";
-    return `${selectedBBox.x}-${selectedBBox.y}-${selectedBBox.w}-${selectedBBox.h}-${selCount}-${singleKind}`;
-  }, [selectedBBox, selCount, singleKind]);
+    const selShapeKey = (selectedIds || []).join(",");
+    const selOverlayKey = (selectedOverlayIds || []).join(",");
+    return `${selCount}-${singleKind}-${selShapeKey}-${selOverlayKey}`;
+  }, [selectedBBox, selCount, singleKind, selectedIds, selectedOverlayIds]);
 
   const freezePanel = !!(dragAll || dragHandle || overlayResize);
   const isEmptyMenu = contextMenu?.mode === "empty";
@@ -3768,13 +4752,77 @@ export default function App() {
     Math.max(12, contextSvgMenuPos.y),
     Math.max(12, winH - subMenuSize.h - 12)
   );
+  const contextSingleSvg =
+    selectedOverlayIds.length === 1 && selectedIds.length === 0
+      ? svgOverlays.find((o) => o.id === selectedOverlayIds[0]) || null
+      : null;
+  const topMenuTextButtonStyle = {
+    border: "1px solid var(--border)",
+    background: "var(--bg-elev)",
+    borderRadius: 8,
+    padding: "4px 10px",
+    fontSize: 11,
+    fontWeight: 700,
+    color: "var(--text)",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  };
+  const topMenuIconButtonStyle = {
+    ...topMenuTextButtonStyle,
+    width: 30,
+    height: 28,
+    padding: 0,
+    display: "grid",
+    placeItems: "center",
+  };
+  const topMenuDeleteButtonStyle = (enabled = true) => ({
+    ...topMenuIconButtonStyle,
+    border: "1px solid #f04438",
+    background: enabled ? "#f04438" : "rgba(244,68,56,0.25)",
+    color: "#ffffff",
+    cursor: enabled ? "pointer" : "not-allowed",
+    opacity: enabled ? 1 : 0.6,
+  });
+  const topMenuIconSize = 14;
+  const topMenuModeButtonStyle = (active) => ({
+    ...topMenuIconButtonStyle,
+    border: topMenuTextButtonStyle.border,
+    color: active ? (theme === "dark" ? "#0b1220" : "#ffffff") : topMenuTextButtonStyle.color,
+    background: active
+      ? theme === "dark"
+        ? "linear-gradient(180deg, #cfd4dc 0%, #aeb7c4 100%)"
+        : "#2b6cff"
+      : topMenuIconButtonStyle.background,
+    boxShadow: "none",
+  });
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId) || null,
+    [projects, activeProjectId]
+  );
+  const filteredProjects = useMemo(() => {
+    const q = normalizeTagValue(projectSearch).toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) => {
+      const name = String(p?.name || "").toLowerCase();
+      const id = String(p?.id || "").toLowerCase();
+      return name.includes(q) || id.includes(q);
+    });
+  }, [projects, projectSearch]);
+  const formatProjectTime = (value) => {
+    const t = String(value || "").trim();
+    if (!t) return "";
+    const d = new Date(t);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleString();
+  };
 
   return (
     <div
       style={{
         position: "fixed",
         inset: 0,
-        background: "#fafafa",
+        background: "var(--bg)",
+        color: "var(--text)",
         overflow: "hidden",
         fontFamily: "system-ui",
         userSelect: "none",
@@ -3783,40 +4831,6 @@ export default function App() {
         boxSizing: "border-box",
       }}
     >
-        <Toolbar
-          tool={tool}
-          setTool={setTool}
-          importOpen={importOpen}
-          setImportOpen={setImportOpen}
-        exportSVG={exportSVG}
-        exportIgnitionJson={exportIgnitionJson}
-        editingId={editingId}
-        toggleEditMode={toggleEditMode}
-        toolbarPos={toolbarPos}
-        setToolbarPos={setToolbarPos}
-        selectedIds={selectedIds}
-        selectedOverlayIds={selectedOverlayIds}
-        setEditingId={setEditingId}
-        setDrawing={setDrawing}
-        exitEditMode={exitEditMode}
-        setSelectedOverlayIds={setSelectedOverlayIds}
-        deleteSelected={deleteSelected}
-        showToolbar={showToolbar}
-        setShowToolbar={setShowToolbar}
-        showTagPaths={showTagPaths}
-        setShowTagPaths={setShowTagPaths}
-        showGrid={showGrid}
-        setShowGrid={setShowGrid}
-        resetView={resetView}
-        openViewBox={() => setViewBoxOpen(true)}
-        exportProjectJson={saveProject}     // Save
-        exportProjectJsonAs={saveProjectAs} // Save As (NEW PROP)
-        importProjectJson={loadProjectViaPicker} // Load
-        bounds={{ top: TOP_BAR_H + RULER_SIZE + 8, left: 8, right: RULER_SIZE + 8, bottom: 8 }}
-
-
-      />
-
       <ViewBoxModal
         open={viewBoxOpen}
         onClose={() => setViewBoxOpen(false)}
@@ -3851,6 +4865,7 @@ export default function App() {
         applySingleTagPath={applySingleTagPath}
         applySingleFill={applySingleFill}
         applySingleStroke={applySingleStroke}
+        applySingleSvgStrokeWidth={applySingleSvgStrokeWidth}
         applyBBoxFromHud={applyBBoxFromHud}
         applySingleArrowStart={applySingleArrowStart}
         applySingleArrowEnd={applySingleArrowEnd}
@@ -3878,9 +4893,15 @@ export default function App() {
         svgLibrary={SVG_LIBRARY}   // ✅ add this
         onPickSvg={onPickSvg}
       />
+      <WidgetSelectorModal
+        open={widgetOpen}
+        onClose={() => setWidgetOpen(false)}
+        onPickWidget={(key) => onPickWidget(key)}
+      />
 
-        <CanvasSvg
+      <CanvasSvg
           svgRef={svgRef}
+          theme={theme}
           zoom={zoom}          // ✅ NEW
           onWheel={onWheelZoom} // ✅ NEW
           vbW={vbW}
@@ -3921,6 +4942,15 @@ export default function App() {
         importAnchor={importAnchor}
         onSvgDoubleClick={onSvgDoubleClick}
         tagStateColorsByPath={tagStateColorsByPath}
+        routeColorsBySvgKey={routeColorsBySvgKey}
+        routeStrokeColorByGroupPath={routeStrokeColorByGroupPath}
+        svgLiveValuesByGroupPath={svgLiveValuesByGroupPath}
+        opcLiveValues={opcLiveValues}
+        hiddenTagBubbleIds={hiddenTagBubbleIds}
+        onHideTagBubble={(id) =>
+          setHiddenTagBubbleIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+        }
+        collaboratorCursors={projectCursors}
       />
 
       {inlineEdit && inlineEditPos && (
@@ -3960,7 +4990,7 @@ export default function App() {
             border: "1px solid #2b6cff",
             borderRadius: 6,
             padding: "2px 6px",
-            background: "white",
+            background: "var(--bg-elev)",
             zIndex: 200,
             outline: "none",
             minWidth: inlineEditPos.width,
@@ -4034,9 +5064,10 @@ export default function App() {
 
       {showZoom && (
         <div
+          ref={zoomPanelRef}
           style={{
-            position: "absolute",
-            left: Math.max(toolbarPos.x, 8),
+            position: "fixed",
+            left: Math.max(zoomPos.x, 8),
             bottom: 16,
             zIndex: 80,
             boxShadow: "0 12px 30px rgba(0,0,0,0.4)",
@@ -4044,12 +5075,12 @@ export default function App() {
             flexDirection: "column",
             gap: 8,
             padding: 10,
-            background: "rgba(255,255,255,0.95)",
-            border: "1px solid #e6e6e6",
+            background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
+            border: "1px solid var(--border)",
             borderRadius: 14,
             alignItems: "center",
           }}
-          onMouseDown={(e) => e.stopPropagation()}
+          onMouseDown={startZoomDrag}
           onPointerDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
@@ -4130,7 +5161,7 @@ export default function App() {
             left: menuLeft,
             top: menuTop,
             zIndex: 200,
-            background: "white",
+            background: "var(--bg-elev)",
             border: "1px solid rgba(0,0,0,0.12)",
             borderRadius: 10,
             boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
@@ -4141,7 +5172,13 @@ export default function App() {
           }}
           onMouseDown={(e) => {
             e.stopPropagation();
-            e.preventDefault();
+            const target = e.target;
+            const isFormControl =
+              target instanceof Element &&
+              !!target.closest("select, option, input, textarea, button");
+            if (!isFormControl) {
+              e.preventDefault();
+            }
           }}
           onMouseLeave={() => {
             if (contextSvgMenuTimerRef.current) clearTimeout(contextSvgMenuTimerRef.current);
@@ -4152,7 +5189,7 @@ export default function App() {
         >
           {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
               onClick={() => {
                 copySelection();
                 setContextMenu(null);
@@ -4165,7 +5202,7 @@ export default function App() {
           {contextMenu.mode === "element" &&
             (clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
               onClick={() => {
                 pasteClipboard();
                 setContextMenu(null);
@@ -4177,7 +5214,7 @@ export default function App() {
 
           {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
               onClick={() => {
                 handleDuplicate();
                 setContextMenu(null);
@@ -4192,7 +5229,7 @@ export default function App() {
             return s && (s.type === "polyline" || Array.isArray(s.points));
           })() && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
               onClick={() => {
                 const id = selectedIds[0];
                 setEditingId(id);
@@ -4206,7 +5243,7 @@ export default function App() {
 
           {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#b00020" }}
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#f04438" }}
               onClick={() => {
                 deleteSelected();
                 setContextMenu(null);
@@ -4218,73 +5255,12 @@ export default function App() {
 
           {contextMenu.mode === "empty" && (
             <>
-              {(clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
-                <div
-                  style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
-                  onClick={() => {
-                    pasteClipboard();
-                    setContextMenu(null);
-                  }}
-                >
-                  Paste
-                </div>
-              )}
-              <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
-                onClick={() => {
-                  undo();
-                  setContextMenu(null);
-                }}
-              >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↶</span>
-                Undo
-              </div>
-              <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
-                onClick={() => {
-                  redo();
-                  setContextMenu(null);
-                }}
-              >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↷</span>
-                Redo
-              </div>
-              <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
-                onClick={() => {
-                  setTool("polyline");
-                  setContextMenu(null);
-                }}
-              >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>／</span>
-                Polyline
-              </div>
-              <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
-                onClick={() => {
-                  setTool("text");
-                  setContextMenu(null);
-                }}
-              >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>T</span>
-                Text
-              </div>
-              <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
-                onClick={() => {
-                  setTool("select");
-                  setContextMenu(null);
-                }}
-              >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↔</span>
-                Move
-              </div>
               <div
                 style={{
                   padding: "8px 12px",
                   cursor: "pointer",
                   fontSize: 13,
-                  color: "#111",
+                  color: "var(--text)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
@@ -4306,14 +5282,95 @@ export default function App() {
                 }}
               >
                 SVG's
-                <span style={{ color: "#999" }}>▸</span>
+                <span style={{ color: "var(--text-muted)" }}>▸</span>
+              </div>
+              {(clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
+                <div
+                  style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                  onClick={() => {
+                    pasteClipboard();
+                    setContextMenu(null);
+                  }}
+                >
+                  Paste
+                </div>
+              )}
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                onClick={() => {
+                  undo();
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↶</span>
+                Undo
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                onClick={() => {
+                  redo();
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↷</span>
+                Redo
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                onClick={() => {
+                  setTool("polyline");
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>／</span>
+                Polyline
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                onClick={() => {
+                  setTool("rect");
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>▭</span>
+                Rectangle
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                onClick={() => {
+                  setTool("text");
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>T</span>
+                Text
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                onClick={() => {
+                  setTool("select");
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↔</span>
+                Move
+              </div>
+              
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                onClick={() => {
+                  setWidgetOpen(true);
+                  setContextMenu(null);
+                }}
+              >
+                Widgets...
               </div>
             </>
           )}
 
           {contextMenu.mode === "element" && selectedBBox && !showHUD && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
               onClick={() => {
                 setPanelCursor({ x: contextMenu.x, y: contextMenu.y });
                 setShowHUD(true);
@@ -4325,7 +5382,7 @@ export default function App() {
           )}
           {contextMenu.mode === "element" && showHUD && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
               onClick={() => {
                 setShowHUD(false);
                 setContextMenu(null);
@@ -4334,8 +5391,57 @@ export default function App() {
               Hide Properties
             </div>
           )}
+          {contextMenu.mode === "element" && contextSingleSvg && (
+            <div style={{ padding: "8px 12px", display: "grid", gap: 6 }}>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Tag</div>
+              <input
+                type="text"
+                value={contextSvgTagQuery}
+                placeholder="Search tags..."
+                onChange={(e) => setContextSvgTagQuery(e.target.value)}
+                onMouseDown={(e) => e.stopPropagation()}
+              style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: "6px 8px",
+                  fontSize: 12,
+                  color: "var(--text)",
+                  background: "var(--bg-elev)",
+                }}
+              />
+              <select
+                value={String(contextSingleSvg.tagPath || "")}
+                onChange={(e) => {
+                  const v = String(e.target.value || "").trim();
+                  applySingleTagPath(v);
+                  setContextMenu(null);
+                }}
+                style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: "6px 8px",
+                  fontSize: 12,
+                  color: "var(--text)",
+                  background: "var(--bg-elev)",
+                  cursor: "pointer",
+                }}
+              >
+                {svgTagGroupMenuFilteredOptions.length === 0 ? (
+                  <option value="" disabled>
+                    No matches
+                  </option>
+                ) : (
+                  svgTagGroupMenuFilteredOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.group} / {opt.label}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          )}
           {contextMenu.mode === "element" && !selectedBBox && (
-            <div style={{ padding: "8px 12px", fontSize: 13, color: "#888" }}>
+            <div style={{ padding: "8px 12px", fontSize: 13, color: "var(--text-muted)" }}>
               No selection
             </div>
           )}
@@ -4349,7 +5455,7 @@ export default function App() {
             left: polyHandleMenu.x,
             top: polyHandleMenu.y,
             zIndex: 210,
-            background: "white",
+            background: "var(--bg-elev)",
             border: "1px solid rgba(0,0,0,0.12)",
             borderRadius: 10,
             boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
@@ -4362,7 +5468,7 @@ export default function App() {
           }}
         >
           <div
-            style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#b00020" }}
+            style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#f04438" }}
             onClick={() => {
               removeVertex(polyHandleMenu.id, polyHandleMenu.index);
               setSelectedSegment(null);
@@ -4372,7 +5478,7 @@ export default function App() {
             Delete Segment
           </div>
           <div
-            style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#111" }}
+            style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
             onClick={() => setPolyHandleMenu(null)}
           >
             Cancel
@@ -4389,7 +5495,7 @@ export default function App() {
             zIndex: 210,
             width: subMenuSize.w,
             maxHeight: subMenuSize.h,
-            background: "white",
+            background: "var(--bg-elev)",
             border: "1px solid rgba(0,0,0,0.12)",
             borderRadius: 10,
             boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
@@ -4412,8 +5518,8 @@ export default function App() {
             e.preventDefault();
           }}
         >
-          <div style={{ padding: "8px 10px", borderBottom: "1px solid #f0f0f0", background: "white" }}>
-            <div style={{ fontWeight: 800, fontSize: 12, color: "#111" }}>SVG Files</div>
+          <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
+            <div style={{ fontWeight: 800, fontSize: 12, color: "var(--text)" }}>SVG Files</div>
                 <div
                   style={{ marginTop: 6, position: "relative" }}
                   onMouseDown={(e) => e.stopPropagation()}
@@ -4428,11 +5534,11 @@ export default function App() {
                 onClick={(e) => e.stopPropagation()}
                 style={{
                   width: "100%",
-                  border: "1px solid #e6e6e6",
-                  background: "white",
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
                   borderRadius: 8,
                   padding: "7px 26px 7px 8px",
-                  color: "#111",
+                  color: "var(--text)",
                   outline: "none",
                   fontSize: 12,
                   boxSizing: "border-box",
@@ -4452,11 +5558,11 @@ export default function App() {
                     width: 18,
                     height: 18,
                     borderRadius: 6,
-                    border: "1px solid #e6e6e6",
-                    background: "white",
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
                     cursor: "pointer",
                     lineHeight: 1,
-                    color: "#111",
+                    color: "var(--text)",
                     padding: 0,
                     fontSize: 11,
                   }}
@@ -4476,11 +5582,11 @@ export default function App() {
             }}
           >
             {contextGrouped.length === 0 ? (
-              <div style={{ color: "#888", fontSize: 12 }}>No matches.</div>
+              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No matches.</div>
             ) : (
               contextGrouped.map((group) => (
                 <div key={group.folder} style={{ display: "grid", gap: 6 }}>
-                  <div style={{ color: "#808080", fontSize: 11, fontWeight: 800, padding: "2px 2px" }}>
+                  <div style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 800, padding: "2px 2px" }}>
                     {group.folder}
                   </div>
                   {group.files.map((f) => (
@@ -4497,10 +5603,10 @@ export default function App() {
                         textAlign: "left",
                         padding: "8px 10px",
                         borderRadius: 10,
-                        border: "1px solid #e6e6e6",
-                        background: "white",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
                         cursor: "pointer",
-                        color: "#111",
+                        color: "var(--text)",
                         fontSize: 12,
                       }}
                       title={f.key}
@@ -4541,42 +5647,48 @@ export default function App() {
               top: 0,
               height: "100%",
               width: "min(900px, 96vw)",
-              background: "#f7f8fb",
+              background: "var(--bg-soft)",
               boxShadow: "-16px 0 40px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
-              borderLeft: "1px solid rgba(0,0,0,0.08)",
+              borderLeft: "1px solid var(--border)",
+              color: "var(--text)",
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div
               style={{
                 display: "flex",
-                alignItems: "center",
+                alignItems: "flex-start",
                 justifyContent: "space-between",
                 padding: "12px 16px",
-                borderBottom: "1px solid #e4e7ec",
-                background: "white",
+                borderBottom: "1px solid var(--border)",
+                background: "var(--bg-elev)",
                 gap: 12,
                 flexWrap: "wrap",
               }}
             >
-              <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>
-                {drawerView === "ai"
-                  ? "AI"
-                  : drawerView === "data"
-                  ? "Data"
-                  : drawerView === "tags"
-                  ? "Tags"
-                  : drawerView === "opc"
-                  ? "OPC Configuration"
-                  : "Help"}
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>
+                  {drawerView === "ai"
+                    ? "AI"
+                    : drawerView === "data"
+                    ? "Data"
+                    : drawerView === "tags"
+                    ? "Tags"
+                    : drawerView === "logs"
+                    ? "Logs"
+                    : drawerView === "opc"
+                    ? "OPC Configuration"
+                    : "Help"}
+                </div>
               </div>
               <button
                 onClick={() => setShowMainDrawer(false)}
                 style={{
-                  border: "1px solid #d0d7e2",
-                  background: "white",
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  color: "var(--text)",
                   borderRadius: 8,
                   padding: "6px 10px",
                   cursor: "pointer",
@@ -4590,12 +5702,16 @@ export default function App() {
                 <div style={{ height: "100%", overflow: "auto" }}>
                   <OpcConfig embedded mode="tags" />
                 </div>
+              ) : drawerView === "logs" ? (
+                <div style={{ height: "100%", overflow: "auto" }}>
+                  <OpcConfig embedded mode="logs" onDrawerViewChange={setDrawerView} />
+                </div>
               ) : drawerView === "opc" ? (
                 <div style={{ height: "100%", overflow: "auto", padding: 16, boxSizing: "border-box" }}>
-                  <OpcConfig embedded />
+                  <OpcConfig embedded onDrawerViewChange={setDrawerView} />
                 </div>
               ) : drawerView === "help" ? (
-                <div style={{ height: "100%", overflow: "auto", padding: 16 }}>
+                <div style={{ height: "100%", overflow: "hidden", padding: 16, boxSizing: "border-box" }}>
                   <HelpPanel inline onClose={() => setShowMainDrawer(false)} />
                 </div>
               ) : drawerView === "data" ? (
@@ -4637,7 +5753,8 @@ export default function App() {
             style={{
               position: "absolute",
               inset: 0,
-              background: "rgba(0,0,0,0.35)",
+              background: "rgba(4, 10, 20, 0.55)",
+              backdropFilter: "blur(2px)",
             }}
           />
           <div
@@ -4646,12 +5763,14 @@ export default function App() {
               right: 0,
               top: 0,
               height: "100%",
-              width: "min(520px, 94vw)",
-              background: "#f7f8fb",
-              boxShadow: "-16px 0 40px rgba(0,0,0,0.18)",
+              width: "min(620px, 96vw)",
+              background:
+                "linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 96%, white 4%) 0%, color-mix(in srgb, var(--bg-soft) 90%, black 10%) 100%)",
+              boxShadow: "-20px 0 48px rgba(0,0,0,0.32)",
               display: "flex",
               flexDirection: "column",
-              borderLeft: "1px solid rgba(0,0,0,0.08)",
+              borderLeft: "1px solid var(--border)",
+              color: "var(--text)",
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
@@ -4660,64 +5779,103 @@ export default function App() {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                padding: "12px 16px",
-                borderBottom: "1px solid #e4e7ec",
-                background: "white",
+                padding: "14px 18px",
+                borderBottom: "1px solid var(--border)",
+                background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
                 gap: 12,
               }}
             >
-              <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>
-                User Settings
+              <div style={{ display: "grid", gap: 2 }}>
+                <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "0.02em" }}>
+                  User Settings
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  Profile, security and session preferences
+                </div>
               </div>
               <button
                 onClick={() => setShowUserDrawer(false)}
                 style={{
-                  border: "1px solid #d0d7e2",
-                  background: "white",
-                  borderRadius: 8,
-                  padding: "6px 10px",
+                  border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
+                  background: "color-mix(in srgb, var(--bg-elev) 92%, white 8%)",
+                  color: "var(--text)",
+                  borderRadius: 10,
+                  padding: "9px 14px",
+                  fontSize: 13,
+                  fontWeight: 600,
                   cursor: "pointer",
                 }}
               >
                 Close
               </button>
             </div>
-            <div style={{ flex: "1 1 auto", overflow: "auto", padding: 16, display: "grid", gap: 16 }}>
+            <div style={{ flex: "1 1 auto", overflow: "auto", padding: 22, display: "grid", gap: 18 }}>
               <div
                 style={{
-                  background: "white",
-                  border: "1px solid #e4e7ec",
-                  borderRadius: 14,
-                  padding: 16,
+                  background:
+                    "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
+                  border: "1px solid color-mix(in srgb, var(--border) 82%, white 18%)",
+                  borderRadius: 16,
+                  padding: 18,
                   display: "grid",
-                  gap: 12,
+                  gap: 14,
+                  boxShadow: "0 10px 20px rgba(0,0,0,0.18)",
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={{ fontWeight: 800, fontSize: 13 }}>Profile</div>
-                  <div style={{ fontSize: 11, color: "#667085" }}>Public info</div>
+                  <div style={{ fontWeight: 800, fontSize: 16 }}>Profile</div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-muted)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 999,
+                      padding: "2px 8px",
+                      background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
+                    }}
+                  >
+                    Public info
+                  </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
                     Display Name
                     <input
                       value={profileDraft.display_name}
                       onChange={(e) =>
                         setProfileDraft((p) => ({ ...p, display_name: e.target.value }))
                       }
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                      style={{
+                        border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
+                        borderRadius: 10,
+                        padding: "11px 12px",
+                        minHeight: 42,
+                        fontSize: 14,
+                        background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
+                        color: "var(--text)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                      }}
                     />
                   </label>
-                  <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
                     Username
                     <input
                       value={profileDraft.username}
                       onChange={(e) => setProfileDraft((p) => ({ ...p, username: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                      style={{
+                        border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
+                        borderRadius: 10,
+                        padding: "11px 12px",
+                        minHeight: 42,
+                        fontSize: 14,
+                        background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
+                        color: "var(--text)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                      }}
                     />
                   </label>
                 </div>
-                <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
                   Avatar URL
                   <input
                     value={profileDraft.avatar_url}
@@ -4725,7 +5883,16 @@ export default function App() {
                       setProfileDraft((p) => ({ ...p, avatar_url: e.target.value }))
                     }
                     placeholder="https://..."
-                    style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                    style={{
+                      border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
+                      borderRadius: 10,
+                      padding: "11px 12px",
+                      minHeight: 42,
+                      fontSize: 14,
+                      background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
+                      color: "var(--text)",
+                      boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                    }}
                   />
                 </label>
                 {profileError && <div style={{ color: "#b42318", fontSize: 12 }}>{profileError}</div>}
@@ -4747,13 +5914,17 @@ export default function App() {
                       }
                     }}
                     style={{
-                      border: "1px solid #2b6cff",
-                      background: "#2b6cff",
+                      border: "1px solid #2f6dff",
+                      background: "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
                       color: "white",
                       borderRadius: 10,
-                      padding: "8px 14px",
+                      padding: "10px 18px",
+                      minHeight: 42,
+                      minWidth: 152,
+                      fontSize: 13,
                       cursor: "pointer",
                       fontWeight: 700,
+                      boxShadow: "0 8px 18px rgba(43,108,255,0.35)",
                     }}
                   >
                     Save Changes
@@ -4763,35 +5934,66 @@ export default function App() {
 
               <div
                 style={{
-                  background: "white",
-                  border: "1px solid #e4e7ec",
-                  borderRadius: 14,
-                  padding: 16,
+                  background:
+                    "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
+                  border: "1px solid color-mix(in srgb, var(--border) 82%, white 18%)",
+                  borderRadius: 16,
+                  padding: 18,
                   display: "grid",
-                  gap: 12,
+                  gap: 14,
+                  boxShadow: "0 10px 20px rgba(0,0,0,0.18)",
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={{ fontWeight: 800, fontSize: 13 }}>Security</div>
-                  <div style={{ fontSize: 11, color: "#667085" }}>Update password</div>
+                  <div style={{ fontWeight: 800, fontSize: 16 }}>Security</div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-muted)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 999,
+                      padding: "2px 8px",
+                      background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
+                    }}
+                  >
+                    Update password
+                  </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
                     Current Password
                     <input
                       type="password"
                       value={passwordDraft.current}
                       onChange={(e) => setPasswordDraft((p) => ({ ...p, current: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                      style={{
+                        border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
+                        borderRadius: 10,
+                        padding: "11px 12px",
+                        minHeight: 42,
+                        fontSize: 14,
+                        background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
+                        color: "var(--text)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                      }}
                     />
                   </label>
-                  <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
                     New Password
                     <input
                       type="password"
                       value={passwordDraft.next}
                       onChange={(e) => setPasswordDraft((p) => ({ ...p, next: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 10, padding: "10px 12px" }}
+                      style={{
+                        border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
+                        borderRadius: 10,
+                        padding: "11px 12px",
+                        minHeight: 42,
+                        fontSize: 14,
+                        background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
+                        color: "var(--text)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                      }}
                     />
                   </label>
                 </div>
@@ -4809,13 +6011,17 @@ export default function App() {
                       }
                     }}
                     style={{
-                      border: "1px solid #111827",
-                      background: "#111827",
+                      border: "1px solid color-mix(in srgb, var(--border) 70%, #9ca3af 30%)",
+                      background: "linear-gradient(180deg, #273445 0%, #1b2533 100%)",
                       color: "white",
                       borderRadius: 10,
-                      padding: "8px 14px",
+                      padding: "10px 18px",
+                      minHeight: 42,
+                      minWidth: 152,
+                      fontSize: 13,
                       cursor: "pointer",
                       fontWeight: 700,
+                      boxShadow: "0 8px 16px rgba(0,0,0,0.28)",
                     }}
                   >
                     Update Password
@@ -4828,15 +6034,17 @@ export default function App() {
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
-                  background: "white",
-                  border: "1px solid #f2c6c2",
-                  borderRadius: 14,
-                  padding: "12px 16px",
+                  background:
+                    "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, #3b0b0b 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
+                  border: "1px solid color-mix(in srgb, #f2c6c2 75%, #f04438 25%)",
+                  borderRadius: 16,
+                  padding: "14px 18px",
+                  boxShadow: "0 10px 20px rgba(0,0,0,0.18)",
                 }}
               >
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 12, color: "#b42318" }}>Sign out</div>
-                  <div style={{ fontSize: 11, color: "#667085" }}>End your current session.</div>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "#b42318" }}>Sign out</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>End your current session.</div>
                 </div>
                 <button
                   onClick={async () => {
@@ -4844,12 +6052,16 @@ export default function App() {
                   }}
                   style={{
                     border: "1px solid #f04438",
-                    background: "#f04438",
+                    background: "linear-gradient(180deg, #f75b51 0%, #f04438 100%)",
                     color: "white",
                     borderRadius: 10,
-                    padding: "8px 14px",
+                    padding: "10px 18px",
+                    minHeight: 42,
+                    minWidth: 112,
+                    fontSize: 13,
                     cursor: "pointer",
                     fontWeight: 700,
+                    boxShadow: "0 8px 16px rgba(240,68,56,0.35)",
                   }}
                 >
                   Logout
@@ -4868,9 +6080,8 @@ export default function App() {
           right: 0,
           height: 56,
           zIndex: 95,
-          background:
-            "linear-gradient(90deg, rgba(14, 165, 233, 0.18) 0%, rgba(59, 130, 246, 0.12) 45%, rgba(16, 185, 129, 0.14) 100%), rgba(255,255,255,0.92)",
-          borderBottom: "1px solid rgba(15, 23, 42, 0.12)",
+          background: "var(--topbar-grad)",
+          borderBottom: "1px solid var(--topbar-border)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
@@ -4880,115 +6091,222 @@ export default function App() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ fontWeight: 900, letterSpacing: "-0.02em", color: "#0b1220" }}>Vizi</div>
-          <div style={{ width: 1, height: 18, background: "rgba(15, 23, 42, 0.2)" }} />
+          <div style={{ fontWeight: 900, letterSpacing: "-0.02em", color: "var(--text)" }}>Vizi</div>
+          <div style={{ width: 1, height: 18, background: "var(--border)" }} />
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <select
-              value={activeProjectId}
-              onChange={(e) => {
-                setActiveProjectId(e.target.value);
-                setShowProjectNameInput(false);
-              }}
+            <button
+              className="top-menu-btn"
+              onClick={() => setShowProjectDrawer((v) => !v)}
+              title={showProjectDrawer ? "Hide Projects" : "Show Projects"}
+              style={topMenuModeButtonStyle(!!showProjectDrawer)}
+            >
+              <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M4 7h16M4 12h16M4 17h16"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+            <div
+              title={activeProject?.name || projectName || "No project selected"}
               style={{
-                border: "1px solid rgba(15, 23, 42, 0.15)",
-                background: "rgba(255,255,255,0.9)",
-                borderRadius: 8,
-                padding: "4px 8px",
+                maxWidth: 220,
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 999,
+                padding: "4px 10px",
                 fontSize: 11,
-                fontWeight: 600,
-                minWidth: 220,
+                fontWeight: 700,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
               }}
             >
-              <option value="">Select Project</option>
-              {projects.map((p) => (
-                <option key={`proj-${p.id}`} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            {showProjectNameInput ? (
-              <input
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                placeholder="Project name"
-                style={{
-                  border: "1px solid rgba(15, 23, 42, 0.15)",
-                  background: "rgba(255,255,255,0.9)",
-                  borderRadius: 8,
-                  padding: "4px 8px",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  minWidth: 160,
+              {activeProject?.name || projectName || "No project selected"}
+            </div>
+            <div style={{ width: 1, height: 20, background: "var(--border)", margin: "0 4px" }} />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                maxWidth: "44vw",
+                overflowX: "auto",
+              }}
+            >
+              <button title="Export SVG" style={topMenuIconButtonStyle} onClick={exportSVG}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M12 3v10m0 0l-4-4m4 4l4-4"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button title="Export Ignition" style={topMenuIconButtonStyle} onClick={exportIgnitionJson}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M9 4c-2 0-3 1-3 3v1c0 1-.5 2-2 2 1.5 0 2 1 2 2v1c0 2 1 3 3 3"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M15 4c2 0 3 1 3 3v1c0 1 .5 2 2 2-1.5 0-2 1-2 2v1c0 2-1 3-3 3"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+              <button title="Add SVG" style={topMenuIconButtonStyle} onClick={() => setImportOpen(true)}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M12 21V11m0 0l4 4m-4-4l-4 4"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M5 7h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button title="Add Widget" style={topMenuIconButtonStyle} onClick={() => setWidgetOpen(true)}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <rect x="3" y="12" width="4" height="8" rx="1" stroke="currentColor" strokeWidth="2" />
+                  <rect x="10" y="8" width="4" height="12" rx="1" stroke="currentColor" strokeWidth="2" />
+                  <rect x="17" y="5" width="4" height="15" rx="1" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Move"
+                style={topMenuModeButtonStyle(tool === "select")}
+                onClick={() => {
+                  setTool("select");
+                  setDrawing(null);
                 }}
-              />
-            ) : null}
-            <button
-              onClick={() => openProjectFromDb(activeProjectId)}
-              disabled={!activeProjectId}
-              style={{
-                border: "1px solid rgba(15, 23, 42, 0.15)",
-                background: "rgba(255,255,255,0.85)",
-                borderRadius: 8,
-                padding: "4px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: activeProjectId ? "pointer" : "not-allowed",
-                opacity: activeProjectId ? 1 : 0.6,
-              }}
-            >
-              Open
-            </button>
-            <button
-              onClick={saveProjectToDb}
-              style={{
-                border: "1px solid rgba(15, 23, 42, 0.15)",
-                background: "rgba(255,255,255,0.85)",
-                borderRadius: 8,
-                padding: "4px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              Save
-            </button>
-            <button
-              onClick={newProjectFromDb}
-              style={{
-                border: "1px solid rgba(15, 23, 42, 0.15)",
-                background: "rgba(255,255,255,0.85)",
-                borderRadius: 8,
-                padding: "4px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              New
-            </button>
-            <button
-              onClick={() => deleteProjectFromDb(activeProjectId)}
-              disabled={!activeProjectId}
-              style={{
-                border: "1px solid #f04438",
-                background: activeProjectId ? "#f04438" : "rgba(244,68,56,0.25)",
-                color: "white",
-                borderRadius: 8,
-                padding: "4px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: activeProjectId ? "pointer" : "not-allowed",
-                opacity: activeProjectId ? 1 : 0.6,
-              }}
-            >
-              Delete
-            </button>
-            {projectStatus ? (
-              <div style={{ fontSize: 11, color: "#667085", marginLeft: 4 }}>{projectStatus}</div>
-            ) : null}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M4 3l7 18 2-7 7-2L4 3z" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Polyline"
+                style={topMenuModeButtonStyle(tool === "polyline")}
+                onClick={() => {
+                  setTool("polyline");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M5 6h5l4 6h5"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <circle cx="5" cy="6" r="1.5" fill="currentColor" />
+                  <circle cx="10" cy="6" r="1.5" fill="currentColor" />
+                  <circle cx="14" cy="12" r="1.5" fill="currentColor" />
+                  <circle cx="19" cy="12" r="1.5" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Rectangle"
+                style={topMenuModeButtonStyle(tool === "rect")}
+                onClick={() => {
+                  setTool("rect");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <rect x="5" y="6" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Text"
+                style={topMenuModeButtonStyle(tool === "text")}
+                onClick={() => {
+                  setTool("text");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M4 6V4h16v2M9 20h6M12 4v16"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Toggle Tag Paths"
+                style={topMenuModeButtonStyle(!!showTagPaths)}
+                onClick={() => setShowTagPaths((v) => !v)}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M4 12l8-8h6l2 2v6l-8 8-8-8z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinejoin="round"
+                  />
+                  <circle cx="16" cy="8" r="1.5" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Toggle Grid"
+                style={topMenuModeButtonStyle(!!showGrid)}
+                onClick={() => setShowGrid((v) => !v)}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
+          <button
+            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+            style={{
+              border: "1px solid var(--border)",
+              background: "var(--bg-elev)",
+              color: "var(--text)",
+              borderRadius: 999,
+              padding: "4px 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+            title="Toggle Dark Mode"
+          >
+            {theme === "dark" ? "Light" : "Dark"}
+          </button>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {[
               { key: "ai", label: "AI" },
@@ -5021,8 +6339,8 @@ export default function App() {
               display: "flex",
               alignItems: "center",
               gap: 10,
-              border: "1px solid rgba(15, 23, 42, 0.12)",
-              background: "rgba(255,255,255,0.9)",
+              border: "1px solid var(--border)",
+              background: "color-mix(in srgb, var(--bg-elev) 90%, transparent)",
               borderRadius: 999,
               padding: "4px 10px",
               cursor: "pointer",
@@ -5040,8 +6358,8 @@ export default function App() {
                   width: 28,
                   height: 28,
                   borderRadius: "50%",
-                  background: "#111827",
-                  color: "white",
+                  background: theme === "dark" ? "#ffffff" : "#111827",
+                  color: theme === "dark" ? "#111827" : "white",
                   display: "grid",
                   placeItems: "center",
                   fontSize: 12,
@@ -5051,37 +6369,286 @@ export default function App() {
                 {avatarLabel}
               </div>
             )}
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#111" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>
               {user?.display_name || user?.username || "User"}
             </div>
           </button>
         </div>
       </div>
 
-
-      {!showToolbar && (
-        <button
-          title="Show Toolbar"
-          onClick={() => setShowToolbar(true)}
+      {showProjectDrawer && (
+        <div
           style={{
             position: "fixed",
-            left: Math.max(toolbarPos.x, 8),
-            top: Math.max(toolbarPos.y, TOP_BAR_H + RULER_SIZE + 8),
-            zIndex: 92,
-            padding: "6px 10px",
-            borderRadius: 8,
-            border: "1px solid rgba(0,0,0,0.12)",
-            background: "white",
-            cursor: "pointer",
-            boxShadow: "0 6px 14px rgba(0,0,0,0.10)",
-            color: "#111",
-            fontSize: 12,
-            fontWeight: 600,
-            letterSpacing: "0.02em",
+            top: TOP_BAR_H,
+            left: 0,
+            bottom: 0,
+            width: "min(360px, 92vw)",
+            zIndex: 220,
+            borderRight: "1px solid var(--border)",
+            background: "var(--bg-soft)",
+            boxShadow: "16px 0 40px rgba(0,0,0,0.18)",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
           }}
+          onMouseDown={(e) => e.stopPropagation()}
         >
-          Toolbar
-        </button>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: 12,
+              padding: "12px 16px",
+              borderBottom: "1px solid var(--border)",
+              background: "var(--bg-elev)",
+            }}
+          >
+            <div style={{ display: "grid", gap: 2 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: "0.02em", color: "var(--text)" }}>
+                Projects
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {projects.length} total
+              </div>
+            </div>
+            <button
+              onClick={() => setShowProjectDrawer(false)}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 8,
+                padding: "6px 10px",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+              title="Close Projects"
+            >
+              Close
+            </button>
+          </div>
+
+          <div
+            style={{
+              margin: 12,
+              marginBottom: 8,
+              padding: 12,
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              background: "var(--bg-elev)",
+              display: "grid",
+              gap: 6,
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Current Project</div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text)" }}>
+              {activeProject?.name || projectName || "Untitled"}
+            </div>
+            {activeProjectUpdatedBy ? (
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                Updated by {activeProjectUpdatedBy}
+              </div>
+            ) : null}
+            {activeProjectUpdatedAt ? (
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {formatProjectTime(activeProjectUpdatedAt)}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, padding: "0 12px 12px" }}>
+            <button
+              onClick={newProjectFromDb}
+              style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "7px 10px" }}
+              title="Add Project"
+            >
+              New
+            </button>
+            <button
+              onClick={() => setShowProjectNameInput((v) => !v)}
+              style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "7px 10px" }}
+              title="Edit Project Name"
+            >
+              Rename
+            </button>
+            <button
+              onClick={saveProjectToDb}
+              style={{
+                ...topMenuTextButtonStyle,
+                fontSize: 11,
+                padding: "7px 10px",
+                border: "1px solid #2b6cff",
+                background: "#2b6cff",
+                color: "#ffffff",
+              }}
+              title="Save Project"
+            >
+              Save
+            </button>
+            <button
+              onClick={() => deleteProjectFromDb(activeProjectId)}
+              disabled={!activeProjectId}
+              style={{
+                ...topMenuTextButtonStyle,
+                fontSize: 11,
+                padding: "7px 10px",
+                border: "1px solid #f04438",
+                color: "#ffffff",
+                background: activeProjectId ? "#f04438" : "rgba(244,68,56,0.25)",
+                cursor: activeProjectId ? "pointer" : "not-allowed",
+                opacity: activeProjectId ? 1 : 0.6,
+              }}
+              title="Delete Project"
+            >
+              Delete
+            </button>
+          </div>
+
+          {showProjectNameInput ? (
+            <div
+              style={{
+                display: "grid",
+                gap: 8,
+                padding: 12,
+                margin: "0 12px 12px",
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                background: "var(--bg-elev)",
+              }}
+            >
+              <input
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder="Project name"
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  color: "var(--text)",
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+                <button
+                  onClick={cancelNewProjectInput}
+                  style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 10px" }}
+                  title="Cancel Edit"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveProjectToDb}
+                  style={{
+                    ...topMenuTextButtonStyle,
+                    fontSize: 11,
+                    padding: "6px 10px",
+                    border: "1px solid #2b6cff",
+                    background: "#2b6cff",
+                    color: "#ffffff",
+                  }}
+                  title="Save Name"
+                >
+                  Save Name
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div style={{ padding: "0 12px 8px" }}>
+            <input
+              value={projectSearch}
+              onChange={(e) => setProjectSearch(e.target.value)}
+              placeholder="Search projects..."
+              style={{
+                width: "100%",
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 8,
+                padding: "8px 10px",
+                fontSize: 12,
+              }}
+            />
+          </div>
+          <div
+            style={{
+              padding: "0 12px 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              color: "var(--text-muted)",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
+            {filteredProjects.length} shown
+          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: "0 12px 12px" }} className="vizi-scroll">
+            {filteredProjects.length === 0 ? (
+              <div
+                style={{
+                  marginTop: 12,
+                  border: "1px dashed var(--border)",
+                  borderRadius: 8,
+                  padding: 12,
+                  fontSize: 12,
+                  color: "var(--text-muted)",
+                }}
+              >
+                No projects match your search.
+              </div>
+            ) : null}
+            {filteredProjects.map((p) => {
+              const active = p.id === activeProjectId;
+              return (
+                <button
+                  key={`proj-list-${p.id}`}
+                  onClick={() => {
+                    setActiveProjectId(p.id);
+                    setShowProjectNameInput(false);
+                    openProjectFromDb(p.id);
+                  }}
+                  style={{
+                    width: "100%",
+                    textAlign: "left",
+                    marginBottom: 8,
+                    border: active ? "1px solid #2b6cff" : "1px solid var(--border)",
+                    background: active ? "color-mix(in srgb, #2b6cff 20%, var(--bg-elev))" : "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    fontSize: 12,
+                    fontWeight: active ? 800 : 600,
+                    cursor: "pointer",
+                    display: "grid",
+                    gap: 2,
+                  }}
+                  title={p.name}
+                >
+                  <span>{p.name || "Untitled"}</span>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500 }}>
+                    {p.id}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {!!projectStatus && (
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                padding: "10px 12px",
+                fontSize: 12,
+                color: "var(--text-muted)",
+              }}
+            >
+              {projectStatus}
+            </div>
+          )}
+        </div>
       )}
 
       {!showZoom && (
@@ -5090,7 +6657,7 @@ export default function App() {
           onClick={() => setShowZoom(true)}
           style={{
             position: "fixed",
-            left: Math.max(toolbarPos.x, 8),
+            left: Math.max(zoomPos.x, 8),
             bottom: 16,
             zIndex: 92,
             padding: "6px 10px",
@@ -5111,3 +6678,7 @@ export default function App() {
     </div>
   );
 }
+
+
+
+

@@ -15,10 +15,60 @@ function makeId() {
   return `plc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function formatLiveNumber(value, decimals = 4) {
+function formatLiveNumber(value, decimals = 0) {
   if (value == null || value === "") return "";
   if (!Number.isFinite(Number(value))) return String(value);
   return Number(value).toFixed(decimals);
+}
+
+function parseOptionalMs(value) {
+  if (value == null) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return Math.round(n);
+}
+
+function parseOptionalNonNegative(value) {
+  if (value == null) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return "";
+  return n;
+}
+
+function defaultRuntimeConfig() {
+  return {
+    readTimeoutMs: 2000,
+    errorBackoffEnabled: true,
+    errorBackoffBaseMs: 1000,
+    errorBackoffMaxMs: 15000,
+    errorBackoffThreshold: 3,
+    pollJitterMs: 0,
+    deadbandDefault: "",
+    reconnectDelayMs: 2000,
+    reconnectMaxAttempts: "",
+    heartbeatMs: 5000,
+  };
+}
+
+function normalizeRuntimeConfig(value) {
+  const incoming = value && typeof value === "object" ? value : {};
+  const defaults = defaultRuntimeConfig();
+  return {
+    readTimeoutMs: parseOptionalMs(incoming.readTimeoutMs) || defaults.readTimeoutMs,
+    errorBackoffEnabled: incoming.errorBackoffEnabled !== false,
+    errorBackoffBaseMs: parseOptionalMs(incoming.errorBackoffBaseMs) || defaults.errorBackoffBaseMs,
+    errorBackoffMaxMs: parseOptionalMs(incoming.errorBackoffMaxMs) || defaults.errorBackoffMaxMs,
+    errorBackoffThreshold: parseOptionalMs(incoming.errorBackoffThreshold) || defaults.errorBackoffThreshold,
+    pollJitterMs: parseOptionalNonNegative(incoming.pollJitterMs) === "" ? defaults.pollJitterMs : parseOptionalNonNegative(incoming.pollJitterMs),
+    deadbandDefault: parseOptionalNonNegative(incoming.deadbandDefault),
+    reconnectDelayMs: parseOptionalMs(incoming.reconnectDelayMs) || defaults.reconnectDelayMs,
+    reconnectMaxAttempts: parseOptionalMs(incoming.reconnectMaxAttempts),
+    heartbeatMs: parseOptionalMs(incoming.heartbeatMs) || defaults.heartbeatMs,
+  };
 }
 
 function parseCsv(text) {
@@ -67,12 +117,13 @@ function parseCsv(text) {
     .filter((t) => t.name);
 }
 
-export default function OpcConfig({ embedded = false, mode = "full" }) {
+export default function OpcConfig({ embedded = false, mode = "full", onDrawerViewChange = null }) {
   const [config, setConfig] = useState({
     plc: { host: "", slot: 0 },
     plcs: [],
     opcua: { port: 4840, resourcePath: "/UA/ControlLogix", name: "ControlLogix" },
     pollMs: 500,
+    runtime: defaultRuntimeConfig(),
     topics: [],
     tags: [],
   });
@@ -81,13 +132,15 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
   const [error, setError] = useState("");
   const [liveValues, setLiveValues] = useState({});
   const [liveErrors, setLiveErrors] = useState({});
+  const [liveQualities, setLiveQualities] = useState({});
+  const [liveDiagnostics, setLiveDiagnostics] = useState({});
   const [opcConnected, setOpcConnected] = useState(null);
   const [opcLastPollAt, setOpcLastPollAt] = useState(null);
   const [restartPending, setRestartPending] = useState(false);
   const [templates, setTemplates] = useState([]);
   const [templateName, setTemplateName] = useState("");
   const [templateFieldRows, setTemplateFieldRows] = useState([
-    { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 },
+    { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 },
   ]);
   const [templateStateMappings, setTemplateStateMappings] = useState([
     { field: "", state: "", color: "" },
@@ -106,6 +159,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
   const [applyTopic, setApplyTopic] = useState("");
   const [applyPrefix, setApplyPrefix] = useState("");
   const [applyMappingSet, setApplyMappingSet] = useState("");
+  const [errorLogEntries, setErrorLogEntries] = useState([]);
   const [expandedPrefixes, setExpandedPrefixes] = useState({});
   const [tagSectionTab, setTagSectionTab] = useState("tags");
   const [showTagsDrawer, setShowTagsDrawer] = useState(false);
@@ -118,8 +172,10 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     samplingInterval: "",
     topic: "",
     enabled: true,
+    muted: false,
     mappingSet: "",
     groupName: "",
+    deadband: "",
   });
   const [tagTableEditing, setTagTableEditing] = useState(false);
   const [editingTagIndex, setEditingTagIndex] = useState(null);
@@ -133,15 +189,26 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     enabled: true,
   });
   const [showPlcForm, setShowPlcForm] = useState(false);
+  const [opcConfigSectionTab, setOpcConfigSectionTab] = useState("opcua");
   const [manualPlc, setManualPlc] = useState({
     name: "",
     host: "",
     slot: "",
     pollMs: "",
   });
+  const [bulkEdit, setBulkEdit] = useState({
+    topic: "",
+    groupName: "",
+    pollMs: "",
+    samplingInterval: "",
+    mappingSet: "",
+    deadband: "",
+    muted: false,
+  });
   const tagEditRowRefs = useRef(new Map());
   const tagColumnKeys = [
     "enabled",
+    "muted",
     "name",
     "topic",
     "tagPath",
@@ -151,11 +218,13 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     "mappingSet",
     "scale",
     "decimals",
+    "quality",
     "liveValue",
     "actions",
   ];
   const tagColumnLabels = {
     enabled: "Enabled",
+    muted: "Muted",
     name: "Name",
     topic: "Topic",
     tagPath: "Tag Path",
@@ -165,6 +234,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     mappingSet: "Mapping Set",
     scale: "Scale",
     decimals: "Decimals",
+    quality: "Quality",
     liveValue: "Live Value",
     actions: "",
   };
@@ -181,9 +251,18 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
   const autoSaveTimerRef = useRef(null);
   const autoSaveReadyRef = useRef(false);
   const lastSavedRef = useRef("");
+  const lastLiveErrorsRef = useRef({});
   const mappingSetAutoSelectedRef = useRef(false);
   const drawerMenuRef = useRef(null);
   const drawerMenuBtnRef = useRef(null);
+
+  useEffect(() => {
+    if (mode === "logs") {
+      setTagSectionTab("logs");
+    } else if (mode === "tags") {
+      setTagSectionTab("tags");
+    }
+  }, [mode]);
 
   useEffect(() => {
     async function load() {
@@ -196,10 +275,17 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
             const name = normalizeTagName(t.name);
             const tagPath = normalizeTagName(t.tagPath || name);
             const topic = normalizeTagName(t.topic || "");
-            const samplingInterval = Number.isFinite(Number(t?.samplingInterval))
-              ? Number(t.samplingInterval)
-              : "";
-            return { ...t, name, tagPath, topic, samplingInterval, mappingSet: t?.mappingSet || "" };
+            const samplingInterval = parseOptionalMs(t?.samplingInterval);
+            return {
+              ...t,
+              name,
+              tagPath,
+              topic,
+              samplingInterval,
+              deadband: parseOptionalNonNegative(t?.deadband),
+              muted: t?.muted === true,
+              mappingSet: t?.mappingSet || "",
+            };
           })
           .filter((t) => t.name);
         const cleanedPlcs = Array.isArray(data.plcs) && data.plcs.length
@@ -209,7 +295,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 name: normalizeTopicValue(p?.name || `PLC-${idx + 1}`),
                 host: normalizeTopicValue(p?.host || ""),
                 slot: Number.isFinite(Number(p?.slot)) ? Number(p.slot) : 0,
-                pollMs: Number.isFinite(Number(p?.pollMs)) ? Number(p.pollMs) : "",
+                pollMs: parseOptionalMs(p?.pollMs),
               }))
               .filter((p) => p.name)
           : data?.plc?.host
@@ -219,7 +305,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 name: normalizeTopicValue(data?.plc?.name || "PLC-1"),
                 host: normalizeTopicValue(data?.plc?.host || ""),
                 slot: Number.isFinite(Number(data?.plc?.slot)) ? Number(data.plc.slot) : 0,
-                pollMs: Number.isFinite(Number(data?.pollMs)) ? Number(data.pollMs) : "",
+                pollMs: parseOptionalMs(data?.pollMs),
               },
             ]
           : [];
@@ -228,13 +314,17 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
             name: normalizeTopicValue(t?.name || ""),
             prefix: normalizeTopicValue(t?.prefix || ""),
             plcName: normalizeTopicValue(t?.plcName || t?.plc || ""),
-            samplingInterval: Number.isFinite(Number(t?.samplingInterval))
-              ? Number(t.samplingInterval)
-              : "",
+            samplingInterval: parseOptionalMs(t?.samplingInterval),
             enabled: t?.enabled !== false,
           }))
           .filter((t) => t.name);
-        const loadedConfig = { ...data, tags: cleanedTags, topics: cleanedTopics, plcs: cleanedPlcs };
+        const loadedConfig = {
+          ...data,
+          runtime: normalizeRuntimeConfig(data?.runtime),
+          tags: cleanedTags,
+          topics: cleanedTopics,
+          plcs: cleanedPlcs,
+        };
         setConfig(loadedConfig);
         lastSavedRef.current = JSON.stringify(loadedConfig);
         setTimeout(() => {
@@ -257,7 +347,13 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
       const cleanedTags = buildCleanedTags(config.tags);
       const cleanedTopics = buildCleanedTopics(config.topics);
       const cleanedPlcs = buildCleanedPlcs(config.plcs);
-      const nextConfig = { ...config, tags: cleanedTags, topics: cleanedTopics, plcs: cleanedPlcs };
+      const nextConfig = {
+        ...config,
+        runtime: normalizeRuntimeConfig(config.runtime),
+        tags: cleanedTags,
+        topics: cleanedTopics,
+        plcs: cleanedPlcs,
+      };
       const payload = JSON.stringify(nextConfig);
       if (payload === lastSavedRef.current) return;
       lastSavedRef.current = payload;
@@ -340,7 +436,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               enabled: true,
               mappingSet: "",
               scale: 1,
-              decimals: 4,
+              decimals: 0,
             };
           }
           return {
@@ -353,14 +449,14 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
             enabled: f?.enabled !== false,
             mappingSet: String(f?.mappingSet || ""),
             scale: Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1,
-            decimals: Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 4,
+            decimals: Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 0,
           };
         })
       : [];
     setTemplateFieldRows(
       nextFields.length
         ? nextFields
-        : [{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 }]
+        : [{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 }]
     );
     const nextMappings = Array.isArray(tmpl.state_mappings)
       ? tmpl.state_mappings.map((m) => ({
@@ -394,7 +490,45 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         if (!res.ok) throw new Error(data?.error || "Failed to load status.");
         if (alive) {
           setLiveValues(data.values || {});
-          setLiveErrors(data.errors || {});
+          const nextErrors = data.errors || {};
+          const prevErrors = lastLiveErrorsRef.current || {};
+          setLiveErrors(nextErrors);
+          setLiveQualities(data.qualities || {});
+          setLiveDiagnostics(data.diagnostics || {});
+          const now = Date.now();
+          const nextLogEntries = [];
+          Object.entries(nextErrors).forEach(([name, count]) => {
+            const key = String(name || "").trim();
+            if (!key) return;
+            const nextCount = Number.isFinite(Number(count)) ? Number(count) : count;
+            const prevCount = prevErrors[key];
+            if (prevCount === nextCount) return;
+            nextLogEntries.push({
+              id: `${now}-${key}-${nextCount}`,
+              at: now,
+              tag: key,
+              count: nextCount,
+              kind: "error",
+            });
+          });
+          Object.keys(prevErrors).forEach((name) => {
+            if (Object.prototype.hasOwnProperty.call(nextErrors, name)) return;
+            const prevCount = prevErrors[name];
+            nextLogEntries.push({
+              id: `${now}-${name}-cleared`,
+              at: now,
+              tag: String(name || "").trim(),
+              count: prevCount,
+              kind: "cleared",
+            });
+          });
+          if (nextLogEntries.length) {
+            setErrorLogEntries((prev) => {
+              const merged = [...nextLogEntries, ...prev];
+              return merged.slice(0, 500);
+            });
+          }
+          lastLiveErrorsRef.current = nextErrors;
           setOpcConnected(
             typeof data.connected === "boolean" ? data.connected : null
           );
@@ -498,12 +632,52 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     return tagVisibleColumns[key] !== false;
   }
 
-  function getTagKey(tag) {
+  function getTagLegacyKey(tag) {
     const topicName = normalizeTagName(tag?.topic || "");
     const name = String(tag?.name || "").trim();
     if (!name) return "";
     const resolvedTopic = topicName || "Default";
     return `${resolvedTopic}.${name}`;
+  }
+
+  function getTagPathKey(tag) {
+    const topicName = normalizeTagName(tag?.topic || "");
+    const path = String(tag?.tagPath || tag?.name || "").trim();
+    if (!path) return "";
+    const resolvedTopic = topicName || "Default";
+    return `${resolvedTopic}.${path}`;
+  }
+
+  function getTagLiveKeys(tag) {
+    const pathKey = getTagPathKey(tag);
+    const legacyKey = getTagLegacyKey(tag);
+    const out = [];
+    const seen = new Set();
+    [pathKey, legacyKey].forEach((key) => {
+      const k = String(key || "").trim();
+      if (!k) return;
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+      const lower = k.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        out.push(lower);
+      }
+    });
+    return out;
+  }
+
+  function getLiveValueForTag(source, tag) {
+    if (!source || typeof source !== "object") return undefined;
+    const keys = getTagLiveKeys(tag);
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        return source[key];
+      }
+    }
+    return undefined;
   }
 
   const tagMappingMap = useMemo(() => {
@@ -574,7 +748,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
   function getStateColorForTag(tag) {
     const mappingSetName = String(tag?.mappingSet || "").trim();
     const templateName = String(tag?.plcType || "").trim();
-    const rawValue = liveValues?.[getTagKey(tag)];
+    const rawValue = getLiveValueForTag(liveValues, tag);
     const scale = Number.isFinite(Number(tag?.scale)) ? Number(tag.scale) : 1;
     const value =
       rawValue != null && rawValue !== "" && !Number.isNaN(Number(rawValue))
@@ -591,8 +765,12 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         ? false
         : null;
     const fieldName = String(tag?.name || "").trim();
-    const tagKey = getTagKey(tag);
-    const tagMappingsForKey = tagMappingMap.get(tagKey) || [];
+    const legacyTagKey = getTagLegacyKey(tag);
+    const pathTagKey = getTagPathKey(tag);
+    const tagMappingsForKey = [
+      ...(tagMappingMap.get(pathTagKey) || []),
+      ...(tagMappingMap.get(legacyTagKey) || []),
+    ];
     const setMappings = mappingSetName
       ? (mappingSets.find((s) => s.name === mappingSetName)?.mappings || [])
       : [];
@@ -664,7 +842,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
           const samplingVal = f?.samplingInterval ?? "";
           const enabledVal = f?.enabled !== false;
           const scaleVal = Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1;
-          const decimalsVal = Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 4;
+          const decimalsVal = Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 0;
           const key = tagPathVal || nameVal;
           if (!key) return;
           fields = fields.filter((x) => (x.tagPath || x.name) !== key);
@@ -710,20 +888,23 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         const tagPath = normalizeTagName(t.tagPath || name);
         const topic = normalizeTagName(t.topic || "");
         const groupName = normalizeTagName(t.groupName || "");
-        const samplingInterval = Number.isFinite(Number(t?.samplingInterval))
-          ? Number(t.samplingInterval)
-          : "";
+        const samplingInterval = parseOptionalMs(t?.samplingInterval);
+        const pollMs = parseOptionalMs(t?.pollMs);
+        const deadband = parseOptionalNonNegative(t?.deadband);
         const scale = Number.isFinite(Number(t?.scale)) ? Number(t.scale) : 1;
-        const decimals = Number.isFinite(Number(t?.decimals)) ? Number(t.decimals) : 4;
+        const decimals = Number.isFinite(Number(t?.decimals)) ? Number(t.decimals) : 0;
         return {
           ...t,
           name,
           tagPath,
           topic,
           groupName,
+          pollMs,
           scale,
           decimals,
           samplingInterval,
+          deadband,
+          muted: t?.muted === true,
           mappingSet: t?.mappingSet || "",
         };
       })
@@ -737,7 +918,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         const name = normalizeTopicValue(p?.name || `PLC-${idx + 1}`);
         const host = normalizeTopicValue(p?.host || "");
         const slot = Number.isFinite(Number(p?.slot)) ? Number(p.slot) : 0;
-        const pollMs = Number.isFinite(Number(p?.pollMs)) ? Number(p.pollMs) : "";
+        const pollMs = parseOptionalMs(p?.pollMs);
         return { ...p, id, name, host, slot, pollMs };
       })
       .filter((p) => p.name);
@@ -749,13 +930,36 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         const name = normalizeTopicValue(t?.name || "");
         const prefix = normalizeTopicValue(t?.prefix || "");
         const plcName = normalizeTopicValue(t?.plcName || t?.plc || "");
-        const samplingInterval = Number.isFinite(Number(t?.samplingInterval))
-          ? Number(t.samplingInterval)
-          : "";
+        const samplingInterval = parseOptionalMs(t?.samplingInterval);
         return { ...t, name, prefix, plcName, samplingInterval, enabled: t?.enabled !== false };
       })
       .filter((t) => t.name);
   }
+
+  function collectValidationWarnings(nextConfig = config) {
+    const warnings = [];
+    const topicsByNameSet = new Set((nextConfig.topics || []).map((t) => String(t?.name || "").trim()).filter(Boolean));
+    const tagKeys = new Set();
+    (nextConfig.tags || []).forEach((tag, idx) => {
+      const name = String(tag?.name || "").trim();
+      const topic = String(tag?.topic || "").trim();
+      const tagPath = String(tag?.tagPath || "").trim();
+      if (!name) warnings.push(`Tag row ${idx + 1}: Name is required.`);
+      if (!tagPath) warnings.push(`Tag ${name || `row ${idx + 1}`}: Tag Path is required.`);
+      if (topic && !topicsByNameSet.has(topic)) warnings.push(`Tag ${name || `row ${idx + 1}`}: Topic '${topic}' does not exist.`);
+      const key = topic ? `${topic}.${name}` : name;
+      if (key) {
+        if (tagKeys.has(key)) warnings.push(`Duplicate tag key '${key}'.`);
+        tagKeys.add(key);
+      }
+      if (tag?.pollMs !== "" && parseOptionalMs(tag?.pollMs) === "") warnings.push(`Tag ${name || `row ${idx + 1}`}: Poll (ms) must be > 0.`);
+      if (tag?.samplingInterval !== "" && parseOptionalMs(tag?.samplingInterval) === "") warnings.push(`Tag ${name || `row ${idx + 1}`}: Sampling (ms) must be > 0.`);
+      if (tag?.deadband !== "" && parseOptionalNonNegative(tag?.deadband) === "") warnings.push(`Tag ${name || `row ${idx + 1}`}: Deadband must be >= 0.`);
+    });
+    return warnings;
+  }
+
+  const validationWarnings = useMemo(() => collectValidationWarnings(config), [config]);
 
   async function persistConfig(nextConfig, successMessage = "Config saved.") {
     const res = await fetch("/api/opc/config", {
@@ -773,10 +977,8 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     const tagPath = String(manualTag.tagPath || name).trim();
     const topic = String(manualTag.topic || "").trim();
     const groupName = String(manualTag.groupName || "").trim();
-    const samplingInterval =
-      manualTag.samplingInterval === "" || manualTag.samplingInterval === null
-        ? undefined
-        : Number(manualTag.samplingInterval);
+    const parsedSamplingInterval = parseOptionalMs(manualTag.samplingInterval);
+    const samplingInterval = parsedSamplingInterval === "" ? undefined : parsedSamplingInterval;
     if (!name) {
       setError("Tag name is required.");
       return;
@@ -794,9 +996,11 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         topic,
         groupName,
         uaType: String(manualTag.uaType || "").trim(),
-        pollMs: manualTag.pollMs !== "" ? Number(manualTag.pollMs) : undefined,
-        samplingInterval: Number.isFinite(Number(samplingInterval)) ? Number(samplingInterval) : undefined,
+        pollMs: parseOptionalMs(manualTag.pollMs) || undefined,
+        samplingInterval: parseOptionalMs(samplingInterval) || undefined,
+        deadband: parseOptionalNonNegative(manualTag.deadband) || undefined,
         enabled: manualTag.enabled !== false,
+        muted: manualTag.muted === true,
         mappingSet: String(manualTag.mappingSet || "").trim(),
       },
     ];
@@ -805,7 +1009,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     setConfig(nextConfig);
     try {
       await persistConfig(nextConfig, "Tag saved.");
-      const tagKey = getTagKey({ name, topic });
+      const tagKey = getTagLegacyKey({ name, topic });
       const cleanedMappings = (manualTagMappings || [])
         .map((row) => ({
           field: String(row?.field ?? "State Text").trim() || "State Text",
@@ -828,7 +1032,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     } catch (err) {
       setError(err?.message || "Save failed.");
     }
-    setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", groupName: "" });
+    setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, muted: false, mappingSet: "", groupName: "", deadband: "" });
     setManualTagMappings([{ field: "", state: "", color: "" }]);
     setTagTableEditing(false);
     setEditingTagIndex(null);
@@ -851,10 +1055,21 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     setError("");
     setStatus("");
     try {
+      const warnings = collectValidationWarnings(config);
+      if (warnings.length) {
+        setError(`Fix validation warnings before save (${warnings.length}).`);
+        return;
+      }
       const cleanedTags = buildCleanedTags(config.tags);
       const cleanedTopics = buildCleanedTopics(config.topics);
       const cleanedPlcs = buildCleanedPlcs(config.plcs);
-      const nextConfig = { ...config, tags: cleanedTags, topics: cleanedTopics, plcs: cleanedPlcs };
+      const nextConfig = {
+        ...config,
+        runtime: normalizeRuntimeConfig(config.runtime),
+        tags: cleanedTags,
+        topics: cleanedTopics,
+        plcs: cleanedPlcs,
+      };
       setConfig(nextConfig);
       await persistConfig(nextConfig, "Config saved.");
     } catch (err) {
@@ -915,7 +1130,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         enabled: row?.enabled !== false,
         mappingSet: String(row?.mappingSet || "").trim(),
         scale: Number.isFinite(Number(row?.scale)) ? Number(row.scale) : 1,
-        decimals: Number.isFinite(Number(row?.decimals)) ? Number(row.decimals) : 4,
+        decimals: Number.isFinite(Number(row?.decimals)) ? Number(row.decimals) : 0,
       }))
       .filter((row) => row.name || row.tagPath);
     const stateMappings = (templateStateMappings || [])
@@ -1016,7 +1231,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
           : Number(f.samplingInterval);
       const fieldEnabled = f?.enabled !== false;
       const fieldScale = Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1;
-      const fieldDecimals = Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 4;
+      const fieldDecimals = Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 0;
       return {
         name,
         tagPath,
@@ -1061,21 +1276,147 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     }
   }
 
+  const recentErrorCount = useMemo(() => {
+    const cutoff = Date.now() - 15000;
+    return errorLogEntries.filter((entry) => entry.at >= cutoff && entry.kind === "error").length;
+  }, [errorLogEntries]);
+
+  function renderErrorLogsCard() {
+    return (
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          background: "var(--bg-elev)",
+          borderRadius: 12,
+          padding: 12,
+          boxShadow: "0 1px 2px rgba(16,24,40,0.06)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+          <div style={{ fontWeight: 700 }}>OPC Error Logs</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{errorLogEntries.length} entries</div>
+            <button
+              onClick={() => setErrorLogEntries([])}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                borderRadius: 8,
+                padding: "4px 8px",
+                fontSize: 12,
+                color: "var(--text)",
+              }}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
+          Live errors can clear on the next successful poll. This log keeps a short history.
+        </div>
+        {errorLogEntries.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No logged errors yet.</div>
+        ) : (
+          <div style={{ display: "grid", gap: 6, maxHeight: 340, overflowY: "auto" }}>
+            {errorLogEntries.map((entry) => (
+              <div
+                key={entry.id}
+                style={{
+                  border: "1px solid #eaecf0",
+                  borderRadius: 8,
+                  padding: "6px 8px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 10,
+                  fontSize: 12,
+                }}
+              >
+                <div style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {entry.tag}
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+                  <span style={{ color: entry.kind === "error" ? "#b42318" : "#027a48", fontWeight: 600 }}>
+                    {entry.kind === "error" ? `err ${entry.count}` : "cleared"}
+                  </span>
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {new Date(entry.at).toLocaleTimeString()}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderTagDiagnosticsCard() {
+    const entries = Object.entries(liveDiagnostics || {});
+    return (
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          background: "var(--bg-elev)",
+          padding: 12,
+          marginTop: 10,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+          <div style={{ fontWeight: 700 }} title="Per-tag health details from the OPC poller.">
+            Tag Diagnostics
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{entries.length} tags</div>
+        </div>
+        {entries.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No diagnostics yet.</div>
+        ) : (
+          <div style={{ maxHeight: 280, overflow: "auto", border: "1px solid #eef2f6", borderRadius: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "var(--bg-soft)" }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }} title="Topic.Tag key used by OPC status and mappings.">Tag</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }} title="Current quality: Good, Bad, Muted, or Unknown.">Quality</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }} title="Consecutive read failures since last successful read.">Err Streak</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }} title="Current poll interval including backoff and scheduling.">Effective (ms)</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }} title="Most recent read error message for this tag.">Last Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.slice(0, 400).map(([key, d]) => (
+                  <tr key={`diag-${key}`} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "6px 8px" }}>{key}</td>
+                    <td style={{ padding: "6px 8px" }}>{liveQualities?.[key] || "Unknown"}</td>
+                    <td style={{ padding: "6px 8px" }}>{Number(d?.errorStreak || 0)}</td>
+                    <td style={{ padding: "6px 8px" }}>{d?.effectiveIntervalMs ?? ""}</td>
+                    <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>{d?.lastErrorMessage || ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const outerStyle = embedded
-    ? { width: "100%", height: "100%", background: "transparent", color: "#111" }
-    : { minHeight: "100vh", background: "#f7f8fb", color: "#111" };
+    ? { width: "100%", height: "100%", background: "transparent", color: "var(--text)" }
+    : { minHeight: "100vh", background: "var(--bg-soft)", color: "var(--text)" };
   const innerStyle = embedded
     ? { width: "100%", height: "100%", padding: 0, boxSizing: "border-box", display: "flex", flexDirection: "column" }
     : { width: "100%", minHeight: "100vh", padding: 16, boxSizing: "border-box", display: "flex", flexDirection: "column" };
   const contentStyle = embedded
     ? { width: "100%" }
     : { width: "100%", maxWidth: 1400, margin: "0 auto" };
-  const isTagsOnly = mode === "tags";
+  const isTagsOnly = mode === "tags" || mode === "logs";
 
   function renderTagsPanel() {
+    const activeTagTab = mode === "logs" ? "logs" : tagSectionTab;
     const sectionCardStyle = {
-      border: "1px solid #e4e7ec",
-      background: "white",
+      border: "1px solid var(--border)",
+      background: "var(--bg-elev)",
       borderRadius: 12,
       padding: 12,
       boxShadow: "0 1px 2px rgba(16,24,40,0.06)",
@@ -1086,6 +1427,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
       justifyContent: "center",
       textAlign: "center",
     };
+    const showDrawerViewButtons = typeof onDrawerViewChange === "function";
     return (
       <div style={{ flex: "1 1 auto", overflow: "auto", padding: 16 }}>
         <div style={{ marginBottom: 8 }}>
@@ -1111,7 +1453,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     ? "#027a48"
                     : opcConnected === false
                     ? "#b42318"
-                    : "#667085",
+                    : "var(--text-muted)",
                 border:
                   restartPending
                     ? "1px solid #fed7aa"
@@ -1119,7 +1461,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     ? "1px solid #abefc6"
                     : opcConnected === false
                     ? "1px solid #fecdca"
-                    : "1px solid #e4e7ec",
+                    : "1px solid var(--border)",
               }}
             >
               {restartPending
@@ -1130,36 +1472,71 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 ? "Disconnected"
                 : "Status Unknown"}
             </div>
-            {Object.keys(liveErrors || {}).length > 0 ? (
-              <div
-                style={{
-                  padding: "4px 8px",
-                  borderRadius: 999,
-                  fontSize: 11,
-                  fontWeight: 700,
-                  background: "#fef3f2",
-                  color: "#b42318",
-                  border: "1px solid #fecdca",
-                }}
-              >
-                {Object.keys(liveErrors || {}).length} Errors
-              </div>
-            ) : null}
             {opcLastPollAt ? (
-              <div style={{ fontSize: 11, color: "#667085" }}>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 Last poll {new Date(opcLastPollAt).toLocaleTimeString()}
               </div>
             ) : null}
           </div>
         </div>
+        {showDrawerViewButtons ? (
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <button
+              onClick={() => onDrawerViewChange("opc")}
+              style={{
+                ...drawerButtonStyle,
+                border: "1px solid var(--border)",
+                background: mode === "logs" ? "var(--bg-soft)" : "#2b6cff",
+                color: mode === "logs" ? "var(--text)" : "white",
+                borderRadius: 999,
+                padding: "6px 12px",
+                fontWeight: 600,
+              }}
+            >
+              Config
+            </button>
+            <button
+              onClick={() => onDrawerViewChange("logs")}
+              style={{
+                ...drawerButtonStyle,
+                border: "1px solid var(--border)",
+                background: mode === "logs" ? "#2b6cff" : "var(--bg-soft)",
+                color: mode === "logs" ? "white" : "var(--text)",
+                borderRadius: 999,
+                padding: "6px 12px",
+                fontWeight: 600,
+              }}
+            >
+              Logs
+            </button>
+            <button
+              onClick={() => {
+                setOpcConfigSectionTab("diagnostics");
+                if (mode === "logs") onDrawerViewChange("opc");
+              }}
+              style={{
+                ...drawerButtonStyle,
+                border: "1px solid var(--border)",
+                background: mode !== "logs" && opcConfigSectionTab === "diagnostics" ? "#2b6cff" : "var(--bg-soft)",
+                color: mode !== "logs" && opcConfigSectionTab === "diagnostics" ? "white" : "var(--text)",
+                borderRadius: 999,
+                padding: "6px 12px",
+                fontWeight: 600,
+              }}
+            >
+              Diagnostics
+            </button>
+          </div>
+        ) : null}
+        {mode !== "logs" ? (
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           <button
             onClick={() => setTagSectionTab("tags")}
             style={{
               ...drawerButtonStyle,
-              border: "1px solid #d0d7e2",
-              background: tagSectionTab === "tags" ? "#2b6cff" : "#f9fafb",
-              color: tagSectionTab === "tags" ? "white" : "#111",
+              border: "1px solid var(--border)",
+              background: tagSectionTab === "tags" ? "#2b6cff" : "var(--bg-soft)",
+              color: tagSectionTab === "tags" ? "white" : "var(--text)",
               borderRadius: 999,
               padding: "6px 12px",
               fontWeight: 600,
@@ -1171,9 +1548,9 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
             onClick={() => setTagSectionTab("templates")}
             style={{
               ...drawerButtonStyle,
-              border: "1px solid #d0d7e2",
-              background: tagSectionTab === "templates" ? "#2b6cff" : "#f9fafb",
-              color: tagSectionTab === "templates" ? "white" : "#111",
+              border: "1px solid var(--border)",
+              background: tagSectionTab === "templates" ? "#2b6cff" : "var(--bg-soft)",
+              color: tagSectionTab === "templates" ? "white" : "var(--text)",
               borderRadius: 999,
               padding: "6px 12px",
               fontWeight: 600,
@@ -1185,9 +1562,9 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
             onClick={() => setTagSectionTab("mappings")}
             style={{
               ...drawerButtonStyle,
-              border: "1px solid #d0d7e2",
-              background: tagSectionTab === "mappings" ? "#2b6cff" : "#f9fafb",
-              color: tagSectionTab === "mappings" ? "white" : "#111",
+              border: "1px solid var(--border)",
+              background: tagSectionTab === "mappings" ? "#2b6cff" : "var(--bg-soft)",
+              color: tagSectionTab === "mappings" ? "white" : "var(--text)",
               borderRadius: 999,
               padding: "6px 12px",
               fontWeight: 600,
@@ -1195,10 +1572,39 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
           >
             Mappings
           </button>
+          <button
+            onClick={() => setTagSectionTab("logs")}
+            style={{
+              ...drawerButtonStyle,
+              border: "1px solid var(--border)",
+              background: tagSectionTab === "logs" ? "#2b6cff" : "var(--bg-soft)",
+              color: tagSectionTab === "logs" ? "white" : "var(--text)",
+              borderRadius: 999,
+              padding: "6px 12px",
+              fontWeight: 600,
+            }}
+          >
+            Logs
+          </button>
+          <button
+            onClick={() => setTagSectionTab("diagnostics")}
+            style={{
+              ...drawerButtonStyle,
+              border: "1px solid var(--border)",
+              background: tagSectionTab === "diagnostics" ? "#2b6cff" : "var(--bg-soft)",
+              color: tagSectionTab === "diagnostics" ? "white" : "var(--text)",
+              borderRadius: 999,
+              padding: "6px 12px",
+              fontWeight: 600,
+            }}
+          >
+            Diagnostics
+          </button>
         </div>
-        {tagSectionTab === "tags" ? (
+        ) : null}
+        {activeTagTab === "tags" ? (
           <>
-            <div style={{ ...sectionCardStyle, marginBottom: 10, background: "#fbfcff" }}>
+            <div style={{ ...sectionCardStyle, marginBottom: 10, background: "var(--bg-soft)" }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Columns</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {tagColumnKeys.map((key) => (
@@ -1210,8 +1616,10 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       gap: 6,
                       padding: "4px 8px",
                       borderRadius: 999,
-                      border: "1px solid #e4e7ec",
-                      background: showTagColumn(key) ? "#f0f5ff" : "white",
+                      border: "1px solid var(--border)",
+                      background: showTagColumn(key)
+                        ? "color-mix(in srgb, #2b6cff 14%, var(--bg-elev))"
+                        : "var(--bg-elev)",
                       fontSize: 12,
                       cursor: "pointer",
                     }}
@@ -1235,14 +1643,14 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               </div>
             </div>
             {false ? (
-              <div style={{ ...sectionCardStyle, marginBottom: 10, background: "#fbfcff" }}>
+              <div style={{ ...sectionCardStyle, marginBottom: 10, background: "var(--bg-soft)" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
                     Name
                     <input
                       value={manualTag.name}
                       onChange={(e) => setManualTag((prev) => ({ ...prev, name: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1251,7 +1659,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       value={manualTag.tagPath}
                       onChange={(e) => setManualTag((prev) => ({ ...prev, tagPath: e.target.value }))}
                       placeholder="Defaults to name"
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1261,7 +1669,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       onChange={(e) => setManualTag((prev) => ({ ...prev, groupName: e.target.value }))}
                       placeholder="Optional"
                       list="opc-group-names"
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <datalist id="opc-group-names">
@@ -1274,7 +1682,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     <select
                       value={manualTag.topic}
                       onChange={(e) => setManualTag((prev) => ({ ...prev, topic: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     >
                       <option value="">Select topic</option>
                       {(topics || []).map((t) => (
@@ -1289,7 +1697,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     <select
                       value={manualTag.uaType}
                       onChange={(e) => setManualTag((prev) => ({ ...prev, uaType: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     >
                       <option value="">Select UA type</option>
                       <option value="Boolean">Boolean</option>
@@ -1309,7 +1717,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     <select
                       value={manualTag.mappingSet || ""}
                       onChange={(e) => setManualTag((prev) => ({ ...prev, mappingSet: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     >
                       <option value="">None</option>
                       {mappingSets.map((s) => (
@@ -1327,7 +1735,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       value={manualTag.pollMs}
                       onChange={(e) => setManualTag((prev) => ({ ...prev, pollMs: e.target.value }))}
                       placeholder="Uses global"
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1338,12 +1746,12 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       value={manualTag.samplingInterval}
                       onChange={(e) => setManualTag((prev) => ({ ...prev, samplingInterval: e.target.value }))}
                       placeholder="Overrides topic"
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                 </div>
                 <div style={{ fontSize: 12, marginTop: 10, marginBottom: 6 }}>Tag Mappings</div>
-                <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflow: "hidden", padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
+                <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
                   <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
                     <colgroup>
                       <col style={{ width: "27%" }} />
@@ -1352,7 +1760,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       <col style={{ width: "14%" }} />
                     </colgroup>
                     <thead>
-                      <tr style={{ background: "#f8fafc" }}>
+                      <tr style={{ background: "var(--bg-soft)" }}>
                         <th style={{ textAlign: "left", padding: "8px 10px" }}>State Text</th>
                         <th style={{ textAlign: "left", padding: "8px 10px" }}>PLC Value</th>
                         <th style={{ textAlign: "left", padding: "8px 10px" }}>Color</th>
@@ -1366,7 +1774,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                             <input
                               value={row.field || "State Text"}
                               placeholder="State Text"
-                              style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                              style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                               disabled
                             />
                           </td>
@@ -1381,7 +1789,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 })
                               }
                               placeholder="Value"
-                              style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                              style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             />
                           </td>
                           <td style={{ padding: "8px 16px 8px 10px" }}>
@@ -1408,7 +1816,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                   })
                                 }
                                 placeholder="#12b76a"
-                                style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                                style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                               />
                             </div>
                           </td>
@@ -1426,7 +1834,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       ))}
                       {manualTagMappings.length === 0 && (
                         <tr>
-                          <td colSpan={3} style={{ padding: "8px", color: "#98a2b3" }}>
+                          <td colSpan={3} style={{ padding: "8px", color: "var(--text-muted)" }}>
                             No mappings yet.
                           </td>
                         </tr>
@@ -1439,7 +1847,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     onClick={() =>
                       setManualTagMappings((prev) => [...prev, { field: "State Text", state: "", color: "" }])
                     }
-                    style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                    style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                   >
                     Add Mapping
                   </button>
@@ -1461,20 +1869,20 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "" });
                     setShowManualTagForm(false);
                   }}
-                  style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                  style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                 >
                   Cancel
                 </button>
               </div>
             </div>
-          ) : null}
+        ) : null}
             <div style={{ ...sectionCardStyle, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, marginBottom: 10, alignItems: "end" }}>
               <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
                 Template
                 <select
                   value={applyTemplate}
                   onChange={(e) => setApplyTemplate(e.target.value)}
-                  style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 >
                   <option value="">Select template</option>
                   {templates.map((t) => (
@@ -1489,7 +1897,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 <select
                   value={applyTopic}
                   onChange={(e) => setApplyTopic(e.target.value)}
-                  style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 >
                   <option value="">Select topic</option>
                   {(topics || []).map((t) => (
@@ -1504,11 +1912,135 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 <input
                   value={applyPrefix}
                   onChange={(e) => setApplyPrefix(e.target.value)}
-                  style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
               </label>
               <button onClick={applyTemplateToTags} style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px", height: 32 }}>
                 Add From Template
+              </button>
+            </div>
+            {validationWarnings.length ? (
+              <div style={{ ...sectionCardStyle, borderColor: "#fecdca", background: "#fef3f2", marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, color: "#b42318", marginBottom: 6 }} title="These checks prevent common OPC issues before saving configuration.">
+                  Validation Warnings ({validationWarnings.length})
+                </div>
+                <div style={{ maxHeight: 120, overflow: "auto", fontSize: 12, color: "#912018" }}>
+                  {validationWarnings.slice(0, 50).map((w, i) => (
+                    <div key={`warn-${i}`}>{w}</div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <div
+              style={{
+                ...sectionCardStyle,
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: 12,
+                marginBottom: 10,
+                alignItems: "end",
+              }}
+            >
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Apply bulk changes only to tags in this topic. Leave blank to target all topics.">
+                Topic Filter
+                <select
+                  value={bulkEdit.topic}
+                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, topic: e.target.value }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                >
+                  <option value="">All</option>
+                  {(topics || []).map((t) => (
+                    <option key={`bulk-topic-${t.name}`} value={t.name}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="SQL-LIKE style group filter. Use % for wildcard and _ for single character.">
+                Group Filter
+                <input
+                  value={bulkEdit.groupName}
+                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, groupName: e.target.value }))}
+                  placeholder="e.g. PLC%"
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Per-tag poll interval override in milliseconds for matching tags.">
+                Poll (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={bulkEdit.pollMs}
+                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, pollMs: e.target.value }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Sampling interval override in milliseconds for matching tags.">
+                Sampling (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={bulkEdit.samplingInterval}
+                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, samplingInterval: e.target.value }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Minimum numeric change required before a value update is published.">
+                Deadband
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={bulkEdit.deadband}
+                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, deadband: e.target.value }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Set mapping set on matching tags. 'Keep current' leaves existing mapping sets unchanged.">
+                Mapping Set
+                <select
+                  value={bulkEdit.mappingSet}
+                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, mappingSet: e.target.value }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                >
+                  <option value="">Keep current</option>
+                  {mappingSets.map((s) => (
+                    <option key={`bulk-map-${s.name}`} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label
+                style={{ display: "grid", gap: 6, fontSize: 12 }}
+                title="Mute matching tags to stop active polling while keeping configuration."
+              >
+                Muted
+                <span style={{ display: "inline-flex", alignItems: "center", minHeight: 32, paddingLeft: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={bulkEdit.muted === true}
+                    onChange={(e) => setBulkEdit((prev) => ({ ...prev, muted: e.target.checked }))}
+                  />
+                </span>
+              </label>
+              <button
+                onClick={applyBulkEditToTags}
+                title="Apply the selected bulk settings to matching tags."
+                style={{
+                  ...drawerButtonStyle,
+                  border: "1px solid #2b6cff",
+                  background: "#2b6cff",
+                  color: "white",
+                  borderRadius: 8,
+                  padding: "6px 14px",
+                  height: 32,
+                  minWidth: 160,
+                  justifySelf: "start",
+                  gridColumn: "1 / -1",
+                }}
+              >
+                Apply Bulk Edit
               </button>
             </div>
             <div style={{ ...sectionCardStyle, marginTop: 10, maxHeight: 520, overflow: "auto" }}>
@@ -1518,7 +2050,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   style={{
                     ...drawerButtonStyle,
                     border: "1px solid #2b6cff",
-                    background: "white",
+                    background: "var(--bg-elev)",
                     color: "#2b6cff",
                     borderRadius: 8,
                     padding: "6px 10px",
@@ -1528,13 +2060,16 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 </button>
               </div>
               {tags.length === 0 ? (
-                <div style={{ color: "#98a2b3", fontSize: 12 }}>No tags.</div>
+                <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No tags.</div>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12, tableLayout: "auto" }}>
                   <thead>
                     <tr>
                       {showTagColumn("enabled") ? (
                         <th style={{ textAlign: "left", padding: "6px 8px" }}>Enabled</th>
+                      ) : null}
+                      {showTagColumn("muted") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }} title="Muted tags are configured but not actively polled.">Muted</th>
                       ) : null}
                       {showTagColumn("name") ? (
                         <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
@@ -1563,6 +2098,9 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       {showTagColumn("decimals") ? (
                         <th style={{ textAlign: "left", padding: "6px 8px" }}>Decimals</th>
                       ) : null}
+                      {showTagColumn("quality") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }} title="Live quality from OPC status (Good/Bad/Muted/Unknown).">Quality</th>
+                      ) : null}
                       {showTagColumn("liveValue") ? (
                         <th style={{ textAlign: "left", padding: "6px 8px" }}>Live Value</th>
                       ) : null}
@@ -1578,7 +2116,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       const topicMeta = topicMap.get(topicKey);
                       return (
                         <Fragment key={`topic-${topicKey}`}>
-                          <tr style={{ borderTop: "1px solid #eef2f6", background: "#f8fafc" }}>
+                          <tr style={{ borderTop: "1px solid #eef2f6", background: "var(--bg-soft)" }}>
                             <td colSpan={visibleTagColumnCount} style={{ padding: "6px 8px" }}>
                               <button
                                 onClick={() =>
@@ -1589,8 +2127,8 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 }
                                 style={{
                                   ...drawerButtonStyle,
-                                  border: "1px solid #d0d7e2",
-                                  background: "white",
+                                  border: "1px solid var(--border)",
+                                  background: "var(--bg-elev)",
                                   borderRadius: 6,
                                   padding: "4px 8px",
                                   marginRight: 8,
@@ -1600,11 +2138,11 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               </button>
                               <span style={{ fontWeight: 600 }}>{topicKey}</span>
                               {topicMeta?.plcName ? (
-                                <span style={{ color: "#667085", marginLeft: 8 }}>
+                                <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
                                   PLC {topicMeta.plcName}
                                 </span>
                               ) : null}
-                              <span style={{ color: "#667085", marginLeft: 8 }}>
+                              <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
                                 {group.groups.reduce((sum, t) => sum + t.items.length, 0)} tags
                               </span>
                               <button
@@ -1612,7 +2150,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 style={{
                                   ...drawerButtonStyle,
                                   border: "1px solid #2b6cff",
-                                  background: "white",
+                                  background: "var(--bg-elev)",
                                   color: "#2b6cff",
                                   borderRadius: 6,
                                   padding: "4px 8px",
@@ -1631,7 +2169,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 return (
                                   <Fragment key={`group-${topicKey}-${groupName}`}>
                                     <tr
-                                      style={{ borderTop: "1px solid #eef2f6", background: "#f2f4f7" }}
+                                      style={{ borderTop: "1px solid var(--border)", background: "var(--bg-soft)" }}
                                       onMouseDown={() => {
                                         setActiveTagGroup({ topic: topicKey, groupName });
                                       }}
@@ -1647,8 +2185,8 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                           onMouseDown={() => setActiveTagGroup({ topic: topicKey, groupName })}
                                           style={{
                                             ...drawerButtonStyle,
-                                            border: "1px solid #d0d7e2",
-                                            background: "white",
+                                            border: "1px solid var(--border)",
+                                            background: "var(--bg-elev)",
                                             borderRadius: 6,
                                             padding: "4px 8px",
                                             marginRight: 8,
@@ -1657,7 +2195,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                           {groupExpanded ? "-" : "+"}
                                         </button>
                                         <span style={{ fontWeight: 600 }}>{groupName}</span>
-                                        <span style={{ color: "#667085", marginLeft: 8 }}>
+                                        <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
                                           {tagGroup.items.length} tags
                                         </span>
                                         <button
@@ -1668,7 +2206,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                           style={{
                                             ...drawerButtonStyle,
                                             border: "1px solid #2b6cff",
-                                            background: "white",
+                                            background: "var(--bg-elev)",
                                             color: "#2b6cff",
                                             borderRadius: 6,
                                             padding: "4px 8px",
@@ -1684,7 +2222,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                           const rowEditing = tagTableEditing && editingTagIndex === idx;
                                         return (
                                           <Fragment key={`tag-row-${idx}`}>
-                                          <tr style={{ borderTop: "1px solid #eef2f6" }}>
+                                          <tr style={{ borderTop: "1px solid var(--border)" }}>
                                             {showTagColumn("enabled") ? (
                                               <td style={{ padding: "8px 16px 8px 10px" }}>
                                                 <input
@@ -1695,8 +2233,18 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                 />
                                               </td>
                                             ) : null}
+                                            {showTagColumn("muted") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px" }}>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={t.muted === true}
+                                                  onChange={(e) => updateTag(idx, "muted", e.target.checked)}
+                                                  disabled={!rowEditing}
+                                                />
+                                              </td>
+                                            ) : null}
                                             {showTagColumn("name") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
                                                 {(() => {
                                                   const group = String(t.groupName || "").trim();
                                                   const name = String(t.name || "").trim();
@@ -1708,63 +2256,67 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                               </td>
                                             ) : null}
                                             {showTagColumn("topic") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#475467" }}>
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
                                                 {t.topic || ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("tagPath") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
                                                 {t.tagPath || ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("uaType") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
                                                 {t.uaType || ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("pollMs") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
                                                 {Number.isFinite(Number(t.pollMs)) ? Number(t.pollMs) : ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("samplingInterval") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
                                                 {Number.isFinite(Number(t.samplingInterval)) ? Number(t.samplingInterval) : ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("mappingSet") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
                                                 {t.mappingSet || ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("scale") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
                                                 {Number.isFinite(Number(t.scale)) ? Number(t.scale) : 1}
                                               </td>
                                             ) : null}
                                             {showTagColumn("decimals") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "#111" }}>
-                                                {Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 4}
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
+                                                {Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 0}
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("quality") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
+                                                {String(getLiveValueForTag(liveQualities, t) || (t.muted ? "Muted" : "Unknown"))}
                                               </td>
                                             ) : null}
                                             {showTagColumn("liveValue")
                                               ? (() => {
-                                                  const liveColor =
-                                                    t.enabled === false ? "" : getStateColorForTag(t) || "";
                                                   const scale = Number.isFinite(Number(t.scale)) ? Number(t.scale) : 1;
-                                                  const decimals = Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 4;
-                                                  const rawValue = liveValues?.[getTagKey(t)];
+                                                  const decimals = Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 0;
+                                                  const rawValue = getLiveValueForTag(liveValues, t);
                                                   const scaledValue =
                                                     rawValue != null && rawValue !== "" && !Number.isNaN(Number(rawValue))
                                                       ? Number(rawValue) * scale
                                                       : rawValue;
+                                                  const errorCount = Number(getLiveValueForTag(liveErrors, t) || 0);
                                                   return (
                                                     <td
                                                       style={{
                                                         padding: "6px 8px",
-                                                        color: "#111",
+                                                        color: "var(--text)",
                                                         fontSize: 12,
-                                                        background: liveColor || "transparent",
+                                                        background: "transparent",
                                                         borderRadius: 4,
                                                       }}
                                                     >
@@ -1773,16 +2325,16 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                           color:
                                                             t.enabled === false
                                                               ? "#b42318"
-                                                              : "#111",
+                                                              : "var(--text)",
                                                         }}
                                                       >
                                                         {t.enabled === false
                                                           ? "Disabled"
                                                           : formatLiveNumber(scaledValue, decimals)}
                                                       </span>
-                                                  {liveErrors?.[getTagKey(t)] ? (
+                                                  {errorCount > 0 ? (
                                                     <span style={{ color: "#b42318", marginLeft: 8 }}>
-                                                      (err {liveErrors[getTagKey(t)]})
+                                                      (err {errorCount})
                                                     </span>
                                                   ) : null}
                                                     </td>
@@ -1802,7 +2354,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                       width: 28,
                                                       height: 28,
                                                       border: "1px solid #2b6cff",
-                                                      background: rowEditing ? "#2b6cff" : "white",
+                                                      background: rowEditing ? "#2b6cff" : "var(--bg-elev)",
                                                       color: rowEditing ? "white" : "#2b6cff",
                                                       borderRadius: 8,
                                                     }}
@@ -1819,10 +2371,10 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                               <td colSpan={visibleTagColumnCount} style={{ padding: "8px 12px 12px 12px" }}>
                                                 <div
                                                   style={{
-                                                    border: "1px solid #e4e7ec",
+                                                    border: "1px solid var(--border)",
                                                     borderRadius: 10,
                                                     padding: 12,
-                                                    background: "#fbfcff",
+                                                    background: "var(--bg-soft)",
                                                   }}
                                                 >
                                                   <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
@@ -1843,7 +2395,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                           const fullName = group ? `${group}.${nextName}` : nextName;
                                                           updateTag(idx, "name", fullName);
                                                         }}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
                                                       />
                                                     </label>
                                                     <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1851,7 +2403,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                       <select
                                                         value={t.topic || ""}
                                                         onChange={(e) => updateTag(idx, "topic", e.target.value)}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
                                                       >
                                                         <option value="">Select topic</option>
                                                         {(topics || []).map((topic) => (
@@ -1866,7 +2418,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                       <input
                                                         value={t.tagPath || ""}
                                                         onChange={(e) => updateTag(idx, "tagPath", e.target.value)}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
                                                       />
                                                     </label>
                                                     <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1874,7 +2426,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                       <select
                                                         value={t.uaType || ""}
                                                         onChange={(e) => updateTag(idx, "uaType", e.target.value)}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
                                                       >
                                                         <option value="">Select UA type</option>
                                                         <option value="Boolean">Boolean</option>
@@ -1896,7 +2448,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                         min="0"
                                                         value={t.pollMs ?? ""}
                                                         onChange={(e) => updateTag(idx, "pollMs", e.target.value)}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
                                                       />
                                                     </label>
                                                     <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1906,7 +2458,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                         min="0"
                                                         value={t.samplingInterval ?? ""}
                                                         onChange={(e) => updateTag(idx, "samplingInterval", e.target.value)}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
                                                       />
                                                     </label>
                                                     <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1914,7 +2466,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                       <select
                                                         value={t.mappingSet || ""}
                                                         onChange={(e) => updateTag(idx, "mappingSet", e.target.value)}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12 }}
                                                       >
                                                         <option value="">None</option>
                                                         {mappingSets.map((s) => (
@@ -1931,7 +2483,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                         step="any"
                                                         value={t.scale ?? 1}
                                                         onChange={(e) => updateTag(idx, "scale", e.target.value)}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 120 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 120 }}
                                                       />
                                                     </label>
                                                     <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1942,7 +2494,18 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                         step="1"
                                                         value={t.decimals ?? 4}
                                                         onChange={(e) => updateTag(idx, "decimals", e.target.value)}
-                                                        style={{ border: "1px solid #d0d7e2", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 120 }}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 120 }}
+                                                      />
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Minimum numeric change required before this tag publishes a new value.">
+                                                      Deadband
+                                                      <input
+                                                        type="number"
+                                                        min="0"
+                                                        step="any"
+                                                        value={t.deadband ?? ""}
+                                                        onChange={(e) => updateTag(idx, "deadband", e.target.value)}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 120 }}
                                                       />
                                                     </label>
                                                     <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -1952,6 +2515,16 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                           type="checkbox"
                                                           checked={t.enabled !== false}
                                                           onChange={(e) => updateTag(idx, "enabled", e.target.checked)}
+                                                        />
+                                                      </div>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Mute this tag to stop polling without removing it.">
+                                                      Muted
+                                                      <div>
+                                                        <input
+                                                          type="checkbox"
+                                                          checked={t.muted === true}
+                                                          onChange={(e) => updateTag(idx, "muted", e.target.checked)}
                                                         />
                                                       </div>
                                                     </label>
@@ -1974,7 +2547,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                                         setEditingTagIndex(null);
                                                         reloadConfig();
                                                       }}
-                                                      style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                                                      style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                                                     >
                                                       Cancel
                                                     </button>
@@ -1999,7 +2572,15 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               )}
             </div>
           </>
-        ) : tagSectionTab === "templates" ? (
+        ) : activeTagTab === "logs" ? (
+          <div style={{ marginTop: 10 }}>
+            {renderErrorLogsCard()}
+          </div>
+        ) : activeTagTab === "diagnostics" ? (
+          <div style={{ marginTop: 10 }}>
+            {renderTagDiagnosticsCard()}
+          </div>
+        ) : activeTagTab === "templates" ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
             <div style={sectionCardStyle}>
               <div style={{ fontWeight: 600, marginBottom: 8 }}>Create / Edit Template</div>
@@ -2015,12 +2596,12 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                         setTemplateOriginalName("");
                         setTemplateName("");
                         setTemplateParent("");
-                    setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 }]);
+                    setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 }]);
                     setTemplateStateMappings([{ field: "", state: "", color: "" }]);
                     setTemplateEditing(true);
                   }
                 }}
-                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                   >
                     <option value="">New template</option>
                     {templates.map((t) => (
@@ -2037,11 +2618,11 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       setTemplateOriginalName("");
                       setTemplateName("");
                       setTemplateParent("");
-                      setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 }]);
+                      setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 }]);
                       setTemplateStateMappings([{ field: "", state: "", color: "" }]);
                       setTemplateEditing(true);
                     }}
-                    style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                    style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                   >
                     New
                   </button>
@@ -2054,7 +2635,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       setTemplateOriginalName("");
                       setTemplateName("");
                       setTemplateParent("");
-                      setTemplateFieldRows([{ name: "", tagPath: "", mappingSet: "", scale: 1, decimals: 4 }]);
+                      setTemplateFieldRows([{ name: "", tagPath: "", mappingSet: "", scale: 1, decimals: 0 }]);
                       setTemplateStateMappings([{ field: "", state: "", color: "" }]);
                       setTemplateEditing(true);
                     }}
@@ -2071,7 +2652,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   <input
                     value={templateName}
                     onChange={(e) => setTemplateName(e.target.value)}
-                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                     disabled={!templateEditing}
                   />
                 </label>
@@ -2080,7 +2661,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   <select
                     value={templateParent}
                     onChange={(e) => setTemplateParent(e.target.value)}
-                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                     disabled={!templateEditing}
                   >
                     <option value="">None</option>
@@ -2095,7 +2676,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 </label>
               </div>
               <div style={{ fontSize: 12, marginBottom: 8 }}>Fields</div>
-              <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflowX: "auto", overflowY: "auto", maxHeight: 320, padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflowX: "auto", overflowY: "auto", maxHeight: 320, padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
                 <table style={{ width: 1200, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
                   <colgroup>
                     <col style={{ width: "13%" }} />
@@ -2110,7 +2691,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     <col style={{ width: "4%" }} />
                   </colgroup>
                   <thead>
-                    <tr style={{ background: "#f8fafc" }}>
+                    <tr style={{ background: "var(--bg-soft)" }}>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>Name</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>Tag Path</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>UA Type</th>
@@ -2138,7 +2719,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               })
                             }
                             placeholder="Display name"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           />
                         </td>
@@ -2153,7 +2734,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               })
                             }
                             placeholder="Controller tag path"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           />
                         </td>
@@ -2167,7 +2748,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 return next;
                               })
                             }
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           >
                             <option value="">Select UA type</option>
@@ -2194,7 +2775,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               })
                             }
                             placeholder="ms"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           />
                         </td>
@@ -2209,7 +2790,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               })
                             }
                             placeholder="ms"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           />
                         </td>
@@ -2224,7 +2805,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               })
                             }
                             placeholder="Optional"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           />
                         </td>
@@ -2256,7 +2837,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 return next;
                               })
                             }
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           />
                         </td>
@@ -2273,7 +2854,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 return next;
                               })
                             }
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           />
                         </td>
@@ -2287,7 +2868,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 return next;
                               })
                             }
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled={!templateEditing}
                           >
                             <option value="">None</option>
@@ -2315,7 +2896,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     ))}
                     {templateFieldRows.length === 0 && (
                       <tr>
-                        <td colSpan={10} style={{ padding: "8px", color: "#98a2b3" }}>
+                        <td colSpan={10} style={{ padding: "8px", color: "var(--text-muted)" }}>
                           No fields yet.
                         </td>
                       </tr>
@@ -2328,10 +2909,10 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   onClick={() =>
                     setTemplateFieldRows((prev) => [
                       ...prev,
-                      { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 },
+                      { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 },
                     ])
                   }
-                  style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                  style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                 >
                   Add Tag
                 </button>
@@ -2351,7 +2932,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     setTemplateOriginalName("");
                     setTemplateName("");
                     setTemplateParent("");
-                    setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 4 }]);
+                    setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 }]);
                     setTemplateStateMappings([{ field: "", state: "", color: "" }]);
                     setTemplateEditing(true);
                   }}
@@ -2393,7 +2974,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                         setMappingSetRows([{ field: "", state: "", color: "" }]);
                       }
                     }}
-                    style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                   >
                     <option value="">New set</option>
                     {mappingSets.map((s) => (
@@ -2410,7 +2991,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       setMappingSetOriginalName("");
                       setMappingSetRows([{ field: "", state: "", color: "" }]);
                     }}
-                    style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                    style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                   >
                     New Set
                   </button>
@@ -2449,10 +3030,10 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   value={mappingSetName}
                   onChange={(e) => setMappingSetName(e.target.value)}
                   placeholder="e.g. Motor States"
-                  style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                 />
               </label>
-              <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflow: "hidden", padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
                 <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
                   <colgroup>
                     <col style={{ width: "27%" }} />
@@ -2461,7 +3042,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     <col style={{ width: "14%" }} />
                   </colgroup>
                   <thead>
-                    <tr style={{ background: "#f8fafc" }}>
+                    <tr style={{ background: "var(--bg-soft)" }}>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>State Text</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>PLC Value</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>Color</th>
@@ -2475,7 +3056,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                           <input
                             value={row.field || "State Text"}
                             placeholder="State Text"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             disabled
                           />
                         </td>
@@ -2490,7 +3071,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                               })
                             }
                             placeholder="1"
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                           />
                         </td>
                         <td style={{ padding: "8px 16px 8px 10px" }}>
@@ -2517,7 +3098,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                                 })
                               }
                               placeholder="#12b76a"
-                              style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 8, padding: "8px 10px" }}
+                              style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             />
                           </div>
                         </td>
@@ -2535,7 +3116,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     ))}
                     {mappingSetRows.length === 0 && (
                       <tr>
-                        <td colSpan={4} style={{ padding: "8px", color: "#98a2b3" }}>
+                        <td colSpan={4} style={{ padding: "8px", color: "var(--text-muted)" }}>
                           No mappings yet.
                         </td>
                       </tr>
@@ -2551,7 +3132,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       { field: "State Text", state: "", color: "" },
                     ])
                   }
-                  style={{ ...drawerButtonStyle, border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                  style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                 >
                   Add Mapping
                 </button>
@@ -2631,15 +3212,28 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
           const name = normalizeTagName(t.name);
           const tagPath = normalizeTagName(t.tagPath || name);
           const topic = normalizeTagName(t.topic || "");
-          const samplingInterval = Number.isFinite(Number(t?.samplingInterval))
-            ? Number(t.samplingInterval)
-            : "";
-          return { ...t, name, tagPath, topic, samplingInterval, mappingSet: t?.mappingSet || "" };
+          const samplingInterval = parseOptionalMs(t?.samplingInterval);
+          return {
+            ...t,
+            name,
+            tagPath,
+            topic,
+            samplingInterval,
+            deadband: parseOptionalNonNegative(t?.deadband),
+            muted: t?.muted === true,
+            mappingSet: t?.mappingSet || "",
+          };
         })
         .filter((t) => t.name);
       const cleanedTopics = buildCleanedTopics(data.topics || []);
       const cleanedPlcs = buildCleanedPlcs(data.plcs || []);
-      const loadedConfig = { ...data, tags: cleanedTags, topics: cleanedTopics, plcs: cleanedPlcs };
+      const loadedConfig = {
+        ...data,
+        runtime: normalizeRuntimeConfig(data?.runtime),
+        tags: cleanedTags,
+        topics: cleanedTopics,
+        plcs: cleanedPlcs,
+      };
       setConfig(loadedConfig);
       lastSavedRef.current = JSON.stringify(loadedConfig);
     } catch (err) {
@@ -2651,10 +3245,21 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     setError("");
     setStatus("");
     try {
+      const warnings = collectValidationWarnings(config);
+      if (warnings.length) {
+        setError(`Fix validation warnings before save (${warnings.length}).`);
+        return;
+      }
       const cleanedTags = buildCleanedTags(config.tags);
       const cleanedTopics = buildCleanedTopics(config.topics);
       const cleanedPlcs = buildCleanedPlcs(config.plcs);
-      const nextConfig = { ...config, tags: cleanedTags, topics: cleanedTopics, plcs: cleanedPlcs };
+      const nextConfig = {
+        ...config,
+        runtime: normalizeRuntimeConfig(config.runtime),
+        tags: cleanedTags,
+        topics: cleanedTopics,
+        plcs: cleanedPlcs,
+      };
       setConfig(nextConfig);
       await persistConfig(nextConfig, "Tags saved.");
       setTagTableEditing(false);
@@ -2692,10 +3297,12 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         samplingInterval: "",
         topic: topicKey,
         enabled: true,
+        muted: false,
         mappingSet: "",
         groupName,
+        deadband: "",
         scale: 1,
-        decimals: 4,
+        decimals: 0,
       });
       return { ...prev, tags: next };
     });
@@ -2724,14 +3331,49 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     setActiveTagGroup({ topic: topicKey, groupName });
     addTagToGroup(topicKey, groupName);
   }
+
+  function applyBulkEditToTags() {
+    const topicFilter = String(bulkEdit.topic || "").trim();
+    const groupFilter = String(bulkEdit.groupName || "").trim();
+    const groupLikeRegex = groupFilter
+      ? new RegExp(
+          `^${groupFilter
+            .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+            .replace(/%/g, ".*")
+            .replace(/_/g, ".")}$`,
+          "i"
+        )
+      : null;
+    const pollMsVal = parseOptionalMs(bulkEdit.pollMs);
+    const samplingVal = parseOptionalMs(bulkEdit.samplingInterval);
+    const deadbandVal = parseOptionalNonNegative(bulkEdit.deadband);
+    const mappingSetVal = String(bulkEdit.mappingSet || "").trim();
+    let changed = 0;
+    setConfig((prev) => {
+      const nextTags = (prev.tags || []).map((tag) => {
+        const topic = String(tag?.topic || "").trim();
+        const group = String(tag?.groupName || "").trim();
+        if (topicFilter && topic !== topicFilter) return tag;
+        if (groupLikeRegex && !groupLikeRegex.test(group)) return tag;
+        const next = { ...tag };
+        if (bulkEdit.pollMs !== "") next.pollMs = pollMsVal;
+        if (bulkEdit.samplingInterval !== "") next.samplingInterval = samplingVal;
+        if (bulkEdit.deadband !== "") next.deadband = deadbandVal;
+        if (mappingSetVal) next.mappingSet = mappingSetVal;
+        next.muted = bulkEdit.muted === true;
+        changed += 1;
+        return next;
+      });
+      return { ...prev, tags: nextTags };
+    });
+    setStatus(changed ? `Updated ${changed} tag(s).` : "No matching tags.");
+  }
   function addTopic() {
     const name = normalizeTopicValue(manualTopic.name);
     const prefix = normalizeTopicValue(manualTopic.prefix);
     const plcName = normalizeTopicValue(manualTopic.plcName);
-    const samplingInterval =
-      manualTopic.samplingInterval === "" || manualTopic.samplingInterval === null
-        ? undefined
-        : Number(manualTopic.samplingInterval);
+    const samplingIntervalRaw = parseOptionalMs(manualTopic.samplingInterval);
+    const samplingInterval = samplingIntervalRaw === "" ? undefined : samplingIntervalRaw;
     if (!name) {
       setError("Topic name is required.");
       return;
@@ -2747,7 +3389,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
         name,
         prefix,
         plcName,
-        samplingInterval: Number.isFinite(Number(samplingInterval)) ? Number(samplingInterval) : undefined,
+        samplingInterval,
         enabled: manualTopic.enabled !== false,
       },
     ];
@@ -2786,7 +3428,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
     const name = normalizeTopicValue(manualPlc.name);
     const host = normalizeTopicValue(manualPlc.host);
     const slot = manualPlc.slot === "" ? 0 : Number(manualPlc.slot);
-    const pollMs = manualPlc.pollMs === "" ? "" : Number(manualPlc.pollMs);
+    const pollMs = parseOptionalMs(manualPlc.pollMs);
     if (!name) {
       setError("PLC name is required.");
       return;
@@ -2862,7 +3504,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     ? "#027a48"
                     : opcConnected === false
                     ? "#b42318"
-                    : "#667085",
+                    : "var(--text-muted)",
                 border:
                   restartPending
                     ? "1px solid #fed7aa"
@@ -2870,7 +3512,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     ? "1px solid #abefc6"
                     : opcConnected === false
                     ? "1px solid #fecdca"
-                    : "1px solid #e4e7ec",
+                    : "1px solid var(--border)",
               }}
             >
               {restartPending
@@ -2893,46 +3535,152 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   border: "1px solid #fecdca",
                 }}
               >
-                {Object.keys(liveErrors || {}).length} Errors
+                {Object.keys(liveErrors || {}).length} Active Errors
+              </div>
+            ) : null}
+            {recentErrorCount > 0 ? (
+              <div
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: 999,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  background: "#fff8eb",
+                  color: "#b54708",
+                  border: "1px solid #fedf89",
+                }}
+              >
+                {recentErrorCount} Recent
               </div>
             ) : null}
             {opcLastPollAt ? (
-              <div style={{ fontSize: 11, color: "#667085" }}>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 Last poll {new Date(opcLastPollAt).toLocaleTimeString()}
               </div>
             ) : null}
           </div>
           {null}
         </div>
+        {typeof onDrawerViewChange === "function" ? (
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <button
+              onClick={() => onDrawerViewChange("opc")}
+              style={{
+                border: "1px solid var(--border)",
+                background: "#2b6cff",
+                color: "white",
+                borderRadius: 999,
+                padding: "6px 12px",
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+              }}
+            >
+              Config
+            </button>
+            <button
+              onClick={() => onDrawerViewChange("logs")}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-soft)",
+                color: "var(--text)",
+                borderRadius: 999,
+                padding: "6px 12px",
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+              }}
+            >
+              Logs
+            </button>
+          </div>
+        ) : null}
 
         {error && <div style={{ color: "#b42318", marginBottom: 10 }}>{error}</div>}
         {status && <div style={{ color: "#12b76a", marginBottom: 10 }}>{status}</div>}
-        {Object.keys(liveErrors || {}).length > 0 && (
-          <div
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <button
+            onClick={() => setOpcConfigSectionTab("opcua")}
             style={{
-              border: "1px solid #fecdca",
-              background: "#fef3f2",
-              color: "#7a271a",
-              borderRadius: 10,
-              padding: "8px 10px",
-              marginBottom: 10,
+              border: "1px solid var(--border)",
+              background: opcConfigSectionTab === "opcua" ? "#2b6cff" : "#f9fafb",
+              color: opcConfigSectionTab === "opcua" ? "white" : "#111",
+              borderRadius: 999,
+              padding: "6px 12px",
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
               fontSize: 12,
             }}
           >
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>Tag Errors</div>
-            <div style={{ display: "grid", gap: 4, maxHeight: 120, overflow: "auto" }}>
-              {Object.entries(liveErrors).map(([name, count]) => (
-                <div key={`err-${name}`} style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span>{name}</span>
-                  <span>err {count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16, flex: "1 1 0", minHeight: 0 }}>
-          <div style={{ background: "white", border: "1px solid #e4e7ec", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
+            OPC UA
+          </button>
+          <button
+            onClick={() => setOpcConfigSectionTab("plcs")}
+            style={{
+              border: "1px solid var(--border)",
+              background: opcConfigSectionTab === "plcs" ? "#2b6cff" : "#f9fafb",
+              color: opcConfigSectionTab === "plcs" ? "white" : "#111",
+              borderRadius: 999,
+              padding: "6px 12px",
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              fontSize: 12,
+            }}
+          >
+            PLC Instances
+          </button>
+          <button
+            onClick={() => setOpcConfigSectionTab("topics")}
+            style={{
+              border: "1px solid var(--border)",
+              background: opcConfigSectionTab === "topics" ? "#2b6cff" : "#f9fafb",
+              color: opcConfigSectionTab === "topics" ? "white" : "#111",
+              borderRadius: 999,
+              padding: "6px 12px",
+              fontWeight: 600,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              fontSize: 12,
+            }}
+          >
+            PLC Topics
+          </button>
+          {typeof onDrawerViewChange !== "function" ? (
+            <button
+              onClick={() => setOpcConfigSectionTab("diagnostics")}
+              style={{
+                border: "1px solid var(--border)",
+                background: opcConfigSectionTab === "diagnostics" ? "#2b6cff" : "#f9fafb",
+                color: opcConfigSectionTab === "diagnostics" ? "white" : "#111",
+                borderRadius: 999,
+                padding: "6px 12px",
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+                fontSize: 12,
+              }}
+            >
+              Diagnostics
+            </button>
+          ) : null}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, flex: "1 1 0", minHeight: 0 }}>
+          {opcConfigSectionTab === "opcua" ? (
+          <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
             <div style={{ fontWeight: 700, marginBottom: 10 }}>OPC UA</div>
             <label style={{ display: "grid", gap: 6, fontSize: 12, marginBottom: 10 }}>
               Port
@@ -2942,7 +3690,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 onChange={(e) =>
                   setConfig((p) => ({ ...p, opcua: { ...p.opcua, port: Number(e.target.value) } }))
                 }
-                style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
               />
             </label>
             <label style={{ display: "grid", gap: 6, fontSize: 12, marginBottom: 10 }}>
@@ -2952,7 +3700,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                 onChange={(e) =>
                   setConfig((p) => ({ ...p, opcua: { ...p.opcua, resourcePath: e.target.value } }))
                 }
-                style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
               />
             </label>
             <label style={{ display: "grid", gap: 6, fontSize: 12, marginBottom: 10 }}>
@@ -2960,26 +3708,133 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               <input
                 value={config.opcua?.name || ""}
                 onChange={(e) => setConfig((p) => ({ ...p, opcua: { ...p.opcua, name: e.target.value } }))}
-                style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
               />
             </label>
+            <div style={{ fontWeight: 700, marginBottom: 8, marginTop: 4 }} title="Live OPC poller behavior and resiliency settings.">
+              Runtime
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Maximum wait for a PLC read before marking it as timeout/error.">
+                Read Timeout (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={config.runtime?.readTimeoutMs ?? 2000}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), readTimeoutMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Heartbeat check interval used to verify PLC connection health.">
+                Heartbeat (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={config.runtime?.heartbeatMs ?? 5000}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), heartbeatMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Delay between PLC reconnect attempts after disconnect or failed heartbeat.">
+                Reconnect Delay (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={config.runtime?.reconnectDelayMs ?? 2000}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), reconnectDelayMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Maximum reconnect attempts. Leave blank for infinite retries.">
+                Reconnect Max Attempts
+                <input
+                  type="number"
+                  min="1"
+                  value={config.runtime?.reconnectMaxAttempts ?? ""}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), reconnectMaxAttempts: e.target.value } }))}
+                  placeholder="Blank = infinite"
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Base backoff added after repeated read errors.">
+                Backoff Base (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={config.runtime?.errorBackoffBaseMs ?? 1000}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffBaseMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Maximum extra delay added by error backoff.">
+                Backoff Max (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={config.runtime?.errorBackoffMaxMs ?? 15000}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffMaxMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Number of consecutive errors before backoff starts.">
+                Backoff Threshold
+                <input
+                  type="number"
+                  min="1"
+                  value={config.runtime?.errorBackoffThreshold ?? 3}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffThreshold: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Random spread added to scheduling to reduce burst polling.">
+                Poll Jitter (ms)
+                <input
+                  type="number"
+                  min="0"
+                  value={config.runtime?.pollJitterMs ?? 0}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), pollJitterMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Default deadband for numeric tags unless a tag-specific deadband is set.">
+                Default Deadband
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={config.runtime?.deadbandDefault ?? ""}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), deadbandDefault: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, gridColumn: "1 / span 2" }} title="Enable dynamic slowdown after repeated tag read failures.">
+                <input
+                  type="checkbox"
+                  checked={config.runtime?.errorBackoffEnabled !== false}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffEnabled: e.target.checked } }))}
+                />
+                Enable Error Backoff
+              </label>
+            </div>
             <div style={{ marginTop: "auto", display: "flex", gap: 8, paddingTop: 10 }}>
               <button onClick={saveConfig} style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 10, padding: "8px 12px" }}>
                 Save Config
               </button>
-              <button onClick={requestRestart} style={{ border: "1px solid #d0d7e2", background: "white", borderRadius: 10, padding: "8px 12px" }}>
+              <button onClick={requestRestart} style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 10, padding: "8px 12px" }}>
                 Restart OPC Server
               </button>
             </div>
           </div>
+          ) : null}
 
-          <div style={{ background: "white", border: "1px solid #e4e7ec", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
+          {opcConfigSectionTab === "plcs" ? (
+          <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
             <div style={{ fontWeight: 700, marginBottom: 10 }}>PLC Instances</div>
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
               <button
                 onClick={() => setShowPlcForm((v) => !v)}
                 style={{
-                  border: "1px solid #d0d7e2",
+                  border: "1px solid var(--border)",
                   background: showPlcForm ? "#2b6cff" : "white",
                   color: showPlcForm ? "white" : "#111",
                   borderRadius: 8,
@@ -2990,14 +3845,14 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               </button>
             </div>
             {showPlcForm ? (
-              <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, padding: 10, background: "#fbfcff", marginBottom: 10 }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 10, background: "var(--bg-soft)", marginBottom: 10 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "end" }}>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
                     Name
                     <input
                       value={manualPlc.name}
                       onChange={(e) => setManualPlc((prev) => ({ ...prev, name: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -3006,7 +3861,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       value={manualPlc.host}
                       onChange={(e) => setManualPlc((prev) => ({ ...prev, host: e.target.value }))}
                       placeholder="e.g., 10.0.0.10"
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -3015,7 +3870,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       type="number"
                       value={manualPlc.slot}
                       onChange={(e) => setManualPlc((prev) => ({ ...prev, slot: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -3025,7 +3880,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       value={manualPlc.pollMs}
                       onChange={(e) => setManualPlc((prev) => ({ ...prev, pollMs: e.target.value }))}
                       placeholder="Optional"
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                 </div>
@@ -3038,16 +3893,16 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       setManualPlc({ name: "", host: "", slot: "", pollMs: "" });
                       setShowPlcForm(false);
                     }}
-                    style={{ border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                    style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                   >
                     Cancel
                   </button>
                 </div>
               </div>
             ) : null}
-            <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflow: "hidden", maxHeight: 300, overflowY: "auto" }}>
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", maxHeight: 300, overflowY: "auto" }}>
               {(!plcs || plcs.length === 0) ? (
-                <div style={{ padding: 8, color: "#98a2b3", fontSize: 12 }}>No PLCs configured.</div>
+                <div style={{ padding: 8, color: "var(--text-muted)", fontSize: 12 }}>No PLCs configured.</div>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <colgroup>
@@ -3058,7 +3913,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     <col style={{ width: 48 }} />
                   </colgroup>
                   <thead>
-                    <tr style={{ background: "#f8fafc" }}>
+                    <tr style={{ background: "var(--bg-soft)" }}>
                       <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
                       <th style={{ textAlign: "left", padding: "6px 8px" }}>Host</th>
                       <th style={{ textAlign: "left", padding: "6px 8px" }}>Slot</th>
@@ -3068,19 +3923,19 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   </thead>
                   <tbody>
                     {plcs.map((plc, idx) => (
-                      <tr key={plc.id || `plc-${idx}`} style={{ borderTop: "1px solid #eef2f6" }}>
+                      <tr key={plc.id || `plc-${idx}`} style={{ borderTop: "1px solid var(--border)" }}>
                         <td style={{ padding: "6px 8px" }}>
                           <input
                             value={plc.name || ""}
                             onChange={(e) => updatePlc(idx, "name", e.target.value)}
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 6, padding: "4px 6px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 6px" }}
                           />
                         </td>
                         <td style={{ padding: "6px 8px" }}>
                           <input
                             value={plc.host || ""}
                             onChange={(e) => updatePlc(idx, "host", e.target.value)}
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 6, padding: "4px 6px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 6px" }}
                           />
                         </td>
                         <td style={{ padding: "6px 8px" }}>
@@ -3088,7 +3943,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                             type="number"
                             value={plc.slot ?? 0}
                             onChange={(e) => updatePlc(idx, "slot", e.target.value)}
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 6, padding: "4px 6px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 6px" }}
                           />
                         </td>
                         <td style={{ padding: "6px 8px" }}>
@@ -3096,7 +3951,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                             type="number"
                             value={plc.pollMs ?? ""}
                             onChange={(e) => updatePlc(idx, "pollMs", e.target.value)}
-                            style={{ width: "100%", border: "1px solid #d0d7e2", borderRadius: 6, padding: "4px 6px" }}
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 6px" }}
                           />
                         </td>
                         <td style={{ padding: "6px 8px" }}>
@@ -3114,14 +3969,16 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               )}
             </div>
           </div>
+          ) : null}
 
-          <div style={{ background: "white", border: "1px solid #e4e7ec", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
+          {opcConfigSectionTab === "topics" ? (
+          <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
             <div style={{ fontWeight: 700, marginBottom: 10 }}>PLC Topics</div>
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
               <button
                 onClick={() => setShowTopicForm((v) => !v)}
                 style={{
-                  border: "1px solid #d0d7e2",
+                  border: "1px solid var(--border)",
                   background: showTopicForm ? "#2b6cff" : "white",
                   color: showTopicForm ? "white" : "#111",
                   borderRadius: 8,
@@ -3132,14 +3989,14 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               </button>
             </div>
             {showTopicForm ? (
-              <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, padding: 10, background: "#fbfcff", marginBottom: 10 }}>
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 10, background: "var(--bg-soft)", marginBottom: 10 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "end" }}>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
                     Topic Name
                     <input
                       value={manualTopic.name}
                       onChange={(e) => setManualTopic((prev) => ({ ...prev, name: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -3148,7 +4005,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       value={manualTopic.prefix}
                       onChange={(e) => setManualTopic((prev) => ({ ...prev, prefix: e.target.value }))}
                       placeholder="Optional"
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
@@ -3156,7 +4013,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     <select
                       value={manualTopic.plcName}
                       onChange={(e) => setManualTopic((prev) => ({ ...prev, plcName: e.target.value }))}
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     >
                       <option value="">Select PLC</option>
                       {(plcs || []).map((p) => (
@@ -3174,7 +4031,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       value={manualTopic.samplingInterval}
                       onChange={(e) => setManualTopic((prev) => ({ ...prev, samplingInterval: e.target.value }))}
                       placeholder="Overrides PLC"
-                      style={{ border: "1px solid #d0d7e2", borderRadius: 8, padding: "6px 8px" }}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     />
                   </label>
                 </div>
@@ -3187,16 +4044,16 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                       setManualTopic({ name: "", prefix: "", plcName: "", enabled: true });
                       setShowTopicForm(false);
                     }}
-                    style={{ border: "1px solid #d0d7e2", background: "white", borderRadius: 8, padding: "6px 10px" }}
+                    style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                   >
                     Cancel
                   </button>
                 </div>
               </div>
             ) : null}
-            <div style={{ border: "1px solid #e4e7ec", borderRadius: 10, overflow: "hidden", maxHeight: 300, overflowY: "auto" }}>
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", maxHeight: 300, overflowY: "auto" }}>
               {(!config.topics || config.topics.length === 0) ? (
-                <div style={{ padding: 8, color: "#98a2b3", fontSize: 12 }}>No topics.</div>
+                <div style={{ padding: 8, color: "var(--text-muted)", fontSize: 12 }}>No topics.</div>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <colgroup>
@@ -3207,7 +4064,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     <col style={{ width: 48 }} />
                   </colgroup>
                   <thead>
-                    <tr style={{ background: "#f8fafc" }}>
+                    <tr style={{ background: "var(--bg-soft)" }}>
                       <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
                       <th style={{ textAlign: "left", padding: "6px 8px" }}>Prefix</th>
                       <th style={{ textAlign: "left", padding: "6px 8px" }}>PLC</th>
@@ -3217,11 +4074,11 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   </thead>
                   <tbody>
                     {(config.topics || []).map((topic, idx) => (
-                      <tr key={`topic-${topic.name}-${idx}`} style={{ borderTop: "1px solid #eef2f6" }}>
+                      <tr key={`topic-${topic.name}-${idx}`} style={{ borderTop: "1px solid var(--border)" }}>
                         <td style={{ padding: "6px 8px" }}>{topic.name || ""}</td>
-                        <td style={{ padding: "6px 8px", color: "#475467" }}>{topic.prefix || ""}</td>
-                        <td style={{ padding: "6px 8px", color: "#475467" }}>{topic.plcName || ""}</td>
-                        <td style={{ padding: "6px 8px", color: "#475467" }}>
+                        <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>{topic.prefix || ""}</td>
+                        <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>{topic.plcName || ""}</td>
+                        <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>
                           {Number.isFinite(Number(topic.samplingInterval)) ? Number(topic.samplingInterval) : ""}
                         </td>
                         <td style={{ padding: "6px 8px" }}>
@@ -3239,6 +4096,13 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
               )}
             </div>
           </div>
+          ) : null}
+
+          {opcConfigSectionTab === "diagnostics" ? (
+          <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
+            {renderTagDiagnosticsCard()}
+          </div>
+          ) : null}
 
           {showTagsDrawer ? (
             <div
@@ -3259,11 +4123,11 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                   top: 0,
                   height: "100%",
                   width: "min(760px, 95vw)",
-                  background: "#f7f8fb",
+                  background: "var(--bg-soft)",
                   boxShadow: "-16px 0 40px rgba(0,0,0,0.18)",
                   display: "flex",
                   flexDirection: "column",
-                  borderLeft: "1px solid rgba(0,0,0,0.08)",
+                  borderLeft: "1px solid var(--border)",
                 }}
                 onMouseDown={(e) => e.stopPropagation()}
               >
@@ -3273,16 +4137,16 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                     alignItems: "center",
                     justifyContent: "space-between",
                     padding: "12px 16px",
-                    borderBottom: "1px solid #e4e7ec",
-                    background: "white",
+                    borderBottom: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
                   }}
                 >
                   <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>Tags</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
                     <label
                       style={{
-                        border: "1px solid #d0d7e2",
-                        background: "white",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
                         borderRadius: 8,
                         padding: "6px 10px",
                         cursor: "pointer",
@@ -3300,8 +4164,8 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                         display: "inline-flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        border: "1px solid #d0d7e2",
-                        background: "white",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
                         borderRadius: 8,
                         padding: "6px 10px",
                         cursor: "pointer",
@@ -3318,7 +4182,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                           top: 36,
                           zIndex: 5,
                           minWidth: 160,
-                          background: "white",
+                          background: "var(--bg-elev)",
                           border: "1px solid rgba(0,0,0,0.12)",
                           borderRadius: 10,
                           boxShadow: "0 12px 24px rgba(0,0,0,0.14)",
@@ -3337,7 +4201,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                             cursor: "pointer",
                             fontSize: 12,
                             fontWeight: 600,
-                            color: "#111",
+                            color: "var(--text)",
                           }}
                         >
                           AI
@@ -3353,7 +4217,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                             cursor: "pointer",
                             fontSize: 12,
                             fontWeight: 600,
-                            color: "#111",
+                            color: "var(--text)",
                           }}
                         >
                           Data
@@ -3367,8 +4231,8 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
                         display: "inline-flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        border: "1px solid #d0d7e2",
-                        background: "white",
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
                         borderRadius: 8,
                         padding: "6px 10px",
                         cursor: "pointer",
@@ -3388,4 +4252,7 @@ export default function OpcConfig({ embedded = false, mode = "full" }) {
   </div>
   );
 }
+
+
+
 

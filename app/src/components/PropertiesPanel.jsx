@@ -2,44 +2,44 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const closeBtnStyle = {
-  border: "1px solid #e6e6e6",
-  background: "white",
+  border: "1px solid var(--border)",
+  background: "var(--bg-elev)",
   borderRadius: 10,
   padding: "4px 8px",
   cursor: "pointer",
   lineHeight: 1,
-  color: "#111",
+  color: "var(--text)",
 };
 
 // ✅ Shared compact control style (actual height shrink)
 const controlStyle = {
   boxSizing: "border-box",
   height: 26,
-  border: "1px solid #dcdcdc",
+  border: "1px solid var(--border)",
   borderRadius: 8,
   padding: "0 8px",
   fontSize: 12,
   lineHeight: "26px",
   outline: "none",
   width: "100%",
-  background: "white",
-  color: "#111",
+  background: "var(--bg-elev)",
+  color: "var(--text)",
 };
 
 const labelStyle = {
-  color: "#808080",
+  color: "var(--text-muted)",
   alignSelf: "center",
   fontSize: 12,
   lineHeight: "26px",
 };
 
 const btnStyle = {
-  border: "1px solid #dcdcdc",
-  background: "white",
+  border: "1px solid var(--border)",
+  background: "var(--bg-elev)",
   borderRadius: 10,
   padding: "6px 10px",
   cursor: "pointer",
-  color: "#111",
+  color: "var(--text)",
   boxShadow: "0 6px 18px rgba(0,0,0,0.08)",
 };
 
@@ -80,7 +80,7 @@ function Row({
               padding: 0,
               borderRadius: 10,
               border: "1px solid #d6d6d6",
-              background: "#fff",
+              background: "var(--bg-elev)",
               cursor: "pointer",
             }}
           />
@@ -109,31 +109,77 @@ function Row({
   );
 }
 
-function SelectRow({ label, value, onChange, onBlur, options }) {
-  const hasGroups = options?.some((opt) => opt.group);
+function SelectRow({
+  label,
+  value,
+  onChange,
+  onBlur,
+  options,
+  searchable = false,
+  searchPlaceholder = "Search tags...",
+}) {
+  const [query, setQuery] = useState("");
+  const safeOptions = Array.isArray(options) ? options : [];
+
+  const filteredOptions = useMemo(() => {
+    const q = String(query || "").trim().toLowerCase();
+    if (!searchable || !q) return safeOptions;
+
+    const filtered = safeOptions.filter((opt) =>
+      `${opt?.group || ""} ${opt?.label || ""} ${opt?.value || ""}`.toLowerCase().includes(q)
+    );
+
+    const selectedValue = value ?? safeOptions?.[0]?.value ?? "";
+    if (
+      selectedValue !== "" &&
+      !filtered.some((opt) => String(opt.value) === String(selectedValue))
+    ) {
+      const selected = safeOptions.find((opt) => String(opt.value) === String(selectedValue));
+      if (selected) return [selected, ...filtered];
+    }
+
+    return filtered;
+  }, [query, safeOptions, searchable, value]);
+
+  const hasGroups = filteredOptions?.some((opt) => opt.group);
   const grouped = hasGroups
-    ? options.reduce((acc, opt) => {
+    ? filteredOptions.reduce((acc, opt) => {
         const key = opt.group || "Other";
         if (!acc.has(key)) acc.set(key, []);
         acc.get(key).push(opt);
         return acc;
       }, new Map())
     : null;
+
   return (
     <>
       <div style={labelStyle}>{label}</div>
-      <select
-        value={value ?? options?.[0]?.value ?? ""}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        style={{
-          ...controlStyle,
-          cursor: "pointer",
-          lineHeight: "normal",
-        }}
-      >
-        {hasGroups
-          ? Array.from(grouped.entries()).map(([group, opts]) => (
+      <div style={{ display: "grid", gap: 6 }}>
+        {searchable && (
+          <input
+            type="text"
+            value={query}
+            placeholder={searchPlaceholder}
+            onChange={(e) => setQuery(e.target.value)}
+            style={controlStyle}
+          />
+        )}
+        <select
+          value={value ?? safeOptions?.[0]?.value ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={onBlur}
+          style={{
+            ...controlStyle,
+            cursor: "pointer",
+            lineHeight: "normal",
+          }}
+        >
+          {filteredOptions.length === 0 ? (
+            <option value="" disabled>
+              No matches
+            </option>
+          ) : hasGroups ? (
+            Array.from(grouped.entries()).map(([group, opts]) => (
               <optgroup key={group} label={group}>
                 {opts.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -142,12 +188,15 @@ function SelectRow({ label, value, onChange, onBlur, options }) {
                 ))}
               </optgroup>
             ))
-          : options.map((opt) => (
+          ) : (
+            filteredOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
-            ))}
-      </select>
+            ))
+          )}
+        </select>
+      </div>
     </>
   );
 }
@@ -178,6 +227,7 @@ export default function PropertiesPanel({
   applySingleTagPath,
   applySingleFill,
   applySingleStroke,
+  applySingleSvgStrokeWidth,
   applyBBoxFromHud,
 
   applySingleArrowStart,
@@ -233,6 +283,27 @@ export default function PropertiesPanel({
     return options;
   }, [opcTags, hudFields.tagPath]);
 
+  const svgTagGroupOptions = useMemo(() => {
+    const options = [{ value: "", label: "Select tag group" }];
+    const seen = new Set();
+
+    (opcTags || []).forEach((tag) => {
+      const topic = String(tag?.topic || "Default").trim() || "Default";
+      const groupName = String(tag?.groupName || "").trim();
+      if (!groupName) return;
+      const value = `${topic}.${groupName}`;
+      const dedupe = value.toLowerCase();
+      if (seen.has(dedupe)) return;
+      seen.add(dedupe);
+      options.push({ value, label: groupName, group: topic });
+    });
+
+    if (hudFields.tagPath && !options.some((opt) => opt.value === hudFields.tagPath)) {
+      options.push({ value: hudFields.tagPath, label: hudFields.tagPath, group: "Custom" });
+    }
+    return options;
+  }, [opcTags, hudFields.tagPath]);
+
   // keep latest fns for Apply (avoid stale closure)
   const latest = useRef({});
   latest.current = {
@@ -240,6 +311,7 @@ export default function PropertiesPanel({
     applySingleTagPath,
     applySingleFill,
     applySingleStroke,
+    applySingleSvgStrokeWidth,
     applySingleArrowStart,
     applySingleArrowEnd,
     applySingleLineStyle,
@@ -447,6 +519,7 @@ export default function PropertiesPanel({
       a.applySingleTagPath?.(next.tagPath);
 
       if (isSvg) {
+        a.applySingleSvgStrokeWidth?.(next.strokeWidth);
         const w = Number.parseFloat(next.w);
         const h = Number.parseFloat(next.h);
         if (Number.isFinite(w) && Number.isFinite(h)) {
@@ -481,14 +554,14 @@ export default function PropertiesPanel({
         position: "fixed",
         left: panelPos.x,
         top: panelPos.y,
-        background: "rgba(255,255,255,0.9)",
-        border: "1px solid #e6e6e6",
+        background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
+        border: "1px solid var(--border)",
         borderRadius: 12,
         padding: "10px 12px",
         fontSize: 13,
         lineHeight: 1.35,
         boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
-        color: "#111",
+        color: "var(--text)",
         zIndex: 35,
         minWidth: 320,
       }}
@@ -538,7 +611,7 @@ export default function PropertiesPanel({
             }}
             style={{
               ...btnStyle,
-              background: "#f7f7f7",
+              background: "var(--bg-soft)",
             }}
           >
             Apply & Close
@@ -593,7 +666,9 @@ export default function PropertiesPanel({
                 applySingleTagPath(v);
               }}
               onBlur={() => {}}
-              options={tagOptions}
+              options={isSvg ? svgTagGroupOptions : tagOptions}
+              searchable
+              searchPlaceholder={isSvg ? "Search tag groups..." : "Search tags..."}
             />
 
           {/* SVG */}
@@ -649,6 +724,17 @@ export default function PropertiesPanel({
                   if (!isSvg) applySingleStroke(hudFields.stroke);
                 }}
                 placeholder="#111111"
+              />
+            )}
+
+            {isSvg && (
+              <Row
+                label="Stroke W"
+                type="number"
+                value={hudFields.strokeWidth}
+                onChange={(v) => setHudFields((p) => ({ ...p, strokeWidth: v }))}
+                onBlur={() => {}}
+                placeholder="2"
               />
             )}
 
@@ -787,7 +873,7 @@ export default function PropertiesPanel({
         ))}
       </div>
 
-      <div style={{ marginTop: 8, fontSize: 12, color: "#808080" }}>
+      <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
         Tip: press <b>Apply</b> to commit all fields.
       </div>
     </div>

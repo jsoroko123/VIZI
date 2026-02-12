@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/start-all.js",
+    "dev:vite": "vite",
+    "start": "node scripts/start-all.js",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",

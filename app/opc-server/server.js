@@ -62,16 +62,61 @@ function plcTypeToUa(plcType) {
   }
 }
 
+function parsePositiveMs(value, fallback = null) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(100, Math.round(n));
+}
+
+function parsePositiveNumber(value, fallback = null) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
+function parseNonNegativeNumber(value, fallback = null) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return n;
+}
+
+function isNumericLiveValue(value) {
+  if (value == null) return false;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return false;
+    const n = Number(s);
+    return Number.isFinite(n);
+  }
+  return false;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function main() {
   const config = await loadConfig();
-  const globalPollMs = Math.max(100, Number(config?.pollMs ?? 500));
+  const runtime = config?.runtime || {};
+  const readTimeoutMs = parsePositiveMs(runtime?.readTimeoutMs, 2000);
+  const errorBackoffEnabled = runtime?.errorBackoffEnabled !== false;
+  const errorBackoffBaseMs = parsePositiveMs(runtime?.errorBackoffBaseMs, 1000);
+  const errorBackoffMaxMs = parsePositiveMs(runtime?.errorBackoffMaxMs, 15000);
+  const errorBackoffThreshold = Math.max(1, Math.round(parsePositiveNumber(runtime?.errorBackoffThreshold, 3)));
+  const pollJitterMs = Math.max(0, Math.round(parseNonNegativeNumber(runtime?.pollJitterMs, 0) || 0));
+  const deadbandDefault = parseNonNegativeNumber(runtime?.deadbandDefault, null);
+  const reconnectDelayMs = parsePositiveMs(runtime?.reconnectDelayMs, 2000);
+  const reconnectMaxAttempts = parsePositiveNumber(runtime?.reconnectMaxAttempts, null);
+  const heartbeatMs = parsePositiveMs(runtime?.heartbeatMs, 5000);
+  const globalPollMs = parsePositiveMs(config?.pollMs, 500);
   const plcs = Array.isArray(config?.plcs) && config.plcs.length
     ? config.plcs
         .map((p, idx) => ({
           name: String(p?.name || `PLC-${idx + 1}`),
           host: String(p?.host || ""),
           slot: Number.isFinite(Number(p?.slot)) ? Number(p.slot) : 0,
-          pollMs: Number.isFinite(Number(p?.pollMs)) ? Math.max(100, Number(p.pollMs)) : globalPollMs,
+          pollMs: parsePositiveMs(p?.pollMs, globalPollMs),
         }))
         .filter((p) => p.name && p.host)
     : config?.plc?.host
@@ -92,9 +137,7 @@ async function main() {
       name: String(t?.name || `Topic-${idx + 1}`),
       prefix: String(t?.prefix || ""),
       plcName: String(t?.plcName || t?.plc || ""),
-      samplingInterval: Number.isFinite(Number(t?.samplingInterval))
-        ? Math.max(100, Number(t.samplingInterval))
-        : null,
+      samplingInterval: parsePositiveMs(t?.samplingInterval, null),
     }))
     .filter((t) => t.name);
 
@@ -106,10 +149,10 @@ async function main() {
           name: String(t?.name || ""),
           tagPath: String(t?.tagPath || t?.name || ""),
           topic: String(t?.topic || ""),
-          pollMs: Number.isFinite(Number(t?.pollMs)) ? Math.max(100, Number(t.pollMs)) : null,
-          samplingInterval: Number.isFinite(Number(t?.samplingInterval))
-            ? Math.max(100, Number(t.samplingInterval))
-            : null,
+          pollMs: parsePositiveMs(t?.pollMs, null),
+          samplingInterval: parsePositiveMs(t?.samplingInterval, null),
+          deadband: parseNonNegativeNumber(t?.deadband, deadbandDefault),
+          muted: t?.muted === true,
         }))
         .filter((t) => t.name)
     : [];
@@ -172,10 +215,24 @@ async function main() {
   const tagValues = new Map();
   const tagErrors = new Map();
   const tagLastRead = new Map();
+  const tagLastSuccessAt = new Map();
+  const tagLastErrorAt = new Map();
+  const tagLastErrorMessage = new Map();
+  const tagErrorStreak = new Map();
+  const tagQuality = new Map();
+  const tagEffectiveInterval = new Map();
+  const tagNextDueAt = new Map();
 
-  function getTagKey(tag) {
+  function getLegacyTagKey(tag) {
     const topicName = tag.topic || "";
-    return topicName ? `${topicName}.${tag.name}` : tag.name;
+    const name = tag.name || "";
+    return topicName ? `${topicName}.${name}` : name;
+  }
+
+  function getPathTagKey(tag) {
+    const topicName = tag.topic || "";
+    const base = tag.tagPath || tag.name || "";
+    return topicName ? `${topicName}.${base}` : base;
   }
 
   const tagsWithMeta = tags.map((t) => {
@@ -183,29 +240,28 @@ async function main() {
     const topic = topicsByName.get(topicName) || { name: topicName, plcName: defaultPlcName };
     const plcName = topic.plcName || defaultPlcName;
     const plc = plcs.find((p) => p.name === plcName) || plcs[0];
-    const pollMs = Number.isFinite(Number(t.pollMs))
-      ? Math.max(100, Number(t.pollMs))
-      : Number.isFinite(Number(plc?.pollMs))
-      ? Math.max(100, Number(plc.pollMs))
-      : globalPollMs;
-    const samplingInterval = Number.isFinite(Number(t.samplingInterval))
-      ? Math.max(100, Number(t.samplingInterval))
-      : Number.isFinite(Number(topic?.samplingInterval))
-      ? Math.max(100, Number(topic.samplingInterval))
-      : Number.isFinite(Number(plc?.pollMs))
-      ? Math.max(100, Number(plc.pollMs))
-      : globalPollMs;
+    const pollMs = parsePositiveMs(t.pollMs, parsePositiveMs(plc?.pollMs, globalPollMs));
+    const samplingInterval = parsePositiveMs(
+      t.samplingInterval,
+      parsePositiveMs(topic?.samplingInterval, parsePositiveMs(plc?.pollMs, globalPollMs))
+    );
     return {
       ...t,
       topic: topicName,
       plcName,
       pollMs,
       samplingInterval,
-      tagKey: getTagKey({ ...t, topic: topicName }),
+      tagKey: getPathTagKey({ ...t, topic: topicName }),
+      legacyTagKey: getLegacyTagKey({ ...t, topic: topicName }),
     };
   });
 
   tagsWithMeta.forEach((t) => tagValues.set(t.tagKey, null));
+  tagsWithMeta.forEach((t) => {
+    tagQuality.set(t.tagKey, t.muted ? "Muted" : "Unknown");
+    tagEffectiveInterval.set(t.tagKey, parsePositiveMs(t.samplingInterval, parsePositiveMs(t.pollMs, globalPollMs)));
+    tagNextDueAt.set(t.tagKey, Date.now() + Math.floor(Math.random() * Math.max(1, pollJitterMs + 1)));
+  });
 
   const topicNodes = new Map();
   const resolvedTopics = Array.from(topicsByName.values());
@@ -278,7 +334,9 @@ async function main() {
   tagsWithMeta.forEach(createVariable);
 
   async function connectPlcWithRetry(name, plc) {
+    let attempts = 0;
     while (true) {
+      attempts += 1;
       try {
         await plc.connect();
         plcConnected.set(name, true);
@@ -287,9 +345,14 @@ async function main() {
         return;
       } catch (err) {
         plcConnected.set(name, false);
+        if (reconnectMaxAttempts && attempts >= reconnectMaxAttempts) {
+          // eslint-disable-next-line no-console
+          console.warn(`PLC ${name} connect failed after ${attempts} attempts.`, err?.message || err);
+          return;
+        }
         // eslint-disable-next-line no-console
-        console.warn(`PLC ${name} connect failed, retrying in 2s...`, err?.message || err);
-        await new Promise((r) => setTimeout(r, 2000));
+        console.warn(`PLC ${name} connect failed, retrying in ${reconnectDelayMs}ms...`, err?.message || err);
+        await sleep(reconnectDelayMs);
       }
     }
   }
@@ -344,9 +407,37 @@ async function main() {
     try {
       const snapshot = {};
       const errors = {};
+      const qualities = {};
+      const diagnostics = {};
       tagsWithMeta.forEach((t) => {
-        snapshot[t.tagKey] = tagValues.get(t.tagKey);
-        if (tagErrors.has(t.tagKey)) errors[t.tagKey] = tagErrors.get(t.tagKey);
+        const value = tagValues.get(t.tagKey);
+        const errorCount = tagErrors.get(t.tagKey);
+        const quality = tagQuality.get(t.tagKey) || "Unknown";
+        const diagnostic = {
+          topic: t.topic,
+          name: t.name,
+          tagPath: t.tagPath || t.name,
+          plcName: t.plcName,
+          muted: t.muted === true,
+          deadband: t.deadband ?? null,
+          errorStreak: tagErrorStreak.get(t.tagKey) || 0,
+          effectiveIntervalMs: tagEffectiveInterval.get(t.tagKey) || null,
+          lastReadAt: tagLastRead.get(t.tagKey) || null,
+          lastSuccessAt: tagLastSuccessAt.get(t.tagKey) || null,
+          lastErrorAt: tagLastErrorAt.get(t.tagKey) || null,
+          lastErrorMessage: tagLastErrorMessage.get(t.tagKey) || "",
+          nextDueAt: tagNextDueAt.get(t.tagKey) || null,
+        };
+        snapshot[t.tagKey] = value;
+        qualities[t.tagKey] = quality;
+        diagnostics[t.tagKey] = diagnostic;
+        if (tagErrors.has(t.tagKey)) errors[t.tagKey] = errorCount;
+        if (t.legacyTagKey && t.legacyTagKey !== t.tagKey) {
+          snapshot[t.legacyTagKey] = value;
+          qualities[t.legacyTagKey] = quality;
+          diagnostics[t.legacyTagKey] = diagnostic;
+          if (tagErrors.has(t.tagKey)) errors[t.legacyTagKey] = errorCount;
+        }
       });
       const allConnected = Array.from(plcConnected.values()).every(Boolean);
       const lastPollAt = Math.max(0, ...Array.from(plcLastPollAt.values()), 0);
@@ -360,6 +451,20 @@ async function main() {
             lastPollAt: lastPollAt || null,
             values: snapshot,
             errors,
+            qualities,
+            diagnostics,
+            runtime: {
+              readTimeoutMs,
+              errorBackoffEnabled,
+              errorBackoffBaseMs,
+              errorBackoffMaxMs,
+              errorBackoffThreshold,
+              pollJitterMs,
+              deadbandDefault,
+              reconnectDelayMs,
+              reconnectMaxAttempts,
+              heartbeatMs,
+            },
           },
           null,
           2
@@ -372,12 +477,21 @@ async function main() {
 
   tagsByPlc.forEach((plcTags, plcName) => {
     const plc = plcClients.get(plcName);
+    async function readWithTimeout(tagPath) {
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Read timeout after ${readTimeoutMs}ms`)), readTimeoutMs);
+      });
+      return Promise.race([plc.read(tagPath), timeoutPromise]);
+    }
+
+    function nextJitter() {
+      return pollJitterMs > 0 ? Math.floor(Math.random() * (pollJitterMs + 1)) : 0;
+    }
+
     const tickMs = Math.max(
       100,
       Math.min(
-        ...plcTags.map((t) =>
-          Number.isFinite(Number(t.samplingInterval)) ? Number(t.samplingInterval) : globalPollMs
-        )
+        ...plcTags.map((t) => parsePositiveMs(t.samplingInterval, globalPollMs))
       )
     );
     setInterval(async () => {
@@ -385,28 +499,90 @@ async function main() {
       const now = Date.now();
       let didRead = false;
       for (const tag of plcTags) {
-        const interval = Number.isFinite(Number(tag.samplingInterval))
-          ? Number(tag.samplingInterval)
-          : Number.isFinite(Number(tag.pollMs))
-          ? Number(tag.pollMs)
-          : globalPollMs;
-        const last = tagLastRead.get(tag.tagKey) || 0;
-        if (now - last < interval) continue;
-        try {
-          const value = await plc.read(tag.tagPath || tag.name);
-          tagValues.set(tag.tagKey, value);
-          tagErrors.delete(tag.tagKey);
+        const baseInterval = parsePositiveMs(
+          tag.samplingInterval,
+          parsePositiveMs(tag.pollMs, globalPollMs)
+        );
+        const dueAt = tagNextDueAt.get(tag.tagKey) || 0;
+        if (now < dueAt) continue;
+
+        if (tag.muted === true) {
+          tagQuality.set(tag.tagKey, "Muted");
+          tagEffectiveInterval.set(tag.tagKey, baseInterval);
           tagLastRead.set(tag.tagKey, now);
+          tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
+          continue;
+        }
+
+        try {
+          const value = await readWithTimeout(tag.tagPath || tag.name);
+          if (value == null) {
+            throw new Error("Read returned no data (null/undefined).");
+          }
+          const prev = tagValues.get(tag.tagKey);
+          const deadband = parseNonNegativeNumber(tag.deadband, deadbandDefault);
+          let shouldUpdateValue = true;
+          if (deadband != null) {
+            if (isNumericLiveValue(prev) && isNumericLiveValue(value)) {
+              const prevNum = Number(prev);
+              const nextNum = Number(value);
+              shouldUpdateValue = Math.abs(nextNum - prevNum) >= deadband;
+            }
+          }
+          if (shouldUpdateValue) tagValues.set(tag.tagKey, value);
+          tagErrors.delete(tag.tagKey);
+          tagErrorStreak.set(tag.tagKey, 0);
+          tagQuality.set(tag.tagKey, "Good");
+          tagLastRead.set(tag.tagKey, now);
+          tagLastSuccessAt.set(tag.tagKey, now);
+          tagEffectiveInterval.set(tag.tagKey, baseInterval);
+          tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
           didRead = true;
-        } catch {
+        } catch (err) {
           const prev = tagErrors.get(tag.tagKey) || 0;
           tagErrors.set(tag.tagKey, prev + 1);
+          const streak = (tagErrorStreak.get(tag.tagKey) || 0) + 1;
+          tagErrorStreak.set(tag.tagKey, streak);
+          tagQuality.set(tag.tagKey, "Bad");
+          tagLastErrorAt.set(tag.tagKey, now);
+          tagLastErrorMessage.set(tag.tagKey, err?.message || "Read failed.");
+          let backoffMs = 0;
+          if (errorBackoffEnabled && streak >= errorBackoffThreshold) {
+            const exp = Math.max(0, streak - errorBackoffThreshold);
+            backoffMs = Math.min(errorBackoffMaxMs, errorBackoffBaseMs * 2 ** exp);
+          }
+          tagEffectiveInterval.set(tag.tagKey, baseInterval + backoffMs);
+          tagNextDueAt.set(tag.tagKey, now + baseInterval + backoffMs + nextJitter());
           tagLastRead.set(tag.tagKey, now);
         }
       }
       if (didRead) plcLastPollAt.set(plcName, now);
       writeStatus();
     }, tickMs);
+  });
+
+  plcClients.forEach((plc, plcName) => {
+    setInterval(async () => {
+      try {
+        if (!plcConnected.get(plcName)) {
+          await connectPlcWithRetry(plcName, plc);
+          writeStatus();
+          return;
+        }
+        const firstTag = (tagsByPlc.get(plcName) || [])[0];
+        if (!firstTag) return;
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`Heartbeat timeout after ${readTimeoutMs}ms`)), readTimeoutMs);
+        });
+        await Promise.race([plc.read(firstTag.tagPath || firstTag.name), timeoutPromise]);
+      } catch (err) {
+        plcConnected.set(plcName, false);
+        // eslint-disable-next-line no-console
+        console.warn(`PLC ${plcName} heartbeat failed.`, err?.message || err);
+      } finally {
+        writeStatus();
+      }
+    }, heartbeatMs);
   });
 
   await server.start();

@@ -14,6 +14,7 @@ export default function DataBrowser() {
   const [detailFieldOrder, setDetailFieldOrder] = useState([]);
   const [dragDetailField, setDragDetailField] = useState("");
   const [projects, setProjects] = useState([]);
+  const [opcTags, setOpcTags] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(() => {
     return localStorage.getItem("vizi_active_project_id") || "";
   });
@@ -59,12 +60,32 @@ export default function DataBrowser() {
     }
     return visible;
   };
+  const equipmentTagGroupOptions = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    (opcTags || []).forEach((tag) => {
+      const topic = String(tag?.topic || "").trim();
+      const group = String(tag?.groupName || "").trim();
+      if (!topic || !group) return;
+      const value = `${topic}.${group}`;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ value, label: group, topic });
+    });
+    out.sort((a, b) => {
+      const t = a.topic.localeCompare(b.topic);
+      if (t !== 0) return t;
+      return a.label.localeCompare(b.label);
+    });
+    return out;
+  }, [opcTags]);
 
   const pageStyle = {
     position: "fixed",
     inset: 0,
-    background: "#f7f8fb",
-    color: "#0b1220",
+    background: "var(--bg-soft)",
+    color: "var(--text)",
     overflow: "hidden",
   };
   const shellStyle = {
@@ -78,8 +99,8 @@ export default function DataBrowser() {
     paddingBottom: 30,
   };
   const cardStyle = {
-    background: "rgba(255,255,255,0.9)",
-    border: "1px solid rgba(17, 24, 39, 0.08)",
+    background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
+    border: "1px solid var(--border)",
     borderRadius: 16,
     padding: 16,
     boxShadow:
@@ -97,14 +118,14 @@ export default function DataBrowser() {
     fontWeight: 800,
     letterSpacing: "0.06em",
     textTransform: "uppercase",
-    color: "#475467",
+    color: "var(--text-muted)",
     marginBottom: 10,
   };
-  const subtleText = { fontSize: 12, color: "#667085" };
+  const subtleText = { fontSize: 12, color: "var(--text-muted)" };
   const buttonBase = {
-    border: "1px solid #d0d7e2",
-    background: "white",
-    color: "#0b1220",
+    border: "1px solid var(--border)",
+    background: "var(--bg-elev)",
+    color: "var(--text)",
     borderRadius: 10,
     padding: "8px 12px",
     cursor: "pointer",
@@ -177,6 +198,20 @@ export default function DataBrowser() {
       }
     }
     loadProjects();
+  }, []);
+
+  useEffect(() => {
+    async function loadOpcTags() {
+      try {
+        const res = await fetch("/api/opc/tags");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load OPC tags.");
+        setOpcTags(Array.isArray(data?.tags) ? data.tags : []);
+      } catch {
+        setOpcTags([]);
+      }
+    }
+    loadOpcTags();
   }, []);
 
   useEffect(() => {
@@ -480,8 +515,11 @@ export default function DataBrowser() {
                   onClick={() => navigate(`/data/${t}`)}
                   style={{
                     textAlign: "left",
-                    border: "1px solid #e4e7ec",
-                    background: t === currentTable ? "#eef4ff" : "white",
+                    border: "1px solid var(--border)",
+                    background:
+                      t === currentTable
+                        ? "color-mix(in srgb, #2b6cff 16%, var(--bg-elev))"
+                        : "var(--bg-elev)",
                     padding: "8px 12px",
                     borderRadius: 12,
                     cursor: "pointer",
@@ -494,7 +532,7 @@ export default function DataBrowser() {
                 </button>
               ))}
               {!tableList.length && (
-                <div style={{ color: "#98a2b3", fontSize: 12 }}>No tables found.</div>
+                <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No tables found.</div>
               )}
             </div>
           </div>
@@ -519,7 +557,7 @@ export default function DataBrowser() {
                 </button>
               </div>
               {!currentTable ? (
-                <div style={{ color: "#98a2b3", fontSize: 12 }}>Select a table to begin.</div>
+                <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Select a table to begin.</div>
               ) : (
                 <>
                   <div
@@ -530,8 +568,8 @@ export default function DataBrowser() {
                       overflowY: "auto",
                       padding: 12,
                       borderRadius: 12,
-                      border: "1px solid #e4e7ec",
-                      background: "#f9fafb",
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-soft)",
                       flex: 1,
                       minHeight: 0,
                       alignContent: "start",
@@ -550,6 +588,8 @@ export default function DataBrowser() {
                       (() => {
                         const isProjectField =
                           currentTable === "routes" && c.column_name === "project_id";
+                        const isEquipmentTagGroupField =
+                          currentTable === "equipment" && c.column_name === "tag_path";
                         return (
                       <label
                         key={`form-${c.column_name}`}
@@ -588,7 +628,7 @@ export default function DataBrowser() {
                           alignItems: "center",
                           gap: 10,
                           fontSize: 12,
-                          color: "#344054",
+                          color: "var(--text)",
                           fontWeight: 600,
                           paddingBottom: 2,
                           cursor: formEnabled ? "grab" : "default",
@@ -613,12 +653,12 @@ export default function DataBrowser() {
                               }
                               disabled={!formEnabled}
                               style={{
-                                border: "1px solid #d0d7e2",
+                                border: "1px solid var(--border)",
                                 borderRadius: 8,
                                 padding: "4px 8px",
                                 fontSize: 12,
                                 outline: "none",
-                                background: formEnabled ? "white" : "#f8fafc",
+                                background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
                                 height: 28,
                                 width: "100%",
                               }}
@@ -627,6 +667,34 @@ export default function DataBrowser() {
                               {projects.map((p) => (
                                 <option key={`proj-${p.id}`} value={p.id}>
                                   {p.name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : isEquipmentTagGroupField ? (
+                            <select
+                              value={formDraft?.[c.column_name] || ""}
+                              onChange={(e) =>
+                                setFormDraft((p) => ({
+                                  ...p,
+                                  [c.column_name]: e.target.value || "",
+                                }))
+                              }
+                              disabled={!formEnabled}
+                              style={{
+                                border: "1px solid var(--border)",
+                                borderRadius: 8,
+                                padding: "4px 8px",
+                                fontSize: 12,
+                                outline: "none",
+                                background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
+                                height: 28,
+                                width: "100%",
+                              }}
+                            >
+                              <option value="">Unassigned</option>
+                              {equipmentTagGroupOptions.map((opt) => (
+                                <option key={`equip-tag-${opt.value}`} value={opt.value}>
+                                  {opt.topic} / {opt.label}
                                 </option>
                               ))}
                             </select>
@@ -656,12 +724,12 @@ export default function DataBrowser() {
                               }
                               disabled={!formEnabled}
                               style={{
-                                border: "1px solid #d0d7e2",
+                                border: "1px solid var(--border)",
                                 borderRadius: 8,
                                 padding: inputTypeFor(c.column_name) === "checkbox" ? 0 : "4px 8px",
                                 fontSize: 12,
                                 outline: "none",
-                                background: formEnabled ? "white" : "#f8fafc",
+                                background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
                                 height: inputTypeFor(c.column_name) === "checkbox" ? 16 : 28,
                                 width: inputTypeFor(c.column_name) === "checkbox" ? 16 : "100%",
                               }}
@@ -681,10 +749,10 @@ export default function DataBrowser() {
                       gap: 8,
                       marginTop: "auto",
                       justifyContent: "flex-end",
-                      background: "white",
+                      background: "var(--bg-elev)",
                       paddingTop: 12,
                       paddingBottom: 16,
-                      borderTop: "1px solid #e4e7ec",
+                      borderTop: "1px solid var(--border)",
                       flexShrink: 0,
                     }}
                   >
@@ -700,8 +768,8 @@ export default function DataBrowser() {
                       disabled={!formEnabled}
                       style={{
                         ...ghostButton,
-                        background: formEnabled ? "white" : "#f2f4f7",
-                        color: formEnabled ? "#0b1220" : "#98a2b3",
+                        background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
+                        color: formEnabled ? "var(--text)" : "var(--text-muted)",
                         cursor: formEnabled ? "pointer" : "not-allowed",
                       }}
                     >
@@ -715,7 +783,7 @@ export default function DataBrowser() {
                         background: formEnabled
                           ? "linear-gradient(180deg, #2b6cff 0%, #1f5ce6 100%)"
                           : "#e2e8f0",
-                        color: formEnabled ? "white" : "#667085",
+                        color: formEnabled ? "white" : "var(--text-muted)",
                         cursor: formEnabled ? "pointer" : "not-allowed",
                         boxShadow: formEnabled ? primaryButton.boxShadow : "none",
                       }}
@@ -731,9 +799,9 @@ export default function DataBrowser() {
                       disabled={!detail}
                       style={{
                         ...ghostButton,
-                        color: detail ? "#2b6cff" : "#98a2b3",
+                        color: detail ? "#2b6cff" : "var(--text-muted)",
                         border: "1px solid rgba(43,108,255,0.35)",
-                        background: detail ? "white" : "#f2f4f7",
+                        background: detail ? "var(--bg-elev)" : "var(--bg-soft)",
                         cursor: detail ? "pointer" : "not-allowed",
                       }}
                     >
@@ -747,7 +815,7 @@ export default function DataBrowser() {
                         background: selectedId
                           ? "linear-gradient(180deg, #f04438 0%, #d92d20 100%)"
                           : "#f2f4f7",
-                        color: selectedId ? "white" : "#98a2b3",
+                        color: selectedId ? "white" : "var(--text-muted)",
                         cursor: selectedId ? "pointer" : "not-allowed",
                         boxShadow: selectedId ? dangerButton.boxShadow : "none",
                       }}
@@ -782,7 +850,7 @@ export default function DataBrowser() {
                 ) : null}
               </div>
               {!currentTable ? (
-                <div style={{ color: "#98a2b3", fontSize: 12, marginTop: 8 }}>
+                <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
                   Select a table to view rows.
                 </div>
               ) : (
@@ -801,10 +869,12 @@ export default function DataBrowser() {
                                 display: "inline-flex",
                                 alignItems: "center",
                                 gap: 6,
-                                border: "1px solid #e4e7ec",
+                                border: "1px solid var(--border)",
                                 borderRadius: 999,
                                 padding: "2px 8px",
-                                background: checked ? "#eef4ff" : "white",
+                                background: checked
+                                  ? "color-mix(in srgb, #2b6cff 16%, var(--bg-elev))"
+                                  : "var(--bg-elev)",
                                 cursor: "pointer",
                               }}
                             >
@@ -845,7 +915,7 @@ export default function DataBrowser() {
                   <div style={{ ...subtleText, marginBottom: 8 }}>Primary key: {primaryKey || "none"}</div>
                   <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
                     {rows.length === 0 ? (
-                      <div style={{ color: "#98a2b3", fontSize: 12 }}>No rows.</div>
+                      <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No rows.</div>
                     ) : (
                       <table
                         style={{
@@ -887,11 +957,11 @@ export default function DataBrowser() {
                                 style={{
                                   textAlign: "left",
                                   padding: "6px 8px",
-                                  borderBottom: "1px solid #e4e7ec",
-                                  color: "#667085",
+                                  borderBottom: "1px solid var(--border)",
+                                  color: "var(--text-muted)",
                                   position: "sticky",
                                   top: 0,
-                                  background: "#fff",
+                                  background: "var(--bg-elev)",
                                   zIndex: 1,
                                   cursor: "grab",
                                 }}
@@ -910,7 +980,7 @@ export default function DataBrowser() {
                                 key={`${rowId}-${i}`}
                                 onClick={() => navigate(`/data/${currentTable}/${rowId}`)}
                                 style={{
-                                  background: "white",
+                                  background: "var(--bg-elev)",
                                   cursor: "pointer",
                                 }}
                               >
@@ -919,8 +989,8 @@ export default function DataBrowser() {
                                     key={`${rowId}-${f}`}
                                     style={{
                                       padding: "6px 8px",
-                                      borderBottom: "1px solid #eef2f6",
-                                      color: "#111",
+                                      borderBottom: "1px solid var(--border)",
+                                      color: "var(--text)",
                                       whiteSpace: "nowrap",
                                       maxWidth: 200,
                                       textOverflow: "ellipsis",
@@ -947,3 +1017,4 @@ export default function DataBrowser() {
     </div>
   );
 }
+
