@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-label="Terra KE Powered by Knobelsdorff">
+  <defs>
+    <style>
+      .brand { fill: #0b2b73; font-family: Arial, Helvetica, sans-serif; font-weight: 800; }
+      .accent { fill: #1343a8; font-family: Arial, Helvetica, sans-serif; font-weight: 800; }
+    </style>
+  </defs>
+  <rect x="0" y="0" width="1200" height="420" fill="transparent" />
+
+  <text x="20" y="225" class="brand" font-size="190" letter-spacing="4">TERRA</text>
+  <line x1="20" y1="255" x2="660" y2="255" stroke="#1343a8" stroke-width="26" stroke-linecap="round" />
+
+  <text x="300" y="338" class="accent" font-size="66" letter-spacing="2">POWERED BY</text>
+  <text x="190" y="390" class="accent" font-size="72" letter-spacing="3">KNOBELSDORFF</text>
+
+  <circle cx="930" cy="205" r="188" fill="none" stroke="#0b2b73" stroke-width="52" />
+  <text x="755" y="270" class="accent" font-size="250" letter-spacing="6">KE</text>
+</svg>

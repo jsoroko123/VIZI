@@ -221,6 +221,12 @@ async function main() {
   const tagQuality = new Map();
   const tagEffectiveInterval = new Map();
   const tagNextDueAt = new Map();
+  const tagReadCount = new Map();
+  const tagReadSuccessCount = new Map();
+  const tagReadErrorCount = new Map();
+  const tagReadDurationTotalMs = new Map();
+  const tagReadDurationMaxMs = new Map();
+  const tagLastReadDurationMs = new Map();
   let statusPublishInFlight = false;
   let pendingStatusPayload = null;
 
@@ -262,6 +268,12 @@ async function main() {
     tagQuality.set(t.tagKey, t.muted ? "Muted" : "Unknown");
     tagEffectiveInterval.set(t.tagKey, parsePositiveMs(t.samplingInterval, parsePositiveMs(t.pollMs, globalPollMs)));
     tagNextDueAt.set(t.tagKey, Date.now() + Math.floor(Math.random() * Math.max(1, pollJitterMs + 1)));
+    tagReadCount.set(t.tagKey, 0);
+    tagReadSuccessCount.set(t.tagKey, 0);
+    tagReadErrorCount.set(t.tagKey, 0);
+    tagReadDurationTotalMs.set(t.tagKey, 0);
+    tagReadDurationMaxMs.set(t.tagKey, 0);
+    tagLastReadDurationMs.set(t.tagKey, null);
   });
 
   const topicNodes = new Map();
@@ -450,6 +462,15 @@ async function main() {
           lastErrorAt: tagLastErrorAt.get(t.tagKey) || null,
           lastErrorMessage: tagLastErrorMessage.get(t.tagKey) || "",
           nextDueAt: tagNextDueAt.get(t.tagKey) || null,
+          readCount: tagReadCount.get(t.tagKey) || 0,
+          readSuccessCount: tagReadSuccessCount.get(t.tagKey) || 0,
+          readErrorCount: tagReadErrorCount.get(t.tagKey) || 0,
+          lastReadDurationMs: tagLastReadDurationMs.get(t.tagKey) ?? null,
+          avgReadDurationMs:
+            (tagReadCount.get(t.tagKey) || 0) > 0
+              ? Math.round((tagReadDurationTotalMs.get(t.tagKey) || 0) / (tagReadCount.get(t.tagKey) || 1))
+              : null,
+          maxReadDurationMs: tagReadDurationMaxMs.get(t.tagKey) || null,
         };
         snapshot[t.tagKey] = value;
         qualities[t.tagKey] = quality;
@@ -531,11 +552,22 @@ async function main() {
           continue;
         }
 
+        const readStartedAt = Date.now();
         try {
           const value = await readWithTimeout(tag.tagPath || tag.name);
           if (value == null) {
             throw new Error("Read returned no data (null/undefined).");
           }
+          const durationMs = Math.max(0, Date.now() - readStartedAt);
+          const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
+          const successCount = (tagReadSuccessCount.get(tag.tagKey) || 0) + 1;
+          const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
+          const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
+          tagReadCount.set(tag.tagKey, readCount);
+          tagReadSuccessCount.set(tag.tagKey, successCount);
+          tagReadDurationTotalMs.set(tag.tagKey, totalMs);
+          tagReadDurationMaxMs.set(tag.tagKey, maxMs);
+          tagLastReadDurationMs.set(tag.tagKey, durationMs);
           const prev = tagValues.get(tag.tagKey);
           const deadband = parseNonNegativeNumber(tag.deadband, deadbandDefault);
           let shouldUpdateValue = true;
@@ -556,6 +588,16 @@ async function main() {
           tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
           didRead = true;
         } catch (err) {
+          const durationMs = Math.max(0, Date.now() - readStartedAt);
+          const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
+          const errorReadCount = (tagReadErrorCount.get(tag.tagKey) || 0) + 1;
+          const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
+          const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
+          tagReadCount.set(tag.tagKey, readCount);
+          tagReadErrorCount.set(tag.tagKey, errorReadCount);
+          tagReadDurationTotalMs.set(tag.tagKey, totalMs);
+          tagReadDurationMaxMs.set(tag.tagKey, maxMs);
+          tagLastReadDurationMs.set(tag.tagKey, durationMs);
           const prev = tagErrors.get(tag.tagKey) || 0;
           tagErrors.set(tag.tagKey, prev + 1);
           const streak = (tagErrorStreak.get(tag.tagKey) || 0) + 1;

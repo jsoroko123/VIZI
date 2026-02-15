@@ -1,4 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { showToast, toastError, toastSuccess } from "../utils/toast";
+
+const DIAGNOSTICS_UI_MAX_ROWS = 500;
 
 function normalizeTagName(name) {
   return String(name || "")
@@ -38,6 +41,12 @@ function parseOptionalNonNegative(value) {
   if (!Number.isFinite(n) || n < 0) return "";
   return n;
 }
+
+function normalizeTrendMode(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return v === "time" ? "time" : "value";
+}
+
 
 function defaultRuntimeConfig() {
   return {
@@ -134,6 +143,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [liveErrors, setLiveErrors] = useState({});
   const [liveQualities, setLiveQualities] = useState({});
   const [liveDiagnostics, setLiveDiagnostics] = useState({});
+  const [liveRuntime, setLiveRuntime] = useState({});
   const [opcConnected, setOpcConnected] = useState(null);
   const [opcLastPollAt, setOpcLastPollAt] = useState(null);
   const [restartPending, setRestartPending] = useState(false);
@@ -162,6 +172,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [errorLogEntries, setErrorLogEntries] = useState([]);
   const [expandedPrefixes, setExpandedPrefixes] = useState({});
   const [tagSectionTab, setTagSectionTab] = useState("tags");
+  const [tagSearch, setTagSearch] = useState("");
   const [showTagsDrawer, setShowTagsDrawer] = useState(false);
   const [showDrawerMenu, setShowDrawerMenu] = useState(false);
   const [manualTag, setManualTag] = useState({
@@ -176,6 +187,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     mappingSet: "",
     groupName: "",
     deadband: "",
+    trendEnabled: false,
+    trendMode: "value",
+    trendSampleMs: "",
   });
   const [tagTableEditing, setTagTableEditing] = useState(false);
   const [editingTagIndex, setEditingTagIndex] = useState(null);
@@ -205,10 +219,52 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     deadband: "",
     muted: false,
   });
+  const [bulkEditCollapsed, setBulkEditCollapsed] = useState(true);
+  const [templateApplyCollapsed, setTemplateApplyCollapsed] = useState(true);
+  const [tagWriteByKey, setTagWriteByKey] = useState({});
+  const [tagWriteBusyByKey, setTagWriteBusyByKey] = useState({});
   const tagEditRowRefs = useRef(new Map());
+  const RESTART_TOAST_ID = "opc-restart";
+  const restartToastIdRef = useRef("");
+  const restartStartedAtRef = useRef(0);
+  const restartSawDisconnectRef = useRef(false);
+  useEffect(() => {
+    const msg = String(status || "").trim();
+    if (!msg) return;
+    toastSuccess(msg);
+  }, [status]);
+  useEffect(() => {
+    const msg = String(error || "").trim();
+    if (!msg) return;
+    toastError(msg);
+  }, [error]);
+
+  useEffect(() => {
+    if (!restartPending) return;
+    if (opcConnected === false) {
+      restartSawDisconnectRef.current = true;
+      return;
+    }
+    if (opcConnected !== true) return;
+    const elapsed = Date.now() - Number(restartStartedAtRef.current || 0);
+    if (!restartSawDisconnectRef.current && elapsed < 1500) return;
+    const toastId = restartToastIdRef.current;
+    if (toastId) {
+      showToast("OPC server reconnected.", {
+        id: toastId,
+        type: "success",
+        duration: 5000,
+      });
+      restartToastIdRef.current = "";
+    }
+    restartSawDisconnectRef.current = false;
+    restartStartedAtRef.current = 0;
+    setRestartPending(false);
+  }, [restartPending, opcConnected, opcLastPollAt]);
   const tagColumnKeys = [
     "enabled",
     "muted",
+    "trend",
     "name",
     "topic",
     "tagPath",
@@ -225,6 +281,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const tagColumnLabels = {
     enabled: "Enabled",
     muted: "Muted",
+    trend: "Trend",
     name: "Name",
     topic: "Topic",
     tagPath: "Tag Path",
@@ -259,6 +316,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   useEffect(() => {
     if (mode === "logs") {
       setTagSectionTab("logs");
+    } else if (mode === "diagnostics") {
+      setTagSectionTab("diagnostics");
     } else if (mode === "tags") {
       setTagSectionTab("tags");
     }
@@ -284,6 +343,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               samplingInterval,
               deadband: parseOptionalNonNegative(t?.deadband),
               muted: t?.muted === true,
+              trendEnabled: t?.trendEnabled === true,
+              trendMode: normalizeTrendMode(t?.trendMode),
+              trendSampleMs: parseOptionalMs(t?.trendSampleMs),
               mappingSet: t?.mappingSet || "",
             };
           })
@@ -495,6 +557,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           setLiveErrors(nextErrors);
           setLiveQualities(data.qualities || {});
           setLiveDiagnostics(data.diagnostics || {});
+          setLiveRuntime(data.runtime || {});
           const now = Date.now();
           const nextLogEntries = [];
           Object.entries(nextErrors).forEach(([name, count]) => {
@@ -561,6 +624,46 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const plcs = useMemo(() => config.plcs || [], [config.plcs]);
   const topics = useMemo(() => config.topics || [], [config.topics]);
   const tags = useMemo(() => config.tags || [], [config.tags]);
+  const trendTagOptions = useMemo(() => {
+    const out = [];
+    const seen = new Set();
+    (tags || []).forEach((t) => {
+      if (t?.trendEnabled !== true) return;
+      const key = getTagPathKey(t) || getTagLegacyKey(t);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      const labelName = normalizeTagName(t?.name || t?.tagPath || "");
+      const topic = String(t?.topic || "").trim() || "Default";
+      out.push({ value: key, label: `${topic} | ${labelName}` });
+    });
+    out.sort((a, b) => a.label.localeCompare(b.label));
+    return out;
+  }, [tags]);
+  const trendGroupedTags = useMemo(() => {
+    const groups = new Map();
+    (tags || []).forEach((tag, idx) => {
+      if (tag?.trendEnabled !== true) return;
+      const name = normalizeTagName(tag?.name || "");
+      const tagPath = normalizeTagName(tag?.tagPath || "");
+      const groupRaw = normalizeTagName(tag?.groupName || "");
+      if (!name && !tagPath && !groupRaw) return;
+      const topicKey = normalizeTagName(tag?.topic || "") || "No Topic";
+      const fallbackGroup = name && name.includes(".") ? name.split(".")[0] : "";
+      const groupKey = groupRaw || fallbackGroup || "Ungrouped";
+      if (!groups.has(topicKey)) groups.set(topicKey, new Map());
+      const topicMap = groups.get(topicKey);
+      if (!topicMap.has(groupKey)) {
+        topicMap.set(groupKey, { groupName: groupKey, items: [] });
+      }
+      topicMap.get(groupKey).items.push({ tag: { ...tag, name }, idx });
+    });
+    const out = Array.from(groups.entries()).map(([topic, tagMap]) => ({
+      topic,
+      groups: Array.from(tagMap.values()).sort((a, b) => a.groupName.localeCompare(b.groupName)),
+    }));
+    out.sort((a, b) => a.topic.localeCompare(b.topic));
+    return out;
+  }, [tags]);
 
   useEffect(() => {
     if (!applyTopic && (topics || []).length) {
@@ -574,11 +677,18 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     }
   }, [topics, plcs, applyTopic, manualTag.topic, manualTopic.plcName]);
   const groupedTags = useMemo(() => {
+    const q = String(tagSearch || "").trim().toLowerCase();
     const groups = new Map();
     (tags || []).forEach((tag, idx) => {
       const name = normalizeTagName(tag?.name || "");
       const tagPath = normalizeTagName(tag?.tagPath || "");
       const groupRaw = normalizeTagName(tag?.groupName || "");
+      if (q) {
+        const topicText = normalizeTagName(tag?.topic || "");
+        const templateText = normalizeTagName(tag?.plcType || "");
+        const hay = `${name} ${tagPath} ${groupRaw} ${topicText} ${templateText}`.toLowerCase();
+        if (!hay.includes(q)) return;
+      }
       if (!name && !tagPath && !groupRaw) return;
       const topicKey = normalizeTagName(tag?.topic || "") || "No Topic";
       const fallbackGroup = name && name.includes(".") ? name.split(".")[0] : "";
@@ -594,7 +704,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       topic,
       groups: Array.from(tagMap.values()),
     }));
-  }, [tags]);
+  }, [tags, tagSearch]);
 
   const groupNameOptions = useMemo(() => {
     const topic = String(manualTag.topic || "").trim();
@@ -873,11 +983,68 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     });
   }
 
+  async function writeTagLiveValue(tag, rowKey) {
+    const pathKey = getTagPathKey(tag);
+    const legacyKey = getTagLegacyKey(tag);
+    const key = pathKey || legacyKey;
+    if (!key) {
+      setError("Tag key missing.");
+      return;
+    }
+    const draftValue =
+      Object.prototype.hasOwnProperty.call(tagWriteByKey, rowKey)
+        ? tagWriteByKey[rowKey]
+        : getLiveValueForTag(liveValues, tag);
+    setTagWriteBusyByKey((prev) => ({ ...prev, [rowKey]: true }));
+    setError("");
+    try {
+      const res = await fetch("/api/opc/write", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tagKey: key,
+          legacyTagKey: legacyKey && legacyKey !== key ? legacyKey : undefined,
+          uaType: tag?.uaType || "",
+          value: draftValue,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Write failed.");
+      const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value")
+        ? data.value
+        : draftValue;
+      setLiveValues((prev) => {
+        const next = { ...prev, [key]: nextValue };
+        if (legacyKey && legacyKey !== key && Object.prototype.hasOwnProperty.call(next, legacyKey)) {
+          delete next[legacyKey];
+        }
+        return next;
+      });
+      setStatus(`Wrote ${key}`);
+    } catch (err) {
+      setError(err?.message || "Write failed.");
+    } finally {
+      setTagWriteBusyByKey((prev) => ({ ...prev, [rowKey]: false }));
+    }
+  }
+
   function addTag() {
     const defaultTopic = (topics || [])[0]?.name || "";
     setConfig((prev) => ({
       ...prev,
-      tags: [...(prev.tags || []), { name: "", tagPath: "", uaType: "", topic: defaultTopic, enabled: true }],
+      tags: [
+        ...(prev.tags || []),
+        {
+          name: "",
+          tagPath: "",
+          uaType: "",
+          topic: defaultTopic,
+          enabled: true,
+          trendEnabled: false,
+          trendMode: "value",
+          trendSampleMs: "",
+        },
+      ],
     }));
   }
 
@@ -905,6 +1072,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           samplingInterval,
           deadband,
           muted: t?.muted === true,
+          trendEnabled: t?.trendEnabled === true,
+          trendMode: normalizeTrendMode(t?.trendMode),
+          trendSampleMs: parseOptionalMs(t?.trendSampleMs),
           mappingSet: t?.mappingSet || "",
         };
       })
@@ -955,6 +1125,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       if (tag?.pollMs !== "" && parseOptionalMs(tag?.pollMs) === "") warnings.push(`Tag ${name || `row ${idx + 1}`}: Poll (ms) must be > 0.`);
       if (tag?.samplingInterval !== "" && parseOptionalMs(tag?.samplingInterval) === "") warnings.push(`Tag ${name || `row ${idx + 1}`}: Sampling (ms) must be > 0.`);
       if (tag?.deadband !== "" && parseOptionalNonNegative(tag?.deadband) === "") warnings.push(`Tag ${name || `row ${idx + 1}`}: Deadband must be >= 0.`);
+      if (tag?.trendEnabled === true && normalizeTrendMode(tag?.trendMode) === "time" && tag?.trendSampleMs !== "" && parseOptionalMs(tag?.trendSampleMs) === "")
+        warnings.push(`Tag ${name || `row ${idx + 1}`}: Trend Every (ms) must be > 0.`);
     });
     return warnings;
   }
@@ -1001,6 +1173,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         deadband: parseOptionalNonNegative(manualTag.deadband) || undefined,
         enabled: manualTag.enabled !== false,
         muted: manualTag.muted === true,
+        trendEnabled: manualTag.trendEnabled === true,
+        trendMode: normalizeTrendMode(manualTag.trendMode),
+        trendSampleMs: parseOptionalMs(manualTag.trendSampleMs) || undefined,
         mappingSet: String(manualTag.mappingSet || "").trim(),
       },
     ];
@@ -1032,7 +1207,22 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     } catch (err) {
       setError(err?.message || "Save failed.");
     }
-    setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, muted: false, mappingSet: "", groupName: "", deadband: "" });
+    setManualTag({
+      name: "",
+      tagPath: "",
+      uaType: "",
+      pollMs: "",
+      samplingInterval: "",
+      topic: "",
+      enabled: true,
+      muted: false,
+      trendEnabled: false,
+      trendMode: "value",
+      trendSampleMs: "",
+      mappingSet: "",
+      groupName: "",
+      deadband: "",
+    });
     setManualTagMappings([{ field: "", state: "", color: "" }]);
     setTagTableEditing(false);
     setEditingTagIndex(null);
@@ -1082,16 +1272,30 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     setStatus("");
     try {
       setRestartPending(true);
+      restartStartedAtRef.current = Date.now();
+      restartSawDisconnectRef.current = opcConnected === false;
+      const toastId = RESTART_TOAST_ID;
+      showToast("Restarting OPC server. Waiting for connection...", {
+        id: toastId,
+        type: "info",
+        duration: 0,
+      });
+      restartToastIdRef.current = toastId;
       const res = await fetch("/api/opc/restart", { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Restart failed.");
-      setStatus(data?.message || "Restart requested.");
-      setTimeout(() => {
-        setStatus((prev) => (prev && prev.toLowerCase().includes("restart") ? "" : prev));
-      }, 4000);
-      setTimeout(() => setRestartPending(false), 8000);
     } catch (err) {
-      setError(err?.message || "Restart failed.");
+      const toastId = restartToastIdRef.current;
+      if (toastId) {
+        showToast(err?.message || "Restart failed.", {
+          id: toastId,
+          type: "error",
+          duration: 5000,
+        });
+        restartToastIdRef.current = "";
+      }
+      restartSawDisconnectRef.current = false;
+      restartStartedAtRef.current = 0;
       setRestartPending(false);
     }
   }
@@ -1353,6 +1557,97 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   function renderTagDiagnosticsCard() {
     const entries = Object.entries(liveDiagnostics || {});
+    const entriesForCompute =
+      entries.length > DIAGNOSTICS_UI_MAX_ROWS
+        ? entries.slice(0, DIAGNOSTICS_UI_MAX_ROWS)
+        : entries;
+    const rows = entriesForCompute.map(([key, d]) => {
+      const hasReadMetrics =
+        d && typeof d === "object" &&
+        (
+          Object.prototype.hasOwnProperty.call(d, "readCount") ||
+          Object.prototype.hasOwnProperty.call(d, "readSuccessCount") ||
+          Object.prototype.hasOwnProperty.call(d, "readErrorCount") ||
+          Object.prototype.hasOwnProperty.call(d, "avgReadDurationMs") ||
+          Object.prototype.hasOwnProperty.call(d, "maxReadDurationMs")
+        );
+      const readCount = hasReadMetrics && Number.isFinite(Number(d?.readCount)) ? Number(d.readCount) : null;
+      const readSuccessCount = hasReadMetrics && Number.isFinite(Number(d?.readSuccessCount)) ? Number(d.readSuccessCount) : null;
+      const readErrorCount = hasReadMetrics && Number.isFinite(Number(d?.readErrorCount)) ? Number(d.readErrorCount) : null;
+      const avgReadDurationMs = Number.isFinite(Number(d?.avgReadDurationMs)) ? Number(d.avgReadDurationMs) : null;
+      const maxReadDurationMs = Number.isFinite(Number(d?.maxReadDurationMs)) ? Number(d.maxReadDurationMs) : null;
+      const hasWriteMetrics =
+        d && typeof d === "object" &&
+        (
+          Object.prototype.hasOwnProperty.call(d, "writeCount") ||
+          Object.prototype.hasOwnProperty.call(d, "avgWriteDurationMs") ||
+          Object.prototype.hasOwnProperty.call(d, "maxWriteDurationMs")
+        );
+      const writeCount = hasWriteMetrics && Number.isFinite(Number(d?.writeCount)) ? Number(d.writeCount) : null;
+      const avgWriteDurationMs = Number.isFinite(Number(d?.avgWriteDurationMs)) ? Number(d.avgWriteDurationMs) : null;
+      const maxWriteDurationMs = Number.isFinite(Number(d?.maxWriteDurationMs)) ? Number(d.maxWriteDurationMs) : null;
+      return {
+        key,
+        d,
+        quality: liveQualities?.[key] || "Unknown",
+        hasReadMetrics,
+        hasWriteMetrics,
+        readCount,
+        readSuccessCount,
+        readErrorCount,
+        avgReadDurationMs,
+        maxReadDurationMs,
+        writeCount,
+        avgWriteDurationMs,
+        maxWriteDurationMs,
+      };
+    });
+    const rowsWithReadMetrics = rows.filter((r) => r.hasReadMetrics);
+    const rowsWithWriteMetrics = rows.filter((r) => r.hasWriteMetrics);
+    const totalReadCount = rowsWithReadMetrics.reduce((sum, r) => sum + (Number.isFinite(Number(r.readCount)) ? Number(r.readCount) : 0), 0);
+    const totalReadSuccessCount = rowsWithReadMetrics.reduce((sum, r) => sum + (Number.isFinite(Number(r.readSuccessCount)) ? Number(r.readSuccessCount) : 0), 0);
+    const totalReadErrorCount = rowsWithReadMetrics.reduce((sum, r) => sum + (Number.isFinite(Number(r.readErrorCount)) ? Number(r.readErrorCount) : 0), 0);
+    const readAvgAcrossTags = rows.reduce((sum, r) => sum + (Number.isFinite(r.avgReadDurationMs) ? r.avgReadDurationMs : 0), 0);
+    const readAvgAcrossTagsCount = rows.reduce((sum, r) => sum + (Number.isFinite(r.avgReadDurationMs) ? 1 : 0), 0);
+    const writeAvgAcrossTags = rows.reduce((sum, r) => sum + (Number.isFinite(r.avgWriteDurationMs) ? r.avgWriteDurationMs : 0), 0);
+    const writeAvgAcrossTagsCount = rows.reduce((sum, r) => sum + (Number.isFinite(r.avgWriteDurationMs) ? 1 : 0), 0);
+    const maxReadRow = rows.reduce((best, row) => {
+      if (!Number.isFinite(row.maxReadDurationMs)) return best;
+      if (!best) return row;
+      return row.maxReadDurationMs > best.maxReadDurationMs ? row : best;
+    }, null);
+    const maxWriteRow = rows.reduce((best, row) => {
+      if (!Number.isFinite(row.maxWriteDurationMs)) return best;
+      if (!best) return row;
+      return row.maxWriteDurationMs > best.maxWriteDurationMs ? row : best;
+    }, null);
+    const writeMetrics = liveRuntime?.writeMetrics && typeof liveRuntime.writeMetrics === "object" ? liveRuntime.writeMetrics : {};
+    const totalWriteCount = Number.isFinite(Number(writeMetrics?.count)) ? Number(writeMetrics.count) : rowsWithWriteMetrics.reduce((sum, r) => sum + (Number.isFinite(Number(r.writeCount)) ? Number(r.writeCount) : 0), 0);
+    const badQualityCount = rows.reduce((sum, r) => sum + (r.quality === "Bad" ? 1 : 0), 0);
+    const mutedCount = rows.reduce((sum, r) => sum + (r.quality === "Muted" ? 1 : 0), 0);
+    const staleRefTs = Number(opcLastPollAt) || Date.now();
+    const staleCount = rows.reduce((sum, r) => {
+      const lastSuccessAt = Number.isFinite(Number(r?.d?.lastSuccessAt)) ? Number(r.d.lastSuccessAt) : null;
+      const effective = Number.isFinite(Number(r?.d?.effectiveIntervalMs)) ? Number(r.d.effectiveIntervalMs) : null;
+      if (!lastSuccessAt || !effective) return sum;
+      return staleRefTs - lastSuccessAt > effective * 3 ? sum + 1 : sum;
+    }, 0);
+    const hasAnyReadMetrics = rowsWithReadMetrics.length > 0;
+    const formatMs = (v) => (Number.isFinite(Number(v)) ? `${Math.round(Number(v))} ms` : "--");
+    const formatAt = (v) => {
+      const t = Number(v);
+      if (!Number.isFinite(t) || t <= 0) return "--";
+      return new Date(t).toLocaleTimeString();
+    };
+    const sortedRows = rows
+      .slice()
+      .sort((a, b) => {
+        const badA = a.quality === "Bad" ? 1 : 0;
+        const badB = b.quality === "Bad" ? 1 : 0;
+        if (badB !== badA) return badB - badA;
+        if (b.readErrorCount !== a.readErrorCount) return b.readErrorCount - a.readErrorCount;
+        return a.key.localeCompare(b.key);
+      });
     return (
       <div
         style={{
@@ -1369,6 +1664,50 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           </div>
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{entries.length} tags</div>
         </div>
+        {entries.length > entriesForCompute.length ? (
+          <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-muted)" }}>
+            Showing first {entriesForCompute.length} tags for diagnostics performance.
+          </div>
+        ) : null}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(150px, 1fr))", gap: 8, marginBottom: 10 }}>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg-soft)", fontSize: 12 }}>
+            <div style={{ color: "var(--text-muted)" }}>Read Ops</div>
+            <div style={{ fontWeight: 700 }}>{hasAnyReadMetrics ? totalReadCount : "--"}</div>
+            <div style={{ color: "var(--text-muted)" }}>
+              {hasAnyReadMetrics ? `ok ${totalReadSuccessCount} / err ${totalReadErrorCount}` : "extended read metrics unavailable"}
+            </div>
+          </div>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg-soft)", fontSize: 12 }}>
+            <div style={{ color: "var(--text-muted)" }}>Read Avg / Max</div>
+            <div style={{ fontWeight: 700 }}>
+              {hasAnyReadMetrics
+                ? `${formatMs(readAvgAcrossTagsCount ? readAvgAcrossTags / readAvgAcrossTagsCount : null)} / ${formatMs(maxReadRow?.maxReadDurationMs)}`
+                : "-- / --"}
+            </div>
+            <div style={{ color: "var(--text-muted)" }}>
+              {hasAnyReadMetrics ? `max tag ${maxReadRow?.key || "--"}` : "restart OPC server to enable"}
+            </div>
+          </div>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg-soft)", fontSize: 12 }}>
+            <div style={{ color: "var(--text-muted)" }}>Write Ops</div>
+            <div style={{ fontWeight: 700 }}>{totalWriteCount}</div>
+            <div style={{ color: "var(--text-muted)" }}>
+              avg {formatMs(Number.isFinite(Number(writeMetrics?.avgMs)) ? Number(writeMetrics.avgMs) : writeAvgAcrossTagsCount ? writeAvgAcrossTags / writeAvgAcrossTagsCount : null)} / max {formatMs(maxWriteRow?.maxWriteDurationMs)}
+            </div>
+          </div>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg-soft)", fontSize: 12 }}>
+            <div style={{ color: "var(--text-muted)" }}>Health</div>
+            <div style={{ fontWeight: 700, color: badQualityCount > 0 ? "#b42318" : "var(--text)" }}>
+              bad {badQualityCount} / stale {staleCount}
+            </div>
+            <div style={{ color: "var(--text-muted)" }}>muted {mutedCount}</div>
+          </div>
+        </div>
+        {!hasAnyReadMetrics ? (
+          <div style={{ marginBottom: 10, fontSize: 11, color: "#b54708", background: "#fff6ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "6px 8px" }}>
+            Extended read metrics are not present in current OPC status payload. Restart the OPC server to publish read avg/max counters.
+          </div>
+        ) : null}
         {entries.length === 0 ? (
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No diagnostics yet.</div>
         ) : (
@@ -1380,17 +1719,25 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   <th style={{ textAlign: "left", padding: "6px 8px" }} title="Current quality: Good, Bad, Muted, or Unknown.">Quality</th>
                   <th style={{ textAlign: "left", padding: "6px 8px" }} title="Consecutive read failures since last successful read.">Err Streak</th>
                   <th style={{ textAlign: "left", padding: "6px 8px" }} title="Current poll interval including backoff and scheduling.">Effective (ms)</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }} title="Average and longest read duration for this tag.">Read Avg / Max</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }} title="Average and longest write duration for this tag.">Write Avg / Max</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }} title="Last successful read and write timestamp.">Last Read / Write</th>
                   <th style={{ textAlign: "left", padding: "6px 8px" }} title="Most recent read error message for this tag.">Last Error</th>
                 </tr>
               </thead>
               <tbody>
-                {entries.slice(0, 400).map(([key, d]) => (
-                  <tr key={`diag-${key}`} style={{ borderTop: "1px solid var(--border)" }}>
-                    <td style={{ padding: "6px 8px" }}>{key}</td>
-                    <td style={{ padding: "6px 8px" }}>{liveQualities?.[key] || "Unknown"}</td>
-                    <td style={{ padding: "6px 8px" }}>{Number(d?.errorStreak || 0)}</td>
-                    <td style={{ padding: "6px 8px" }}>{d?.effectiveIntervalMs ?? ""}</td>
-                    <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>{d?.lastErrorMessage || ""}</td>
+                {sortedRows.slice(0, 400).map((row) => (
+                  <tr key={`diag-${row.key}`} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "6px 8px" }}>{row.key}</td>
+                    <td style={{ padding: "6px 8px" }}>{row.quality}</td>
+                    <td style={{ padding: "6px 8px" }}>{Number(row?.d?.errorStreak || 0)}</td>
+                    <td style={{ padding: "6px 8px" }}>{row?.d?.effectiveIntervalMs ?? ""}</td>
+                    <td style={{ padding: "6px 8px" }}>{formatMs(row.avgReadDurationMs)} / {formatMs(row.maxReadDurationMs)}</td>
+                    <td style={{ padding: "6px 8px" }}>{formatMs(row.avgWriteDurationMs)} / {formatMs(row.maxWriteDurationMs)}</td>
+                    <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>
+                      {formatAt(row?.d?.lastSuccessAt)} / {formatAt(row?.d?.lastWriteAt)}
+                    </td>
+                    <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>{row?.d?.lastErrorMessage || ""}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1408,12 +1755,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     ? { width: "100%", height: "100%", padding: 0, boxSizing: "border-box", display: "flex", flexDirection: "column" }
     : { width: "100%", minHeight: "100vh", padding: 16, boxSizing: "border-box", display: "flex", flexDirection: "column" };
   const contentStyle = embedded
-    ? { width: "100%" }
+    ? { width: "100%", height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }
     : { width: "100%", maxWidth: 1400, margin: "0 auto" };
-  const isTagsOnly = mode === "tags" || mode === "logs";
+  const isTagsOnly = mode === "tags" || mode === "logs" || mode === "diagnostics";
 
   function renderTagsPanel() {
-    const activeTagTab = mode === "logs" ? "logs" : tagSectionTab;
+    const activeTagTab =
+      mode === "logs" ? "logs" : mode === "diagnostics" ? "diagnostics" : tagSectionTab;
     const sectionCardStyle = {
       border: "1px solid var(--border)",
       background: "var(--bg-elev)",
@@ -1486,8 +1834,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               style={{
                 ...drawerButtonStyle,
                 border: "1px solid var(--border)",
-                background: mode === "logs" ? "var(--bg-soft)" : "#2b6cff",
-                color: mode === "logs" ? "var(--text)" : "white",
+                background: mode === "logs" || mode === "diagnostics" ? "var(--bg-soft)" : "#2b6cff",
+                color: mode === "logs" || mode === "diagnostics" ? "var(--text)" : "white",
                 borderRadius: 999,
                 padding: "6px 12px",
                 fontWeight: 600,
@@ -1510,15 +1858,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               Logs
             </button>
             <button
-              onClick={() => {
-                setOpcConfigSectionTab("diagnostics");
-                if (mode === "logs") onDrawerViewChange("opc");
-              }}
+              onClick={() => onDrawerViewChange("diagnostics")}
               style={{
                 ...drawerButtonStyle,
                 border: "1px solid var(--border)",
-                background: mode !== "logs" && opcConfigSectionTab === "diagnostics" ? "#2b6cff" : "var(--bg-soft)",
-                color: mode !== "logs" && opcConfigSectionTab === "diagnostics" ? "white" : "var(--text)",
+                background: mode === "diagnostics" ? "#2b6cff" : "var(--bg-soft)",
+                color: mode === "diagnostics" ? "white" : "var(--text)",
                 borderRadius: 999,
                 padding: "6px 12px",
                 fontWeight: 600,
@@ -1528,9 +1873,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             </button>
           </div>
         ) : null}
-        {mode !== "logs" ? (
+        {mode !== "logs" && mode !== "diagnostics" ? (
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           <button
+            data-preserve-style="true"
             onClick={() => setTagSectionTab("tags")}
             style={{
               ...drawerButtonStyle,
@@ -1545,6 +1891,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             Tags
           </button>
           <button
+            data-preserve-style="true"
             onClick={() => setTagSectionTab("templates")}
             style={{
               ...drawerButtonStyle,
@@ -1559,6 +1906,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             Templates
           </button>
           <button
+            data-preserve-style="true"
             onClick={() => setTagSectionTab("mappings")}
             style={{
               ...drawerButtonStyle,
@@ -1573,6 +1921,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             Mappings
           </button>
           <button
+            data-preserve-style="true"
             onClick={() => setTagSectionTab("logs")}
             style={{
               ...drawerButtonStyle,
@@ -1587,6 +1936,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             Logs
           </button>
           <button
+            data-preserve-style="true"
             onClick={() => setTagSectionTab("diagnostics")}
             style={{
               ...drawerButtonStyle,
@@ -1876,48 +2226,79 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
             </div>
         ) : null}
-            <div style={{ ...sectionCardStyle, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, marginBottom: 10, alignItems: "end" }}>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                Template
-                <select
-                  value={applyTemplate}
-                  onChange={(e) => setApplyTemplate(e.target.value)}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                >
-                  <option value="">Select template</option>
-                  {templates.map((t) => (
-                    <option key={`opt-${t.name}`} value={t.name}>
-                      {t.parent_name ? `${t.name} (extends ${t.parent_name})` : t.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                Topic
-                <select
-                  value={applyTopic}
-                  onChange={(e) => setApplyTopic(e.target.value)}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                >
-                  <option value="">Select topic</option>
-                  {(topics || []).map((t) => (
-                    <option key={`apply-topic-${t.name}`} value={t.name}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                Tag Name (e.g., Motor1)
-                <input
-                  value={applyPrefix}
-                  onChange={(e) => setApplyPrefix(e.target.value)}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                />
-              </label>
-              <button onClick={applyTemplateToTags} style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px", height: 32 }}>
-                Add From Template
+            <div style={{ ...sectionCardStyle, marginBottom: 10 }}>
+              <button
+                onClick={() => setTemplateApplyCollapsed((v) => !v)}
+                style={{
+                  ...drawerButtonStyle,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  borderRadius: 8,
+                  padding: "6px 10px",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontWeight: 700,
+                }}
+                title="Toggle template apply panel"
+              >
+                <span>Apply Template</span>
+                <span>{templateApplyCollapsed ? "+" : "-"}</span>
               </button>
+              {!templateApplyCollapsed ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr 1fr auto",
+                    gap: 8,
+                    marginTop: 10,
+                    alignItems: "end",
+                  }}
+                >
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                    Template
+                    <select
+                      value={applyTemplate}
+                      onChange={(e) => setApplyTemplate(e.target.value)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                    >
+                      <option value="">Select template</option>
+                      {templates.map((t) => (
+                        <option key={`opt-${t.name}`} value={t.name}>
+                          {t.parent_name ? `${t.name} (extends ${t.parent_name})` : t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                    Topic
+                    <select
+                      value={applyTopic}
+                      onChange={(e) => setApplyTopic(e.target.value)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                    >
+                      <option value="">Select topic</option>
+                      {(topics || []).map((t) => (
+                        <option key={`apply-topic-${t.name}`} value={t.name}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                    Tag Name (e.g., Motor1)
+                    <input
+                      value={applyPrefix}
+                      onChange={(e) => setApplyPrefix(e.target.value)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                    />
+                  </label>
+                  <button onClick={applyTemplateToTags} style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px", height: 32 }}>
+                    Add From Template
+                  </button>
+                </div>
+              ) : null}
             </div>
             {validationWarnings.length ? (
               <div style={{ ...sectionCardStyle, borderColor: "#fecdca", background: "#fef3f2", marginBottom: 10 }}>
@@ -1931,119 +2312,158 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 </div>
               </div>
             ) : null}
-            <div
-              style={{
-                ...sectionCardStyle,
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                gap: 12,
-                marginBottom: 10,
-                alignItems: "end",
-              }}
-            >
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Apply bulk changes only to tags in this topic. Leave blank to target all topics.">
-                Topic Filter
-                <select
-                  value={bulkEdit.topic}
-                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, topic: e.target.value }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
-                >
-                  <option value="">All</option>
-                  {(topics || []).map((t) => (
-                    <option key={`bulk-topic-${t.name}`} value={t.name}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="SQL-LIKE style group filter. Use % for wildcard and _ for single character.">
-                Group Filter
-                <input
-                  value={bulkEdit.groupName}
-                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, groupName: e.target.value }))}
-                  placeholder="e.g. PLC%"
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Per-tag poll interval override in milliseconds for matching tags.">
-                Poll (ms)
-                <input
-                  type="number"
-                  min="100"
-                  value={bulkEdit.pollMs}
-                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, pollMs: e.target.value }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Sampling interval override in milliseconds for matching tags.">
-                Sampling (ms)
-                <input
-                  type="number"
-                  min="100"
-                  value={bulkEdit.samplingInterval}
-                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, samplingInterval: e.target.value }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Minimum numeric change required before a value update is published.">
-                Deadband
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={bulkEdit.deadband}
-                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, deadband: e.target.value }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Set mapping set on matching tags. 'Keep current' leaves existing mapping sets unchanged.">
-                Mapping Set
-                <select
-                  value={bulkEdit.mappingSet}
-                  onChange={(e) => setBulkEdit((prev) => ({ ...prev, mappingSet: e.target.value }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
-                >
-                  <option value="">Keep current</option>
-                  {mappingSets.map((s) => (
-                    <option key={`bulk-map-${s.name}`} value={s.name}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label
-                style={{ display: "grid", gap: 6, fontSize: 12 }}
-                title="Mute matching tags to stop active polling while keeping configuration."
-              >
-                Muted
-                <span style={{ display: "inline-flex", alignItems: "center", minHeight: 32, paddingLeft: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={bulkEdit.muted === true}
-                    onChange={(e) => setBulkEdit((prev) => ({ ...prev, muted: e.target.checked }))}
-                  />
-                </span>
-              </label>
+            <div style={{ ...sectionCardStyle, marginBottom: 10 }}>
               <button
-                onClick={applyBulkEditToTags}
-                title="Apply the selected bulk settings to matching tags."
+                onClick={() => setBulkEditCollapsed((v) => !v)}
                 style={{
                   ...drawerButtonStyle,
-                  border: "1px solid #2b6cff",
-                  background: "#2b6cff",
-                  color: "white",
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
                   borderRadius: 8,
-                  padding: "6px 14px",
-                  height: 32,
-                  minWidth: 160,
-                  justifySelf: "start",
-                  gridColumn: "1 / -1",
+                  padding: "6px 10px",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontWeight: 700,
                 }}
+                title="Toggle bulk edit panel"
               >
-                Apply Bulk Edit
+                <span>Apply Bulk Edit</span>
+                <span>{bulkEditCollapsed ? "+" : "-"}</span>
               </button>
+              {!bulkEditCollapsed ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                    gap: 12,
+                    marginTop: 10,
+                    alignItems: "end",
+                  }}
+                >
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Apply bulk changes only to tags in this topic. Leave blank to target all topics.">
+                    Topic Filter
+                    <select
+                      value={bulkEdit.topic}
+                      onChange={(e) => setBulkEdit((prev) => ({ ...prev, topic: e.target.value }))}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                    >
+                      <option value="">All</option>
+                      {(topics || []).map((t) => (
+                        <option key={`bulk-topic-${t.name}`} value={t.name}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="SQL-LIKE style group filter. Use % for wildcard and _ for single character.">
+                    Group Filter
+                    <input
+                      value={bulkEdit.groupName}
+                      onChange={(e) => setBulkEdit((prev) => ({ ...prev, groupName: e.target.value }))}
+                      placeholder="e.g. PLC%"
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Per-tag poll interval override in milliseconds for matching tags.">
+                    Poll (ms)
+                    <input
+                      type="number"
+                      min="100"
+                      value={bulkEdit.pollMs}
+                      onChange={(e) => setBulkEdit((prev) => ({ ...prev, pollMs: e.target.value }))}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Sampling interval override in milliseconds for matching tags.">
+                    Sampling (ms)
+                    <input
+                      type="number"
+                      min="100"
+                      value={bulkEdit.samplingInterval}
+                      onChange={(e) => setBulkEdit((prev) => ({ ...prev, samplingInterval: e.target.value }))}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Minimum numeric change required before a value update is published.">
+                    Deadband
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={bulkEdit.deadband}
+                      onChange={(e) => setBulkEdit((prev) => ({ ...prev, deadband: e.target.value }))}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Set mapping set on matching tags. 'Keep current' leaves existing mapping sets unchanged.">
+                    Mapping Set
+                    <select
+                      value={bulkEdit.mappingSet}
+                      onChange={(e) => setBulkEdit((prev) => ({ ...prev, mappingSet: e.target.value }))}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px" }}
+                    >
+                      <option value="">Keep current</option>
+                      {mappingSets.map((s) => (
+                        <option key={`bulk-map-${s.name}`} value={s.name}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label
+                    style={{ display: "grid", gap: 6, fontSize: 12 }}
+                    title="Mute matching tags to stop active polling while keeping configuration."
+                  >
+                    Muted
+                    <span style={{ display: "inline-flex", alignItems: "center", minHeight: 32, paddingLeft: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={bulkEdit.muted === true}
+                        onChange={(e) => setBulkEdit((prev) => ({ ...prev, muted: e.target.checked }))}
+                      />
+                    </span>
+                  </label>
+                  <button
+                    onClick={applyBulkEditToTags}
+                    title="Apply the selected bulk settings to matching tags."
+                    style={{
+                      ...drawerButtonStyle,
+                      border: "1px solid #2b6cff",
+                      background: "#2b6cff",
+                      color: "white",
+                      borderRadius: 8,
+                      padding: "6px 14px",
+                      height: 32,
+                      minWidth: 160,
+                      justifySelf: "start",
+                      gridColumn: "1 / -1",
+                    }}
+                  >
+                    Apply Bulk Edit
+                  </button>
+                </div>
+              ) : null}
             </div>
             <div style={{ ...sectionCardStyle, marginTop: 10, maxHeight: 520, overflow: "auto" }}>
+              <div style={{ marginBottom: 8 }}>
+                <input
+                  value={tagSearch}
+                  onChange={(e) => setTagSearch(e.target.value)}
+                  placeholder="Search tags..."
+                  style={{
+                    width: "100%",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: "6px 8px",
+                    fontSize: 12,
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 8 }}>
                 <button
                   onClick={addTagFromToolbar}
@@ -2061,6 +2481,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
               {tags.length === 0 ? (
                 <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No tags.</div>
+              ) : groupedTags.length === 0 ? (
+                <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No tags match search.</div>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12, tableLayout: "auto" }}>
                   <thead>
@@ -2070,6 +2492,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       ) : null}
                       {showTagColumn("muted") ? (
                         <th style={{ textAlign: "left", padding: "6px 8px" }} title="Muted tags are configured but not actively polled.">Muted</th>
+                      ) : null}
+                      {showTagColumn("trend") ? (
+                        <th style={{ textAlign: "left", padding: "6px 8px" }} title="Store compressed trend history for this tag.">Trend</th>
                       ) : null}
                       {showTagColumn("name") ? (
                         <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
@@ -2166,6 +2591,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                 const groupName = tagGroup.groupName ?? "Ungrouped";
                                 const groupExpanded =
                                   expandedPrefixes[`topic:${topicKey}::group:${groupName}`] ?? true;
+                                const groupTemplateNames = Array.from(
+                                  new Set(
+                                    (tagGroup.items || [])
+                                      .map(({ tag }) => String(tag?.plcType || "").trim())
+                                      .filter(Boolean),
+                                  ),
+                                );
                                 return (
                                   <Fragment key={`group-${topicKey}-${groupName}`}>
                                     <tr
@@ -2195,6 +2627,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                           {groupExpanded ? "-" : "+"}
                                         </button>
                                         <span style={{ fontWeight: 600 }}>{groupName}</span>
+                                        {groupTemplateNames.length ? (
+                                          <span style={{ color: "var(--text-muted)", marginLeft: 8, fontSize: 12 }}>
+                                            {groupTemplateNames.join(", ")}
+                                          </span>
+                                        ) : null}
                                         <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
                                           {tagGroup.items.length} tags
                                         </span>
@@ -2228,8 +2665,17 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                 <input
                                                   type="checkbox"
                                                   checked={t.enabled !== false}
-                                                  onChange={(e) => updateTag(idx, "enabled", e.target.checked)}
-                                                  disabled={!rowEditing}
+                                                  onChange={(e) => {
+                                                    if (!rowEditing) return;
+                                                    updateTag(idx, "enabled", e.target.checked);
+                                                  }}
+                                                  onClick={(e) => {
+                                                    if (rowEditing) return;
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                  }}
+                                                  aria-disabled={!rowEditing}
+                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
                                                 />
                                               </td>
                                             ) : null}
@@ -2238,8 +2684,36 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                 <input
                                                   type="checkbox"
                                                   checked={t.muted === true}
-                                                  onChange={(e) => updateTag(idx, "muted", e.target.checked)}
-                                                  disabled={!rowEditing}
+                                                  onChange={(e) => {
+                                                    if (!rowEditing) return;
+                                                    updateTag(idx, "muted", e.target.checked);
+                                                  }}
+                                                  onClick={(e) => {
+                                                    if (rowEditing) return;
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                  }}
+                                                  aria-disabled={!rowEditing}
+                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
+                                                />
+                                              </td>
+                                            ) : null}
+                                            {showTagColumn("trend") ? (
+                                              <td style={{ padding: "8px 16px 8px 10px" }}>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={t.trendEnabled === true}
+                                                  onChange={(e) => {
+                                                    if (!rowEditing) return;
+                                                    updateTag(idx, "trendEnabled", e.target.checked);
+                                                  }}
+                                                  onClick={(e) => {
+                                                    if (rowEditing) return;
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                  }}
+                                                  aria-disabled={!rowEditing}
+                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
                                                 />
                                               </td>
                                             ) : null}
@@ -2248,10 +2722,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                 {(() => {
                                                   const group = String(t.groupName || "").trim();
                                                   const name = String(t.name || "").trim();
-                                                  if (group && name.startsWith(`${group}.`)) {
-                                                    return name.slice(group.length + 1);
-                                                  }
-                                                  return name;
+                                                  const displayName = group && name.startsWith(`${group}.`)
+                                                    ? name.slice(group.length + 1)
+                                                    : name;
+                                                  return displayName;
                                                 })()}
                                               </td>
                                             ) : null}
@@ -2310,6 +2784,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                       ? Number(rawValue) * scale
                                                       : rawValue;
                                                   const errorCount = Number(getLiveValueForTag(liveErrors, t) || 0);
+                                                  const pathKey = getTagPathKey(t);
+                                                  const legacyKey = getTagLegacyKey(t);
+                                                  const writeKey = pathKey || legacyKey || `tag-${idx}`;
+                                                  const writeDraft = Object.prototype.hasOwnProperty.call(tagWriteByKey, writeKey)
+                                                    ? tagWriteByKey[writeKey]
+                                                    : (rawValue == null ? "" : String(rawValue));
+                                                  const writeBusy = tagWriteBusyByKey?.[writeKey] === true;
                                                   return (
                                                     <td
                                                       style={{
@@ -2332,11 +2813,53 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                           ? "Disabled"
                                                           : formatLiveNumber(scaledValue, decimals)}
                                                       </span>
-                                                  {errorCount > 0 ? (
-                                                    <span style={{ color: "#b42318", marginLeft: 8 }}>
-                                                      (err {errorCount})
-                                                    </span>
-                                                  ) : null}
+                                                      {errorCount > 0 ? (
+                                                        <span style={{ color: "#b42318", marginLeft: 8 }}>
+                                                          (err {errorCount})
+                                                        </span>
+                                                      ) : null}
+                                                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                                                        <input
+                                                          value={writeDraft}
+                                                          onChange={(e) =>
+                                                            setTagWriteByKey((prev) => ({
+                                                              ...prev,
+                                                              [writeKey]: e.target.value,
+                                                            }))
+                                                          }
+                                                          onKeyDown={(e) => {
+                                                            if (e.key !== "Enter") return;
+                                                            e.preventDefault();
+                                                            writeTagLiveValue(t, writeKey);
+                                                          }}
+                                                          placeholder="Write value"
+                                                          style={{
+                                                            width: 120,
+                                                            border: "1px solid var(--border)",
+                                                            borderRadius: 6,
+                                                            padding: "4px 6px",
+                                                            fontSize: 11,
+                                                            background: "var(--bg-elev)",
+                                                            color: "var(--text)",
+                                                          }}
+                                                        />
+                                                        <button
+                                                          onClick={() => writeTagLiveValue(t, writeKey)}
+                                                          disabled={writeBusy}
+                                                          style={{
+                                                            ...drawerButtonStyle,
+                                                            border: "1px solid #2b6cff",
+                                                            background: writeBusy ? "var(--bg-soft)" : "#2b6cff",
+                                                            color: writeBusy ? "var(--text-muted)" : "white",
+                                                            borderRadius: 6,
+                                                            padding: "4px 8px",
+                                                            fontSize: 11,
+                                                            cursor: writeBusy ? "not-allowed" : "pointer",
+                                                          }}
+                                                        >
+                                                          {writeBusy ? "..." : "Write"}
+                                                        </button>
+                                                      </div>
                                                     </td>
                                                   );
                                                 })()
@@ -2527,6 +3050,41 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                           onChange={(e) => updateTag(idx, "muted", e.target.checked)}
                                                         />
                                                       </div>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Store compressed trend history for this tag.">
+                                                      Trend
+                                                      <div>
+                                                        <input
+                                                          type="checkbox"
+                                                          checked={t.trendEnabled === true}
+                                                          onChange={(e) => updateTag(idx, "trendEnabled", e.target.checked)}
+                                                        />
+                                                      </div>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Record trend samples on value changes or fixed time interval.">
+                                                      Trend Mode
+                                                      <select
+                                                        value={normalizeTrendMode(t.trendMode)}
+                                                        onChange={(e) => updateTag(idx, "trendMode", normalizeTrendMode(e.target.value))}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12, minWidth: 140 }}
+                                                        disabled={t.trendEnabled !== true}
+                                                      >
+                                                        <option value="value">Value Change</option>
+                                                        <option value="time">Time Interval</option>
+                                                      </select>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Only used when Trend Mode is Time Interval.">
+                                                      Trend Every (ms)
+                                                      <input
+                                                        type="number"
+                                                        min="1000"
+                                                        step="1000"
+                                                        value={t.trendSampleMs ?? ""}
+                                                        onChange={(e) => updateTag(idx, "trendSampleMs", e.target.value)}
+                                                        placeholder="Default 30000"
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 140 }}
+                                                        disabled={t.trendEnabled !== true || normalizeTrendMode(t.trendMode) !== "time"}
+                                                      />
                                                     </label>
                                                   </div>
                                                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
@@ -3221,6 +3779,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             samplingInterval,
             deadband: parseOptionalNonNegative(t?.deadband),
             muted: t?.muted === true,
+            trendEnabled: t?.trendEnabled === true,
+            trendMode: normalizeTrendMode(t?.trendMode),
+            trendSampleMs: parseOptionalMs(t?.trendSampleMs),
             mappingSet: t?.mappingSet || "",
           };
         })
@@ -3298,6 +3859,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         topic: topicKey,
         enabled: true,
         muted: false,
+        trendEnabled: false,
+        trendMode: "value",
+        trendSampleMs: "",
         mappingSet: "",
         groupName,
         deadband: "",
@@ -3597,18 +4161,34 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             >
               Logs
             </button>
+            <button
+              onClick={() => onDrawerViewChange("diagnostics")}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-soft)",
+                color: "var(--text)",
+                borderRadius: 999,
+                padding: "6px 12px",
+                fontWeight: 600,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+              }}
+            >
+              Diagnostics
+            </button>
           </div>
         ) : null}
 
-        {error && <div style={{ color: "#b42318", marginBottom: 10 }}>{error}</div>}
-        {status && <div style={{ color: "#12b76a", marginBottom: 10 }}>{status}</div>}
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           <button
+            data-preserve-style="true"
             onClick={() => setOpcConfigSectionTab("opcua")}
             style={{
-              border: "1px solid var(--border)",
-              background: opcConfigSectionTab === "opcua" ? "#2b6cff" : "#f9fafb",
-              color: opcConfigSectionTab === "opcua" ? "white" : "#111",
+              border: `1px solid ${opcConfigSectionTab === "opcua" ? "#2b6cff" : "var(--border)"}`,
+              background: opcConfigSectionTab === "opcua" ? "#2b6cff" : "var(--bg-soft)",
+              color: opcConfigSectionTab === "opcua" ? "white" : "var(--text)",
               borderRadius: 999,
               padding: "6px 12px",
               fontWeight: 600,
@@ -3622,11 +4202,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             OPC UA
           </button>
           <button
+            data-preserve-style="true"
             onClick={() => setOpcConfigSectionTab("plcs")}
             style={{
-              border: "1px solid var(--border)",
-              background: opcConfigSectionTab === "plcs" ? "#2b6cff" : "#f9fafb",
-              color: opcConfigSectionTab === "plcs" ? "white" : "#111",
+              border: `1px solid ${opcConfigSectionTab === "plcs" ? "#2b6cff" : "var(--border)"}`,
+              background: opcConfigSectionTab === "plcs" ? "#2b6cff" : "var(--bg-soft)",
+              color: opcConfigSectionTab === "plcs" ? "white" : "var(--text)",
               borderRadius: 999,
               padding: "6px 12px",
               fontWeight: 600,
@@ -3640,11 +4221,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             PLC Instances
           </button>
           <button
+            data-preserve-style="true"
             onClick={() => setOpcConfigSectionTab("topics")}
             style={{
-              border: "1px solid var(--border)",
-              background: opcConfigSectionTab === "topics" ? "#2b6cff" : "#f9fafb",
-              color: opcConfigSectionTab === "topics" ? "white" : "#111",
+              border: `1px solid ${opcConfigSectionTab === "topics" ? "#2b6cff" : "var(--border)"}`,
+              background: opcConfigSectionTab === "topics" ? "#2b6cff" : "var(--bg-soft)",
+              color: opcConfigSectionTab === "topics" ? "white" : "var(--text)",
               borderRadius: 999,
               padding: "6px 12px",
               fontWeight: 600,
@@ -3659,11 +4241,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           </button>
           {typeof onDrawerViewChange !== "function" ? (
             <button
+              data-preserve-style="true"
               onClick={() => setOpcConfigSectionTab("diagnostics")}
               style={{
-                border: "1px solid var(--border)",
-                background: opcConfigSectionTab === "diagnostics" ? "#2b6cff" : "#f9fafb",
-                color: opcConfigSectionTab === "diagnostics" ? "white" : "#111",
+                border: `1px solid ${opcConfigSectionTab === "diagnostics" ? "#2b6cff" : "var(--border)"}`,
+                background: opcConfigSectionTab === "diagnostics" ? "#2b6cff" : "var(--bg-soft)",
+                color: opcConfigSectionTab === "diagnostics" ? "white" : "var(--text)",
                 borderRadius: 999,
                 padding: "6px 12px",
                 fontWeight: 600,
@@ -3680,7 +4263,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, flex: "1 1 0", minHeight: 0 }}>
           {opcConfigSectionTab === "opcua" ? (
-          <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
+          <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", minHeight: 0, height: "100%", overflow: "auto" }}>
             <div style={{ fontWeight: 700, marginBottom: 10 }}>OPC UA</div>
             <label style={{ display: "grid", gap: 6, fontSize: 12, marginBottom: 10 }}>
               Port
@@ -3816,7 +4399,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 Enable Error Backoff
               </label>
             </div>
-            <div style={{ marginTop: "auto", display: "flex", gap: 8, paddingTop: 10 }}>
+            <div style={{ marginTop: "auto", display: "flex", gap: 8, paddingTop: 10, position: "sticky", bottom: 0, background: "var(--bg-elev)" }}>
               <button onClick={saveConfig} style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 10, padding: "8px 12px" }}>
                 Save Config
               </button>

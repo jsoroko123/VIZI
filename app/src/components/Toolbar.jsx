@@ -1,7 +1,7 @@
 // src/components/Toolbar.jsx
 import React, { useEffect, useRef } from "react";
 
-function IconButton({ title, active, onClick, children }) {
+function IconButton({ title, active, onClick, children, danger = false }) {
   return (
     <button
       type="button" // ✅ important
@@ -15,15 +15,23 @@ function IconButton({ title, active, onClick, children }) {
         width: 38,
         height: 38,
         borderRadius: 10,
-        border: active ? "2px solid #2b6cff" : "1px solid rgba(0,0,0,0.08)",
-        background: active
+        border: danger
+          ? "1px solid #f04438"
+          : active
+          ? "2px solid #2b6cff"
+          : "1px solid rgba(0,0,0,0.08)",
+        background: danger
+          ? "linear-gradient(180deg, #f04438 0%, #d92d20 100%)"
+          : active
           ? "linear-gradient(180deg, #eef3ff 0%, #e2ecff 100%)"
           : "linear-gradient(180deg, #ffffff 0%, #f7f7f7 100%)",
         cursor: "pointer",
-        boxShadow: active
+        boxShadow: danger
+          ? "0 8px 20px rgba(240,68,56,0.35)"
+          : active
           ? "0 8px 20px rgba(43,108,255,0.25)"
           : "0 6px 18px rgba(0,0,0,0.08)",
-        color: active ? "#1f56cc" : "#111",
+        color: danger ? "#fff" : active ? "#1f56cc" : "#111",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -435,7 +443,7 @@ export default function Toolbar({
       <div style={{ display: "flex", flexDirection: "column" }}>
         <GroupLabel>Edit</GroupLabel>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <IconButton title="Delete selected" active={false} onClick={deleteSelected}>
+          <IconButton title="Delete selected" active={false} danger onClick={deleteSelected}>
             {Icons.trash}
           </IconButton>
           <IconButton

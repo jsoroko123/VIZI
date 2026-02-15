@@ -23,29 +23,32 @@ const overlayStyle = {
 const modalStyle = {
     width: 360,
     borderRadius: 16,
-    background: "white",
-    border: "1px solid #e6e6e6",
+    background: "var(--bg-elev)",
+    border: "1px solid var(--border)",
     boxShadow: "0 18px 60px rgba(0,0,0,0.25)",
     padding: 14,
+    color: "var(--text)",
 };
 
 const rowStyle = { display: "flex", gap: 10, marginTop: 10 };
-const labelStyle = { fontSize: 12, color: "#444", marginBottom: 6 };
+const labelStyle = { fontSize: 12, color: "var(--text-muted)", marginBottom: 6 };
 const inputStyle = {
     width: "60%",
     height: 36,
     borderRadius: 12,
-    border: "1px solid #d6d6d6",
+    border: "1px solid var(--border)",
     padding: "0 10px",
     outline: "none",
+    background: "var(--bg-elev)",
+    color: "var(--text)",
 };
 
 const btnStyle = (primary) => ({
     height: 36,
     borderRadius: 12,
-    border: primary ? "1px solid #2b6cff" : "1px solid #d6d6d6",
-    background: primary ? "#2b6cff" : "white",
-    color: primary ? "white" : "#111",
+    border: primary ? "1px solid #2b6cff" : "1px solid var(--border)",
+    background: primary ? "#2b6cff" : "var(--bg-elev)",
+    color: primary ? "white" : "var(--text)",
     padding: "0 12px",
     cursor: "pointer",
     boxShadow: "0 8px 24px rgba(0,0,0,0.10)",
@@ -82,12 +85,12 @@ export default function ViewBoxModal({ open, onClose, vbW, vbH, onApply }) {
         <div style={overlayStyle} onMouseDown={onClose}>
             <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>Canvas ViewBox</div>
-                <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
                     Set the drawing coordinate space (viewBox width & height).
                 </div>
 
                 <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 12, color: "#444", marginBottom: 8 }}>Presets</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>Presets</div>
 
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                         {PRESETS.map((p) => (
@@ -101,12 +104,12 @@ export default function ViewBoxModal({ open, onClose, vbW, vbH, onApply }) {
                                 style={{
                                     height: 34,
                                     borderRadius: 12,
-                                    border: "1px solid #d6d6d6",
-                                    background: "white",
+                                    border: "1px solid var(--border)",
+                                    background: "var(--bg-elev)",
                                     cursor: "pointer",
                                     boxShadow: "0 8px 24px rgba(0,0,0,0.10)",
                                     fontSize: 12,
-                                    color: "#111",
+                                    color: "var(--text)",
                                     padding: "0 10px",
                                     textAlign: "left",
                                 }}

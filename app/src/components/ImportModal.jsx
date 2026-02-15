@@ -20,8 +20,10 @@ export default function ImportModal({
   svgFiles,
   onPickSvg,
   svgLibrary, // ✅ NEW
+  loadSvgRaw,
 }) {
   const [query, setQuery] = useState("");
+  const PREVIEW_CACHE_MAX = 80;
 
   // ---- Hover preview state ----
   const cacheRef = useRef(new Map()); // key -> { vb, inner } OR null (failed)
@@ -41,6 +43,13 @@ export default function ImportModal({
       setQuery("");
     }
   }, [importOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+      hoverTokenRef.current += 1;
+    };
+  }, []);
 
   const closeBtnStyle = {
     border: "1px solid var(--border)",
@@ -85,13 +94,26 @@ export default function ImportModal({
     }));
   }, [svgFiles, query]);
 
+  function setCachedPreview(fileKey, data) {
+    const cache = cacheRef.current;
+    if (cache.has(fileKey)) cache.delete(fileKey);
+    cache.set(fileKey, data);
+    while (cache.size > PREVIEW_CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      cache.delete(oldest);
+    }
+  }
+
   // ✅ hover loader (lazy, cached, delayed)
   async function loadPreviewForKey(fileKey) {
     if (!svgLibrary) return;
 
     // cached?
     if (cacheRef.current.has(fileKey)) {
-      setPreview(cacheRef.current.get(fileKey));
+      const hit = cacheRef.current.get(fileKey);
+      cacheRef.current.delete(fileKey);
+      cacheRef.current.set(fileKey, hit);
+      setPreview(hit);
       setPreviewLoading(false);
       return;
     }
@@ -103,12 +125,14 @@ export default function ImportModal({
     setPreviewLoading(true);
 
     try {
-      const raw = typeof entry === "function" ? await entry() : entry;
+      const raw = typeof loadSvgRaw === "function"
+        ? await loadSvgRaw(fileKey)
+        : (typeof entry === "function" ? await entry() : entry);
       if (hoverTokenRef.current !== myToken) return; // stale hover
 
       const parsed = stripOuterSvg(raw);
       if (!parsed?.inner) {
-        cacheRef.current.set(fileKey, null);
+        setCachedPreview(fileKey, null);
         setPreview(null);
         setPreviewLoading(false);
         return;
@@ -117,10 +141,10 @@ export default function ImportModal({
       const vb = parsed.vb ? `${parsed.vb.x} ${parsed.vb.y} ${parsed.vb.w} ${parsed.vb.h}` : "0 0 100 100";
       const data = { vb, inner: parsed.inner };
 
-      cacheRef.current.set(fileKey, data);
+      setCachedPreview(fileKey, data);
       setPreview(data);
     } catch {
-      cacheRef.current.set(fileKey, null);
+      setCachedPreview(fileKey, null);
       setPreview(null);
     } finally {
       if (hoverTokenRef.current === myToken) setPreviewLoading(false);

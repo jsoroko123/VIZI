@@ -5,9 +5,12 @@ import "./index.css";
 import App from "./App.jsx";
 import AiTableBuilder from "./components/AiTableBuilder.jsx";
 import DataBrowser from "./components/DataBrowser.jsx";
+import ReportDesigner from "./components/ReportDesigner.jsx";
 import OpcConfig from "./components/OpcConfig.jsx";
 import Login from "./components/Login.jsx";
+import ToastHost from "./components/ToastHost.jsx";
 import { AuthProvider, useAuth } from "./components/AuthContext.jsx";
+import { installAlertToasts } from "./utils/toast";
 
 const THEME_KEY = "vizi_theme";
 
@@ -32,6 +35,7 @@ function applyTheme(theme) {
 }
 
 applyTheme(getInitialTheme());
+installAlertToasts();
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth();
@@ -48,6 +52,7 @@ createRoot(document.getElementById('root')).render(
   <StrictMode>
     <AuthProvider>
       <BrowserRouter>
+        <ToastHost />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route
@@ -87,6 +92,14 @@ createRoot(document.getElementById('root')).render(
             element={
               <RequireAuth>
                 <DataBrowser />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/report-designer"
+            element={
+              <RequireAuth>
+                <ReportDesigner />
               </RequireAuth>
             }
           />

@@ -7,6 +7,9 @@ import WidgetSelectorModal from "./components/WidgetSelectorModal";
 import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
 import OpcConfig from "./components/OpcConfig";
+import DataBrowser from "./components/DataBrowser";
+import ReportDesigner from "./components/ReportDesigner";
+import PlcAnalyzer from "./components/PlcAnalyzer";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -28,11 +31,59 @@ import {
 
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { exportToIgnitionJson, downloadIgnitionJson } from "./utils/ignitionExport";
+import { toastError, toastSuccess } from "./utils/toast";
 
-// Vite: put SVGs in src/assets/SVG Files/*.svg
-const SVG_LIBRARY = import.meta.glob("./assets/SVG_Files/**/*.svg", { as: "raw" });
+// Vite: keep SVG modules as URLs and fetch raw text only when needed.
+const SVG_LIBRARY = import.meta.glob("./assets/SVG_Files/**/*.svg", {
+  import: "default",
+  query: "?url",
+});
 const THEME_KEY = "vizi_theme";
 // (no eager:true)
+
+const SVG_RAW_CACHE_MAX = 96;
+const DEFAULT_CANVAS_BG_LIGHT = "#ffffff";
+const DEFAULT_CANVAS_BG_DARK = "#0f141c";
+
+function isSvgMarkup(value) {
+  const text = String(value || "").trimStart();
+  return text.startsWith("<svg") || text.startsWith("<?xml");
+}
+
+function normalizeProjectCanvasBackground(raw) {
+  const fallback = {
+    light: DEFAULT_CANVAS_BG_LIGHT,
+    dark: DEFAULT_CANVAS_BG_DARK,
+  };
+  const src = raw && typeof raw === "object" ? raw : {};
+  const normalizeColor = (value, defaultColor) => {
+    const text = String(value || "").trim();
+    if (!text) return defaultColor;
+    if (/^#[0-9a-fA-F]{6}$/.test(text) || /^#[0-9a-fA-F]{3}$/.test(text)) return text;
+    return defaultColor;
+  };
+  return {
+    light: normalizeColor(src.light, fallback.light),
+    dark: normalizeColor(src.dark, fallback.dark),
+  };
+}
+
+function normalizeProjectPlcEntries(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  return list
+    .map((item, idx) => {
+      const analysis = item?.analysis && typeof item.analysis === "object" ? item.analysis : null;
+      return {
+        id: String(item?.id || `plc-${idx + 1}`),
+        name: String(item?.name || "").trim(),
+        size: Number.isFinite(Number(item?.size)) ? Number(item.size) : 0,
+        uploadedAt: Number.isFinite(Number(item?.uploadedAt)) ? Number(item.uploadedAt) : Date.now(),
+        rawText: String(item?.rawText || ""),
+        analysis,
+      };
+    })
+    .filter((item) => item.name || item.rawText);
+}
 
 function getFolderFromKey(key) {
   const parts = String(key).split("/");
@@ -71,6 +122,18 @@ function isStateTagKey(value) {
   return key === "state" || key === "stcode" || key === "status" || key === "stat";
 }
 
+function parseDbTagPath(value) {
+  const raw = String(value || "").trim();
+  if (!raw.toLowerCase().startsWith("db:")) return null;
+  const expr = raw.slice(3).trim();
+  const dot = expr.indexOf(".");
+  if (dot <= 0 || dot >= expr.length - 1) return null;
+  const table = expr.slice(0, dot).trim();
+  const field = expr.slice(dot + 1).trim();
+  if (!table || !field) return null;
+  return { table, field };
+}
+
 function widgetTemplate(widgetKey) {
   const templates = {
     lineChart: {
@@ -99,6 +162,60 @@ function widgetTemplate(widgetKey) {
     },
   };
   return templates[widgetKey] || templates.lineChart;
+}
+
+function defaultWidgetSettings(widgetKey) {
+  const kind = String(widgetKey || "").trim();
+  const base = {
+    kind: kind || "lineChart",
+    title: "",
+    min: 0,
+    max: 100,
+    decimals: 0,
+    unit: "",
+    historyPoints: 40,
+    rowCount: 4,
+    rangeFrom: null,
+    rangeTo: null,
+    windowMinutes: 60,
+    durationPreset: "1h",
+    maxPoints: 500,
+    lineTension: 0.34,
+    showPoints: true,
+    seriesTags: [],
+    axisMode: "auto",
+    barSourceMode: "table",
+    barTable: "",
+    barField: "",
+    barLabelField: "",
+    barQuery: "",
+    barQueryValueField: "",
+    barQueryLabelField: "",
+  };
+  if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
+  if (kind === "kpi") return { ...base, historyPoints: 10 };
+  if (kind === "gauge") return { ...base, min: 0, max: 100, historyPoints: 16 };
+  if (kind === "barChart") return { ...base, historyPoints: 20 };
+  if (kind === "areaChart") return { ...base, historyPoints: 40 };
+  return base;
+}
+
+function normalizeSeriesTagsValue(rawSeries, fallbackTagPath = "") {
+  const tags = (Array.isArray(rawSeries) ? rawSeries : String(rawSeries || "").split(/\r?\n|,/))
+    .map((x) => String(x || "").trim())
+    .filter(Boolean)
+    .filter((v, i, arr) => arr.findIndex((x) => x.toLowerCase() === v.toLowerCase()) === i);
+  if (tags.length) return tags;
+  const primary = String(fallbackTagPath || "").trim();
+  return primary ? [primary] : [];
+}
+
+function toDatetimeLocalInput(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const d = new Date(ms);
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
 }
 
 
@@ -172,6 +289,10 @@ export default function App() {
   const [opcLiveValues, setOpcLiveValues] = useState({});
   const [opcTagMappings, setOpcTagMappings] = useState([]);
   const [opcMappingSets, setOpcMappingSets] = useState([]);
+  const [widgetDbValues, setWidgetDbValues] = useState({});
+  const [isPageVisible, setIsPageVisible] = useState(() =>
+    typeof document === "undefined" ? true : !document.hidden
+  );
 
 
   const overlayRefs = useRef(new Map()); // id -> <g> element containing imported inner
@@ -183,8 +304,18 @@ export default function App() {
   const selPolyRef = useRef(selectedIds);
   const selOverRef = useRef(selectedOverlayIds);
   const projectFileRef = useRef(null);
+  const svgRawCacheRef = useRef(new Map());
   const [projectHandle, setProjectHandle] = useState(null);
   const [projectName, setProjectName] = useState("Untitled");
+  const [projectCanvasBackground, setProjectCanvasBackground] = useState(() =>
+    normalizeProjectCanvasBackground(null)
+  );
+  const [projectPlcs, setProjectPlcs] = useState([]);
+  const [screens, setScreens] = useState([
+    { id: "screen-1", name: "Screen 1", shapes: [], svgOverlays: [], vbW: 1600, vbH: 900, pan: { x: 0, y: 0 }, zoom: 1 },
+  ]);
+  const [activeScreenId, setActiveScreenId] = useState("screen-1");
+  const [screenName, setScreenName] = useState("Screen 1");
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState("");
   const [projectRouteRows, setProjectRouteRows] = useState([]);
@@ -194,13 +325,45 @@ export default function App() {
   const [projectCursors, setProjectCursors] = useState([]);
   const [showProjectNameInput, setShowProjectNameInput] = useState(false);
   const [showProjectDrawer, setShowProjectDrawer] = useState(false);
-  const [projectSearch, setProjectSearch] = useState("");
+  const [mainDrawerFullscreen, setMainDrawerFullscreen] = useState(false);
+  const [userDrawerFullscreen, setUserDrawerFullscreen] = useState(false);
+  const [projectDrawerFullscreen, setProjectDrawerFullscreen] = useState(false);
   const lastProjectSignatureRef = useRef("");
   const projectSaveInFlightRef = useRef(false);
   const autoSaveTimerRef = useRef(null);
   const pendingSilentSaveRef = useRef(false);
   const queuedSaveAfterFlightRef = useRef(null); // null | "silent" | "manual"
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
+  const projectNameRef = useRef(projectName);
+  const projectCanvasBackgroundRef = useRef(projectCanvasBackground);
+  const projectPlcsRef = useRef(projectPlcs);
+  const screensRef = useRef(screens);
+  const activeScreenIdRef = useRef(activeScreenId);
+  const screenNameRef = useRef(screenName);
+  const vbWRef = useRef(vbW);
+  const vbHRef = useRef(vbH);
+  const panRef = useRef(pan);
+  const zoomRef = useRef(zoom);
+
+  useEffect(() => {
+    projectNameRef.current = projectName;
+    projectCanvasBackgroundRef.current = projectCanvasBackground;
+    projectPlcsRef.current = projectPlcs;
+    screensRef.current = screens;
+    activeScreenIdRef.current = activeScreenId;
+    screenNameRef.current = screenName;
+    vbWRef.current = vbW;
+    vbHRef.current = vbH;
+    panRef.current = pan;
+    zoomRef.current = zoom;
+  }, [projectName, projectCanvasBackground, projectPlcs, screens, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const onVis = () => setIsPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -253,10 +416,10 @@ export default function App() {
     loadTemplates();
     loadTagMappings();
     loadMappingSets();
-    const configId = setInterval(loadConfig, 5000);
-    const templateId = setInterval(loadTemplates, 10000);
-    const mappingId = setInterval(loadTagMappings, 10000);
-    const mappingSetId = setInterval(loadMappingSets, 10000);
+    const configId = setInterval(loadConfig, isPageVisible ? 5000 : 25000);
+    const templateId = setInterval(loadTemplates, isPageVisible ? 10000 : 30000);
+    const mappingId = setInterval(loadTagMappings, isPageVisible ? 10000 : 30000);
+    const mappingSetId = setInterval(loadMappingSets, isPageVisible ? 10000 : 30000);
     return () => {
       alive = false;
       clearInterval(configId);
@@ -269,6 +432,7 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     async function pollStatus() {
+      if (!isPageVisible) return;
       try {
         const res = await fetch("/api/opc/status");
         const data = await res.json();
@@ -280,27 +444,62 @@ export default function App() {
       }
     }
     pollStatus();
-    const id = setInterval(pollStatus, 1000);
+    const id = setInterval(pollStatus, isPageVisible ? 1000 : 6000);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [isPageVisible]);
 
-  const lastOpcValuesRef = useRef({});
   useEffect(() => {
-    const prev = lastOpcValuesRef.current || {};
-    const next = opcLiveValues || {};
-    const changes = [];
-    Object.keys(next).forEach((k) => {
-      if (prev[k] !== next[k]) changes.push({ key: k, prev: prev[k], next: next[k] });
-    });
-    if (changes.length) {
-      // eslint-disable-next-line no-console
-      console.log("OPC values changed", changes.slice(0, 10));
+    let alive = true;
+    async function pollWidgetDbValues() {
+      if (!isPageVisible) return;
+      const overlays = Array.isArray(svgOverlays) ? svgOverlays : [];
+      const widgetBindings = overlays
+        .map((o) => ({
+          id: String(o?.id || ""),
+          tagPath: String(o?.tagPath || "").trim(),
+          isWidget: !!o?.widget,
+        }))
+        .filter((x) => x.isWidget && x.id && x.tagPath.toLowerCase().startsWith("db:"));
+      if (!widgetBindings.length) {
+        if (alive) setWidgetDbValues({});
+        return;
+      }
+      const next = {};
+      await Promise.all(
+        widgetBindings.map(async (b) => {
+          const expr = b.tagPath.slice(3).trim();
+          const dot = expr.indexOf(".");
+          if (dot <= 0 || dot === expr.length - 1) return;
+          const table = expr.slice(0, dot).trim();
+          const field = expr.slice(dot + 1).trim();
+          if (!table || !field) return;
+          try {
+            const res = await fetch(`/api/db/${encodeURIComponent(table)}?limit=1`);
+            const data = await res.json();
+            if (!res.ok) return;
+            const row = Array.isArray(data?.rows) ? data.rows[0] : null;
+            if (!row || typeof row !== "object") return;
+            const value = row[field];
+            if (value == null) return;
+            next[b.id] = value;
+          } catch {
+            // ignore per-widget db errors
+          }
+        })
+      );
+      if (!alive) return;
+      setWidgetDbValues(next);
     }
-    lastOpcValuesRef.current = next;
-  }, [opcLiveValues]);
+    pollWidgetDbValues();
+    const id = setInterval(pollWidgetDbValues, isPageVisible ? 2000 : 8000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [svgOverlays, isPageVisible]);
 
   const opcTemplateMap = useMemo(() => {
     const map = new Map();
@@ -746,27 +945,98 @@ export default function App() {
   // ---- Project file handle (for Save / Save As) ----
   const projectHandleRef = useRef(null);
 
+  function normalizeScreenPayload(screen, fallback = {}) {
+    const name = String(screen?.name || fallback?.name || "Screen 1").trim() || "Screen 1";
+    return {
+      id: String(screen?.id || fallback?.id || uid()),
+      name,
+      shapes: Array.isArray(screen?.shapes) ? screen.shapes : Array.isArray(fallback?.shapes) ? fallback.shapes : [],
+      svgOverlays: Array.isArray(screen?.svgOverlays)
+        ? screen.svgOverlays
+        : Array.isArray(fallback?.svgOverlays)
+        ? fallback.svgOverlays
+        : [],
+      vbW: Number.isFinite(screen?.vbW) ? screen.vbW : Number.isFinite(fallback?.vbW) ? fallback.vbW : 1600,
+      vbH: Number.isFinite(screen?.vbH) ? screen.vbH : Number.isFinite(fallback?.vbH) ? fallback.vbH : 900,
+      pan:
+        screen?.pan && Number.isFinite(screen.pan.x) && Number.isFinite(screen.pan.y)
+          ? { x: screen.pan.x, y: screen.pan.y }
+          : fallback?.pan && Number.isFinite(fallback.pan.x) && Number.isFinite(fallback.pan.y)
+          ? { x: fallback.pan.x, y: fallback.pan.y }
+          : { x: 0, y: 0 },
+      zoom: Number.isFinite(screen?.zoom) ? screen.zoom : Number.isFinite(fallback?.zoom) ? fallback.zoom : 1,
+    };
+  }
+
+  function commitCurrentScreenState(sourceScreens = screensRef.current) {
+    const list = Array.isArray(sourceScreens) ? sourceScreens.map((s) => normalizeScreenPayload(s)) : [];
+    const fallbackId = list[0]?.id || `screen-${Date.now()}`;
+    const currentId = String(activeScreenIdRef.current || fallbackId);
+    const snapshot = normalizeScreenPayload(
+      {
+        id: currentId,
+        name: screenNameRef.current,
+        shapes: shapesRef.current ?? [],
+        svgOverlays: overlaysRef.current ?? [],
+        vbW: vbWRef.current,
+        vbH: vbHRef.current,
+        pan: panRef.current,
+        zoom: zoomRef.current,
+      },
+      { id: currentId, name: screenNameRef.current || "Screen 1" }
+    );
+    const idx = list.findIndex((s) => s.id === currentId);
+    if (idx >= 0) list[idx] = snapshot;
+    else list.push(snapshot);
+    return { list, currentId };
+  }
+
+  function hydrateScreenState(screen) {
+    const next = normalizeScreenPayload(screen);
+    setActiveScreenId(next.id);
+    setScreenName(next.name);
+    setShapes(next.shapes);
+    setSvgOverlays(next.svgOverlays);
+    setVbW(next.vbW);
+    setVbH(next.vbH);
+    setPan(next.pan);
+    setZoom(next.zoom);
+  }
+
 
   function getProjectPayload() {
+    const committed = commitCurrentScreenState(screensRef.current);
+    const effectiveScreenId = committed.currentId || committed.list[0]?.id || "";
     return {
       version: 1,
-      name: projectName || "Untitled",
+      name: projectNameRef.current || "Untitled",
+      canvasBackground: normalizeProjectCanvasBackground(projectCanvasBackgroundRef.current),
+      plcs: normalizeProjectPlcEntries(projectPlcsRef.current),
+      activeScreenId: effectiveScreenId,
+      screens: committed.list,
       savedAt: new Date().toISOString(),
 
       shapes: shapesRef.current ?? [],
       svgOverlays: overlaysRef.current ?? [],
 
-      vbW,
-      vbH,
-      pan,
-      zoom,
+      vbW: vbWRef.current,
+      vbH: vbHRef.current,
+      pan: panRef.current,
+      zoom: zoomRef.current,
     };
   }
 
   function projectPayloadSignature(payload) {
     if (!payload || typeof payload !== "object") return "";
+    const normalizedScreens = Array.isArray(payload.screens)
+      ? payload.screens.map((s) => normalizeScreenPayload(s))
+      : [];
     const compact = {
       name: payload.name || "",
+      canvasBackground: normalizeProjectCanvasBackground(payload.canvasBackground),
+      plcs: normalizeProjectPlcEntries(payload.plcs || payload.plcLibrary),
+      activeScreenId: payload.activeScreenId || "",
+      screens: normalizedScreens,
       vbW: payload.vbW,
       vbH: payload.vbH,
       pan: payload.pan || { x: 0, y: 0 },
@@ -782,33 +1052,59 @@ export default function App() {
   }
 
   function applyRemoteProjectPayload(data) {
-    const nextShapes = Array.isArray(data?.shapes) ? data.shapes : [];
-    const nextOverlays = Array.isArray(data?.svgOverlays) ? data.svgOverlays : [];
-    setShapes(nextShapes);
-    setSvgOverlays(nextOverlays);
-    if (Number.isFinite(data?.vbW)) setVbW(data.vbW);
-    if (Number.isFinite(data?.vbH)) setVbH(data.vbH);
-    if (data?.pan && Number.isFinite(data.pan.x) && Number.isFinite(data.pan.y)) {
-      setPan({ x: data.pan.x, y: data.pan.y });
-    }
-    if (Number.isFinite(data?.zoom)) setZoom(data.zoom);
+    setProjectCanvasBackground(
+      normalizeProjectCanvasBackground(data?.canvasBackground || data?.canvasBackgroundByTheme)
+    );
+    setProjectPlcs(normalizeProjectPlcEntries(data?.plcs || data?.plcLibrary));
+    const fallbackScreen = normalizeScreenPayload(
+      {
+        id: data?.activeScreenId || "screen-1",
+        name: data?.screenName || "Screen 1",
+        shapes: Array.isArray(data?.shapes) ? data.shapes : [],
+        svgOverlays: Array.isArray(data?.svgOverlays) ? data.svgOverlays : [],
+        vbW: data?.vbW,
+        vbH: data?.vbH,
+        pan: data?.pan,
+        zoom: data?.zoom,
+      },
+      { id: "screen-1", name: "Screen 1" }
+    );
+    const incoming = Array.isArray(data?.screens) && data.screens.length
+      ? data.screens.map((s) => normalizeScreenPayload(s))
+      : [fallbackScreen];
+    const nextActiveId = String(data?.activeScreenId || incoming[0]?.id || "screen-1");
+    const active = incoming.find((s) => s.id === nextActiveId) || incoming[0];
+    setScreens(incoming);
+    hydrateScreenState(active);
   }
 
   function applyProjectPayload(data) {
-    const nextShapes = Array.isArray(data?.shapes) ? data.shapes : [];
-    const nextOverlays = Array.isArray(data?.svgOverlays) ? data.svgOverlays : [];
+    setProjectCanvasBackground(
+      normalizeProjectCanvasBackground(data?.canvasBackground || data?.canvasBackgroundByTheme)
+    );
+    setProjectPlcs(normalizeProjectPlcEntries(data?.plcs || data?.plcLibrary));
+    const fallbackScreen = normalizeScreenPayload(
+      {
+        id: data?.activeScreenId || "screen-1",
+        name: data?.screenName || "Screen 1",
+        shapes: Array.isArray(data?.shapes) ? data.shapes : [],
+        svgOverlays: Array.isArray(data?.svgOverlays) ? data.svgOverlays : [],
+        vbW: data?.vbW,
+        vbH: data?.vbH,
+        pan: data?.pan,
+        zoom: data?.zoom,
+      },
+      { id: "screen-1", name: "Screen 1" }
+    );
+    const incoming = Array.isArray(data?.screens) && data.screens.length
+      ? data.screens.map((s) => normalizeScreenPayload(s))
+      : [fallbackScreen];
+    const nextActiveId = String(data?.activeScreenId || incoming[0]?.id || "screen-1");
+    const active = incoming.find((s) => s.id === nextActiveId) || incoming[0];
 
     pushHistory();
-    setShapes(nextShapes);
-    setSvgOverlays(nextOverlays);
-
-    if (Number.isFinite(data?.vbW)) setVbW(data.vbW);
-    if (Number.isFinite(data?.vbH)) setVbH(data.vbH);
-
-    if (data?.pan && Number.isFinite(data.pan.x) && Number.isFinite(data.pan.y)) {
-      setPan({ x: data.pan.x, y: data.pan.y });
-    }
-    if (Number.isFinite(data?.zoom)) setZoom(data.zoom);
+    setScreens(incoming);
+    hydrateScreenState(active);
 
     setSelectedIds([]);
     setSelectedOverlayIds([]);
@@ -925,30 +1221,42 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let bootstrappedProject = false;
     async function loadProjects() {
       try {
         const res = await fetch("/api/projects");
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || "Failed to load projects.");
         if (!alive) return;
-        setProjects(data.projects || []);
+        const list = Array.isArray(data.projects) ? data.projects : [];
+        setProjects(list);
+        if (!bootstrappedProject && list.length) {
+          const stored = localStorage.getItem("vizi_active_project_id") || "";
+          const preferred = list.find((p) => p?.id === stored) || list[0];
+          if (preferred?.id) {
+            bootstrappedProject = true;
+            setActiveProjectId(preferred.id);
+            openProjectFromDb(preferred.id);
+          }
+        } else if (!bootstrappedProject && !list.length) {
+          bootstrappedProject = true;
+          setTimeout(() => {
+            saveProjectToDb({ silent: true });
+          }, 0);
+        }
       } catch {
         // ignore
       }
     }
     loadProjects();
-    const id = setInterval(loadProjects, 15000);
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      loadProjects();
+    }, 15000);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, []);
-
-  useEffect(() => {
-    const stored = localStorage.getItem("vizi_active_project_id") || "";
-    if (!stored) return;
-    setActiveProjectId(stored);
-    openProjectFromDb(stored);
   }, []);
 
   useEffect(() => {
@@ -1137,24 +1445,60 @@ export default function App() {
 
   function newProjectFromDb() {
     applyProjectPayload({
-      shapes: [],
-      svgOverlays: [],
-      vbW: 1600,
-      vbH: 900,
-      pan: { x: 0, y: 0 },
-      zoom: 1,
+      activeScreenId: "screen-1",
+      screens: [
+        {
+          id: "screen-1",
+          name: "Screen 1",
+          shapes: [],
+          svgOverlays: [],
+          vbW: 1600,
+          vbH: 900,
+          pan: { x: 0, y: 0 },
+          zoom: 1,
+        },
+      ],
     });
     setProjectName("Untitled");
+    setProjectCanvasBackground(normalizeProjectCanvasBackground(null));
+    setScreenName("Screen 1");
+    setActiveScreenId("screen-1");
+    setScreens([
+      {
+        id: "screen-1",
+        name: "Screen 1",
+        shapes: [],
+        svgOverlays: [],
+        vbW: 1600,
+        vbH: 900,
+        pan: { x: 0, y: 0 },
+        zoom: 1,
+      },
+    ]);
     setActiveProjectId("");
     localStorage.removeItem("vizi_active_project_id");
     setActiveProjectUpdatedAt("");
     setActiveProjectUpdatedBy("");
     lastProjectSignatureRef.current = projectPayloadSignature({
       name: "Untitled",
+      canvasBackground: normalizeProjectCanvasBackground(null),
       vbW: 1600,
       vbH: 900,
       pan: { x: 0, y: 0 },
       zoom: 1,
+      activeScreenId: "screen-1",
+      screens: [
+        {
+          id: "screen-1",
+          name: "Screen 1",
+          shapes: [],
+          svgOverlays: [],
+          vbW: 1600,
+          vbH: 900,
+          pan: { x: 0, y: 0 },
+          zoom: 1,
+        },
+      ],
       shapes: [],
       svgOverlays: [],
     });
@@ -1172,6 +1516,7 @@ export default function App() {
     if (!activeProjectId) return;
     let alive = true;
     async function pollProject() {
+      if (!isPageVisible) return;
       try {
         const res = await fetch(`/api/projects/${activeProjectId}`);
         const data = await res.json();
@@ -1196,15 +1541,15 @@ export default function App() {
         // ignore sync failures
       }
     }
-    const id = setInterval(pollProject, 3000);
+    const id = setInterval(pollProject, isPageVisible ? 3000 : 12000);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [activeProjectId, activeProjectUpdatedAt]);
+  }, [activeProjectId, activeProjectUpdatedAt, isPageVisible]);
 
   useEffect(() => {
-    if (!activeProjectId) return;
+    if (!activeProjectId || !isPageVisible) return;
     const id = setInterval(() => {
       const sig = projectPayloadSignature(getProjectPayload());
       if (!sig) return;
@@ -1212,7 +1557,7 @@ export default function App() {
       saveProjectToDb({ silent: true });
     }, 2500);
     return () => clearInterval(id);
-  }, [activeProjectId, projectName, vbW, vbH, pan, zoom, shapes, svgOverlays]);
+  }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -1222,6 +1567,7 @@ export default function App() {
     }
     let alive = true;
     async function pollCursors() {
+      if (!isPageVisible) return;
       try {
         const res = await fetch(`/api/projects/${activeProjectId}/cursors`);
         const data = await res.json();
@@ -1232,12 +1578,12 @@ export default function App() {
       }
     }
     pollCursors();
-    const id = setInterval(pollCursors, 1000);
+    const id = setInterval(pollCursors, isPageVisible ? 1000 : 5000);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [activeProjectId]);
+  }, [activeProjectId, isPageVisible]);
 
   useEffect(() => {
     function isTypingTarget(t) {
@@ -1393,6 +1739,7 @@ export default function App() {
   const [showHUD, setShowHUD] = useState(true);
   const [showMainDrawer, setShowMainDrawer] = useState(false);
   const [drawerView, setDrawerView] = useState("ai");
+  const [databaseTab, setDatabaseTab] = useState("data");
   const [showUserDrawer, setShowUserDrawer] = useState(false);
   const [theme, setTheme] = useState(() => {
     try {
@@ -1407,6 +1754,20 @@ export default function App() {
   const [passwordDraft, setPasswordDraft] = useState({ current: "", next: "" });
   const [profileStatus, setProfileStatus] = useState("");
   const [profileError, setProfileError] = useState("");
+
+  useEffect(() => {
+    const msg = String(projectStatus || "").trim();
+    if (!msg) return;
+    if (msg.toLowerCase() === "saving...") return;
+    toastSuccess(msg);
+  }, [projectStatus]);
+
+  useEffect(() => {
+    const ok = String(profileStatus || "").trim();
+    if (ok) toastSuccess(ok);
+    const err = String(profileError || "").trim();
+    if (err) toastError(err);
+  }, [profileStatus, profileError]);
   const [altDown, setAltDown] = useState(false);
   useEffect(() => {
     zoomPosRef.current = zoomPos;
@@ -1493,7 +1854,9 @@ export default function App() {
   }, []);
 
   function openDrawer(view) {
-    setDrawerView(view || "ai");
+    const next = view || "ai";
+    setDrawerView(next);
+    if (next === "database") setDatabaseTab((prev) => (prev === "dataset" ? "dataset" : "data"));
     setShowMainDrawer(true);
   }
 
@@ -1785,38 +2148,17 @@ export default function App() {
       return;
     }
 
-    const nextShapes = Array.isArray(data.shapes) ? data.shapes : [];
-    const nextOverlays = Array.isArray(data.svgOverlays) ? data.svgOverlays : [];
-
-    pushHistory();
-
-    setShapes(nextShapes);
-    setSvgOverlays(nextOverlays);
-
-    if (Number.isFinite(data.vbW)) setVbW(data.vbW);
-    if (Number.isFinite(data.vbH)) setVbH(data.vbH);
-
-    if (data.pan && Number.isFinite(data.pan.x) && Number.isFinite(data.pan.y)) {
-      setPan({ x: data.pan.x, y: data.pan.y });
-    }
-    if (Number.isFinite(data.zoom)) setZoom(data.zoom);
-
-    // clear selection/edit state
-    setSelectedIds([]);
-    setSelectedOverlayIds([]);
-    setEditingId(null);
-    setDrawing(null);
-    setDragAll(null);
-    setDragHandle(null);
-    setOverlayResize(null);
-    setMarquee(null);
-    setImportAnchor(null);
+    applyProjectPayload(data || {});
   }
 
   function buildProjectPayload() {
+    const committed = commitCurrentScreenState(screens);
     return {
       version: 1,
       name: projectName,
+      plcs: normalizeProjectPlcEntries(projectPlcs),
+      activeScreenId: committed.currentId,
+      screens: committed.list,
       savedAt: new Date().toISOString(),
       vbW,
       vbH,
@@ -1828,16 +2170,7 @@ export default function App() {
   }
 
   function exportProjectJson() {
-    const payload = {
-      version: 1,
-      savedAt: new Date().toISOString(),
-      vbW,
-      vbH,
-      pan,
-      zoom,
-      shapes,
-      svgOverlays,
-    };
+    const payload = buildProjectPayload();
 
     async function saveProjectAs() {
       const data = buildProjectPayload();
@@ -1849,7 +2182,7 @@ export default function App() {
           suggestedName: `${projectName || "project"}.json`,
           types: [
             {
-              description: "Vizi Project",
+              description: "Mesora Project",
               accept: { "application/json": [".json"] },
             },
           ],
@@ -2245,9 +2578,14 @@ export default function App() {
       return "Shape";
     }
 
-    if (selectedOverlayIds.length === 1) return "SVG";
+    if (selectedOverlayIds.length === 1) {
+      const id = selectedOverlayIds[0];
+      const o = svgOverlays.find((x) => x.id === id);
+      if (o?.widget) return "Widget";
+      return "SVG";
+    }
     return null;
-  }, [isSingle, selectedIds, selectedOverlayIds, shapes]);
+  }, [isSingle, selectedIds, selectedOverlayIds, shapes, svgOverlays]);
 
   const singleOverlay = useMemo(
     () => svgOverlays.find((o) => o.id === singleSelectedOverlayId),
@@ -2496,12 +2834,51 @@ export default function App() {
     return SVG_LIBRARY[fileKey];
   }
 
+  function cacheSvgRawByUrl(url, raw) {
+    const cache = svgRawCacheRef.current;
+    if (!cache) return;
+    if (cache.has(url)) cache.delete(url);
+    cache.set(url, raw);
+    while (cache.size > SVG_RAW_CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      cache.delete(oldest);
+    }
+  }
+
+  async function readSvgRaw(entry) {
+    if (entry == null) return null;
+    let value = typeof entry === "function" ? await entry() : entry;
+    if (value && typeof value === "object" && typeof value.default === "string") {
+      value = value.default;
+    }
+    if (typeof value !== "string") return null;
+    if (isSvgMarkup(value)) return value;
+    const url = String(value || "").trim();
+    if (!url) return null;
+    const cache = svgRawCacheRef.current;
+    if (cache?.has(url)) {
+      const hit = cache.get(url);
+      cache.delete(url);
+      cache.set(url, hit);
+      return hit;
+    }
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const raw = await res.text();
+    cacheSvgRawByUrl(url, raw);
+    return raw;
+  }
+
+  async function readSvgRawByKey(fileKey) {
+    return readSvgRaw(getSvgEntry(fileKey));
+  }
+
   function ensureGeneratedKey(name) {
     const clean = String(name || "Generated.svg").replace(/[\\/:*?"<>|]/g, "_");
     const base = clean.toLowerCase().endsWith(".svg") ? clean : `${clean}.svg`;
     let key = `__generated__/${base}`;
     let i = 2;
-    while (generatedSvgMap.has(key) || SVG_LIBRARY[key]) {
+    while (generatedSvgMap.has(key) || Object.prototype.hasOwnProperty.call(SVG_LIBRARY, key)) {
       const stem = base.replace(/\.svg$/i, "");
       key = `__generated__/${stem}-${i}.svg`;
       i += 1;
@@ -2549,7 +2926,7 @@ export default function App() {
       };
     }
 
-    const raw = typeof entry === "function" ? await entry() : entry;
+    const raw = await readSvgRaw(entry);
     if (typeof raw !== "string") {
       const w = Math.max(40, Number(targetW) || 120);
       const h = Math.max(30, w * 0.6);
@@ -2861,10 +3238,14 @@ export default function App() {
   function duplicateSelectedStable() {
     const pad = getDupOffset();
 
-    const curShapes = shapesRef.current;
-    const curOverlays = overlaysRef.current;
-    const curSelShapes = selPolyRef.current;     // (your selectedIds)
-    const curSelOvers = selOverRef.current;      // (your selectedOverlayIds)
+    const refShapes = Array.isArray(shapesRef.current) ? shapesRef.current : [];
+    const refOverlays = Array.isArray(overlaysRef.current) ? overlaysRef.current : [];
+    const refSelShapes = Array.isArray(selPolyRef.current) ? selPolyRef.current : [];
+    const refSelOvers = Array.isArray(selOverRef.current) ? selOverRef.current : [];
+    const curShapes = refShapes.length ? refShapes : shapes;
+    const curOverlays = refOverlays.length ? refOverlays : svgOverlays;
+    const curSelShapes = refSelShapes.length ? refSelShapes : selectedIds;
+    const curSelOvers = refSelOvers.length ? refSelOvers : selectedOverlayIds;
 
     if (!curSelShapes.length && !curSelOvers.length) return;
 
@@ -2948,10 +3329,14 @@ export default function App() {
   }
 
   function copySelection() {
-    const curShapes = shapesRef.current;
-    const curOverlays = overlaysRef.current;
-    const curSelShapes = selPolyRef.current;
-    const curSelOvers = selOverRef.current;
+    const refShapes = Array.isArray(shapesRef.current) ? shapesRef.current : [];
+    const refOverlays = Array.isArray(overlaysRef.current) ? overlaysRef.current : [];
+    const refSelShapes = Array.isArray(selPolyRef.current) ? selPolyRef.current : [];
+    const refSelOvers = Array.isArray(selOverRef.current) ? selOverRef.current : [];
+    const curShapes = refShapes.length ? refShapes : shapes;
+    const curOverlays = refOverlays.length ? refOverlays : svgOverlays;
+    const curSelShapes = refSelShapes.length ? refSelShapes : selectedIds;
+    const curSelOvers = refSelOvers.length ? refSelOvers : selectedOverlayIds;
 
     const shapesCopy = curShapes
       .filter((s) => curSelShapes.includes(s.id))
@@ -3332,6 +3717,22 @@ export default function App() {
   // ---------- Overlay selection / move / resize ----------
   function onOverlayMouseDown(e, id) {
     if (tool !== "select") return;
+    const target = e.target;
+    const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
+    if (target && typeof target.closest === "function") {
+      if (target.closest(interactiveSelector)) return;
+    }
+    const nativeEvent = e.nativeEvent;
+    if (nativeEvent && typeof nativeEvent.composedPath === "function") {
+      const path = nativeEvent.composedPath();
+      const hitInteractive = path.some((node) => {
+        if (!node || typeof node !== "object") return false;
+        const el = node;
+        if (typeof el.matches === "function" && el.matches(interactiveSelector)) return true;
+        return false;
+      });
+      if (hitInteractive) return;
+    }
     e.stopPropagation();
     e.preventDefault();
 
@@ -3416,6 +3817,7 @@ export default function App() {
     pushHistory(); // ✅ UNDO: start of overlay resize
     setOverlayResize({
       id,
+      isWidget: !!o?.widget,
       anchorLocal,
       anchorWorld,
       startDist,
@@ -3471,12 +3873,11 @@ export default function App() {
 
 
   // ✅ Lazy/eager compatible SVG import
-  async function onPickSvg(fileKey, anchorOverride) {
-    const entry = getSvgEntry(fileKey);
+  async function onPickSvg(fileKey, anchorOverride, overlayExtras = {}, rawOverride = null) {
+    const entry = rawOverride ?? getSvgEntry(fileKey);
     if (!entry) return;
 
-    // entry is a function in lazy mode, string in eager mode
-    const raw = typeof entry === "function" ? await entry() : entry;
+    const raw = await readSvgRaw(entry);
     if (typeof raw !== "string") return;
 
     const parsed = stripOuterSvg(raw);
@@ -3545,6 +3946,7 @@ export default function App() {
         stroke: DEFAULT_STROKE,
         tagPath: "",
         bbox,
+        ...overlayExtras,
       },
     ]);
 
@@ -3574,7 +3976,10 @@ export default function App() {
   async function onPickWidget(widgetKey, anchorOverride) {
     const tmpl = widgetTemplate(widgetKey);
     const key = addGeneratedSvg(tmpl.name, tmpl.raw);
-    await onPickSvg(key, anchorOverride ?? lastContextPoint ?? undefined);
+    await onPickSvg(key, anchorOverride ?? lastContextPoint ?? undefined, {
+      tagPath: "",
+      widget: defaultWidgetSettings(widgetKey),
+    }, tmpl.raw);
     setWidgetOpen(false);
     setContextMenu(null);
   }
@@ -3706,7 +4111,7 @@ export default function App() {
     tagPath: "",
     fill: DEFAULT_FILL,
     stroke: DEFAULT_STROKE,
-    strokeWidth: "2",
+    strokeWidth: "",
     arrowStart: "none",
     arrowEnd: "none",
     lineStyle: "solid",   // ✅ NEW
@@ -3719,6 +4124,23 @@ export default function App() {
     fontFamily: "system-ui",
     fontWeight: "400",
     textAlign: "start",
+    widgetKind: "",
+    widgetTitle: "",
+    widgetMin: "0",
+    widgetMax: "100",
+    widgetDecimals: "0",
+    widgetUnit: "",
+    widgetHistoryPoints: "40",
+    widgetRowCount: "4",
+    widgetRangeFrom: "",
+    widgetRangeTo: "",
+    widgetWindowMinutes: "60",
+    widgetDurationPreset: "1h",
+    widgetMaxPoints: "500",
+    widgetLineTension: "0.34",
+    widgetShowPoints: "true",
+    widgetSeriesTags: "",
+    widgetAxisMode: "auto",
   });
 
 
@@ -3729,7 +4151,7 @@ export default function App() {
         tagPath: "",
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
-        strokeWidth: "2",
+        strokeWidth: "",
         arrowStart: "none",
         arrowEnd: "none",
         x: "",
@@ -3742,6 +4164,23 @@ export default function App() {
         fontFamily: "system-ui",
         fontWeight: "400",
         textAlign: "start",
+        widgetKind: "",
+        widgetTitle: "",
+        widgetMin: "0",
+        widgetMax: "100",
+        widgetDecimals: "0",
+        widgetUnit: "",
+        widgetHistoryPoints: "40",
+        widgetRowCount: "4",
+        widgetRangeFrom: "",
+        widgetRangeTo: "",
+        widgetWindowMinutes: "60",
+        widgetDurationPreset: "1h",
+        widgetMaxPoints: "500",
+        widgetLineTension: "0.34",
+        widgetShowPoints: "true",
+        widgetSeriesTags: "",
+        widgetAxisMode: "auto",
       });
       return;
     }
@@ -3750,7 +4189,7 @@ export default function App() {
     let tagPath = "";
     let fill = DEFAULT_FILL;
     let stroke = DEFAULT_STROKE;
-    let strokeWidth = "2";
+    let strokeWidth = "";
     let arrowStart = "none";
     let arrowEnd = "none";
     let lineStyle = "solid"; // ✅ NEW
@@ -3765,18 +4204,74 @@ export default function App() {
         arrowEnd = s.arrowEnd ?? "none";
         lineStyle = s.lineStyle ?? "solid"; // ✅ NEW
       }
-    } else if (isSingle && singleKind === "SVG") {
+    } else if (isSingle && (singleKind === "SVG" || singleKind === "Widget")) {
       const o = svgOverlays.find((x) => x.id === singleId);
       if (o) {
+        const w = o.widget || {};
+        const overlayTagPath = String(o.tagPath || "");
+        const parsedDb = parseDbTagPath(overlayTagPath);
+        const parsedQuery = overlayTagPath.trim().toLowerCase().startsWith("dbq:")
+          ? overlayTagPath.trim().slice(4)
+          : "";
+        const rawBarSourceMode = String(w.barSourceMode || "").trim().toLowerCase();
+        const barSourceMode = rawBarSourceMode === "query"
+          ? "query"
+          : rawBarSourceMode === "tags"
+          ? "tags"
+          : (String(w.barQuery || parsedQuery).trim() ? "query" : "table");
         idText = o.id;
-        tagPath = o.tagPath || "";
+        tagPath = overlayTagPath;
         fill = !o.fill || o.fill === "none" ? DEFAULT_FILL : o.fill;
         stroke = !o.stroke || o.stroke === "none" ? DEFAULT_STROKE : o.stroke;
         strokeWidth = String(
           Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0
             ? Number(o.strokeWidth)
-            : 2
+            : ""
         );
+        setHudFields({
+          id: idText,
+          tagPath,
+          fill,
+          stroke,
+          strokeWidth,
+          arrowStart: "none",
+          arrowEnd: "none",
+          lineStyle: "solid",
+          x: String(fmt(selectedBBox.x)),
+          y: String(fmt(selectedBBox.y)),
+          w: String(fmt(selectedBBox.w)),
+          h: String(fmt(selectedBBox.h)),
+          text: "",
+          fontSize: "24",
+          fontFamily: "system-ui",
+          fontWeight: "400",
+          textAlign: "start",
+          widgetKind: String(w.kind || ""),
+          widgetTitle: String(w.title || ""),
+          widgetMin: String(Number.isFinite(Number(w.min)) ? Number(w.min) : 0),
+          widgetMax: String(Number.isFinite(Number(w.max)) ? Number(w.max) : 100),
+          widgetDecimals: String(Number.isFinite(Number(w.decimals)) ? Number(w.decimals) : 0),
+          widgetUnit: String(w.unit || ""),
+          widgetHistoryPoints: String(Number.isFinite(Number(w.historyPoints)) ? Number(w.historyPoints) : 40),
+          widgetRowCount: String(Number.isFinite(Number(w.rowCount)) ? Number(w.rowCount) : 4),
+          widgetRangeFrom: toDatetimeLocalInput(w.rangeFrom),
+          widgetRangeTo: toDatetimeLocalInput(w.rangeTo),
+          widgetWindowMinutes: String(Number.isFinite(Number(w.windowMinutes)) ? Number(w.windowMinutes) : 60),
+          widgetDurationPreset: String(w.durationPreset || ""),
+          widgetMaxPoints: String(Number.isFinite(Number(w.maxPoints)) ? Number(w.maxPoints) : 500),
+          widgetLineTension: String(Number.isFinite(Number(w.lineTension)) ? Number(w.lineTension) : 0.34),
+          widgetShowPoints: String(w.showPoints !== false),
+          widgetSeriesTags: normalizeSeriesTagsValue(w.seriesTags, tagPath).join("\n"),
+          widgetAxisMode: String(w.axisMode === "manual" ? "manual" : "auto"),
+          widgetBarSourceMode: barSourceMode,
+          widgetBarTable: String(w.barTable || parsedDb?.table || ""),
+          widgetBarField: String(w.barField || parsedDb?.field || ""),
+          widgetBarLabelField: String(w.barLabelField || ""),
+          widgetBarQuery: String(w.barQuery || parsedQuery || ""),
+          widgetBarQueryValueField: String(w.barQueryValueField || ""),
+          widgetBarQueryLabelField: String(w.barQueryLabelField || ""),
+        });
+        return;
       }
     } else if (isSingle && singleKind === "Text") {
       const t = shapes.find((x) => x.id === singleId);
@@ -3791,7 +4286,7 @@ export default function App() {
           tagPath,
           fill,
           stroke,
-          strokeWidth: "2",
+          strokeWidth: "",
           arrowStart: "none",
           arrowEnd: "none",
           lineStyle: "solid",
@@ -3804,6 +4299,30 @@ export default function App() {
           fontFamily: String(t.fontFamily ?? "system-ui"),
           fontWeight: String(t.fontWeight ?? "400"),
           textAlign: String(t.anchor ?? "start"),
+          widgetKind: "",
+          widgetTitle: "",
+          widgetMin: "0",
+          widgetMax: "100",
+          widgetDecimals: "0",
+          widgetUnit: "",
+          widgetHistoryPoints: "40",
+          widgetRowCount: "4",
+          widgetRangeFrom: "",
+          widgetRangeTo: "",
+          widgetWindowMinutes: "60",
+          widgetDurationPreset: "1h",
+          widgetMaxPoints: "500",
+          widgetLineTension: "0.34",
+          widgetShowPoints: "true",
+          widgetSeriesTags: "",
+          widgetAxisMode: "auto",
+          widgetBarSourceMode: "table",
+          widgetBarTable: "",
+          widgetBarField: "",
+          widgetBarLabelField: "",
+          widgetBarQuery: "",
+          widgetBarQueryValueField: "",
+          widgetBarQueryLabelField: "",
         });
         return;
       }
@@ -3828,6 +4347,30 @@ export default function App() {
       fontFamily: "system-ui",
       fontWeight: "400",
       textAlign: "start",
+      widgetKind: "",
+      widgetTitle: "",
+      widgetMin: "0",
+      widgetMax: "100",
+      widgetDecimals: "0",
+      widgetUnit: "",
+      widgetHistoryPoints: "40",
+      widgetRowCount: "4",
+      widgetRangeFrom: "",
+      widgetRangeTo: "",
+      widgetWindowMinutes: "60",
+      widgetDurationPreset: "1h",
+      widgetMaxPoints: "500",
+      widgetLineTension: "0.34",
+      widgetShowPoints: "true",
+      widgetSeriesTags: "",
+      widgetAxisMode: "auto",
+      widgetBarSourceMode: "table",
+      widgetBarTable: "",
+      widgetBarField: "",
+      widgetBarLabelField: "",
+      widgetBarQuery: "",
+      widgetBarQueryValueField: "",
+      widgetBarQueryLabelField: "",
     });
 
   }, [selectedBBox, isSingle, singleKind, singleId, shapes, svgOverlays]);
@@ -3847,7 +4390,7 @@ export default function App() {
     if (singleKind === "Polyline" || singleKind === "Text") {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, id: nextId } : s)));
       setSelectedIds([nextId]);
-    } else if (singleKind === "SVG") {
+    } else if (singleKind === "SVG" || singleKind === "Widget") {
       setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, id: nextId } : o)));
       setSelectedOverlayIds([nextId]);
     }
@@ -3859,10 +4402,154 @@ export default function App() {
 
     if (singleKind === "Polyline" || singleKind === "Text") {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, tagPath: v } : s)));
-    } else if (singleKind === "SVG") {
+    } else if (singleKind === "SVG" || singleKind === "Widget") {
       setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, tagPath: v } : o)));
     }
     scheduleProjectAutoSave();
+  }
+
+  function applySingleWidgetSettings(next) {
+    if (!isSingle || singleKind !== "Widget" || !singleId) return;
+    const source = next && typeof next === "object" ? next : {};
+    const title = String(source.widgetTitle ?? "").trim();
+    const unit = String(source.widgetUnit ?? "").trim();
+    const min = Number(source.widgetMin);
+    const max = Number(source.widgetMax);
+    const decimals = Number(source.widgetDecimals);
+    const historyPoints = Number(source.widgetHistoryPoints);
+    const rowCount = Number(source.widgetRowCount);
+    const windowMinutes = Number(source.widgetWindowMinutes);
+    const durationPresetRaw = String(source.widgetDurationPreset || "").trim().toLowerCase();
+    const maxPoints = Number(source.widgetMaxPoints);
+    const lineTension = Number(source.widgetLineTension);
+    const showPoints = String(source.widgetShowPoints ?? "true").toLowerCase() !== "false";
+    const axisMode = String(source.widgetAxisMode || "").trim().toLowerCase() === "manual"
+      ? "manual"
+      : "auto";
+    const rawBarSourceMode = String(source.widgetBarSourceMode || "table").trim().toLowerCase();
+    const barSourceMode = rawBarSourceMode === "query"
+      ? "query"
+      : rawBarSourceMode === "tags"
+      ? "tags"
+      : "table";
+    const barTable = String(source.widgetBarTable || "").trim();
+    const barField = String(source.widgetBarField || "").trim();
+    const barLabelField = String(source.widgetBarLabelField || "").trim();
+    const barQuery = String(source.widgetBarQuery || "").trim();
+    const barQueryValueField = String(source.widgetBarQueryValueField || "").trim();
+    const barQueryLabelField = String(source.widgetBarQueryLabelField || "").trim();
+    const parseDateMs = (raw) => {
+      const text = String(raw ?? "").trim();
+      if (!text) return null;
+      if (/^\d+$/.test(text)) {
+        const n = Number(text);
+        return Number.isFinite(n) && n > 0 ? n : null;
+      }
+      const ms = Date.parse(text);
+      return Number.isFinite(ms) ? ms : null;
+    };
+    let rangeFrom = parseDateMs(source.widgetRangeFrom);
+    let rangeTo = parseDateMs(source.widgetRangeTo);
+    const presetToMinutes = {
+      "15m": 15,
+      "30m": 30,
+      "1h": 60,
+      "2h": 120,
+      "6h": 360,
+      "12h": 720,
+      "24h": 1440,
+      "7d": 10080,
+    };
+    let resolvedWindowMinutes = Number.isFinite(windowMinutes)
+      ? Math.max(1, Math.min(10080, Math.round(windowMinutes)))
+      : null;
+    let durationPreset = durationPresetRaw;
+    if (durationPreset && Object.prototype.hasOwnProperty.call(presetToMinutes, durationPreset)) {
+      resolvedWindowMinutes = presetToMinutes[durationPreset];
+      rangeFrom = null;
+      rangeTo = null;
+    } else if (!durationPreset) {
+      durationPreset = "";
+    }
+    if (rangeFrom != null && rangeTo != null && rangeFrom > rangeTo) {
+      const t = rangeFrom;
+      rangeFrom = rangeTo;
+      rangeTo = t;
+    }
+    setSvgOverlays((prev) =>
+      prev.map((o) => {
+        if (o.id !== singleId) return o;
+        const current = o.widget || {};
+        const kind = String(current.kind || "").trim();
+        let nextTagPath = String(o.tagPath || "").trim();
+        if (kind === "barChart") {
+          if (barSourceMode === "table" && barTable && barField) {
+            nextTagPath = `db:${barTable}.${barField}`;
+          } else if (barSourceMode === "query" && barQuery) {
+            nextTagPath = `dbq:${barQuery}`;
+          }
+        }
+        const sourceHasSeriesTags = Object.prototype.hasOwnProperty.call(source, "widgetSeriesTags");
+        const sourceSeriesTags = normalizeSeriesTagsValue(source.widgetSeriesTags, nextTagPath);
+        const currentSeriesTags = normalizeSeriesTagsValue(current.seriesTags, nextTagPath);
+        const isSeriesEdit = source.__seriesTagsEdited === true;
+        const allowSeriesTags =
+          kind === "lineChart" || (kind === "barChart" && barSourceMode === "tags");
+        const seriesTags = allowSeriesTags
+          ? isSeriesEdit
+            ? sourceSeriesTags
+            : (currentSeriesTags.length ? currentSeriesTags : sourceSeriesTags)
+          : (sourceHasSeriesTags ? sourceSeriesTags : currentSeriesTags);
+        if (kind === "barChart" && barSourceMode === "tags" && seriesTags.length) {
+          nextTagPath = String(seriesTags[0] || "").trim() || nextTagPath;
+        }
+        return {
+          ...o,
+          tagPath: nextTagPath,
+          widget: {
+            ...current,
+            title,
+            unit,
+            min: Number.isFinite(min) ? min : Number(current.min ?? 0) || 0,
+            max: Number.isFinite(max) ? max : Number(current.max ?? 100) || 100,
+            decimals: Number.isFinite(decimals) ? Math.max(0, Math.round(decimals)) : Number(current.decimals ?? 0) || 0,
+            historyPoints: Number.isFinite(historyPoints) ? Math.max(5, Math.min(200, Math.round(historyPoints))) : Number(current.historyPoints ?? 40) || 40,
+            rowCount: Number.isFinite(rowCount) ? Math.max(1, Math.min(20, Math.round(rowCount))) : Number(current.rowCount ?? 4) || 4,
+            rangeFrom,
+            rangeTo,
+            windowMinutes: Number.isFinite(resolvedWindowMinutes) ? resolvedWindowMinutes : Number(current.windowMinutes ?? 60) || 60,
+            durationPreset,
+            maxPoints: Number.isFinite(maxPoints) ? Math.max(50, Math.min(10000, Math.round(maxPoints))) : Number(current.maxPoints ?? 500) || 500,
+            lineTension: Number.isFinite(lineTension) ? Math.max(0, Math.min(1, lineTension)) : Number(current.lineTension ?? 0.34),
+            showPoints,
+            seriesTags,
+            axisMode,
+            barSourceMode,
+            barTable,
+            barField,
+            barLabelField,
+            barQuery,
+            barQueryValueField,
+            barQueryLabelField,
+          },
+        };
+      })
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function onWidgetDurationPresetChange(overlayId, preset, minutes) {
+    if (!isSingle || singleKind !== "Widget" || !singleId) return;
+    if (String(singleId) !== String(overlayId)) return;
+    const mins = Number.isFinite(Number(minutes)) ? Math.max(1, Math.min(10080, Math.round(Number(minutes)))) : 60;
+    const presetText = String(preset || "").trim().toLowerCase();
+    setHudFields((prev) => ({
+      ...prev,
+      widgetDurationPreset: presetText || "",
+      widgetWindowMinutes: String(mins),
+      widgetRangeFrom: "",
+      widgetRangeTo: "",
+    }));
   }
 
   const applySingleArrowStart = (v) => {
@@ -4436,9 +5123,34 @@ export default function App() {
     }
 
     if (overlayResize) {
-      const { id, anchorLocal, anchorWorld, startDist, origScale } = overlayResize;
+      const { id, isWidget, anchorLocal, anchorWorld, startDist, origScale } = overlayResize;
       const o = svgOverlays.find((x) => x.id === id);
       if (!o) return;
+
+      if (isWidget) {
+        const minW = 80;
+        const minH = 60;
+        const leftRaw = Math.min(anchorWorld.x, p.x);
+        const rightRaw = Math.max(anchorWorld.x, p.x);
+        const topRaw = Math.min(anchorWorld.y, p.y);
+        const bottomRaw = Math.max(anchorWorld.y, p.y);
+        const width = Math.max(minW, rightRaw - leftRaw);
+        const height = Math.max(minH, bottomRaw - topRaw);
+        setSvgOverlays((prev) =>
+          prev.map((x) =>
+            x.id === id
+              ? {
+                  ...x,
+                  scale: 1,
+                  tx: leftRaw,
+                  ty: topRaw,
+                  bbox: { x: 0, y: 0, width, height },
+                }
+              : x
+          )
+        );
+        return;
+      }
 
       const d = Math.max(1, distance(p, anchorWorld));
       const ratio = d / startDist;
@@ -4799,15 +5511,74 @@ export default function App() {
     () => projects.find((p) => p.id === activeProjectId) || null,
     [projects, activeProjectId]
   );
-  const filteredProjects = useMemo(() => {
-    const q = normalizeTagValue(projectSearch).toLowerCase();
-    if (!q) return projects;
-    return projects.filter((p) => {
-      const name = String(p?.name || "").toLowerCase();
-      const id = String(p?.id || "").toLowerCase();
-      return name.includes(q) || id.includes(q);
-    });
-  }, [projects, projectSearch]);
+  const activeScreen = useMemo(() => {
+    if (!Array.isArray(screens) || !screens.length) return null;
+    return screens.find((s) => s.id === activeScreenId) || screens[0];
+  }, [screens, activeScreenId]);
+
+  function switchToScreen(nextScreenId) {
+    const committed = commitCurrentScreenState(screens);
+    const target = committed.list.find((s) => s.id === nextScreenId) || committed.list[0];
+    setScreens(committed.list);
+    if (!target) return;
+    hydrateScreenState(target);
+    scheduleProjectAutoSave();
+  }
+
+  function addScreen() {
+    const committed = commitCurrentScreenState(screens);
+    const existingIds = new Set(committed.list.map((s) => String(s.id || "")));
+    let id = `screen-${uid()}`;
+    while (existingIds.has(id)) id = `screen-${uid()}`;
+    const existingNames = new Set(committed.list.map((s) => String(s.name || "").trim().toLowerCase()));
+    let n = committed.list.length + 1;
+    let name = `Screen ${n}`;
+    while (existingNames.has(name.toLowerCase())) {
+      n += 1;
+      name = `Screen ${n}`;
+    }
+    const next = [
+      ...committed.list,
+      normalizeScreenPayload({
+        id,
+        name,
+        shapes: [],
+        svgOverlays: [],
+        vbW: 1600,
+        vbH: 900,
+        pan: { x: 0, y: 0 },
+        zoom: 1,
+      }),
+    ];
+    setScreens(next);
+    hydrateScreenState(next[next.length - 1]);
+    setProjectStatus(`Added ${name}`);
+    scheduleProjectAutoSave();
+  }
+
+  function deleteActiveScreen() {
+    const committed = commitCurrentScreenState(screens);
+    if (committed.list.length <= 1) return;
+    const removed = committed.list.find((s) => s.id === committed.currentId);
+    const filtered = committed.list.filter((s) => s.id !== committed.currentId);
+    const target = filtered[0] || null;
+    setScreens(filtered);
+    if (target) hydrateScreenState(target);
+    setProjectStatus(`Deleted ${removed?.name || "screen"}`);
+    scheduleProjectAutoSave();
+  }
+
+  function renameActiveScreen(value) {
+    const nextName = String(value || "").trim() || "Screen";
+    setScreenName(nextName);
+    setScreens((prev) =>
+      (Array.isArray(prev) ? prev : []).map((s) =>
+        s.id === activeScreenId ? { ...s, name: nextName } : s
+      )
+    );
+    scheduleProjectAutoSave();
+  }
+
   const formatProjectTime = (value) => {
     const t = String(value || "").trim();
     if (!t) return "";
@@ -4815,6 +5586,9 @@ export default function App() {
     if (Number.isNaN(d.getTime())) return "";
     return d.toLocaleString();
   };
+  const activeCanvasBackgroundColor =
+    theme === "dark" ? projectCanvasBackground.dark : projectCanvasBackground.light;
+  const projectDrawerInset = showProjectDrawer && !projectDrawerFullscreen ? "min(360px, 92vw)" : "0px";
 
   return (
     <div
@@ -4828,6 +5602,7 @@ export default function App() {
         userSelect: "none",
         WebkitUserSelect: "none",
         paddingTop: TOP_BAR_H,
+        paddingLeft: projectDrawerInset,
         boxSizing: "border-box",
       }}
     >
@@ -4875,6 +5650,7 @@ export default function App() {
         applySingleFontFamily={applySingleFontFamily}
         applySingleFontWeight={applySingleFontWeight}
         applySingleTextAlign={applySingleTextAlign}
+        applySingleWidgetSettings={applySingleWidgetSettings}
         opcTags={opcTags}
         duplicateOffset={duplicateOffset}
         setDuplicateOffset={setDuplicateOffset}
@@ -4887,10 +5663,12 @@ export default function App() {
         }}
       />
 
-      <ImportModal importOpen={importOpen}
+      <ImportModal
+        importOpen={importOpen}
         setImportOpen={setImportOpen}
         svgFiles={svgFiles}
-        svgLibrary={SVG_LIBRARY}   // ✅ add this
+        svgLibrary={SVG_LIBRARY}
+        loadSvgRaw={readSvgRawByKey}
         onPickSvg={onPickSvg}
       />
       <WidgetSelectorModal
@@ -4902,6 +5680,7 @@ export default function App() {
       <CanvasSvg
           svgRef={svgRef}
           theme={theme}
+          canvasBackgroundColor={activeCanvasBackgroundColor}
           zoom={zoom}          // ✅ NEW
           onWheel={onWheelZoom} // ✅ NEW
           vbW={vbW}
@@ -4946,6 +5725,8 @@ export default function App() {
         routeStrokeColorByGroupPath={routeStrokeColorByGroupPath}
         svgLiveValuesByGroupPath={svgLiveValuesByGroupPath}
         opcLiveValues={opcLiveValues}
+        widgetDbValues={widgetDbValues}
+        onWidgetDurationPresetChange={onWidgetDurationPresetChange}
         hiddenTagBubbleIds={hiddenTagBubbleIds}
         onHideTagBubble={(id) =>
           setHiddenTagBubbleIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
@@ -4986,7 +5767,7 @@ export default function App() {
             fontSize: inlineEditPos.fontSize,
             fontFamily: inlineEditPos.fontFamily,
             fontWeight: inlineEditPos.fontWeight,
-            color: "#111",
+            color: "var(--text)",
             border: "1px solid #2b6cff",
             borderRadius: 6,
             padding: "2px 6px",
@@ -5099,11 +5880,11 @@ export default function App() {
                 width: 38,
                 height: 38,
                 borderRadius: 12,
-                border: "1px solid #d6d6d6",
-                background: "white",
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
                 cursor: "pointer",
                 boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
-                color: "#111",
+                color: "var(--text)",
                 display: "grid",
                 placeItems: "center",
                 padding: 0,
@@ -5137,11 +5918,11 @@ export default function App() {
               height: 38,
               marginTop: 6,
               borderRadius: 12,
-              border: "1px solid #d6d6d6",
-              background: "white",
+              border: "1px solid var(--border)",
+              background: "var(--bg-elev)",
               cursor: "pointer",
               boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
-              color: "#111",
+              color: "var(--text)",
               display: "grid",
               placeItems: "center",
               padding: 0,
@@ -5633,25 +6414,26 @@ export default function App() {
           }}
         >
           <div
-            onClick={() => setShowMainDrawer(false)}
             style={{
               position: "absolute",
               inset: 0,
               background: "rgba(0,0,0,0.35)",
+              pointerEvents: "none",
             }}
           />
           <div
             style={{
               position: "absolute",
               right: 0,
+              left: mainDrawerFullscreen ? 0 : undefined,
               top: 0,
               height: "100%",
-              width: "min(900px, 96vw)",
+              width: mainDrawerFullscreen ? "100%" : "min(900px, 96vw)",
               background: "var(--bg-soft)",
               boxShadow: "-16px 0 40px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
-              borderLeft: "1px solid var(--border)",
+              borderLeft: mainDrawerFullscreen ? "none" : "1px solid var(--border)",
               color: "var(--text)",
             }}
             onMouseDown={(e) => e.stopPropagation()}
@@ -5672,30 +6454,59 @@ export default function App() {
                 <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>
                   {drawerView === "ai"
                     ? "AI"
-                    : drawerView === "data"
-                    ? "Data"
+                    : drawerView === "reports"
+                    ? "Report Designer"
+                    : drawerView === "plc"
+                    ? "PLC"
+                    : drawerView === "database"
+                    ? "Database"
                     : drawerView === "tags"
                     ? "Tags"
-                    : drawerView === "logs"
-                    ? "Logs"
-                    : drawerView === "opc"
-                    ? "OPC Configuration"
-                    : "Help"}
+                  : drawerView === "logs"
+                  ? "Logs"
+                  : drawerView === "diagnostics"
+                  ? "Diagnostics"
+                  : drawerView === "opc"
+                  ? "OPC Configuration"
+                  : "Help"}
                 </div>
               </div>
-              <button
-                onClick={() => setShowMainDrawer(false)}
-                style={{
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
-                  color: "var(--text)",
-                  borderRadius: 8,
-                  padding: "6px 10px",
-                  cursor: "pointer",
-                }}
-              >
-                Close
-              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setMainDrawerFullscreen((v) => !v)}
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    width: 32,
+                    height: 32,
+                    padding: 0,
+                    cursor: "pointer",
+                  }}
+                  title={mainDrawerFullscreen ? "Windowed" : "Fullscreen"}
+                  aria-label={mainDrawerFullscreen ? "Windowed" : "Fullscreen"}
+                >
+                  {mainDrawerFullscreen ? "❐" : "⛶"}
+                </button>
+                <button
+                  onClick={() => setShowMainDrawer(false)}
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    width: 32,
+                    height: 32,
+                    padding: 0,
+                    cursor: "pointer",
+                  }}
+                  title="Close"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
             <div style={{ flex: "1 1 auto", overflow: "hidden" }}>
               {drawerView === "tags" ? (
@@ -5706,6 +6517,10 @@ export default function App() {
                 <div style={{ height: "100%", overflow: "auto" }}>
                   <OpcConfig embedded mode="logs" onDrawerViewChange={setDrawerView} />
                 </div>
+              ) : drawerView === "diagnostics" ? (
+                <div style={{ height: "100%", overflow: "auto" }}>
+                  <OpcConfig embedded mode="diagnostics" onDrawerViewChange={setDrawerView} />
+                </div>
               ) : drawerView === "opc" ? (
                 <div style={{ height: "100%", overflow: "auto", padding: 16, boxSizing: "border-box" }}>
                   <OpcConfig embedded onDrawerViewChange={setDrawerView} />
@@ -5714,24 +6529,64 @@ export default function App() {
                 <div style={{ height: "100%", overflow: "hidden", padding: 16, boxSizing: "border-box" }}>
                   <HelpPanel inline onClose={() => setShowMainDrawer(false)} />
                 </div>
-              ) : drawerView === "data" ? (
-                <div
-                  style={{
-                    height: "100%",
-                    padding: "0 16px 30px",
-                    boxSizing: "border-box",
-                  }}
-                >
-                  <iframe
-                    title="Data"
-                    src="/data"
-                    style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-                  />
+              ) : drawerView === "plc" ? (
+                <PlcAnalyzer plcItems={projectPlcs} onChange={setProjectPlcs} />
+              ) : drawerView === "database" ? (
+                <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+                  <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
+                    <button
+                      data-preserve-style="true"
+                      onClick={() => setDatabaseTab("data")}
+                      style={{
+                        border: `1px solid ${databaseTab === "data" ? "#2b6cff" : "var(--border)"}`,
+                        background: databaseTab === "data" ? "#2b6cff" : "var(--bg-soft)",
+                        color: databaseTab === "data" ? "#fff" : "var(--text)",
+                        borderRadius: 999,
+                        padding: "6px 12px",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Data
+                    </button>
+                    <button
+                      data-preserve-style="true"
+                      onClick={() => setDatabaseTab("dataset")}
+                      style={{
+                        border: `1px solid ${databaseTab === "dataset" ? "#2b6cff" : "var(--border)"}`,
+                        background: databaseTab === "dataset" ? "#2b6cff" : "var(--bg-soft)",
+                        color: databaseTab === "dataset" ? "#fff" : "var(--text)",
+                        borderRadius: 999,
+                        padding: "6px 12px",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Dataset
+                    </button>
+                  </div>
+                  <div style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
+                    {databaseTab === "dataset" ? (
+                      <ReportDesigner initialEditorTab="datasets" lockEditorTab hideTopTabs />
+                    ) : (
+                      <DataBrowser embedded />
+                    )}
+                  </div>
                 </div>
+              ) : drawerView === "reports" ? (
+                <iframe
+                  key={`drawer-reports-${theme}`}
+                  title="Report Designer"
+                  src={`/report-designer?theme=${theme}`}
+                  style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+                />
               ) : (
                 <iframe
+                  key={`drawer-ai-${theme}`}
                   title="AI"
-                  src="/ai"
+                  src={`/ai?theme=${theme}`}
                   style={{ width: "100%", height: "100%", border: "none", display: "block" }}
                 />
               )}
@@ -5749,27 +6604,28 @@ export default function App() {
           }}
         >
           <div
-            onClick={() => setShowUserDrawer(false)}
             style={{
               position: "absolute",
               inset: 0,
               background: "rgba(4, 10, 20, 0.55)",
               backdropFilter: "blur(2px)",
+              pointerEvents: "none",
             }}
           />
           <div
             style={{
               position: "absolute",
               right: 0,
+              left: userDrawerFullscreen ? 0 : undefined,
               top: 0,
               height: "100%",
-              width: "min(620px, 96vw)",
+              width: userDrawerFullscreen ? "100%" : "min(620px, 96vw)",
               background:
                 "linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 96%, white 4%) 0%, color-mix(in srgb, var(--bg-soft) 90%, black 10%) 100%)",
               boxShadow: "-20px 0 48px rgba(0,0,0,0.32)",
               display: "flex",
               flexDirection: "column",
-              borderLeft: "1px solid var(--border)",
+              borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
               color: "var(--text)",
             }}
             onMouseDown={(e) => e.stopPropagation()}
@@ -5793,21 +6649,46 @@ export default function App() {
                   Profile, security and session preferences
                 </div>
               </div>
-              <button
-                onClick={() => setShowUserDrawer(false)}
-                style={{
-                  border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
-                  background: "color-mix(in srgb, var(--bg-elev) 92%, white 8%)",
-                  color: "var(--text)",
-                  borderRadius: 10,
-                  padding: "9px 14px",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                Close
-              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setUserDrawerFullscreen((v) => !v)}
+                  style={{
+                    border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
+                    background: "color-mix(in srgb, var(--bg-elev) 92%, white 8%)",
+                    color: "var(--text)",
+                    borderRadius: 10,
+                    width: 34,
+                    height: 34,
+                    padding: 0,
+                    fontSize: 15,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                  title={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
+                  aria-label={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
+                >
+                  {userDrawerFullscreen ? "❐" : "⛶"}
+                </button>
+                <button
+                  onClick={() => setShowUserDrawer(false)}
+                  style={{
+                    border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
+                    background: "color-mix(in srgb, var(--bg-elev) 92%, white 8%)",
+                    color: "var(--text)",
+                    borderRadius: 10,
+                    width: 34,
+                    height: 34,
+                    padding: 0,
+                    fontSize: 15,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                  title="Close"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
             <div style={{ flex: "1 1 auto", overflow: "auto", padding: 22, display: "grid", gap: 18 }}>
               <div
@@ -5895,8 +6776,6 @@ export default function App() {
                     }}
                   />
                 </label>
-                {profileError && <div style={{ color: "#b42318", fontSize: 12 }}>{profileError}</div>}
-                {profileStatus && <div style={{ color: "#12b76a", fontSize: 12 }}>{profileStatus}</div>}
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                   <button
                     onClick={async () => {
@@ -6091,13 +6970,17 @@ export default function App() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ fontWeight: 900, letterSpacing: "-0.02em", color: "var(--text)" }}>Vizi</div>
+          <img
+            src="/mesora-wordmark.svg"
+            alt="Mesora"
+            style={{ height: 34, width: "auto", display: "block" }}
+          />
           <div style={{ width: 1, height: 18, background: "var(--border)" }} />
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <button
               className="top-menu-btn"
               onClick={() => setShowProjectDrawer((v) => !v)}
-              title={showProjectDrawer ? "Hide Projects" : "Show Projects"}
+              title={showProjectDrawer ? "Hide Project Drawer" : "Show Project Drawer"}
               style={topMenuModeButtonStyle(!!showProjectDrawer)}
             >
               <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
@@ -6125,7 +7008,25 @@ export default function App() {
                 textOverflow: "ellipsis",
               }}
             >
-              {activeProject?.name || projectName || "No project selected"}
+              Project: {activeProject?.name || projectName || "None"}
+            </div>
+            <div
+              title={activeScreen?.name || screenName || "No screen selected"}
+              style={{
+                maxWidth: 180,
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 999,
+                padding: "4px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              Screen: {activeScreen?.name || screenName || "None"}
             </div>
             <div style={{ width: 1, height: 20, background: "var(--border)", margin: "0 4px" }} />
             <div
@@ -6310,27 +7211,39 @@ export default function App() {
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {[
               { key: "ai", label: "AI" },
-              { key: "data", label: "Data" },
+              { key: "reports", label: "Reports" },
+              { key: "plc", label: "PLC" },
+              { key: "database", label: "Database" },
               { key: "tags", label: "Tags" },
               { key: "opc", label: "OPC" },
               { key: "help", label: "Help" },
             ].map((item) => (
-              <button
-                key={`top-nav-${item.key}`}
-                onClick={() => openDrawer(item.key)}
-                style={{
-                  border: "1px solid rgba(15, 23, 42, 0.15)",
-                  background: "rgba(255,255,255,0.85)",
-                  borderRadius: 999,
-                  padding: "4px 10px",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  boxShadow: "0 6px 16px rgba(15, 23, 42, 0.08)",
-                }}
-              >
-                {item.label}
-              </button>
+              (() => {
+                const isActiveView =
+                  drawerView === item.key ||
+                  (item.key === "opc" && (drawerView === "logs" || drawerView === "diagnostics"));
+                const isActive = showMainDrawer && isActiveView;
+                return (
+                  <button
+                    key={`top-nav-${item.key}`}
+                    data-preserve-style="true"
+                    onClick={() => openDrawer(item.key)}
+                    style={{
+                      border: `1px solid ${isActive ? "#2b6cff" : "var(--border)"}`,
+                      background: isActive ? "#2b6cff" : "var(--bg-elev)",
+                      color: isActive ? "#ffffff" : "var(--text)",
+                      borderRadius: 999,
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      boxShadow: isActive ? "0 0 0 1px rgba(43,108,255,0.35)" : "0 6px 16px rgba(15, 23, 42, 0.08)",
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })()
             ))}
           </div>
           <button
@@ -6382,10 +7295,11 @@ export default function App() {
             position: "fixed",
             top: TOP_BAR_H,
             left: 0,
+            right: projectDrawerFullscreen ? 0 : undefined,
             bottom: 0,
-            width: "min(360px, 92vw)",
+            width: projectDrawerFullscreen ? "auto" : "min(360px, 92vw)",
             zIndex: 220,
-            borderRight: "1px solid var(--border)",
+            borderRight: projectDrawerFullscreen ? "none" : "1px solid var(--border)",
             background: "var(--bg-soft)",
             boxShadow: "16px 0 40px rgba(0,0,0,0.18)",
             display: "flex",
@@ -6407,28 +7321,52 @@ export default function App() {
           >
             <div style={{ display: "grid", gap: 2 }}>
               <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: "0.02em", color: "var(--text)" }}>
-                Projects
+                Project
               </div>
               <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {projects.length} total
+                One app project
               </div>
             </div>
-            <button
-              onClick={() => setShowProjectDrawer(false)}
-              style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg-elev)",
-                color: "var(--text)",
-                borderRadius: 8,
-                padding: "6px 10px",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 600,
-              }}
-              title="Close Projects"
-            >
-              Close
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => setProjectDrawerFullscreen((v) => !v)}
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  color: "var(--text)",
+                  borderRadius: 8,
+                  width: 32,
+                  height: 32,
+                  padding: 0,
+                  cursor: "pointer",
+                  fontSize: 14,
+                  fontWeight: 700,
+                }}
+                title="Toggle Project Drawer Fullscreen"
+                aria-label={projectDrawerFullscreen ? "Windowed" : "Fullscreen"}
+              >
+                {projectDrawerFullscreen ? "❐" : "⛶"}
+              </button>
+              <button
+                onClick={() => setShowProjectDrawer(false)}
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  color: "var(--text)",
+                  borderRadius: 8,
+                  width: 32,
+                  height: 32,
+                  padding: 0,
+                  cursor: "pointer",
+                  fontSize: 14,
+                  fontWeight: 700,
+                }}
+                title="Close Project Drawer"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
           </div>
 
           <div
@@ -6447,6 +7385,9 @@ export default function App() {
             <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text)" }}>
               {activeProject?.name || projectName || "Untitled"}
             </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Active Screen: {activeScreen?.name || screenName || "Screen 1"}
+            </div>
             {activeProjectUpdatedBy ? (
               <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 Updated by {activeProjectUpdatedBy}
@@ -6459,21 +7400,7 @@ export default function App() {
             ) : null}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, padding: "0 12px 12px" }}>
-            <button
-              onClick={newProjectFromDb}
-              style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "7px 10px" }}
-              title="Add Project"
-            >
-              New
-            </button>
-            <button
-              onClick={() => setShowProjectNameInput((v) => !v)}
-              style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "7px 10px" }}
-              title="Edit Project Name"
-            >
-              Rename
-            </button>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6, padding: "0 12px 12px" }}>
             <button
               onClick={saveProjectToDb}
               style={{
@@ -6486,156 +7413,240 @@ export default function App() {
               }}
               title="Save Project"
             >
-              Save
-            </button>
-            <button
-              onClick={() => deleteProjectFromDb(activeProjectId)}
-              disabled={!activeProjectId}
-              style={{
-                ...topMenuTextButtonStyle,
-                fontSize: 11,
-                padding: "7px 10px",
-                border: "1px solid #f04438",
-                color: "#ffffff",
-                background: activeProjectId ? "#f04438" : "rgba(244,68,56,0.25)",
-                cursor: activeProjectId ? "pointer" : "not-allowed",
-                opacity: activeProjectId ? 1 : 0.6,
-              }}
-              title="Delete Project"
-            >
-              Delete
+              Save Project
             </button>
           </div>
 
-          {showProjectNameInput ? (
-            <div
-              style={{
-                display: "grid",
-                gap: 8,
-                padding: 12,
-                margin: "0 12px 12px",
-                border: "1px solid var(--border)",
-                borderRadius: 10,
-                background: "var(--bg-elev)",
-              }}
-            >
-              <input
-                value={projectName}
-                onChange={(e) => setProjectName(e.target.value)}
-                placeholder="Project name"
-                style={{
-                  border: "1px solid var(--border)",
-                  background: "var(--bg)",
-                  color: "var(--text)",
-                  borderRadius: 8,
-                  padding: "8px 10px",
-                  fontSize: 12,
-                  fontWeight: 600,
-                }}
-              />
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
-                <button
-                  onClick={cancelNewProjectInput}
-                  style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 10px" }}
-                  title="Cancel Edit"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={saveProjectToDb}
-                  style={{
-                    ...topMenuTextButtonStyle,
-                    fontSize: 11,
-                    padding: "6px 10px",
-                    border: "1px solid #2b6cff",
-                    background: "#2b6cff",
-                    color: "#ffffff",
-                  }}
-                  title="Save Name"
-                >
-                  Save Name
-                </button>
-              </div>
+          <div
+            style={{
+              display: "grid",
+              gap: 8,
+              padding: 12,
+              margin: "0 12px 12px",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              background: "var(--bg-elev)",
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+              SVG Background Colors
             </div>
-          ) : null}
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center" }}>
+              <div style={{ fontSize: 12, color: "var(--text)" }}>Light</div>
+              <input
+                type="color"
+                value={projectCanvasBackground.light || DEFAULT_CANVAS_BG_LIGHT}
+                onChange={(e) => {
+                  const next = normalizeProjectCanvasBackground({
+                    ...projectCanvasBackground,
+                    light: e.target.value,
+                  });
+                  setProjectCanvasBackground(next);
+                  scheduleProjectAutoSave();
+                }}
+                style={{ width: "100%", height: 32, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}
+                title="Canvas background color in light mode"
+              />
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{projectCanvasBackground.light}</div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center" }}>
+              <div style={{ fontSize: 12, color: "var(--text)" }}>Dark</div>
+              <input
+                type="color"
+                value={projectCanvasBackground.dark || DEFAULT_CANVAS_BG_DARK}
+                onChange={(e) => {
+                  const next = normalizeProjectCanvasBackground({
+                    ...projectCanvasBackground,
+                    dark: e.target.value,
+                  });
+                  setProjectCanvasBackground(next);
+                  scheduleProjectAutoSave();
+                }}
+                style={{ width: "100%", height: 32, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}
+                title="Canvas background color in dark mode"
+              />
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{projectCanvasBackground.dark}</div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => {
+                  const next = normalizeProjectCanvasBackground(null);
+                  setProjectCanvasBackground(next);
+                  scheduleProjectAutoSave();
+                }}
+                style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 10px" }}
+                title="Reset canvas background colors to defaults"
+              >
+                Reset Defaults
+              </button>
+            </div>
+          </div>
 
-          <div style={{ padding: "0 12px 8px" }}>
+          <div
+            style={{
+              display: "grid",
+              gap: 10,
+              padding: 12,
+              margin: "0 12px 12px",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              background: "var(--bg-elev)",
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Project Name</div>
             <input
-              value={projectSearch}
-              onChange={(e) => setProjectSearch(e.target.value)}
-              placeholder="Search projects..."
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                saveProjectToDb();
+              }}
+              placeholder="Project name"
               style={{
-                width: "100%",
                 border: "1px solid var(--border)",
-                background: "var(--bg-elev)",
+                background: "var(--bg)",
                 color: "var(--text)",
                 borderRadius: 8,
                 padding: "8px 10px",
                 fontSize: 12,
+                fontWeight: 600,
               }}
             />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+              <button
+                onClick={saveProjectToDb}
+                style={{
+                  ...topMenuTextButtonStyle,
+                  fontSize: 11,
+                  padding: "6px 10px",
+                  border: "1px solid #2b6cff",
+                  background: "#2b6cff",
+                  color: "#ffffff",
+                }}
+                title="Save Project Name"
+              >
+                Save Name
+              </button>
+            </div>
           </div>
+
           <div
             style={{
-              padding: "0 12px 10px",
-              fontSize: 11,
-              fontWeight: 700,
-              color: "var(--text-muted)",
-              borderBottom: "1px solid var(--border)",
+              display: "grid",
+              gap: 8,
+              padding: 12,
+              margin: "0 12px 12px",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              background: "var(--bg-elev)",
             }}
           >
-            {filteredProjects.length} shown
-          </div>
-          <div style={{ flex: 1, overflow: "auto", padding: "0 12px 12px" }} className="vizi-scroll">
-            {filteredProjects.length === 0 ? (
-              <div
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Screens</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{screens.length} total</div>
+            </div>
+            <input
+              value={screenName}
+              onChange={(e) => renameActiveScreen(e.target.value)}
+              placeholder="Screen name"
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                color: "var(--text)",
+                borderRadius: 8,
+                padding: "9px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              <button
+                onClick={addScreen}
                 style={{
-                  marginTop: 12,
-                  border: "1px dashed var(--border)",
-                  borderRadius: 8,
-                  padding: 12,
-                  fontSize: 12,
-                  color: "var(--text-muted)",
+                  ...topMenuTextButtonStyle,
+                  fontSize: 11,
+                  padding: "8px 10px",
+                  border: "1px solid #2b6cff",
+                  background: "#2b6cff",
+                  color: "#ffffff",
+                  fontWeight: 800,
                 }}
+                title="Add Screen"
               >
-                No projects match your search.
-              </div>
-            ) : null}
-            {filteredProjects.map((p) => {
-              const active = p.id === activeProjectId;
-              return (
-                <button
-                  key={`proj-list-${p.id}`}
-                  onClick={() => {
-                    setActiveProjectId(p.id);
-                    setShowProjectNameInput(false);
-                    openProjectFromDb(p.id);
-                  }}
-                  style={{
-                    width: "100%",
-                    textAlign: "left",
-                    marginBottom: 8,
-                    border: active ? "1px solid #2b6cff" : "1px solid var(--border)",
-                    background: active ? "color-mix(in srgb, #2b6cff 20%, var(--bg-elev))" : "var(--bg-elev)",
-                    color: "var(--text)",
-                    borderRadius: 8,
-                    padding: "10px 12px",
-                    fontSize: 12,
-                    fontWeight: active ? 800 : 600,
-                    cursor: "pointer",
-                    display: "grid",
-                    gap: 2,
-                  }}
-                  title={p.name}
-                >
-                  <span>{p.name || "Untitled"}</span>
-                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500 }}>
-                    {p.id}
-                  </span>
-                </button>
-              );
-            })}
+                + New Screen
+              </button>
+              <button
+                onClick={deleteActiveScreen}
+                disabled={screens.length <= 1}
+                style={{
+                  ...topMenuTextButtonStyle,
+                  fontSize: 11,
+                  padding: "8px 10px",
+                  border: "1px solid #f04438",
+                  background: screens.length > 1 ? "#f04438" : "rgba(244,68,56,0.25)",
+                  color: "#fff",
+                  cursor: screens.length > 1 ? "pointer" : "not-allowed",
+                  opacity: screens.length > 1 ? 1 : 0.6,
+                  fontWeight: 800,
+                }}
+                title="Delete Active Screen"
+              >
+                Delete
+              </button>
+            </div>
+            <div style={{ maxHeight: 220, overflow: "auto", paddingRight: 2 }} className="vizi-scroll">
+              {(screens || []).map((s) => {
+                const active = s.id === activeScreenId;
+                return (
+                  <button
+                    key={`screen-item-${s.id}`}
+                    data-preserve-style="true"
+                    onClick={() => switchToScreen(s.id)}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      marginBottom: 6,
+                      border: active ? "1px solid #2b6cff" : "1px solid var(--border)",
+                      background: active ? "#2b6cff" : "var(--bg)",
+                      color: active ? "#ffffff" : "var(--text)",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      fontSize: 12,
+                      fontWeight: active ? 800 : 600,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                    title={s.name}
+                  >
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: 8 }}>
+                      {s.name || "Screen"}
+                    </span>
+                    {active ? (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 800,
+                          border: "1px solid rgba(255,255,255,0.7)",
+                          color: "#ffffff",
+                          borderRadius: 999,
+                          padding: "2px 6px",
+                          background: "rgba(255,255,255,0.14)",
+                          flex: "0 0 auto",
+                        }}
+                      >
+                        Active
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
           </div>
+
+          <div style={{ flex: 1 }} />
           {!!projectStatus && (
             <div
               style={{
@@ -6662,11 +7673,11 @@ export default function App() {
             zIndex: 92,
             padding: "6px 10px",
             borderRadius: 8,
-            border: "1px solid rgba(0,0,0,0.12)",
-            background: "white",
+            border: "1px solid var(--border)",
+            background: "var(--bg-elev)",
             cursor: "pointer",
             boxShadow: "0 6px 14px rgba(0,0,0,0.10)",
-            color: "#111",
+            color: "var(--text)",
             fontSize: 12,
             fontWeight: 600,
             letterSpacing: "0.02em",
@@ -6678,6 +7689,7 @@ export default function App() {
     </div>
   );
 }
+
 
 
 

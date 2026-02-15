@@ -42,6 +42,8 @@ const btnStyle = {
   color: "var(--text)",
   boxShadow: "0 6px 18px rgba(0,0,0,0.08)",
 };
+const MIN_PANEL_HEIGHT = 280;
+const MAX_PANEL_HEIGHT = 500;
 
 function Row({
   label,
@@ -51,6 +53,7 @@ function Row({
   placeholder,
   type = "text",
   showHex = false,
+  disabled = false,
 }) {
   const textValue = value ?? "";
   const isColor = type === "color";
@@ -91,6 +94,7 @@ function Row({
             onChange={(e) => onChange(e.target.value)}
             onBlur={commit}
             onKeyDown={handleKeyDown}
+            disabled={disabled}
             style={controlStyle}
           />
         </div>
@@ -102,6 +106,7 @@ function Row({
           onChange={(e) => onChange(e.target.value)}
           onBlur={commit}
           onKeyDown={handleKeyDown}
+          disabled={disabled}
           style={controlStyle}
         />
       )}
@@ -201,6 +206,14 @@ function SelectRow({
   );
 }
 
+function splitSeriesTags(value) {
+  return String(value ?? "")
+    .split(/\r?\n|,/)
+    .map((x) => String(x || "").trim())
+    .filter(Boolean)
+    .filter((v, i, arr) => arr.findIndex((x) => x.toLowerCase() === v.toLowerCase()) === i);
+}
+
 export default function PropertiesPanel({
   showHUD,
   setShowHUD,
@@ -243,6 +256,7 @@ export default function PropertiesPanel({
   applySingleFontFamily,
   applySingleFontWeight,
   applySingleTextAlign,
+  applySingleWidgetSettings,
 
   opcTags,
   duplicateOffset,
@@ -324,6 +338,7 @@ export default function PropertiesPanel({
     applySingleFontFamily,
     applySingleFontWeight,
     applySingleTextAlign,
+    applySingleWidgetSettings,
   };
 
   // ✅ refresh bbox draft when hudFields x/y/w/h update
@@ -375,7 +390,7 @@ export default function PropertiesPanel({
     }
     const rect = panelRef.current?.getBoundingClientRect();
     const panelW = rect?.width ?? 320;
-    const panelH = rect?.height ?? 200;
+    const panelH = Math.max(rect?.height ?? MIN_PANEL_HEIGHT, MIN_PANEL_HEIGHT);
     const minX = safeBounds.left;
     const minY = safeBounds.top;
     const maxX = Math.max(minX, window.innerWidth - panelW - safeBounds.right);
@@ -417,9 +432,8 @@ export default function PropertiesPanel({
       const maxX = rect
         ? Math.max(minX, window.innerWidth - rect.width - safeBounds.right)
         : window.innerWidth;
-      const maxY = rect
-        ? Math.max(minY, window.innerHeight - rect.height - safeBounds.bottom)
-        : window.innerHeight;
+      const panelH = Math.max(rect?.height ?? MIN_PANEL_HEIGHT, MIN_PANEL_HEIGHT);
+      const maxY = Math.max(minY, window.innerHeight - panelH - safeBounds.bottom);
       setPanelPos({
         x: Math.min(Math.max(minX, e.clientX - dragRef.current.ox), maxX),
         y: Math.min(Math.max(minY, e.clientY - dragRef.current.oy), maxY),
@@ -436,9 +450,8 @@ export default function PropertiesPanel({
     };
   }, []);
 
-  if (!showHUD || !selectedBBox) return null;
-
   const isSvg = isSingle && singleKind === "SVG";
+  const isWidget = isSingle && singleKind === "Widget";
   const isPoly = isSingle && singleKind === "Polyline";
   const isText = isSingle && singleKind === "Text";
 
@@ -479,6 +492,82 @@ export default function PropertiesPanel({
   const fontWeightVal = hudFields?.fontWeight ?? "400";
   const textVal = hudFields?.text ?? "Text";
   const textFillVal = hudFields?.fill ?? "#808080"; // ✅ text uses fill
+  const widgetKindVal = String(hudFields?.widgetKind || "");
+  const widgetTitleVal = String(hudFields?.widgetTitle || "");
+  const widgetMinVal = String(hudFields?.widgetMin ?? "0");
+  const widgetMaxVal = String(hudFields?.widgetMax ?? "100");
+  const widgetDecimalsVal = String(hudFields?.widgetDecimals ?? "0");
+  const widgetUnitVal = String(hudFields?.widgetUnit || "");
+  const widgetHistoryPointsVal = String(hudFields?.widgetHistoryPoints ?? "40");
+  const widgetRowCountVal = String(hudFields?.widgetRowCount ?? "4");
+  const widgetRangeFromVal = String(hudFields?.widgetRangeFrom || "");
+  const widgetRangeToVal = String(hudFields?.widgetRangeTo || "");
+  const widgetWindowMinutesVal = String(hudFields?.widgetWindowMinutes ?? "60");
+  const widgetDurationPresetVal = String(hudFields?.widgetDurationPreset ?? "1h");
+  const widgetMaxPointsVal = String(hudFields?.widgetMaxPoints ?? "500");
+  const widgetLineTensionVal = String(hudFields?.widgetLineTension ?? "0.34");
+  const widgetShowPointsVal = String(hudFields?.widgetShowPoints ?? "true");
+  const widgetSeriesTagsVal = String(hudFields?.widgetSeriesTags ?? "");
+  const widgetAxisModeVal = String(hudFields?.widgetAxisMode ?? "auto");
+  const widgetBarSourceModeRaw = String(hudFields?.widgetBarSourceMode || "table").toLowerCase();
+  const widgetBarSourceModeVal =
+    widgetBarSourceModeRaw === "query"
+      ? "query"
+      : widgetBarSourceModeRaw === "tags"
+      ? "tags"
+      : "table";
+  const widgetBarTableVal = String(hudFields?.widgetBarTable || "");
+  const widgetBarFieldVal = String(hudFields?.widgetBarField || "");
+  const widgetBarLabelFieldVal = String(hudFields?.widgetBarLabelField || "");
+  const widgetBarQueryVal = String(hudFields?.widgetBarQuery || "");
+  const widgetBarQueryValueFieldVal = String(hudFields?.widgetBarQueryValueField || "");
+  const widgetBarQueryLabelFieldVal = String(hudFields?.widgetBarQueryLabelField || "");
+  const [seriesSearch, setSeriesSearch] = useState("");
+  const [seriesPick, setSeriesPick] = useState("");
+  const selectedSeriesTags = useMemo(() => splitSeriesTags(widgetSeriesTagsVal), [widgetSeriesTagsVal]);
+  const selectableSeriesTagOptions = useMemo(() => {
+    const selected = new Set(selectedSeriesTags.map((x) => x.toLowerCase()));
+    const q = String(seriesSearch || "").trim().toLowerCase();
+    return (tagOptions || [])
+      .filter((opt) => String(opt?.value || "").trim() !== "")
+      .filter((opt) => {
+        const v = String(opt?.value || "").trim();
+        if (!v) return false;
+        if (selected.has(v.toLowerCase())) return false;
+        if (!q) return true;
+        return `${opt?.label || ""} ${v} ${opt?.group || ""}`.toLowerCase().includes(q);
+      });
+  }, [tagOptions, selectedSeriesTags, seriesSearch]);
+  const dbTableFieldMap = useMemo(() => {
+    const map = new Map();
+    (tagOptions || []).forEach((opt) => {
+      const raw = String(opt?.value || "").trim();
+      if (!raw.toLowerCase().startsWith("db:")) return;
+      const expr = raw.slice(3).trim();
+      const dot = expr.indexOf(".");
+      if (dot <= 0 || dot >= expr.length - 1) return;
+      const table = expr.slice(0, dot).trim();
+      const field = expr.slice(dot + 1).trim();
+      if (!table || !field) return;
+      if (!map.has(table)) map.set(table, new Set());
+      map.get(table).add(field);
+    });
+    return map;
+  }, [tagOptions]);
+  const barTableOptions = useMemo(
+    () => Array.from(dbTableFieldMap.keys()).sort((a, b) => a.localeCompare(b)).map((t) => ({ value: t, label: t })),
+    [dbTableFieldMap]
+  );
+  const barFieldOptions = useMemo(
+    () =>
+      Array.from(dbTableFieldMap.get(widgetBarTableVal) || [])
+        .sort((a, b) => a.localeCompare(b))
+        .map((f) => ({ value: f, label: f })),
+    [dbTableFieldMap, widgetBarTableVal]
+  );
+  const isTrendChartKind =
+    widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart";
+  const chartMinMaxDisabled = isTrendChartKind && widgetAxisModeVal !== "manual";
   const duplicateOffsetVal = dupDraft;
   const svgTemplateOptions = (svgFiles || []).map((f) => ({
     value: f.key,
@@ -496,6 +585,37 @@ export default function PropertiesPanel({
     setTimeout(() => {
       setBtnPulse((p) => ({ ...p, [key]: false }));
     }, 140);
+  };
+
+  useEffect(() => {
+    if (!selectableSeriesTagOptions.length) {
+      setSeriesPick("");
+      return;
+    }
+    const current = String(seriesPick || "").trim();
+    if (current && selectableSeriesTagOptions.some((opt) => String(opt.value) === current)) return;
+    setSeriesPick(String(selectableSeriesTagOptions[0]?.value || ""));
+  }, [selectableSeriesTagOptions, seriesPick]);
+
+  if (!showHUD || !selectedBBox) return null;
+
+  const commitSeriesTags = (nextTags) => {
+    const text = splitSeriesTags(Array.isArray(nextTags) ? nextTags.join("\n") : nextTags).join("\n");
+    const nextHud = { ...hudFields, widgetSeriesTags: text };
+    setHudFields(nextHud);
+    applySingleWidgetSettings?.({ ...nextHud, __seriesTagsEdited: true });
+  };
+
+  const addSeriesTag = () => {
+    const pick = String(seriesPick || "").trim();
+    if (!pick) return;
+    commitSeriesTags([...selectedSeriesTags, pick]);
+  };
+
+  const removeSeriesTag = (value) => {
+    const target = String(value || "").trim().toLowerCase();
+    if (!target) return;
+    commitSeriesTags(selectedSeriesTags.filter((t) => String(t).trim().toLowerCase() !== target));
   };
 
   const applyAll = () => {
@@ -528,6 +648,11 @@ export default function PropertiesPanel({
         return;
       }
 
+      if (isWidget) {
+        a.applySingleWidgetSettings?.(next);
+        return;
+      }
+
       if (isPoly) {
         a.applySingleStroke?.(next.stroke);
         a.applySingleArrowStart?.(next.arrowStart ?? "none");
@@ -554,6 +679,8 @@ export default function PropertiesPanel({
         position: "fixed",
         left: panelPos.x,
         top: panelPos.y,
+        display: "flex",
+        flexDirection: "column",
         background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
         border: "1px solid var(--border)",
         borderRadius: 12,
@@ -564,6 +691,9 @@ export default function PropertiesPanel({
         color: "var(--text)",
         zIndex: 35,
         minWidth: 320,
+        minHeight: MIN_PANEL_HEIGHT,
+        maxHeight: `min(${MAX_PANEL_HEIGHT}px, calc(100vh - ${safeBounds.top + safeBounds.bottom + 16}px))`,
+        overflow: "hidden",
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
@@ -642,21 +772,31 @@ export default function PropertiesPanel({
       <div
         style={{
           marginTop: 10,
-          display: "grid",
-          gridTemplateColumns: "92px 1fr",
-          columnGap: 8,
-          rowGap: 6,
+          flex: "1 1 auto",
+          minHeight: 0,
+          maxHeight: "100%",
+          overflowY: "auto",
+          overflowX: "hidden",
+          paddingRight: 4,
         }}
       >
-        {isSingle && (
-          <>
-            <Row
-              label="ID"
-              value={hudFields.id}
-              onChange={(v) => setHudFields((p) => ({ ...p, id: v }))}
-              onBlur={() => applySingleId(hudFields.id)}
-              placeholder="Element ID"
-            />
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "92px 1fr",
+            columnGap: 8,
+            rowGap: 6,
+          }}
+        >
+          {isSingle && (
+            <>
+              <Row
+                label="ID"
+                value={hudFields.id}
+                onChange={(v) => setHudFields((p) => ({ ...p, id: v }))}
+                onBlur={() => applySingleId(hudFields.id)}
+                placeholder="Element ID"
+              />
 
             <SelectRow
               label="Tag Path"
@@ -668,49 +808,424 @@ export default function PropertiesPanel({
               onBlur={() => {}}
               options={isSvg ? svgTagGroupOptions : tagOptions}
               searchable
-              searchPlaceholder={isSvg ? "Search tag groups..." : "Search tags..."}
+              searchPlaceholder={isSvg ? "Search tag groups..." : "Search tags or db binding..."}
             />
+            {isWidget ? (
+              <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+                Use tag path for OPC binding or `db:table.column` for database binding.
+              </div>
+            ) : isSvg ? (
+              <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+                SVGs use tag-group bindings like `Topic.GroupName`.
+              </div>
+              ) : null}
 
-          {/* SVG */}
-          {isSvg && (
-            <>
-              <SelectRow
-                label="Template"
-                value={svgTemplateKey || svgTemplateOptions?.[0]?.value || ""}
-                onChange={(v) => {
-                  if (!singleOverlayId) return;
-                  swapSvgTemplate?.(singleOverlayId, v);
-                }}
-                onBlur={() => {}}
-                options={svgTemplateOptions}
-              />
-              {isGeneratedTemplate && (
-                <Row
-                  label="Template Name"
-                  value={templateNameDraft}
-                  onChange={(v) => setTemplateNameDraft(v)}
-                  onBlur={() => {
-                    const next = String(templateNameDraft || "").trim();
-                    if (!next) {
-                      setTemplateNameDraft(svgTemplateName || "");
-                      return;
-                    }
-                    renameSvgTemplate?.(svgTemplateKey, next);
+            {/* SVG */}
+            {isSvg && (
+              <>
+                <SelectRow
+                  label="Template"
+                  value={svgTemplateKey || svgTemplateOptions?.[0]?.value || ""}
+                  onChange={(v) => {
+                    if (!singleOverlayId) return;
+                    swapSvgTemplate?.(singleOverlayId, v);
                   }}
-                  placeholder="Generated.svg"
+                  onBlur={() => {}}
+                  options={svgTemplateOptions}
                 />
+                {isGeneratedTemplate && (
+                  <Row
+                    label="Template Name"
+                    value={templateNameDraft}
+                    onChange={(v) => setTemplateNameDraft(v)}
+                    onBlur={() => {
+                      const next = String(templateNameDraft || "").trim();
+                      if (!next) {
+                        setTemplateNameDraft(svgTemplateName || "");
+                        return;
+                      }
+                      renameSvgTemplate?.(svgTemplateKey, next);
+                    }}
+                    placeholder="Generated.svg"
+                  />
+                )}
+                <Row
+                  label="Fill"
+                  type="color"
+                  showHex
+                  value={hudFields.fill}
+                  onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
+                  onBlur={() => {}}
+                  placeholder="#ffffff"
+                />
+              </>
               )}
-              <Row
-                label="Fill"
-                type="color"
-                showHex
-                value={hudFields.fill}
-                onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
-                onBlur={() => {}}
-                placeholder="#ffffff"
-              />
-            </>
-          )}
+
+            {/* Widget */}
+            {isWidget && (
+              <>
+                <Row
+                  label="Widget Type"
+                  value={widgetKindVal}
+                  onChange={() => {}}
+                  onBlur={() => {}}
+                  placeholder=""
+                  disabled
+                />
+                <Row
+                  label="Title"
+                  value={widgetTitleVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, widgetTitle: v }))}
+                  onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                  placeholder="Optional title"
+                />
+                {(widgetKindVal === "gauge" || widgetKindVal === "kpi" || widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart") && (
+                  <>
+                    {isTrendChartKind ? (
+                      <SelectRow
+                        label="Axis Mode"
+                        value={widgetAxisModeVal}
+                        onChange={(v) => {
+                          setHudFields((p) => ({ ...p, widgetAxisMode: v }));
+                          applySingleWidgetSettings?.({ ...hudFields, widgetAxisMode: v });
+                        }}
+                        onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                        options={[
+                          { value: "auto", label: "Auto" },
+                          { value: "manual", label: "Manual" },
+                        ]}
+                      />
+                    ) : null}
+                    <Row
+                      label="Min"
+                      type="number"
+                      value={widgetMinVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetMin: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="0"
+                      disabled={chartMinMaxDisabled}
+                    />
+                    <Row
+                      label="Max"
+                      type="number"
+                      value={widgetMaxVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetMax: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="100"
+                      disabled={chartMinMaxDisabled}
+                    />
+                  </>
+                )}
+                {(widgetKindVal === "kpi" || widgetKindVal === "gauge" || widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart") && (
+                  <>
+                    <Row
+                      label="Decimals"
+                      type="number"
+                      value={widgetDecimalsVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetDecimals: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="0"
+                    />
+                    <Row
+                      label="Unit"
+                      value={widgetUnitVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetUnit: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="%, psi, C"
+                    />
+                  </>
+                )}
+                {widgetKindVal === "statusTable" && (
+                  <>
+                    <Row
+                      label="History"
+                      type="number"
+                      value={widgetHistoryPointsVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetHistoryPoints: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="40"
+                    />
+                  </>
+                )}
+                {(widgetKindVal === "lineChart" || widgetKindVal === "areaChart") && (
+                  <SelectRow
+                    label="Duration"
+                    value={widgetDurationPresetVal}
+                    onChange={(v) => {
+                      const presetToMinutes = {
+                        "15m": "15",
+                        "30m": "30",
+                        "1h": "60",
+                        "2h": "120",
+                        "6h": "360",
+                        "12h": "720",
+                        "24h": "1440",
+                        "7d": "10080",
+                      };
+                      const minutes = presetToMinutes[v] || "60";
+                      const next = {
+                        ...hudFields,
+                        widgetDurationPreset: v,
+                        widgetWindowMinutes: minutes,
+                        widgetRangeFrom: "",
+                        widgetRangeTo: "",
+                      };
+                      setHudFields(next);
+                      applySingleWidgetSettings?.(next);
+                    }}
+                    onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                    options={[
+                      { value: "15m", label: "15 min" },
+                      { value: "30m", label: "30 min" },
+                      { value: "1h", label: "1 hour" },
+                      { value: "2h", label: "2 hours" },
+                      { value: "6h", label: "6 hours" },
+                      { value: "12h", label: "12 hours" },
+                      { value: "24h", label: "24 hours" },
+                      { value: "7d", label: "7 days" },
+                    ]}
+                  />
+                )}
+                {widgetKindVal === "barChart" && (
+                  <>
+                    <SelectRow
+                      label="Data Source"
+                      value={widgetBarSourceModeVal}
+                      onChange={(v) => {
+                        const raw = String(v || "").toLowerCase();
+                        const mode = raw === "query" ? "query" : raw === "tags" ? "tags" : "table";
+                        const next = { ...hudFields, widgetBarSourceMode: mode };
+                        setHudFields(next);
+                        applySingleWidgetSettings?.(next);
+                      }}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={[
+                        { value: "table", label: "Table" },
+                        { value: "query", label: "Query" },
+                        { value: "tags", label: "Tags" },
+                      ]}
+                    />
+                    {widgetBarSourceModeVal === "table" ? (
+                      <>
+                        <SelectRow
+                          label="Table"
+                          value={widgetBarTableVal}
+                          onChange={(v) => {
+                            const table = String(v || "");
+                            const fieldSet = Array.from(dbTableFieldMap.get(table) || []);
+                            const keepField = fieldSet.includes(widgetBarFieldVal) ? widgetBarFieldVal : (fieldSet[0] || "");
+                            const keepLabel = widgetBarLabelFieldVal && fieldSet.includes(widgetBarLabelFieldVal)
+                              ? widgetBarLabelFieldVal
+                              : "";
+                            const next = {
+                              ...hudFields,
+                              widgetBarTable: table,
+                              widgetBarField: keepField,
+                              widgetBarLabelField: keepLabel,
+                            };
+                            setHudFields(next);
+                            applySingleWidgetSettings?.(next);
+                          }}
+                          onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                          options={barTableOptions.length ? barTableOptions : [{ value: "", label: "No DB tables" }]}
+                        />
+                        <SelectRow
+                          label="Value Col"
+                          value={widgetBarFieldVal}
+                          onChange={(v) => {
+                            const next = { ...hudFields, widgetBarField: String(v || "") };
+                            setHudFields(next);
+                            applySingleWidgetSettings?.(next);
+                          }}
+                          onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                          options={barFieldOptions.length ? barFieldOptions : [{ value: "", label: "No fields" }]}
+                        />
+                        <SelectRow
+                          label="Label Col"
+                          value={widgetBarLabelFieldVal}
+                          onChange={(v) => {
+                            const next = { ...hudFields, widgetBarLabelField: String(v || "") };
+                            setHudFields(next);
+                            applySingleWidgetSettings?.(next);
+                          }}
+                          onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                          options={[{ value: "", label: "(Auto)" }, ...barFieldOptions]}
+                        />
+                      </>
+                    ) : widgetBarSourceModeVal === "query" ? (
+                      <>
+                        <div style={labelStyle}>SQL Query</div>
+                        <textarea
+                          value={widgetBarQueryVal}
+                          onChange={(e) => setHudFields((p) => ({ ...p, widgetBarQuery: e.target.value }))}
+                          onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                          placeholder="SELECT category, total FROM your_view LIMIT 20"
+                          style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 8,
+                            padding: "6px 8px",
+                            fontSize: 12,
+                            minHeight: 72,
+                            resize: "vertical",
+                            background: "var(--bg-elev)",
+                            color: "var(--text)",
+                          }}
+                        />
+                        <Row
+                          label="Value Col"
+                          value={widgetBarQueryValueFieldVal}
+                          onChange={(v) => setHudFields((p) => ({ ...p, widgetBarQueryValueField: v }))}
+                          onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                          placeholder="(Auto first numeric)"
+                        />
+                        <Row
+                          label="Label Col"
+                          value={widgetBarQueryLabelFieldVal}
+                          onChange={(v) => setHudFields((p) => ({ ...p, widgetBarQueryLabelField: v }))}
+                          onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                          placeholder="(Auto first text)"
+                        />
+                      </>
+                    ) : (
+                      <div style={{ gridColumn: "2 / 3", fontSize: 11, color: "var(--text-muted)" }}>
+                        Use Series Tags below. Each tag renders one bar with its live value.
+                      </div>
+                    )}
+                    <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+                      Choose table/query dataset or use multiple live OPC tags.
+                    </div>
+                  </>
+                )}
+                {(widgetKindVal === "lineChart" || widgetKindVal === "areaChart") && (
+                  <>
+                    <Row
+                      label="Line Smooth"
+                      type="number"
+                      value={widgetLineTensionVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetLineTension: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="0.34"
+                    />
+                    <SelectRow
+                      label="Show Points"
+                      value={widgetShowPointsVal}
+                      onChange={(v) => {
+                        setHudFields((p) => ({ ...p, widgetShowPoints: v }));
+                        applySingleWidgetSettings?.({ ...hudFields, widgetShowPoints: v });
+                      }}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={[
+                        { value: "true", label: "Yes" },
+                        { value: "false", label: "No" },
+                      ]}
+                    />
+                  </>
+                )}
+                {(widgetKindVal === "lineChart" || (widgetKindVal === "barChart" && widgetBarSourceModeVal === "tags")) && (
+                  <>
+                    <div style={labelStyle}>{widgetKindVal === "barChart" ? "Bar Tags" : "Series Tags"}</div>
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {selectedSeriesTags.length === 0 ? (
+                          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>No series tags selected.</span>
+                        ) : (
+                          selectedSeriesTags.map((tag) => (
+                            <button
+                              key={tag}
+                              type="button"
+                              onClick={() => removeSeriesTag(tag)}
+                              title="Remove series"
+                              style={{
+                                border: "1px solid #f04438",
+                                background: "#f04438",
+                                borderRadius: 999,
+                                padding: "2px 8px",
+                                fontSize: 11,
+                                color: "#ffffff",
+                                cursor: "pointer",
+                              }}
+                            >
+                              {tag} x
+                            </button>
+                          ))
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={seriesSearch}
+                        onChange={(e) => setSeriesSearch(e.target.value)}
+                        placeholder="Search tags to add..."
+                        style={controlStyle}
+                      />
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6 }}>
+                        <select
+                          value={seriesPick}
+                          onChange={(e) => setSeriesPick(e.target.value)}
+                          style={{ ...controlStyle, lineHeight: "normal" }}
+                        >
+                          {selectableSeriesTagOptions.length === 0 ? (
+                            <option value="">No tags available</option>
+                          ) : (
+                            selectableSeriesTagOptions.map((opt) => (
+                              <option key={`${opt.group || "g"}:${opt.value}`} value={opt.value}>
+                                {opt.group ? `${opt.group} | ` : ""}{opt.label}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={addSeriesTag}
+                          style={{
+                            border: "1px solid #2b6cff",
+                            background: "#2b6cff",
+                            color: "white",
+                            borderRadius: 8,
+                            padding: "0 10px",
+                            fontSize: 12,
+                            cursor: "pointer",
+                          }}
+                          disabled={!seriesPick}
+                        >
+                          Add
+                        </button>
+                      </div>
+                      <textarea
+                        value={widgetSeriesTagsVal}
+                        onChange={(e) => setHudFields((p) => ({ ...p, widgetSeriesTags: e.target.value }))}
+                        onBlur={() => applySingleWidgetSettings?.({ ...hudFields, __seriesTagsEdited: true })}
+                        placeholder="TagA,TagB or one tag per line"
+                        style={{
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          padding: "6px 8px",
+                          fontSize: 12,
+                          minHeight: 54,
+                          resize: "vertical",
+                          background: "var(--bg-elev)",
+                          color: "var(--text)",
+                        }}
+                      />
+                    </div>
+                    <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+                      {widgetKindVal === "barChart"
+                        ? "Add tags with search or edit manually. One line = one bar."
+                        : "Add tags with search or edit manually. One line = one series."}
+                    </div>
+                  </>
+                )}
+                {widgetKindVal === "statusTable" && (
+                  <Row
+                    label="Rows"
+                    type="number"
+                    value={widgetRowCountVal}
+                    onChange={(v) => setHudFields((p) => ({ ...p, widgetRowCount: v }))}
+                    onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                    placeholder="4"
+                  />
+                )}
+              </>
+            )}
 
             {/* Stroke (SVG + Polyline) */}
             {(isSvg || isPoly) && (
@@ -734,7 +1249,7 @@ export default function PropertiesPanel({
                 value={hudFields.strokeWidth}
                 onChange={(v) => setHudFields((p) => ({ ...p, strokeWidth: v }))}
                 onBlur={() => {}}
-                placeholder="2"
+                placeholder=""
               />
             )}
 
@@ -821,60 +1336,61 @@ export default function PropertiesPanel({
                 />
               </>
             )}
-          </>
-        )}
+            </>
+          )}
 
-        {/* Duplicate Offset (always visible, including groups) */}
-        <Row
-          label="Dup Offset"
-          value={duplicateOffsetVal}
-          onChange={(v) => {
-            setDupDraft(v);
-            const n = Number(v);
-            if (Number.isFinite(n)) setDuplicateOffset?.(n);
+          {/* Duplicate Offset (always visible, including groups) */}
+          <Row
+            label="Dup Offset"
+            value={duplicateOffsetVal}
+            onChange={(v) => {
+              setDupDraft(v);
+              const n = Number(v);
+              if (Number.isFinite(n)) setDuplicateOffset?.(n);
+            }}
+            onBlur={() => {
+              const n = Math.max(0, Number(duplicateOffsetVal) || 0);
+              setDupDraft(String(n));
+              setDuplicateOffset?.(n);
+            }}
+            placeholder="20"
+          />
+        </div>
+
+        {/* bbox always visible */}
+        <div
+          style={{
+            marginTop: 12,
+            display: "grid",
+            gridTemplateColumns: "22px 1fr 22px 1fr",
+            columnGap: 8,
+            rowGap: 6,
           }}
-          onBlur={() => {
-            const n = Math.max(0, Number(duplicateOffsetVal) || 0);
-            setDupDraft(String(n));
-            setDuplicateOffset?.(n);
-          }}
-          placeholder="20"
-        />
-      </div>
+        >
+          {["x", "y", "w", "h"].map((k) => (
+            <span key={k} style={{ display: "contents" }}>
+              <div style={{ ...labelStyle, lineHeight: "26px" }}>{k.toUpperCase()}</div>
+              <input
+                type="text"
+                value={bboxDraft[k] ?? ""}
+                onChange={(e) => setBboxDraft((p) => ({ ...p, [k]: e.target.value }))}
+                onBlur={commitBBox}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitBBox();
+                    e.currentTarget.blur();
+                  }
+                }}
+                style={controlStyle}
+              />
+            </span>
+          ))}
+        </div>
 
-      {/* bbox always visible */}
-      <div
-        style={{
-          marginTop: 12,
-          display: "grid",
-          gridTemplateColumns: "22px 1fr 22px 1fr",
-          columnGap: 8,
-          rowGap: 6,
-        }}
-      >
-        {["x", "y", "w", "h"].map((k) => (
-          <span key={k} style={{ display: "contents" }}>
-            <div style={{ ...labelStyle, lineHeight: "26px" }}>{k.toUpperCase()}</div>
-            <input
-              type="text"
-              value={bboxDraft[k] ?? ""}
-              onChange={(e) => setBboxDraft((p) => ({ ...p, [k]: e.target.value }))}
-              onBlur={commitBBox}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  commitBBox();
-                  e.currentTarget.blur();
-                }
-              }}
-              style={controlStyle}
-            />
-          </span>
-        ))}
-      </div>
-
-      <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
-        Tip: press <b>Apply</b> to commit all fields.
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+          Tip: press <b>Apply</b> to commit all fields.
+        </div>
       </div>
     </div>
   );

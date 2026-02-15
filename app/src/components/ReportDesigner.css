@@ -1,0 +1,36 @@
+.report-designer-root button:not([data-preserve-style="true"]) {
+  background: var(--bg-soft) !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+  border-radius: 0 !important;
+}
+
+.report-designer-root .rd-tab-btn {
+  border: 1px solid var(--border) !important;
+  background: transparent !important;
+  color: var(--text) !important;
+  border-radius: 999px !important;
+  padding: 6px 12px !important;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: none;
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+
+.report-designer-root .rd-tab-btn:hover {
+  border-color: color-mix(in srgb, #2b6cff 45%, var(--border)) !important;
+  background: color-mix(in srgb, #2b6cff 10%, transparent) !important;
+}
+
+.report-designer-root .rd-tab-btn.is-active {
+  border-color: #2b6cff !important;
+  background: #2b6cff !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 1px rgba(43, 108, 255, 0.35);
+}
+
+.report-designer-root .rd-tab-btn:focus-visible {
+  outline: 2px solid rgba(43, 108, 255, 0.45);
+  outline-offset: 2px;
+}

@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { toastError, toastSuccess } from "../utils/toast";
 
-export default function DataBrowser() {
+export default function DataBrowser({ embedded = false }) {
   const { table, id } = useParams();
   const navigate = useNavigate();
+  const [embeddedTable, setEmbeddedTable] = useState("");
+  const [embeddedDetailId, setEmbeddedDetailId] = useState("");
+  const currentTable = embedded ? String(embeddedTable || "") : String(table || "");
+  const detailId = embedded ? String(embeddedDetailId || "") : id ? String(id) : "";
   const [tables, setTables] = useState([]);
   const [columns, setColumns] = useState([]);
   const [rows, setRows] = useState([]);
@@ -24,21 +29,22 @@ export default function DataBrowser() {
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [typeMap, setTypeMap] = useState({});
+  const [foreignKeyMeta, setForeignKeyMeta] = useState({});
   const [formEnabled, setFormEnabled] = useState(false);
 
   const tableList = useMemo(() => tables || [], [tables]);
-  const currentTable = table || "";
-  const detailId = id ? String(id) : "";
   const isNewDetail = detailId === "new";
   const tableTitle = currentTable
     ? currentTable
         .replace(/_/g, " ")
         .replace(/\b\w/g, (m) => m.toUpperCase())
     : "";
-  const labelize = (value) =>
-    String(value || "")
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, (m) => m.toUpperCase());
+  const labelize = (value) => {
+    const raw = String(value || "").trim();
+    const withoutId = raw.replace(/_id$/i, "").replace(/Id$/, "");
+    const source = withoutId || raw;
+    return source.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  };
   const isHiddenColumn = (name) => {
     const key = String(name || "");
     if (!key) return false;
@@ -151,11 +157,17 @@ export default function DataBrowser() {
     ...buttonBase,
     background: "transparent",
   };
-  const noticeStyle = {
-    minHeight: 16,
-    marginBottom: 6,
-    fontSize: 12,
-  };
+  useEffect(() => {
+    const msg = String(status || "").trim();
+    if (!msg) return;
+    toastSuccess(msg);
+  }, [status]);
+
+  useEffect(() => {
+    const msg = String(error || "").trim();
+    if (!msg) return;
+    toastError(msg);
+  }, [error]);
 
   useEffect(() => {
     async function loadTables() {
@@ -170,6 +182,14 @@ export default function DataBrowser() {
     }
     loadTables();
   }, []);
+
+  useEffect(() => {
+    if (!embedded) return;
+    if (currentTable) return;
+    if (!Array.isArray(tableList) || !tableList.length) return;
+    setEmbeddedTable(String(tableList[0] || ""));
+    setEmbeddedDetailId("");
+  }, [embedded, currentTable, tableList]);
 
   useEffect(() => {
     function handleStorage(event) {
@@ -227,6 +247,7 @@ export default function DataBrowser() {
       setSelectedId(null);
       setDetail(null);
       setTypeMap({});
+      setForeignKeyMeta({});
       setFormDraft({});
       setFormEnabled(false);
       try {
@@ -240,6 +261,9 @@ export default function DataBrowser() {
           nextTypeMap[c.column_name] = String(c.data_type || "").toLowerCase();
         });
         setTypeMap(nextTypeMap);
+        setForeignKeyMeta(
+          data?.foreignKeys && typeof data.foreignKeys === "object" ? data.foreignKeys : {}
+        );
       } catch (err) {
         setError(err?.message || "Failed to load metadata.");
       }
@@ -336,6 +360,7 @@ export default function DataBrowser() {
     if (!currentTable) return;
     setError("");
     const payload = buildPayload(formDraft);
+    const pendingDetailOrder = Array.isArray(detailFieldOrder) ? [...detailFieldOrder] : [];
     if (currentTable === "routes" && activeProjectId && !payload.project_id) {
       payload.project_id = activeProjectId;
     }
@@ -362,8 +387,8 @@ export default function DataBrowser() {
         setDetail(data.row || null);
         setFormDraft(data.row || {});
       }
+      await saveDetailFields(pendingDetailOrder);
       await reloadRows();
-      await saveDetailFields();
       setFormEnabled(false);
     } catch (err) {
       setError(err?.message || "Save failed.");
@@ -427,6 +452,25 @@ export default function DataBrowser() {
 
   function formatValue(columnName, value) {
     if (value == null) return "";
+    const fkMeta =
+      foreignKeyMeta && typeof foreignKeyMeta === "object"
+        ? foreignKeyMeta[String(columnName || "")]
+        : null;
+    const fkOptions = Array.isArray(fkMeta?.options) ? fkMeta.options : [];
+    if (fkOptions.length) {
+      const valueText = String(value);
+      let match = fkOptions.find((opt) => String(opt?.value ?? "") === valueText);
+      if (!match) {
+        const valueNum = Number(value);
+        if (Number.isFinite(valueNum)) {
+          match = fkOptions.find((opt) => {
+            const optNum = Number(opt?.value);
+            return Number.isFinite(optNum) && optNum === valueNum;
+          });
+        }
+      }
+      if (match) return String(match?.label || match?.value || "");
+    }
     const t = typeMap[columnName] || "";
     if (t.includes("date") || t.includes("time")) {
       const date = new Date(value);
@@ -468,12 +512,13 @@ export default function DataBrowser() {
     }
   }
 
-  async function saveDetailFields() {
+  async function saveDetailFields(orderOverride = null) {
     if (!currentTable) return;
     setError("");
     setStatus("");
     try {
-      const visibleDetailFields = (detailFieldOrder || []).filter((f) => !isHiddenColumn(f));
+      const sourceOrder = Array.isArray(orderOverride) ? orderOverride : detailFieldOrder || [];
+      const visibleDetailFields = sourceOrder.filter((f) => !isHiddenColumn(f));
       const res = await fetch(`/api/db/${currentTable}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -490,10 +535,6 @@ export default function DataBrowser() {
   return (
     <div style={pageStyle}>
       <div style={shellStyle}>
-
-        <div style={noticeStyle}>
-          {error ? <div style={{ color: "#b42318" }}>{error}</div> : null}
-        </div>
 
         <div
           style={{
@@ -512,7 +553,7 @@ export default function DataBrowser() {
               {tableList.map((t) => (
                 <button
                   key={t}
-                  onClick={() => navigate(`/data/${t}`)}
+                  onClick={() => navigateData(`/data/${t}`)}
                   style={{
                     textAlign: "left",
                     border: "1px solid var(--border)",
@@ -552,7 +593,7 @@ export default function DataBrowser() {
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                 <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Details</div>
-                <button onClick={() => navigate(`/data/${currentTable}`)} style={ghostButton}>
+                <button onClick={() => navigateData(`/data/${currentTable}`)} style={ghostButton}>
                   Back to List
                 </button>
               </div>
@@ -586,6 +627,16 @@ export default function DataBrowser() {
                         if (!c) return null;
                         return (
                       (() => {
+                        const fkMeta =
+                          foreignKeyMeta && typeof foreignKeyMeta === "object"
+                            ? foreignKeyMeta[c.column_name]
+                            : null;
+                        const fkOptions = Array.isArray(fkMeta?.options) ? fkMeta.options : [];
+                        const isForeignKeyField = Boolean(
+                          fkMeta &&
+                            String(fkMeta?.referencedTable || "").trim() &&
+                            String(fkMeta?.referencedColumn || "").trim()
+                        );
                         const isProjectField =
                           currentTable === "routes" && c.column_name === "project_id";
                         const isEquipmentTagGroupField =
@@ -642,7 +693,38 @@ export default function DataBrowser() {
                             height: 30,
                           }}
                         >
-                          {isProjectField ? (
+                          {isForeignKeyField ? (
+                            <select
+                              value={formDraft?.[c.column_name] == null ? "" : String(formDraft?.[c.column_name])}
+                              onChange={(e) =>
+                                setFormDraft((p) => ({
+                                  ...p,
+                                  [c.column_name]: e.target.value === "" ? null : e.target.value,
+                                }))
+                              }
+                              disabled={!formEnabled}
+                              style={{
+                                border: "1px solid var(--border)",
+                                borderRadius: 8,
+                                padding: "4px 8px",
+                                fontSize: 12,
+                                outline: "none",
+                                background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
+                                height: 28,
+                                width: "100%",
+                              }}
+                            >
+                              <option value="">Unassigned</option>
+                              {fkOptions.map((opt, idx) => (
+                                <option
+                                  key={`fk-opt-${c.column_name}-${idx}-${String(opt?.value ?? "")}`}
+                                  value={String(opt?.value ?? "")}
+                                >
+                                  {String(opt?.label || opt?.value || "")}
+                                </option>
+                              ))}
+                            </select>
+                          ) : isProjectField ? (
                             <select
                               value={formDraft?.[c.column_name] || ""}
                               onChange={(e) =>
@@ -841,7 +923,7 @@ export default function DataBrowser() {
                 {currentTable ? (
                   <button
                     onClick={() => {
-                      navigate(`/data/${currentTable}/new`);
+                      navigateData(`/data/${currentTable}/new`);
                     }}
                     style={primaryButton}
                   >
@@ -855,7 +937,6 @@ export default function DataBrowser() {
                 </div>
               ) : (
                 <>
-                  {status && <div style={{ marginBottom: 8, fontSize: 12, color: "#12b76a" }}>{status}</div>}
                   {columns.length > 0 && (
                     <div style={{ marginBottom: 8, ...subtleText }}>
                       List fields:
@@ -978,7 +1059,7 @@ export default function DataBrowser() {
                             return (
                               <tr
                                 key={`${rowId}-${i}`}
-                                onClick={() => navigate(`/data/${currentTable}/${rowId}`)}
+                                onClick={() => navigateData(`/data/${currentTable}/${rowId}`)}
                                 style={{
                                   background: "var(--bg-elev)",
                                   cursor: "pointer",
@@ -1018,3 +1099,15 @@ export default function DataBrowser() {
   );
 }
 
+  const navigateData = (path) => {
+    const next = String(path || "").trim();
+    if (!next) return;
+    if (!embedded) {
+      navigate(next);
+      return;
+    }
+    const m = next.match(/^\/data\/([^/]+)(?:\/([^/]+))?$/i);
+    if (!m) return;
+    setEmbeddedTable(decodeURIComponent(String(m[1] || "")));
+    setEmbeddedDetailId(decodeURIComponent(String(m[2] || "")));
+  };

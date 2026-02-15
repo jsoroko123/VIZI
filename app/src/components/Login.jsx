@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
+import { toastError } from "../utils/toast";
 
 export default function Login() {
   const { user, login, register } = useAuth();
@@ -25,6 +26,12 @@ export default function Login() {
       document.body.style.height = prevHeight;
     };
   }, []);
+
+  useEffect(() => {
+    const msg = String(error || "").trim();
+    if (!msg) return;
+    toastError(msg);
+  }, [error]);
 
   async function onSubmit(e) {
     e.preventDefault();
@@ -138,7 +145,11 @@ export default function Login() {
       >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <div>
-            <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.02em" }}>Vizi</div>
+            <img
+              src="/mesora-logo.svg"
+              alt="Mesora"
+              style={{ height: 38, width: "auto", display: "block" }}
+            />
             <div style={{ fontSize: 12, color: "#475467", marginTop: 4 }}>
               {mode === "login" ? "Sign in to continue." : "Create your first user."}
             </div>
@@ -194,7 +205,6 @@ export default function Login() {
               }}
             />
           </label>
-          {error && <div style={{ color: "#b42318", fontSize: 12 }}>{error}</div>}
           <button
             type="submit"
             disabled={busy}

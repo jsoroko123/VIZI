@@ -107,7 +107,8 @@ async function getStaleAppPidsWindows() {
     "Get-CimInstance Win32_Process |",
     "Where-Object {",
     "($_.Name -in @('node.exe','cmd.exe')) -and",
-    "($_.CommandLine -match 'start-all\\.js|--prefix opc-server start|--prefix ai-server start|npm run dev:vite|vite\\\\bin\\\\vite\\.js')",
+    "($_.CommandLine -match 'Projects\\\\Vizi\\\\app') -and",
+    "($_.CommandLine -match 'start-all\\.js|watchdog\\.js|opc-server\\\\server\\.js|ai-server\\\\server\\.js|--prefix opc-server run start:watchdog|--prefix ai-server run start:watchdog|npm run dev:vite|vite\\\\bin\\\\vite\\.js')",
     "} | Select-Object -ExpandProperty ProcessId",
   ].join(" ");
 

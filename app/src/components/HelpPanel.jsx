@@ -43,7 +43,7 @@ export default function HelpPanel({ showHelp = true, setShowHelp, inline = false
         title: "Getting Started",
         summary: "Open a project, pick a tool, then edit the canvas.",
         items: [
-          "Use top bar Project controls to Open, Save, New, and Delete.",
+          "Use top bar Project controls to open, save, create, and delete.",
           "Switch drawers from the top bar: AI, Data, Tags, OPC, and Help.",
           "Toggle Dark/Light mode in the top bar.",
         ],
@@ -185,7 +185,7 @@ export default function HelpPanel({ showHelp = true, setShowHelp, inline = false
         }}
       >
         <div style={{ display: "grid", gap: 4 }}>
-          <div style={{ fontWeight: 800, fontSize: 15, color: "var(--text)" }}>Vizi Help Guide</div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: "var(--text)" }}>Mesora Help Guide</div>
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
             Detailed usage reference for canvas editing, tags, OPC, and data tools.
           </div>

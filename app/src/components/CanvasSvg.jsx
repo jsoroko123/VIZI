@@ -1,8 +1,30 @@
 // src/components/CanvasSvg.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GRID, pointsToAttr, bboxOfPoints } from "../utils/geometry";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  ArcElement,
+  Tooltip,
+  Filler,
+} from "chart.js";
+import { Line, Bar, Doughnut } from "react-chartjs-2";
 
 const RULER = 24; // ruler thickness (px)
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  ArcElement,
+  Tooltip,
+  Filler
+);
 
 export default function CanvasSvg({
   svgRef,
@@ -51,11 +73,14 @@ export default function CanvasSvg({
   routeStrokeColorByGroupPath,
   svgLiveValuesByGroupPath,
   opcLiveValues,
+  widgetDbValues,
+  onWidgetDurationPresetChange,
   hiddenTagBubbleIds,
   onHideTagBubble,
   onSvgDoubleClick, // ✅ used in TopRuler + main svg
   collaboratorCursors,
   theme,
+  canvasBackgroundColor,
 }) {
   const vb = useMemo(() => `0 0 ${vbW} ${vbH}`, [vbW, vbH]);
   const isLineMode = tool === "polyline" || tool === "rect";
@@ -152,8 +177,13 @@ export default function CanvasSvg({
     });
     return map;
   }, [opcLiveValues]);
+  const liveLookupRef = useRef(liveLookup);
+  useEffect(() => {
+    liveLookupRef.current = liveLookup;
+  }, [liveLookup]);
 
   const getLiveValueForTagPath = (rawTagPath) => {
+    const lookupMap = liveLookupRef.current || liveLookup;
     const tagPath = String(rawTagPath || "").replace(/\r?\n/g, "").trim();
     if (!tagPath) return "";
 
@@ -165,10 +195,22 @@ export default function CanvasSvg({
     candidates.push(`Default.${tagPath}`);
 
     for (const key of candidates) {
-      const direct = liveLookup.get(key);
-      if (direct != null && direct !== "") return String(direct);
-      const lower = liveLookup.get(String(key).toLowerCase());
-      if (lower != null && lower !== "") return String(lower);
+      const direct = lookupMap.get(key);
+      if (direct != null && direct !== "") return direct;
+      const lower = lookupMap.get(String(key).toLowerCase());
+      if (lower != null && lower !== "") return lower;
+    }
+    // Support short tag bindings (e.g. "Group.Tag") when live keys are "Topic.Group.Tag".
+    // Prefer exact suffix match to align with trend candidate behavior.
+    for (const key of candidates) {
+      const suffix = `.${String(key || "").toLowerCase()}`;
+      for (const [mapKey, mapValue] of lookupMap.entries()) {
+        if (mapValue == null || mapValue === "") continue;
+        const textKey = String(mapKey || "").toLowerCase();
+        if (textKey === String(key || "").toLowerCase() || textKey.endsWith(suffix)) {
+          return mapValue;
+        }
+      }
     }
 
     // Fallback: overlay tagPath may be a group path (e.g. Default.Group).
@@ -184,16 +226,1496 @@ export default function CanvasSvg({
         `${prefix}value`,
       ];
       for (const k of preferred) {
-        const v = liveLookup.get(k);
-        if (v != null && v !== "") return String(v);
+        const v = lookupMap.get(k);
+        if (v != null && v !== "") return v;
       }
-      for (const [k, v] of liveLookup.entries()) {
+      for (const [k, v] of lookupMap.entries()) {
         if (typeof k !== "string") continue;
         if (!k.startsWith(prefix)) continue;
-        if (v != null && v !== "") return String(v);
+        if (v != null && v !== "") return v;
       }
     }
     return "";
+  };
+
+  const getWidgetValueForOverlay = (overlay) => {
+    if (!overlay?.widget) return "";
+    const tagPath = String(overlay?.tagPath || "").trim();
+    if (!tagPath) return "";
+    if (tagPath.toLowerCase().startsWith("db:")) {
+      const id = String(overlay?.id || "");
+      const v = widgetDbValues && Object.prototype.hasOwnProperty.call(widgetDbValues, id)
+        ? widgetDbValues[id]
+        : "";
+      return v == null ? "" : v;
+    }
+    return getLiveValueForTagPath(tagPath);
+  };
+  const toNumberOrNull = (value) => {
+    if (value == null) return null;
+    if (typeof value === "boolean") return null;
+    if (typeof value === "string" && value.trim() === "") return null;
+    if (value != null && typeof value === "object") {
+      const obj = value;
+      const candidates = [obj.value, obj.v, obj.state, obj.State, obj.rawValue, obj.raw];
+      for (const c of candidates) {
+        const n = toNumberOrNull(c);
+        if (n != null) return n;
+      }
+      return null;
+    }
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const widgetHistoryRef = useRef(new Map()); // overlayId -> [{t,v}]
+  const widgetLiveSeriesRef = useRef(new Map()); // overlayId -> [{ tagPath, tagKey, points:[{t,v}] }] from live opc values
+  const [, setWidgetRenderTick] = useState(0);
+  const widgetTrendSeriesRef = useRef(new Map()); // overlayId -> [{ tagPath, tagKey, points:[{t,v}] }] from /api/opc/trends
+  const [, setWidgetTrendTick] = useState(0);
+  const [widgetTrendReloadNonce, setWidgetTrendReloadNonce] = useState(0);
+  const widgetBarDatasetRef = useRef(new Map()); // overlayId -> { labels: string[], values: number[], updatedAt: number }
+  const [, setWidgetBarTick] = useState(0);
+  const trendLiveKeyListRef = useRef([]);
+  const trendTagCandidateCacheRef = useRef(new Map());
+
+  const parseDbBinding = (rawTagPath) => {
+    const tagPath = String(rawTagPath || "").trim();
+    if (!tagPath.toLowerCase().startsWith("db:")) return null;
+    const expr = tagPath.slice(3).trim();
+    const dot = expr.indexOf(".");
+    if (dot <= 0 || dot >= expr.length - 1) return null;
+    const table = expr.slice(0, dot).trim();
+    const field = expr.slice(dot + 1).trim();
+    if (!table || !field) return null;
+    return { table, field };
+  };
+  const parseDbQueryBinding = (rawTagPath) => {
+    const tagPath = String(rawTagPath || "").trim();
+    if (!tagPath.toLowerCase().startsWith("dbq:")) return "";
+    return tagPath.slice(4).trim();
+  };
+  const getBarDataSource = (overlay) => {
+    const widget = overlay?.widget || {};
+    const seriesTagPaths = parseWidgetSeriesTags(overlay).filter((tp) => {
+      const text = String(tp || "").trim().toLowerCase();
+      return text && !text.startsWith("db:") && !text.startsWith("dbq:");
+    });
+    const mode = String(widget?.barSourceMode || "").trim().toLowerCase();
+    if (mode === "tags") {
+      return {
+        mode: "tags",
+        tagPaths: seriesTagPaths,
+      };
+    }
+    if (mode === "query") {
+      const sql = String(widget?.barQuery || "").trim() || parseDbQueryBinding(overlay?.tagPath);
+      if (!sql) return null;
+      return {
+        mode: "query",
+        sql,
+        labelField: String(widget?.barQueryLabelField || "").trim(),
+        valueField: String(widget?.barQueryValueField || "").trim(),
+      };
+    }
+    const table = String(widget?.barTable || "").trim();
+    const field = String(widget?.barField || "").trim();
+    if (table && field) {
+      return {
+        mode: "table",
+        table,
+        field,
+        labelField: String(widget?.barLabelField || "").trim(),
+      };
+    }
+    const parsedDb = parseDbBinding(overlay?.tagPath);
+    if (parsedDb) {
+      return {
+        mode: "table",
+        table: parsedDb.table,
+        field: parsedDb.field,
+        labelField: String(widget?.barLabelField || "").trim(),
+      };
+    }
+    const parsedQuery = parseDbQueryBinding(overlay?.tagPath);
+    if (parsedQuery) {
+      return {
+        mode: "query",
+        sql: parsedQuery,
+        labelField: String(widget?.barQueryLabelField || "").trim(),
+        valueField: String(widget?.barQueryValueField || "").trim(),
+      };
+    }
+    // Backward-compatible fallback: if table/query is not configured but live tags exist, use tags mode.
+    if (seriesTagPaths.length) {
+      return {
+        mode: "tags",
+        tagPaths: seriesTagPaths,
+      };
+    }
+    return null;
+  };
+
+  useEffect(() => {
+    trendLiveKeyListRef.current = Object.keys(opcLiveValues || {}).map((k) => String(k || "").trim()).filter(Boolean);
+    trendTagCandidateCacheRef.current.clear();
+  }, [opcLiveValues]);
+  const parseWidgetSeriesTags = (overlay) => {
+    const out = [];
+    const push = (raw) => {
+      const tag = String(raw || "").trim();
+      if (!tag) return;
+      const key = tag.toLowerCase();
+      if (out.some((x) => x.toLowerCase() === key)) return;
+      out.push(tag);
+    };
+    const primary = String(overlay?.tagPath || "").trim();
+    const widget = overlay?.widget || {};
+    const kind = String(widget?.kind || "").trim().toLowerCase();
+    const isLineChart = kind === "linechart" || kind === "line_chart" || kind === "line-chart";
+    const isBarChart = kind === "barchart" || kind === "bar_chart" || kind === "bar-chart";
+    const rawSeries = widget?.seriesTags;
+    const parsedSeries = Array.isArray(rawSeries)
+      ? rawSeries
+      : String(rawSeries || "").split(/\r?\n|,/);
+    if (isLineChart) {
+      parsedSeries.forEach((t) => push(t));
+      push(primary);
+      return out;
+    }
+    if (isBarChart) {
+      parsedSeries.forEach((t) => push(t));
+      push(primary);
+      return out;
+    }
+    push(primary);
+    if (!out.length) parsedSeries.forEach((t) => push(t));
+    return out;
+  };
+
+  useEffect(() => {
+    const now = Date.now();
+    let changed = false;
+    const keep = new Set();
+    const lineKindSet = new Set(["linechart", "line_chart", "line-chart"]);
+    (svgOverlays || []).forEach((o) => {
+      if (!o?.widget) return;
+      const id = String(o.id || "");
+      if (!id) return;
+      keep.add(id);
+      const raw = getWidgetValueForOverlay(o);
+      const n = toNumberOrNull(raw);
+      if (n == null) return;
+      const maxHist = Math.max(
+        50,
+        Math.min(
+          10000,
+          Number(o?.widget?.maxPoints) ||
+            Number(o?.widget?.historyPoints) ||
+            500
+        )
+      );
+      const prev = widgetHistoryRef.current.get(id) || [];
+      const last = prev.length ? prev[prev.length - 1] : null;
+      if (!last || last.v !== n || now - last.t >= 2000) {
+        const next = [...prev, { t: now, v: n }];
+        const clipped = next.slice(-maxHist);
+        widgetHistoryRef.current.set(id, clipped);
+        changed = true;
+      }
+
+      const kind = String(o?.widget?.kind || "").trim().toLowerCase();
+      if (!lineKindSet.has(kind)) return;
+      const seriesTags = parseWidgetSeriesTags(o).filter(
+        (tp) => !String(tp || "").trim().toLowerCase().startsWith("db:")
+      );
+      if (!seriesTags.length) return;
+      const prevSeries = Array.isArray(widgetLiveSeriesRef.current.get(id))
+        ? widgetLiveSeriesRef.current.get(id)
+        : [];
+      const prevByTag = new Map(
+        prevSeries.map((s) => [String(s?.tagPath || s?.tagKey || "").trim().toLowerCase(), s])
+      );
+      const nextSeries = seriesTags.map((tagPath) => {
+        const key = String(tagPath || "").trim().toLowerCase();
+        const prevItem = prevByTag.get(key) || { tagPath, tagKey: tagPath, points: [] };
+        const prevPoints = Array.isArray(prevItem.points) ? prevItem.points : [];
+        const liveRaw = getLiveValueForTagPath(tagPath);
+        const liveNum = toNumberOrNull(liveRaw);
+        if (liveNum == null) {
+          return { ...prevItem, tagPath, tagKey: prevItem.tagKey || tagPath, points: prevPoints };
+        }
+        const lastPoint = prevPoints.length ? prevPoints[prevPoints.length - 1] : null;
+        if (!lastPoint || lastPoint.v !== liveNum || now - Number(lastPoint.t || 0) >= 2000) {
+          changed = true;
+          return {
+            ...prevItem,
+            tagPath,
+            tagKey: prevItem.tagKey || tagPath,
+            points: [...prevPoints, { t: now, v: liveNum }].slice(-maxHist),
+          };
+        }
+        return { ...prevItem, tagPath, tagKey: prevItem.tagKey || tagPath, points: prevPoints };
+      });
+      widgetLiveSeriesRef.current.set(id, nextSeries);
+    });
+    // cleanup removed widgets
+    Array.from(widgetHistoryRef.current.keys()).forEach((id) => {
+      if (!keep.has(id)) {
+        widgetHistoryRef.current.delete(id);
+        changed = true;
+      }
+    });
+    Array.from(widgetLiveSeriesRef.current.keys()).forEach((id) => {
+      if (!keep.has(id)) {
+        widgetLiveSeriesRef.current.delete(id);
+        changed = true;
+      }
+    });
+    if (changed) setWidgetRenderTick((x) => x + 1);
+  }, [svgOverlays, opcLiveValues, widgetDbValues]);
+
+  useEffect(() => {
+    let alive = true;
+    const chartKinds = new Set(["lineChart", "areaChart", "statusTable"]);
+    const parseRangeMs = (raw) => {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return n;
+      const text = String(raw ?? "").trim();
+      if (!text) return null;
+      const ms = Date.parse(text);
+      return Number.isFinite(ms) ? ms : null;
+    };
+    const normalizePoints = (arr) =>
+      (Array.isArray(arr) ? arr : [])
+        .map((p) => ({ t: Number(p?.t) || 0, v: toNumberOrNull(p?.v) }))
+        .filter((p) => p.t > 0 && Number.isFinite(p.v));
+    const buildTagCandidates = (raw) => {
+      const tagPath = String(raw || "").trim();
+      if (!tagPath) return [];
+      const cacheKey = tagPath.toLowerCase();
+      const cached = trendTagCandidateCacheRef.current.get(cacheKey);
+      if (Array.isArray(cached) && cached.length) return cached;
+      const out = [];
+      const push = (v) => {
+        const s = String(v || "").trim();
+        if (!s) return;
+        if (!out.includes(s)) out.push(s);
+      };
+      push(tagPath);
+      if (!tagPath.toLowerCase().startsWith("default.")) push(`Default.${tagPath}`);
+      // Add exact key matches from live values (e.g. Topic.TagPath), same pattern used by Tags pages.
+      trendLiveKeyListRef.current.forEach((k) => {
+        const key = String(k || "").trim();
+        if (!key) return;
+        if (key.toLowerCase() === tagPath.toLowerCase()) push(key);
+        if (key.toLowerCase().endsWith(`.${tagPath.toLowerCase()}`)) push(key);
+      });
+      trendTagCandidateCacheRef.current.set(cacheKey, out);
+      return out;
+    };
+    const loadBestTrendPointsForTagPath = async (tagPath, from, to, maxPoints) => {
+      const candidates = buildTagCandidates(tagPath);
+      let bestPoints = null;
+      let bestTotal = -1;
+      let bestTagKey = "";
+      for (const tagKey of candidates) {
+        const q = new URLSearchParams({
+          tagKey: String(tagKey),
+          from: String(from),
+          to: String(to),
+          maxPoints: String(maxPoints),
+        });
+        try {
+          const res = await fetch(`/api/opc/trends?${q.toString()}`);
+          const data = await res.json();
+          if (!res.ok) continue;
+          const points = normalizePoints(data?.points);
+          const total = Number(data?.totalPoints);
+          const safeTotal = Number.isFinite(total) ? total : points.length;
+          if (
+            !bestPoints ||
+            points.length > bestPoints.length ||
+            (points.length === bestPoints.length && safeTotal > bestTotal)
+          ) {
+            bestPoints = points;
+            bestTotal = safeTotal;
+            bestTagKey = String(tagKey || "").trim();
+          }
+        } catch {
+          // ignore per-key errors, try next candidate
+        }
+      }
+      return {
+        tagKey: bestTagKey || String(tagPath || "").trim(),
+        points: Array.isArray(bestPoints) ? bestPoints : [],
+      };
+    };
+
+    async function loadWidgetTrends() {
+      if (typeof document !== "undefined" && document.hidden) return;
+      const overlays = Array.isArray(svgOverlays) ? svgOverlays : [];
+      const targets = overlays.filter((o) => {
+        if (!o?.widget) return false;
+        const kind = String(o?.widget?.kind || "").trim();
+        if (!chartKinds.has(kind)) return false;
+        const tagPaths = parseWidgetSeriesTags(o);
+        const trendTagPaths = tagPaths.filter((tp) => !String(tp).toLowerCase().startsWith("db:"));
+        return trendTagPaths.length > 0;
+      });
+      if (!targets.length) {
+        if (!alive) return;
+        widgetTrendSeriesRef.current = new Map();
+        setWidgetTrendTick((x) => x + 1);
+        return;
+      }
+
+      const now = Date.now();
+      const prevMap = widgetTrendSeriesRef.current;
+      const nextMap = new Map();
+      await Promise.allSettled(
+        targets.map(async (o) => {
+          const id = String(o?.id || "");
+          if (!id) return;
+          const cfg = o?.widget || {};
+          const windowMinutes = Math.max(1, Math.min(10080, Number(cfg?.windowMinutes) || 60));
+          const maxPoints = Math.max(50, Math.min(10000, Number(cfg?.maxPoints) || 500));
+          let from = parseRangeMs(cfg?.rangeFrom);
+          let to = parseRangeMs(cfg?.rangeTo);
+          if (from != null && to != null && from > to) {
+            const t = from;
+            from = to;
+            to = t;
+          }
+          if (from == null && to == null) {
+            from = now - windowMinutes * 60 * 1000;
+            to = now;
+          } else {
+            if (from == null) from = Math.max(0, (to || now) - windowMinutes * 60 * 1000);
+            if (to == null) to = now;
+          }
+          const tagPaths = parseWidgetSeriesTags(o).filter(
+            (tp) => !String(tp).toLowerCase().startsWith("db:")
+          );
+          const seriesList = await Promise.all(
+            tagPaths.map(async (tagPath) => {
+              const result = await loadBestTrendPointsForTagPath(tagPath, from, to, maxPoints);
+              return {
+                tagPath: String(tagPath || "").trim(),
+                tagKey: String(result?.tagKey || tagPath || "").trim(),
+                points: Array.isArray(result?.points) ? result.points : [],
+              };
+            })
+          );
+          const prevSeries = Array.isArray(prevMap.get(id)) ? prevMap.get(id) : [];
+          const prevByTag = new Map(
+            prevSeries.map((s) => {
+              const key = String(s?.tagPath || s?.tagKey || "").trim().toLowerCase();
+              return [key, s];
+            })
+          );
+          const mergedSeries = seriesList.map((series) => {
+            if (Array.isArray(series?.points) && series.points.length > 0) return series;
+            const lookupKey = String(series?.tagPath || series?.tagKey || "").trim().toLowerCase();
+            const prev = prevByTag.get(lookupKey);
+            if (prev && Array.isArray(prev.points) && prev.points.length > 0) {
+              return {
+                ...series,
+                tagKey: String(series?.tagKey || prev?.tagKey || "").trim(),
+                points: prev.points,
+              };
+            }
+            return series;
+          });
+          nextMap.set(id, mergedSeries);
+        })
+      );
+      if (!alive) return;
+      widgetTrendSeriesRef.current = nextMap;
+      setWidgetTrendTick((x) => x + 1);
+    }
+
+    loadWidgetTrends();
+    const id = setInterval(loadWidgetTrends, 2000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [svgOverlays, widgetTrendReloadNonce]);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadBarChartDatasets() {
+      if (typeof document !== "undefined" && document.hidden) return;
+      const overlays = Array.isArray(svgOverlays) ? svgOverlays : [];
+      const targets = overlays.filter((o) => {
+        const kind = String(o?.widget?.kind || "").trim();
+        if (kind !== "barChart") return false;
+        return !!getBarDataSource(o);
+      });
+
+      const nextMap = new Map();
+      await Promise.allSettled(
+        targets.map(async (o) => {
+          const overlayId = String(o?.id || "");
+          if (!overlayId) return;
+          const source = getBarDataSource(o);
+          if (!source) return;
+          const cfg = o?.widget || {};
+          const maxRows = Math.max(
+            1,
+            Math.min(
+              200,
+              Number(cfg?.historyPoints) || Number(cfg?.rowCount) || Number(cfg?.maxPoints) || 20
+            )
+          );
+          try {
+            const labelKeyRegex = /(name|label|title|code|id)$/i;
+            const labels = [];
+            const values = [];
+            if (source.mode === "tags") {
+              const formatTagLabel = (raw) => {
+                const text = String(raw || "").trim();
+                if (!text) return "";
+                const parts = text.split(".").map((x) => x.trim()).filter(Boolean);
+                if (!parts.length) return text;
+                if (parts.length === 1) return parts[0];
+                return parts.slice(-2).join(".");
+              };
+              const makeUniqueLabel = (rawLabel, index) => {
+                const base = String(rawLabel || "").trim() || `Tag ${index + 1}`;
+                if (!labels.includes(base)) return base;
+                let n = 2;
+                let next = `${base} (${n})`;
+                while (labels.includes(next)) {
+                  n += 1;
+                  next = `${base} (${n})`;
+                }
+                return next;
+              };
+              (Array.isArray(source.tagPaths) ? source.tagPaths : []).forEach((tagPath) => {
+                const v = toNumberOrNull(getLiveValueForTagPath(tagPath));
+                labels.push(makeUniqueLabel(formatTagLabel(tagPath), labels.length));
+                values.push(v == null ? 0 : Number(v));
+              });
+            } else if (source.mode === "table") {
+              const table = source.table;
+              const field = source.field;
+              const labelField = String(source.labelField || "").trim();
+              const res = await fetch(`/api/db/${encodeURIComponent(table)}?limit=${maxRows}`);
+              const data = await res.json();
+              if (!res.ok) return;
+              const rows = Array.isArray(data?.rows) ? data.rows : [];
+              const pk = String(data?.primaryKey || "").trim();
+              rows.forEach((row, idx) => {
+                if (!row || typeof row !== "object") return;
+                const v = toNumberOrNull(row[field]);
+                if (v == null) return;
+                let label = "";
+                if (labelField && row[labelField] != null && String(row[labelField]).trim() !== "") {
+                  label = String(row[labelField]);
+                } else if (pk && pk !== field && row[pk] != null && row[pk] !== "") {
+                  label = String(row[pk]);
+                } else {
+                  const keys = Object.keys(row);
+                  const alt = keys.find(
+                    (k) =>
+                      k !== field &&
+                      labelKeyRegex.test(String(k || "")) &&
+                      row[k] != null &&
+                      String(row[k]).trim() !== ""
+                  );
+                  if (alt) label = String(row[alt]);
+                }
+                if (!label) label = String(idx + 1);
+                labels.push(label);
+                values.push(v);
+              });
+            } else if (source.mode === "query") {
+              const res = await fetch("/api/reports/preview", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ mode: "sql", sql: source.sql }),
+              });
+              const data = await res.json();
+              if (!res.ok) return;
+              const rowsAll = Array.isArray(data?.rows) ? data.rows : [];
+              const rows = rowsAll.slice(0, maxRows);
+              const valueFieldPref = String(source.valueField || "").trim();
+              const labelFieldPref = String(source.labelField || "").trim();
+              const cols = Array.isArray(data?.columns) ? data.columns.map((c) => String(c || "").trim()).filter(Boolean) : [];
+              const inferValueField = () => {
+                if (valueFieldPref) return valueFieldPref;
+                for (const c of cols) {
+                  const anyNumeric = rows.some((r) => toNumberOrNull(r?.[c]) != null);
+                  if (anyNumeric) return c;
+                }
+                return "";
+              };
+              const valueField = inferValueField();
+              const inferLabelField = () => {
+                if (labelFieldPref) return labelFieldPref;
+                const preferred = cols.find((c) => c !== valueField && labelKeyRegex.test(c));
+                if (preferred) return preferred;
+                const firstText = cols.find((c) => c !== valueField);
+                return firstText || "";
+              };
+              const labelField = inferLabelField();
+              rows.forEach((row, idx) => {
+                if (!row || typeof row !== "object") return;
+                const v = toNumberOrNull(row[valueField]);
+                if (v == null) return;
+                let label = "";
+                if (labelField && row[labelField] != null && String(row[labelField]).trim() !== "") {
+                  label = String(row[labelField]);
+                }
+                if (!label) label = String(idx + 1);
+                labels.push(label);
+                values.push(v);
+              });
+            }
+            nextMap.set(overlayId, { labels, values, updatedAt: Date.now(), mode: source.mode });
+          } catch {
+            // ignore per-widget db errors
+          }
+        })
+      );
+
+      if (!alive) return;
+      widgetBarDatasetRef.current = nextMap;
+      setWidgetBarTick((x) => x + 1);
+    }
+
+    loadBarChartDatasets();
+    const id = setInterval(loadBarChartDatasets, 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [svgOverlays]);
+
+  const renderWidgetOverlay = (overlay) => {
+    if (!overlay?.widget) return null;
+    const kind = String(overlay?.widget?.kind || "").trim();
+    const cfg = overlay?.widget || {};
+    const rawVal = getWidgetValueForOverlay(overlay);
+    const n = toNumberOrNull(rawVal);
+    const decimals = Math.max(0, Math.min(6, Number(cfg?.decimals) || 0));
+    const unit = String(cfg?.unit || "").trim();
+    const title = String(cfg?.title || "").trim();
+    const minCfg = Number.isFinite(Number(cfg?.min)) ? Number(cfg.min) : 0;
+    const maxCfg = Number.isFinite(Number(cfg?.max)) ? Number(cfg.max) : 100;
+    const rowCount = Math.max(1, Math.min(20, Number(cfg?.rowCount) || 4));
+    const formatNum = (v) =>
+      Number.isFinite(Number(v)) ? `${Number(v).toFixed(decimals)}${unit ? ` ${unit}` : ""}` : "";
+    const seriesTags = parseWidgetSeriesTags(overlay);
+    const primaryTagPath = String(seriesTags[0] || "").trim();
+    const label = primaryTagPath || String(overlay?.tagPath || "").trim() || "Unbound";
+    const bb = overlay?.bbox || { x: 0, y: 0, width: 320, height: 180 };
+    const x = Number(bb.x) || 0;
+    const y = Number(bb.y) || 0;
+    const w = Math.max(80, Number(bb.width) || 320);
+    const h = Math.max(60, Number(bb.height) || 180);
+    const overlayId = String(overlay?.id || "");
+    const apiSeriesRaw = widgetTrendSeriesRef.current.get(overlayId);
+    const apiSeries = Array.isArray(apiSeriesRaw) ? apiSeriesRaw : [];
+    const liveSeriesRaw = widgetLiveSeriesRef.current.get(overlayId);
+    const liveSeries = Array.isArray(liveSeriesRaw) ? liveSeriesRaw : [];
+    const configuredSeriesTags = parseWidgetSeriesTags(overlay);
+    const toSeriesKey = (raw) => String(raw || "").trim().toLowerCase();
+    const byTag = (list) => {
+      const map = new Map();
+      (Array.isArray(list) ? list : []).forEach((s) => {
+        const key = toSeriesKey(s?.tagPath || s?.tagKey || "");
+        if (!key || map.has(key)) return;
+        map.set(key, s);
+      });
+      return map;
+    };
+    const apiByTag = byTag(apiSeries);
+    const liveByTag = byTag(liveSeries);
+    const effectiveSeries = configuredSeriesTags.map((tagPath) => {
+      const key = toSeriesKey(tagPath);
+      const api = apiByTag.get(key);
+      const apiPoints = Array.isArray(api?.points) ? api.points : [];
+      if (apiPoints.length > 0) {
+        return { ...api, tagPath: tagPath || api?.tagPath || api?.tagKey };
+      }
+      const live = liveByTag.get(key);
+      const livePoints = Array.isArray(live?.points) ? live.points : [];
+      if (livePoints.length > 0) {
+        return {
+          ...live,
+          tagPath: tagPath || live?.tagPath || live?.tagKey,
+          tagKey: api?.tagKey || live?.tagKey || tagPath,
+          points: livePoints,
+        };
+      }
+      return {
+        tagPath,
+        tagKey: api?.tagKey || live?.tagKey || tagPath,
+        points: [],
+      };
+    });
+    const firstApiWithPoints = effectiveSeries.find(
+      (s) => Array.isArray(s?.points) && s.points.length > 0
+    );
+    const primaryApiSeries = effectiveSeries.find((s) => {
+      const tag = String(s?.tagPath || "").trim().toLowerCase();
+      const key = String(s?.tagKey || "").trim().toLowerCase();
+      const target = String(primaryTagPath || "").trim().toLowerCase();
+      if (!target) return false;
+      return tag === target || key === target;
+    });
+    const apiHist = Array.isArray(primaryApiSeries?.points)
+      ? primaryApiSeries.points
+      : Array.isArray(firstApiWithPoints?.points)
+      ? firstApiWithPoints.points
+      : [];
+    const localHist = widgetHistoryRef.current.get(overlayId) || [];
+    const isTrendWidgetKind = kind === "lineChart" || kind === "areaChart" || kind === "statusTable";
+    const hasApiSeries = Array.isArray(effectiveSeries) && effectiveSeries.some(
+      (s) => Array.isArray(s?.points) && s.points.length > 0
+    );
+    const barBinding = kind === "barChart" ? getBarDataSource(overlay) : null;
+    const barDataset = kind === "barChart" ? widgetBarDatasetRef.current.get(overlayId) : null;
+    const barValues = Array.isArray(barDataset?.values)
+      ? barDataset.values.map((v) => Number(v)).filter((v) => Number.isFinite(v))
+      : [];
+    const barLabelsRaw = Array.isArray(barDataset?.labels) ? barDataset.labels : [];
+    const histAll = isTrendWidgetKind
+      ? (hasApiSeries ? (Array.isArray(apiHist) ? apiHist : []) : localHist)
+      : localHist;
+    const parseRangeMs = (raw) => {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return n;
+      const text = String(raw ?? "").trim();
+      if (!text) return null;
+      const ms = Date.parse(text);
+      return Number.isFinite(ms) ? ms : null;
+    };
+    let rangeFrom = parseRangeMs(cfg?.rangeFrom);
+    let rangeTo = parseRangeMs(cfg?.rangeTo);
+    const windowMinutes = Math.max(1, Math.min(10080, Number(cfg?.windowMinutes) || 60));
+    const maxPoints = Math.max(50, Math.min(10000, Number(cfg?.maxPoints) || 500));
+    if (rangeFrom != null && rangeTo != null && rangeFrom > rangeTo) {
+      const t = rangeFrom;
+      rangeFrom = rangeTo;
+      rangeTo = t;
+    }
+    if (rangeFrom == null && rangeTo == null) {
+      const now = Date.now();
+      rangeFrom = now - windowMinutes * 60 * 1000;
+      rangeTo = now;
+    }
+    const hasRange = rangeFrom != null || rangeTo != null;
+    const histFiltered = histAll.filter((p) => {
+      const t = Number(p?.t);
+      if (!Number.isFinite(t)) return false;
+      if (rangeFrom != null && t < rangeFrom) return false;
+      if (rangeTo != null && t > rangeTo) return false;
+      return true;
+    });
+    const hist =
+      histFiltered.length > maxPoints
+        ? histFiltered.slice(-maxPoints)
+        : histFiltered;
+    const latestPoint = hist.length ? hist[hist.length - 1] : null;
+    const displayN = latestPoint ? latestPoint.v : n;
+    const compact = w < 220 || h < 130;
+    const dense = w < 160 || h < 100;
+    const headH = dense ? 20 : compact ? 24 : 28;
+    const pad = dense ? 6 : compact ? 8 : 10;
+    const cardTitle = title || label;
+    const titleSize = dense ? 8 : compact ? 9 : 10;
+    const valueSize = dense ? 14 : compact ? 18 : 22;
+    const valueColor = "var(--text)";
+    const accent = "#2b8cff";
+    const accentSoft = "#2b8cff33";
+    const subdued = "var(--text-muted)";
+    const formatTime = (ts) => {
+      const nTs = Number(ts);
+      if (!Number.isFinite(nTs)) return "--:--:--";
+      try {
+        return new Intl.DateTimeFormat([], {
+          month: "short",
+          day: "2-digit",
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }).format(new Date(nTs));
+      } catch {
+        return "--:--:--";
+      }
+    };
+    const formatAxisTime = (ts, withDate = false) => {
+      const nTs = Number(ts);
+      if (!Number.isFinite(nTs)) return "";
+      try {
+        return new Intl.DateTimeFormat([], withDate
+          ? {
+              month: "short",
+              day: "2-digit",
+              hour12: false,
+              hour: "2-digit",
+              minute: "2-digit",
+            }
+          : {
+              hour12: false,
+              hour: "2-digit",
+              minute: "2-digit",
+            }).format(new Date(nTs));
+      } catch {
+        return "";
+      }
+    };
+    const formatTooltipTime = (ts) => {
+      const nTs = Number(ts);
+      if (!Number.isFinite(nTs)) return "--";
+      try {
+        return new Intl.DateTimeFormat([], {
+          year: "numeric",
+          month: "short",
+          day: "2-digit",
+          hour12: false,
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }).format(new Date(nTs));
+      } catch {
+        return "--";
+      }
+    };
+    const latestTime = formatTime(latestPoint?.t);
+
+    if (kind === "kpi") {
+      const display =
+        displayN != null
+          ? formatNum(displayN)
+          : rawVal !== ""
+          ? String(rawVal)
+          : "--";
+      return (
+        <g pointerEvents="none">
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+            {cardTitle}
+          </text>
+          <text x={x + pad} y={y + Math.max(headH + 26, h * 0.62)} fill={valueColor} fontSize={valueSize} fontFamily="system-ui" fontWeight={800}>
+            {display}
+          </text>
+          {!dense ? (
+            <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={10} fontFamily="system-ui" fontWeight={600}>
+              {`Updated ${latestTime}`}
+            </text>
+          ) : null}
+          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
+        </g>
+      );
+    }
+
+    if (kind === "gauge") {
+      const spanCfg = Math.max(1e-9, maxCfg - minCfg);
+      const pct = displayN == null ? 0 : Math.max(0, Math.min(100, ((displayN - minCfg) / spanCfg) * 100));
+      const gaugeTop = Math.round(y + headH + 2);
+      const gaugeH = Math.max(26, Math.round(h - headH - 34));
+      const gaugeW = Math.max(60, Math.round(w - pad * 2));
+      const gaugeX = Math.round(x + pad);
+      const viewScale = Math.max(1, Number(zoom) || 1);
+      const overlayScale = Math.max(1, Number(overlay?.scale) || 1);
+      const dpr =
+        typeof window !== "undefined"
+          ? Math.max(1, Math.min(8, (window.devicePixelRatio || 1) * viewScale * overlayScale))
+          : 1;
+      const gaugeKey = `g-${overlay.id}-${kind}-${gaugeW}x${gaugeH}-z${viewScale.toFixed(3)}-s${overlayScale.toFixed(3)}`;
+      const rootStyle =
+        typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
+      const borderColor = rootStyle?.getPropertyValue("--border")?.trim() || "#334155";
+      const textColor = rootStyle?.getPropertyValue("--text")?.trim() || "#e2e8f0";
+      const gaugeData = {
+        datasets: [
+          {
+            data: [pct, Math.max(0, 100 - pct)],
+            backgroundColor: ["#2b6cff", borderColor],
+            borderWidth: 0,
+            circumference: 180,
+            rotation: 270,
+            cutout: "72%",
+          },
+        ],
+      };
+      const gaugeOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        devicePixelRatio: dpr,
+        resizeDelay: 0,
+        animation: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      };
+      return (
+        <g pointerEvents="none">
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+            {cardTitle}
+          </text>
+          <foreignObject x={gaugeX} y={gaugeTop} width={gaugeW} height={gaugeH}>
+            <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%", pointerEvents: "none", position: "relative" }}>
+              <Doughnut key={gaugeKey} data={gaugeData} options={gaugeOptions} />
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: 4,
+                  textAlign: "center",
+                  color: textColor,
+                  fontSize: dense ? 10 : 11,
+                  fontWeight: 700,
+                  fontFamily: "system-ui",
+                }}
+              >
+                {Number(pct).toFixed(1)}%
+              </div>
+            </div>
+          </foreignObject>
+          <text x={x + w / 2} y={y + h - (dense ? 8 : 10)} fill={valueColor} fontSize={dense ? 10 : compact ? 11 : 12} fontFamily="system-ui" fontWeight={700} textAnchor="middle">
+            {displayN != null ? formatNum(displayN) : rawVal !== "" ? String(rawVal) : "--"}
+          </text>
+          {!dense ? (
+            <text x={x + w / 2} y={y + h - 22} fill={subdued} fontSize={9} fontFamily="system-ui" textAnchor="middle">
+              {latestTime}
+            </text>
+          ) : null}
+          {!dense ? (
+            <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={9} fontFamily="system-ui">
+              {minCfg.toFixed(decimals)}
+            </text>
+          ) : null}
+          {!dense ? (
+            <text x={x + w - pad} y={y + h - 10} fill={subdued} fontSize={9} fontFamily="system-ui" textAnchor="end">
+              {maxCfg.toFixed(decimals)}
+            </text>
+          ) : null}
+        </g>
+      );
+    }
+
+    if (kind === "statusTable") {
+      const rows = hist.slice(-rowCount).reverse();
+      const rangeLatest = hist.length ? hist[hist.length - 1] : null;
+      const showVal = rangeLatest
+        ? formatNum(rangeLatest.v)
+        : !hasRange && rawVal !== ""
+        ? (n == null ? String(rawVal) : formatNum(n))
+        : "--";
+      const startY = y + headH + 14;
+      const rowStep = dense ? 11 : 13;
+      return (
+        <g pointerEvents="none">
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+            {cardTitle}
+          </text>
+          <line x1={x + pad} y1={startY - 8} x2={x + w - pad} y2={startY - 8} stroke="var(--border)" />
+          <text x={x + pad} y={startY} fill="var(--text)" fontSize={dense ? 8 : 9} fontFamily="system-ui" fontWeight={700}>Source</text>
+          <text x={x + Math.max(108, w * 0.43)} y={startY} fill="var(--text)" fontSize={dense ? 8 : 9} fontFamily="system-ui" fontWeight={700}>Value</text>
+          <text x={x + w - pad} y={startY} fill="var(--text)" fontSize={dense ? 8 : 9} fontFamily="system-ui" fontWeight={700} textAnchor="end">Time</text>
+          <text x={x + pad} y={startY + rowStep} fill={subdued} fontSize={dense ? 8 : 9} fontFamily="system-ui">{label}</text>
+          <text x={x + Math.max(108, w * 0.43)} y={startY + rowStep} fill={valueColor} fontSize={dense ? 8 : 9} fontFamily="system-ui" fontWeight={700}>{showVal}</text>
+          <text x={x + w - pad} y={startY + rowStep} fill={subdued} fontSize={dense ? 7 : 8} fontFamily="system-ui" textAnchor="end">{latestTime}</text>
+          {rows.slice(0, Math.max(0, rowCount - 1)).map((p, i) => (
+            <g key={`wrow-${overlay.id}-${i}`}>
+              <text
+                x={x + Math.max(108, w * 0.43)}
+                y={startY + rowStep * (i + 2)}
+                fill={subdued}
+                fontSize={dense ? 7 : 8}
+                fontFamily="system-ui"
+              >
+                {formatNum(p.v)}
+              </text>
+              <text
+                x={x + w - pad}
+                y={startY + rowStep * (i + 2)}
+                fill={subdued}
+                fontSize={dense ? 7 : 8}
+                fontFamily="system-ui"
+                textAnchor="end"
+              >
+                {formatTime(p.t)}
+              </text>
+            </g>
+          ))}
+        </g>
+      );
+    }
+
+    const pointsRaw = kind === "barChart"
+      ? barValues.map((v, idx) => ({ t: idx + 1, v: Number(v) }))
+      : hist.length
+      ? hist.map((p) => ({ t: Number(p?.t), v: Number(p?.v) }))
+      : !isTrendWidgetKind && !hasRange && n != null
+      ? [{ t: Date.now(), v: n }]
+      : [];
+    const pointsSorted = pointsRaw
+      .filter((p) => Number.isFinite(p.t) && p.t > 0 && Number.isFinite(p.v))
+      .sort((a, b) => a.t - b.t);
+    const pointsDeduped = [];
+    for (let i = 0; i < pointsSorted.length; i += 1) {
+      const pt = pointsSorted[i];
+      const prev = pointsDeduped[pointsDeduped.length - 1];
+      if (prev && prev.t === pt.t) pointsDeduped[pointsDeduped.length - 1] = pt;
+      else pointsDeduped.push(pt);
+    }
+    const smoothTransientZeroSpikes = (arr) => {
+      const src = Array.isArray(arr) ? arr : [];
+      if (src.length < 3) return src;
+      const out = src.map((p) => ({ ...p }));
+      for (let i = 1; i < out.length - 1; i += 1) {
+        const prev = out[i - 1];
+        const cur = out[i];
+        const next = out[i + 1];
+        if (!prev || !cur || !next) continue;
+        if (!Number.isFinite(prev.v) || !Number.isFinite(cur.v) || !Number.isFinite(next.v)) continue;
+        if (cur.v !== 0) continue;
+        if (prev.v === 0 || next.v === 0) continue;
+        const near = Math.max(Math.abs(prev.v), Math.abs(next.v), 1);
+        if (Math.abs(prev.v - next.v) > near * 0.15) continue;
+        out[i].v = (prev.v + next.v) / 2;
+      }
+      return out;
+    };
+    const pointsSmoothed = smoothTransientZeroSpikes(pointsDeduped);
+    const maxRenderPoints = Math.max(120, Math.min(1800, Number(cfg?.maxPoints) || 800));
+    const downsampleMinMax = (arr, limit) => {
+      if (!Array.isArray(arr) || arr.length <= limit) return arr || [];
+      if (limit <= 2) return [arr[0], arr[arr.length - 1]];
+      const out = [arr[0]];
+      const interior = arr.length - 2;
+      const bucket = Math.max(1, Math.ceil(interior / Math.max(1, limit - 2)));
+      for (let start = 1; start < arr.length - 1; start += bucket) {
+        const end = Math.min(arr.length - 1, start + bucket);
+        let minIdx = start;
+        let maxIdx = start;
+        for (let i = start + 1; i < end; i += 1) {
+          if (arr[i].v < arr[minIdx].v) minIdx = i;
+          if (arr[i].v > arr[maxIdx].v) maxIdx = i;
+        }
+        if (minIdx === maxIdx) {
+          out.push(arr[minIdx]);
+        } else if (minIdx < maxIdx) {
+          out.push(arr[minIdx], arr[maxIdx]);
+        } else {
+          out.push(arr[maxIdx], arr[minIdx]);
+        }
+      }
+      out.push(arr[arr.length - 1]);
+      if (out.length <= limit) return out;
+      const stride = (out.length - 1) / (limit - 1);
+      return Array.from({ length: limit }, (_, i) => out[Math.min(out.length - 1, Math.round(i * stride))]);
+    };
+    const points = downsampleMinMax(pointsSmoothed, maxRenderPoints);
+    const valuesSource = pointsSmoothed.length ? pointsSmoothed : points;
+    const formatLineSeriesLabel = (rawTag) => {
+      const value = String(rawTag || "").trim();
+      if (!value) return "Series";
+      const bits = value.split(".").map((x) => x.trim()).filter(Boolean);
+      if (!bits.length) return value;
+      if (bits.length === 1) return bits[0];
+      return bits.slice(-2).join(".");
+    };
+    const palette = ["#2563eb", "#0891b2", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0284c7", "#4f46e5"];
+    const lineSeriesMultiRaw =
+      kind === "lineChart"
+        ? effectiveSeries
+            .map((s, idx) => {
+              const pts = (Array.isArray(s?.points) ? s.points : [])
+                .map((p) => ({ t: Number(p?.t) || 0, v: toNumberOrNull(p?.v) }))
+                .filter((p) => Number.isFinite(p.t) && p.t > 0 && Number.isFinite(p.v))
+                .filter((p) => (rangeFrom == null || p.t >= rangeFrom) && (rangeTo == null || p.t <= rangeTo));
+              const clipped = pts.length > maxPoints ? pts.slice(-maxPoints) : pts;
+              const sampled = downsampleMinMax(smoothTransientZeroSpikes(clipped), maxRenderPoints);
+              return {
+                key: String(s?.tagKey || s?.tagPath || `series-${idx}`),
+                label: formatLineSeriesLabel(s?.tagPath || s?.tagKey || `Series ${idx + 1}`),
+                color: palette[idx % palette.length],
+                points: sampled,
+              };
+            })
+        : [];
+    const useMultiLine = kind === "lineChart" && lineSeriesMultiRaw.length > 1;
+    const multiTimeline = useMultiLine
+      ? Array.from(
+          new Set(
+            lineSeriesMultiRaw.flatMap((s) => s.points.map((p) => Number(p.t))).filter((t) => Number.isFinite(t))
+          )
+        ).sort((a, b) => a - b)
+      : [];
+    const values = useMultiLine
+      ? lineSeriesMultiRaw.flatMap((s) => s.points.map((p) => p.v))
+      : valuesSource.map((p) => p.v);
+    const axisMode =
+      (kind === "lineChart" || kind === "areaChart" || kind === "barChart")
+        ? (String(cfg?.axisMode || "").trim().toLowerCase() === "manual" ? "manual" : "auto")
+        : "auto";
+    const dataMin = values.length ? Math.min(...values) : minCfg;
+    const dataMax = values.length ? Math.max(...values) : maxCfg;
+    const manualMin = Number.isFinite(Number(cfg?.min)) ? Number(cfg.min) : null;
+    const manualMax = Number.isFinite(Number(cfg?.max)) ? Number(cfg.max) : null;
+    let minV =
+      axisMode === "manual" && manualMin != null && manualMax != null
+        ? Math.min(manualMin, manualMax)
+        : dataMin;
+    let maxV =
+      axisMode === "manual" && manualMin != null && manualMax != null
+        ? Math.max(manualMin, manualMax)
+        : dataMax;
+    if (!Number.isFinite(minV) || !Number.isFinite(maxV)) {
+      minV = 0;
+      maxV = 1;
+    }
+    // Graph widgets should anchor at zero in auto mode.
+    if ((kind === "lineChart" || kind === "areaChart" || kind === "barChart") && axisMode !== "manual") {
+      minV = 0;
+      if (maxV <= minV) maxV = 1;
+    }
+    if (minV === maxV) {
+      const padV = Math.max(1, Math.abs(minV) * 0.05);
+      minV -= padV;
+      maxV += padV;
+    }
+    const footerH = dense ? 0 : 16;
+    const chartTop = Math.round(y + headH + 4);
+    const chartH = Math.max(30, Math.round(h - headH - 14 - footerH));
+    const chartW = Math.max(60, Math.round(w - pad * 2));
+    const chartX = Math.round(x + pad);
+    const durationPresetMap = {
+      "15m": 15,
+      "1h": 60,
+      "6h": 360,
+      "24h": 1440,
+      "7d": 10080,
+    };
+    const durationChipOptions = [
+      { value: "15m", label: "15m" },
+      { value: "1h", label: "1h" },
+      { value: "6h", label: "6h" },
+      { value: "24h", label: "24h" },
+      { value: "7d", label: "7d" },
+    ];
+    const applyDurationPreset = (presetValue) => {
+      const mins = durationPresetMap[presetValue] || 60;
+      setSvgOverlays?.((prev) =>
+        prev.map((o) =>
+          o.id !== overlay.id
+            ? o
+            : {
+                ...o,
+                widget: {
+                  ...(o.widget || {}),
+                  durationPreset: presetValue,
+                  windowMinutes: mins,
+                  rangeFrom: null,
+                  rangeTo: null,
+                },
+              }
+        )
+      );
+      onWidgetDurationPresetChange?.(overlay.id, presetValue, mins);
+      widgetTrendSeriesRef.current.set(String(overlay.id || ""), []);
+      setWidgetTrendTick((x) => x + 1);
+      setWidgetTrendReloadNonce((n) => n + 1);
+    };
+    const inferDurationPreset = () => {
+      const raw = String(cfg?.durationPreset || "").trim().toLowerCase();
+      if (raw && Object.prototype.hasOwnProperty.call(durationPresetMap, raw)) return raw;
+      const wm = Number(cfg?.windowMinutes);
+      if (!Number.isFinite(wm)) return "1h";
+      const found = Object.entries(durationPresetMap).find(([, mins]) => Number(mins) === Math.round(wm));
+      return found?.[0] || "1h";
+    };
+    const activeDurationPreset = inferDurationPreset();
+    const activeDurationLabel = activeDurationPreset ? activeDurationPreset.toUpperCase() : `${windowMinutes}m`;
+    const viewScale = Math.max(1, Number(zoom) || 1);
+    const overlayScale = Math.max(1, Number(overlay?.scale) || 1);
+    const dpr =
+      typeof window !== "undefined"
+        ? Math.max(1, Math.min(8, (window.devicePixelRatio || 1) * viewScale * overlayScale))
+        : 1;
+    const chartKey = `c-${overlay.id}-${kind}-${chartW}x${chartH}-z${viewScale.toFixed(3)}-s${overlayScale.toFixed(3)}`;
+    const rootStyle =
+      typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
+    const isDark = String(theme || "").toLowerCase() === "dark";
+    const textColor = rootStyle?.getPropertyValue("--text-muted")?.trim() || (isDark ? "#b7c4d8" : "#5d6b82");
+    const chartPanelFill = isDark ? "#0b1220" : "#ffffff";
+    const gridColor = isDark ? "rgba(148,163,184,0.24)" : "rgba(100,116,139,0.22)";
+    const axisColor = isDark ? "#d4deee" : "#334155";
+    const accentLine = isDark ? "#22d3ee" : "#2563eb";
+    const accentFillTop = isDark ? "rgba(34,211,238,0.42)" : "rgba(37,99,235,0.32)";
+    const accentFillBottom = isDark ? "rgba(34,211,238,0.06)" : "rgba(37,99,235,0.05)";
+    const barFill = isDark ? "rgba(45,212,191,0.9)" : "rgba(59,130,246,0.9)";
+    const tooltipBg = isDark ? "rgba(8,14,24,0.96)" : "rgba(255,255,255,0.96)";
+    const tooltipText = isDark ? "#e6eefc" : "#1b2a41";
+    const tooltipBorder = isDark ? "rgba(118,149,195,0.32)" : "rgba(54,96,163,0.22)";
+    const trimTick = (nVal, maxFractionDigits) => {
+      const safeDigits = Math.max(0, Math.min(3, Number(maxFractionDigits) || 0));
+      return Number(nVal).toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: safeDigits,
+      });
+    };
+    const yTickFmt = (v) => {
+      const nVal = Number(v);
+      if (!Number.isFinite(nVal)) return "";
+      const abs = Math.abs(nVal);
+      const approxTickCount = dense ? 3 : 5;
+      const spanForTicks = Math.max(1e-9, Math.abs(maxV - minV));
+      const tickStep = spanForTicks / approxTickCount;
+      const compact = kind === "lineChart" || kind === "areaChart" || kind === "barChart";
+      if (compact && abs >= 1_000_000_000) return `${trimTick(nVal / 1_000_000_000, 1)}B`;
+      if (compact && abs >= 1_000_000) return `${trimTick(nVal / 1_000_000, 1)}M`;
+      if (compact && abs >= 1_000) return `${trimTick(nVal / 1_000, 1)}K`;
+      const stepDigits =
+        tickStep >= 1
+          ? 0
+          : Math.max(1, Math.min(3, Math.ceil(-Math.log10(tickStep))));
+      const axisDigits = Math.max(
+        stepDigits,
+        abs < 1 ? 3 : abs < 10 ? 2 : abs < 100 ? 1 : 0
+      );
+      return trimTick(nVal, axisDigits);
+    };
+    const axisTimeline = kind === "barChart"
+      ? barValues.map((_, idx) => idx)
+      : useMultiLine
+      ? multiTimeline
+      : points.map((p) => Number(p.t)).filter((t) => Number.isFinite(t));
+    const firstTs = axisTimeline.length ? Number(axisTimeline[0]) : null;
+    const lastTs = axisTimeline.length ? Number(axisTimeline[axisTimeline.length - 1]) : null;
+    const spanMs =
+      Number.isFinite(firstTs) && Number.isFinite(lastTs) ? Math.max(0, lastTs - firstTs) : 0;
+    const showDateOnAxis = spanMs >= 24 * 60 * 60 * 1000;
+    const labels = kind === "barChart"
+      ? axisTimeline.map((_, idx) => String(barLabelsRaw[idx] || idx + 1))
+      : axisTimeline.map((ts) => formatAxisTime(ts, showDateOnAxis));
+    const rangeStartTs = Number.isFinite(rangeFrom) ? Number(rangeFrom) : null;
+    const rangeEndTs = Number.isFinite(rangeTo) ? Number(rangeTo) : null;
+    const rangeStartLabel = rangeStartTs != null ? formatAxisTime(rangeStartTs, true) : "--";
+    const rangeEndLabel = rangeEndTs != null ? formatAxisTime(rangeEndTs, true) : "--";
+    const footerValue =
+      displayN != null
+        ? formatNum(displayN)
+        : rawVal !== ""
+        ? String(rawVal)
+        : "--";
+    const samplesCount = axisTimeline.length;
+    const lastUpdateTs = kind === "barChart"
+      ? Number(barDataset?.updatedAt) || null
+      : Number.isFinite(lastTs)
+      ? lastTs
+      : null;
+    const lastUpdateLabel = lastUpdateTs != null ? formatTooltipTime(lastUpdateTs) : "--";
+    const lineTension = Math.max(0, Math.min(1, Number(cfg?.lineTension) || 0.34));
+    const effectiveTension = axisTimeline.length > 240 ? 0 : lineTension;
+    const showPoints = cfg?.showPoints !== false;
+    const baseScales = dense
+      ? { x: { display: false }, y: { display: false } }
+      : {
+          x: {
+            display: true,
+            offset: false,
+            ticks: {
+              color: axisColor,
+              maxTicksLimit: dense ? 3 : 6,
+              minRotation: 0,
+              maxRotation: 0,
+              autoSkip: true,
+              autoSkipPadding: 10,
+              font: { size: 10, weight: "600" },
+            },
+            grid: { color: "transparent", drawBorder: false },
+            border: { display: false },
+          },
+          y: {
+            display: true,
+            ticks: {
+              color: axisColor,
+              font: { size: 10, weight: "600" },
+              maxTicksLimit: 5,
+              callback: yTickFmt,
+            },
+            grid: { color: gridColor, borderDash: [4, 4], drawBorder: false },
+            border: { display: false },
+            min: minV,
+            max: maxV,
+            grace: 0,
+          },
+        };
+    const commonOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      devicePixelRatio: dpr,
+      resizeDelay: 0,
+      animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          display: useMultiLine,
+          position: "top",
+          labels: {
+            color: axisColor,
+            boxWidth: 10,
+            boxHeight: 10,
+            usePointStyle: true,
+            pointStyle: "line",
+            padding: 10,
+            font: { size: 10, weight: "600" },
+          },
+        },
+        tooltip: {
+          enabled: true,
+          backgroundColor: tooltipBg,
+          titleColor: tooltipText,
+          bodyColor: tooltipText,
+          borderColor: tooltipBorder,
+          borderWidth: 1,
+          displayColors: false,
+          padding: 10,
+          callbacks: {
+            title: (items) => {
+              const idx = items?.[0]?.dataIndex;
+              if (kind === "barChart") return String(labels?.[idx] || `Row ${Number(idx) + 1}`);
+              const ts = axisTimeline?.[idx];
+              return formatTooltipTime(ts);
+            },
+            label: (ctx) => {
+              const name = String(ctx?.dataset?.label || "Value");
+              return `${name} ${formatNum(ctx?.parsed?.y) || "--"}`;
+            },
+          },
+        },
+      },
+      scales: baseScales,
+      elements: {
+        line: { borderJoinStyle: "round", capBezierPoints: true },
+        point: {
+          radius: !showPoints || dense ? 0 : axisTimeline.length <= 2 ? 3.6 : 2.2,
+          hoverRadius: !showPoints || dense ? 0 : 5,
+          hitRadius: !showPoints || dense ? 0 : 8,
+          pointStyle: "circle",
+          borderWidth: 1,
+          borderColor: "rgba(255,255,255,0.95)",
+          backgroundColor: accentLine,
+        },
+      },
+    };
+    const lineOptions = {
+      ...commonOptions,
+      elements: {
+        ...commonOptions.elements,
+        line: { ...commonOptions.elements.line, tension: effectiveTension, borderWidth: 2.6 },
+      },
+    };
+    const areaOptions = {
+      ...commonOptions,
+      elements: {
+        ...commonOptions.elements,
+        line: { ...commonOptions.elements.line, tension: effectiveTension, borderWidth: 2.4 },
+      },
+    };
+    const barOptions = {
+      ...commonOptions,
+      elements: {
+        ...commonOptions.elements,
+        bar: { borderRadius: 6, borderSkipped: false, barPercentage: 0.7, categoryPercentage: 0.74, maxBarThickness: 24 },
+      },
+    };
+    const lineLikeData = useMultiLine
+      ? {
+          labels,
+          datasets: lineSeriesMultiRaw.map((series) => {
+            const byTs = new Map(series.points.map((p) => [Number(p.t), Number(p.v)]));
+            return {
+              label: series.label,
+              data: axisTimeline.map((ts) => (byTs.has(Number(ts)) ? byTs.get(Number(ts)) : null)),
+              borderColor: series.color,
+              backgroundColor: series.color,
+              borderWidth: 2.3,
+              fill: false,
+              spanGaps: true,
+              tension: effectiveTension,
+              cubicInterpolationMode: "monotone",
+            };
+          }),
+        }
+      : {
+          labels,
+          datasets: [
+            {
+              label: cardTitle || "Trend",
+              data: points.map((p) => p.v),
+              borderColor: accentLine,
+              backgroundColor:
+                kind === "areaChart"
+                  ? (ctx) => {
+                      const chart = ctx?.chart;
+                      const area = chart?.chartArea;
+                      if (!chart || !area) return accentFillTop;
+                      const g = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+                      g.addColorStop(0, accentFillTop);
+                      g.addColorStop(1, accentFillBottom);
+                      return g;
+                    }
+                  : accentLine,
+              borderWidth: kind === "areaChart" ? 2.2 : 2.4,
+              fill: kind === "areaChart",
+              tension: effectiveTension,
+              cubicInterpolationMode: "monotone",
+            },
+          ],
+        };
+    const barData = {
+      labels,
+      datasets: [
+        {
+          label: cardTitle || "Trend",
+          data: points.map((p) => p.v),
+          backgroundColor: barFill,
+          borderRadius: 4,
+          borderSkipped: false,
+        },
+      ],
+    };
+    return (
+      <g>
+        <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+        <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+          {cardTitle}
+        </text>
+        {!dense ? (
+          <text
+            x={x + pad + Math.min(230, Math.max(120, cardTitle.length * 6 + 26))}
+            y={y + headH - 7}
+            fill={textColor}
+            fontSize={10}
+            fontFamily="system-ui"
+            fontWeight={600}
+          >
+            {`Updated ${lastUpdateLabel}`}
+          </text>
+        ) : null}
+        {!dense && kind !== "barChart" ? (() => {
+          const chipGap = 4;
+          const chipH = Math.max(16, headH - 8);
+          const chipY = y + Math.max(2, (headH - chipH) / 2);
+          const chipWByLabel = (label) => Math.max(28, 12 + String(label || "").length * 6);
+          const chipWidths = durationChipOptions.map((opt) => chipWByLabel(opt.label));
+          const totalW = chipWidths.reduce((a, b) => a + b, 0) + chipGap * Math.max(0, durationChipOptions.length - 1);
+          const startX = Math.max(x + pad, x + w - pad - totalW);
+          let cursorX = startX;
+          return (
+            <g data-widget-control="true">
+              {durationChipOptions.map((opt, i) => {
+                const active = activeDurationPreset === opt.value;
+                const cw = chipWidths[i];
+                const cx = cursorX;
+                cursorX += cw + chipGap;
+                return (
+                  <g
+                    key={`${overlay.id}-dur-${opt.value}`}
+                    data-widget-control="true"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      applyDurationPreset(opt.value);
+                    }}
+                    style={{ cursor: "pointer" }}
+                  >
+                    <rect
+                      x={cx}
+                      y={chipY}
+                      width={cw}
+                      height={chipH}
+                      rx={6}
+                      fill={active ? (isDark ? "rgba(34,211,238,0.2)" : "rgba(37,99,235,0.16)") : "var(--bg-elev)"}
+                      stroke={active ? accentLine : "var(--border)"}
+                    />
+                    <text
+                      x={cx + cw / 2}
+                      y={chipY + chipH / 2 + 3.5}
+                      textAnchor="middle"
+                      fill={active ? (isDark ? "#9be8ff" : "#1d4ed8") : axisColor}
+                      fontSize={10}
+                      fontFamily="system-ui"
+                      fontWeight={700}
+                      pointerEvents="none"
+                    >
+                      {opt.label}
+                    </text>
+                  </g>
+                );
+              })}
+            </g>
+          );
+        })() : null}
+        <rect x={chartX} y={chartTop} width={chartW} height={chartH} rx={8} fill={chartPanelFill} stroke={isDark ? "#1e293b" : "#dbe3ef"} />
+        <foreignObject x={chartX} y={chartTop} width={chartW} height={chartH}>
+          <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%", pointerEvents: "none" }}>
+            {kind === "barChart" ? (
+              <Bar key={chartKey} data={barData} options={barOptions} />
+            ) : (
+              <Line key={chartKey} data={lineLikeData} options={kind === "areaChart" ? areaOptions : lineOptions} />
+            )}
+          </div>
+        </foreignObject>
+        {!dense ? (
+          <>
+            <text
+              x={x + pad}
+              y={y + h - 6}
+              fill={axisColor}
+              fontSize={10}
+              fontFamily="system-ui"
+              fontWeight={600}
+            >
+              {`Value ${footerValue}`}
+            </text>
+            <text
+              x={x + w / 2}
+              y={y + h - 6}
+              fill={axisColor}
+              fontSize={10}
+              fontFamily="system-ui"
+              fontWeight={600}
+              textAnchor="middle"
+            >
+              {`Samples ${samplesCount}`}
+            </text>
+            <text
+              x={x + w - pad}
+              y={y + h - 6}
+              fill={axisColor}
+              fontSize={10}
+              fontFamily="system-ui"
+              fontWeight={600}
+              textAnchor="end"
+            >
+              {kind === "barChart"
+                ? (barBinding?.mode === "tags"
+                    ? `Tags ${samplesCount} bars`
+                    : `Dataset ${samplesCount} rows`)
+                : `${activeDurationLabel} ${rangeStartLabel} - ${rangeEndLabel}`}
+            </text>
+          </>
+        ) : null}
+        {points.length === 0 ? (
+          <text x={x + w / 2} y={y + h / 2 + 4} fill={textColor} fontSize={dense ? 9 : 11} fontFamily="system-ui" fontWeight={600} textAnchor="middle">
+            {kind === "barChart" && !barBinding ? "Configure dataset or tags source" : "Waiting for data"}
+          </text>
+        ) : null}
+      </g>
+    );
   };
 
   const getGroupRouteStateForTagPath = (rawTagPath) => {
@@ -755,9 +2277,8 @@ export default function CanvasSvg({
         onCanvasDoubleClick?.(e);
       }}
       style={{
-        position: "relative",
-        width: "100%",
-        height: "100%",
+        position: "absolute",
+        inset: 0,
         overflow: "hidden",
         userSelect: "none",
       }}
@@ -798,7 +2319,7 @@ export default function CanvasSvg({
           tabIndex={0}
           style={{
             display: "block",
-            background: "var(--canvas-bg)",
+            background: canvasBackgroundColor || "var(--canvas-bg)",
             outline: "none",
             cursor: isCrosshair ? "crosshair" : "default",
           }}
@@ -1225,18 +2746,37 @@ export default function CanvasSvg({
                     onMouseLeave={() => setHoverOverlayId((prev) => (prev === o.id ? null : prev))}
                     style={{
                       cursor: tool === "select" ? "move" : "crosshair",
-                      pointerEvents: "visiblePainted",
+                      pointerEvents: o.widget ? "all" : "visiblePainted",
                     }}
                   >
                     {(() => {
+                      if (o.widget) {
+                        const bb = o?.bbox || { x: 0, y: 0, width: 320, height: 180 };
+                        const wx = Number(bb.x) || 0;
+                        const wy = Number(bb.y) || 0;
+                        const ww = Math.max(80, Number(bb.width) || 320);
+                        const wh = Math.max(60, Number(bb.height) || 180);
+                        return (
+                          <g style={{ pointerEvents: "visiblePainted" }}>
+                            <rect
+                              x={wx}
+                              y={wy}
+                              width={ww}
+                              height={wh}
+                              rx={12}
+                              fill="var(--bg-elev)"
+                              stroke="var(--border)"
+                              strokeWidth={2}
+                            />
+                          </g>
+                        );
+                      }
                       const tagFill = getTagColor(o.tagPath);
                       const routeStroke = getRouteStrokeColorForOverlay(o);
                       if (tagFill) {
                         const key = String(o.tagPath || o.id || "");
                         const prev = lastTagColorRef.current.get(key);
                         if (prev !== tagFill) {
-                          // eslint-disable-next-line no-console
-                          console.log("SVG tag color changed", { tagPath: o.tagPath, color: tagFill });
                           lastTagColorRef.current.set(key, tagFill);
                         }
                       }
@@ -1256,6 +2796,7 @@ export default function CanvasSvg({
                         />
                       );
                     })()}
+                    {o.widget ? renderWidgetOverlay(o) : null}
                   </g>
 
                   {isLineMode && (() => {

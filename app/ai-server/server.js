@@ -7,6 +7,7 @@ import process from "process";
 import OpenAI from "openai";
 import pkg from "pg";
 import crypto from "node:crypto";
+import { gzipSync, gunzipSync } from "node:zlib";
 
 const { Pool } = pkg;
 
@@ -57,6 +58,211 @@ let pool = null;
 
 const SESSION_COOKIE = "vizi_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const OPC_TREND_CHUNK_POINTS = Math.max(
+  60,
+  Number.parseInt(process.env.OPC_TREND_CHUNK_POINTS || "240", 10) || 240
+);
+const OPC_TREND_FORCE_SAMPLE_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.OPC_TREND_FORCE_SAMPLE_MS || "30000", 10) || 30000
+);
+const OPC_TREND_FLUSH_IDLE_MS = Math.max(
+  20000,
+  Number.parseInt(process.env.OPC_TREND_FLUSH_IDLE_MS || "120000", 10) || 120000
+);
+const OPC_TREND_RETENTION_MS = Math.max(
+  3600000,
+  Number.parseInt(process.env.OPC_TREND_RETENTION_MS || `${7 * 24 * 60 * 60 * 1000}`, 10) ||
+    7 * 24 * 60 * 60 * 1000
+);
+const TREND_CODEC = "json-gzip-v1";
+const trendBuffers = new Map();
+let trendLastCleanupAt = 0;
+let trendTagConfigCache = { loadedAt: 0, map: null };
+
+function toFiniteNumber(value) {
+  if (value == null) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeTrendTimestamp(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return Date.now();
+  const t = Math.round(n);
+  return t > 0 ? t : Date.now();
+}
+
+function normalizeTrendMode(value) {
+  const v = String(value || "").trim().toLowerCase();
+  return v === "time" ? "time" : "value";
+}
+
+async function loadTrendTagConfigMap() {
+  const now = Date.now();
+  if (trendTagConfigCache.map && now - Number(trendTagConfigCache.loadedAt || 0) < 5000) {
+    return trendTagConfigCache.map;
+  }
+  try {
+    let parsed = null;
+    try {
+      const { rows } = await pool.query("SELECT config FROM opc_config WHERE id = 1 LIMIT 1");
+      if (rows.length && rows[0]?.config && typeof rows[0].config === "object") {
+        parsed = rows[0].config;
+      }
+    } catch {
+      // fall back to file below
+    }
+    if (!parsed && fs.existsSync(OPC_CONFIG_PATH)) {
+      const text = fs.readFileSync(OPC_CONFIG_PATH, "utf8");
+      parsed = JSON.parse(text);
+    }
+    if (!parsed || typeof parsed !== "object") {
+      trendTagConfigCache = { loadedAt: now, map: null };
+      return null;
+    }
+    const tags = Array.isArray(parsed?.tags) ? parsed.tags : [];
+    const map = new Map();
+    tags.forEach((t) => {
+      if (t?.trendEnabled !== true) return;
+      const topic = String(t?.topic || "").trim();
+      const resolvedTopic = topic || "Default";
+      const name = String(t?.name || "").trim();
+      const tagPath = String(t?.tagPath || name).trim();
+      const trendMode = normalizeTrendMode(t?.trendMode);
+      const trendSampleMs = Math.max(1000, Number.parseInt(String(t?.trendSampleMs || ""), 10) || 0);
+      const cfg = { trendMode, trendSampleMs: trendSampleMs || null };
+      if (tagPath) {
+        map.set(`${resolvedTopic}.${tagPath}`, cfg);
+        if (!topic) map.set(tagPath, cfg);
+      }
+      if (name) {
+        map.set(`${resolvedTopic}.${name}`, cfg);
+        if (!topic) map.set(name, cfg);
+      }
+    });
+    trendTagConfigCache = { loadedAt: now, map };
+    return map;
+  } catch {
+    trendTagConfigCache = { loadedAt: now, map: null };
+    return null;
+  }
+}
+
+function appendTrendSample(tagKey, at, numericValue, options = {}) {
+  const key = String(tagKey || "").trim();
+  if (!key) return;
+  const ts = normalizeTrendTimestamp(at);
+  const value = Number(numericValue);
+  const mode = normalizeTrendMode(options?.mode);
+  const forceMs = Math.max(
+    1000,
+    Number.parseInt(String(options?.forceMs || ""), 10) || OPC_TREND_FORCE_SAMPLE_MS
+  );
+  const existing = trendBuffers.get(key);
+  if (!existing) {
+    trendBuffers.set(key, {
+      baseTs: ts,
+      baseValue: value,
+      lastTs: ts,
+      lastValue: value,
+      points: [],
+      sampleCount: 1,
+    });
+    return;
+  }
+  const sameValue = value === existing.lastValue;
+  const deltaTs = ts - existing.lastTs;
+  if (mode === "time") {
+    if (deltaTs >= 0 && deltaTs < forceMs) return;
+  } else {
+    // Value mode: only append when the numeric value actually changes.
+    // Do not add periodic same-value samples.
+    if (sameValue) return;
+  }
+  const dt = Math.max(0, ts - existing.baseTs);
+  const dv = value - existing.baseValue;
+  existing.points.push([dt, dv]);
+  existing.lastTs = ts;
+  existing.lastValue = value;
+  existing.sampleCount += 1;
+}
+
+async function flushTrendBuffer(tagKey) {
+  const key = String(tagKey || "").trim();
+  if (!key) return;
+  const buffer = trendBuffers.get(key);
+  if (!buffer || !buffer.sampleCount) return;
+  const payloadJson = JSON.stringify({
+    v: 1,
+    bt: buffer.baseTs,
+    bv: buffer.baseValue,
+    p: buffer.points,
+  });
+  const payload = gzipSync(Buffer.from(payloadJson, "utf8"), { level: 9 });
+  await pool.query(
+    `
+    INSERT INTO opc_tag_trend_chunks (
+      tag_key, from_ts, to_ts, sample_count, codec, payload
+    ) VALUES ($1, $2, $3, $4, $5, $6)
+    `,
+    [key, buffer.baseTs, buffer.lastTs, buffer.sampleCount, TREND_CODEC, payload]
+  );
+  trendBuffers.delete(key);
+}
+
+async function flushTrendBuffersIfNeeded(at) {
+  const now = normalizeTrendTimestamp(at);
+  const pendingFlush = [];
+  for (const [tagKey, buffer] of trendBuffers.entries()) {
+    if (!buffer) continue;
+    if (buffer.sampleCount >= OPC_TREND_CHUNK_POINTS) pendingFlush.push(tagKey);
+    else if (now - buffer.lastTs >= OPC_TREND_FLUSH_IDLE_MS) pendingFlush.push(tagKey);
+  }
+  for (const tagKey of pendingFlush) {
+    await flushTrendBuffer(tagKey);
+  }
+}
+
+function decodeTrendChunkPayload(codec, payload) {
+  if (!payload) return [];
+  const raw =
+    codec === TREND_CODEC
+      ? gunzipSync(payload).toString("utf8")
+      : Buffer.isBuffer(payload)
+      ? payload.toString("utf8")
+      : String(payload);
+  const parsed = JSON.parse(raw);
+  const baseTs = normalizeTrendTimestamp(parsed?.bt);
+  const baseValue = toFiniteNumber(parsed?.bv);
+  if (baseValue == null) return [];
+  const points = [{ t: baseTs, v: baseValue }];
+  const deltas = Array.isArray(parsed?.p) ? parsed.p : [];
+  deltas.forEach((entry) => {
+    if (!Array.isArray(entry) || entry.length < 2) return;
+    const dt = Number(entry[0]);
+    const dv = Number(entry[1]);
+    if (!Number.isFinite(dt) || !Number.isFinite(dv)) return;
+    points.push({ t: baseTs + Math.max(0, Math.round(dt)), v: baseValue + dv });
+  });
+  return points;
+}
+
+function downsampleTrendPoints(points, maxPoints) {
+  const list = Array.isArray(points) ? points : [];
+  const limit = Math.max(10, Number(maxPoints) || 1200);
+  if (list.length <= limit) return list;
+  const stride = (list.length - 1) / (limit - 1);
+  const out = [];
+  for (let i = 0; i < limit; i += 1) {
+    const idx = Math.round(i * stride);
+    out.push(list[Math.min(list.length - 1, idx)]);
+  }
+  return out;
+}
 
 function parseCookies(header) {
   const list = {};
@@ -158,6 +364,12 @@ function safeIdent(name) {
   return `"${name}"`;
 }
 
+function safeQualifiedIdent(schemaName, objectName) {
+  const schema = String(schemaName || "").trim();
+  const object = String(objectName || "").trim();
+  return `${safeIdent(schema)}.${safeIdent(object)}`;
+}
+
 async function getPrimaryKey(table) {
   const sql = `
     SELECT a.attname AS column
@@ -180,6 +392,210 @@ async function getPrimaryKey(table) {
     [table, pk]
   );
   return check.rows.length ? pk : null;
+}
+
+function pickReferenceLabelColumn(columnNames, referencedColumn) {
+  const cols = Array.isArray(columnNames) ? columnNames.map((c) => String(c)) : [];
+  const lower = new Set(cols.map((c) => c.toLowerCase()));
+  const preferred = [
+    "name",
+    "title",
+    "label",
+    "display_name",
+    "description",
+    "code",
+  ];
+  const found = preferred.find((p) => lower.has(p));
+  if (found) {
+    return cols.find((c) => c.toLowerCase() === found) || referencedColumn;
+  }
+  return referencedColumn;
+}
+
+async function getForeignKeysForTable(table) {
+  const fkSql = `
+    SELECT
+      kcu.column_name AS local_column,
+      ccu.table_name AS referenced_table,
+      ccu.column_name AS referenced_column
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+     AND tc.table_schema = kcu.table_schema
+    JOIN information_schema.constraint_column_usage ccu
+      ON ccu.constraint_name = tc.constraint_name
+     AND ccu.table_schema = tc.table_schema
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+      AND tc.table_schema = 'public'
+      AND tc.table_name = $1
+    ORDER BY kcu.ordinal_position
+  `;
+  const { rows: fkRows } = await pool.query(fkSql, [table]);
+  const out = {};
+
+  async function loadReferenceOptions(localColumn, refTable, refColumn) {
+    let labelColumn = refColumn;
+    let options = [];
+    try {
+      const colsRes = await pool.query(
+        `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = $1
+        `,
+        [refTable]
+      );
+      const refColumns = colsRes.rows.map((r) => String(r.column_name || "")).filter(Boolean);
+      labelColumn = pickReferenceLabelColumn(refColumns, refColumn);
+      const valueIdent = safeIdent(refColumn);
+      const labelIdent = safeIdent(labelColumn);
+      const tableIdent = safeQualifiedIdent("public", refTable);
+      const lookupSql = `
+        SELECT ${valueIdent} AS value, ${labelIdent} AS label
+        FROM ${tableIdent}
+        ORDER BY ${labelIdent} NULLS LAST, ${valueIdent}
+        LIMIT 1000
+      `;
+      const lookup = await pool.query(lookupSql);
+      options = (Array.isArray(lookup.rows) ? lookup.rows : []).map((r) => {
+        const value = r?.value ?? null;
+        const labelRaw = r?.label ?? null;
+        const valueText = value == null ? "" : String(value);
+        const labelText = labelRaw == null ? "" : String(labelRaw);
+        return {
+          value,
+          label: labelText || valueText,
+        };
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[fk-meta] lookup failed", {
+        table,
+        localColumn,
+        referencedTable: refTable,
+        referencedColumn: refColumn,
+        labelColumn,
+        error: String(err?.message || err),
+      });
+      try {
+        const fallbackSql = `
+          SELECT ${safeIdent(refColumn)} AS value
+          FROM ${safeQualifiedIdent("public", refTable)}
+          ORDER BY ${safeIdent(refColumn)}
+          LIMIT 1000
+        `;
+        const fallback = await pool.query(fallbackSql);
+        options = (Array.isArray(fallback.rows) ? fallback.rows : []).map((r) => {
+          const value = r?.value ?? null;
+          const valueText = value == null ? "" : String(value);
+          return {
+            value,
+            label: valueText,
+          };
+        });
+      } catch (fallbackErr) {
+        // eslint-disable-next-line no-console
+        console.warn("[fk-meta] fallback lookup failed", {
+          table,
+          localColumn,
+          referencedTable: refTable,
+          referencedColumn: refColumn,
+          error: String(fallbackErr?.message || fallbackErr),
+        });
+        options = [];
+      }
+    }
+    return { labelColumn, options };
+  }
+
+  for (const fk of fkRows) {
+    const localColumn = String(fk?.local_column || "").trim();
+    const refTable = String(fk?.referenced_table || "").trim();
+    const refColumn = String(fk?.referenced_column || "").trim();
+    if (
+      !/^[a-zA-Z0-9_]+$/.test(localColumn) ||
+      !/^[a-zA-Z0-9_]+$/.test(refTable) ||
+      !/^[a-zA-Z0-9_]+$/.test(refColumn)
+    ) {
+      continue;
+    }
+    const { labelColumn, options } = await loadReferenceOptions(localColumn, refTable, refColumn);
+    out[localColumn] = {
+      column: localColumn,
+      referencedTable: refTable,
+      referencedColumn: refColumn,
+      labelColumn,
+      options,
+    };
+  }
+
+  // Fallback for naming-convention relations when FK constraints are missing:
+  // `<something>_id` -> table `<something>` (or plural variants), key `id`.
+  const localColumnsRes = await pool.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = $1
+    `,
+    [table]
+  );
+  const localColumns = localColumnsRes.rows
+    .map((r) => String(r?.column_name || "").trim())
+    .filter(Boolean);
+  const localFkCandidates = localColumns.filter((name) => name.endsWith("_id") && !out[name]);
+
+  for (const localColumn of localFkCandidates) {
+    const stem = localColumn.slice(0, -3);
+    if (!/^[a-zA-Z0-9_]+$/.test(stem)) continue;
+    const candidates = [stem, `${stem}s`, `${stem}es`];
+    if (stem.endsWith("y") && stem.length > 1) {
+      candidates.push(`${stem.slice(0, -1)}ies`);
+    }
+    let refTable = "";
+    for (const candidate of candidates) {
+      if (!/^[a-zA-Z0-9_]+$/.test(candidate)) continue;
+      const exists = await pool.query(
+        `
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = $1
+        LIMIT 1
+        `,
+        [candidate]
+      );
+      if (exists.rows.length) {
+        refTable = candidate;
+        break;
+      }
+    }
+    if (!refTable) continue;
+    const idCheck = await pool.query(
+      `
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'id'
+      LIMIT 1
+      `,
+      [refTable]
+    );
+    if (!idCheck.rows.length) continue;
+    const refColumn = "id";
+    const { labelColumn, options } = await loadReferenceOptions(localColumn, refTable, refColumn);
+    out[localColumn] = {
+      column: localColumn,
+      referencedTable: refTable,
+      referencedColumn: refColumn,
+      labelColumn,
+      options,
+    };
+  }
+
+  return out;
+}
+
+function isMissingPublicRoutinesError(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  return msg.includes('relation "public.routines" does not exist') || msg.includes("relation public.routines does not exist");
 }
 
 async function buildSchemaContext() {
@@ -552,6 +968,33 @@ function validateSql(sql) {
   return statements;
 }
 
+function extractCreatedTableNames(statements) {
+  const names = new Set();
+  for (const stmt of Array.isArray(statements) ? statements : []) {
+    const text = String(stmt || "").trim();
+    // Supports: CREATE TABLE [IF NOT EXISTS] [schema.]table (...)
+    const match = text.match(
+      /^create\s+table\s+(?:if\s+not\s+exists\s+)?(?:"?([a-zA-Z0-9_]+)"?\.)?"?([a-zA-Z0-9_]+)"?\s*\(/i
+    );
+    if (!match) continue;
+    const schema = String(match[1] || "public").trim();
+    const table = String(match[2] || "").trim();
+    if (!/^[a-zA-Z0-9_]+$/.test(schema) || !/^[a-zA-Z0-9_]+$/.test(table)) continue;
+    if (schema.toLowerCase() !== "public") continue;
+    names.add(table);
+  }
+  return Array.from(names);
+}
+
+async function ensureStandardTableColumns(db, tableName) {
+  const table = String(tableName || "").trim();
+  if (!/^[a-zA-Z0-9_]+$/.test(table)) return;
+  const tableIdent = safeIdent(table);
+  await db.query(`ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS id BIGINT GENERATED BY DEFAULT AS IDENTITY`);
+  await db.query(`ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`);
+  await db.query(`ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`);
+}
+
 function mergeByIdArray(base, incoming) {
   const out = new Map();
   (Array.isArray(base) ? base : []).forEach((item, idx) => {
@@ -616,6 +1059,78 @@ function sanitizeReadOnlyQuery(sql) {
   return text;
 }
 
+function extractReportFilterNames(sql) {
+  const text = String(sql || "");
+  const names = [];
+  const seen = new Set();
+  const re = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
+  let match;
+  while ((match = re.exec(text)) != null) {
+    const name = String(match[1] || "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+function extractPositionalParamCount(sql) {
+  const text = String(sql || "");
+  const refs = Array.from(text.matchAll(/\$([1-9]\d*)\b/g)).map((m) => Number(m[1]));
+  return refs.length ? Math.max(...refs) : 0;
+}
+
+function buildParameterizedReadOnlyQuery(sql, filters, positionalValues) {
+  const text = String(sql || "");
+  const provided = filters && typeof filters === "object" ? filters : {};
+  const positional = Array.isArray(positionalValues) ? positionalValues : [];
+  const nameToIndex = new Map();
+  const values = [];
+  const replaced = text.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g, (_all, raw) => {
+    const name = String(raw || "").trim();
+    const hasValue = Object.prototype.hasOwnProperty.call(provided, name);
+    let idx = nameToIndex.get(name);
+    if (!idx) {
+      values.push(hasValue ? provided[name] : null);
+      idx = values.length;
+      nameToIndex.set(name, idx);
+    }
+    return `$${idx}`;
+  });
+  const positionalRefs = Array.from(replaced.matchAll(/\$([1-9]\d*)\b/g)).map((m) => Number(m[1]));
+  const positionalMax = positionalRefs.length ? Math.max(...positionalRefs) : 0;
+  if (positionalMax > 0 && values.length < positionalMax) {
+    for (let i = values.length; i < positionalMax; i += 1) {
+      values.push(i < positional.length ? positional[i] : null);
+    }
+  }
+  const safeSql = sanitizeReadOnlyQuery(replaced);
+  return { sql: safeSql, values };
+}
+
+function autoParameterizeReportSql(sql) {
+  const text = String(sql || "");
+  if (!text) return text;
+  if (/\{\{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\}\}/.test(text)) return text;
+
+  const used = new Map();
+  const nextName = (lhs) => {
+    const baseRaw = String(lhs || "")
+      .replace(/"/g, "")
+      .split(".")
+      .pop() || "filter";
+    const base = baseRaw.replace(/[^a-zA-Z0-9_]/g, "_").replace(/^[^a-zA-Z_]+/, "") || "filter";
+    const n = (used.get(base) || 0) + 1;
+    used.set(base, n);
+    return n === 1 ? base : `${base}_${n}`;
+  };
+
+  return text.replace(
+    /(\b(?:"?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?[a-zA-Z_][a-zA-Z0-9_]*"?)\s*(=|!=|<>|>=|<=|>|<|like|ilike)\s*('(?:''|[^'])*'|-?\d+(?:\.\d+)?)/gi,
+    (_all, lhs, op) => `${lhs} ${op} {{${nextName(lhs)}}}`
+  );
+}
+
 function extractSimpleFromTable(sql) {
   const text = String(sql || "");
   const m = text.match(/\bfrom\s+("?[\w]+"?)(?:\s+\w+)?/i);
@@ -623,6 +1138,78 @@ function extractSimpleFromTable(sql) {
   const raw = String(m[1] || "").replace(/"/g, "");
   if (!/^[a-zA-Z0-9_]+$/.test(raw)) return null;
   return raw;
+}
+
+function isFiniteNumberValue(value) {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return false;
+    const n = Number(s);
+    return Number.isFinite(n);
+  }
+  return false;
+}
+
+function buildSummaryRow(rows, columns, includeColumns = null) {
+  const dataRows = Array.isArray(rows) ? rows : [];
+  const cols = Array.isArray(columns) ? columns : [];
+  if (!dataRows.length || !cols.length) return null;
+
+  const include = Array.isArray(includeColumns) && includeColumns.length
+    ? new Set(includeColumns.map((c) => String(c)))
+    : null;
+  const numericCols = cols.filter(
+    (col) =>
+      (!include || include.has(String(col))) &&
+      dataRows.some((row) => isFiniteNumberValue(row?.[col]))
+  );
+  if (!numericCols.length) return null;
+
+  const summary = {};
+  cols.forEach((col) => {
+    if (!numericCols.includes(col)) {
+      summary[col] = null;
+      return;
+    }
+    let total = 0;
+    dataRows.forEach((row) => {
+      const v = row?.[col];
+      if (isFiniteNumberValue(v)) total += Number(v);
+    });
+    summary[col] = total;
+  });
+
+  const labelCol = cols.find((col) => !numericCols.includes(col));
+  if (labelCol) summary[labelCol] = "Total";
+  return summary;
+}
+
+function extractSummedOutputColumns(sql, columns) {
+  const text = String(sql || "");
+  const cols = Array.isArray(columns) ? columns : [];
+  if (!text || !cols.length) return [];
+
+  const byLower = new Map(cols.map((c) => [String(c).toLowerCase(), String(c)]));
+  const out = [];
+  const seen = new Set();
+  const re = /\bsum\s*\(([^)]+)\)\s*(?:as\s+("?[\w]+"?))?/gi;
+  let m;
+  while ((m = re.exec(text)) != null) {
+    const inner = String(m[1] || "").trim();
+    const aliasRaw = String(m[2] || "").replace(/"/g, "").trim();
+    const innerField = inner.replace(/"/g, "").split(".").pop()?.trim() || "";
+    const candidates = [aliasRaw, innerField, "sum"];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const actual = byLower.get(candidate.toLowerCase());
+      if (!actual || seen.has(actual)) continue;
+      seen.add(actual);
+      out.push(actual);
+      break;
+    }
+  }
+  return out;
 }
 
 app.get("/api/health", (_req, res) => {
@@ -911,6 +1498,161 @@ app.get("/api/opc/status", async (_req, res) => {
   }
 });
 
+app.get("/api/opc/trends/tags", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        tag_key,
+        MAX(to_ts) AS last_at,
+        SUM(sample_count)::bigint AS sample_count
+      FROM opc_tag_trend_chunks
+      GROUP BY tag_key
+      ORDER BY tag_key
+      `
+    );
+    res.json({
+      tags: rows.map((r) => ({
+        tagKey: String(r?.tag_key || ""),
+        lastAt: Number(r?.last_at) || null,
+        sampleCount: Number(r?.sample_count) || 0,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load trend tags." });
+  }
+});
+
+app.get("/api/opc/trends", async (req, res) => {
+  try {
+    const tagKey = String(req.query.tagKey || req.query.tag || "").trim();
+    if (!tagKey) {
+      res.status(400).json({ error: "tagKey required." });
+      return;
+    }
+    const now = Date.now();
+    const to = normalizeTrendTimestamp(req.query.to ?? now);
+    const from = normalizeTrendTimestamp(req.query.from ?? to - 60 * 60 * 1000);
+    const rangeFrom = Math.min(from, to);
+    const rangeTo = Math.max(from, to);
+    const maxPoints = Math.max(50, Math.min(10000, Number(req.query.maxPoints) || 1200));
+    if (trendBuffers.has(tagKey)) {
+      await flushTrendBuffer(tagKey);
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT codec, payload, from_ts, to_ts
+      FROM opc_tag_trend_chunks
+      WHERE tag_key = $1 AND to_ts >= $2 AND from_ts <= $3
+      ORDER BY from_ts ASC
+      LIMIT 5000
+      `,
+      [tagKey, rangeFrom, rangeTo]
+    );
+    const points = [];
+    for (const row of rows) {
+      const decoded = decodeTrendChunkPayload(String(row?.codec || ""), row?.payload);
+      decoded.forEach((pt) => {
+        if (pt.t < rangeFrom || pt.t > rangeTo) return;
+        points.push(pt);
+      });
+    }
+    const live = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+    const liveStatus = live.rows[0]?.status || {};
+    const liveAt = normalizeTrendTimestamp(liveStatus?.at || now);
+    const liveValue = toFiniteNumber(liveStatus?.values?.[tagKey]);
+    if (liveValue != null && liveAt >= rangeFrom && liveAt <= rangeTo) {
+      points.push({ t: liveAt, v: liveValue });
+    }
+    points.sort((a, b) => a.t - b.t);
+    const deduped = [];
+    let lastT = null;
+    for (const pt of points) {
+      if (lastT === pt.t && deduped.length) deduped[deduped.length - 1] = pt;
+      else {
+        deduped.push(pt);
+        lastT = pt.t;
+      }
+    }
+    // Preserve the full requested time window by downsampling across the whole
+    // range, rather than slicing to the newest maxPoints only.
+    const finalPoints = downsampleTrendPoints(deduped, maxPoints);
+    res.json({
+      tagKey,
+      from: rangeFrom,
+      to: rangeTo,
+      points: finalPoints,
+      totalPoints: deduped.length,
+      rawTotalPoints: deduped.length,
+      returnedPoints: finalPoints.length,
+      codec: TREND_CODEC,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load trend data." });
+  }
+});
+
+function mergeWriteDiagnostics(incomingDiagnostics, existingDiagnostics) {
+  const incoming =
+    incomingDiagnostics && typeof incomingDiagnostics === "object" ? incomingDiagnostics : {};
+  const existing =
+    existingDiagnostics && typeof existingDiagnostics === "object" ? existingDiagnostics : {};
+  const merged = {};
+  Object.entries(incoming).forEach(([key, diag]) => {
+    const nextDiag = diag && typeof diag === "object" ? diag : {};
+    const prevDiag = existing?.[key] && typeof existing[key] === "object" ? existing[key] : null;
+    if (!prevDiag) {
+      merged[key] = nextDiag;
+      return;
+    }
+    merged[key] = {
+      ...nextDiag,
+      writeCount:
+        Number.isFinite(Number(nextDiag?.writeCount))
+          ? Number(nextDiag.writeCount)
+          : Number(prevDiag?.writeCount || 0),
+      writeDurationTotalMs:
+        Number.isFinite(Number(nextDiag?.writeDurationTotalMs))
+          ? Number(nextDiag.writeDurationTotalMs)
+          : Number(prevDiag?.writeDurationTotalMs || 0),
+      lastWriteDurationMs:
+        Number.isFinite(Number(nextDiag?.lastWriteDurationMs))
+          ? Number(nextDiag.lastWriteDurationMs)
+          : Number(prevDiag?.lastWriteDurationMs || 0),
+      avgWriteDurationMs:
+        Number.isFinite(Number(nextDiag?.avgWriteDurationMs))
+          ? Number(nextDiag.avgWriteDurationMs)
+          : Number(prevDiag?.avgWriteDurationMs || 0),
+      maxWriteDurationMs:
+        Number.isFinite(Number(nextDiag?.maxWriteDurationMs))
+          ? Number(nextDiag.maxWriteDurationMs)
+          : Number(prevDiag?.maxWriteDurationMs || 0),
+      lastWriteAt: nextDiag?.lastWriteAt || prevDiag?.lastWriteAt || null,
+    };
+  });
+  return merged;
+}
+
+function mergeRuntimeWriteMetrics(incomingRuntime, existingRuntime) {
+  const incoming =
+    incomingRuntime && typeof incomingRuntime === "object" ? incomingRuntime : {};
+  const existing =
+    existingRuntime && typeof existingRuntime === "object" ? existingRuntime : {};
+  const incomingWrite = incoming?.writeMetrics;
+  const existingWrite = existing?.writeMetrics;
+  if (
+    incomingWrite &&
+    typeof incomingWrite === "object" &&
+    Number.isFinite(Number(incomingWrite?.count || 0))
+  ) {
+    return { ...incoming };
+  }
+  if (existingWrite && typeof existingWrite === "object") {
+    return { ...incoming, writeMetrics: existingWrite };
+  }
+  return { ...incoming };
+}
+
 app.post("/api/opc/status", async (req, res) => {
   try {
     const status = req.body;
@@ -918,6 +1660,16 @@ app.post("/api/opc/status", async (req, res) => {
       res.status(400).json({ error: "status object required." });
       return;
     }
+    const current = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+    const existingStatus =
+      current.rows[0]?.status && typeof current.rows[0].status === "object"
+        ? current.rows[0].status
+        : {};
+    const mergedStatus = {
+      ...status,
+      diagnostics: mergeWriteDiagnostics(status?.diagnostics, existingStatus?.diagnostics),
+      runtime: mergeRuntimeWriteMetrics(status?.runtime, existingStatus?.runtime),
+    };
     await pool.query(
       `
       INSERT INTO opc_status (id, status, updated_at)
@@ -925,11 +1677,207 @@ app.post("/api/opc/status", async (req, res) => {
       ON CONFLICT (id)
       DO UPDATE SET status = EXCLUDED.status, updated_at = now()
       `,
-      [JSON.stringify(status)]
+      [JSON.stringify(mergedStatus)]
     );
+    const at = normalizeTrendTimestamp(mergedStatus?.at);
+    const values =
+      mergedStatus?.values && typeof mergedStatus.values === "object" ? mergedStatus.values : {};
+    const diagnostics =
+      mergedStatus?.diagnostics && typeof mergedStatus.diagnostics === "object"
+        ? mergedStatus.diagnostics
+        : {};
+    const trendConfigMap = await loadTrendTagConfigMap();
+    Object.entries(values).forEach(([tagKey, rawValue]) => {
+      const key = String(tagKey || "").trim();
+      const cfg = trendConfigMap instanceof Map ? trendConfigMap.get(key) : null;
+      if (trendConfigMap instanceof Map && !cfg) return;
+      const n = toFiniteNumber(rawValue);
+      if (n == null) return;
+      const mode = cfg?.trendMode || "value";
+      const diag = diagnostics?.[key] && typeof diagnostics[key] === "object" ? diagnostics[key] : null;
+      const effectiveIntervalMs = Math.max(
+        1000,
+        Number.parseInt(String(diag?.effectiveIntervalMs || ""), 10) || 0
+      );
+      appendTrendSample(tagKey, at, n, {
+        mode,
+        forceMs:
+          cfg?.trendSampleMs ||
+          (mode === "time" ? effectiveIntervalMs || 1000 : OPC_TREND_FORCE_SAMPLE_MS),
+      });
+    });
+    await flushTrendBuffersIfNeeded(at);
+    if (at - trendLastCleanupAt >= 5 * 60 * 1000) {
+      trendLastCleanupAt = at;
+      const cutoff = at - OPC_TREND_RETENTION_MS;
+      await pool.query("DELETE FROM opc_tag_trend_chunks WHERE to_ts < $1", [cutoff]);
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to save OPC status." });
+  }
+});
+
+app.post("/api/opc/write", async (req, res) => {
+  try {
+    const writeStartedAt = Date.now();
+    const tagKey = String(req.body?.tagKey || "").trim();
+    const legacyTagKey = String(req.body?.legacyTagKey || "").trim();
+    const uaType = String(req.body?.uaType || "").trim().toLowerCase();
+    if (!tagKey) {
+      res.status(400).json({ error: "tagKey required." });
+      return;
+    }
+    let nextValue = req.body?.value;
+    if (typeof nextValue === "string") {
+      const raw = nextValue.trim();
+      if (uaType === "boolean") {
+        const lower = raw.toLowerCase();
+        if (lower === "true" || lower === "1" || lower === "on") nextValue = true;
+        else if (lower === "false" || lower === "0" || lower === "off") nextValue = false;
+        else nextValue = raw;
+      } else if (
+        uaType === "int16" ||
+        uaType === "int32" ||
+        uaType === "int64" ||
+        uaType === "uint16" ||
+        uaType === "uint32" ||
+        uaType === "uint64" ||
+        uaType === "float" ||
+        uaType === "double"
+      ) {
+        const n = Number(raw);
+        nextValue = Number.isFinite(n) ? n : raw;
+      } else {
+        nextValue = raw;
+      }
+    }
+
+    const current = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+    const baseStatus = current.rows[0]?.status && typeof current.rows[0].status === "object"
+      ? current.rows[0].status
+      : {};
+    const at = Date.now();
+    const nextStatus = {
+      ...baseStatus,
+      at,
+      values: { ...(baseStatus?.values || {}), [tagKey]: nextValue },
+      qualities: { ...(baseStatus?.qualities || {}), [tagKey]: "Good" },
+      diagnostics: { ...(baseStatus?.diagnostics || {}) },
+      runtime: {
+        ...(baseStatus?.runtime && typeof baseStatus.runtime === "object" ? baseStatus.runtime : {}),
+      },
+    };
+    if (legacyTagKey && legacyTagKey !== tagKey) {
+      nextStatus.values[legacyTagKey] = nextValue;
+      nextStatus.qualities[legacyTagKey] = "Good";
+    }
+    const writeDurationMs = Math.max(0, Date.now() - writeStartedAt);
+    const applyWriteDiag = (key) => {
+      const prev =
+        nextStatus?.diagnostics?.[key] && typeof nextStatus.diagnostics[key] === "object"
+          ? nextStatus.diagnostics[key]
+          : {};
+      const writeCount = Math.max(0, Number.parseInt(String(prev?.writeCount || 0), 10) || 0) + 1;
+      const writeDurationTotalMs =
+        Math.max(0, Number.parseInt(String(prev?.writeDurationTotalMs || 0), 10) || 0) +
+        writeDurationMs;
+      const maxWriteDurationMs = Math.max(
+        Math.max(0, Number.parseInt(String(prev?.maxWriteDurationMs || 0), 10) || 0),
+        writeDurationMs
+      );
+      nextStatus.diagnostics[key] = {
+        ...prev,
+        lastReadAt: at,
+        lastSuccessAt: at,
+        lastErrorAt: null,
+        lastErrorMessage: "",
+        errorStreak: 0,
+        writeCount,
+        writeDurationTotalMs,
+        lastWriteAt: at,
+        lastWriteDurationMs: writeDurationMs,
+        avgWriteDurationMs: Math.round(writeDurationTotalMs / Math.max(1, writeCount)),
+        maxWriteDurationMs,
+      };
+    };
+    if (nextStatus?.diagnostics?.[tagKey] && typeof nextStatus.diagnostics[tagKey] === "object") {
+      applyWriteDiag(tagKey);
+    } else {
+      nextStatus.diagnostics[tagKey] = {};
+      applyWriteDiag(tagKey);
+    }
+    if (
+      legacyTagKey &&
+      legacyTagKey !== tagKey &&
+      nextStatus?.diagnostics?.[legacyTagKey] &&
+      typeof nextStatus.diagnostics[legacyTagKey] === "object"
+    ) {
+      applyWriteDiag(legacyTagKey);
+    } else if (legacyTagKey && legacyTagKey !== tagKey) {
+      nextStatus.diagnostics[legacyTagKey] = {};
+      applyWriteDiag(legacyTagKey);
+    }
+
+    const prevWriteMetrics =
+      nextStatus?.runtime?.writeMetrics && typeof nextStatus.runtime.writeMetrics === "object"
+        ? nextStatus.runtime.writeMetrics
+        : {};
+    const runtimeWriteCount =
+      Math.max(0, Number.parseInt(String(prevWriteMetrics?.count || 0), 10) || 0) + 1;
+    const runtimeWriteTotalMs =
+      Math.max(0, Number.parseInt(String(prevWriteMetrics?.totalMs || 0), 10) || 0) +
+      writeDurationMs;
+    nextStatus.runtime.writeMetrics = {
+      count: runtimeWriteCount,
+      totalMs: runtimeWriteTotalMs,
+      avgMs: Math.round(runtimeWriteTotalMs / Math.max(1, runtimeWriteCount)),
+      maxMs: Math.max(
+        Math.max(0, Number.parseInt(String(prevWriteMetrics?.maxMs || 0), 10) || 0),
+        writeDurationMs
+      ),
+      lastMs: writeDurationMs,
+      lastAt: at,
+    };
+
+    if (nextStatus?.diagnostics?.[tagKey] && typeof nextStatus.diagnostics[tagKey] === "object") {
+      nextStatus.diagnostics[tagKey] = {
+        ...nextStatus.diagnostics[tagKey],
+        lastReadAt: at,
+      };
+    }
+    if (legacyTagKey && legacyTagKey !== tagKey && nextStatus?.diagnostics?.[legacyTagKey]) {
+      nextStatus.diagnostics[legacyTagKey] = {
+        ...nextStatus.diagnostics[legacyTagKey],
+        lastReadAt: at,
+      };
+    }
+
+    await pool.query(
+      `
+      INSERT INTO opc_status (id, status, updated_at)
+      VALUES (1, $1::jsonb, now())
+      ON CONFLICT (id)
+      DO UPDATE SET status = EXCLUDED.status, updated_at = now()
+      `,
+      [JSON.stringify(nextStatus)]
+    );
+
+    const n = toFiniteNumber(nextValue);
+    if (n != null) {
+      const trendConfigMap = await loadTrendTagConfigMap();
+      const cfg = trendConfigMap instanceof Map ? trendConfigMap.get(tagKey) : null;
+      const mode = cfg?.trendMode || "value";
+      appendTrendSample(tagKey, at, n, {
+        mode,
+        forceMs: cfg?.trendSampleMs || OPC_TREND_FORCE_SAMPLE_MS,
+      });
+      await flushTrendBuffersIfNeeded(at);
+    }
+
+    res.json({ ok: true, at, tagKey, value: nextValue });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to write OPC value." });
   }
 });
 
@@ -1125,6 +2073,56 @@ app.get("/api/db/tables", async (_req, res) => {
   }
 });
 
+app.get("/api/db/routines", async (_req, res) => {
+  try {
+    const q = `
+      SELECT
+        p.oid::text AS oid,
+        n.nspname AS schema_name,
+        p.proname AS routine_name,
+        p.prokind AS routine_kind,
+        p.proretset AS returns_set,
+        format_type(p.prorettype, NULL) AS return_type,
+        COALESCE(p.proargnames, ARRAY[]::text[]) AS arg_names,
+        COALESCE(
+          ARRAY(
+            SELECT format_type((p.proargtypes::oid[])[i], NULL)
+            FROM generate_subscripts(p.proargtypes::oid[], 1) g(i)
+            ORDER BY i
+          ),
+          ARRAY[]::text[]
+        ) AS arg_types
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND p.prokind IN ('f', 'p')
+      ORDER BY n.nspname, p.proname, p.oid;
+    `;
+    const { rows } = await pool.query(q);
+    const routines = rows.map((r) => {
+      const names = Array.isArray(r.arg_names) ? r.arg_names : [];
+      const types = Array.isArray(r.arg_types) ? r.arg_types : [];
+      const count = Math.max(names.length, types.length);
+      const args = Array.from({ length: count }, (_, idx) => ({
+        name: String(names[idx] || "").trim() || `arg_${idx + 1}`,
+        type: String(types[idx] || "").trim() || "text",
+      }));
+      return {
+        oid: String(r.oid || ""),
+        schema: String(r.schema_name || ""),
+        name: String(r.routine_name || ""),
+        kind: String(r.routine_kind || ""),
+        returnsSet: Boolean(r.returns_set),
+        returnType: String(r.return_type || ""),
+        args,
+      };
+    });
+    res.json({ routines });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to list routines." });
+  }
+});
+
 app.get("/api/db/schema", async (_req, res) => {
   try {
     const tablesSql = `
@@ -1169,7 +2167,8 @@ app.get("/api/db/:table/meta", async (req, res) => {
     `;
     const { rows } = await pool.query(q, [table]);
     const pk = await getPrimaryKey(table);
-    res.json({ columns: rows, primaryKey: pk });
+    const foreignKeys = await getForeignKeysForTable(table);
+    res.json({ columns: rows, primaryKey: pk, foreignKeys });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load metadata." });
   }
@@ -1457,23 +2456,208 @@ app.post("/api/reports/:id/run", async (req, res) => {
       return;
     }
     const report = rows[0];
-    const sql = sanitizeReadOnlyQuery(report.sql);
-    const result = await pool.query(sql);
+    const expectedFilters = extractReportFilterNames(report.sql);
+    const expectedPositionalParams = extractPositionalParamCount(report.sql);
+    const filterValues =
+      req.body?.filters && typeof req.body.filters === "object" && !Array.isArray(req.body.filters)
+        ? req.body.filters
+        : {};
+    const positionalValues =
+      Array.isArray(req.body?.positional) ? req.body.positional : [];
+    const { sql, values } = buildParameterizedReadOnlyQuery(report.sql, filterValues, positionalValues);
+    const result = await pool.query(sql, values);
     const columns = (result.fields || []).map((f) => f.name);
     const dataRows = Array.isArray(result.rows) ? result.rows : [];
+    const summedColumns = extractSummedOutputColumns(sql, columns);
+    const summaryRow = summedColumns.length
+      ? buildSummaryRow(dataRows, columns, summedColumns)
+      : null;
     res.json({
       report: {
         id: report.id,
         name: report.name,
         description: report.description || "",
         sql,
+        expectedFilters,
+        expectedPositionalParams,
       },
       columns,
       rows: dataRows,
       rowCount: dataRows.length,
+      summaryRow,
     });
   } catch (err) {
+    if (isMissingPublicRoutinesError(err)) {
+      res.status(400).json({
+        error:
+          'Table "public.routines" does not exist. Use /api/db/routines (metadata), Report source mode "Stored Routine", or query pg_catalog.pg_proc instead.',
+      });
+      return;
+    }
     res.status(500).json({ error: err?.message || "Failed to run report." });
+  }
+});
+
+app.post("/api/reports/preview", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const mode = String(req.body?.mode || "sql").trim().toLowerCase();
+    let sqlTemplate = String(req.body?.sql || "").trim();
+    if (mode === "table") {
+      const table = String(req.body?.table || "").trim();
+      if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+        res.status(400).json({ error: "Valid table is required." });
+        return;
+      }
+      const selectedColumns = Array.isArray(req.body?.selectedColumns)
+        ? req.body.selectedColumns
+            .map((c) => String(c || "").trim())
+            .filter((c) => /^[a-zA-Z0-9_]+$/.test(c))
+        : [];
+      const groupByColumns = Array.isArray(req.body?.groupByColumns)
+        ? Array.from(
+            new Set(
+              req.body.groupByColumns
+                .map((c) => String(c || "").trim())
+                .filter((c) => /^[a-zA-Z0-9_]+$/.test(c))
+            )
+          )
+        : [];
+      const limit = Math.min(1000, Math.max(1, Number(req.body?.limit) || 100));
+      const selectCols = selectedColumns.length
+        ? selectedColumns.map((c) => safeIdent(c)).join(", ")
+        : "*";
+      const allowedOps = new Set(["=", "!=", ">", ">=", "<", "<=", "like", "ilike"]);
+      const rawTableFilters = Array.isArray(req.body?.tableFilters) ? req.body.tableFilters : [];
+      const where = [];
+      const values = [];
+      for (const f of rawTableFilters) {
+        const column = String(f?.column || "").trim();
+        if (!/^[a-zA-Z0-9_]+$/.test(column)) continue;
+        const op = String(f?.operator || "=").trim().toLowerCase();
+        if (op === "is_null") {
+          where.push(`${safeIdent(column)} IS NULL`);
+          continue;
+        }
+        if (op === "is_not_null") {
+          where.push(`${safeIdent(column)} IS NOT NULL`);
+          continue;
+        }
+        if (!allowedOps.has(op)) continue;
+        const raw = f?.value;
+        if (raw == null || String(raw).trim() === "") continue;
+        values.push(raw);
+        where.push(`${safeIdent(column)} ${op.toUpperCase()} $${values.length}`);
+      }
+      let sql = `SELECT ${selectCols} FROM ${safeIdent(table)}`;
+      if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
+      if (groupByColumns.length) {
+        sql += ` GROUP BY ${groupByColumns.map((c) => safeIdent(c)).join(", ")}`;
+      }
+      values.push(limit);
+      sql += ` LIMIT $${values.length}`;
+      const result = await pool.query(sql, values);
+      const columns = (result.fields || []).map((f) => f.name);
+      const rows = Array.isArray(result.rows) ? result.rows : [];
+      const summedColumns = extractSummedOutputColumns(sql, columns);
+      const summaryRow = summedColumns.length ? buildSummaryRow(rows, columns, summedColumns) : null;
+      res.json({
+        sql,
+        columns,
+        rows,
+        rowCount: rows.length,
+        expectedFilters: [],
+        expectedPositionalParams: 0,
+        summaryRow,
+      });
+      return;
+    } else if (mode === "routine") {
+      const routineOid = String(req.body?.routineOid || "").trim();
+      if (!routineOid || !/^\d+$/.test(routineOid)) {
+        res.status(400).json({ error: "Routine selection required." });
+        return;
+      }
+      const meta = await pool.query(
+        `
+        SELECT
+          p.oid::text AS oid,
+          n.nspname AS schema_name,
+          p.proname AS routine_name,
+          p.prokind AS routine_kind,
+          p.proretset AS returns_set
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE p.oid = $1::oid
+        LIMIT 1
+        `,
+        [routineOid]
+      );
+      if (!meta.rows.length) {
+        res.status(404).json({ error: "Routine not found." });
+        return;
+      }
+      const routine = meta.rows[0];
+      if (String(routine.routine_kind || "") === "p") {
+        res.status(400).json({
+          error: "Procedures are not supported for preview. Use a set-returning function.",
+        });
+        return;
+      }
+      const args = Array.isArray(req.body?.routineArgs) ? req.body.routineArgs : [];
+      const placeholders = args.map((_v, i) => `$${i + 1}`).join(", ");
+      const fnIdent = safeQualifiedIdent(routine.schema_name, routine.routine_name);
+      if (Boolean(routine.returns_set)) {
+        sqlTemplate = `SELECT * FROM ${fnIdent}(${placeholders}) LIMIT 100`;
+      } else {
+        sqlTemplate = `SELECT ${fnIdent}(${placeholders}) AS result LIMIT 1`;
+      }
+    }
+    if (!sqlTemplate) {
+      res.status(400).json({ error: "Report SQL required." });
+      return;
+    }
+    const expectedFilters = extractReportFilterNames(sqlTemplate);
+    const expectedPositionalParams = extractPositionalParamCount(sqlTemplate);
+    const filterValues =
+      req.body?.filters && typeof req.body.filters === "object" && !Array.isArray(req.body.filters)
+        ? req.body.filters
+        : {};
+    const positionalValues =
+      mode === "routine"
+        ? Array.isArray(req.body?.routineArgs)
+          ? req.body.routineArgs
+          : []
+        : Array.isArray(req.body?.positional)
+          ? req.body.positional
+          : [];
+    const { sql, values } = buildParameterizedReadOnlyQuery(sqlTemplate, filterValues, positionalValues);
+    const result = await pool.query(sql, values);
+    const columns = (result.fields || []).map((f) => f.name);
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+    const summedColumns = extractSummedOutputColumns(sql, columns);
+    const summaryRow = summedColumns.length ? buildSummaryRow(rows, columns, summedColumns) : null;
+    res.json({
+      sql,
+      columns,
+      rows,
+      rowCount: rows.length,
+      expectedFilters,
+      expectedPositionalParams,
+      summaryRow,
+    });
+  } catch (err) {
+    if (isMissingPublicRoutinesError(err)) {
+      res.status(400).json({
+        error:
+          'Table "public.routines" does not exist. Use Report source mode "Stored Routine" for functions/procedures, not table mode.',
+      });
+      return;
+    }
+    res.status(500).json({ error: err?.message || "Failed to preview report." });
   }
 });
 
@@ -1498,7 +2682,7 @@ app.delete("/api/reports/:id", async (req, res) => {
 
 app.post("/api/ai/table-preview", async (req, res) => {
   try {
-    const { prompt, history } = req.body || {};
+    const { prompt, history, reportContext } = req.body || {};
     if (!prompt || typeof prompt !== "string") {
       res.status(400).json({ error: "Missing prompt." });
       return;
@@ -1521,14 +2705,37 @@ app.post("/api/ai/table-preview", async (req, res) => {
       "Use mode=answer for non-SQL conversational replies (sql can be empty).",
       "For mode=query and mode=report, generate exactly one safe read-only SELECT (or WITH ... SELECT) statement.",
       "For mode=query, include a LIMIT clause unless user explicitly asks for a different reasonable limit.",
+      "For reusable report filters, use placeholders like {{route_id}} and {{state}} instead of hardcoded values.",
+      "For mode=report, do not hardcode literal filter values in WHERE/HAVING; convert them to placeholders.",
+      "When using SUM(...), always alias each sum output to a clear column name.",
+      "When editing an existing report, prefer mode=report and return updated SQL that applies requested filters/grouping/sorting/columns changes.",
       "Do not include code fences or extra text.",
       "Use lower_snake_case for table and column names unless user specifies otherwise.",
     ].join(" ");
+
+    const existingReportSql = String(reportContext?.sql || "").trim();
+    const existingReportName = String(reportContext?.name || "").trim();
+    const existingReportDescription = String(reportContext?.description || "").trim();
+    const hasExistingReportContext = /^(select|with)\b/i.test(existingReportSql);
 
     const input = [
       { role: "system", content: system },
       ...(schemaContext
         ? [{ role: "system", content: `Current database schema:\n${schemaContext}` }]
+        : []),
+      ...(hasExistingReportContext
+        ? [
+            {
+              role: "system",
+              content: [
+                "Existing report context:",
+                `name: ${existingReportName || "(unnamed)"}`,
+                `description: ${existingReportDescription || "(none)"}`,
+                `sql: ${existingReportSql}`,
+                "Apply user instructions to this SQL and return the revised query.",
+              ].join("\n"),
+            },
+          ]
         : []),
       ...(Array.isArray(history) ? history : []),
       { role: "user", content: prompt },
@@ -1586,17 +2793,26 @@ app.post("/api/ai/table-preview", async (req, res) => {
     }
     const modeRaw = String(json.mode || "").trim().toLowerCase();
     const mode = ["ddl", "query", "report", "answer"].includes(modeRaw) ? modeRaw : "answer";
-    const sqlText = String(json.sql || "").trim();
+    let sqlText = String(json.sql || "").trim();
     const summaryText = String(json.summary || "").trim();
     const reportName = String(json.report_name || "").trim();
+
+    if (mode === "report") {
+      sqlText = autoParameterizeReportSql(sqlText);
+    }
 
     if (mode === "query" || mode === "report") {
       if (!sqlText) {
         res.status(400).json({ error: "Query mode returned no SQL." });
         return;
       }
-      const safeQuery = sanitizeReadOnlyQuery(sqlText);
-      let result = await pool.query(safeQuery);
+      const expectedFilters = extractReportFilterNames(sqlText);
+      const previewFilterValues = Object.fromEntries(expectedFilters.map((name) => [name, null]));
+      const { sql: safeQuery, values: safeValues } = buildParameterizedReadOnlyQuery(
+        sqlText,
+        previewFilterValues
+      );
+      let result = await pool.query(safeQuery, safeValues);
       let columns = (result.fields || []).map((f) => f.name);
       let rows = Array.isArray(result.rows) ? result.rows : [];
       let usedFallback = false;
@@ -1618,7 +2834,7 @@ app.post("/api/ai/table-preview", async (req, res) => {
       }
       res.json({
         mode,
-        sql: safeQuery,
+        sql: mode === "report" ? sqlText : safeQuery,
         summary:
           summaryText ||
           (usedFallback
@@ -1628,7 +2844,13 @@ app.post("/api/ai/table-preview", async (req, res) => {
         rows,
         rowCount: rows.length,
         usedFallback,
-        reportName,
+        reportName: reportName || existingReportName || "",
+        expectedFilters,
+        summaryRow: (() => {
+          const summedColumns = extractSummedOutputColumns(safeQuery, columns);
+          if (!summedColumns.length) return null;
+          return buildSummaryRow(rows, columns, summedColumns);
+        })(),
       });
       return;
     }
@@ -1660,12 +2882,16 @@ app.post("/api/ai/apply", async (req, res) => {
   try {
     const { sql } = req.body || {};
     const statements = validateSql(sql);
+    const createdTables = extractCreatedTableNames(statements);
 
     const db = await pool.connect();
     try {
       await db.query("BEGIN");
       for (const stmt of statements) {
         await db.query(stmt);
+      }
+      for (const table of createdTables) {
+        await ensureStandardTableColumns(db, table);
       }
       await db.query("COMMIT");
     } catch (err) {
@@ -1807,6 +3033,26 @@ async function start() {
   await pool.query(`
     ALTER TABLE opc_status
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS opc_tag_trend_chunks (
+      id BIGSERIAL PRIMARY KEY,
+      tag_key TEXT NOT NULL,
+      from_ts BIGINT NOT NULL,
+      to_ts BIGINT NOT NULL,
+      sample_count INT NOT NULL DEFAULT 0,
+      codec TEXT NOT NULL DEFAULT 'json-gzip-v1',
+      payload BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS opc_tag_trend_chunks_tag_to_idx
+    ON opc_tag_trend_chunks(tag_key, to_ts DESC);
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS opc_tag_trend_chunks_to_idx
+    ON opc_tag_trend_chunks(to_ts DESC);
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (

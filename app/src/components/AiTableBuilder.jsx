@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toastError, toastSuccess } from "../utils/toast";
 
 export default function AiTableBuilder() {
   const storageKey = "vizi_ai_table_builder_v1";
@@ -24,16 +25,32 @@ export default function AiTableBuilder() {
   const [lastSummary, setLastSummary] = useState("");
   const [lastColumns, setLastColumns] = useState([]);
   const [lastRows, setLastRows] = useState([]);
+  const [lastSummaryRow, setLastSummaryRow] = useState(null);
   const [reports, setReports] = useState([]);
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reportName, setReportName] = useState("");
   const [reportDescription, setReportDescription] = useState("");
+  const [selectedReportId, setSelectedReportId] = useState("");
+  const [reportFiltersById, setReportFiltersById] = useState({});
+  const [reportPositionalById, setReportPositionalById] = useState({});
   const [savingReport, setSavingReport] = useState(false);
   const [runningReportId, setRunningReportId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [applyStatus, setApplyStatus] = useState("");
   const chatScrollRef = useRef(null);
+
+  useEffect(() => {
+    const msg = String(error || "").trim();
+    if (!msg) return;
+    toastError(msg);
+  }, [error]);
+
+  useEffect(() => {
+    const msg = String(applyStatus || "").trim();
+    if (!msg) return;
+    toastSuccess(msg);
+  }, [applyStatus]);
 
   function toDisplayText(value) {
     if (typeof value === "string") return value;
@@ -59,6 +76,44 @@ export default function AiTableBuilder() {
     if (value == null) return "";
     if (typeof value === "object") return JSON.stringify(value);
     return String(value);
+  }
+
+  function extractFilterNames(sql) {
+    const text = String(sql || "");
+    const names = [];
+    const seen = new Set();
+    const re = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g;
+    let m;
+    while ((m = re.exec(text)) != null) {
+      const name = String(m[1] || "").trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      names.push(name);
+    }
+    return names;
+  }
+
+  function extractPositionalParamCount(sql) {
+    const text = String(sql || "");
+    const refs = Array.from(text.matchAll(/\$([1-9]\d*)\b/g)).map((m) => Number(m[1]));
+    return refs.length ? Math.max(...refs) : 0;
+  }
+
+  function extractPositionalParamLabels(sql) {
+    const text = String(sql || "");
+    const labelsByIndex = {};
+    const pattern =
+      /(\b(?:"?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?)\s*(=|!=|<>|>=|<=|>|<|like|ilike)\s*\$([1-9]\d*)/gi;
+    let m;
+    while ((m = pattern.exec(text)) != null) {
+      const field = String(m[2] || "").replace(/"/g, "").trim();
+      const idx = Number(m[4]);
+      if (!Number.isFinite(idx) || idx <= 0) continue;
+      if (!labelsByIndex[idx]) {
+        labelsByIndex[idx] = field || `param_${idx}`;
+      }
+    }
+    return labelsByIndex;
   }
 
   useEffect(() => {
@@ -95,6 +150,11 @@ export default function AiTableBuilder() {
     [messages]
   );
 
+  const selectedReport = useMemo(
+    () => reports.find((r) => String(r.id) === String(selectedReportId || "")) || null,
+    [reports, selectedReportId]
+  );
+
   async function generate() {
     const text = prompt.trim();
     if (!text) return;
@@ -118,6 +178,17 @@ export default function AiTableBuilder() {
         body: JSON.stringify({
           prompt: text,
           history: historyWithNext,
+          reportContext: selectedReport
+            ? {
+                id: selectedReport.id,
+                name: selectedReport.name || "",
+                description: selectedReport.description || "",
+                sql:
+                  /^(select|with)\b/i.test(String(lastSql || "").trim()) && (lastMode === "query" || lastMode === "report")
+                    ? String(lastSql || "")
+                    : selectedReport.sql || "",
+              }
+            : null,
         }),
       });
       const data = await res.json();
@@ -137,6 +208,7 @@ export default function AiTableBuilder() {
       setLastSummary(summaryText);
       setLastColumns(columns.length ? columns : inferColumns(rows));
       setLastRows(rows);
+      setLastSummaryRow(data?.summaryRow && typeof data.summaryRow === "object" ? data.summaryRow : null);
       if (suggestedReportName && !reportName) {
         setReportName(suggestedReportName);
       }
@@ -153,7 +225,11 @@ export default function AiTableBuilder() {
             role: "assistant",
             content:
               mode === "report"
-                ? `${summaryText || `Report query returned ${rows.length} row(s).`}\n\n${formattedRows}\n\nSave this query as a report from below.`
+                ? `${summaryText || `Report query returned ${rows.length} row(s).`}\n\n${formattedRows}\n\n${
+                    selectedReport
+                      ? `Click "Update Selected Report" below to save changes to "${String(selectedReport.name || "")}".`
+                      : "Save this query as a report from below."
+                  }`
                 : `${summaryText || `Returned ${rows.length} row(s).`}\n\n${formattedRows}`,
           },
         ]);
@@ -220,12 +296,14 @@ export default function AiTableBuilder() {
       }
       const name = String(reportName || "").trim();
       if (!name) throw new Error("Report name is required.");
+      const currentSelectedId = String(selectedReport?.id || "").trim();
       setSavingReport(true);
       setError("");
       const res = await fetch("/api/reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          id: currentSelectedId || undefined,
           name,
           description: String(reportDescription || "").trim(),
           sql,
@@ -233,8 +311,11 @@ export default function AiTableBuilder() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to save report.");
-      setApplyStatus("Report saved.");
+      setApplyStatus(currentSelectedId ? "Report updated." : "Report saved.");
       await loadReports();
+      if (data?.report?.id) {
+        setSelectedReportId(String(data.report.id));
+      }
       setActiveTab("reports");
     } catch (err) {
       setError(err?.message || "Failed to save report.");
@@ -246,8 +327,27 @@ export default function AiTableBuilder() {
   async function runReport(report) {
     try {
       setRunningReportId(String(report?.id || ""));
+      const reportId = String(report?.id || "");
+      const expectedFilterNames = extractFilterNames(report?.sql || "");
+      const positionalCount = extractPositionalParamCount(report?.sql || "");
+      const currentFilters = reportFiltersById[reportId] || {};
+      const currentPositional = reportPositionalById[reportId] || [];
+      const activeFilters = Object.fromEntries(
+        expectedFilterNames.map((name) => {
+          const raw = currentFilters[name];
+          const value = raw == null ? "" : String(raw);
+          return [name, value.trim() === "" ? null : raw];
+        })
+      );
+      const positional = Array.from({ length: positionalCount }, (_, idx) => {
+        const raw = currentPositional[idx];
+        const value = raw == null ? "" : String(raw);
+        return value.trim() === "" ? null : raw;
+      });
       const res = await fetch(`/api/reports/${encodeURIComponent(String(report?.id || ""))}/run`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filters: activeFilters, positional }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to run report.");
@@ -258,11 +358,25 @@ export default function AiTableBuilder() {
       setLastSummary(`Report: ${String(data?.report?.name || "")} (${rows.length} row(s))`);
       setLastColumns(columns.length ? columns : inferColumns(rows));
       setLastRows(rows);
+      setLastSummaryRow(data?.summaryRow && typeof data.summaryRow === "object" ? data.summaryRow : null);
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: `Report "${String(data?.report?.name || "")}" returned ${rows.length} row(s).\n\n${
+          content: `Report "${String(data?.report?.name || "")}" returned ${rows.length} row(s)${
+            Array.isArray(data?.report?.expectedFilters) && data.report.expectedFilters.length
+              ? ` using filters: ${data.report.expectedFilters
+                  .map((k) => `${k}=${String(activeFilters?.[k] ?? "")}`)
+                  .join(", ")}`
+              : ""
+          }${
+            Number(data?.report?.expectedPositionalParams || 0) > 0
+              ? ` using params: ${Array.from(
+                  { length: Number(data?.report?.expectedPositionalParams || 0) },
+                  (_, idx) => `$${idx + 1}=${String(positional[idx] ?? "")}`
+                ).join(", ")}`
+              : ""
+          }.\n\n${
             rows.length ? JSON.stringify(rows, null, 2) : "No rows returned."
           }`,
         },
@@ -282,10 +396,28 @@ export default function AiTableBuilder() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to delete report.");
+      if (String(report?.id || "") === String(selectedReportId || "")) {
+        setSelectedReportId("");
+      }
       await loadReports();
     } catch (err) {
       setError(err?.message || "Failed to delete report.");
     }
+  }
+
+  function beginEditReport(report) {
+    if (!report) return;
+    setSelectedReportId(String(report.id || ""));
+    setReportName(String(report.name || ""));
+    setReportDescription(String(report.description || ""));
+    setLastMode("report");
+    setLastSql(String(report.sql || ""));
+      setLastSummary(`Editing report: ${String(report.name || "")}`);
+      setLastColumns([]);
+      setLastRows([]);
+      setLastSummaryRow(null);
+    setActiveTab("chat");
+    setApplyStatus(`Editing "${String(report.name || "")}". Ask AI to add filters, grouping, sorting, or columns.`);
   }
 
   return (
@@ -328,6 +460,7 @@ export default function AiTableBuilder() {
               onClick={() => {
                 setMessages([]);
                 setPrompt("");
+                setSelectedReportId("");
               }}
               style={{
                 border: "1px solid var(--border)",
@@ -441,8 +574,96 @@ export default function AiTableBuilder() {
                           padding: 10,
                           display: "grid",
                           gap: 8,
+                          outline:
+                            String(selectedReportId || "") === String(r.id)
+                              ? "2px solid #2b6cff"
+                              : "none",
                         }}
                       >
+                        {extractFilterNames(r.sql).length > 0 || extractPositionalParamCount(r.sql) > 0 ? (
+                          <div
+                            style={{
+                              border: "1px dashed var(--border)",
+                              borderRadius: 8,
+                              background: "var(--bg-soft)",
+                              padding: 8,
+                              display: "grid",
+                              gap: 8,
+                            }}
+                          >
+                            <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>
+                              Filters
+                            </div>
+                            {extractFilterNames(r.sql).length > 0 ? (
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 }}>
+                                {extractFilterNames(r.sql).map((name) => (
+                                  <input
+                                    key={`${String(r.id)}-filter-${name}`}
+                                    value={String(reportFiltersById[String(r.id)]?.[name] ?? "")}
+                                    onChange={(e) => {
+                                      const nextValue = e.target.value;
+                                      setReportFiltersById((prev) => ({
+                                        ...prev,
+                                        [String(r.id)]: {
+                                          ...(prev[String(r.id)] || {}),
+                                          [name]: nextValue,
+                                        },
+                                      }));
+                                    }}
+                                    placeholder={name}
+                                    style={{
+                                      border: "1px solid var(--border)",
+                                      background: "var(--bg-elev)",
+                                      color: "var(--text)",
+                                      borderRadius: 8,
+                                      padding: "6px 8px",
+                                      fontSize: 12,
+                                    }}
+                                  />
+                                ))}
+                              </div>
+                            ) : null}
+                            {extractPositionalParamCount(r.sql) > 0 ? (
+                              <div style={{ display: "grid", gap: 6 }}>
+                                <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700 }}>
+                                  Params
+                                </div>
+                                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+                                  {Array.from({ length: extractPositionalParamCount(r.sql) }, (_, idx) => (
+                                    <div key={`${String(r.id)}-param-${idx + 1}`} style={{ display: "grid", gap: 4 }}>
+                                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                        {`${extractPositionalParamLabels(r.sql)[idx + 1] || `param_${idx + 1}`} ($${idx + 1})`}
+                                      </div>
+                                      <input
+                                        value={String(reportPositionalById[String(r.id)]?.[idx] ?? "")}
+                                        onChange={(e) => {
+                                          const nextValue = e.target.value;
+                                          setReportPositionalById((prev) => {
+                                            const arr = Array.isArray(prev[String(r.id)]) ? [...prev[String(r.id)]] : [];
+                                            arr[idx] = nextValue;
+                                            return {
+                                              ...prev,
+                                              [String(r.id)]: arr,
+                                            };
+                                          });
+                                        }}
+                                        placeholder={extractPositionalParamLabels(r.sql)[idx + 1] || `param_${idx + 1}`}
+                                        style={{
+                                          border: "1px solid var(--border)",
+                                          background: "var(--bg-elev)",
+                                          color: "var(--text)",
+                                          borderRadius: 8,
+                                          padding: "6px 8px",
+                                          fontSize: 12,
+                                        }}
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                           <div>
                             <div style={{ fontWeight: 700 }}>{String(r.name || "")}</div>
@@ -454,6 +675,23 @@ export default function AiTableBuilder() {
                             </div>
                           </div>
                           <div style={{ display: "flex", gap: 6, alignItems: "start" }}>
+                            <button
+                              onClick={() => beginEditReport(r)}
+                              style={{
+                                border: "1px solid var(--border)",
+                                background:
+                                  String(selectedReportId || "") === String(r.id)
+                                    ? "color-mix(in srgb, #2b6cff 28%, var(--bg-elev))"
+                                    : "var(--bg-elev)",
+                                color: "var(--text)",
+                                borderRadius: 8,
+                                padding: "6px 10px",
+                                fontSize: 12,
+                                cursor: "pointer",
+                              }}
+                            >
+                              Edit with AI
+                            </button>
                             <button
                               onClick={() => runReport(r)}
                               disabled={runningReportId === String(r.id)}
@@ -472,9 +710,9 @@ export default function AiTableBuilder() {
                             <button
                               onClick={() => deleteReport(r)}
                               style={{
-                                border: "1px solid #d92d20",
-                                background: "var(--bg-elev)",
-                                color: "#d92d20",
+                                border: "1px solid #f04438",
+                                background: "#f04438",
+                                color: "#ffffff",
                                 borderRadius: 8,
                                 padding: "6px 10px",
                                 fontSize: 12,
@@ -604,6 +842,30 @@ export default function AiTableBuilder() {
                                     ))}
                                   </tr>
                                 ))}
+                                {lastSummaryRow ? (
+                                  <tr
+                                    style={{
+                                      background: "color-mix(in srgb, #2b6cff 14%, var(--bg-elev))",
+                                      fontWeight: 700,
+                                    }}
+                                  >
+                                    {(lastColumns.length ? lastColumns : inferColumns(lastRows)).map((col) => (
+                                      <td
+                                        key={`summary-${col}`}
+                                        style={{
+                                          padding: "8px 10px",
+                                          borderTop: "1px solid var(--border)",
+                                          verticalAlign: "top",
+                                          whiteSpace: "pre-wrap",
+                                          wordBreak: "break-word",
+                                          minWidth: 120,
+                                        }}
+                                      >
+                                        {renderCell(lastSummaryRow?.[col])}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ) : null}
                               </tbody>
                             </table>
                           </div>
@@ -653,11 +915,50 @@ export default function AiTableBuilder() {
                 marginBottom: 8,
               }}
             >
+              {selectedReport ? (
+                <div
+                  style={{
+                    marginBottom: 8,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-soft)",
+                    color: "var(--text)",
+                    borderRadius: 10,
+                    padding: "8px 10px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    fontSize: 12,
+                  }}
+                >
+                  <div>
+                    Editing report: <strong>{String(selectedReport.name || "")}</strong>
+                  </div>
+                  <button
+                    onClick={() => setSelectedReportId("")}
+                    style={{
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-elev)",
+                      color: "var(--text)",
+                      borderRadius: 8,
+                      padding: "4px 8px",
+                      fontSize: 11,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              ) : null}
               <div style={{ display: "flex", gap: 8 }}>
                 <input
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="Ask VIZI AI..."
+                  placeholder={
+                    selectedReport
+                      ? `Update "${String(selectedReport.name || "")}" (filters, grouping, sorting, columns)...`
+                      : "Ask VIZI AI..."
+                  }
                   style={{
                     flex: 1,
                     border: "1px solid var(--border)",
@@ -731,20 +1032,18 @@ export default function AiTableBuilder() {
                       cursor: "pointer",
                     }}
                   >
-                    {savingReport ? "Saving..." : "Save Report"}
+                    {savingReport
+                      ? "Saving..."
+                      : selectedReport
+                      ? "Update Selected Report"
+                      : "Save Report"}
                   </button>
                 </div>
               )}
             </div>
 
-            {error && (
-              <div style={{ marginTop: 10, color: "#b42318", fontSize: 12 }}>{error}</div>
-            )}
           </div>
 
-          {applyStatus && (
-            <div style={{ marginTop: 8, fontSize: 12, color: "#12b76a" }}>{applyStatus}</div>
-          )}
         </div>
       </div>
     </div>
