@@ -8,8 +8,11 @@ import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
 import OpcConfig from "./components/OpcConfig";
 import DataBrowser from "./components/DataBrowser";
-import ReportDesigner from "./components/ReportDesigner";
+import DatasetBuilder from "./components/DatasetBuilder";
+import DatabaseConfigPanel from "./components/DatabaseConfigPanel";
+import SqlDesigner from "./components/SqlDesigner";
 import PlcAnalyzer from "./components/PlcAnalyzer";
+import ServerDiagnosticsPanel from "./components/ServerDiagnosticsPanel";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -68,18 +71,36 @@ function normalizeProjectCanvasBackground(raw) {
   };
 }
 
-function normalizeProjectPlcEntries(raw) {
+function normalizeProjectPlcEntries(raw, options = {}) {
+  const includeRawText = options?.includeRawText !== false;
+  const maxRawText =
+    Number.isFinite(Number(options?.maxRawText)) && Number(options.maxRawText) > 0
+      ? Math.floor(Number(options.maxRawText))
+      : null;
   const list = Array.isArray(raw) ? raw : [];
   return list
     .map((item, idx) => {
       const analysis = item?.analysis && typeof item.analysis === "object" ? item.analysis : null;
+      const rawText = includeRawText ? String(item?.rawText || "") : "";
+      const normalizedRaw = maxRawText == null ? rawText : rawText.slice(0, maxRawText);
       return {
         id: String(item?.id || `plc-${idx + 1}`),
         name: String(item?.name || "").trim(),
         size: Number.isFinite(Number(item?.size)) ? Number(item.size) : 0,
         uploadedAt: Number.isFinite(Number(item?.uploadedAt)) ? Number(item.uploadedAt) : Date.now(),
-        rawText: String(item?.rawText || ""),
+        debugSessionId: String(item?.debugSessionId || "").trim(),
+        rawText: normalizedRaw,
         analysis,
+        chatHistory: Array.isArray(item?.chatHistory)
+          ? item.chatHistory
+              .map((msg) => ({
+                role: String(msg?.role || "").toLowerCase() === "assistant" ? "assistant" : "user",
+                content: String(msg?.content || "").slice(0, 8000),
+              }))
+              .filter((msg) => String(msg.content || "").trim())
+              .slice(-80)
+          : [],
+        opcPlan: item?.opcPlan && typeof item.opcPlan === "object" ? item.opcPlan : null,
       };
     })
     .filter((item) => item.name || item.rawText);
@@ -119,7 +140,13 @@ function isRouteIdTagKey(value) {
 
 function isStateTagKey(value) {
   const key = normalizeRouteTagKey(value);
-  return key === "state" || key === "stcode" || key === "status" || key === "stat";
+  return (
+    key === "state" ||
+    key === "stcode" ||
+    key === "status" ||
+    key === "stat" ||
+    key === "hmistate"
+  );
 }
 
 function parseDbTagPath(value) {
@@ -155,6 +182,10 @@ function widgetTemplate(widgetKey) {
     kpi: {
       name: "Widget-KPI.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 140"><rect x="1" y="1" width="238" height="138" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">KPI</text><text x="20" y="84" fill="#22c55e" font-size="42" font-family="system-ui" font-weight="700">98.7%</text><text x="20" y="112" fill="#94a3b8" font-size="12" font-family="system-ui">Target: 95%</text></svg>`,
+    },
+    displayBox: {
+      name: "Widget-DisplayBox.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Display Box</text><text x="20" y="92" fill="#22c55e" font-size="40" font-family="system-ui" font-weight="700">123.4</text><text x="214" y="92" fill="#93c5fd" font-size="16" font-family="system-ui" font-weight="700">psi</text><rect x="20" y="122" width="194" height="30" rx="8" fill="#111827" stroke="#334155"/><rect x="222" y="122" width="78" height="30" rx="8" fill="#2b6cff"/><text x="242" y="141" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="700">Write</text></svg>`,
     },
     statusTable: {
       name: "Widget-StatusTable.svg",
@@ -194,6 +225,7 @@ function defaultWidgetSettings(widgetKey) {
   };
   if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
   if (kind === "kpi") return { ...base, historyPoints: 10 };
+  if (kind === "displayBox") return { ...base, historyPoints: 10 };
   if (kind === "gauge") return { ...base, min: 0, max: 100, historyPoints: 16 };
   if (kind === "barChart") return { ...base, historyPoints: 20 };
   if (kind === "areaChart") return { ...base, historyPoints: 40 };
@@ -453,6 +485,38 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    const pollSessionKeepAlive = async () => {
+      if (!alive) return;
+      const sessionIds = Array.from(
+        new Set(
+          (Array.isArray(projectPlcs) ? projectPlcs : [])
+            .map((plc) => String(plc?.debugSessionId || "").trim())
+            .filter(Boolean)
+        )
+      );
+      if (!sessionIds.length) return;
+      await Promise.all(
+        sessionIds.map(async (id) => {
+          try {
+            await fetch(`/api/ai/plc-debug-sessions/${encodeURIComponent(id)}`, {
+              credentials: "include",
+            });
+          } catch {
+            // keepalive is best-effort only
+          }
+        })
+      );
+    };
+    void pollSessionKeepAlive();
+    const id = setInterval(pollSessionKeepAlive, isPageVisible ? 12000 : 30000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [projectPlcs, isPageVisible]);
+
+  useEffect(() => {
+    let alive = true;
     async function pollWidgetDbValues() {
       if (!isPageVisible) return;
       const overlays = Array.isArray(svgOverlays) ? svgOverlays : [];
@@ -562,11 +626,42 @@ export default function App() {
 
   const tagStateColorsByPath = useMemo(() => {
     const map = new Map();
+    const live = opcLiveValues || {};
+
+    const inferGroupName = (tag) => {
+      const explicit = normalizeTagValue(tag?.groupName || "");
+      if (explicit) return explicit;
+      const rawPath = normalizeTagValue(tag?.tagPath || tag?.name || "");
+      if (!rawPath.includes(".")) return "";
+      return normalizeTagValue(rawPath.slice(0, rawPath.indexOf(".")));
+    };
+
+    const readLiveTagValue = (tag, topicName, groupName) => {
+      const candidates = [
+        topicName && groupName && tag?.tagPath ? `${topicName}.${groupName}.${tag.tagPath}` : "",
+        topicName && groupName && tag?.name ? `${topicName}.${groupName}.${tag.name}` : "",
+        topicName && tag?.tagPath ? `${topicName}.${tag.tagPath}` : "",
+        topicName && tag?.name ? `${topicName}.${tag.name}` : "",
+        groupName && tag?.tagPath ? `${groupName}.${tag.tagPath}` : "",
+        groupName && tag?.name ? `${groupName}.${tag.name}` : "",
+        tag?.tagPath || "",
+        tag?.name || "",
+      ]
+        .map((x) => normalizeTagValue(x))
+        .filter(Boolean);
+      for (const k of candidates) {
+        if (live[k] != null && live[k] !== "") return live[k];
+        const lower = k.toLowerCase();
+        if (live[lower] != null && live[lower] !== "") return live[lower];
+      }
+      return null;
+    };
+
     (opcTags || []).forEach((tag) => {
       const tagPath = normalizeTagValue(tag?.tagPath || "");
       const tagName = normalizeTagValue(tag?.name || "");
       const topicName = normalizeTagValue(tag?.topic || "");
-      const groupName = normalizeTagValue(tag?.groupName || "");
+      const groupName = inferGroupName(tag);
       const keyCandidates = [
         tagPath,
         topicName && tagName ? `${topicName}.${tagName}` : "",
@@ -575,8 +670,7 @@ export default function App() {
         topicName && groupName ? `${topicName}.${groupName}` : "",
       ].filter(Boolean);
       if (!keyCandidates.length) return;
-      const key = topicName ? `${topicName}.${tag?.name || ""}` : tag?.name || "";
-      const rawValue = opcLiveValues?.[key];
+      const rawValue = readLiveTagValue(tag, topicName, groupName);
       const scale = Number.isFinite(Number(tag?.scale)) ? Number(tag.scale) : 1;
       const value =
         rawValue != null && rawValue !== "" && !Number.isNaN(Number(rawValue))
@@ -585,7 +679,17 @@ export default function App() {
       const templateName = String(tag?.plcType || "").trim();
       const mappingSetName = String(tag?.mappingSet || "").trim();
       if (value == null || value === "") return;
-      const tagMappings = opcTagMappingMap.get(key) || [];
+      const mappingKeys = [
+        topicName && tagName ? `${topicName}.${tagName}` : "",
+        topicName && tagPath ? `${topicName}.${tagPath}` : "",
+        tagName,
+        tagPath,
+      ]
+        .map((x) => normalizeTagValue(x))
+        .filter(Boolean);
+      const tagMappings =
+        mappingKeys.map((k) => opcTagMappingMap.get(k)).find((rows) => Array.isArray(rows) && rows.length) ||
+        [];
       const setMappings = mappingSetName
         ? (opcMappingSetMap.get(mappingSetName)?.mappings || [])
         : [];
@@ -881,7 +985,13 @@ export default function App() {
     const seen = new Set();
     (opcTags || []).forEach((tag) => {
       const topic = normalizeTagValue(tag?.topic || "Default") || "Default";
-      const group = normalizeTagValue(tag?.groupName || "");
+      const explicitGroup = normalizeTagValue(tag?.groupName || "");
+      const rawPath = normalizeTagValue(tag?.tagPath || tag?.name || "");
+      const inferredGroup =
+        !explicitGroup && rawPath.includes(".")
+          ? normalizeTagValue(rawPath.slice(0, rawPath.indexOf(".")))
+          : "";
+      const group = explicitGroup || inferredGroup;
       if (!group) return;
       const value = `${topic}.${group}`;
       const dedupe = value.toLowerCase();
@@ -1005,13 +1115,13 @@ export default function App() {
 
 
   function getProjectPayload() {
-    const committed = commitCurrentScreenState(screensRef.current);
+    const committed = commitCurrentScreenState(screens);
     const effectiveScreenId = committed.currentId || committed.list[0]?.id || "";
     return {
       version: 1,
-      name: projectNameRef.current || "Untitled",
-      canvasBackground: normalizeProjectCanvasBackground(projectCanvasBackgroundRef.current),
-      plcs: normalizeProjectPlcEntries(projectPlcsRef.current),
+      name: projectName || "Untitled",
+      canvasBackground: normalizeProjectCanvasBackground(projectCanvasBackground),
+      plcs: normalizeProjectPlcEntries(projectPlcs, { includeRawText: true }),
       activeScreenId: effectiveScreenId,
       screens: committed.list,
       savedAt: new Date().toISOString(),
@@ -1034,7 +1144,7 @@ export default function App() {
     const compact = {
       name: payload.name || "",
       canvasBackground: normalizeProjectCanvasBackground(payload.canvasBackground),
-      plcs: normalizeProjectPlcEntries(payload.plcs || payload.plcLibrary),
+      plcs: normalizeProjectPlcEntries(payload.plcs || payload.plcLibrary, { includeRawText: false }),
       activeScreenId: payload.activeScreenId || "",
       screens: normalizedScreens,
       vbW: payload.vbW,
@@ -1736,11 +1846,29 @@ export default function App() {
   const zoomDragRef = useRef({ dragging: false, ox: 0, oy: 0, panelW: 64, panelH: 240 });
   const zoomPosRef = useRef(zoomPos);
   const zoomPanelRef = useRef(null);
-  const [showHUD, setShowHUD] = useState(true);
+  const [showHUD, setShowHUD] = useState(false);
   const [showMainDrawer, setShowMainDrawer] = useState(false);
   const [drawerView, setDrawerView] = useState("ai");
   const [databaseTab, setDatabaseTab] = useState("data");
   const [showUserDrawer, setShowUserDrawer] = useState(false);
+  const getViewportSize = () => ({
+    w: typeof window !== "undefined" ? window.innerWidth : 1400,
+    h: typeof window !== "undefined" ? window.innerHeight : 900,
+  });
+  const { w: initialVpW } = getViewportSize();
+  const [drawerSizes, setDrawerSizes] = useState({
+    main: { w: Math.min(900, Math.floor(initialVpW * 0.96)) },
+    user: { w: Math.min(620, Math.floor(initialVpW * 0.96)) },
+    project: { w: Math.min(360, Math.floor(initialVpW * 0.92)) },
+  });
+  const drawerResizeRef = useRef({
+    active: null,
+    startX: 0,
+    originW: 0,
+  });
+  const mainDrawerRef = useRef(null);
+  const userDrawerRef = useRef(null);
+  const projectDrawerRef = useRef(null);
   const [theme, setTheme] = useState(() => {
     try {
       const stored = localStorage.getItem(THEME_KEY);
@@ -1756,6 +1884,14 @@ export default function App() {
   const [profileError, setProfileError] = useState("");
 
   useEffect(() => {
+    if (!showMainDrawer) return;
+    setContextMenu(null);
+    setPolyHandleMenu(null);
+    setContextSvgMenuOpen(false);
+    setContextSvgTagQuery("");
+  }, [showMainDrawer, drawerView]);
+
+  useEffect(() => {
     const msg = String(projectStatus || "").trim();
     if (!msg) return;
     if (msg.toLowerCase() === "saving...") return;
@@ -1768,6 +1904,69 @@ export default function App() {
     const err = String(profileError || "").trim();
     if (err) toastError(err);
   }, [profileStatus, profileError]);
+
+  function beginDrawerResize(which, e, disabled = false) {
+    if (disabled) return;
+    if (e.button !== 0) return;
+    const current = drawerSizes?.[which] || { w: 0 };
+    drawerResizeRef.current = {
+      active: which,
+      startX: e.clientX,
+      originW: Number(current.w) || 0,
+    };
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  useEffect(() => {
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+    function onMove(e) {
+      const resize = drawerResizeRef.current;
+      if (resize?.active) {
+        const key = resize.active;
+        const vpW = window.innerWidth;
+        const minW = key === "project" ? 280 : 420;
+        const maxW = Math.max(minW, Math.floor(vpW * (key === "project" ? 0.92 : 0.96)));
+        const dx = e.clientX - resize.startX;
+        const widthDelta = key === "project" ? dx : -dx;
+        const nextW = clamp(resize.originW + widthDelta, minW, maxW);
+        setDrawerSizes((prev) => ({
+          ...prev,
+          [key]: { w: nextW },
+        }));
+      }
+    }
+    function onUp() {
+      drawerResizeRef.current.active = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [TOP_BAR_H]);
+
+  useEffect(() => {
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+    const onResize = () => {
+      const vpW = window.innerWidth;
+      setDrawerSizes((prev) => ({
+        main: {
+          w: clamp(prev.main.w, 420, Math.max(420, Math.floor(vpW * 0.96))),
+        },
+        user: {
+          w: clamp(prev.user.w, 420, Math.max(420, Math.floor(vpW * 0.96))),
+        },
+        project: {
+          w: clamp(prev.project.w, 280, Math.max(280, Math.floor(vpW * 0.92))),
+        },
+      }));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [TOP_BAR_H]);
+
   const [altDown, setAltDown] = useState(false);
   useEffect(() => {
     zoomPosRef.current = zoomPos;
@@ -1855,8 +2054,10 @@ export default function App() {
 
   function openDrawer(view) {
     const next = view || "ai";
+    setMainDrawerFullscreen(false);
     setDrawerView(next);
-    if (next === "database") setDatabaseTab((prev) => (prev === "dataset" ? "dataset" : "data"));
+    if (next === "database")
+      setDatabaseTab((prev) => (prev === "dataset" || prev === "config" || prev === "designer" ? prev : "data"));
     setShowMainDrawer(true);
   }
 
@@ -5490,10 +5691,10 @@ export default function App() {
   const topMenuDeleteButtonStyle = (enabled = true) => ({
     ...topMenuIconButtonStyle,
     border: "1px solid #f04438",
-    background: enabled ? "#f04438" : "rgba(244,68,56,0.25)",
+    background: enabled ? "#f04438" : "rgba(244,68,56,0.55)",
     color: "#ffffff",
     cursor: enabled ? "pointer" : "not-allowed",
-    opacity: enabled ? 1 : 0.6,
+    opacity: enabled ? 1 : 0.9,
   });
   const topMenuIconSize = 14;
   const topMenuModeButtonStyle = (active) => ({
@@ -5506,6 +5707,36 @@ export default function App() {
         : "#2b6cff"
       : topMenuIconButtonStyle.background,
     boxShadow: "none",
+  });
+  const drawerHeaderButtonStyle = {
+    border: "1px solid var(--border)",
+    background: "var(--bg-elev)",
+    color: "var(--text)",
+    borderRadius: 10,
+    width: 34,
+    height: 34,
+    padding: 0,
+    cursor: "pointer",
+    fontSize: 14,
+    fontWeight: 700,
+    display: "grid",
+    placeItems: "center",
+  };
+  const drawerTabButtonStyle = (active) => ({
+    border: `1px solid ${active ? "#2b6cff" : "var(--border)"}`,
+    background: active ? "#2b6cff" : "var(--bg-soft)",
+    color: active ? "#ffffff" : "var(--text)",
+    borderRadius: 10,
+    minWidth: 96,
+    height: 34,
+    padding: "0 12px",
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    boxShadow: active ? "0 0 0 1px rgba(43,108,255,0.3)" : "none",
   });
   const activeProject = useMemo(
     () => projects.find((p) => p.id === activeProjectId) || null,
@@ -5588,7 +5819,8 @@ export default function App() {
   };
   const activeCanvasBackgroundColor =
     theme === "dark" ? projectCanvasBackground.dark : projectCanvasBackground.light;
-  const projectDrawerInset = showProjectDrawer && !projectDrawerFullscreen ? "min(360px, 92vw)" : "0px";
+  const projectDrawerInset =
+    showProjectDrawer && !projectDrawerFullscreen ? `${Math.round(drawerSizes.project.w)}px` : "0px";
 
   return (
     <div
@@ -5606,6 +5838,16 @@ export default function App() {
         boxSizing: "border-box",
       }}
     >
+      <style>{`
+        @keyframes drawer-slide-in-right {
+          from { transform: translateX(18px); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes drawer-slide-in-left {
+          from { transform: translateX(-18px); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+      `}</style>
       <ViewBoxModal
         open={viewBoxOpen}
         onClose={() => setViewBoxOpen(false)}
@@ -6172,7 +6414,7 @@ export default function App() {
               Hide Properties
             </div>
           )}
-          {contextMenu.mode === "element" && contextSingleSvg && (
+          {contextMenu.mode === "element" && contextSingleSvg && !contextSingleSvg.widget && (
             <div style={{ padding: "8px 12px", display: "grid", gap: 6 }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Tag</div>
               <input
@@ -6414,27 +6656,22 @@ export default function App() {
           }}
         >
           <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              background: "rgba(0,0,0,0.35)",
-              pointerEvents: "none",
-            }}
-          />
-          <div
+            ref={mainDrawerRef}
             style={{
               position: "absolute",
               right: 0,
               left: mainDrawerFullscreen ? 0 : undefined,
               top: 0,
               height: "100%",
-              width: mainDrawerFullscreen ? "100%" : "min(900px, 96vw)",
+              width: mainDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.main.w)}px`,
               background: "var(--bg-soft)",
-              boxShadow: "-16px 0 40px rgba(0,0,0,0.18)",
+              boxShadow: "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
               borderLeft: mainDrawerFullscreen ? "none" : "1px solid var(--border)",
               color: "var(--text)",
+              transform: "translate(0px, 0px)",
+              animation: "drawer-slide-in-right 220ms ease-out",
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
@@ -6448,6 +6685,7 @@ export default function App() {
                 background: "var(--bg-elev)",
                 gap: 12,
                 flexWrap: "wrap",
+                cursor: "default",
               }}
             >
               <div style={{ display: "grid", gap: 10 }}>
@@ -6458,6 +6696,8 @@ export default function App() {
                     ? "Report Designer"
                     : drawerView === "plc"
                     ? "PLC"
+                    : drawerView === "server"
+                    ? "Server Diagnostics"
                     : drawerView === "database"
                     ? "Database"
                     : drawerView === "tags"
@@ -6474,16 +6714,7 @@ export default function App() {
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   onClick={() => setMainDrawerFullscreen((v) => !v)}
-                  style={{
-                    border: "1px solid var(--border)",
-                    background: "var(--bg-elev)",
-                    color: "var(--text)",
-                    borderRadius: 8,
-                    width: 32,
-                    height: 32,
-                    padding: 0,
-                    cursor: "pointer",
-                  }}
+                  style={drawerHeaderButtonStyle}
                   title={mainDrawerFullscreen ? "Windowed" : "Fullscreen"}
                   aria-label={mainDrawerFullscreen ? "Windowed" : "Fullscreen"}
                 >
@@ -6491,16 +6722,7 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => setShowMainDrawer(false)}
-                  style={{
-                    border: "1px solid var(--border)",
-                    background: "var(--bg-elev)",
-                    color: "var(--text)",
-                    borderRadius: 8,
-                    width: 32,
-                    height: 32,
-                    padding: 0,
-                    cursor: "pointer",
-                  }}
+                  style={drawerHeaderButtonStyle}
                   title="Close"
                   aria-label="Close"
                 >
@@ -6530,46 +6752,50 @@ export default function App() {
                   <HelpPanel inline onClose={() => setShowMainDrawer(false)} />
                 </div>
               ) : drawerView === "plc" ? (
-                <PlcAnalyzer plcItems={projectPlcs} onChange={setProjectPlcs} />
+                <div style={{ height: "100%", overflow: "auto", padding: 16, boxSizing: "border-box" }}>
+                  <PlcAnalyzer plcItems={projectPlcs} onChange={setProjectPlcs} />
+                </div>
+              ) : drawerView === "server" ? (
+                <ServerDiagnosticsPanel />
               ) : drawerView === "database" ? (
                 <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
                   <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
                     <button
                       data-preserve-style="true"
                       onClick={() => setDatabaseTab("data")}
-                      style={{
-                        border: `1px solid ${databaseTab === "data" ? "#2b6cff" : "var(--border)"}`,
-                        background: databaseTab === "data" ? "#2b6cff" : "var(--bg-soft)",
-                        color: databaseTab === "data" ? "#fff" : "var(--text)",
-                        borderRadius: 999,
-                        padding: "6px 12px",
-                        fontSize: 12,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                      }}
+                      style={drawerTabButtonStyle(databaseTab === "data")}
                     >
                       Data
                     </button>
                     <button
                       data-preserve-style="true"
                       onClick={() => setDatabaseTab("dataset")}
-                      style={{
-                        border: `1px solid ${databaseTab === "dataset" ? "#2b6cff" : "var(--border)"}`,
-                        background: databaseTab === "dataset" ? "#2b6cff" : "var(--bg-soft)",
-                        color: databaseTab === "dataset" ? "#fff" : "var(--text)",
-                        borderRadius: 999,
-                        padding: "6px 12px",
-                        fontSize: 12,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                      }}
+                      style={drawerTabButtonStyle(databaseTab === "dataset")}
                     >
                       Dataset
+                    </button>
+                    <button
+                      data-preserve-style="true"
+                      onClick={() => setDatabaseTab("config")}
+                      style={drawerTabButtonStyle(databaseTab === "config")}
+                    >
+                      Config
+                    </button>
+                    <button
+                      data-preserve-style="true"
+                      onClick={() => setDatabaseTab("designer")}
+                      style={drawerTabButtonStyle(databaseTab === "designer")}
+                    >
+                      Designer
                     </button>
                   </div>
                   <div style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
                     {databaseTab === "dataset" ? (
-                      <ReportDesigner initialEditorTab="datasets" lockEditorTab hideTopTabs />
+                      <DatasetBuilder embedded />
+                    ) : databaseTab === "designer" ? (
+                      <SqlDesigner embedded />
+                    ) : databaseTab === "config" ? (
+                      <DatabaseConfigPanel embedded />
                     ) : (
                       <DataBrowser embedded />
                     )}
@@ -6591,6 +6817,23 @@ export default function App() {
                 />
               )}
             </div>
+            {!mainDrawerFullscreen ? (
+              <div
+                onMouseDown={(e) => beginDrawerResize("main", e, mainDrawerFullscreen)}
+                title="Resize"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 10,
+                  cursor: "ew-resize",
+                  borderRight: "1px solid var(--border)",
+                  background: "color-mix(in srgb, var(--bg-elev) 90%, transparent)",
+                  zIndex: 2,
+                }}
+              />
+            ) : null}
           </div>
         </div>
       )}
@@ -6604,29 +6847,23 @@ export default function App() {
           }}
         >
           <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              background: "rgba(4, 10, 20, 0.55)",
-              backdropFilter: "blur(2px)",
-              pointerEvents: "none",
-            }}
-          />
-          <div
+            ref={userDrawerRef}
             style={{
               position: "absolute",
               right: 0,
               left: userDrawerFullscreen ? 0 : undefined,
               top: 0,
               height: "100%",
-              width: userDrawerFullscreen ? "100%" : "min(620px, 96vw)",
+              width: userDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.user.w)}px`,
               background:
                 "linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 96%, white 4%) 0%, color-mix(in srgb, var(--bg-soft) 90%, black 10%) 100%)",
-              boxShadow: "-20px 0 48px rgba(0,0,0,0.32)",
+              boxShadow: "-24px 0 52px rgba(0,0,0,0.36), -8px 0 22px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
               borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
               color: "var(--text)",
+              transform: "translate(0px, 0px)",
+              animation: "drawer-slide-in-right 220ms ease-out",
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
@@ -6635,10 +6872,11 @@ export default function App() {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                padding: "14px 18px",
+                padding: "12px 14px",
                 borderBottom: "1px solid var(--border)",
                 background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
-                gap: 12,
+                gap: 10,
+                cursor: "default",
               }}
             >
               <div style={{ display: "grid", gap: 2 }}>
@@ -6649,21 +6887,10 @@ export default function App() {
                   Profile, security and session preferences
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 6 }}>
                 <button
                   onClick={() => setUserDrawerFullscreen((v) => !v)}
-                  style={{
-                    border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
-                    background: "color-mix(in srgb, var(--bg-elev) 92%, white 8%)",
-                    color: "var(--text)",
-                    borderRadius: 10,
-                    width: 34,
-                    height: 34,
-                    padding: 0,
-                    fontSize: 15,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
+                  style={drawerHeaderButtonStyle}
                   title={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
                   aria-label={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
                 >
@@ -6671,18 +6898,7 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => setShowUserDrawer(false)}
-                  style={{
-                    border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
-                    background: "color-mix(in srgb, var(--bg-elev) 92%, white 8%)",
-                    color: "var(--text)",
-                    borderRadius: 10,
-                    width: 34,
-                    height: 34,
-                    padding: 0,
-                    fontSize: 15,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
+                  style={drawerHeaderButtonStyle}
                   title="Close"
                   aria-label="Close"
                 >
@@ -6690,36 +6906,36 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <div style={{ flex: "1 1 auto", overflow: "auto", padding: 22, display: "grid", gap: 18 }}>
+            <div style={{ flex: "1 1 auto", overflow: "auto", padding: 14, display: "grid", gap: 12 }}>
               <div
                 style={{
                   background:
                     "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
                   border: "1px solid color-mix(in srgb, var(--border) 82%, white 18%)",
-                  borderRadius: 16,
-                  padding: 18,
+                  borderRadius: 12,
+                  padding: 14,
                   display: "grid",
-                  gap: 14,
-                  boxShadow: "0 10px 20px rgba(0,0,0,0.18)",
+                  gap: 10,
+                  boxShadow: "0 8px 16px rgba(0,0,0,0.16)",
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div style={{ fontWeight: 800, fontSize: 16 }}>Profile</div>
                   <div
                     style={{
-                      fontSize: 11,
+                      fontSize: 10,
                       color: "var(--text-muted)",
                       border: "1px solid var(--border)",
                       borderRadius: 999,
-                      padding: "2px 8px",
+                      padding: "2px 7px",
                       background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
                     }}
                   >
                     Public info
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                     Display Name
                     <input
                       value={profileDraft.display_name}
@@ -6729,16 +6945,16 @@ export default function App() {
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 10,
-                        padding: "11px 12px",
-                        minHeight: 42,
-                        fontSize: 14,
+                        padding: "9px 10px",
+                        minHeight: 38,
+                        fontSize: 13,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
                       }}
                     />
                   </label>
-                  <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                     Username
                     <input
                       value={profileDraft.username}
@@ -6746,9 +6962,9 @@ export default function App() {
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 10,
-                        padding: "11px 12px",
-                        minHeight: 42,
-                        fontSize: 14,
+                        padding: "9px 10px",
+                        minHeight: 38,
+                        fontSize: 13,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
@@ -6756,7 +6972,7 @@ export default function App() {
                     />
                   </label>
                 </div>
-                <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+                <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                   Avatar URL
                   <input
                     value={profileDraft.avatar_url}
@@ -6767,9 +6983,9 @@ export default function App() {
                     style={{
                       border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                       borderRadius: 10,
-                      padding: "11px 12px",
-                      minHeight: 42,
-                      fontSize: 14,
+                      padding: "9px 10px",
+                      minHeight: 38,
+                      fontSize: 13,
                       background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                       color: "var(--text)",
                       boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
@@ -6797,10 +7013,10 @@ export default function App() {
                       background: "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
                       color: "white",
                       borderRadius: 10,
-                      padding: "10px 18px",
-                      minHeight: 42,
-                      minWidth: 152,
-                      fontSize: 13,
+                      padding: "8px 14px",
+                      minHeight: 38,
+                      minWidth: 132,
+                      fontSize: 12,
                       cursor: "pointer",
                       fontWeight: 700,
                       boxShadow: "0 8px 18px rgba(43,108,255,0.35)",
@@ -6816,30 +7032,30 @@ export default function App() {
                   background:
                     "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
                   border: "1px solid color-mix(in srgb, var(--border) 82%, white 18%)",
-                  borderRadius: 16,
-                  padding: 18,
+                  borderRadius: 12,
+                  padding: 14,
                   display: "grid",
-                  gap: 14,
-                  boxShadow: "0 10px 20px rgba(0,0,0,0.18)",
+                  gap: 10,
+                  boxShadow: "0 8px 16px rgba(0,0,0,0.16)",
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div style={{ fontWeight: 800, fontSize: 16 }}>Security</div>
                   <div
                     style={{
-                      fontSize: 11,
+                      fontSize: 10,
                       color: "var(--text-muted)",
                       border: "1px solid var(--border)",
                       borderRadius: 999,
-                      padding: "2px 8px",
+                      padding: "2px 7px",
                       background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
                     }}
                   >
                     Update password
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                     Current Password
                     <input
                       type="password"
@@ -6848,16 +7064,16 @@ export default function App() {
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 10,
-                        padding: "11px 12px",
-                        minHeight: 42,
-                        fontSize: 14,
+                        padding: "9px 10px",
+                        minHeight: 38,
+                        fontSize: 13,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
                       }}
                     />
                   </label>
-                  <label style={{ display: "grid", gap: 6, fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                     New Password
                     <input
                       type="password"
@@ -6866,9 +7082,9 @@ export default function App() {
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 10,
-                        padding: "11px 12px",
-                        minHeight: 42,
-                        fontSize: 14,
+                        padding: "9px 10px",
+                        minHeight: 38,
+                        fontSize: 13,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
@@ -6894,10 +7110,10 @@ export default function App() {
                       background: "linear-gradient(180deg, #273445 0%, #1b2533 100%)",
                       color: "white",
                       borderRadius: 10,
-                      padding: "10px 18px",
-                      minHeight: 42,
-                      minWidth: 152,
-                      fontSize: 13,
+                      padding: "8px 14px",
+                      minHeight: 38,
+                      minWidth: 132,
+                      fontSize: 12,
                       cursor: "pointer",
                       fontWeight: 700,
                       boxShadow: "0 8px 16px rgba(0,0,0,0.28)",
@@ -6916,14 +7132,14 @@ export default function App() {
                   background:
                     "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, #3b0b0b 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
                   border: "1px solid color-mix(in srgb, #f2c6c2 75%, #f04438 25%)",
-                  borderRadius: 16,
-                  padding: "14px 18px",
-                  boxShadow: "0 10px 20px rgba(0,0,0,0.18)",
+                  borderRadius: 12,
+                  padding: "11px 14px",
+                  boxShadow: "0 8px 16px rgba(0,0,0,0.16)",
                 }}
               >
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 14, color: "#b42318" }}>Sign out</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>End your current session.</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>End your current session.</div>
                 </div>
                 <button
                   onClick={async () => {
@@ -6934,10 +7150,10 @@ export default function App() {
                     background: "linear-gradient(180deg, #f75b51 0%, #f04438 100%)",
                     color: "white",
                     borderRadius: 10,
-                    padding: "10px 18px",
-                    minHeight: 42,
-                    minWidth: 112,
-                    fontSize: 13,
+                    padding: "8px 14px",
+                    minHeight: 38,
+                    minWidth: 100,
+                    fontSize: 12,
                     cursor: "pointer",
                     fontWeight: 700,
                     boxShadow: "0 8px 16px rgba(240,68,56,0.35)",
@@ -6947,6 +7163,23 @@ export default function App() {
                 </button>
               </div>
             </div>
+            {!userDrawerFullscreen ? (
+              <div
+                onMouseDown={(e) => beginDrawerResize("user", e, userDrawerFullscreen)}
+                title="Resize"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 10,
+                  cursor: "ew-resize",
+                  borderRight: "1px solid var(--border)",
+                  background: "color-mix(in srgb, var(--bg-elev) 90%, transparent)",
+                  zIndex: 2,
+                }}
+              />
+            ) : null}
           </div>
         </div>
       )}
@@ -7192,55 +7425,71 @@ export default function App() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
-          <button
-            onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-            style={{
-              border: "1px solid var(--border)",
-              background: "var(--bg-elev)",
-              color: "var(--text)",
-              borderRadius: 999,
-              padding: "4px 10px",
-              fontSize: 11,
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-            title="Toggle Dark Mode"
-          >
-            {theme === "dark" ? "Light" : "Dark"}
-          </button>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {[
-              { key: "ai", label: "AI" },
-              { key: "reports", label: "Reports" },
+              { key: "theme", label: "Theme" },
               { key: "plc", label: "PLC" },
-              { key: "database", label: "Database" },
-              { key: "tags", label: "Tags" },
               { key: "opc", label: "OPC" },
+              { key: "server", label: "Server" },
+              { key: "tags", label: "Tag" },
+              { key: "database", label: "Database" },
+              { key: "reports", label: "Reports" },
+              { key: "ai", label: "AI" },
               { key: "help", label: "Help" },
             ].map((item) => (
               (() => {
                 const isActiveView =
                   drawerView === item.key ||
                   (item.key === "opc" && (drawerView === "logs" || drawerView === "diagnostics"));
-                const isActive = showMainDrawer && isActiveView;
+                const isActive = item.key === "theme" ? false : (showMainDrawer && isActiveView);
                 return (
                   <button
                     key={`top-nav-${item.key}`}
                     data-preserve-style="true"
-                    onClick={() => openDrawer(item.key)}
+                    title={
+                      item.key === "theme"
+                        ? theme === "dark"
+                          ? "Switch to light mode"
+                          : "Switch to dark mode"
+                        : item.label
+                    }
+                    onClick={() => {
+                      if (item.key === "theme") {
+                        setTheme((t) => (t === "dark" ? "light" : "dark"));
+                        return;
+                      }
+                      openDrawer(item.key);
+                    }}
                     style={{
                       border: `1px solid ${isActive ? "#2b6cff" : "var(--border)"}`,
                       background: isActive ? "#2b6cff" : "var(--bg-elev)",
                       color: isActive ? "#ffffff" : "var(--text)",
                       borderRadius: 999,
-                      padding: "4px 10px",
+                      padding: item.key === "theme" ? "4px 8px" : "4px 10px",
                       fontSize: 11,
                       fontWeight: 700,
                       cursor: "pointer",
+                      minWidth: item.key === "theme" ? 34 : undefined,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                       boxShadow: isActive ? "0 0 0 1px rgba(43,108,255,0.35)" : "0 6px 16px rgba(15, 23, 42, 0.08)",
                     }}
                   >
-                    {item.label}
+                    {item.key === "theme" ? (
+                      theme === "dark" ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2" />
+                          <path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        </svg>
+                      ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      )
+                    ) : (
+                      item.label
+                    )}
                   </button>
                 );
               })()
@@ -7291,20 +7540,23 @@ export default function App() {
 
       {showProjectDrawer && (
         <div
+          ref={projectDrawerRef}
           style={{
             position: "fixed",
             top: TOP_BAR_H,
             left: 0,
             right: projectDrawerFullscreen ? 0 : undefined,
             bottom: 0,
-            width: projectDrawerFullscreen ? "auto" : "min(360px, 92vw)",
+            width: projectDrawerFullscreen ? "auto" : `${Math.round(drawerSizes.project.w)}px`,
             zIndex: 220,
             borderRight: projectDrawerFullscreen ? "none" : "1px solid var(--border)",
             background: "var(--bg-soft)",
-            boxShadow: "16px 0 40px rgba(0,0,0,0.18)",
+            boxShadow: "24px 0 48px rgba(0,0,0,0.34), 8px 0 20px rgba(0,0,0,0.18)",
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
+            transform: "translate(0px, 0px)",
+            animation: "drawer-slide-in-left 220ms ease-out",
           }}
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -7317,6 +7569,7 @@ export default function App() {
               padding: "12px 16px",
               borderBottom: "1px solid var(--border)",
               background: "var(--bg-elev)",
+              cursor: "default",
             }}
           >
             <div style={{ display: "grid", gap: 2 }}>
@@ -7330,18 +7583,7 @@ export default function App() {
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={() => setProjectDrawerFullscreen((v) => !v)}
-                style={{
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
-                  color: "var(--text)",
-                  borderRadius: 8,
-                  width: 32,
-                  height: 32,
-                  padding: 0,
-                  cursor: "pointer",
-                  fontSize: 14,
-                  fontWeight: 700,
-                }}
+                style={drawerHeaderButtonStyle}
                 title="Toggle Project Drawer Fullscreen"
                 aria-label={projectDrawerFullscreen ? "Windowed" : "Fullscreen"}
               >
@@ -7349,18 +7591,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => setShowProjectDrawer(false)}
-                style={{
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
-                  color: "var(--text)",
-                  borderRadius: 8,
-                  width: 32,
-                  height: 32,
-                  padding: 0,
-                  cursor: "pointer",
-                  fontSize: 14,
-                  fontWeight: 700,
-                }}
+                style={drawerHeaderButtonStyle}
                 title="Close Project Drawer"
                 aria-label="Close"
               >
@@ -7368,6 +7599,23 @@ export default function App() {
               </button>
             </div>
           </div>
+          {!projectDrawerFullscreen ? (
+            <div
+              onMouseDown={(e) => beginDrawerResize("project", e, projectDrawerFullscreen)}
+              title="Resize"
+              style={{
+                position: "absolute",
+                right: 0,
+                top: 0,
+                bottom: 0,
+                width: 10,
+                cursor: "ew-resize",
+                borderLeft: "1px solid var(--border)",
+                background: "color-mix(in srgb, var(--bg-elev) 90%, transparent)",
+                zIndex: 2,
+              }}
+            />
+          ) : null}
 
           <div
             style={{
@@ -7584,7 +7832,7 @@ export default function App() {
                   fontSize: 11,
                   padding: "8px 10px",
                   border: "1px solid #f04438",
-                  background: screens.length > 1 ? "#f04438" : "rgba(244,68,56,0.25)",
+                  background: screens.length > 1 ? "#f04438" : "rgba(244,68,56,0.55)",
                   color: "#fff",
                   cursor: screens.length > 1 ? "pointer" : "not-allowed",
                   opacity: screens.length > 1 ? 1 : 0.6,
@@ -7689,6 +7937,7 @@ export default function App() {
     </div>
   );
 }
+
 
 
 

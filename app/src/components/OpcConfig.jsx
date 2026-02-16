@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { showToast, toastError, toastSuccess } from "../utils/toast";
+import { dismissToast, showToast, toastError, toastSuccess } from "../utils/toast";
 
 const DIAGNOSTICS_UI_MAX_ROWS = 500;
 
@@ -8,6 +8,13 @@ function normalizeTagName(name) {
     .replace(/\\n/g, "")
     .replace(/\r?\n/g, "")
     .trim();
+}
+
+function getTagGroupKey(tag) {
+  const name = normalizeTagName(tag?.name || "");
+  const groupRaw = normalizeTagName(tag?.groupName || "");
+  const fallbackGroup = name && name.includes(".") ? name.split(".")[0] : "";
+  return groupRaw || fallbackGroup || "Ungrouped";
 }
 
 function normalizeTopicValue(value) {
@@ -45,6 +52,28 @@ function parseOptionalNonNegative(value) {
 function normalizeTrendMode(value) {
   const v = String(value || "").trim().toLowerCase();
   return v === "time" ? "time" : "value";
+}
+
+function TrashCanIcon({ size = 12 }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M6 6l1 14h10l1-14" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  );
 }
 
 
@@ -169,6 +198,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [applyTopic, setApplyTopic] = useState("");
   const [applyPrefix, setApplyPrefix] = useState("");
   const [applyMappingSet, setApplyMappingSet] = useState("");
+  const [templateSourceGroupKey, setTemplateSourceGroupKey] = useState("");
   const [errorLogEntries, setErrorLogEntries] = useState([]);
   const [expandedPrefixes, setExpandedPrefixes] = useState({});
   const [tagSectionTab, setTagSectionTab] = useState("tags");
@@ -219,10 +249,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     deadband: "",
     muted: false,
   });
-  const [bulkEditCollapsed, setBulkEditCollapsed] = useState(true);
-  const [templateApplyCollapsed, setTemplateApplyCollapsed] = useState(true);
+  const [tagToolsTab, setTagToolsTab] = useState("template");
   const [tagWriteByKey, setTagWriteByKey] = useState({});
   const [tagWriteBusyByKey, setTagWriteBusyByKey] = useState({});
+  const [pendingTagGroupDelete, setPendingTagGroupDelete] = useState(null);
+  const [pendingTagDelete, setPendingTagDelete] = useState(null);
   const tagEditRowRefs = useRef(new Map());
   const RESTART_TOAST_ID = "opc-restart";
   const restartToastIdRef = useRef("");
@@ -261,6 +292,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     restartStartedAtRef.current = 0;
     setRestartPending(false);
   }, [restartPending, opcConnected, opcLastPollAt]);
+
+  useEffect(
+    () => () => {
+      const toastId = String(restartToastIdRef.current || "").trim();
+      if (toastId) {
+        dismissToast(toastId);
+      }
+      restartToastIdRef.current = "";
+      restartSawDisconnectRef.current = false;
+      restartStartedAtRef.current = 0;
+    },
+    []
+  );
   const tagColumnKeys = [
     "enabled",
     "muted",
@@ -648,8 +692,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       const groupRaw = normalizeTagName(tag?.groupName || "");
       if (!name && !tagPath && !groupRaw) return;
       const topicKey = normalizeTagName(tag?.topic || "") || "No Topic";
-      const fallbackGroup = name && name.includes(".") ? name.split(".")[0] : "";
-      const groupKey = groupRaw || fallbackGroup || "Ungrouped";
+      const groupKey = getTagGroupKey(tag);
       if (!groups.has(topicKey)) groups.set(topicKey, new Map());
       const topicMap = groups.get(topicKey);
       if (!topicMap.has(groupKey)) {
@@ -691,8 +734,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       }
       if (!name && !tagPath && !groupRaw) return;
       const topicKey = normalizeTagName(tag?.topic || "") || "No Topic";
-      const fallbackGroup = name && name.includes(".") ? name.split(".")[0] : "";
-      const groupKey = groupRaw || fallbackGroup || "Ungrouped";
+      const groupKey = getTagGroupKey(tag);
       if (!groups.has(topicKey)) groups.set(topicKey, new Map());
       const topicMap = groups.get(topicKey);
       if (!topicMap.has(groupKey)) {
@@ -705,6 +747,36 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       groups: Array.from(tagMap.values()),
     }));
   }, [tags, tagSearch]);
+
+  const templateSourceGroups = useMemo(() => {
+    const groups = new Map();
+    (tags || []).forEach((tag) => {
+      const topic = normalizeTagName(tag?.topic || "") || "No Topic";
+      const groupName = getTagGroupKey(tag);
+      const key = `${topic}::${groupName}`;
+      if (!groups.has(key)) {
+        groups.set(key, { key, topic, groupName, items: [] });
+      }
+      groups.get(key).items.push(tag);
+    });
+    return Array.from(groups.values())
+      .map((entry) => ({ ...entry, count: entry.items.length }))
+      .sort((a, b) => {
+        const g = String(a.groupName || "").localeCompare(String(b.groupName || ""));
+        if (g !== 0) return g;
+        return String(a.topic || "").localeCompare(String(b.topic || ""));
+      });
+  }, [tags]);
+
+  useEffect(() => {
+    if (!templateSourceGroups.length) {
+      if (templateSourceGroupKey) setTemplateSourceGroupKey("");
+      return;
+    }
+    if (!templateSourceGroupKey || !templateSourceGroups.some((g) => g.key === templateSourceGroupKey)) {
+      setTemplateSourceGroupKey(templateSourceGroups[0].key);
+    }
+  }, [templateSourceGroups, templateSourceGroupKey]);
 
   const groupNameOptions = useMemo(() => {
     const topic = String(manualTag.topic || "").trim();
@@ -1480,6 +1552,58 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     }
   }
 
+  function createTemplateFromTagGroup() {
+    const selected = templateSourceGroups.find((g) => g.key === templateSourceGroupKey);
+    if (!selected) {
+      setError("Select a tag group first.");
+      return;
+    }
+    const groupName = String(selected.groupName || "").trim();
+    const stripGroupPrefix = (value) => {
+      const text = normalizeTagName(value || "");
+      if (!text || !groupName) return text;
+      const prefix = `${groupName}.`;
+      if (text.toLowerCase().startsWith(prefix.toLowerCase())) {
+        return text.slice(prefix.length);
+      }
+      return text;
+    };
+    const rows = (selected.items || [])
+      .map((tag) => {
+        const rawName = normalizeTagName(tag?.name || "");
+        const rawTagPath = normalizeTagName(tag?.tagPath || rawName);
+        const name = stripGroupPrefix(rawName) || stripGroupPrefix(rawTagPath) || rawName || rawTagPath;
+        const tagPath = stripGroupPrefix(rawTagPath) || stripGroupPrefix(rawName) || rawTagPath || rawName;
+        if (!name && !tagPath) return null;
+        return {
+          name,
+          tagPath,
+          uaType: String(tag?.uaType || "").trim(),
+          pollMs: tag?.pollMs === "" || tag?.pollMs == null ? "" : Number(tag.pollMs),
+          samplingInterval:
+            tag?.samplingInterval === "" || tag?.samplingInterval == null ? "" : Number(tag.samplingInterval),
+          topic: "",
+          enabled: tag?.enabled !== false,
+          mappingSet: String(tag?.mappingSet || "").trim(),
+          scale: Number.isFinite(Number(tag?.scale)) ? Number(tag.scale) : 1,
+          decimals: Number.isFinite(Number(tag?.decimals)) ? Number(tag.decimals) : 0,
+        };
+      })
+      .filter(Boolean);
+    if (!rows.length) {
+      setError("Selected tag group has no tags to build a template.");
+      return;
+    }
+    setEditTemplate("");
+    setTemplateOriginalName("");
+    setTemplateParent("");
+    setTemplateFieldRows(rows);
+    setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+    setTemplateEditing(true);
+    setTemplateName(groupName || "NewTemplate");
+    setStatus(`Loaded ${rows.length} fields from group "${groupName || "Ungrouped"}".`);
+  }
+
   const recentErrorCount = useMemo(() => {
     const cutoff = Date.now() - 15000;
     return errorLogEntries.filter((entry) => entry.at >= cutoff && entry.kind === "error").length;
@@ -1557,10 +1681,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   function renderTagDiagnosticsCard() {
     const entries = Object.entries(liveDiagnostics || {});
+    const uniqueEntryMap = new Map();
+    for (const [key, d] of entries) {
+      const topic = String(d?.topic || "").trim();
+      const tagPath = String(d?.tagPath || d?.name || key || "").trim();
+      const uniqueKey = `${topic}::${tagPath}`.toLowerCase();
+      if (!uniqueKey) continue;
+      if (!uniqueEntryMap.has(uniqueKey)) {
+        uniqueEntryMap.set(uniqueKey, [key, d]);
+      }
+    }
+    const uniqueEntries = Array.from(uniqueEntryMap.values());
     const entriesForCompute =
-      entries.length > DIAGNOSTICS_UI_MAX_ROWS
-        ? entries.slice(0, DIAGNOSTICS_UI_MAX_ROWS)
-        : entries;
+      uniqueEntries.length > DIAGNOSTICS_UI_MAX_ROWS
+        ? uniqueEntries.slice(0, DIAGNOSTICS_UI_MAX_ROWS)
+        : uniqueEntries;
     const rows = entriesForCompute.map(([key, d]) => {
       const hasReadMetrics =
         d && typeof d === "object" &&
@@ -1633,6 +1768,15 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return staleRefTs - lastSuccessAt > effective * 3 ? sum + 1 : sum;
     }, 0);
     const hasAnyReadMetrics = rowsWithReadMetrics.length > 0;
+    const totalTags = uniqueEntries.length;
+    const readTimestamps = rowsWithReadMetrics
+      .map((r) => (Number.isFinite(Number(r?.d?.lastReadAt)) ? Number(r.d.lastReadAt) : null))
+      .filter((v) => Number.isFinite(v));
+    const readAllCycleMs =
+      readTimestamps.length >= 2
+        ? Math.max(...readTimestamps) - Math.min(...readTimestamps)
+        : null;
+    const hasReadTimingData = readTimestamps.length >= 2;
     const formatMs = (v) => (Number.isFinite(Number(v)) ? `${Math.round(Number(v))} ms` : "--");
     const formatAt = (v) => {
       const t = Number(v);
@@ -1662,9 +1806,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <div style={{ fontWeight: 700 }} title="Per-tag health details from the OPC poller.">
             Tag Diagnostics
           </div>
-          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{entries.length} tags</div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{totalTags} tags</div>
         </div>
-        {entries.length > entriesForCompute.length ? (
+        {uniqueEntries.length > entriesForCompute.length ? (
           <div style={{ marginBottom: 8, fontSize: 11, color: "var(--text-muted)" }}>
             Showing first {entriesForCompute.length} tags for diagnostics performance.
           </div>
@@ -1702,13 +1846,20 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             </div>
             <div style={{ color: "var(--text-muted)" }}>muted {mutedCount}</div>
           </div>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg-soft)", fontSize: 12 }}>
+            <div style={{ color: "var(--text-muted)" }}>Tag Sweep</div>
+            <div style={{ fontWeight: 700 }}>{totalTags}</div>
+            <div style={{ color: "var(--text-muted)" }}>
+              read cycle {hasReadTimingData ? formatMs(readAllCycleMs) : "--"}
+            </div>
+          </div>
         </div>
         {!hasAnyReadMetrics ? (
           <div style={{ marginBottom: 10, fontSize: 11, color: "#b54708", background: "#fff6ed", border: "1px solid #fed7aa", borderRadius: 8, padding: "6px 8px" }}>
             Extended read metrics are not present in current OPC status payload. Restart the OPC server to publish read avg/max counters.
           </div>
         ) : null}
-        {entries.length === 0 ? (
+        {uniqueEntries.length === 0 ? (
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No diagnostics yet.</div>
         ) : (
           <div style={{ maxHeight: 280, overflow: "auto", border: "1px solid #eef2f6", borderRadius: 8 }}>
@@ -1774,6 +1925,20 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       alignItems: "center",
       justifyContent: "center",
       textAlign: "center",
+    };
+    const dangerIconButtonStyle = {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: 28,
+      height: 28,
+      border: "1px solid #f04438",
+      background: "#f04438",
+      color: "#ffffff",
+      borderRadius: 8,
+      padding: 0,
+      lineHeight: 1,
+      boxShadow: "0 4px 12px rgba(240,68,56,0.28)",
     };
     const showDrawerViewButtons = typeof onDrawerViewChange === "function";
     return (
@@ -1954,44 +2119,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         ) : null}
         {activeTagTab === "tags" ? (
           <>
-            <div style={{ ...sectionCardStyle, marginBottom: 10, background: "var(--bg-soft)" }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Columns</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {tagColumnKeys.map((key) => (
-                  <label
-                    key={`tag-col-${key}`}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "4px 8px",
-                      borderRadius: 999,
-                      border: "1px solid var(--border)",
-                      background: showTagColumn(key)
-                        ? "color-mix(in srgb, #2b6cff 14%, var(--bg-elev))"
-                        : "var(--bg-elev)",
-                      fontSize: 12,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={showTagColumn(key)}
-                      onChange={(e) => {
-                        const next = { ...tagVisibleColumns, [key]: e.target.checked };
-                        setTagVisibleColumns(next);
-                        try {
-                          localStorage.setItem("vizi_tag_columns", JSON.stringify(next));
-                        } catch {
-                          // ignore
-                        }
-                      }}
-                    />
-                    {tagColumnLabels[key] || key}
-                  </label>
-                ))}
-              </div>
-            </div>
+            
             {false ? (
               <div style={{ ...sectionCardStyle, marginBottom: 10, background: "var(--bg-soft)" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
@@ -2177,7 +2305,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                               }
                               style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
                             >
-                              X
+                              <TrashCanIcon />
                             </button>
                           </td>
                         </tr>
@@ -2211,8 +2339,27 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     />
                     Enabled
                   </label>
-                <button onClick={addManualTag} style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px" }}>
-                  Add Tag
+                <button
+                  onClick={addManualTag}
+                  title="Add Tag"
+                  aria-label="Add Tag"
+                  style={{
+                    ...drawerButtonStyle,
+                    border: "1px solid #2b6cff",
+                    background: "#2b6cff",
+                    color: "white",
+                    borderRadius: 8,
+                    width: 32,
+                    height: 32,
+                    padding: 0,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    lineHeight: 1,
+                    fontWeight: 800,
+                  }}
+                >
+                  +
                 </button>
                 <button
                   onClick={() => {
@@ -2227,32 +2374,63 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             </div>
         ) : null}
             <div style={{ ...sectionCardStyle, marginBottom: 10 }}>
-              <button
-                onClick={() => setTemplateApplyCollapsed((v) => !v)}
-                style={{
-                  ...drawerButtonStyle,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
-                  borderRadius: 8,
-                  padding: "6px 10px",
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  fontWeight: 700,
-                }}
-                title="Toggle template apply panel"
-              >
-                <span>Apply Template</span>
-                <span>{templateApplyCollapsed ? "+" : "-"}</span>
-              </button>
-              {!templateApplyCollapsed ? (
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <button
+                  data-preserve-style="true"
+                  onClick={() => setTagToolsTab("template")}
+                  style={{
+                    ...drawerButtonStyle,
+                    border: tagToolsTab === "template" ? "1px solid #2b6cff" : "1px solid var(--border)",
+                    background: tagToolsTab === "template" ? "#2b6cff" : "var(--bg-elev)",
+                    color: tagToolsTab === "template" ? "white" : "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontWeight: 700,
+                    boxShadow: tagToolsTab === "template" ? "0 0 0 2px rgba(43,108,255,0.25)" : "none",
+                  }}
+                >
+                  Template
+                </button>
+                <button
+                  data-preserve-style="true"
+                  onClick={() => setTagToolsTab("bulk")}
+                  style={{
+                    ...drawerButtonStyle,
+                    border: tagToolsTab === "bulk" ? "1px solid #2b6cff" : "1px solid var(--border)",
+                    background: tagToolsTab === "bulk" ? "#2b6cff" : "var(--bg-elev)",
+                    color: tagToolsTab === "bulk" ? "white" : "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontWeight: 700,
+                    boxShadow: tagToolsTab === "bulk" ? "0 0 0 2px rgba(43,108,255,0.25)" : "none",
+                  }}
+                >
+                  Bulk Edit
+                </button>
+                <button
+                  data-preserve-style="true"
+                  onClick={() => setTagToolsTab("columns")}
+                  style={{
+                    ...drawerButtonStyle,
+                    border: tagToolsTab === "columns" ? "1px solid #2b6cff" : "1px solid var(--border)",
+                    background: tagToolsTab === "columns" ? "#2b6cff" : "var(--bg-elev)",
+                    color: tagToolsTab === "columns" ? "white" : "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontWeight: 700,
+                    boxShadow: tagToolsTab === "columns" ? "0 0 0 2px rgba(43,108,255,0.25)" : "none",
+                  }}
+                >
+                  Columns
+                </button>
+              </div>
+
+              {tagToolsTab === "template" ? (
                 <div
                   style={{
                     display: "grid",
                     gridTemplateColumns: "1fr 1fr 1fr auto",
                     gap: 8,
-                    marginTop: 10,
                     alignItems: "end",
                   }}
                 >
@@ -2298,47 +2476,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     Add From Template
                   </button>
                 </div>
-              ) : null}
-            </div>
-            {validationWarnings.length ? (
-              <div style={{ ...sectionCardStyle, borderColor: "#fecdca", background: "#fef3f2", marginBottom: 10 }}>
-                <div style={{ fontWeight: 700, color: "#b42318", marginBottom: 6 }} title="These checks prevent common OPC issues before saving configuration.">
-                  Validation Warnings ({validationWarnings.length})
-                </div>
-                <div style={{ maxHeight: 120, overflow: "auto", fontSize: 12, color: "#912018" }}>
-                  {validationWarnings.slice(0, 50).map((w, i) => (
-                    <div key={`warn-${i}`}>{w}</div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            <div style={{ ...sectionCardStyle, marginBottom: 10 }}>
-              <button
-                onClick={() => setBulkEditCollapsed((v) => !v)}
-                style={{
-                  ...drawerButtonStyle,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
-                  borderRadius: 8,
-                  padding: "6px 10px",
-                  width: "100%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  fontWeight: 700,
-                }}
-                title="Toggle bulk edit panel"
-              >
-                <span>Apply Bulk Edit</span>
-                <span>{bulkEditCollapsed ? "+" : "-"}</span>
-              </button>
-              {!bulkEditCollapsed ? (
+              ) : tagToolsTab === "bulk" ? (
                 <div
                   style={{
                     display: "grid",
                     gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
                     gap: 12,
-                    marginTop: 10,
                     alignItems: "end",
                   }}
                 >
@@ -2444,9 +2587,57 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     Apply Bulk Edit
                   </button>
                 </div>
-              ) : null}
+              ) : (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {tagColumnKeys.map((key) => (
+                    <label
+                      key={`tag-col-${key}`}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "4px 8px",
+                        borderRadius: 999,
+                        border: "1px solid var(--border)",
+                        background: showTagColumn(key)
+                          ? "color-mix(in srgb, #2b6cff 14%, var(--bg-elev))"
+                          : "var(--bg-elev)",
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={showTagColumn(key)}
+                        onChange={(e) => {
+                          const next = { ...tagVisibleColumns, [key]: e.target.checked };
+                          setTagVisibleColumns(next);
+                          try {
+                            localStorage.setItem("vizi_tag_columns", JSON.stringify(next));
+                          } catch {
+                            // ignore
+                          }
+                        }}
+                      />
+                      {tagColumnLabels[key] || key}
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
-            <div style={{ ...sectionCardStyle, marginTop: 10, maxHeight: 520, overflow: "auto" }}>
+            {validationWarnings.length ? (
+              <div style={{ ...sectionCardStyle, borderColor: "#fecdca", background: "#fef3f2", marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, color: "#b42318", marginBottom: 6 }} title="These checks prevent common OPC issues before saving configuration.">
+                  Validation Warnings ({validationWarnings.length})
+                </div>
+                <div style={{ maxHeight: 120, overflow: "auto", fontSize: 12, color: "#912018" }}>
+                  {validationWarnings.slice(0, 50).map((w, i) => (
+                    <div key={`warn-${i}`}>{w}</div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <div style={{ ...sectionCardStyle, marginTop: 10, overflowX: "auto", overflowY: "visible" }}>
               <div style={{ marginBottom: 8 }}>
                 <input
                   value={tagSearch}
@@ -2467,16 +2658,25 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 8 }}>
                 <button
                   onClick={addTagFromToolbar}
+                  title="Add Tag"
+                  aria-label="Add Tag"
                   style={{
                     ...drawerButtonStyle,
                     border: "1px solid #2b6cff",
                     background: "var(--bg-elev)",
                     color: "#2b6cff",
                     borderRadius: 8,
-                    padding: "6px 10px",
+                    width: 32,
+                    height: 32,
+                    padding: 0,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    lineHeight: 1,
+                    fontWeight: 800,
                   }}
                 >
-                  Add Tag
+                  +
                 </button>
               </div>
               {tags.length === 0 ? (
@@ -2572,17 +2772,26 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                               </span>
                               <button
                                 onClick={() => addTagToGroup(topicKey, "Custom")}
+                                title="Add Tag"
+                                aria-label="Add Tag"
                                 style={{
                                   ...drawerButtonStyle,
                                   border: "1px solid #2b6cff",
                                   background: "var(--bg-elev)",
                                   color: "#2b6cff",
                                   borderRadius: 6,
-                                  padding: "4px 8px",
+                                  width: 28,
+                                  height: 28,
+                                  padding: 0,
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  lineHeight: 1,
                                   marginLeft: 10,
+                                  fontWeight: 800,
                                 }}
                               >
-                                Add Tag
+                                +
                               </button>
                             </td>
                           </tr>
@@ -2640,17 +2849,48 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             setActiveTagGroup({ topic: topicKey, groupName });
                                             addTagToGroup(topicKey, groupName);
                                           }}
+                                          title="Add Tag"
+                                          aria-label="Add Tag"
                                           style={{
                                             ...drawerButtonStyle,
                                             border: "1px solid #2b6cff",
                                             background: "var(--bg-elev)",
                                             color: "#2b6cff",
                                             borderRadius: 6,
-                                            padding: "4px 8px",
+                                            width: 28,
+                                            height: 28,
+                                            padding: 0,
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                            lineHeight: 1,
                                             marginLeft: 10,
+                                            fontWeight: 800,
                                           }}
                                         >
-                                          Add Tag
+                                          +
+                                        </button>
+                                        <button
+                                          onClick={() => removeTagGroup(topicKey, groupName)}
+                                          title={`Delete group ${groupName}`}
+                                          aria-label={`Delete group ${groupName}`}
+                                          style={{
+                                            ...drawerButtonStyle,
+                                            border: "1px solid #f04438",
+                                            background: "#f04438",
+                                            color: "white",
+                                            borderRadius: 6,
+                                            width: 28,
+                                            height: 28,
+                                            padding: 0,
+                                            marginLeft: 8,
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                            lineHeight: 1,
+                                          }}
+                                        >
+                                          <TrashCanIcon />
                                         </button>
                                       </td>
                                     </tr>
@@ -2884,7 +3124,18 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                   >
                                                     ✎
                                                   </button>
-                                                  <span />
+                                                  <button
+                                                    onClick={() => requestRemoveTag(idx, t)}
+                                                    title="Delete tag"
+                                                    aria-label="Delete tag"
+                                                    style={{
+                                                      ...dangerIconButtonStyle,
+                                                      fontWeight: 700,
+                                                      fontSize: 11,
+                                                    }}
+                                                  >
+                                                    <TrashCanIcon />
+                                                  </button>
                                                 </div>
                                               </td>
                                             ) : null}
@@ -3095,7 +3346,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                       Save
                                                     </button>
                                                     <button
-                                                      onClick={() => removeTag(idx)}
+                                                      onClick={() => requestRemoveTag(idx, t)}
                                                       style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
                                                     >
                                                       Delete
@@ -3142,6 +3393,36 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
             <div style={sectionCardStyle}>
               <div style={{ fontWeight: 600, marginBottom: 8 }}>Create / Edit Template</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, marginBottom: 12, alignItems: "end" }}>
+                <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
+                  Build From Tag Group
+                  <select
+                    value={templateSourceGroupKey}
+                    onChange={(e) => setTemplateSourceGroupKey(e.target.value)}
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
+                  >
+                    {templateSourceGroups.length === 0 ? (
+                      <option value="">No groups available</option>
+                    ) : (
+                      templateSourceGroups.map((g) => (
+                        <option key={`tmpl-group-${g.key}`} value={g.key}>
+                          {g.groupName} ({g.count})
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+                <button
+                  onClick={createTemplateFromTagGroup}
+                  style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px" }}
+                  disabled={!templateSourceGroupKey || templateSourceGroups.length === 0}
+                >
+                  Load Group
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10 }}>
+                Loads fields from selected tag group into template editor. Save Template to persist.
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 14, marginBottom: 12, alignItems: "end" }}>
                 <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
                   Edit Existing
@@ -3446,7 +3727,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                               style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
                               disabled={!templateEditing}
                             >
-                              X
+                              <TrashCanIcon />
                             </button>
                           </div>
                         </td>
@@ -3470,9 +3751,23 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 },
                     ])
                   }
-                  style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
+                  title="Add Tag"
+                  aria-label="Add Tag"
+                  style={{
+                    ...drawerButtonStyle,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    borderRadius: 8,
+                    width: 32,
+                    height: 32,
+                    padding: 0,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    lineHeight: 1,
+                  }}
                 >
-                  Add Tag
+                  +
                 </button>
                 <button
                   onClick={saveTemplate}
@@ -3667,7 +3962,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                             }
                             style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
                           >
-                            X
+                            <TrashCanIcon />
                           </button>
                         </td>
                       </tr>
@@ -3980,6 +4275,72 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     });
   }
 
+  function removeTagGroup(topicKey, groupName) {
+    const topicTarget = normalizeTagName(topicKey || "") || "No Topic";
+    const groupTarget = normalizeTagName(groupName || "") || "Ungrouped";
+    setPendingTagGroupDelete({ topicTarget, groupTarget });
+  }
+
+  function requestRemoveTag(idx, tag) {
+    const topic = normalizeTagName(tag?.topic || "") || "No Topic";
+    const name = normalizeTagName(tag?.name || "");
+    const tagPath = normalizeTagName(tag?.tagPath || "");
+    const displayName = name || tagPath || `Tag #${Number(idx) + 1}`;
+    setPendingTagDelete({
+      idxHint: Number(idx),
+      topic,
+      name,
+      tagPath,
+      displayName,
+    });
+  }
+
+  function confirmRemoveTag() {
+    const pending = pendingTagDelete;
+    setPendingTagDelete(null);
+    if (!pending) return;
+    const source = Array.isArray(config?.tags) ? config.tags : [];
+    let idx = source.findIndex((tag) => {
+      const topic = normalizeTagName(tag?.topic || "") || "No Topic";
+      const name = normalizeTagName(tag?.name || "");
+      const tagPath = normalizeTagName(tag?.tagPath || "");
+      return topic === pending.topic && name === pending.name && tagPath === pending.tagPath;
+    });
+    if (idx < 0) {
+      const hinted = Number.isInteger(pending?.idxHint) ? pending.idxHint : -1;
+      if (hinted >= 0 && hinted < source.length) idx = hinted;
+    }
+    if (idx < 0) return;
+    removeTag(idx);
+  }
+
+  function confirmRemoveTagGroup() {
+    const topicTarget = normalizeTagName(pendingTagGroupDelete?.topicTarget || "") || "No Topic";
+    const groupTarget = normalizeTagName(pendingTagGroupDelete?.groupTarget || "") || "Ungrouped";
+    setPendingTagGroupDelete(null);
+    setConfig((prev) => {
+      const sourceTags = Array.isArray(prev.tags) ? prev.tags : [];
+      const nextTags = sourceTags.filter((tag) => {
+        const topic = normalizeTagName(tag?.topic || "") || "No Topic";
+        const group = getTagGroupKey(tag);
+        return !(topic === topicTarget && group === groupTarget);
+      });
+      const removed = sourceTags.length - nextTags.length;
+      if (removed <= 0) return prev;
+      const cleanedTags = buildCleanedTags(nextTags);
+      const nextConfig = { ...prev, tags: cleanedTags };
+      setActiveTagGroup((current) =>
+        current?.topic === topicTarget && current?.groupName === groupTarget
+          ? { topic: "", groupName: "" }
+          : current
+      );
+      persistConfig(nextConfig, `Deleted group "${groupTarget}" (${removed} tag${removed === 1 ? "" : "s"}).`).catch((err) => {
+        setError(err?.message || "Save failed.");
+      });
+      return nextConfig;
+    });
+  }
+
   function updatePlc(idx, key, value) {
     setConfig((prev) => {
       const next = [...(prev.plcs || [])];
@@ -4029,6 +4390,143 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     });
   }
 
+  function renderDeleteModals() {
+    return (
+      <>
+        {pendingTagGroupDelete ? (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 400,
+              background: "rgba(4, 10, 20, 0.56)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                width: "min(460px, 96vw)",
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                borderRadius: 12,
+                boxShadow: "0 18px 44px rgba(0,0,0,0.28)",
+                padding: 14,
+                display: "grid",
+                gap: 10,
+              }}
+            >
+              <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text)" }}>Delete Tag Group</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                Delete group <strong style={{ color: "var(--text)" }}>{pendingTagGroupDelete.groupTarget}</strong> in topic{" "}
+                <strong style={{ color: "var(--text)" }}>{pendingTagGroupDelete.topicTarget}</strong> and all tags inside it?
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <button
+                  onClick={() => setPendingTagGroupDelete(null)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 12px",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmRemoveTagGroup}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: "1px solid #f04438",
+                    background: "#f04438",
+                    color: "white",
+                    borderRadius: 8,
+                    padding: "6px 12px",
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {pendingTagDelete ? (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 401,
+              background: "rgba(4, 10, 20, 0.56)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                width: "min(460px, 96vw)",
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                borderRadius: 12,
+                boxShadow: "0 18px 44px rgba(0,0,0,0.28)",
+                padding: 14,
+                display: "grid",
+                gap: 10,
+              }}
+            >
+              <div style={{ fontSize: 15, fontWeight: 800, color: "var(--text)" }}>Delete Tag</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                Delete tag <strong style={{ color: "var(--text)" }}>{pendingTagDelete.displayName}</strong> from topic{" "}
+                <strong style={{ color: "var(--text)" }}>{pendingTagDelete.topic}</strong>?
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <button
+                  onClick={() => setPendingTagDelete(null)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 12px",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmRemoveTag}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: "1px solid #f04438",
+                    background: "#f04438",
+                    color: "white",
+                    borderRadius: 8,
+                    padding: "6px 12px",
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
   if (isTagsOnly) {
     return (
       <div style={outerStyle}>
@@ -4036,6 +4534,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <div style={contentStyle}>
             {renderTagsPanel()}
           </div>
+          {renderDeleteModals()}
         </div>
       </div>
     );
@@ -4542,7 +5041,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                             onClick={() => removePlc(idx)}
                             style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textAlign: "center", width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
                           >
-                            X
+                            <TrashCanIcon />
                           </button>
                         </td>
                       </tr>
@@ -4667,9 +5166,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         <td style={{ padding: "6px 8px" }}>
                           <button
                             onClick={() => removeTopic(idx)}
-                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textAlign: "center", width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
+                            title="Delete topic"
+                            aria-label="Delete topic"
+                            style={dangerIconButtonStyle}
                           >
-                            X
+                            <TrashCanIcon />
                           </button>
                         </td>
                       </tr>
@@ -4829,6 +5330,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
             </div>
           ) : null}
+          {renderDeleteModals()}
         </div>
       </div>
     </div>

@@ -31,12 +31,20 @@
   <line
     x1="426"
     y1="142"
-    x2="528"
+    x2="520"
     y2="142"
     stroke="#38BDF8"
     stroke-width="14"
     stroke-linecap="round"
     stroke-dasharray="1 12"
   />
-  <path d="M544 130 L574 142 L544 154 Z" fill="#38BDF8" />
+  <circle
+    cx="560"
+    cy="142"
+    r="34"
+    fill="none"
+    stroke="#38BDF8"
+    stroke-width="5"
+  />
+  <path d="M546 130 L578 142 L546 154 Z" fill="#38BDF8" />
 </svg>

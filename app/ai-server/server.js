@@ -14,12 +14,22 @@ const { Pool } = pkg;
 const PORT = Number(process.env.PORT || 5055);
 const DEBUG_ROUTES = process.env.DEBUG_ROUTES === "1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "64mb";
 const REPO_ROOT = process.env.VIZI_ROOT || path.resolve(process.cwd(), "..");
 const OPC_CONFIG_PATH = path.resolve(REPO_ROOT, "opc-server", "config.json");
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use((err, _req, res, next) => {
+  if (err?.type === "entity.too.large") {
+    res
+      .status(413)
+      .json({ error: `Request payload too large. Increase JSON_BODY_LIMIT (current ${JSON_BODY_LIMIT}).` });
+    return;
+  }
+  next(err);
+});
 
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
@@ -29,6 +39,57 @@ function quoteIdent(name) {
     throw new Error("Database name must be alphanumeric/underscore.");
   }
   return `"${name.replace(/"/g, "\"\"")}"`;
+}
+
+function parseDatabaseConnectionInfo(connectionString) {
+  const raw = String(connectionString || "").trim();
+  if (!raw) {
+    return {
+      configured: false,
+      protocol: "",
+      host: "",
+      port: null,
+      database: "",
+      user: "",
+      ssl: false,
+      sslMode: "",
+      applicationName: "",
+    };
+  }
+  try {
+    const url = new URL(raw);
+    const sslMode = String(url.searchParams.get("sslmode") || "").trim();
+    const sslParam = String(url.searchParams.get("ssl") || "").trim().toLowerCase();
+    const ssl =
+      sslMode === "require" ||
+      sslMode === "verify-ca" ||
+      sslMode === "verify-full" ||
+      sslParam === "1" ||
+      sslParam === "true";
+    return {
+      configured: true,
+      protocol: String(url.protocol || "").replace(/:$/, ""),
+      host: String(url.hostname || "").trim(),
+      port: Number.isFinite(Number(url.port)) ? Number(url.port) : 5432,
+      database: String(url.pathname || "").replace(/^\//, "").trim(),
+      user: decodeURIComponent(String(url.username || "").trim()),
+      ssl,
+      sslMode,
+      applicationName: String(url.searchParams.get("application_name") || "").trim(),
+    };
+  } catch {
+    return {
+      configured: true,
+      protocol: "",
+      host: "",
+      port: null,
+      database: "",
+      user: "",
+      ssl: false,
+      sslMode: "",
+      applicationName: "",
+    };
+  }
 }
 
 async function ensureDatabaseExists() {
@@ -79,6 +140,258 @@ const TREND_CODEC = "json-gzip-v1";
 const trendBuffers = new Map();
 let trendLastCleanupAt = 0;
 let trendTagConfigCache = { loadedAt: 0, map: null };
+const DEFAULT_OPC_CONFIG = {
+  plcs: [],
+  opcua: { port: 4840, resourcePath: "/UA/ControlLogix", name: "ControlLogix" },
+  pollMs: 500,
+  topics: [],
+  tags: [],
+};
+const PLC_DEBUG_SESSION_TTL_MS = Math.max(
+  5 * 60 * 1000,
+  Number.parseInt(process.env.PLC_DEBUG_SESSION_TTL_MS || `${30 * 60 * 1000}`, 10) || 30 * 60 * 1000
+);
+const PLC_DEBUG_SESSION_POLL_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.PLC_DEBUG_SESSION_POLL_MS || "3000", 10) || 3000
+);
+const PLC_DEBUG_MAX_WATCH_TAGS = 120;
+const PLC_DEBUG_MAX_SNAPSHOT_TAGS = 80;
+const plcDebugSessions = new Map();
+let plcDebugRefreshBusy = false;
+
+function normalizeDebugToken(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeDebugTagList(list, limit = PLC_DEBUG_MAX_WATCH_TAGS) {
+  const rows = Array.isArray(list) ? list : [];
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const token = normalizeDebugToken(row);
+    if (!token) continue;
+    if (seen.has(token)) continue;
+    seen.add(token);
+    out.push(token);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function formatDebugValue(value) {
+  if (value == null) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "boolean") return value;
+  const text = String(value);
+  return text.length > 200 ? `${text.slice(0, 200)}...` : text;
+}
+
+function buildPlcDebugSnapshot(status, session) {
+  const safeStatus = status && typeof status === "object" ? status : {};
+  const values = safeStatus.values && typeof safeStatus.values === "object" ? safeStatus.values : {};
+  const errors = safeStatus.errors && typeof safeStatus.errors === "object" ? safeStatus.errors : {};
+  const qualities = safeStatus.qualities && typeof safeStatus.qualities === "object" ? safeStatus.qualities : {};
+  const diagnostics =
+    safeStatus.diagnostics && typeof safeStatus.diagnostics === "object" ? safeStatus.diagnostics : {};
+  const connections =
+    safeStatus.connections && typeof safeStatus.connections === "object" ? safeStatus.connections : {};
+  const watchTokens = normalizeDebugTagList(session?.watchTags || [], PLC_DEBUG_MAX_WATCH_TAGS);
+  const routineTokens = normalizeDebugTagList(session?.routineHints || [], 24);
+  const controllerTagTokens = normalizeDebugTagList(session?.controllerTags || [], 240);
+
+  const matchesToken = (text, token) => String(text || "").toLowerCase().includes(token);
+  const isWatched = (row) => {
+    if (!watchTokens.length) return false;
+    return watchTokens.some((token) =>
+      [row.key, row.name, row.tagPath].some((value) => matchesToken(value, token))
+    );
+  };
+
+  const matchesRoutine = (row) => {
+    if (!routineTokens.length) return false;
+    return routineTokens.some((token) =>
+      [row.key, row.name, row.tagPath].some((value) => matchesToken(value, token))
+    );
+  };
+
+  const matchesController = (row) => {
+    if (!controllerTagTokens.length) return false;
+    return controllerTagTokens.some((token) =>
+      [row.key, row.name, row.tagPath].some((value) => matchesToken(value, token))
+    );
+  };
+
+  const rows = Object.keys(diagnostics).map((key) => {
+    const diag = diagnostics[key] && typeof diagnostics[key] === "object" ? diagnostics[key] : {};
+    const readErrorCount = Number(diag?.readErrorCount || 0) || 0;
+    const errorStreak = Number(diag?.errorStreak || 0) || 0;
+    return {
+      key: String(key || ""),
+      name: String(diag?.name || ""),
+      tagPath: String(diag?.tagPath || ""),
+      topic: String(diag?.topic || ""),
+      plcName: String(diag?.plcName || ""),
+      value: formatDebugValue(values[key]),
+      quality: String(qualities[key] || ""),
+      errorCount: Number(errors[key] || 0) || 0,
+      readErrorCount,
+      errorStreak,
+      readCount: Number(diag?.readCount || 0) || 0,
+      avgReadDurationMs: Number(diag?.avgReadDurationMs || 0) || 0,
+      maxReadDurationMs: Number(diag?.maxReadDurationMs || 0) || 0,
+      lastReadAt: Number(diag?.lastReadAt || 0) || null,
+      lastErrorAt: Number(diag?.lastErrorAt || 0) || null,
+      lastErrorMessage: String(diag?.lastErrorMessage || ""),
+    };
+  });
+
+  const filtered = rows.filter((row) => {
+    if (!session?.plcName) return true;
+    const plcName = String(session.plcName || "").toLowerCase();
+    if (!plcName) return true;
+    return String(row.plcName || "").toLowerCase() === plcName;
+  });
+
+  const scored = filtered
+    .map((row) => {
+      const watched = isWatched(row);
+      const routine = matchesRoutine(row);
+      const controller = matchesController(row);
+      const hasErrors = row.errorCount > 0 || row.readErrorCount > 0 || row.errorStreak > 0 || !!row.lastErrorAt;
+      const score =
+        (watched ? 2000 : 0) +
+        (routine ? 1000 : 0) +
+        (controller ? 300 : 0) +
+        (hasErrors ? 500 : 0) +
+        Math.min(400, row.maxReadDurationMs || 0) +
+        Math.min(200, row.errorStreak * 20);
+      return { ...row, score, watched };
+    })
+    .sort((a, b) => b.score - a.score || (b.lastReadAt || 0) - (a.lastReadAt || 0));
+
+  const topRows = scored.slice(0, PLC_DEBUG_MAX_SNAPSHOT_TAGS).map((row) => ({
+    key: row.key,
+    name: row.name,
+    tagPath: row.tagPath,
+    topic: row.topic,
+    plcName: row.plcName,
+    value: row.value,
+    quality: row.quality,
+    errorCount: row.errorCount,
+    readErrorCount: row.readErrorCount,
+    errorStreak: row.errorStreak,
+    readCount: row.readCount,
+    avgReadDurationMs: row.avgReadDurationMs,
+    maxReadDurationMs: row.maxReadDurationMs,
+    lastReadAt: row.lastReadAt,
+    lastErrorAt: row.lastErrorAt,
+    lastErrorMessage: row.lastErrorMessage,
+    watched: row.watched === true,
+  }));
+
+  const activeConnections = Object.entries(connections)
+    .filter(([, connected]) => connected === true)
+    .map(([name]) => String(name || "").trim())
+    .filter(Boolean);
+
+  const errorTags = topRows
+    .filter((row) => row.errorCount > 0 || row.readErrorCount > 0 || row.errorStreak > 0 || !!row.lastErrorAt)
+    .slice(0, 12);
+  const slowTags = [...topRows]
+    .sort((a, b) => (b.maxReadDurationMs || 0) - (a.maxReadDurationMs || 0))
+    .slice(0, 12);
+
+  return {
+    at: Number(safeStatus.at || Date.now()),
+    connected: safeStatus.connected === true,
+    plcName: String(session?.plcName || ""),
+    activeConnections,
+    activeConnectionCount: activeConnections.length,
+    watchTagCount: watchTokens.length,
+    matchedTagCount: topRows.length,
+    tags: topRows,
+    hotspots: {
+      errors: errorTags,
+      slowReads: slowTags,
+    },
+  };
+}
+
+async function loadOpcStatusFromStore() {
+  const { rows } = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+  if (!rows.length || !rows[0]?.status || typeof rows[0].status !== "object") {
+    return { at: Date.now(), connected: false, connections: {}, values: {}, errors: {}, qualities: {}, diagnostics: {} };
+  }
+  return rows[0].status;
+}
+
+async function refreshPlcDebugSession(session) {
+  if (!session || typeof session !== "object") return null;
+  const now = Date.now();
+  try {
+    const status = await loadOpcStatusFromStore();
+    const snapshot = buildPlcDebugSnapshot(status, session);
+    session.snapshot = snapshot;
+    session.updatedAt = now;
+    session.lastError = "";
+    return snapshot;
+  } catch (err) {
+    session.updatedAt = now;
+    session.lastError = String(err?.message || "Failed to refresh PLC debug session.");
+    return session.snapshot || null;
+  }
+}
+
+function serializePlcDebugSession(session) {
+  if (!session || typeof session !== "object") return null;
+  return {
+    id: String(session.id || ""),
+    plcName: String(session.plcName || ""),
+    watchTags: Array.isArray(session.watchTags) ? session.watchTags : [],
+    routineHints: Array.isArray(session.routineHints) ? session.routineHints : [],
+    pollMs: Number(session.pollMs || PLC_DEBUG_SESSION_POLL_MS),
+    createdAt: Number(session.createdAt || 0) || Date.now(),
+    updatedAt: Number(session.updatedAt || 0) || Date.now(),
+    lastTouchedAt: Number(session.lastTouchedAt || 0) || Date.now(),
+    lastError: String(session.lastError || ""),
+    snapshot: session.snapshot || null,
+  };
+}
+
+function getPlcDebugSession(sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return null;
+  const session = plcDebugSessions.get(id);
+  if (!session) return null;
+  session.lastTouchedAt = Date.now();
+  return session;
+}
+
+async function runPlcDebugSessionRefreshTick() {
+  if (plcDebugRefreshBusy) return;
+  plcDebugRefreshBusy = true;
+  try {
+    const now = Date.now();
+    for (const [id, session] of plcDebugSessions.entries()) {
+      if (!session || typeof session !== "object") {
+        plcDebugSessions.delete(id);
+        continue;
+      }
+      const lastTouchedAt = Number(session.lastTouchedAt || 0);
+      if (now - lastTouchedAt > PLC_DEBUG_SESSION_TTL_MS) {
+        plcDebugSessions.delete(id);
+        continue;
+      }
+      const pollMs = Math.max(1000, Number(session.pollMs || PLC_DEBUG_SESSION_POLL_MS));
+      if (now - Number(session.lastRefreshAt || 0) < pollMs) continue;
+      session.lastRefreshAt = now;
+      await refreshPlcDebugSession(session);
+    }
+  } finally {
+    plcDebugRefreshBusy = false;
+  }
+}
 
 function toFiniteNumber(value) {
   if (value == null) return null;
@@ -99,6 +412,421 @@ function normalizeTrendTimestamp(value) {
 function normalizeTrendMode(value) {
   const v = String(value || "").trim().toLowerCase();
   return v === "time" ? "time" : "value";
+}
+
+function normalizeOpcName(value, fallback = "") {
+  const text = String(value || "")
+    .trim()
+    .replace(/[^\w.\-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return text || fallback;
+}
+
+function mapUaTypeFromPlcType(value) {
+  const plcType = String(value || "").trim().toUpperCase();
+  if (!plcType) return "Float";
+  if (plcType === "BOOL") return "Boolean";
+  if (plcType === "REAL") return "Float";
+  if (plcType === "LREAL") return "Double";
+  if (["SINT", "INT", "DINT", "USINT", "UINT", "UDINT", "LINT", "ULINT"].includes(plcType))
+    return "Int32";
+  return "String";
+}
+
+function isPrimitivePlcType(value) {
+  const plcType = String(value || "").trim().toUpperCase();
+  if (!plcType) return false;
+  return [
+    "BOOL",
+    "REAL",
+    "LREAL",
+    "SINT",
+    "INT",
+    "DINT",
+    "USINT",
+    "UINT",
+    "UDINT",
+    "LINT",
+    "ULINT",
+    "STRING",
+  ].includes(plcType);
+}
+
+let opcTemplateNameCache = { loadedAt: 0, names: [] };
+
+async function loadOpcTemplateNamesFromStore() {
+  const now = Date.now();
+  if (Array.isArray(opcTemplateNameCache.names) && now - Number(opcTemplateNameCache.loadedAt || 0) < 10000) {
+    return opcTemplateNameCache.names;
+  }
+  try {
+    const { rows } = await pool.query("SELECT name FROM opc_tag_templates ORDER BY name");
+    const names = rows
+      .map((row) => String(row?.name || "").trim())
+      .filter(Boolean);
+    opcTemplateNameCache = { loadedAt: now, names };
+    return names;
+  } catch {
+    opcTemplateNameCache = { loadedAt: now, names: [] };
+    return [];
+  }
+}
+
+function resolveTemplateNameForDataType(dataType, templateNames) {
+  const raw = String(dataType || "").trim();
+  if (!raw) return "";
+  const rawLower = raw.toLowerCase();
+  const rawUpper = raw.toUpperCase();
+  const stripArray = raw.replace(/\[[^\]]*\]\s*$/, "").trim();
+  const stripPath = stripArray.split(/[.:/\\]/).filter(Boolean);
+  const pathTail = stripPath.length ? stripPath[stripPath.length - 1] : stripArray;
+  const primaryNorm = normalizeOpcName(pathTail || stripArray || raw, "").toLowerCase();
+  const candidates = new Set();
+  if (rawLower) candidates.add(rawLower);
+  if (primaryNorm) candidates.add(primaryNorm);
+  if (stripArray) candidates.add(String(stripArray).toLowerCase());
+  if (pathTail) candidates.add(String(pathTail).toLowerCase());
+
+  // Common PLC/UA type aliases -> template names often used in OPC config.
+  if (["BOOL", "BOOLEAN", "BIT"].includes(rawUpper)) {
+    ["bool", "boolean", "bit"].forEach((v) => candidates.add(v));
+  } else if (["REAL", "FLOAT", "SINGLE"].includes(rawUpper)) {
+    ["real", "float", "single", "float32"].forEach((v) => candidates.add(v));
+  } else if (["LREAL", "DOUBLE", "FLOAT64"].includes(rawUpper)) {
+    ["lreal", "double", "float64"].forEach((v) => candidates.add(v));
+  } else if (
+    ["SINT", "INT", "DINT", "USINT", "UINT", "UDINT", "LINT", "ULINT", "INT16", "INT32", "INT64"].includes(rawUpper)
+  ) {
+    ["int", "int16", "int32", "int64", "integer", "number"].forEach((v) => candidates.add(v));
+  } else if (["STRING", "WSTRING"].includes(rawUpper)) {
+    ["string", "text"].forEach((v) => candidates.add(v));
+  }
+
+  const list = Array.isArray(templateNames) ? templateNames : [];
+
+  // Pass 1: exact normalized/alias match.
+  for (const name of list) {
+    const text = String(name || "").trim();
+    if (!text) continue;
+    const lower = text.toLowerCase();
+    const norm = normalizeOpcName(text, "").toLowerCase();
+    if (candidates.has(lower) || (norm && candidates.has(norm))) {
+      return text;
+    }
+  }
+
+  // Pass 2: contains match (useful for names like "Motor Template").
+  for (const name of list) {
+    const text = String(name || "").trim();
+    if (!text) continue;
+    const lower = text.toLowerCase();
+    const norm = normalizeOpcName(text, "").toLowerCase();
+    for (const candidate of candidates) {
+      if (!candidate || candidate.length < 3) continue;
+      if (lower.includes(candidate) || candidate.includes(lower) || (norm && (norm.includes(candidate) || candidate.includes(norm)))) {
+        return text;
+      }
+    }
+  }
+
+  // Pass 3: direct raw fallback.
+  for (const name of list) {
+    const text = String(name || "").trim();
+    if (!text) continue;
+    if (text.toLowerCase() === rawLower) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function parsePromptHost(promptText) {
+  const text = String(promptText || "");
+  const ipv4 = text.match(/\b((?:\d{1,3}\.){3}\d{1,3})\b/);
+  if (ipv4 && ipv4[1]) return ipv4[1];
+  const hostLike = text.match(/\b([a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}|[a-zA-Z0-9][a-zA-Z0-9.-]*local)\b/);
+  return hostLike && hostLike[1] ? hostLike[1] : "";
+}
+
+function parsePromptSlot(promptText) {
+  const text = String(promptText || "");
+  const match = text.match(/\bslot\s*(?:=|:)?\s*(\d{1,2})\b/i);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? Math.max(0, n) : null;
+}
+
+function parsePromptTopic(promptText) {
+  const text = String(promptText || "");
+  const match = text.match(/\btopic\s*(?:=|:)?\s*([a-zA-Z0-9_.-]+)\b/i);
+  if (!match || !match[1]) return "";
+  return normalizeOpcName(match[1], "");
+}
+
+function normalizeControllerTags(rawTags, limit = 300) {
+  const out = [];
+  const seen = new Set();
+  const rows = Array.isArray(rawTags) ? rawTags : [];
+  for (const row of rows) {
+    const name = normalizeOpcName(row?.name || row?.tagPath || "");
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const plcType = String(row?.plcType || row?.dataType || "").trim().toUpperCase();
+    const dataType = String(row?.dataType || "").trim();
+    const uaType = String(row?.uaType || "").trim() || mapUaTypeFromPlcType(plcType);
+    out.push({
+      name,
+      tagPath: normalizeOpcName(row?.tagPath || name, name),
+      plcType: plcType || undefined,
+      dataType: dataType || undefined,
+      uaType,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function buildOpcConnectionPlan({ prompt = "", plc = {}, overrides = {} }) {
+  const metadata = plc?.metadata && typeof plc.metadata === "object" ? plc.metadata : {};
+  const plcDisplayName = String(plc?.name || metadata?.controllerName || "PLC").trim() || "PLC";
+  const plcName = normalizeOpcName(
+    overrides?.plcName || metadata?.controllerName || plcDisplayName,
+    "PLC1"
+  );
+  const topicName = normalizeOpcName(
+    overrides?.topic || overrides?.topicName || parsePromptTopic(prompt),
+    ""
+  );
+  const prefix = normalizeOpcName(overrides?.prefix || "");
+  const host =
+    String(overrides?.host || "").trim() ||
+    parsePromptHost(prompt) ||
+    String(plc?.host || "").trim();
+  const slotGuess = parsePromptSlot(prompt);
+  const slotRaw = Number.isFinite(Number(overrides?.slot))
+    ? Number(overrides.slot)
+    : Number.isFinite(slotGuess)
+      ? slotGuess
+      : 0;
+  const slot = Math.max(0, Math.floor(slotRaw));
+  const pollMsRaw = Number(overrides?.pollMs || overrides?.samplingInterval || 500);
+  const pollMs = Number.isFinite(pollMsRaw) ? Math.max(100, Math.floor(pollMsRaw)) : 500;
+  const sourceTags = normalizeControllerTags(
+    overrides?.tags || plc?.controllerTags || [],
+    500
+  );
+  const tags = sourceTags.map((t) => {
+    const baseName = normalizeOpcName(t?.name || t?.tagPath || "", "");
+    const resolvedName = prefix && baseName ? `${prefix}.${baseName}` : baseName;
+    return {
+      name: resolvedName,
+      tagPath: String(t?.tagPath || baseName || "").trim(),
+      plcType: t?.plcType || undefined,
+      dataType: String(t?.dataType || "").trim() || undefined,
+      uaType: String(t?.uaType || "").trim() || mapUaTypeFromPlcType(t?.plcType),
+      topic: topicName,
+      enabled: true,
+      pollMs,
+    };
+  });
+  return {
+    plcName,
+    host,
+    slot,
+    topic: topicName,
+    topicExplicit: !!topicName,
+    prefix,
+    pollMs,
+    tagCount: tags.length,
+    tags,
+  };
+}
+
+function resolveTopicForPlan(existingConfig, plan) {
+  const cfg = existingConfig && typeof existingConfig === "object" ? existingConfig : {};
+  const plcName = normalizeOpcName(plan?.plcName || "", "PLC1");
+  const explicitTopic = normalizeOpcName(plan?.topic || plan?.topicName || "", "");
+  if (explicitTopic) {
+    return {
+      ok: true,
+      topic: explicitTopic,
+      plcName,
+      needsChoice: false,
+      needsCreate: false,
+      options: [],
+    };
+  }
+
+  const topics = Array.isArray(cfg?.topics) ? cfg.topics : [];
+  const plcTopics = topics
+    .filter((row) => String(row?.plcName || "").trim().toLowerCase() === plcName.toLowerCase())
+    .map((row) => normalizeOpcName(row?.name || "", ""))
+    .filter(Boolean);
+  const uniqueTopics = Array.from(new Set(plcTopics));
+
+  if (uniqueTopics.length === 1) {
+    return {
+      ok: true,
+      topic: uniqueTopics[0],
+      plcName,
+      needsChoice: false,
+      needsCreate: false,
+      options: uniqueTopics,
+    };
+  }
+
+  if (uniqueTopics.length > 1) {
+    return {
+      ok: false,
+      topic: "",
+      plcName,
+      needsChoice: true,
+      needsCreate: false,
+      options: uniqueTopics,
+      message: `Multiple OPC topics exist for ${plcName}. Choose one: ${uniqueTopics.join(", ")}`,
+    };
+  }
+
+  return {
+    ok: false,
+    topic: "",
+    plcName,
+    needsChoice: false,
+    needsCreate: true,
+    options: [],
+    message: `No OPC topic exists for ${plcName}. Reply with the topic name to create.`,
+  };
+}
+
+async function loadOpcConfigFromStore() {
+  try {
+    const { rows } = await pool.query("SELECT config FROM opc_config WHERE id = 1 LIMIT 1");
+    if (rows.length && rows[0]?.config && typeof rows[0].config === "object") {
+      return rows[0].config;
+    }
+  } catch {
+    // fall back to file below
+  }
+  if (fs.existsSync(OPC_CONFIG_PATH)) {
+    try {
+      const raw = fs.readFileSync(OPC_CONFIG_PATH, "utf8");
+      const parsed = JSON.parse(raw || "{}");
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // ignore invalid file
+    }
+  }
+  return { ...DEFAULT_OPC_CONFIG };
+}
+
+async function saveOpcConfigToStore(config) {
+  const next = config && typeof config === "object" ? config : { ...DEFAULT_OPC_CONFIG };
+  await pool.query(
+    "INSERT INTO opc_config (id, config) VALUES (1, $1::jsonb) ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now()",
+    [JSON.stringify(next)]
+  );
+  trendTagConfigCache = { loadedAt: 0, map: null };
+}
+
+function mergeOpcConfigWithPlan(existingConfig, plan, options = {}) {
+  const base =
+    existingConfig && typeof existingConfig === "object"
+      ? existingConfig
+      : { ...DEFAULT_OPC_CONFIG };
+  const next = {
+    ...base,
+    plcs: Array.isArray(base.plcs) ? [...base.plcs] : [],
+    topics: Array.isArray(base.topics) ? [...base.topics] : [],
+    tags: Array.isArray(base.tags) ? [...base.tags] : [],
+  };
+
+  const plcName = normalizeOpcName(plan?.plcName || "", "PLC1");
+  const topic = normalizeOpcName(plan?.topic || plcName, plcName);
+  const host = String(plan?.host || "").trim();
+  const slot = Number.isFinite(Number(plan?.slot)) ? Math.max(0, Number(plan.slot)) : 0;
+  const pollMs = Number.isFinite(Number(plan?.pollMs)) ? Math.max(100, Number(plan.pollMs)) : 500;
+  const prefix = normalizeOpcName(plan?.prefix || "");
+
+  const plcIdx = next.plcs.findIndex((p) => String(p?.name || "").toLowerCase() === plcName.toLowerCase());
+  const plcEntry = {
+    ...(plcIdx >= 0 ? next.plcs[plcIdx] : {}),
+    name: plcName,
+    host: host || String(next.plcs[plcIdx]?.host || "").trim(),
+    slot,
+    pollMs,
+  };
+  if (plcIdx >= 0) next.plcs[plcIdx] = plcEntry;
+  else next.plcs.push(plcEntry);
+
+  const topicIdx = next.topics.findIndex((t) => String(t?.name || "").toLowerCase() === topic.toLowerCase());
+  const topicEntry = {
+    ...(topicIdx >= 0 ? next.topics[topicIdx] : {}),
+    name: topic,
+    prefix: prefix || String(next.topics[topicIdx]?.prefix || "").trim(),
+    plcName,
+    samplingInterval: pollMs,
+    enabled: true,
+  };
+  if (topicIdx >= 0) next.topics[topicIdx] = topicEntry;
+  else next.topics.push(topicEntry);
+
+  const byKey = new Map();
+  next.tags.forEach((tag, idx) => {
+    const key = `${String(tag?.topic || "").trim().toLowerCase()}::${String(tag?.name || "").trim().toLowerCase()}`;
+    if (!byKey.has(key)) byKey.set(key, idx);
+  });
+
+  let addedTags = 0;
+  let updatedTags = 0;
+  let templateMatchedTags = 0;
+  const templateNames = Array.isArray(options?.templateNames) ? options.templateNames : [];
+  const incomingTags = normalizeControllerTags(plan?.tags || [], 5000);
+  incomingTags.forEach((tag) => {
+    const baseName = normalizeOpcName(tag?.name || tag?.tagPath || "");
+    if (!baseName) return;
+    const name = prefix && !baseName.startsWith(`${prefix}.`) ? `${prefix}.${baseName}` : baseName;
+    const key = `${topic.toLowerCase()}::${name.toLowerCase()}`;
+    const existingIdx = byKey.has(key) ? byKey.get(key) : -1;
+    const existingTag = existingIdx >= 0 ? next.tags[existingIdx] : null;
+    const incomingPlcType = String(tag?.plcType || "").trim();
+    const explicitTemplate = String(tag?.templateName || tag?.template || "").trim();
+    const dataTypeTemplate = resolveTemplateNameForDataType(tag?.dataType || "", templateNames);
+    const plcTypeTemplate = resolveTemplateNameForDataType(tag?.plcType || "", templateNames);
+    const uaTypeTemplate = resolveTemplateNameForDataType(
+      String(tag?.uaType || "").trim() || mapUaTypeFromPlcType(tag?.plcType),
+      templateNames
+    );
+    const matchedTemplate = explicitTemplate || dataTypeTemplate || plcTypeTemplate || uaTypeTemplate;
+    if (matchedTemplate) templateMatchedTags += 1;
+    const existingPlcType = String(existingTag?.plcType || "").trim();
+    const useExistingTemplate = existingPlcType && !isPrimitivePlcType(existingPlcType);
+    const resolvedPlcType = matchedTemplate || (useExistingTemplate ? existingPlcType : incomingPlcType || existingPlcType);
+    const nextTag = {
+      ...(typeof tag === "object" ? tag : {}),
+      name,
+      tagPath: String(tag?.tagPath || baseName).trim(),
+      topic,
+      enabled: tag?.enabled !== false,
+      pollMs: Number.isFinite(Number(tag?.pollMs)) ? Math.max(100, Number(tag.pollMs)) : pollMs,
+      plcType: resolvedPlcType || undefined,
+      uaType: String(tag?.uaType || "").trim() || mapUaTypeFromPlcType(tag?.plcType),
+    };
+    if (existingIdx >= 0) {
+      next.tags[existingIdx] = { ...next.tags[existingIdx], ...nextTag };
+      updatedTags += 1;
+      return;
+    }
+    byKey.set(key, next.tags.length);
+    next.tags.push(nextTag);
+    addedTags += 1;
+  });
+
+  return {
+    config: next,
+    summary: { addedTags, updatedTags, templateMatchedTags, topic, plcName, host: plcEntry.host || "" },
+  };
 }
 
 async function loadTrendTagConfigMap() {
@@ -322,6 +1050,14 @@ async function requireAuth(req, res, next) {
   try {
     if (req.path.startsWith("/api/auth")) return next();
     if (req.method === "OPTIONS") return next();
+    if (
+      (req.path === "/api/ai/plc-insights" &&
+        (req.method === "POST" || req.method === "GET")) ||
+      (req.path === "/api/ai/plc-opc-connect" && req.method === "POST") ||
+      req.path.startsWith("/api/ai/plc-debug-sessions")
+    ) {
+      return next();
+    }
     if (req.path.startsWith("/api/opc/config")) {
       const opcKey = process.env.OPC_SERVER_KEY;
       const headerKey = String(req.headers["x-opc-key"] || "");
@@ -370,7 +1106,56 @@ function safeQualifiedIdent(schemaName, objectName) {
   return `${safeIdent(schema)}.${safeIdent(object)}`;
 }
 
+function normalizeDbIdentifier(value, label = "identifier") {
+  const raw = String(value || "").trim();
+  if (!/^[a-zA-Z0-9_]+$/.test(raw)) {
+    throw new Error(`Invalid ${label}. Use letters, numbers, and underscore only.`);
+  }
+  return raw;
+}
+
+function normalizeSqlType(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  const allow = new Set([
+    "text",
+    "integer",
+    "bigint",
+    "smallint",
+    "boolean",
+    "date",
+    "timestamp",
+    "timestamptz",
+    "real",
+    "double precision",
+    "uuid",
+    "jsonb",
+    "serial",
+    "bigserial",
+  ]);
+  if (allow.has(raw)) return raw;
+  if (/^varchar\(\d+\)$/.test(raw)) return raw;
+  if (/^numeric\(\d+\s*,\s*\d+\)$/.test(raw)) return raw.replace(/\s+/g, "");
+  throw new Error("Unsupported SQL type.");
+}
+
+function toSqlDefaultLiteral(value) {
+  if (value == null) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  if (lower === "null") return "NULL";
+  if (lower === "true" || lower === "false") return lower.toUpperCase();
+  if (/^-?\d+(\.\d+)?$/.test(text)) return text;
+  if (lower === "now()" || lower === "current_timestamp") return "CURRENT_TIMESTAMP";
+  return `'${text.replace(/'/g, "''")}'`;
+}
+
 async function getPrimaryKey(table) {
+  const tableName = String(table || "").trim();
+  if (!/^[a-zA-Z0-9_]+$/.test(tableName)) return null;
+  const regclassRes = await pool.query("SELECT to_regclass($1) AS oid", [`public.${tableName}`]);
+  const oid = regclassRes.rows?.[0]?.oid;
+  if (!oid) return null;
   const sql = `
     SELECT a.attname AS column
     FROM pg_index i
@@ -379,7 +1164,7 @@ async function getPrimaryKey(table) {
     ORDER BY a.attnum
     LIMIT 1;
   `;
-  const res = await pool.query(sql, [`public.${table}`]);
+  const res = await pool.query(sql, [oid]);
   const pk = res.rows[0]?.column || null;
   if (!pk) return null;
   const check = await pool.query(
@@ -389,7 +1174,7 @@ async function getPrimaryKey(table) {
     WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
     LIMIT 1
     `,
-    [table, pk]
+    [tableName, pk]
   );
   return check.rows.length ? pk : null;
 }
@@ -2058,6 +2843,79 @@ app.delete("/api/opc/templates/:name", async (req, res) => {
   }
 });
 
+app.get("/api/db/config", async (_req, res) => {
+  try {
+    const connection = parseDatabaseConnectionInfo(DATABASE_URL);
+    const poolInfo = {
+      max: Number.isFinite(Number(pool?.options?.max)) ? Number(pool.options.max) : null,
+      total: Number.isFinite(Number(pool?.totalCount)) ? Number(pool.totalCount) : 0,
+      idle: Number.isFinite(Number(pool?.idleCount)) ? Number(pool.idleCount) : 0,
+      waiting: Number.isFinite(Number(pool?.waitingCount)) ? Number(pool.waitingCount) : 0,
+    };
+
+    const checkedAt = Date.now();
+    let connected = false;
+    let latencyMs = null;
+    let serverTime = "";
+    let serverVersion = "";
+    let tableCount = null;
+    let routineCount = null;
+    let error = "";
+
+    if (pool) {
+      const startedAt = Date.now();
+      try {
+        const health = await pool.query("SELECT now()::text AS now_text, version() AS version_text");
+        connected = true;
+        latencyMs = Date.now() - startedAt;
+        serverTime = String(health.rows?.[0]?.now_text || "");
+        serverVersion = String(health.rows?.[0]?.version_text || "");
+
+        const counts = await pool.query(`
+          SELECT
+            (SELECT COUNT(*)::int FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE') AS table_count,
+            (SELECT COUNT(*)::int
+              FROM pg_proc p
+              JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                AND p.prokind IN ('f','p')
+            ) AS routine_count
+        `);
+        tableCount = Number.isFinite(Number(counts.rows?.[0]?.table_count))
+          ? Number(counts.rows[0].table_count)
+          : null;
+        routineCount = Number.isFinite(Number(counts.rows?.[0]?.routine_count))
+          ? Number(counts.rows[0].routine_count)
+          : null;
+      } catch (err) {
+        error = String(err?.message || "Database health check failed.");
+      }
+    } else {
+      error = "Database pool is not initialized.";
+    }
+
+    res.json({
+      connection,
+      pool: poolInfo,
+      health: {
+        connected,
+        checkedAt,
+        latencyMs,
+        serverTime,
+        serverVersion,
+        error,
+      },
+      catalog: {
+        schema: "public",
+        tableCount,
+        routineCount,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load database config." });
+  }
+});
+
 app.get("/api/db/tables", async (_req, res) => {
   try {
     const q = `
@@ -2152,6 +3010,209 @@ app.get("/api/db/schema", async (_req, res) => {
   }
 });
 
+app.get("/api/db/designer/schema", async (_req, res) => {
+  try {
+    const { rows: tableRows } = await pool.query(
+      `
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      ORDER BY table_name
+      `
+    );
+    const tables = [];
+    for (const row of tableRows) {
+      const name = String(row.table_name || "");
+      if (!name) continue;
+      let metaRes = { rows: [] };
+      let pk = null;
+      let foreignKeys = {};
+      try {
+        [metaRes, pk, foreignKeys] = await Promise.all([
+          pool.query(
+            `
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1
+            ORDER BY ordinal_position
+            `,
+            [name]
+          ),
+          getPrimaryKey(name),
+          getForeignKeysForTable(name),
+        ]);
+      } catch {
+        // Keep returning the table list even if metadata lookup fails for one table.
+      }
+      tables.push({
+        name,
+        primaryKey: pk || null,
+        columns: metaRes.rows || [],
+        foreignKeys,
+      });
+    }
+    res.json({ tables });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load SQL designer schema." });
+  }
+});
+
+app.post("/api/db/designer/table", async (req, res) => {
+  try {
+    const tableName = normalizeDbIdentifier(req.body?.tableName, "table name");
+    const rawColumns = Array.isArray(req.body?.columns) ? req.body.columns : [];
+    if (!rawColumns.length) {
+      res.status(400).json({ error: "At least one column is required." });
+      return;
+    }
+    const cols = rawColumns.map((c, idx) => {
+      const name = normalizeDbIdentifier(c?.name, `column name #${idx + 1}`);
+      const type = normalizeSqlType(c?.type);
+      const nullable = c?.nullable !== false;
+      const defaultSql = toSqlDefaultLiteral(c?.defaultValue);
+      const isPrimary = c?.primaryKey === true;
+      return { name, type, nullable, defaultSql, isPrimary };
+    });
+    const uniqueNames = new Set(cols.map((c) => c.name.toLowerCase()));
+    if (uniqueNames.size !== cols.length) {
+      res.status(400).json({ error: "Duplicate column names are not allowed." });
+      return;
+    }
+    const pkCols = cols.filter((c) => c.isPrimary).map((c) => c.name);
+    const colDefs = cols.map((c) => {
+      const nullableSql = c.isPrimary ? "NOT NULL" : c.nullable ? "" : "NOT NULL";
+      const defaultSql = c.defaultSql ? ` DEFAULT ${c.defaultSql}` : "";
+      return `${safeIdent(c.name)} ${c.type}${nullableSql ? ` ${nullableSql}` : ""}${defaultSql}`;
+    });
+    if (pkCols.length === 1) {
+      colDefs[cols.findIndex((c) => c.name === pkCols[0])] += " PRIMARY KEY";
+    } else if (pkCols.length > 1) {
+      colDefs.push(`PRIMARY KEY (${pkCols.map((n) => safeIdent(n)).join(", ")})`);
+    }
+    const sql = `CREATE TABLE IF NOT EXISTS ${safeIdent(tableName)} (${colDefs.join(", ")})`;
+    await pool.query(sql);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to create table." });
+  }
+});
+
+app.put("/api/db/designer/table/:table/rename", async (req, res) => {
+  try {
+    const currentName = normalizeDbIdentifier(req.params.table, "table name");
+    const newName = normalizeDbIdentifier(req.body?.newName, "new table name");
+    await pool.query(`ALTER TABLE ${safeIdent(currentName)} RENAME TO ${safeIdent(newName)}`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to rename table." });
+  }
+});
+
+app.post("/api/db/designer/table/:table/column", async (req, res) => {
+  try {
+    const tableName = normalizeDbIdentifier(req.params.table, "table name");
+    const columnName = normalizeDbIdentifier(req.body?.name, "column name");
+    const type = normalizeSqlType(req.body?.type);
+    const nullable = req.body?.nullable !== false;
+    const defaultSql = toSqlDefaultLiteral(req.body?.defaultValue);
+    const notNullSql = nullable ? "" : " NOT NULL";
+    const defaultClause = defaultSql ? ` DEFAULT ${defaultSql}` : "";
+    await pool.query(
+      `ALTER TABLE ${safeIdent(tableName)} ADD COLUMN IF NOT EXISTS ${safeIdent(columnName)} ${type}${defaultClause}${notNullSql}`
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to add column." });
+  }
+});
+
+app.put("/api/db/designer/table/:table/column/:column", async (req, res) => {
+  const db = await pool.connect();
+  try {
+    const tableName = normalizeDbIdentifier(req.params.table, "table name");
+    const columnName = normalizeDbIdentifier(req.params.column, "column name");
+    const newNameRaw = String(req.body?.newName || "").trim();
+    const newName = newNameRaw ? normalizeDbIdentifier(newNameRaw, "new column name") : "";
+    const typeRaw = String(req.body?.type || "").trim();
+    const nullableSet = Object.prototype.hasOwnProperty.call(req.body || {}, "nullable");
+    const defaultSet = Object.prototype.hasOwnProperty.call(req.body || {}, "defaultValue");
+    await db.query("BEGIN");
+    if (typeRaw) {
+      const nextType = normalizeSqlType(typeRaw);
+      await db.query(
+        `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} TYPE ${nextType}`
+      );
+    }
+    if (defaultSet) {
+      const defaultSql = toSqlDefaultLiteral(req.body?.defaultValue);
+      if (defaultSql) {
+        await db.query(
+          `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} SET DEFAULT ${defaultSql}`
+        );
+      } else {
+        await db.query(
+          `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} DROP DEFAULT`
+        );
+      }
+    }
+    if (nullableSet) {
+      if (req.body?.nullable === false) {
+        await db.query(
+          `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} SET NOT NULL`
+        );
+      } else {
+        await db.query(
+          `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} DROP NOT NULL`
+        );
+      }
+    }
+    if (newName && newName.toLowerCase() !== columnName.toLowerCase()) {
+      await db.query(
+        `ALTER TABLE ${safeIdent(tableName)} RENAME COLUMN ${safeIdent(columnName)} TO ${safeIdent(newName)}`
+      );
+    }
+    await db.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await db.query("ROLLBACK");
+    res.status(500).json({ error: err?.message || "Failed to update column." });
+  } finally {
+    db.release();
+  }
+});
+
+app.post("/api/db/designer/foreign-key", async (req, res) => {
+  try {
+    const fromTable = normalizeDbIdentifier(req.body?.fromTable, "source table");
+    const fromColumn = normalizeDbIdentifier(req.body?.fromColumn, "source column");
+    const toTable = normalizeDbIdentifier(req.body?.toTable, "target table");
+    const toColumn = normalizeDbIdentifier(req.body?.toColumn, "target column");
+    const actionAllow = new Set(["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"]);
+    const onDelete = String(req.body?.onDelete || "NO ACTION").trim().toUpperCase();
+    const onUpdate = String(req.body?.onUpdate || "NO ACTION").trim().toUpperCase();
+    if (!actionAllow.has(onDelete) || !actionAllow.has(onUpdate)) {
+      res.status(400).json({ error: "Invalid FK action." });
+      return;
+    }
+    const rawConstraint = String(req.body?.constraintName || "").trim();
+    const constraintName = rawConstraint
+      ? normalizeDbIdentifier(rawConstraint, "constraint name")
+      : normalizeDbIdentifier(`fk_${fromTable}_${fromColumn}_${toTable}_${toColumn}`.slice(0, 60), "constraint name");
+    const sql = `
+      ALTER TABLE ${safeIdent(fromTable)}
+      ADD CONSTRAINT ${safeIdent(constraintName)}
+      FOREIGN KEY (${safeIdent(fromColumn)})
+      REFERENCES ${safeIdent(toTable)} (${safeIdent(toColumn)})
+      ON DELETE ${onDelete}
+      ON UPDATE ${onUpdate}
+    `;
+    await pool.query(sql);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to create foreign key." });
+  }
+});
+
 app.get("/api/db/:table/meta", async (req, res) => {
   try {
     const table = String(req.params.table || "");
@@ -2160,7 +3221,7 @@ app.get("/api/db/:table/meta", async (req, res) => {
       return;
     }
     const q = `
-      SELECT column_name, data_type, is_nullable
+      SELECT column_name, data_type, is_nullable, column_default
       FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = $1
       ORDER BY ordinal_position;
@@ -2878,6 +3939,416 @@ app.post("/api/ai/table-preview", async (req, res) => {
   }
 });
 
+function formatPlcDebugContext(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return "Live debug session: none.";
+  const tags = Array.isArray(snapshot.tags) ? snapshot.tags : [];
+  const topError = Array.isArray(snapshot?.hotspots?.errors) ? snapshot.hotspots.errors.slice(0, 8) : [];
+  const topSlow = Array.isArray(snapshot?.hotspots?.slowReads) ? snapshot.hotspots.slowReads.slice(0, 8) : [];
+  return [
+    `Live debug snapshot @ ${snapshot.at ? new Date(snapshot.at).toISOString() : "unknown"}`,
+    `Connected=${snapshot.connected === true} Active OPC connections=${Array.isArray(snapshot.activeConnections) ? snapshot.activeConnections.join(", ") || "none" : "none"}`,
+    `Matched tags=${Number(snapshot.matchedTagCount || tags.length || 0)} Watched tags=${Number(snapshot.watchTagCount || 0)}`,
+    topError.length
+      ? `Error hotspots:\n${topError
+          .map((t) => `${t.key} quality=${t.quality || "Unknown"} err=${t.errorCount || 0}/${t.readErrorCount || 0} streak=${t.errorStreak || 0} msg=${t.lastErrorMessage || "-"}`)
+          .join("\n")}`
+      : "Error hotspots: none.",
+    topSlow.length
+      ? `Slow-read hotspots:\n${topSlow
+          .map((t) => `${t.key} avgMs=${t.avgReadDurationMs || 0} maxMs=${t.maxReadDurationMs || 0}`)
+          .join("\n")}`
+      : "Slow-read hotspots: none.",
+    tags.length
+      ? `Live tag sample:\n${tags
+          .slice(0, 40)
+          .map((t) => `${t.key} = ${String(t.value)} [${t.quality || "Unknown"}]`)
+          .join("\n")}`
+      : "Live tag sample: none.",
+  ].join("\n\n");
+}
+
+app.post("/api/ai/plc-debug-sessions", async (req, res) => {
+  try {
+    const source = req.body && typeof req.body === "object" ? req.body : {};
+    const requestedId = String(source?.sessionId || "").trim();
+    const plcName = String(source?.plcName || source?.name || "PLC").trim() || "PLC";
+    const controllerTagsRaw = normalizeControllerTags(source?.controllerTags || [], 800).map((t) => t.name);
+    const watchTagsRaw = Array.isArray(source?.watchTags) ? source.watchTags : [];
+    const routineHintsRaw = Array.isArray(source?.routineHints) ? source.routineHints : [];
+    const now = Date.now();
+
+    let session = requestedId ? plcDebugSessions.get(requestedId) : null;
+    if (!session) {
+      const id = `plcdbg-${now.toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
+      session = {
+        id,
+        plcName,
+        watchTags: [],
+        routineHints: [],
+        controllerTags: [],
+        pollMs: PLC_DEBUG_SESSION_POLL_MS,
+        createdAt: now,
+        updatedAt: 0,
+        lastTouchedAt: now,
+        lastRefreshAt: 0,
+        lastError: "",
+        snapshot: null,
+      };
+      plcDebugSessions.set(id, session);
+    }
+
+    session.plcName = plcName;
+    session.watchTags = normalizeDebugTagList([...session.watchTags, ...watchTagsRaw], PLC_DEBUG_MAX_WATCH_TAGS);
+    session.routineHints = normalizeDebugTagList([...session.routineHints, ...routineHintsRaw], 32);
+    session.controllerTags = normalizeDebugTagList([...controllerTagsRaw], 300);
+    session.pollMs = Math.max(
+      1000,
+      Number.parseInt(String(source?.pollMs || session.pollMs || PLC_DEBUG_SESSION_POLL_MS), 10) || PLC_DEBUG_SESSION_POLL_MS
+    );
+    session.lastTouchedAt = now;
+    session.lastRefreshAt = now;
+    await refreshPlcDebugSession(session);
+    res.json({ ok: true, session: serializePlcDebugSession(session) });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to create PLC debug session." });
+  }
+});
+
+app.get("/api/ai/plc-debug-sessions/:id", async (req, res) => {
+  try {
+    const session = getPlcDebugSession(req.params.id);
+    if (!session) {
+      res.status(404).json({ error: "Debug session not found." });
+      return;
+    }
+    const now = Date.now();
+    if (now - Number(session.lastRefreshAt || 0) >= Number(session.pollMs || PLC_DEBUG_SESSION_POLL_MS)) {
+      session.lastRefreshAt = now;
+      await refreshPlcDebugSession(session);
+    }
+    res.json({ ok: true, session: serializePlcDebugSession(session) });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load PLC debug session." });
+  }
+});
+
+app.post("/api/ai/plc-debug-sessions/:id/watch", async (req, res) => {
+  try {
+    const session = getPlcDebugSession(req.params.id);
+    if (!session) {
+      res.status(404).json({ error: "Debug session not found." });
+      return;
+    }
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const watchTagsRaw = Array.isArray(body?.watchTags) ? body.watchTags : [];
+    const routineHintsRaw = Array.isArray(body?.routineHints) ? body.routineHints : [];
+    const mode = String(body?.mode || "append").toLowerCase();
+    if (mode === "replace") {
+      session.watchTags = normalizeDebugTagList(watchTagsRaw, PLC_DEBUG_MAX_WATCH_TAGS);
+      session.routineHints = normalizeDebugTagList(routineHintsRaw, 32);
+    } else {
+      session.watchTags = normalizeDebugTagList([...session.watchTags, ...watchTagsRaw], PLC_DEBUG_MAX_WATCH_TAGS);
+      session.routineHints = normalizeDebugTagList([...session.routineHints, ...routineHintsRaw], 32);
+    }
+    session.lastTouchedAt = Date.now();
+    session.lastRefreshAt = Date.now();
+    await refreshPlcDebugSession(session);
+    res.json({ ok: true, session: serializePlcDebugSession(session) });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to update debug watch list." });
+  }
+});
+
+app.delete("/api/ai/plc-debug-sessions/:id", async (req, res) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!id || !plcDebugSessions.has(id)) {
+      res.status(404).json({ error: "Debug session not found." });
+      return;
+    }
+    plcDebugSessions.delete(id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to delete debug session." });
+  }
+});
+
+async function handlePlcInsights(req, res) {
+  try {
+    const source = req.method === "GET" ? req.query : req.body;
+    const prompt = String(source?.prompt || "").trim();
+    if (!prompt) {
+      res.status(400).json({ error: "Missing prompt." });
+      return;
+    }
+    const plc = source?.plc && typeof source.plc === "object" ? source.plc : {};
+    const name = String(plc?.name || "PLC").trim() || "PLC";
+    const metadata = plc?.metadata && typeof plc.metadata === "object" ? plc.metadata : {};
+    const sections = Array.isArray(plc?.sections) ? plc.sections : [];
+    const controllerTags = normalizeControllerTags(plc?.controllerTags || [], 600);
+    const activeOpcConnections = Array.isArray(plc?.activeOpcConnections)
+      ? plc.activeOpcConnections.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 60)
+      : [];
+    const opcConnectionCount = Number.isFinite(Number(plc?.opcConnectionCount))
+      ? Math.max(0, Number(plc.opcConnectionCount))
+      : activeOpcConnections.length;
+    const rawSample = String(plc?.rawSample || "").slice(0, 18000);
+    const history = Array.isArray(source?.history) ? source.history : [];
+    const debugSessionId = String(source?.debugSessionId || plc?.debugSessionId || "").trim();
+    let debugSnapshot = null;
+    if (debugSessionId) {
+      const debugSession = getPlcDebugSession(debugSessionId);
+      if (debugSession) {
+        const now = Date.now();
+        if (now - Number(debugSession.lastRefreshAt || 0) >= Number(debugSession.pollMs || PLC_DEBUG_SESSION_POLL_MS)) {
+          debugSession.lastRefreshAt = now;
+          await refreshPlcDebugSession(debugSession);
+        }
+        debugSnapshot = debugSession.snapshot || null;
+      }
+    }
+
+    const safeHistory = history
+      .slice(-12)
+      .map((item) => {
+        const role = String(item?.role || "").toLowerCase();
+        if (role !== "user" && role !== "assistant") return null;
+        const content = String(item?.content || "").slice(0, 4000).trim();
+        if (!content) return null;
+        return { role, content };
+      })
+      .filter(Boolean);
+
+    const metadataRows = Object.entries(metadata)
+      .filter(([, value]) => String(value || "").trim())
+      .map(([k, v]) => `${k}: ${String(v)}`);
+    const sectionRows = sections.map((row) => {
+      const label = String(row?.label || "").trim();
+      const count = Number.isFinite(Number(row?.count)) ? Number(row.count) : 0;
+      const names = Array.isArray(row?.names) ? row.names.slice(0, 12).map((x) => String(x || "").trim()).filter(Boolean) : [];
+      return `${label || "Section"} count=${count}${names.length ? ` sample=${names.join(", ")}` : ""}`;
+    });
+
+    const plcContext = [
+      `PLC file: ${name}`,
+      metadataRows.length ? `Metadata:\n${metadataRows.join("\n")}` : "Metadata: none",
+      sectionRows.length ? `Scan summary:\n${sectionRows.join("\n")}` : "Scan summary: none",
+      activeOpcConnections.length
+        ? `Active OPC connections (${opcConnectionCount}): ${activeOpcConnections.join(", ")}`
+        : `Active OPC connections: none reported (${opcConnectionCount})`,
+      controllerTags.length
+        ? `Controller tags sample (${controllerTags.length}):\n${controllerTags
+            .slice(0, 200)
+            .map((t) => `${t.name}${t.plcType ? ` (${t.plcType})` : ""}`)
+            .join("\n")}`
+        : "Controller tags sample: none",
+      rawSample
+        ? `L5X XML excerpt (truncated):\n${rawSample}`
+        : "L5X XML excerpt: not provided",
+      formatPlcDebugContext(debugSnapshot),
+    ].join("\n\n");
+
+    const system = [
+      "You are a PLC analysis assistant focused on Rockwell/Studio5000 L5X exports.",
+      "Use only the provided PLC context and conversation.",
+      "Do not invent tags, routines, or modules that are not in context.",
+      "If data is missing, say exactly what is missing.",
+      "Give concise, actionable answers for controls engineers.",
+      "Treat active OPC connections as real-time environment context when suggesting mapping/connection steps.",
+      "When asked about OPC setup, provide practical configuration steps using available controller tags.",
+    ].join(" ");
+
+    const input = [
+      { role: "system", content: system },
+      { role: "system", content: plcContext },
+      ...safeHistory,
+      { role: "user", content: prompt },
+    ];
+
+    function buildLocalFallbackAnswer() {
+      const metaEntries = [
+        ["Controller", metadata?.controllerName],
+        ["Processor", metadata?.processorType],
+        [
+          "Revision",
+          [metadata?.majorRev, metadata?.minorRev].filter((x) => String(x || "").trim()).join("."),
+        ],
+        ["Target", metadata?.targetName],
+        ["Software", metadata?.softwareRevision],
+      ].filter(([, value]) => String(value || "").trim());
+      const sectionSummary = sections
+        .map((row) => {
+          const label = String(row?.label || "").trim() || "Section";
+          const count = Number.isFinite(Number(row?.count)) ? Number(row.count) : 0;
+          return `${label}: ${count}`;
+        })
+        .join(", ");
+      return [
+        `AI provider is unavailable for ${name}, so this is a local PLC summary.`,
+        metaEntries.length
+          ? `Metadata: ${metaEntries.map(([k, v]) => `${k}=${String(v)}`).join(" | ")}`
+          : "Metadata: none found in uploaded file.",
+        sectionSummary ? `Scan counts: ${sectionSummary}` : "Scan counts: none.",
+        `Your prompt: ${prompt}`,
+        "Configure OPENAI_API_KEY or OLLAMA_NATIVE_URL to enable full PLC AI responses.",
+      ].join("\n\n");
+    }
+
+    async function getModelText(promptInput) {
+      if (OLLAMA_NATIVE_URL) {
+        const resp = await fetch(`${OLLAMA_NATIVE_URL.replace(/\/$/, "")}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: OPENAI_MODEL,
+            prompt: promptInput.map((m) => `${String(m.role || "user").toUpperCase()}: ${String(m.content || "")}`).join("\n\n"),
+            stream: false,
+          }),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error(`Ollama error: ${resp.status} ${errText}`);
+        }
+        const data = await resp.json();
+        return data.response || "";
+      }
+      const response = await client.responses.create({
+        model: OPENAI_MODEL,
+        input: promptInput,
+        max_output_tokens: 700,
+      });
+      return response.output_text || "";
+    }
+
+    const hasAiProvider =
+      !!String(process.env.OLLAMA_NATIVE_URL || "").trim() ||
+      !!String(process.env.OPENAI_BASE_URL || "").trim() ||
+      !!String(process.env.OPENAI_API_KEY || "").trim();
+    if (!hasAiProvider) {
+      const wantsOpcConnection =
+        source?.requestOpcPlan === true ||
+        (/\b(opc|opcua)\b/i.test(prompt) &&
+          /\b(connect|connection|configure|setup|bind|link|map)\b/i.test(prompt));
+      const opcPlan = wantsOpcConnection
+        ? buildOpcConnectionPlan({
+            prompt,
+            plc: { ...plc, controllerTags },
+            overrides: source?.opcPlan || {},
+          })
+        : null;
+      res.json({ answer: buildLocalFallbackAnswer(), opcPlan, debugSessionId });
+      return;
+    }
+
+    let answer = "";
+    try {
+      answer = String(await getModelText(input)).trim();
+    } catch {
+      answer = buildLocalFallbackAnswer();
+    }
+    const wantsOpcConnection =
+      source?.requestOpcPlan === true ||
+      (/\b(opc|opcua)\b/i.test(prompt) &&
+        /\b(connect|connection|configure|setup|bind|link|map)\b/i.test(prompt));
+    const opcPlan = wantsOpcConnection
+      ? buildOpcConnectionPlan({
+          prompt,
+          plc: { ...plc, controllerTags },
+          overrides: source?.opcPlan || {},
+        })
+      : null;
+    res.json({ answer: answer || "No answer generated.", opcPlan, debugSessionId });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to generate PLC insights." });
+  }
+}
+
+app.post("/api/ai/plc-insights", handlePlcInsights);
+app.get("/api/ai/plc-insights", handlePlcInsights);
+
+app.post("/api/ai/plc-opc-connect", async (req, res) => {
+  try {
+    const source = req.body && typeof req.body === "object" ? req.body : {};
+    const prompt = String(source?.prompt || "").trim();
+    const plc = source?.plc && typeof source.plc === "object" ? source.plc : {};
+    const incomingPlan = source?.opcPlan && typeof source.opcPlan === "object" ? source.opcPlan : {};
+    const controllerTags = normalizeControllerTags(plc?.controllerTags || incomingPlan?.tags || [], 1200);
+    const plan = buildOpcConnectionPlan({
+      prompt,
+      plc: { ...plc, controllerTags },
+      overrides: incomingPlan,
+    });
+
+    const existing = await loadOpcConfigFromStore();
+    const topicResolution = resolveTopicForPlan(existing, plan);
+    if (!topicResolution.ok) {
+      res.status(409).json({
+        error: topicResolution.message || "Topic selection is required.",
+        needsTopicChoice: topicResolution.needsChoice === true,
+        needsTopicName: topicResolution.needsCreate === true,
+        topicOptions: topicResolution.options,
+        opcPlan: {
+          ...plan,
+          plcName: topicResolution.plcName,
+        },
+      });
+      return;
+    }
+    plan.topic = topicResolution.topic;
+    const existingPlc = Array.isArray(existing?.plcs)
+      ? existing.plcs.find(
+          (p) => String(p?.name || "").trim().toLowerCase() === String(plan?.plcName || "").trim().toLowerCase()
+        )
+      : null;
+    if (!plan.host && existingPlc?.host) {
+      plan.host = String(existingPlc.host || "").trim();
+    }
+    if (!plan.host) {
+      res.status(400).json({
+        error:
+          "PLC host/IP is required to create OPC connection. Include it in your prompt (example: 10.0.0.39) or set it in the plan before apply.",
+        opcPlan: plan,
+      });
+      return;
+    }
+    if (!Array.isArray(plan.tags) || plan.tags.length === 0) {
+      res.status(400).json({
+        error: "No PLC tags were found to map into OPC. Upload an L5X with controller tags first.",
+        opcPlan: plan,
+      });
+      return;
+    }
+
+    const templateNames = await loadOpcTemplateNamesFromStore();
+    const { config: nextConfig, summary } = mergeOpcConfigWithPlan(existing, plan, { templateNames });
+    await saveOpcConfigToStore(nextConfig);
+
+    const restartFlagPath = path.resolve(REPO_ROOT, "opc-server", "restart.requested");
+    const restartAt = Date.now();
+    fs.writeFileSync(restartFlagPath, JSON.stringify({ at: restartAt }, null, 2));
+
+    res.json({
+      ok: true,
+      message:
+        `OPC updated for ${summary.plcName} on topic ${summary.topic}. ` +
+        `Added ${summary.addedTags} tag(s), updated ${summary.updatedTags} tag(s).` +
+        (summary.templateMatchedTags > 0
+          ? ` Matched ${summary.templateMatchedTags} tag(s) to OPC templates by PLC data type.`
+          : ""),
+      opcPlan: plan,
+      summary: {
+        ...summary,
+        totalTags: Array.isArray(nextConfig?.tags) ? nextConfig.tags.length : 0,
+        totalPlcs: Array.isArray(nextConfig?.plcs) ? nextConfig.plcs.length : 0,
+        totalTopics: Array.isArray(nextConfig?.topics) ? nextConfig.topics.length : 0,
+      },
+      restartRequestedAt: restartAt,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to connect PLC to OPC." });
+  }
+});
+
 app.post("/api/ai/apply", async (req, res) => {
   try {
     const { sql } = req.body || {};
@@ -3206,6 +4677,9 @@ async function start() {
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`AI server listening on http://localhost:${PORT}`);
+    setInterval(() => {
+      void runPlcDebugSessionRefreshTick();
+    }, Math.max(1000, Math.floor(PLC_DEBUG_SESSION_POLL_MS / 2)));
   });
 }
 

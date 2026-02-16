@@ -6,6 +6,7 @@ const WIDGETS = [
   { key: "areaChart", name: "Area Chart", group: "Graphs", desc: "Filled trend graph." },
   { key: "gauge", name: "Gauge", group: "Indicators", desc: "Dial style value." },
   { key: "kpi", name: "KPI Card", group: "Indicators", desc: "Large single metric." },
+  { key: "displayBox", name: "Display Box", group: "Indicators", desc: "Live tag read/write with units." },
   { key: "statusTable", name: "Status Table", group: "Tables", desc: "Compact status rows." },
 ];
 

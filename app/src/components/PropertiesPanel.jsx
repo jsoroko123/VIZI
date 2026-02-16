@@ -214,6 +214,16 @@ function splitSeriesTags(value) {
     .filter((v, i, arr) => arr.findIndex((x) => x.toLowerCase() === v.toLowerCase()) === i);
 }
 
+function inferGroupNameFromTag(tag) {
+  const explicit = String(tag?.groupName || "").trim();
+  if (explicit) return explicit;
+  const rawPath = String(tag?.tagPath || tag?.name || "").trim();
+  if (!rawPath) return "";
+  const dot = rawPath.indexOf(".");
+  if (dot > 0) return rawPath.slice(0, dot).trim();
+  return "";
+}
+
 export default function PropertiesPanel({
   showHUD,
   setShowHUD,
@@ -303,7 +313,7 @@ export default function PropertiesPanel({
 
     (opcTags || []).forEach((tag) => {
       const topic = String(tag?.topic || "Default").trim() || "Default";
-      const groupName = String(tag?.groupName || "").trim();
+      const groupName = inferGroupNameFromTag(tag);
       if (!groupName) return;
       const value = `${topic}.${groupName}`;
       const dedupe = value.toLowerCase();
@@ -317,6 +327,10 @@ export default function PropertiesPanel({
     }
     return options;
   }, [opcTags, hudFields.tagPath]);
+
+  const svgBindingOptions = useMemo(() => {
+    return Array.isArray(svgTagGroupOptions) ? [...svgTagGroupOptions] : [];
+  }, [svgTagGroupOptions]);
 
   // keep latest fns for Apply (avoid stale closure)
   const latest = useRef({});
@@ -806,7 +820,7 @@ export default function PropertiesPanel({
                 applySingleTagPath(v);
               }}
               onBlur={() => {}}
-              options={isSvg ? svgTagGroupOptions : tagOptions}
+              options={isSvg ? svgBindingOptions : tagOptions}
               searchable
               searchPlaceholder={isSvg ? "Search tag groups..." : "Search tags or db binding..."}
             />
@@ -916,7 +930,7 @@ export default function PropertiesPanel({
                     />
                   </>
                 )}
-                {(widgetKindVal === "kpi" || widgetKindVal === "gauge" || widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart") && (
+                {(widgetKindVal === "kpi" || widgetKindVal === "gauge" || widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart" || widgetKindVal === "displayBox") && (
                   <>
                     <Row
                       label="Decimals"
@@ -947,6 +961,11 @@ export default function PropertiesPanel({
                     />
                   </>
                 )}
+                {widgetKindVal === "displayBox" ? (
+                  <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+                    Bind an OPC tag in Tag Path. This widget reads live value and supports live writes.
+                  </div>
+                ) : null}
                 {(widgetKindVal === "lineChart" || widgetKindVal === "areaChart") && (
                   <SelectRow
                     label="Duration"

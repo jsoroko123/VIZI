@@ -2,7 +2,7 @@
   background: var(--bg-soft) !important;
   color: var(--text) !important;
   border-color: var(--border) !important;
-  border-radius: 0 !important;
+  border-radius: 8px !important;
 }
 
 .report-designer-root .rd-tab-btn {

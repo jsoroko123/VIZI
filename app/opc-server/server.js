@@ -211,6 +211,7 @@ async function main() {
   const plcClients = new Map();
   const plcConnected = new Map();
   const plcLastPollAt = new Map();
+  const plcPollInFlight = new Map();
   const tagValues = new Map();
   const tagErrors = new Map();
   const tagLastRead = new Map();
@@ -373,6 +374,7 @@ async function main() {
   plcs.forEach((p) => {
     plcClients.set(p.name, new PLC(p.host, { processorSlot: p.slot }));
     plcConnected.set(p.name, false);
+    plcPollInFlight.set(p.name, false);
   });
 
   await Promise.all(
@@ -534,86 +536,93 @@ async function main() {
     );
     setInterval(async () => {
       if (!plcConnected.get(plcName)) return;
+      if (plcPollInFlight.get(plcName)) return;
+      plcPollInFlight.set(plcName, true);
       const now = Date.now();
       let didRead = false;
-      for (const tag of plcTags) {
-        const baseInterval = parsePositiveMs(
-          tag.samplingInterval,
-          parsePositiveMs(tag.pollMs, globalPollMs)
-        );
-        const dueAt = tagNextDueAt.get(tag.tagKey) || 0;
-        if (now < dueAt) continue;
+      try {
+        for (const tag of plcTags) {
+          const baseInterval = parsePositiveMs(
+            tag.samplingInterval,
+            parsePositiveMs(tag.pollMs, globalPollMs)
+          );
+          const dueAt = tagNextDueAt.get(tag.tagKey) || 0;
+          if (now < dueAt) continue;
 
-        if (tag.muted === true) {
-          tagQuality.set(tag.tagKey, "Muted");
-          tagEffectiveInterval.set(tag.tagKey, baseInterval);
-          tagLastRead.set(tag.tagKey, now);
-          tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
-          continue;
-        }
-
-        const readStartedAt = Date.now();
-        try {
-          const value = await readWithTimeout(tag.tagPath || tag.name);
-          if (value == null) {
-            throw new Error("Read returned no data (null/undefined).");
+          if (tag.muted === true) {
+            tagQuality.set(tag.tagKey, "Muted");
+            tagEffectiveInterval.set(tag.tagKey, baseInterval);
+            tagLastRead.set(tag.tagKey, now);
+            tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
+            continue;
           }
-          const durationMs = Math.max(0, Date.now() - readStartedAt);
-          const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
-          const successCount = (tagReadSuccessCount.get(tag.tagKey) || 0) + 1;
-          const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
-          const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
-          tagReadCount.set(tag.tagKey, readCount);
-          tagReadSuccessCount.set(tag.tagKey, successCount);
-          tagReadDurationTotalMs.set(tag.tagKey, totalMs);
-          tagReadDurationMaxMs.set(tag.tagKey, maxMs);
-          tagLastReadDurationMs.set(tag.tagKey, durationMs);
-          const prev = tagValues.get(tag.tagKey);
-          const deadband = parseNonNegativeNumber(tag.deadband, deadbandDefault);
-          let shouldUpdateValue = true;
-          if (deadband != null) {
-            if (isNumericLiveValue(prev) && isNumericLiveValue(value)) {
-              const prevNum = Number(prev);
-              const nextNum = Number(value);
-              shouldUpdateValue = Math.abs(nextNum - prevNum) >= deadband;
+
+          const readStartedAt = Date.now();
+          try {
+            const value = await readWithTimeout(tag.tagPath || tag.name);
+            if (value == null) {
+              throw new Error("Read returned no data (null/undefined).");
             }
+            const durationMs = Math.max(0, Date.now() - readStartedAt);
+            const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
+            const successCount = (tagReadSuccessCount.get(tag.tagKey) || 0) + 1;
+            const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
+            const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
+            tagReadCount.set(tag.tagKey, readCount);
+            tagReadSuccessCount.set(tag.tagKey, successCount);
+            tagReadDurationTotalMs.set(tag.tagKey, totalMs);
+            tagReadDurationMaxMs.set(tag.tagKey, maxMs);
+            tagLastReadDurationMs.set(tag.tagKey, durationMs);
+            const prev = tagValues.get(tag.tagKey);
+            const deadband = parseNonNegativeNumber(tag.deadband, deadbandDefault);
+            let shouldUpdateValue = true;
+            if (deadband != null) {
+              if (isNumericLiveValue(prev) && isNumericLiveValue(value)) {
+                const prevNum = Number(prev);
+                const nextNum = Number(value);
+                shouldUpdateValue = Math.abs(nextNum - prevNum) >= deadband;
+              }
+            }
+            if (shouldUpdateValue) tagValues.set(tag.tagKey, value);
+            tagErrors.delete(tag.tagKey);
+            tagErrorStreak.set(tag.tagKey, 0);
+            tagQuality.set(tag.tagKey, "Good");
+            tagLastErrorMessage.set(tag.tagKey, "");
+            tagLastRead.set(tag.tagKey, now);
+            tagLastSuccessAt.set(tag.tagKey, now);
+            tagEffectiveInterval.set(tag.tagKey, baseInterval);
+            tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
+            didRead = true;
+          } catch (err) {
+            const durationMs = Math.max(0, Date.now() - readStartedAt);
+            const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
+            const errorReadCount = (tagReadErrorCount.get(tag.tagKey) || 0) + 1;
+            const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
+            const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
+            tagReadCount.set(tag.tagKey, readCount);
+            tagReadErrorCount.set(tag.tagKey, errorReadCount);
+            tagReadDurationTotalMs.set(tag.tagKey, totalMs);
+            tagReadDurationMaxMs.set(tag.tagKey, maxMs);
+            tagLastReadDurationMs.set(tag.tagKey, durationMs);
+            const prev = tagErrors.get(tag.tagKey) || 0;
+            tagErrors.set(tag.tagKey, prev + 1);
+            const streak = (tagErrorStreak.get(tag.tagKey) || 0) + 1;
+            tagErrorStreak.set(tag.tagKey, streak);
+            tagQuality.set(tag.tagKey, "Bad");
+            tagLastErrorAt.set(tag.tagKey, now);
+            tagLastErrorMessage.set(tag.tagKey, err?.message || "Read failed.");
+            let backoffMs = 0;
+            if (errorBackoffEnabled && streak >= errorBackoffThreshold) {
+              const exp = Math.max(0, streak - errorBackoffThreshold);
+              backoffMs = Math.min(errorBackoffMaxMs, errorBackoffBaseMs * 2 ** exp);
+            }
+            tagEffectiveInterval.set(tag.tagKey, baseInterval + backoffMs);
+            tagNextDueAt.set(tag.tagKey, now + baseInterval + backoffMs + nextJitter());
+            tagLastRead.set(tag.tagKey, now);
           }
-          if (shouldUpdateValue) tagValues.set(tag.tagKey, value);
-          tagErrors.delete(tag.tagKey);
-          tagErrorStreak.set(tag.tagKey, 0);
-          tagQuality.set(tag.tagKey, "Good");
-          tagLastRead.set(tag.tagKey, now);
-          tagLastSuccessAt.set(tag.tagKey, now);
-          tagEffectiveInterval.set(tag.tagKey, baseInterval);
-          tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
-          didRead = true;
-        } catch (err) {
-          const durationMs = Math.max(0, Date.now() - readStartedAt);
-          const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
-          const errorReadCount = (tagReadErrorCount.get(tag.tagKey) || 0) + 1;
-          const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
-          const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
-          tagReadCount.set(tag.tagKey, readCount);
-          tagReadErrorCount.set(tag.tagKey, errorReadCount);
-          tagReadDurationTotalMs.set(tag.tagKey, totalMs);
-          tagReadDurationMaxMs.set(tag.tagKey, maxMs);
-          tagLastReadDurationMs.set(tag.tagKey, durationMs);
-          const prev = tagErrors.get(tag.tagKey) || 0;
-          tagErrors.set(tag.tagKey, prev + 1);
-          const streak = (tagErrorStreak.get(tag.tagKey) || 0) + 1;
-          tagErrorStreak.set(tag.tagKey, streak);
-          tagQuality.set(tag.tagKey, "Bad");
-          tagLastErrorAt.set(tag.tagKey, now);
-          tagLastErrorMessage.set(tag.tagKey, err?.message || "Read failed.");
-          let backoffMs = 0;
-          if (errorBackoffEnabled && streak >= errorBackoffThreshold) {
-            const exp = Math.max(0, streak - errorBackoffThreshold);
-            backoffMs = Math.min(errorBackoffMaxMs, errorBackoffBaseMs * 2 ** exp);
-          }
-          tagEffectiveInterval.set(tag.tagKey, baseInterval + backoffMs);
-          tagNextDueAt.set(tag.tagKey, now + baseInterval + backoffMs + nextJitter());
-          tagLastRead.set(tag.tagKey, now);
         }
+      } finally {
+        plcPollInFlight.set(plcName, false);
       }
       if (didRead) plcLastPollAt.set(plcName, now);
       writeStatus();
@@ -628,6 +637,7 @@ async function main() {
           writeStatus();
           return;
         }
+        if (plcPollInFlight.get(plcName)) return;
         const firstTag = (tagsByPlc.get(plcName) || [])[0];
         if (!firstTag) return;
         const timeoutPromise = new Promise((_, reject) => {

@@ -87,22 +87,30 @@ export default function DataBrowser({ embedded = false }) {
     return out;
   }, [opcTags]);
 
-  const pageStyle = {
-    position: "fixed",
-    inset: 0,
-    background: "var(--bg-soft)",
-    color: "var(--text)",
-    overflow: "hidden",
-  };
+  const pageStyle = embedded
+    ? {
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        background: "var(--bg-soft)",
+        color: "var(--text)",
+        overflow: "hidden",
+      }
+    : {
+        position: "fixed",
+        inset: 0,
+        background: "var(--bg-soft)",
+        color: "var(--text)",
+        overflow: "hidden",
+      };
   const shellStyle = {
     width: "100%",
     height: "100%",
     margin: 0,
-    padding: 0,
+    padding: embedded ? "12px 12px 30px" : "0 0 30px",
     boxSizing: "border-box",
     display: "flex",
     flexDirection: "column",
-    paddingBottom: 30,
   };
   const cardStyle = {
     background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",

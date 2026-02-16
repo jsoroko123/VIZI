@@ -221,6 +221,8 @@ export default function CanvasSvg({
         `${prefix}state`,
         `${prefix}stcode`,
         `${prefix}status`,
+        `${prefix}hmi_state`,
+        `${prefix}hmistate`,
         `${prefix}routeid`,
         `${prefix}routenumber`,
         `${prefix}value`,
@@ -275,8 +277,65 @@ export default function CanvasSvg({
   const [widgetTrendReloadNonce, setWidgetTrendReloadNonce] = useState(0);
   const widgetBarDatasetRef = useRef(new Map()); // overlayId -> { labels: string[], values: number[], updatedAt: number }
   const [, setWidgetBarTick] = useState(0);
+  const [widgetWriteDraftByOverlay, setWidgetWriteDraftByOverlay] = useState({});
+  const [widgetWriteBusyByOverlay, setWidgetWriteBusyByOverlay] = useState({});
+  const [widgetWriteErrorByOverlay, setWidgetWriteErrorByOverlay] = useState({});
   const trendLiveKeyListRef = useRef([]);
   const trendTagCandidateCacheRef = useRef(new Map());
+
+  const coerceWidgetWriteValue = (raw) => {
+    const text = String(raw ?? "").trim();
+    if (/^(true|false)$/i.test(text)) return text.toLowerCase() === "true";
+    if (text !== "") {
+      const n = Number(text);
+      if (Number.isFinite(n)) return n;
+    }
+    return raw;
+  };
+
+  const getWritableWidgetTagPath = (overlay) => {
+    const tagPath = String(overlay?.tagPath || "").trim();
+    if (!tagPath) return "";
+    const lower = tagPath.toLowerCase();
+    if (lower.startsWith("db:") || lower.startsWith("dbq:")) return "";
+    return tagPath;
+  };
+
+  const submitWidgetWrite = async (overlay, writeValue) => {
+    const overlayId = String(overlay?.id || "").trim();
+    const tagPath = getWritableWidgetTagPath(overlay);
+    if (!overlayId || !tagPath) return;
+    setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
+    setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
+    try {
+      const payloadValue = coerceWidgetWriteValue(writeValue);
+      const res = await fetch("/api/opc/write", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tagKey: tagPath,
+          legacyTagKey: tagPath,
+          value: payloadValue,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Write failed.");
+      const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value")
+        ? data.value
+        : payloadValue;
+      setWidgetWriteDraftByOverlay((prev) => ({
+        ...prev,
+        [overlayId]: String(nextValue ?? ""),
+      }));
+    } catch (err) {
+      setWidgetWriteErrorByOverlay((prev) => ({
+        ...prev,
+        [overlayId]: err?.message || "Write failed.",
+      }));
+    } finally {
+      setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: false }));
+    }
+  };
 
   const parseDbBinding = (rawTagPath) => {
     const tagPath = String(rawTagPath || "").trim();
@@ -359,6 +418,26 @@ export default function CanvasSvg({
     trendLiveKeyListRef.current = Object.keys(opcLiveValues || {}).map((k) => String(k || "").trim()).filter(Boolean);
     trendTagCandidateCacheRef.current.clear();
   }, [opcLiveValues]);
+
+  useEffect(() => {
+    const activeIds = new Set((Array.isArray(svgOverlays) ? svgOverlays : []).map((o) => String(o?.id || "")));
+    const pruneMap = (prev) => {
+      const next = {};
+      let changed = false;
+      Object.entries(prev || {}).forEach(([k, v]) => {
+        if (!activeIds.has(String(k || ""))) {
+          changed = true;
+          return;
+        }
+        next[k] = v;
+      });
+      return changed ? next : prev;
+    };
+    setWidgetWriteDraftByOverlay(pruneMap);
+    setWidgetWriteBusyByOverlay(pruneMap);
+    setWidgetWriteErrorByOverlay(pruneMap);
+  }, [svgOverlays]);
+
   const parseWidgetSeriesTags = (overlay) => {
     const out = [];
     const push = (raw) => {
@@ -924,11 +1003,14 @@ export default function CanvasSvg({
     const displayN = latestPoint ? latestPoint.v : n;
     const compact = w < 220 || h < 130;
     const dense = w < 160 || h < 100;
+    const widgetScale = Math.max(0.72, Math.min(1.9, Math.min(w, h) / 170));
+    const scaledFont = (base, min = 7, max = 40) =>
+      Math.max(min, Math.min(max, Math.round(Number(base || 0) * widgetScale)));
     const headH = dense ? 20 : compact ? 24 : 28;
     const pad = dense ? 6 : compact ? 8 : 10;
     const cardTitle = title || label;
     const titleSize = dense ? 8 : compact ? 9 : 10;
-    const valueSize = dense ? 14 : compact ? 18 : 22;
+    const valueSize = scaledFont(dense ? 14 : compact ? 18 : 22, 10, 56);
     const valueColor = "var(--text)";
     const accent = "#2b8cff";
     const accentSoft = "#2b8cff33";
@@ -1006,7 +1088,7 @@ export default function CanvasSvg({
             {display}
           </text>
           {!dense ? (
-            <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={10} fontFamily="system-ui" fontWeight={600}>
+            <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={scaledFont(10, 8, 18)} fontFamily="system-ui" fontWeight={600}>
               {`Updated ${latestTime}`}
             </text>
           ) : null}
@@ -1083,17 +1165,17 @@ export default function CanvasSvg({
             {displayN != null ? formatNum(displayN) : rawVal !== "" ? String(rawVal) : "--"}
           </text>
           {!dense ? (
-            <text x={x + w / 2} y={y + h - 22} fill={subdued} fontSize={9} fontFamily="system-ui" textAnchor="middle">
+            <text x={x + w / 2} y={y + h - 22} fill={subdued} fontSize={scaledFont(9, 7, 16)} fontFamily="system-ui" textAnchor="middle">
               {latestTime}
             </text>
           ) : null}
           {!dense ? (
-            <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={9} fontFamily="system-ui">
+            <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={scaledFont(9, 7, 16)} fontFamily="system-ui">
               {minCfg.toFixed(decimals)}
             </text>
           ) : null}
           {!dense ? (
-            <text x={x + w - pad} y={y + h - 10} fill={subdued} fontSize={9} fontFamily="system-ui" textAnchor="end">
+            <text x={x + w - pad} y={y + h - 10} fill={subdued} fontSize={scaledFont(9, 7, 16)} fontFamily="system-ui" textAnchor="end">
               {maxCfg.toFixed(decimals)}
             </text>
           ) : null}
@@ -1118,19 +1200,19 @@ export default function CanvasSvg({
             {cardTitle}
           </text>
           <line x1={x + pad} y1={startY - 8} x2={x + w - pad} y2={startY - 8} stroke="var(--border)" />
-          <text x={x + pad} y={startY} fill="var(--text)" fontSize={dense ? 8 : 9} fontFamily="system-ui" fontWeight={700}>Source</text>
-          <text x={x + Math.max(108, w * 0.43)} y={startY} fill="var(--text)" fontSize={dense ? 8 : 9} fontFamily="system-ui" fontWeight={700}>Value</text>
-          <text x={x + w - pad} y={startY} fill="var(--text)" fontSize={dense ? 8 : 9} fontFamily="system-ui" fontWeight={700} textAnchor="end">Time</text>
-          <text x={x + pad} y={startY + rowStep} fill={subdued} fontSize={dense ? 8 : 9} fontFamily="system-ui">{label}</text>
-          <text x={x + Math.max(108, w * 0.43)} y={startY + rowStep} fill={valueColor} fontSize={dense ? 8 : 9} fontFamily="system-ui" fontWeight={700}>{showVal}</text>
-          <text x={x + w - pad} y={startY + rowStep} fill={subdued} fontSize={dense ? 7 : 8} fontFamily="system-ui" textAnchor="end">{latestTime}</text>
+          <text x={x + pad} y={startY} fill="var(--text)" fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>Source</text>
+          <text x={x + Math.max(108, w * 0.43)} y={startY} fill="var(--text)" fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>Value</text>
+          <text x={x + w - pad} y={startY} fill="var(--text)" fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700} textAnchor="end">Time</text>
+          <text x={x + pad} y={startY + rowStep} fill={subdued} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui">{label}</text>
+          <text x={x + Math.max(108, w * 0.43)} y={startY + rowStep} fill={valueColor} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>{showVal}</text>
+          <text x={x + w - pad} y={startY + rowStep} fill={subdued} fontSize={scaledFont(dense ? 7 : 8, 6, 14)} fontFamily="system-ui" textAnchor="end">{latestTime}</text>
           {rows.slice(0, Math.max(0, rowCount - 1)).map((p, i) => (
             <g key={`wrow-${overlay.id}-${i}`}>
               <text
                 x={x + Math.max(108, w * 0.43)}
                 y={startY + rowStep * (i + 2)}
                 fill={subdued}
-                fontSize={dense ? 7 : 8}
+                fontSize={scaledFont(dense ? 7 : 8, 6, 14)}
                 fontFamily="system-ui"
               >
                 {formatNum(p.v)}
@@ -1139,7 +1221,7 @@ export default function CanvasSvg({
                 x={x + w - pad}
                 y={startY + rowStep * (i + 2)}
                 fill={subdued}
-                fontSize={dense ? 7 : 8}
+                fontSize={scaledFont(dense ? 7 : 8, 6, 14)}
                 fontFamily="system-ui"
                 textAnchor="end"
               >
@@ -1147,6 +1229,126 @@ export default function CanvasSvg({
               </text>
             </g>
           ))}
+        </g>
+      );
+    }
+
+    if (kind === "displayBox") {
+      const display =
+        displayN != null
+          ? formatNum(displayN)
+          : rawVal !== ""
+          ? String(rawVal)
+          : "--";
+      const tagPath = getWritableWidgetTagPath(overlay);
+      const canWrite = Boolean(tagPath);
+      const initialDraft =
+        displayN != null
+          ? String(Number(displayN))
+          : rawVal !== ""
+          ? String(rawVal)
+          : "";
+      const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId)
+        ? String(widgetWriteDraftByOverlay[overlayId] ?? "")
+        : initialDraft;
+      const writeBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
+      const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
+      const inputH = dense ? 22 : 26;
+      const controlsY = y + h - inputH - 8;
+      const controlsW = Math.max(40, w - pad * 2);
+      const btnW = Math.max(52, Math.min(88, Math.round(controlsW * 0.26)));
+      const showControls = h >= (dense ? 96 : 108);
+      return (
+        <g>
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+            {cardTitle}
+          </text>
+          <text x={x + pad} y={y + Math.max(headH + 26, h * 0.54)} fill={valueColor} fontSize={valueSize} fontFamily="system-ui" fontWeight={800}>
+            {display}
+          </text>
+          {!dense ? (
+            <text x={x + pad} y={y + headH + 16} fill={subdued} fontSize={10} fontFamily="system-ui" fontWeight={600}>
+              {label}
+            </text>
+          ) : null}
+          {!dense ? (
+            <text x={x + w - pad} y={y + headH + 16} fill={subdued} fontSize={10} fontFamily="system-ui" fontWeight={600} textAnchor="end">
+              {`Updated ${latestTime}`}
+            </text>
+          ) : null}
+          {showControls ? (
+            <foreignObject x={x + pad} y={controlsY} width={controlsW} height={inputH}>
+              <div
+                xmlns="http://www.w3.org/1999/xhtml"
+                style={{ display: "grid", gridTemplateColumns: `${Math.max(20, controlsW - btnW - 6)}px ${btnW}px`, gap: 6, width: "100%", height: "100%" }}
+              >
+                <input
+                  data-widget-control="true"
+                  value={writeDraft}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onChange={(e) => {
+                    const nextVal = e.target.value;
+                    setWidgetWriteDraftByOverlay((prev) => ({ ...prev, [overlayId]: nextVal }));
+                    if (widgetWriteErrorByOverlay?.[overlayId]) {
+                      setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" || writeBusy || !canWrite) return;
+                    e.preventDefault();
+                    submitWidgetWrite(overlay, writeDraft);
+                  }}
+                  placeholder={canWrite ? "Write value" : "Bind OPC tag to write"}
+                  disabled={!canWrite || writeBusy}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 7,
+                    padding: "0 8px",
+                    fontSize: dense ? 11 : 12,
+                    boxSizing: "border-box",
+                  }}
+                />
+                <button
+                  data-widget-control="true"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                  }}
+                  onClick={() => submitWidgetWrite(overlay, writeDraft)}
+                  disabled={!canWrite || writeBusy}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    border: "1px solid #2b6cff",
+                    background: "#2b6cff",
+                    color: "white",
+                    borderRadius: 7,
+                    fontSize: dense ? 10 : 11,
+                    fontWeight: 700,
+                    cursor: !canWrite || writeBusy ? "default" : "pointer",
+                    opacity: !canWrite || writeBusy ? 0.7 : 1,
+                  }}
+                >
+                  {writeBusy ? "..." : "Write"}
+                </button>
+              </div>
+            </foreignObject>
+          ) : null}
+          {writeError ? (
+            <text x={x + pad} y={showControls ? controlsY - 4 : y + h - 8} fill="#f04438" fontSize={9} fontFamily="system-ui" fontWeight={700}>
+              {writeError}
+            </text>
+          ) : null}
+          {!canWrite ? (
+            <text x={x + pad} y={showControls ? controlsY - 4 : y + h - 8} fill={subdued} fontSize={9} fontFamily="system-ui">
+              Bind OPC tag path to enable write.
+            </text>
+          ) : null}
+          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
         </g>
       );
     }
@@ -1287,8 +1489,10 @@ export default function CanvasSvg({
     }
     const footerH = dense ? 0 : 16;
     const chartTop = Math.round(y + headH + 4);
-    const chartH = Math.max(30, Math.round(h - headH - 14 - footerH));
-    const chartW = Math.max(60, Math.round(w - pad * 2));
+    const minChartH = kind === "barChart" ? 14 : 30;
+    const minChartW = kind === "barChart" ? 20 : 60;
+    const chartH = Math.max(minChartH, Math.round(h - headH - 14 - footerH));
+    const chartW = Math.max(minChartW, Math.round(w - pad * 2));
     const chartX = Math.round(x + pad);
     const durationPresetMap = {
       "15m": 15,
@@ -1424,6 +1628,7 @@ export default function CanvasSvg({
       : {
           x: {
             display: true,
+            alignToPixels: true,
             offset: false,
             ticks: {
               color: axisColor,
@@ -1439,6 +1644,7 @@ export default function CanvasSvg({
           },
           y: {
             display: true,
+            alignToPixels: true,
             ticks: {
               color: axisColor,
               font: { size: 10, weight: "600" },
@@ -1524,11 +1730,21 @@ export default function CanvasSvg({
         line: { ...commonOptions.elements.line, tension: effectiveTension, borderWidth: 2.4 },
       },
     };
+    const barCount = Math.max(1, labels.length || 0);
+    const pxPerBar = Math.max(1, chartW / barCount);
+    const dynamicMaxBarThickness = Math.max(2, Math.min(24, Math.floor(pxPerBar * 0.72)));
+    const dynamicBarRadius = Math.max(0, Math.min(6, Math.floor(dynamicMaxBarThickness / 2)));
     const barOptions = {
       ...commonOptions,
       elements: {
         ...commonOptions.elements,
-        bar: { borderRadius: 6, borderSkipped: false, barPercentage: 0.7, categoryPercentage: 0.74, maxBarThickness: 24 },
+        bar: {
+          borderRadius: dynamicBarRadius,
+          borderSkipped: false,
+          barPercentage: 0.7,
+          categoryPercentage: 0.74,
+          maxBarThickness: dynamicMaxBarThickness,
+        },
       },
     };
     const lineLikeData = useMultiLine
@@ -1587,13 +1803,41 @@ export default function CanvasSvg({
         },
       ],
     };
+    const usesHtmlChartLayer = kind === "lineChart" || kind === "areaChart" || kind === "barChart";
+    if (usesHtmlChartLayer) {
+      const scaleVal = Number(overlay?.scale) || 1;
+      const worldChartX = Number(overlay?.tx || 0) + scaleVal * chartX;
+      const worldChartY = Number(overlay?.ty || 0) + scaleVal * chartTop;
+      const viewportW = Math.max(1, Number(size?.w || 0) - RULER);
+      const viewportH = Math.max(1, Number(size?.h || 0) - RULER);
+      const vbWidth = Math.max(1, Number(vbW) || 1);
+      const vbHeight = Math.max(1, Number(vbH) || 1);
+      const svgToCssScale = Math.min(viewportW / vbWidth, viewportH / vbHeight);
+      const svgOffsetX = 0; // xMin
+      const svgOffsetY = (viewportH - vbHeight * svgToCssScale) / 2; // YMid
+      const svgX = worldChartX * z + panX;
+      const svgY = worldChartY * z + panY;
+      htmlChartLayers.push({
+        id: `${overlay.id}-${kind}`,
+        kind,
+        chartKey,
+        x: svgX * svgToCssScale + svgOffsetX,
+        y: svgY * svgToCssScale + svgOffsetY,
+        w: Math.max(1, chartW * scaleVal * z * svgToCssScale),
+        h: Math.max(1, chartH * scaleVal * z * svgToCssScale),
+        lineLikeData,
+        lineOptions: kind === "areaChart" ? areaOptions : lineOptions,
+        barData,
+        barOptions,
+      });
+    }
     return (
       <g>
         <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
         <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
           {cardTitle}
         </text>
-        {!dense ? (
+        {!dense && !(kind === "lineChart" || kind === "areaChart" || kind === "barChart") ? (
           <text
             x={x + pad + Math.min(230, Math.max(120, cardTitle.length * 6 + 26))}
             y={y + headH - 7}
@@ -1607,9 +1851,9 @@ export default function CanvasSvg({
         ) : null}
         {!dense && kind !== "barChart" ? (() => {
           const chipGap = 4;
-          const chipH = Math.max(16, headH - 8);
-          const chipY = y + Math.max(2, (headH - chipH) / 2);
-          const chipWByLabel = (label) => Math.max(28, 12 + String(label || "").length * 6);
+          const chipH = Math.max(12, headH - 12);
+          const chipY = y + (headH - chipH) / 2;
+          const chipWByLabel = (label) => Math.max(24, 10 + String(label || "").length * 5.5);
           const chipWidths = durationChipOptions.map((opt) => chipWByLabel(opt.label));
           const totalW = chipWidths.reduce((a, b) => a + b, 0) + chipGap * Math.max(0, durationChipOptions.length - 1);
           const startX = Math.max(x + pad, x + w - pad - totalW);
@@ -1643,10 +1887,10 @@ export default function CanvasSvg({
                     />
                     <text
                       x={cx + cw / 2}
-                      y={chipY + chipH / 2 + 3.5}
+                      y={chipY + chipH / 2 + 2.8}
                       textAnchor="middle"
                       fill={active ? (isDark ? "#9be8ff" : "#1d4ed8") : axisColor}
-                      fontSize={10}
+                      fontSize={9}
                       fontFamily="system-ui"
                       fontWeight={700}
                       pointerEvents="none"
@@ -1660,46 +1904,27 @@ export default function CanvasSvg({
           );
         })() : null}
         <rect x={chartX} y={chartTop} width={chartW} height={chartH} rx={8} fill={chartPanelFill} stroke={isDark ? "#1e293b" : "#dbe3ef"} />
-        <foreignObject x={chartX} y={chartTop} width={chartW} height={chartH}>
-          <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%", pointerEvents: "none" }}>
-            {kind === "barChart" ? (
-              <Bar key={chartKey} data={barData} options={barOptions} />
-            ) : (
-              <Line key={chartKey} data={lineLikeData} options={kind === "areaChart" ? areaOptions : lineOptions} />
-            )}
-          </div>
-        </foreignObject>
+        {!usesHtmlChartLayer ? (
+          <foreignObject x={chartX} y={chartTop} width={chartW} height={chartH}>
+            <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%", pointerEvents: "none" }}>
+              {kind === "barChart" ? (
+                <Bar key={chartKey} data={barData} options={barOptions} />
+              ) : (
+                <Line key={chartKey} data={lineLikeData} options={kind === "areaChart" ? areaOptions : lineOptions} />
+              )}
+            </div>
+          </foreignObject>
+        ) : null}
         {!dense ? (
           <>
             <text
-              x={x + pad}
+              x={kind === "barChart" ? x + w - pad : x + w / 2}
               y={y + h - 6}
               fill={axisColor}
               fontSize={10}
               fontFamily="system-ui"
               fontWeight={600}
-            >
-              {`Value ${footerValue}`}
-            </text>
-            <text
-              x={x + w / 2}
-              y={y + h - 6}
-              fill={axisColor}
-              fontSize={10}
-              fontFamily="system-ui"
-              fontWeight={600}
-              textAnchor="middle"
-            >
-              {`Samples ${samplesCount}`}
-            </text>
-            <text
-              x={x + w - pad}
-              y={y + h - 6}
-              fill={axisColor}
-              fontSize={10}
-              fontFamily="system-ui"
-              fontWeight={600}
-              textAnchor="end"
+              textAnchor={kind === "barChart" ? "end" : "middle"}
             >
               {kind === "barChart"
                 ? (barBinding?.mode === "tags"
@@ -1742,7 +1967,7 @@ export default function CanvasSvg({
 
     return {
       routeId: findBySuffixes(["routeid", "routenumber", "routeno", "route"]),
-      state: findBySuffixes(["state", "stcode", "status", "stat"]),
+      state: findBySuffixes(["state", "stcode", "status", "stat", "hmi_state", "hmistate"]),
     };
   };
 
@@ -2269,6 +2494,8 @@ export default function CanvasSvg({
       </g>
     );
   };
+
+  const htmlChartLayers = [];
 
   return (
     <div
@@ -2985,6 +3212,34 @@ export default function CanvasSvg({
             )}
           </g>
         </svg>
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+            overflow: "hidden",
+          }}
+        >
+          {htmlChartLayers.map((layer) => (
+            <div
+              key={layer.id}
+              style={{
+                position: "absolute",
+                left: layer.x,
+                top: layer.y,
+                width: layer.w,
+                height: layer.h,
+                pointerEvents: "none",
+              }}
+            >
+              {layer.kind === "barChart" ? (
+                <Bar key={layer.chartKey} data={layer.barData} options={layer.barOptions} />
+              ) : (
+                <Line key={layer.chartKey} data={layer.lineLikeData} options={layer.lineOptions} />
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

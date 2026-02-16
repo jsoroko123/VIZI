@@ -1,5 +1,9 @@
 # React + Vite
 
+## Windows Installer
+
+Use `app/installer/windows/Install-Vizi.bat` for one-click install of Vizi and all required Node packages (`app`, `opc-server`, `ai-server`), plus PostgreSQL and Ollama.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
