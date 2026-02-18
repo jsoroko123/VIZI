@@ -6654,18 +6654,21 @@ async function start() {
       );
     }
   }
-  const adminRoleId = roleMap.get("administrator");
-  if (Number.isFinite(adminRoleId)) {
-    const seededAdminUsername = "admin";
-    const seededAdminPassword = "admin";
-    const { salt: seededSalt, hash: seededHash } = await createPasswordHash(seededAdminPassword);
-    const { rows: adminRows } = await pool.query(
+  async function ensureSeededUserWithRole({ username, password, displayName, roleId }) {
+    if (!Number.isFinite(roleId)) return null;
+    const seededUsername = String(username || "").trim().toLowerCase();
+    if (!seededUsername) return null;
+    const seededPassword = String(password || "").trim();
+    if (!seededPassword) return null;
+    const seededDisplayName = String(displayName || seededUsername).trim() || seededUsername;
+    const { salt: seededSalt, hash: seededHash } = await createPasswordHash(seededPassword);
+    const { rows } = await pool.query(
       "SELECT id FROM users WHERE lower(username) = lower($1) LIMIT 1",
-      [seededAdminUsername]
+      [seededUsername]
     );
-    let adminUserId = null;
-    if (adminRows.length) {
-      adminUserId = Number(adminRows[0].id);
+    let userId = null;
+    if (rows.length) {
+      userId = Number(rows[0].id);
       await pool.query(
         `
         UPDATE users
@@ -6676,30 +6679,48 @@ async function start() {
             disabled = false
         WHERE id = $5
         `,
-        [seededAdminUsername, "Admin", seededHash, seededSalt, adminUserId]
+        [seededUsername, seededDisplayName, seededHash, seededSalt, userId]
       );
     } else {
-      const createdAdmin = await pool.query(
+      const created = await pool.query(
         `
         INSERT INTO users (username, password_hash, password_salt, display_name, disabled)
         VALUES ($1, $2, $3, $4, false)
         RETURNING id
         `,
-        [seededAdminUsername, seededHash, seededSalt, "Admin"]
+        [seededUsername, seededHash, seededSalt, seededDisplayName]
       );
-      adminUserId = Number(createdAdmin.rows[0]?.id || 0);
+      userId = Number(created.rows[0]?.id || 0);
     }
-    if (Number.isFinite(adminUserId) && adminUserId > 0) {
+    if (Number.isFinite(userId) && userId > 0) {
       await pool.query(
         `
         INSERT INTO user_roles (user_id, role_id)
         VALUES ($1, $2)
         ON CONFLICT (user_id, role_id) DO NOTHING
         `,
-        [adminUserId, adminRoleId]
+        [userId, roleId]
       );
+      return userId;
     }
+    return null;
   }
+
+  const adminRoleId = roleMap.get("administrator");
+  await ensureSeededUserWithRole({
+    username: "admin",
+    password: "admin",
+    displayName: "Admin",
+    roleId: adminRoleId,
+  });
+
+  const engineerRoleId = roleMap.get("engineer");
+  await ensureSeededUserWithRole({
+    username: "engineer",
+    password: "engineer",
+    displayName: "Engineer",
+    roleId: engineerRoleId,
+  });
   const { rows: userRoleCountRows } = await pool.query("SELECT COUNT(*)::int AS count FROM user_roles");
   if (Number(userRoleCountRows?.[0]?.count || 0) === 0) {
     const { rows: firstUserRows } = await pool.query(
