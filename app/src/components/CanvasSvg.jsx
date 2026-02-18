@@ -15,6 +15,7 @@ import {
 import { Line, Bar, Doughnut } from "react-chartjs-2";
 
 const RULER = 24; // ruler thickness (px)
+const SCROLLBAR_RESERVE = 14; // keep native scrollbars visible (not under rulers)
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -2823,7 +2824,7 @@ export default function CanvasSvg({
      RULERS (SCREEN-PIXEL)
      ============================ */
   function TopRuler() {
-    const W = Math.max(0, size.w - rulerSize);
+    const W = Math.max(0, size.w - rulerSize - SCROLLBAR_RESERVE);
     const H = rulerSize;
 
     const majorPx = 100;
@@ -2901,7 +2902,7 @@ export default function CanvasSvg({
 
   function RightRuler() {
     const W = rulerSize;
-    const H = Math.max(0, size.h - rulerSize);
+    const H = Math.max(0, size.h - rulerSize - SCROLLBAR_RESERVE);
 
     const pxPerMajor = 80;
     const worldPerPx = 1 / z;
@@ -2957,7 +2958,7 @@ export default function CanvasSvg({
         viewBox={`0 0 ${W} ${H}`}
         style={{
           position: "absolute",
-          right: 0,
+          right: SCROLLBAR_RESERVE,
           top: rulerSize,
           background: "var(--bg-soft)",
           borderLeft: "1px solid var(--border)",
@@ -3096,62 +3097,67 @@ export default function CanvasSvg({
 
   const htmlChartLayers = [];
   const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
+  const viewportW = Math.max(1, Number(size.w || 0));
+  const viewportH = Math.max(1, Number(size.h || 0));
+  const stageW = Math.max(
+    viewportW,
+    vbWidth + rulerSize + SCROLLBAR_RESERVE
+  );
+  const stageH = Math.max(viewportH, vbHeight + rulerSize + SCROLLBAR_RESERVE);
 
   return (
     <div
-      ref={wrapRef}
-      className="vizi-scroll"
-      onScroll={(e) => {
-        if (typeof onViewportScroll !== "function") return;
-        const target = e.currentTarget;
-        onViewportScroll({
-          x: Number(target?.scrollLeft || 0),
-          y: Number(target?.scrollTop || 0),
-        });
-      }}
-      onDoubleClickCapture={(e) => {
-        onCanvasDoubleClick?.(e);
-      }}
       style={{
         position: "absolute",
         top: viewportTopOffset,
         left: 0,
         right: 0,
         bottom: 0,
-        overflow: "auto",
-        scrollbarGutter: "stable both-edges",
         userSelect: "none",
         transform: viewportShiftX ? `translateX(${viewportShiftX}px)` : "translateX(0px)",
         transition: "transform 180ms ease",
       }}
     >
-      {showRulers ? <TopRuler /> : null}
-      {showRulers ? <RightRuler /> : null}
-
-      {showRulers ? (
+      <div
+        ref={wrapRef}
+        className="vizi-scroll"
+        onScroll={(e) => {
+          if (typeof onViewportScroll !== "function") return;
+          const target = e.currentTarget;
+          onViewportScroll({
+            x: Number(target?.scrollLeft || 0),
+            y: Number(target?.scrollTop || 0),
+          });
+        }}
+        onDoubleClickCapture={(e) => {
+          onCanvasDoubleClick?.(e);
+        }}
+        style={{
+          position: "absolute",
+          inset: 0,
+          overflow: "scroll",
+          overflowX: "scroll",
+          overflowY: "scroll",
+          scrollbarGutter: "stable both-edges",
+          paddingRight: SCROLLBAR_RESERVE,
+          paddingBottom: SCROLLBAR_RESERVE,
+          boxSizing: "border-box",
+        }}
+      >
         <div
           style={{
-            position: "absolute",
-            right: 0,
-            top: 0,
-            width: rulerSize,
-            height: rulerSize,
-            background: "var(--bg-soft)",
-            borderLeft: "1px solid var(--border)",
-            borderBottom: "1px solid var(--border)",
-            pointerEvents: "none",
-            zIndex: 11,
+            position: "relative",
+            width: stageW,
+            height: stageH,
           }}
-        />
-      ) : null}
-
+        >
       <div
         style={{
           position: "absolute",
           left: 0,
           top: rulerSize,
-          right: rulerSize,
-          bottom: 0,
+          right: rulerSize + SCROLLBAR_RESERVE,
+          bottom: SCROLLBAR_RESERVE,
         }}
       >
         <svg
@@ -3895,6 +3901,26 @@ export default function CanvasSvg({
           ))}
         </div>
       </div>
+      </div>
+      </div>
+      {showRulers ? <TopRuler /> : null}
+      {showRulers ? <RightRuler /> : null}
+      {showRulers ? (
+        <div
+          style={{
+            position: "absolute",
+            right: SCROLLBAR_RESERVE,
+            top: 0,
+            width: rulerSize,
+            height: rulerSize,
+            background: "var(--bg-soft)",
+            borderLeft: "1px solid var(--border)",
+            borderBottom: "1px solid var(--border)",
+            pointerEvents: "none",
+            zIndex: 11,
+          }}
+        />
+      ) : null}
     </div>
   );
 }

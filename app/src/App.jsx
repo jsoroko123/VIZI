@@ -419,6 +419,7 @@ export default function App() {
   // unified drag for moving ALL selected items
   // { startWorld, polylines:[{id, origPoints}], overlays:[{id, origTx, origTy}] }
   const [dragAll, setDragAll] = useState(null);
+  const [canvasPanDrag, setCanvasPanDrag] = useState(null); // { startClient:{x,y}, startPan:{x,y}, moved:boolean }
 
   // editing a polyline
   const [editingId, setEditingId] = useState(null); // double-click line to edit
@@ -3850,7 +3851,7 @@ function flushScheduledProjectSave() {
     };
 
     if (scaledW <= viewW) {
-      nextPan.x = (viewW - scaledW) / 2;
+      nextPan.x = 0;
     } else {
       const minX = viewW - scaledW;
       const maxX = 0;
@@ -3858,7 +3859,7 @@ function flushScheduledProjectSave() {
     }
 
     if (scaledH <= viewH) {
-      nextPan.y = (viewH - scaledH) / 2;
+      nextPan.y = 0;
     } else {
       const minY = viewH - scaledH;
       const maxY = 0;
@@ -3878,10 +3879,7 @@ function flushScheduledProjectSave() {
     const worldH = Math.max(1, Number(vbH) || 0);
     const nextZoom = clampZoom(Math.min(viewW / worldW, viewH / worldH));
     setZoom(nextZoom);
-    setPan({
-      x: (viewW - worldW * nextZoom) / 2,
-      y: (viewH - worldH * nextZoom) / 2,
-    });
+    setPan({ x: 0, y: 0 });
   }
 
   function zoomIn() {
@@ -3905,16 +3903,8 @@ function flushScheduledProjectSave() {
       setPan({ x: 0, y: 0 });
       return;
     }
-    const rect = el.getBoundingClientRect();
-    const viewW = Math.max(1, Number(rect.width) || 0);
-    const viewH = Math.max(1, Number(rect.height) || 0);
-    const worldW = Math.max(1, Number(vbW) || 0);
-    const worldH = Math.max(1, Number(vbH) || 0);
     setZoom(1);
-    setPan({
-      x: (viewW - worldW) / 2,
-      y: (viewH - worldH) / 2,
-    });
+    setPan({ x: 0, y: 0 });
   }
   function zoomReset() {
     resetZoomToActual100();
@@ -4284,10 +4274,12 @@ function flushScheduledProjectSave() {
       dx = e.deltaX * factor; // trackpad horizontal still works
     }
 
-    setPan((p) => ({
-      x: p.x - dx * PAN_SPEED,
-      y: p.y - dy * PAN_SPEED,
-    }));
+    setPan((p) =>
+      clampPanToViewport({
+        x: p.x - dx * PAN_SPEED,
+        y: p.y - dy * PAN_SPEED,
+      })
+    );
   };
 
   useEffect(() => {
@@ -4605,7 +4597,12 @@ function flushScheduledProjectSave() {
       y = snap(y, GRID);
     }
 
-    return { x, y };
+    const maxX = Math.max(0, Number(vbW) || 0);
+    const maxY = Math.max(0, Number(vbH) || 0);
+    return {
+      x: Math.max(0, Math.min(maxX, x)),
+      y: Math.max(0, Math.min(maxY, y)),
+    };
   }
 
   function startTextAt(p) {
@@ -7216,6 +7213,32 @@ function flushScheduledProjectSave() {
   }, [isLiveMode, projectDrawerTab]);
 
   useEffect(() => {
+    if (!isLiveMode) return undefined;
+    let rafA = 0;
+    let rafB = 0;
+    const origin = { x: 0, y: 0 };
+    const runFit = () => {
+      if (rafA) window.cancelAnimationFrame(rafA);
+      if (rafB) window.cancelAnimationFrame(rafB);
+      rafA = window.requestAnimationFrame(() => {
+        rafB = window.requestAnimationFrame(() => {
+          fitViewToCanvas();
+          canvasViewportScrollRef.current = origin;
+          setCanvasViewportScrollTarget(origin);
+        });
+      });
+    };
+    runFit();
+    const onResize = () => runFit();
+    window.addEventListener("resize", onResize);
+    return () => {
+      if (rafA) window.cancelAnimationFrame(rafA);
+      if (rafB) window.cancelAnimationFrame(rafB);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [isLiveMode, activeScreenId, vbW, vbH]);
+
+  useEffect(() => {
     const prev = Array.isArray(prevLiveEquipmentOverlayIdsRef.current)
       ? prevLiveEquipmentOverlayIdsRef.current
       : [];
@@ -7401,7 +7424,19 @@ function flushScheduledProjectSave() {
     }
 
     if (tool === "select") {
-      setMarquee({ start: p, cur: p, additive: !!e.shiftKey });
+      if (e.shiftKey) {
+        setMarquee({ start: p, cur: p, additive: true });
+      } else {
+        setMarquee(null);
+        setCanvasPanDrag({
+          startClient: { x: Number(e.clientX) || 0, y: Number(e.clientY) || 0 },
+          startPan:
+            panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
+              ? { x: panRef.current.x, y: panRef.current.y }
+              : { x: 0, y: 0 },
+          moved: false,
+        });
+      }
       exitEditMode();
       setDrawing(null);
     }
@@ -7614,6 +7649,21 @@ function flushScheduledProjectSave() {
       return;
     }
 
+    if (canvasPanDrag) {
+      const dx = (Number(e.clientX) || 0) - Number(canvasPanDrag.startClient?.x || 0);
+      const dy = (Number(e.clientY) || 0) - Number(canvasPanDrag.startClient?.y || 0);
+      const moved = Math.abs(dx) > 1 || Math.abs(dy) > 1;
+      if (moved && !canvasPanDrag.moved) {
+        setCanvasPanDrag((prev) => (prev ? { ...prev, moved: true } : prev));
+      }
+      const nextPan = clampPanToViewport({
+        x: Number(canvasPanDrag.startPan?.x || 0) + dx,
+        y: Number(canvasPanDrag.startPan?.y || 0) + dy,
+      });
+      setPan(nextPan);
+      return;
+    }
+
     if (drawing?.mode === "draw-poly") {
       const id = drawing.id;
 
@@ -7743,6 +7793,8 @@ function flushScheduledProjectSave() {
     if (dragAll) {
       const dx = p.x - dragAll.startWorld.x;
       const dy = p.y - dragAll.startWorld.y;
+      const maxX = Math.max(0, Number(vbW) || 0);
+      const maxY = Math.max(0, Number(vbH) || 0);
 
       if (dragAll.shapes?.length) {
         setShapes((prev) =>
@@ -7751,21 +7803,41 @@ function flushScheduledProjectSave() {
             if (!rec) return s;
 
             if (rec.kind === "text" && s.type === "text") {
-              return { ...s, x: rec.origX + dx, y: rec.origY + dy };
+              return {
+                ...s,
+                x: Math.max(0, Math.min(maxX, rec.origX + dx)),
+                y: Math.max(0, Math.min(maxY, rec.origY + dy)),
+              };
             }
 
             if (rec.kind === "rect" && s.type === "rect") {
+              const w = Math.max(0, Number(rec.origW ?? s.width ?? 0));
+              const h = Math.max(0, Number(rec.origH ?? s.height ?? 0));
+              const x = Math.max(0, Math.min(Math.max(0, maxX - w), rec.origX + dx));
+              const y = Math.max(0, Math.min(Math.max(0, maxY - h), rec.origY + dy));
               return {
                 ...s,
-                x: rec.origX + dx,
-                y: rec.origY + dy,
-                width: rec.origW,
-                height: rec.origH,
+                x,
+                y,
+                width: w,
+                height: h,
               };
             }
 
             if (rec.kind === "poly" && Array.isArray(s.points)) {
-              return { ...s, points: rec.origPoints.map((pt) => ({ x: pt.x + dx, y: pt.y + dy })) };
+              const moved = rec.origPoints.map((pt) => ({ x: pt.x + dx, y: pt.y + dy }));
+              const bb = bboxOfPoints(moved);
+              if (!bb) return { ...s, points: moved };
+              let shiftX = 0;
+              let shiftY = 0;
+              if (bb.minX < 0) shiftX = -bb.minX;
+              if (bb.minY < 0) shiftY = -bb.minY;
+              if (bb.minX + bb.w > maxX) shiftX = Math.min(shiftX, maxX - (bb.minX + bb.w));
+              if (bb.minY + bb.h > maxY) shiftY = Math.min(shiftY, maxY - (bb.minY + bb.h));
+              return {
+                ...s,
+                points: moved.map((pt) => ({ x: pt.x + shiftX, y: pt.y + shiftY })),
+              };
             }
 
             return s;
@@ -7773,15 +7845,20 @@ function flushScheduledProjectSave() {
         );
       }
 
-      if (dragAll.overlays?.length) {
-        setSvgOverlays((prev) =>
-          prev.map((o) => {
-            const rec = dragAll.overlays.find((x) => x.id === o.id);
-            if (!rec) return o;
-            return { ...o, tx: rec.origTx + dx, ty: rec.origTy + dy };
-          })
-        );
-      }
+    if (dragAll.overlays?.length) {
+      setSvgOverlays((prev) =>
+        prev.map((o) => {
+          const rec = dragAll.overlays.find((x) => x.id === o.id);
+          if (!rec) return o;
+          const bb = o?.bbox || overlayLocalBBox(o.id);
+          const sx = overlayScaleX(o);
+          const sy = overlayScaleY(o);
+          if (!bb) return { ...o, tx: rec.origTx + dx, ty: rec.origTy + dy };
+          const clamped = clampOverlayTransformToCanvas(rec.origTx + dx, rec.origTy + dy, sx, sy, bb);
+          return { ...o, tx: clamped.tx, ty: clamped.ty };
+        })
+      );
+    }
       return;
     }
 
@@ -7802,6 +7879,17 @@ function flushScheduledProjectSave() {
 
   function onMouseUp() {
     const hadDragHandle = !!dragHandle;
+    const hadCanvasPanDrag = !!canvasPanDrag;
+    const didCanvasPanMove = Boolean(canvasPanDrag?.moved);
+    if (hadCanvasPanDrag) {
+      setCanvasPanDrag(null);
+      if (!didCanvasPanMove) {
+        clearSelection();
+      } else {
+        scheduleProjectAutoSave(120);
+      }
+      return;
+    }
     if (marquee) {
       const r = rectFrom2Points(marquee.start, marquee.cur);
 
@@ -8546,6 +8634,24 @@ function flushScheduledProjectSave() {
     );
     if (String(activeScreenId || "") === id) {
       setScreenName(nextName);
+    }
+    scheduleProjectAutoSave();
+  }
+
+  function updateScreenSizeById(screenId, axis, rawValue) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const key = axis === "h" ? "vbH" : "vbW";
+    const n = Math.max(100, Math.min(10000, Math.round(Number(rawValue) || 0)));
+    if (!Number.isFinite(n)) return;
+    setScreens((prev) =>
+      (Array.isArray(prev) ? prev : []).map((s) =>
+        String(s?.id || "") === id ? { ...s, [key]: n } : s
+      )
+    );
+    if (String(activeScreenId || "") === id) {
+      if (key === "vbW") setVbW(n);
+      if (key === "vbH") setVbH(n);
     }
     scheduleProjectAutoSave();
   }
@@ -11995,70 +12101,123 @@ function flushScheduledProjectSave() {
                             ? "color-mix(in srgb, var(--bg-elev) 88%, #2b6cff 12%)"
                             : "var(--bg)",
                           padding: "6px 8px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 8,
+                          display: "grid",
+                          gap: 6,
                           cursor: "pointer",
                           outline: "none",
                           boxShadow: "none",
                         }}
                       >
-                        <input
-                          value={String(s.name || "")}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            switchToScreen(s.id);
-                          }}
-                          onFocus={() => switchToScreen(s.id)}
-                          onKeyDown={(e) => e.stopPropagation()}
-                          onChange={(e) => renameScreenById(s.id, e.target.value)}
-                          onBlur={() => {
-                            if (String(s.name || "").trim()) return;
-                            renameScreenById(s.id, "Screen");
-                          }}
-                          readOnly={false}
-                          style={{
-                            color: "var(--text)",
-                            fontSize: 12,
-                            fontWeight: active ? 800 : 600,
-                            textAlign: "left",
-                            padding: "4px 6px",
-                            flex: "1 1 auto",
-                            minWidth: 0,
-                            border: "1px solid var(--border)",
-                            borderRadius: 6,
-                            background: "var(--bg-elev)",
-                            outline: "none",
-                            cursor: "text",
-                          }}
-                          title={s.name}
-                        />
-                        {active ? (
-                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, flex: "0 0 auto" }}>Active</span>
-                        ) : null}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteScreenById(s.id);
-                          }}
-                          disabled={screens.length <= 1}
-                          style={{
-                            width: 22,
-                            height: 22,
-                            borderRadius: 6,
-                            border: "1px solid #f04438",
-                            background: screens.length > 1 ? "#f04438" : "rgba(244,68,56,0.45)",
-                            color: "#fff",
-                            cursor: screens.length > 1 ? "pointer" : "not-allowed",
-                            opacity: screens.length > 1 ? 1 : 0.65,
-                            padding: 0,
-                            flex: "0 0 auto",
-                          }}
-                          title={`Delete ${s.name || "screen"}`}
-                        >
-                          ×
-                        </button>
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto", gap: 8, alignItems: "center" }}>
+                          <input
+                            value={String(s.name || "")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                            }}
+                            onFocus={() => switchToScreen(s.id)}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            onChange={(e) => renameScreenById(s.id, e.target.value)}
+                            onBlur={() => {
+                              if (String(s.name || "").trim()) return;
+                              renameScreenById(s.id, "Screen");
+                            }}
+                            readOnly={false}
+                            style={{
+                              color: "var(--text)",
+                              fontSize: 12,
+                              fontWeight: active ? 800 : 600,
+                              textAlign: "left",
+                              padding: "4px 6px",
+                              minWidth: 0,
+                              border: "1px solid var(--border)",
+                              borderRadius: 6,
+                              background: "var(--bg-elev)",
+                              outline: "none",
+                              cursor: "text",
+                            }}
+                            title={s.name}
+                          />
+                          {active ? (
+                            <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, flex: "0 0 auto" }}>Active</span>
+                          ) : null}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteScreenById(s.id);
+                            }}
+                            disabled={screens.length <= 1}
+                            style={{
+                              width: 22,
+                              height: 22,
+                              borderRadius: 6,
+                              border: "1px solid #f04438",
+                              background: screens.length > 1 ? "#f04438" : "rgba(244,68,56,0.45)",
+                              color: "#fff",
+                              cursor: screens.length > 1 ? "pointer" : "not-allowed",
+                              opacity: screens.length > 1 ? 1 : 0.65,
+                              padding: 0,
+                              flex: "0 0 auto",
+                            }}
+                            title={`Delete ${s.name || "screen"}`}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) 18px minmax(0,1fr)", gap: 6, alignItems: "center" }}>
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>W</span>
+                          <input
+                            type="number"
+                            min={100}
+                            max={10000}
+                            step={10}
+                            value={Math.max(100, Math.round(Number(s?.vbW) || 1600))}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                            }}
+                            onFocus={() => switchToScreen(s.id)}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            onChange={(e) => updateScreenSizeById(s.id, "w", e.target.value)}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 6,
+                              padding: "3px 6px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              minWidth: 0,
+                            }}
+                            title="Screen width"
+                          />
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>H</span>
+                          <input
+                            type="number"
+                            min={100}
+                            max={10000}
+                            step={10}
+                            value={Math.max(100, Math.round(Number(s?.vbH) || 900))}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                            }}
+                            onFocus={() => switchToScreen(s.id)}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            onChange={(e) => updateScreenSizeById(s.id, "h", e.target.value)}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 6,
+                              padding: "3px 6px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              minWidth: 0,
+                            }}
+                            title="Screen height"
+                          />
+                        </div>
                       </div>
                     );
                   })}

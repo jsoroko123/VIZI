@@ -320,6 +320,9 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
 .vizi-live-alarm-marquee {
   flex: 1 1 auto;
   min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
   overflow: hidden;
   white-space: nowrap;
   position: relative;
@@ -329,6 +332,7 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
 
 .vizi-live-alarm-marquee-track {
   display: inline-flex;
+  height: 100%;
   align-items: center;
   min-width: max-content;
   width: max-content;
@@ -341,6 +345,7 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
 
 .vizi-live-alarm-marquee-group {
   display: inline-flex;
+  height: 100%;
   align-items: center;
   justify-content: flex-start;
   flex: 0 0 auto;
@@ -358,6 +363,8 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
 .vizi-live-alarm-marquee-item {
   display: inline-flex;
   align-items: center;
+  align-self: center;
+  box-sizing: border-box;
   gap: 6px;
   border: 1px solid color-mix(in srgb, #f04438 44%, var(--border) 56%);
   background: color-mix(in srgb, var(--bg-elev) 80%, #f04438 20%);
