@@ -4783,19 +4783,11 @@ function flushScheduledProjectSave() {
     const by = Number(bb.y) || 0;
     const canvasW = Math.max(1, Number(vbW) || 1);
     const canvasH = Math.max(1, Number(vbH) || 1);
-    const svgRect = svgRef.current?.getBoundingClientRect?.();
-    const pxToWorldX =
-      svgRect && Number(svgRect.width) > 0 ? canvasW / Number(svgRect.width) : 1;
-    const pxToWorldY =
-      svgRect && Number(svgRect.height) > 0 ? canvasH / Number(svgRect.height) : 1;
-    const designTopRulerWorld =
-      !isLiveMode ? Math.max(0, Number(RULER_SIZE) || 0) * pxToWorldY : 0;
-    const designRightRulerWorld =
-      !isLiveMode ? Math.max(0, Number(RULER_SIZE) || 0) * pxToWorldX : 0;
+    // Clamp in SVG world coordinates, not screen/ruler pixels.
     const boundLeft = 0;
-    const boundTop = designTopRulerWorld;
-    const boundRight = Math.max(boundLeft + 1, canvasW - designRightRulerWorld);
-    const boundBottom = canvasH;
+    const boundTop = 0;
+    const boundRight = Math.max(boundLeft + 1, canvasW);
+    const boundBottom = Math.max(boundTop + 1, canvasH);
 
     let nextTx = Number(tx) || 0;
     let nextTy = Number(ty) || 0;
@@ -4809,17 +4801,19 @@ function flushScheduledProjectSave() {
     if (worldW <= boundW) {
       const minTx = boundLeft - sx * bx;
       const maxTx = boundRight - sx * (bx + bw);
-      nextTx = Math.min(minTx, Math.max(maxTx, nextTx));
+      nextTx = Math.min(maxTx, Math.max(minTx, nextTx));
     } else {
-      nextTx = boundLeft + (boundW - worldW) / 2 - sx * bx;
+      // If larger than canvas, keep the overlay anchored to the left edge.
+      nextTx = boundLeft - sx * bx;
     }
 
     if (worldH <= boundH) {
       const minTy = boundTop - sy * by;
       const maxTy = boundBottom - sy * (by + bh);
-      nextTy = Math.min(minTy, Math.max(maxTy, nextTy));
+      nextTy = Math.min(maxTy, Math.max(minTy, nextTy));
     } else {
-      nextTy = boundTop + (boundH - worldH) / 2 - sy * by;
+      // If larger than canvas, keep the overlay anchored to the top edge.
+      nextTy = boundTop - sy * by;
     }
 
     return { tx: nextTx, ty: nextTy };
