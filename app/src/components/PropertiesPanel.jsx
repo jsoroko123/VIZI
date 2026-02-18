@@ -274,6 +274,7 @@ export default function PropertiesPanel({
   bounds,
 }) {
   const [bboxDraft, setBboxDraft] = useState({ x: "", y: "", w: "", h: "" });
+  const [bboxAspectLocked, setBboxAspectLocked] = useState(true);
   const [panelPos, setPanelPos] = useState({ x: 16, y: 16 });
   const [userMoved, setUserMoved] = useState(false);
   const [btnPulse, setBtnPulse] = useState({ apply: false, convert: false });
@@ -523,6 +524,8 @@ export default function PropertiesPanel({
   const widgetShowPointsVal = String(hudFields?.widgetShowPoints ?? "true");
   const widgetSeriesTagsVal = String(hudFields?.widgetSeriesTags ?? "");
   const widgetAxisModeVal = String(hudFields?.widgetAxisMode ?? "auto");
+  const widgetTimerPreTagVal = String(hudFields?.widgetTimerPreTag || "");
+  const widgetTimerAccTagVal = String(hudFields?.widgetTimerAccTag || "");
   const widgetBarSourceModeRaw = String(hudFields?.widgetBarSourceMode || "table").toLowerCase();
   const widgetBarSourceModeVal =
     widgetBarSourceModeRaw === "query"
@@ -552,6 +555,14 @@ export default function PropertiesPanel({
         return `${opt?.label || ""} ${v} ${opt?.group || ""}`.toLowerCase().includes(q);
       });
   }, [tagOptions, selectedSeriesTags, seriesSearch]);
+  const timerTagOptions = useMemo(() => {
+    const filtered = (tagOptions || []).filter((opt) => {
+      const value = String(opt?.value || "").trim().toLowerCase();
+      if (!value) return true;
+      return !value.startsWith("db:") && !value.startsWith("dbq:");
+    });
+    return filtered.length ? filtered : [{ value: "", label: "Select tag" }];
+  }, [tagOptions]);
   const dbTableFieldMap = useMemo(() => {
     const map = new Map();
     (tagOptions || []).forEach((opt) => {
@@ -591,7 +602,7 @@ export default function PropertiesPanel({
   const commitBBox = () => {
     const next = { ...hudFields, ...bboxDraft };
     setHudFields(next);
-    applyBBoxFromHud(next);
+    applyBBoxFromHud(next, { aspectLocked: bboxAspectLocked });
   };
 
   const pulseButton = (key) => {
@@ -639,7 +650,7 @@ export default function PropertiesPanel({
 
     // 1) commit draft state + bbox transform
     latest.current.setHudFields(next);
-    latest.current.applyBBoxFromHud(next);
+    latest.current.applyBBoxFromHud(next, { aspectLocked: bboxAspectLocked });
 
     if (!isSingle) return;
 
@@ -949,6 +960,41 @@ export default function PropertiesPanel({
                     />
                   </>
                 )}
+                {widgetKindVal === "countdownBar" && (
+                  <>
+                    <SelectRow
+                      label="PRE Tag"
+                      value={widgetTimerPreTagVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetTimerPreTag: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={timerTagOptions}
+                      searchable
+                    />
+                    <SelectRow
+                      label="ACC Tag"
+                      value={widgetTimerAccTagVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetTimerAccTag: v, tagPath: v || p.tagPath }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={timerTagOptions}
+                      searchable
+                    />
+                    <Row
+                      label="Decimals"
+                      type="number"
+                      value={widgetDecimalsVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetDecimals: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="1"
+                    />
+                    <Row
+                      label="Unit"
+                      value={widgetUnitVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetUnit: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="s, ms"
+                    />
+                  </>
+                )}
                 {widgetKindVal === "statusTable" && (
                   <>
                     <Row
@@ -961,9 +1007,14 @@ export default function PropertiesPanel({
                     />
                   </>
                 )}
-                {widgetKindVal === "displayBox" ? (
+                {(widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton") ? (
                   <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
-                    Bind an OPC tag in Tag Path. This widget reads live value and supports live writes.
+                    Bind an OPC tag in Tag Path. This widget reads live value and supports PLC writes.
+                  </div>
+                ) : null}
+                {widgetKindVal === "countdownBar" ? (
+                  <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+                    Bind timer PRE and ACC tags. Countdown shows PRE-ACC and percent complete.
                   </div>
                 ) : null}
                 {(widgetKindVal === "lineChart" || widgetKindVal === "areaChart") && (
@@ -1377,9 +1428,28 @@ export default function PropertiesPanel({
         </div>
 
         {/* bbox always visible */}
+        {(isSvg || isWidget) && (
+          <div style={{ marginTop: 10, marginBottom: 6, display: "flex", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              title={bboxAspectLocked ? "Aspect ratio locked" : "Aspect ratio unlocked"}
+              onClick={() => setBboxAspectLocked((v) => !v)}
+              style={{
+                ...btnStyle,
+                height: 24,
+                padding: "0 8px",
+                fontSize: 11,
+                background: bboxAspectLocked ? "#2b6cff" : "var(--bg-soft)",
+                color: bboxAspectLocked ? "#fff" : "var(--text)",
+              }}
+            >
+              {bboxAspectLocked ? "Lock Ratio" : "Free W/H"}
+            </button>
+          </div>
+        )}
         <div
           style={{
-            marginTop: 12,
+            marginTop: 6,
             display: "grid",
             gridTemplateColumns: "22px 1fr 22px 1fr",
             columnGap: 8,

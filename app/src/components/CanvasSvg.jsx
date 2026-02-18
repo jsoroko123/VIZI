@@ -44,6 +44,7 @@ export default function CanvasSvg({
   editingId,
   showTagPaths,
   showGrid,
+  showRulers = true,
   onSvgMouseDown,
   onMouseMove,
   onMouseUp,
@@ -65,6 +66,7 @@ export default function CanvasSvg({
   onOverlayMouseDown,
   onOverlayDoubleClick,
   overlaySelectionUI,
+  overlayGroupSelectionUI,
   overlayLocalBBox,
   importAnchor,
   onCanvasDoubleClick,
@@ -81,8 +83,12 @@ export default function CanvasSvg({
   collaboratorCursors,
   theme,
   canvasBackgroundColor,
+  liveClickable = false,
+  viewportTopOffset = 0,
+  viewportLeftOffset = 0,
 }) {
   const vb = useMemo(() => `0 0 ${vbW} ${vbH}`, [vbW, vbH]);
+  const rulerSize = showRulers ? RULER : 0;
   const isLineMode = tool === "polyline" || tool === "rect";
   const isCrosshair = isLineMode || marquee;
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
@@ -291,6 +297,18 @@ export default function CanvasSvg({
       if (Number.isFinite(n)) return n;
     }
     return raw;
+  };
+  const toBooleanLike = (raw) => {
+    if (typeof raw === "boolean") return raw;
+    if (raw == null) return false;
+    if (typeof raw === "number") return Number.isFinite(raw) ? raw !== 0 : false;
+    const text = String(raw).trim().toLowerCase();
+    if (!text) return false;
+    if (["1", "true", "on", "yes", "active", "open"].includes(text)) return true;
+    if (["0", "false", "off", "no", "inactive", "closed"].includes(text)) return false;
+    const n = Number(text);
+    if (Number.isFinite(n)) return n !== 0;
+    return false;
   };
 
   const getWritableWidgetTagPath = (overlay) => {
@@ -1070,6 +1088,20 @@ export default function CanvasSvg({
       }
     };
     const latestTime = formatTime(latestPoint?.t);
+    const formatDuration = (valueMs, precision = 1, unitOverride = "") => {
+      const ms = Number(valueMs);
+      if (!Number.isFinite(ms)) return "--";
+      const abs = Math.max(0, ms);
+      const normalizedUnit = String(unitOverride || "").trim().toLowerCase();
+      if (normalizedUnit === "ms") {
+        return `${Math.max(0, Math.round(abs)).toFixed(0)} ms`;
+      }
+      if (normalizedUnit === "s") {
+        return `${(abs / 1000).toFixed(Math.max(0, precision))} s`;
+      }
+      if (abs >= 10000) return `${(abs / 1000).toFixed(Math.max(0, precision))} s`;
+      return `${Math.max(0, Math.round(abs)).toFixed(0)} ms`;
+    };
 
     if (kind === "kpi") {
       const display =
@@ -1233,6 +1265,73 @@ export default function CanvasSvg({
       );
     }
 
+    if (kind === "countdownBar") {
+      const preTagPath = String(cfg?.timerPreTag || "").trim();
+      const accTagPath = String(cfg?.timerAccTag || "").trim() || String(overlay?.tagPath || "").trim();
+      const inferredPreFromAcc =
+        !preTagPath && /\.acc$/i.test(accTagPath)
+          ? accTagPath.replace(/\.acc$/i, ".PRE")
+          : "";
+      const resolvedPreTagPath = preTagPath || inferredPreFromAcc;
+      const resolvedAccTagPath = accTagPath;
+      const preRaw = resolvedPreTagPath ? getLiveValueForTagPath(resolvedPreTagPath) : "";
+      const accRaw = resolvedAccTagPath ? getLiveValueForTagPath(resolvedAccTagPath) : "";
+      const preMs = toNumberOrNull(preRaw);
+      const accMs = toNumberOrNull(accRaw);
+      const validTimer = Number.isFinite(preMs) && preMs > 0 && Number.isFinite(accMs);
+      const safePre = validTimer ? Math.max(1, Number(preMs)) : 0;
+      const safeAcc = validTimer ? Math.max(0, Math.min(Number(accMs), safePre)) : 0;
+      const remainingMs = validTimer ? Math.max(0, safePre - safeAcc) : null;
+      const completePct = validTimer ? Math.max(0, Math.min(100, (safeAcc / safePre) * 100)) : 0;
+      const barX = x + pad;
+      const barY = y + headH + (dense ? 14 : 18);
+      const barW = Math.max(24, w - pad * 2);
+      const barH = Math.max(12, Math.min(24, Math.round(h * 0.15)));
+      const fillW = Math.max(0, Math.min(barW, Math.round((barW * completePct) / 100)));
+      const statusText = validTimer
+        ? `${formatDuration(remainingMs, decimals, unit)} remaining`
+        : "Bind PRE and ACC tags";
+      const sourceText = resolvedAccTagPath || resolvedPreTagPath || "Unbound";
+      return (
+        <g pointerEvents="none">
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+            {cardTitle || "Countdown"}
+          </text>
+          <rect x={barX} y={barY} width={barW} height={barH} rx={Math.min(10, Math.round(barH / 2))} fill="var(--bg-elev)" stroke="var(--border)" />
+          <rect x={barX} y={barY} width={fillW} height={barH} rx={Math.min(10, Math.round(barH / 2))} fill={remainingMs === 0 ? "#16a34a" : accent} />
+          <text
+            x={x + pad}
+            y={barY + barH + (dense ? 12 : 16)}
+            fill={valueColor}
+            fontSize={scaledFont(dense ? 9 : 11, 8, 20)}
+            fontFamily="system-ui"
+            fontWeight={700}
+          >
+            {statusText}
+          </text>
+          <text
+            x={x + w - pad}
+            y={barY + barH + (dense ? 12 : 16)}
+            fill={subdued}
+            fontSize={scaledFont(dense ? 8 : 10, 7, 16)}
+            fontFamily="system-ui"
+            textAnchor="end"
+          >
+            {validTimer ? `${completePct.toFixed(1)}%` : ""}
+          </text>
+          {!dense ? (
+            <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={scaledFont(9, 7, 16)} fontFamily="system-ui">
+              {validTimer
+                ? `ACC ${Math.round(safeAcc)} / PRE ${Math.round(safePre)}`
+                : sourceText}
+            </text>
+          ) : null}
+          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
+        </g>
+      );
+    }
+
     if (kind === "displayBox") {
       const display =
         displayN != null
@@ -1345,6 +1444,153 @@ export default function CanvasSvg({
           ) : null}
           {!canWrite ? (
             <text x={x + pad} y={showControls ? controlsY - 4 : y + h - 8} fill={subdued} fontSize={9} fontFamily="system-ui">
+              Bind OPC tag path to enable write.
+            </text>
+          ) : null}
+          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
+        </g>
+      );
+    }
+
+    if (kind === "pushButton") {
+      const tagPath = getWritableWidgetTagPath(overlay);
+      const canWrite = Boolean(tagPath);
+      const writeBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
+      const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
+      const pressed = toBooleanLike(rawVal);
+      const buttonW = Math.max(54, Math.round(w - pad * 2));
+      const buttonH = Math.max(26, Math.round(Math.min(52, h - headH - 16)));
+      const buttonX = x + pad;
+      const buttonY = Math.max(y + headH + 8, y + h - buttonH - 8);
+      return (
+        <g>
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+            {cardTitle || "Push Button"}
+          </text>
+          {!dense ? (
+            <text x={x + pad} y={y + headH + 16} fill={subdued} fontSize={10} fontFamily="system-ui" fontWeight={600}>
+              {label}
+            </text>
+          ) : null}
+          <foreignObject x={buttonX} y={buttonY} width={buttonW} height={buttonH}>
+            <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%" }}>
+              <button
+                data-widget-control="true"
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  if (!canWrite || writeBusy) return;
+                  submitWidgetWrite(overlay, 1);
+                }}
+                onMouseUp={(e) => {
+                  e.stopPropagation();
+                  if (!canWrite || writeBusy) return;
+                  submitWidgetWrite(overlay, 0);
+                }}
+                onMouseLeave={() => {
+                  if (!canWrite || writeBusy) return;
+                  submitWidgetWrite(overlay, 0);
+                }}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  if (!canWrite || writeBusy) return;
+                  submitWidgetWrite(overlay, 1);
+                }}
+                onTouchEnd={() => {
+                  if (!canWrite || writeBusy) return;
+                  submitWidgetWrite(overlay, 0);
+                }}
+                disabled={!canWrite || writeBusy}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  border: "1px solid var(--border)",
+                  borderRadius: 9,
+                  background: pressed ? "#1d4ed8" : "#2b6cff",
+                  color: "white",
+                  fontSize: dense ? 10 : 12,
+                  fontWeight: 800,
+                  cursor: !canWrite || writeBusy ? "default" : "pointer",
+                  opacity: !canWrite ? 0.65 : 1,
+                  boxShadow: pressed ? "inset 0 2px 8px rgba(0,0,0,0.28)" : "0 6px 14px rgba(43,108,255,0.25)",
+                }}
+              >
+                {writeBusy ? "..." : "PRESS"}
+              </button>
+            </div>
+          </foreignObject>
+          {writeError ? (
+            <text x={x + pad} y={buttonY - 4} fill="#f04438" fontSize={9} fontFamily="system-ui" fontWeight={700}>
+              {writeError}
+            </text>
+          ) : null}
+          {!canWrite ? (
+            <text x={x + pad} y={buttonY - 4} fill={subdued} fontSize={9} fontFamily="system-ui">
+              Bind OPC tag path to enable write.
+            </text>
+          ) : null}
+          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
+        </g>
+      );
+    }
+
+    if (kind === "onOffButton") {
+      const tagPath = getWritableWidgetTagPath(overlay);
+      const canWrite = Boolean(tagPath);
+      const writeBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
+      const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
+      const isOn = toBooleanLike(rawVal);
+      const buttonW = Math.max(54, Math.round(w - pad * 2));
+      const buttonH = Math.max(26, Math.round(Math.min(52, h - headH - 16)));
+      const buttonX = x + pad;
+      const buttonY = Math.max(y + headH + 8, y + h - buttonH - 8);
+      return (
+        <g>
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+            {cardTitle || "On/Off Button"}
+          </text>
+          {!dense ? (
+            <text x={x + pad} y={y + headH + 16} fill={subdued} fontSize={10} fontFamily="system-ui" fontWeight={600}>
+              {label}
+            </text>
+          ) : null}
+          <foreignObject x={buttonX} y={buttonY} width={buttonW} height={buttonH}>
+            <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%" }}>
+              <button
+                data-widget-control="true"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!canWrite || writeBusy) return;
+                  submitWidgetWrite(overlay, isOn ? 0 : 1);
+                }}
+                disabled={!canWrite || writeBusy}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  border: "1px solid var(--border)",
+                  borderRadius: 9,
+                  background: isOn ? "#16a34a" : "#334155",
+                  color: "white",
+                  fontSize: dense ? 10 : 12,
+                  fontWeight: 800,
+                  cursor: !canWrite || writeBusy ? "default" : "pointer",
+                  opacity: !canWrite ? 0.65 : 1,
+                  boxShadow: isOn ? "0 6px 14px rgba(22,163,74,0.24)" : "none",
+                }}
+              >
+                {writeBusy ? "..." : (isOn ? "ON" : "OFF")}
+              </button>
+            </div>
+          </foreignObject>
+          {writeError ? (
+            <text x={x + pad} y={buttonY - 4} fill="#f04438" fontSize={9} fontFamily="system-ui" fontWeight={700}>
+              {writeError}
+            </text>
+          ) : null}
+          {!canWrite ? (
+            <text x={x + pad} y={buttonY - 4} fill={subdued} fontSize={9} fontFamily="system-ui">
               Bind OPC tag path to enable write.
             </text>
           ) : null}
@@ -1813,8 +2059,8 @@ export default function CanvasSvg({
       const vbWidth = Math.max(1, Number(vbW) || 1);
       const vbHeight = Math.max(1, Number(vbH) || 1);
       const svgToCssScale = Math.min(viewportW / vbWidth, viewportH / vbHeight);
-      const svgOffsetX = 0; // xMin
-      const svgOffsetY = (viewportH - vbHeight * svgToCssScale) / 2; // YMid
+      const svgOffsetX = (viewportW - vbWidth * svgToCssScale) / 2;
+      const svgOffsetY = (viewportH - vbHeight * svgToCssScale) / 2;
       const svgX = worldChartX * z + panX;
       const svgY = worldChartY * z + panY;
       htmlChartLayers.push({
@@ -2031,6 +2277,31 @@ export default function CanvasSvg({
     return out;
   };
 
+  const overlayScaleX = (o) => {
+    const sx = Number(o?.scaleX);
+    if (Number.isFinite(sx) && sx > 0) return sx;
+    const s = Number(o?.scale);
+    return Number.isFinite(s) && s > 0 ? s : 1;
+  };
+
+  const overlayScaleY = (o) => {
+    const sy = Number(o?.scaleY);
+    if (Number.isFinite(sy) && sy > 0) return sy;
+    const s = Number(o?.scale);
+    return Number.isFinite(s) && s > 0 ? s : 1;
+  };
+
+  const overlayWorldRect = (o, bb) => {
+    const sx = overlayScaleX(o);
+    const sy = overlayScaleY(o);
+    return {
+      x: o.tx + sx * bb.x,
+      y: o.ty + sy * bb.y,
+      w: sx * bb.width,
+      h: sy * bb.height,
+    };
+  };
+
   const getOverlayColorAtPoint = (pt) => {
     if (!pt || !svgOverlays?.length) return "";
     for (const o of svgOverlays) {
@@ -2038,10 +2309,11 @@ export default function CanvasSvg({
       if (!color) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
-      const x = o.tx + o.scale * bb.x;
-      const y = o.ty + o.scale * bb.y;
-      const w = o.scale * bb.width;
-      const h = o.scale * bb.height;
+      const wr = overlayWorldRect(o, bb);
+      const x = wr.x;
+      const y = wr.y;
+      const w = wr.w;
+      const h = wr.h;
       if (pt.x >= x && pt.x <= x + w && pt.y >= y && pt.y <= y + h) {
         return color;
       }
@@ -2050,18 +2322,29 @@ export default function CanvasSvg({
   };
 
 
+  const innerW = Math.max(0, (size.w || 0) - rulerSize);
+  const innerH = Math.max(0, (size.h || 0) - rulerSize);
+  const vbWidth = Math.max(1, Number(vbW) || 1);
+  const vbHeight = Math.max(1, Number(vbH) || 1);
+  const viewportScale =
+    innerW > 0 && innerH > 0 ? Math.min(innerW / vbWidth, innerH / vbHeight) : 1;
+  const viewportOffsetX = (innerW - vbWidth * viewportScale) / 2;
+  const viewportOffsetY = (innerH - vbHeight * viewportScale) / 2;
+
   // current transform values (WORLD -> SCREEN)
   const z = zoom || 1;
   const panX = pan?.x || 0;
   const panY = pan?.y || 0;
 
   // SCREEN(px) -> WORLD(units)
-  const screenToWorldX = (sx) => (sx - panX) / z;
-  const screenToWorldY = (sy) => (sy - panY) / z;
+  const screenToWorldX = (sx) =>
+    ((sx - viewportOffsetX) / Math.max(1e-9, viewportScale) - panX) / z;
+  const screenToWorldY = (sy) =>
+    ((sy - viewportOffsetY) / Math.max(1e-9, viewportScale) - panY) / z;
 
   // WORLD(units) -> SCREEN(px)
-  const worldToScreenX = (wx) => wx * z + panX;
-  const worldToScreenY = (wy) => wy * z + panY;
+  const worldToScreenX = (wx) => (wx * z + panX) * viewportScale + viewportOffsetX;
+  const worldToScreenY = (wy) => (wy * z + panY) * viewportScale + viewportOffsetY;
 
   // choose a nice step so tick spacing stays visually consistent
   function niceStep(target) {
@@ -2106,13 +2389,10 @@ export default function CanvasSvg({
   /* =========================================================
      GRID (TRUE WORLD GRID)
      ========================================================= */
-  const innerW = Math.max(0, (size.w || 0) - RULER);
-  const innerH = Math.max(0, (size.h || 0) - RULER);
-
   const gridPathD = useMemo(() => {
     if (!innerW || !innerH) return "";
 
-    // Visible area in WORLD units (based on current pan/zoom)
+    // Visible area in WORLD units (based on current pan/zoom + SVG viewBox units)
     const x0 = screenToWorldX(0);
     const x1 = screenToWorldX(innerW);
     const y0 = screenToWorldY(0);
@@ -2129,7 +2409,7 @@ export default function CanvasSvg({
     for (let y = startY; y <= endY; y += GRID) d += `M ${startX} ${y} L ${endX} ${y} `;
 
     return d.trim();
-  }, [innerW, innerH, panX, panY, z]);
+  }, [innerW, innerH, panX, panY, z, viewportScale, viewportOffsetX, viewportOffsetY]);
 
   /* =========================================================
      KEYBOARD NUDGE (ARROWS)
@@ -2224,8 +2504,8 @@ export default function CanvasSvg({
      RULERS (SCREEN-PIXEL)
      ============================ */
   function TopRuler() {
-    const W = Math.max(0, size.w - RULER);
-    const H = RULER;
+    const W = Math.max(0, size.w - rulerSize);
+    const H = rulerSize;
 
     const majorPx = 100;
     const minorPx = 20;
@@ -2301,8 +2581,8 @@ export default function CanvasSvg({
   }
 
   function RightRuler() {
-    const W = RULER;
-    const H = Math.max(0, size.h - RULER);
+    const W = rulerSize;
+    const H = Math.max(0, size.h - rulerSize);
 
     const pxPerMajor = 80;
     const worldPerPx = 1 / z;
@@ -2359,7 +2639,7 @@ export default function CanvasSvg({
         style={{
           position: "absolute",
           right: 0,
-          top: RULER,
+          top: rulerSize,
           background: "var(--bg-soft)",
           borderLeft: "1px solid var(--border)",
           pointerEvents: "none",
@@ -2505,35 +2785,40 @@ export default function CanvasSvg({
       }}
       style={{
         position: "absolute",
-        inset: 0,
+        top: viewportTopOffset,
+        left: Math.max(0, Number(viewportLeftOffset) || 0),
+        right: 0,
+        bottom: 0,
         overflow: "hidden",
         userSelect: "none",
       }}
     >
-      <TopRuler />
-      <RightRuler />
+      {showRulers ? <TopRuler /> : null}
+      {showRulers ? <RightRuler /> : null}
 
-      <div
-        style={{
-          position: "absolute",
-          right: 0,
-          top: 0,
-          width: RULER,
-          height: RULER,
-          background: "var(--bg-soft)",
-          borderLeft: "1px solid var(--border)",
-          borderBottom: "1px solid var(--border)",
-          pointerEvents: "none",
-          zIndex: 11,
-        }}
-      />
+      {showRulers ? (
+        <div
+          style={{
+            position: "absolute",
+            right: 0,
+            top: 0,
+            width: rulerSize,
+            height: rulerSize,
+            background: "var(--bg-soft)",
+            borderLeft: "1px solid var(--border)",
+            borderBottom: "1px solid var(--border)",
+            pointerEvents: "none",
+            zIndex: 11,
+          }}
+        />
+      ) : null}
 
       <div
         style={{
           position: "absolute",
           left: 0,
-          top: RULER,
-          right: RULER,
+          top: rulerSize,
+          right: rulerSize,
           bottom: 0,
         }}
       >
@@ -2541,7 +2826,7 @@ export default function CanvasSvg({
           width="100%"
           height="100%"
           viewBox={vb}
-          preserveAspectRatio="xMinYMid meet"
+          preserveAspectRatio="xMidYMid meet"
           ref={svgRef}
           tabIndex={0}
           style={{
@@ -2966,13 +3251,13 @@ export default function CanvasSvg({
                 >
                   <g
                     ref={(node) => setOverlayRef(o.id, node)}
-                    transform={`translate(${o.tx} ${o.ty}) scale(${o.scale})`}
+                    transform={`translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`}
                     onMouseDown={(e) => onOverlayMouseDown(e, o.id)}
                     onDoubleClick={(e) => onOverlayDoubleClick?.(e, o.id)}
                     onMouseEnter={() => setHoverOverlayId(o.id)}
                     onMouseLeave={() => setHoverOverlayId((prev) => (prev === o.id ? null : prev))}
                     style={{
-                      cursor: tool === "select" ? "move" : "crosshair",
+                      cursor: liveClickable ? "pointer" : tool === "select" ? "move" : "crosshair",
                       pointerEvents: o.widget ? "all" : "visiblePainted",
                     }}
                   >
@@ -3029,10 +3314,11 @@ export default function CanvasSvg({
                   {isLineMode && (() => {
                     const bb = overlayLocalBBox(o.id);
                     if (!bb) return null;
-                    const x = o.tx + o.scale * bb.x;
-                    const y = o.ty + o.scale * bb.y;
-                    const w = o.scale * bb.width;
-                    const h = o.scale * bb.height;
+                    const wr = overlayWorldRect(o, bb);
+                    const x = wr.x;
+                    const y = wr.y;
+                    const w = wr.w;
+                    const h = wr.h;
                     const cx = x + w / 2;
                     const cy = y + h / 2;
                     const snapR = 4 * inv;
@@ -3055,10 +3341,11 @@ export default function CanvasSvg({
                       {(() => {
                         const bb = overlayLocalBBox(o.id);
                         if (!bb) return null;
-                        const x = o.tx + o.scale * bb.x;
-                        const y = o.ty + o.scale * bb.y;
-                        const w = o.scale * bb.width;
-                        const h = o.scale * bb.height;
+                        const wr = overlayWorldRect(o, bb);
+                        const x = wr.x;
+                        const y = wr.y;
+                        const w = wr.w;
+                        const h = wr.h;
                         return (
                           <rect
                             x={x}
@@ -3079,6 +3366,9 @@ export default function CanvasSvg({
                 </g>
               );
             })}
+            {selectedOverlayIds?.length > 1 && selectedIds?.length === 0 && overlayGroupSelectionUI
+              ? overlayGroupSelectionUI(z)
+              : null}
 
             {collabCursors.length > 0 && (
               <g pointerEvents="none">
@@ -3181,8 +3471,10 @@ export default function CanvasSvg({
                   if (!lines.length) return null;
                   const bb = o?.bbox || overlayLocalBBox(o.id);
                   if (!bb) return null;
-                  const x = o.tx + o.scale * (bb.x + bb.width / 2);
-                  const anchorY = o.ty + o.scale * bb.y;
+                  const sx = overlayScaleX(o);
+                  const sy = overlayScaleY(o);
+                  const x = o.tx + sx * (bb.x + bb.width / 2);
+                  const anchorY = o.ty + sy * bb.y;
                   return renderTagBubble({
                     key: `tag-${o.id}`,
                     bubbleId: o.id,

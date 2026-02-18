@@ -13,6 +13,7 @@ import DatabaseConfigPanel from "./components/DatabaseConfigPanel";
 import SqlDesigner from "./components/SqlDesigner";
 import PlcAnalyzer from "./components/PlcAnalyzer";
 import ServerDiagnosticsPanel from "./components/ServerDiagnosticsPanel";
+import SecurityManager from "./components/SecurityManager";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -35,6 +36,7 @@ import {
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { exportToIgnitionJson, downloadIgnitionJson } from "./utils/ignitionExport";
 import { toastError, toastSuccess } from "./utils/toast";
+import appLogo from "./assets/Images/logo.png";
 
 // Vite: keep SVG modules as URLs and fetch raw text only when needed.
 const SVG_LIBRARY = import.meta.glob("./assets/SVG_Files/**/*.svg", {
@@ -42,11 +44,55 @@ const SVG_LIBRARY = import.meta.glob("./assets/SVG_Files/**/*.svg", {
   query: "?url",
 });
 const THEME_KEY = "vizi_theme";
+const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
+const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
 // (no eager:true)
 
 const SVG_RAW_CACHE_MAX = 96;
 const DEFAULT_CANVAS_BG_LIGHT = "#ffffff";
 const DEFAULT_CANVAS_BG_DARK = "#0f141c";
+const LIVE_ALARM_BAR_H = 44;
+const LIVE_ALARM_MARQUEE_DURATION_SEC = 42;
+function normalizeProjectMode(value) {
+  return String(value || "").trim().toLowerCase() === "live" ? "live" : "design";
+}
+
+function readStoredProjectMode(projectId = "") {
+  if (typeof window === "undefined") return "design";
+  const key = `vizi_project_mode:${String(projectId || "default")}`;
+  try {
+    const byProject = localStorage.getItem(key);
+    if (byProject != null) return normalizeProjectMode(byProject);
+    const last = localStorage.getItem("vizi_project_mode:last");
+    if (last != null) return normalizeProjectMode(last);
+  } catch {
+    // ignore storage read errors
+  }
+  return "design";
+}
+
+function readStoredActiveProjectId() {
+  if (typeof window === "undefined") return "";
+  try {
+    return String(localStorage.getItem("vizi_active_project_id") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function readStoredDrawerFullscreen(name) {
+  if (typeof window === "undefined") return false;
+  const key = String(name || "").trim().toLowerCase();
+  if (!key) return false;
+  try {
+    const raw = localStorage.getItem(DRAWER_FULLSCREEN_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed[key] === true : false;
+  } catch {
+    return false;
+  }
+}
 
 function isSvgMarkup(value) {
   const text = String(value || "").trimStart();
@@ -118,10 +164,141 @@ function getFolderFromKey(key) {
   return parts.slice(0, -1).slice(-1)[0] || "Root";
 }
 
+function tokenizeSvgCatalogText(value) {
+  return Array.from(
+    new Set(
+      String(value || "")
+        .replace(/[_/.-]+/g, " ")
+        .replace(/\.svg$/i, "")
+        .split(/\s+/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
 function normalizeTagValue(value) {
   return String(value || "")
     .replace(/\r?\n/g, "")
     .trim();
+}
+
+function normalizeTableDisplayName(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function normalizeAlarmOperatorValue(value) {
+  const op = String(value || "").trim();
+  return ["==", "!=", ">", ">=", "<", "<="].includes(op) ? op : "==";
+}
+
+function isTruthyFlag(value) {
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  const raw = String(value).trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes" || raw === "on";
+}
+
+function coerceAlarmComparable(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return { raw, lower: "", num: null, bool: null };
+  const lower = raw.toLowerCase();
+  const num = Number(raw);
+  const bool =
+    lower === "true" || lower === "1"
+      ? true
+      : lower === "false" || lower === "0"
+      ? false
+      : null;
+  return { raw, lower, num: Number.isFinite(num) ? num : null, bool };
+}
+
+function evaluateAlarmCondition(liveValue, operator, threshold) {
+  const left = coerceAlarmComparable(liveValue);
+  const right = coerceAlarmComparable(threshold);
+  const op = normalizeAlarmOperatorValue(operator);
+  if (left.raw === "" || right.raw === "") return false;
+  if (op === ">" || op === ">=" || op === "<" || op === "<=") {
+    if (left.num == null || right.num == null) return false;
+    if (op === ">") return left.num > right.num;
+    if (op === ">=") return left.num >= right.num;
+    if (op === "<") return left.num < right.num;
+    return left.num <= right.num;
+  }
+  if (left.num != null && right.num != null) {
+    return op === "==" ? left.num === right.num : left.num !== right.num;
+  }
+  if (left.bool != null && right.bool != null) {
+    return op === "==" ? left.bool === right.bool : left.bool !== right.bool;
+  }
+  return op === "==" ? left.lower === right.lower : left.lower !== right.lower;
+}
+
+function defaultLiveMenuGroupsFromScreens(sourceScreens) {
+  const screens = Array.isArray(sourceScreens) ? sourceScreens : [];
+  const items = screens
+    .filter((screen) => screen?.showInLiveMenu !== false)
+    .map((screen) => ({
+      id: `live-item-${uid()}`,
+      type: "screen",
+      screenId: String(screen?.id || ""),
+      label: "",
+    }))
+    .filter((item) => item.screenId);
+  return [
+    {
+      id: `live-group-${uid()}`,
+      name: "Main",
+      items,
+    },
+  ];
+}
+
+function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
+  const screens = Array.isArray(sourceScreens) ? sourceScreens : [];
+  const screenIds = new Set(screens.map((s) => String(s?.id || "")).filter(Boolean));
+  const groups = Array.isArray(rawGroups) ? rawGroups : [];
+  const normalized = groups
+    .map((group) => {
+      const name = String(group?.name ?? "");
+      const items = (Array.isArray(group?.items) ? group.items : [])
+        .map((item) => {
+          const type = String(item?.type || "").toLowerCase() === "data" ? "data" : "screen";
+          if (type === "screen") {
+            const screenId = String(item?.screenId || "").trim();
+            if (!screenId || !screenIds.has(screenId)) return null;
+            return {
+              id: String(item?.id || `live-item-${uid()}`),
+              type,
+              screenId,
+              label: String(item?.label || "").trim(),
+            };
+          }
+          return {
+            id: String(item?.id || `live-item-${uid()}`),
+            type: "data",
+            dataTable: String(item?.dataTable || "").trim(),
+            label: String(item?.label || "").trim(),
+          };
+        })
+        .filter(Boolean);
+      return {
+        id: String(group?.id || `live-group-${uid()}`),
+        name,
+        items,
+      };
+    })
+    .filter((group) => group.items.length > 0 || String(group.name || "").trim());
+
+  if (!normalized.length) return defaultLiveMenuGroupsFromScreens(screens);
+  return normalized;
 }
 
 function normalizeRouteTagKey(value) {
@@ -187,6 +364,18 @@ function widgetTemplate(widgetKey) {
       name: "Widget-DisplayBox.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Display Box</text><text x="20" y="92" fill="#22c55e" font-size="40" font-family="system-ui" font-weight="700">123.4</text><text x="214" y="92" fill="#93c5fd" font-size="16" font-family="system-ui" font-weight="700">psi</text><rect x="20" y="122" width="194" height="30" rx="8" fill="#111827" stroke="#334155"/><rect x="222" y="122" width="78" height="30" rx="8" fill="#2b6cff"/><text x="242" y="141" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="700">Write</text></svg>`,
     },
+    countdownBar: {
+      name: "Widget-CountdownBar.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Countdown</text><rect x="20" y="72" width="280" height="30" rx="10" fill="#111827" stroke="#334155"/><rect x="24" y="76" width="164" height="22" rx="8" fill="#2b6cff"/><text x="20" y="122" fill="#94a3b8" font-size="12" font-family="system-ui">ACC 3500 / PRE 7500 ms</text><text x="20" y="145" fill="#22c55e" font-size="16" font-family="system-ui" font-weight="700">4.0s remaining</text></svg>`,
+    },
+    pushButton: {
+      name: "Widget-PushButton.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 150"><rect x="1" y="1" width="258" height="148" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Push Button</text><rect x="34" y="52" width="192" height="70" rx="12" fill="#1e293b" stroke="#334155"/><rect x="40" y="58" width="180" height="58" rx="10" fill="#2563eb"/><text x="130" y="94" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">PRESS</text></svg>`,
+    },
+    onOffButton: {
+      name: "Widget-OnOffButton.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 160"><rect x="1" y="1" width="278" height="158" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">On/Off Button</text><rect x="34" y="52" width="212" height="74" rx="14" fill="#111827" stroke="#334155"/><rect x="40" y="58" width="98" height="62" rx="10" fill="#16a34a"/><rect x="142" y="58" width="98" height="62" rx="10" fill="#334155"/><text x="89" y="96" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">ON</text><text x="191" y="96" text-anchor="middle" fill="#cbd5e1" font-size="16" font-family="system-ui" font-weight="800">OFF</text></svg>`,
+    },
     statusTable: {
       name: "Widget-StatusTable.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 190"><rect x="1" y="1" width="338" height="188" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Status Table</text><rect x="16" y="40" width="308" height="28" rx="6" fill="#1e293b"/><text x="28" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Tag</text><text x="170" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">State</text><text x="252" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Quality</text><rect x="16" y="74" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="108" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="142" width="308" height="30" rx="6" fill="#111827"/></svg>`,
@@ -226,6 +415,9 @@ function defaultWidgetSettings(widgetKey) {
   if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
   if (kind === "kpi") return { ...base, historyPoints: 10 };
   if (kind === "displayBox") return { ...base, historyPoints: 10 };
+  if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
+  if (kind === "pushButton") return { ...base, historyPoints: 10, decimals: 0 };
+  if (kind === "onOffButton") return { ...base, historyPoints: 10, decimals: 0 };
   if (kind === "gauge") return { ...base, min: 0, max: 100, historyPoints: 16 };
   if (kind === "barChart") return { ...base, historyPoints: 20 };
   if (kind === "areaChart") return { ...base, historyPoints: 40 };
@@ -254,7 +446,7 @@ function toDatetimeLocalInput(value) {
 
 
 export default function App() {
-  const { user, logout, updateProfile, changePassword } = useAuth();
+  const { user, logout, updateProfile, changePassword, refresh } = useAuth();
   const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect"
   const DEFAULT_STROKE = "#808080";
   const DEFAULT_FILL = "#cccccc";
@@ -297,7 +489,7 @@ export default function App() {
   const [svgOverlays, setSvgOverlays] = useState([]);
 
   // overlay resize
-  const [overlayResize, setOverlayResize] = useState(null); // { id, anchorLocal, anchorWorld, startDist, origScale }
+  const [overlayResize, setOverlayResize] = useState(null); // single: { id, anchorLocal, anchorWorld, startDist, origScaleX, origScaleY } | group: { kind:"group", anchorWorld, startDist, overlays:[{id, tx, ty, sx, sy}] }
 
   // ✅ Export settings (dynamic)
   const [exportVB, setExportVB] = useState({ x: 0, y: 0, w: 1600, h: 900 });
@@ -306,6 +498,9 @@ export default function App() {
   const [showGrid, setShowGrid] = useState(true);
   const [showTagPaths, setShowTagPaths] = useState(false);
   const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
+  const [liveEquipmentOverlayIds, setLiveEquipmentOverlayIds] = useState([]);
+  const liveEquipmentCardRefs = useRef(new Map());
+  const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
   const [marquee, setMarquee] = useState(null);
 
   const [vbW, setVbW] = useState(1600);
@@ -339,17 +534,33 @@ export default function App() {
   const svgRawCacheRef = useRef(new Map());
   const [projectHandle, setProjectHandle] = useState(null);
   const [projectName, setProjectName] = useState("Untitled");
+  const [projectNameDraft, setProjectNameDraft] = useState("Untitled");
+  const [projectNameEditing, setProjectNameEditing] = useState(false);
+  const [projectModeDraft, setProjectModeDraft] = useState("design");
   const [projectCanvasBackground, setProjectCanvasBackground] = useState(() =>
+    normalizeProjectCanvasBackground(null)
+  );
+  const [projectCanvasBackgroundDraft, setProjectCanvasBackgroundDraft] = useState(() =>
     normalizeProjectCanvasBackground(null)
   );
   const [projectPlcs, setProjectPlcs] = useState([]);
   const [screens, setScreens] = useState([
-    { id: "screen-1", name: "Screen 1", shapes: [], svgOverlays: [], vbW: 1600, vbH: 900, pan: { x: 0, y: 0 }, zoom: 1 },
+    {
+      id: "screen-1",
+      name: "Screen 1",
+      shapes: [],
+      svgOverlays: [],
+      vbW: 1600,
+      vbH: 900,
+      pan: { x: 0, y: 0 },
+      zoom: 1,
+      showInLiveMenu: true,
+    },
   ]);
   const [activeScreenId, setActiveScreenId] = useState("screen-1");
   const [screenName, setScreenName] = useState("Screen 1");
   const [projects, setProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState("");
+  const [activeProjectId, setActiveProjectId] = useState(() => readStoredActiveProjectId());
   const [projectRouteRows, setProjectRouteRows] = useState([]);
   const [projectStatus, setProjectStatus] = useState("");
   const [activeProjectUpdatedAt, setActiveProjectUpdatedAt] = useState("");
@@ -357,14 +568,37 @@ export default function App() {
   const [projectCursors, setProjectCursors] = useState([]);
   const [showProjectNameInput, setShowProjectNameInput] = useState(false);
   const [showProjectDrawer, setShowProjectDrawer] = useState(false);
-  const [mainDrawerFullscreen, setMainDrawerFullscreen] = useState(false);
-  const [userDrawerFullscreen, setUserDrawerFullscreen] = useState(false);
-  const [projectDrawerFullscreen, setProjectDrawerFullscreen] = useState(false);
+  const [projectMode, setProjectMode] = useState(() =>
+    readStoredProjectMode(readStoredActiveProjectId())
+  );
+  const isLiveMode = projectMode === "live";
+  const [liveMenuCollapsed, setLiveMenuCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem("vizi_live_menu_collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [mainDrawerFullscreen, setMainDrawerFullscreen] = useState(() => readStoredDrawerFullscreen("main"));
+  const [userDrawerFullscreen, setUserDrawerFullscreen] = useState(() => readStoredDrawerFullscreen("user"));
+  const [projectDrawerFullscreen, setProjectDrawerFullscreen] = useState(() => readStoredDrawerFullscreen("project"));
+  const [projectDrawerTab, setProjectDrawerTab] = useState("project");
+  const [databaseEmbeddedPath, setDatabaseEmbeddedPath] = useState("");
+  const [databaseDataOnlyMode, setDatabaseDataOnlyMode] = useState(false);
+  const [databaseTablesForMenu, setDatabaseTablesForMenu] = useState([]);
+  const [liveMenuGroups, setLiveMenuGroups] = useState(() =>
+    defaultLiveMenuGroupsFromScreens([
+      { id: "screen-1", name: "Screen 1", showInLiveMenu: true },
+    ])
+  );
+  const [collapsedLiveGroupIds, setCollapsedLiveGroupIds] = useState([]);
   const lastProjectSignatureRef = useRef("");
   const projectSaveInFlightRef = useRef(false);
   const autoSaveTimerRef = useRef(null);
   const pendingSilentSaveRef = useRef(false);
   const queuedSaveAfterFlightRef = useRef(null); // null | "silent" | "manual"
+  const isInteractingRef = useRef(false);
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
   const projectNameRef = useRef(projectName);
   const projectCanvasBackgroundRef = useRef(projectCanvasBackground);
@@ -376,6 +610,10 @@ export default function App() {
   const vbHRef = useRef(vbH);
   const panRef = useRef(pan);
   const zoomRef = useRef(zoom);
+  const projectModeStorageKey = useMemo(
+    () => `vizi_project_mode:${String(activeProjectId || "default")}`,
+    [activeProjectId]
+  );
 
   useEffect(() => {
     projectNameRef.current = projectName;
@@ -389,6 +627,62 @@ export default function App() {
     panRef.current = pan;
     zoomRef.current = zoom;
   }, [projectName, projectCanvasBackground, projectPlcs, screens, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+
+  useEffect(() => {
+    if (projectNameEditing) return;
+    setProjectNameDraft(projectName || "");
+    setProjectModeDraft(normalizeProjectMode(projectMode));
+    setProjectCanvasBackgroundDraft(normalizeProjectCanvasBackground(projectCanvasBackground));
+  }, [projectName, projectMode, projectCanvasBackground, projectNameEditing]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem("vizi_live_menu_collapsed", liveMenuCollapsed ? "1" : "0");
+    } catch {
+      // ignore storage write errors
+    }
+  }, [liveMenuCollapsed]);
+
+  useEffect(() => {
+    const nextMode = readStoredProjectMode(activeProjectId || "");
+    setProjectMode(nextMode);
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    let alive = true;
+    async function loadDbTablesForMenu() {
+      try {
+        const res = await fetch("/api/db/tables");
+        const data = await res.json();
+        if (!res.ok || !alive) return;
+        const tables = Array.isArray(data?.tables)
+          ? data.tables.map((t) => String(t || "").trim()).filter(Boolean)
+          : [];
+        setDatabaseTablesForMenu(tables);
+      } catch {
+        if (alive) setDatabaseTablesForMenu([]);
+      }
+    }
+    loadDbTablesForMenu();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(projectModeStorageKey, normalizeProjectMode(projectMode));
+      localStorage.setItem("vizi_project_mode:last", normalizeProjectMode(projectMode));
+    } catch {
+      // ignore storage write errors
+    }
+  }, [projectMode, projectModeStorageKey]);
+
+  useEffect(() => {
+    isInteractingRef.current = Boolean(dragAll || dragHandle || overlayResize || marquee || drawing);
+  }, [dragAll, dragHandle, overlayResize, marquee, drawing]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -980,6 +1274,152 @@ export default function App() {
     return map;
   }, [opcTags, opcLiveValues]);
 
+  const liveActiveAlarms = useMemo(() => {
+    const live = opcLiveValues || {};
+    const alarms = [];
+    const buildTestAlarmValue = (operator, thresholdRaw) => {
+      const thresholdNum = Number(thresholdRaw);
+      if (Number.isFinite(thresholdNum)) {
+        if (operator === ">") return thresholdNum + 1;
+        if (operator === ">=") return thresholdNum;
+        if (operator === "<") return thresholdNum - 1;
+        if (operator === "<=") return thresholdNum;
+        if (operator === "!=") return thresholdNum + 1;
+        return thresholdNum;
+      }
+      const thresholdText = normalizeTagValue(thresholdRaw || "");
+      if (operator === "!=") return thresholdText ? `${thresholdText}_test` : "1";
+      return thresholdText || "1";
+    };
+    (opcTags || []).forEach((tag, idx) => {
+      if (!isTruthyFlag(tag?.alarmEnabled)) return;
+      const threshold = normalizeTagValue(tag?.alarmValue || "");
+      if (!threshold) return;
+      const topic = normalizeTagValue(tag?.topic || "");
+      const group = normalizeTagValue(tag?.groupName || "");
+      const tagPath = normalizeTagValue(tag?.tagPath || "");
+      const name = normalizeTagValue(tag?.name || tagPath || `Tag ${idx + 1}`);
+      const candidates = [
+        topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
+        topic && group && name ? `${topic}.${group}.${name}` : "",
+        topic && tagPath ? `${topic}.${tagPath}` : "",
+        topic && name ? `${topic}.${name}` : "",
+        group && tagPath ? `${group}.${tagPath}` : "",
+        group && name ? `${group}.${name}` : "",
+        tagPath,
+        name,
+      ]
+        .map((x) => normalizeTagValue(x))
+        .filter(Boolean);
+      let liveValue = "";
+      for (const key of candidates) {
+        if (Object.prototype.hasOwnProperty.call(live, key)) {
+          liveValue = live[key];
+          break;
+        }
+        const lower = key.toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(live, lower)) {
+          liveValue = live[lower];
+          break;
+        }
+      }
+      const operator = normalizeAlarmOperatorValue(tag?.alarmOperator);
+      if ((liveValue == null || liveValue === "") && isTruthyFlag(tag?.alarmTest)) {
+        liveValue = buildTestAlarmValue(operator, threshold);
+      }
+      if (!evaluateAlarmCondition(liveValue, operator, threshold)) return;
+      alarms.push({
+        id: `${topic}.${name}.${idx}`,
+        label: name,
+        topic,
+        operator,
+        threshold,
+        value: liveValue == null || liveValue === "" ? "-" : String(liveValue),
+      });
+    });
+    return alarms;
+  }, [opcTags, opcLiveValues]);
+  const buildLiveEquipmentDetails = (overlay) => {
+    if (!overlay) return [];
+    const path = String(overlay.tagPath || "").trim();
+    const rows = [];
+    const groupLive = path
+      ? svgLiveValuesByGroupPath.get(path) || svgLiveValuesByGroupPath.get(path.toLowerCase()) || null
+      : null;
+    if (groupLive?.routeId) rows.push({ key: "Route", value: String(groupLive.routeId) });
+    if (groupLive?.state) rows.push({ key: "State", value: String(groupLive.state) });
+    if (path) {
+      const lowerPath = path.toLowerCase();
+      const direct = Object.entries(opcLiveValues || {}).filter(([k]) => {
+        const key = String(k || "").toLowerCase();
+        return key === lowerPath || key.endsWith(`.${lowerPath}`) || key.includes(`${lowerPath}.`);
+      });
+      direct.slice(0, 12).forEach(([k, v]) => {
+        const label = String(k || "").split(".").pop() || String(k || "");
+        rows.push({ key: label, value: v == null || v === "" ? "-" : String(v) });
+      });
+    }
+    return rows;
+  };
+  const liveEquipmentOverlays = useMemo(() => {
+    const byId = new Map((svgOverlays || []).map((o) => [String(o.id || ""), o]));
+    return (liveEquipmentOverlayIds || [])
+      .map((id) => byId.get(String(id || "")))
+      .filter(Boolean)
+      .map((overlay) => ({
+        overlay,
+        details: buildLiveEquipmentDetails(overlay),
+      }));
+  }, [svgOverlays, liveEquipmentOverlayIds, svgLiveValuesByGroupPath, opcLiveValues]);
+  const liveEquipmentConnectorLines = useMemo(() => {
+    if (!isLiveMode || !svgRef.current || !liveEquipmentOverlays.length) return [];
+    const svgRect = svgRef.current.getBoundingClientRect();
+    const z = zoom || 1;
+    const lines = [];
+    for (const entry of liveEquipmentOverlays) {
+      const overlay = entry?.overlay;
+      if (!overlay) continue;
+      let fromX = NaN;
+      let fromY = NaN;
+      let overlayNode = null;
+      try {
+        const rawId = String(overlay.id || "");
+        const escapedId =
+          typeof CSS !== "undefined" && typeof CSS.escape === "function"
+            ? CSS.escape(rawId)
+            : rawId.replace(/"/g, '\\"');
+        overlayNode = document.querySelector(`[data-overlay-id="${escapedId}"]`);
+      } catch {
+        overlayNode = null;
+      }
+      if (overlayNode && typeof overlayNode.getBoundingClientRect === "function") {
+        const r = overlayNode.getBoundingClientRect();
+        fromX = r.left + r.width / 2;
+        fromY = r.bottom;
+      } else {
+        const bb = overlayLocalBBox(overlay.id);
+        if (!bb) continue;
+        const wr = overlayWorldRect(overlay, bb);
+        fromX = svgRect.left + (pan?.x || 0) + (wr.x + wr.w / 2) * z;
+        fromY = svgRect.top + (pan?.y || 0) + (wr.y + wr.h) * z;
+      }
+      const cardEl = liveEquipmentCardRefs.current.get(String(overlay.id || ""));
+      if (!cardEl) continue;
+      const cardRect = cardEl.getBoundingClientRect();
+      const toX = cardRect.left + cardRect.width / 2;
+      const toY = cardRect.top + 2;
+      if (![fromX, fromY, toX, toY].every((n) => Number.isFinite(n))) continue;
+      lines.push({
+        id: String(overlay.id || ""),
+        fromX,
+        fromY,
+        toX,
+        toY,
+      });
+    }
+    return lines;
+  }, [isLiveMode, liveEquipmentOverlays, pan, zoom, liveEquipmentDockTick]);
+
   const svgTagGroupMenuOptions = useMemo(() => {
     const options = [{ value: "", label: "Select tag group" }];
     const seen = new Set();
@@ -1075,6 +1515,12 @@ export default function App() {
           ? { x: fallback.pan.x, y: fallback.pan.y }
           : { x: 0, y: 0 },
       zoom: Number.isFinite(screen?.zoom) ? screen.zoom : Number.isFinite(fallback?.zoom) ? fallback.zoom : 1,
+      showInLiveMenu:
+        typeof screen?.showInLiveMenu === "boolean"
+          ? screen.showInLiveMenu
+          : typeof fallback?.showInLiveMenu === "boolean"
+          ? fallback.showInLiveMenu
+          : true,
     };
   }
 
@@ -1082,6 +1528,7 @@ export default function App() {
     const list = Array.isArray(sourceScreens) ? sourceScreens.map((s) => normalizeScreenPayload(s)) : [];
     const fallbackId = list[0]?.id || `screen-${Date.now()}`;
     const currentId = String(activeScreenIdRef.current || fallbackId);
+    const currentScreen = list.find((s) => s.id === currentId) || {};
     const snapshot = normalizeScreenPayload(
       {
         id: currentId,
@@ -1093,7 +1540,11 @@ export default function App() {
         pan: panRef.current,
         zoom: zoomRef.current,
       },
-      { id: currentId, name: screenNameRef.current || "Screen 1" }
+      {
+        ...currentScreen,
+        id: currentId,
+        name: screenNameRef.current || currentScreen.name || "Screen 1",
+      }
     );
     const idx = list.findIndex((s) => s.id === currentId);
     if (idx >= 0) list[idx] = snapshot;
@@ -1117,13 +1568,16 @@ export default function App() {
   function getProjectPayload() {
     const committed = commitCurrentScreenState(screens);
     const effectiveScreenId = committed.currentId || committed.list[0]?.id || "";
+    const normalizedMenuGroups = normalizeLiveMenuGroups(liveMenuGroups, committed.list);
     return {
       version: 1,
       name: projectName || "Untitled",
       canvasBackground: normalizeProjectCanvasBackground(projectCanvasBackground),
       plcs: normalizeProjectPlcEntries(projectPlcs, { includeRawText: true }),
       activeScreenId: effectiveScreenId,
+      projectMode: normalizeProjectMode(projectMode),
       screens: committed.list,
+      liveMenuGroups: normalizedMenuGroups,
       savedAt: new Date().toISOString(),
 
       shapes: shapesRef.current ?? [],
@@ -1146,7 +1600,9 @@ export default function App() {
       canvasBackground: normalizeProjectCanvasBackground(payload.canvasBackground),
       plcs: normalizeProjectPlcEntries(payload.plcs || payload.plcLibrary, { includeRawText: false }),
       activeScreenId: payload.activeScreenId || "",
+      projectMode: normalizeProjectMode(payload.projectMode),
       screens: normalizedScreens,
+      liveMenuGroups: normalizeLiveMenuGroups(payload.liveMenuGroups, normalizedScreens),
       vbW: payload.vbW,
       vbH: payload.vbH,
       pan: payload.pan || { x: 0, y: 0 },
@@ -1161,7 +1617,7 @@ export default function App() {
     }
   }
 
-  function applyRemoteProjectPayload(data) {
+  function applyRemoteProjectPayload(data, options = {}) {
     setProjectCanvasBackground(
       normalizeProjectCanvasBackground(data?.canvasBackground || data?.canvasBackgroundByTheme)
     );
@@ -1184,11 +1640,17 @@ export default function App() {
       : [fallbackScreen];
     const nextActiveId = String(data?.activeScreenId || incoming[0]?.id || "screen-1");
     const active = incoming.find((s) => s.id === nextActiveId) || incoming[0];
+    if (Object.prototype.hasOwnProperty.call(data || {}, "projectMode")) {
+      setProjectMode(normalizeProjectMode(data?.projectMode));
+    } else {
+      setProjectMode(readStoredProjectMode(options?.projectId || activeProjectIdRef.current));
+    }
+    setLiveMenuGroups(normalizeLiveMenuGroups(data?.liveMenuGroups, incoming));
     setScreens(incoming);
     hydrateScreenState(active);
   }
 
-  function applyProjectPayload(data) {
+  function applyProjectPayload(data, options = {}) {
     setProjectCanvasBackground(
       normalizeProjectCanvasBackground(data?.canvasBackground || data?.canvasBackgroundByTheme)
     );
@@ -1211,6 +1673,12 @@ export default function App() {
       : [fallbackScreen];
     const nextActiveId = String(data?.activeScreenId || incoming[0]?.id || "screen-1");
     const active = incoming.find((s) => s.id === nextActiveId) || incoming[0];
+    if (Object.prototype.hasOwnProperty.call(data || {}, "projectMode")) {
+      setProjectMode(normalizeProjectMode(data?.projectMode));
+    } else {
+      setProjectMode(readStoredProjectMode(options?.projectId || activeProjectIdRef.current));
+    }
+    setLiveMenuGroups(normalizeLiveMenuGroups(data?.liveMenuGroups, incoming));
 
     pushHistory();
     setScreens(incoming);
@@ -1462,12 +1930,9 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Save failed.");
       const next = data.project;
-      if (next?.data) {
-        applyRemoteProjectPayload(next.data);
-        lastProjectSignatureRef.current = projectPayloadSignature(next.data);
-      } else {
-        lastProjectSignatureRef.current = projectPayloadSignature(payload);
-      }
+      const localSig = projectPayloadSignature(payload);
+      const remoteSig = next?.data ? projectPayloadSignature(next.data) : "";
+      lastProjectSignatureRef.current = remoteSig && remoteSig === localSig ? remoteSig : localSig;
       if (next?.id) setActiveProjectId(next.id);
       if (next?.updated_at) setActiveProjectUpdatedAt(String(next.updated_at));
       setActiveProjectUpdatedBy(String(next?.updated_by_username || ""));
@@ -1480,7 +1945,8 @@ export default function App() {
       const payloadList = await reload.json();
       if (reload.ok) setProjects(payloadList.projects || []);
     } catch (err) {
-      if (!options?.silent) setProjectStatus(err?.message || "Save failed.");
+      const message = err?.message || "Save failed.";
+      setProjectStatus(options?.silent ? `Autosave failed: ${message}` : message);
     } finally {
       projectSaveInFlightRef.current = false;
       const queued = queuedSaveAfterFlightRef.current;
@@ -1495,6 +1961,10 @@ export default function App() {
 
   function flushScheduledProjectSave() {
     if (!pendingSilentSaveRef.current) return;
+    if (projectNameEditing) {
+      autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, 350);
+      return;
+    }
     if (projectSaveInFlightRef.current) {
       autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, 350);
       return;
@@ -1523,7 +1993,7 @@ export default function App() {
       const res = await fetch(`/api/projects/${id}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Load failed.");
-      applyProjectPayload(data?.data || {});
+      applyProjectPayload(data?.data || {}, { projectId: data?.id || id });
       setProjectName(data?.name || "Untitled");
       setActiveProjectId(data?.id || "");
       setActiveProjectUpdatedAt(String(data?.updated_at || ""));
@@ -1554,26 +2024,7 @@ export default function App() {
   }
 
   function newProjectFromDb() {
-    applyProjectPayload({
-      activeScreenId: "screen-1",
-      screens: [
-        {
-          id: "screen-1",
-          name: "Screen 1",
-          shapes: [],
-          svgOverlays: [],
-          vbW: 1600,
-          vbH: 900,
-          pan: { x: 0, y: 0 },
-          zoom: 1,
-        },
-      ],
-    });
-    setProjectName("Untitled");
-    setProjectCanvasBackground(normalizeProjectCanvasBackground(null));
-    setScreenName("Screen 1");
-    setActiveScreenId("screen-1");
-    setScreens([
+    const defaultScreens = [
       {
         id: "screen-1",
         name: "Screen 1",
@@ -1583,8 +2034,23 @@ export default function App() {
         vbH: 900,
         pan: { x: 0, y: 0 },
         zoom: 1,
+        showInLiveMenu: true,
       },
-    ]);
+    ];
+    const defaultMenuGroups = defaultLiveMenuGroupsFromScreens(defaultScreens);
+    applyProjectPayload({
+      projectMode: "design",
+      activeScreenId: "screen-1",
+      screens: defaultScreens,
+      liveMenuGroups: defaultMenuGroups,
+    });
+    setProjectName("Untitled");
+    setProjectMode("design");
+    setProjectCanvasBackground(normalizeProjectCanvasBackground(null));
+    setScreenName("Screen 1");
+    setActiveScreenId("screen-1");
+    setScreens(defaultScreens);
+    setLiveMenuGroups(defaultMenuGroups);
     setActiveProjectId("");
     localStorage.removeItem("vizi_active_project_id");
     setActiveProjectUpdatedAt("");
@@ -1596,19 +2062,10 @@ export default function App() {
       vbH: 900,
       pan: { x: 0, y: 0 },
       zoom: 1,
+      projectMode: "design",
       activeScreenId: "screen-1",
-      screens: [
-        {
-          id: "screen-1",
-          name: "Screen 1",
-          shapes: [],
-          svgOverlays: [],
-          vbW: 1600,
-          vbH: 900,
-          pan: { x: 0, y: 0 },
-          zoom: 1,
-        },
-      ],
+      screens: defaultScreens,
+      liveMenuGroups: defaultMenuGroups,
       shapes: [],
       svgOverlays: [],
     });
@@ -1622,11 +2079,40 @@ export default function App() {
     if (!activeProjectId) setProjectName("Untitled");
   }
 
+  async function saveProjectNameFromSettings() {
+    const nextName = String(projectNameDraft || "").trim() || "Untitled";
+    const nextMode = normalizeProjectMode(projectModeDraft);
+    const nextCanvasBackground = normalizeProjectCanvasBackground(projectCanvasBackgroundDraft);
+    setProjectName(nextName);
+    setProjectNameDraft(nextName);
+    setProjectMode(nextMode);
+    setProjectModeDraft(nextMode);
+    setProjectCanvasBackground(nextCanvasBackground);
+    setProjectCanvasBackgroundDraft(nextCanvasBackground);
+    setProjectNameEditing(false);
+    await saveProjectToDb();
+  }
+
+  function cancelProjectNameEditFromSettings() {
+    setProjectNameDraft(projectName || "");
+    setProjectModeDraft(normalizeProjectMode(projectMode));
+    setProjectCanvasBackgroundDraft(normalizeProjectCanvasBackground(projectCanvasBackground));
+    setProjectNameEditing(false);
+  }
+
+  function beginProjectDrawerEdit() {
+    setProjectNameDraft(projectName || "");
+    setProjectModeDraft(normalizeProjectMode(projectMode));
+    setProjectCanvasBackgroundDraft(normalizeProjectCanvasBackground(projectCanvasBackground));
+    setProjectNameEditing(true);
+  }
+
   useEffect(() => {
     if (!activeProjectId) return;
     let alive = true;
     async function pollProject() {
       if (!isPageVisible) return;
+      if (isInteractingRef.current) return;
       try {
         const res = await fetch(`/api/projects/${activeProjectId}`);
         const data = await res.json();
@@ -1641,7 +2127,12 @@ export default function App() {
           await saveProjectToDb({ silent: true });
           return;
         }
-        applyRemoteProjectPayload(data?.data || {});
+        if (remoteSig && remoteSig !== localSig) {
+          setProjectStatus("Remote differs from local. Re-saving local project...");
+          await saveProjectToDb({ silent: true });
+          return;
+        }
+        applyRemoteProjectPayload(data?.data || {}, { projectId: activeProjectId });
         lastProjectSignatureRef.current = remoteSig;
         setActiveProjectUpdatedAt(remoteUpdatedAt);
         const by = String(data?.updated_by_username || "");
@@ -1659,7 +2150,7 @@ export default function App() {
   }, [activeProjectId, activeProjectUpdatedAt, isPageVisible]);
 
   useEffect(() => {
-    if (!activeProjectId || !isPageVisible) return;
+    if (!activeProjectId || !isPageVisible || projectNameEditing) return;
     const id = setInterval(() => {
       const sig = projectPayloadSignature(getProjectPayload());
       if (!sig) return;
@@ -1667,7 +2158,7 @@ export default function App() {
       saveProjectToDb({ silent: true });
     }, 2500);
     return () => clearInterval(id);
-  }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible]);
+  }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible, projectNameEditing]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -1851,15 +2342,35 @@ export default function App() {
   const [drawerView, setDrawerView] = useState("ai");
   const [databaseTab, setDatabaseTab] = useState("data");
   const [showUserDrawer, setShowUserDrawer] = useState(false);
+  const [showSecurityDrawer, setShowSecurityDrawer] = useState(false);
   const getViewportSize = () => ({
     w: typeof window !== "undefined" ? window.innerWidth : 1400,
     h: typeof window !== "undefined" ? window.innerHeight : 900,
   });
   const { w: initialVpW } = getViewportSize();
-  const [drawerSizes, setDrawerSizes] = useState({
-    main: { w: Math.min(900, Math.floor(initialVpW * 0.96)) },
-    user: { w: Math.min(620, Math.floor(initialVpW * 0.96)) },
-    project: { w: Math.min(360, Math.floor(initialVpW * 0.92)) },
+  const [drawerSizes, setDrawerSizes] = useState(() => {
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+    const defaults = {
+      main: { w: Math.min(900, Math.floor(initialVpW * 0.96)) },
+      user: { w: Math.min(620, Math.floor(initialVpW * 0.96)) },
+      project: { w: Math.min(360, Math.floor(initialVpW * 0.92)) },
+    };
+    if (typeof window === "undefined") return defaults;
+    try {
+      const raw = localStorage.getItem(DRAWER_SIZES_KEY);
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      const mainW = clamp(Number(parsed?.main?.w) || defaults.main.w, 420, Math.max(420, Math.floor(initialVpW * 0.96)));
+      const userW = clamp(Number(parsed?.user?.w) || defaults.user.w, 420, Math.max(420, Math.floor(initialVpW * 0.96)));
+      const projectW = clamp(Number(parsed?.project?.w) || defaults.project.w, 280, Math.max(280, Math.floor(initialVpW * 0.92)));
+      return {
+        main: { w: mainW },
+        user: { w: userW },
+        project: { w: projectW },
+      };
+    } catch {
+      return defaults;
+    }
   });
   const drawerResizeRef = useRef({
     active: null,
@@ -1880,6 +2391,8 @@ export default function App() {
   });
   const [profileDraft, setProfileDraft] = useState({ username: "", display_name: "", avatar_url: "" });
   const [passwordDraft, setPasswordDraft] = useState({ current: "", next: "" });
+  const [profileEditing, setProfileEditing] = useState(false);
+  const [passwordEditing, setPasswordEditing] = useState(false);
   const [profileStatus, setProfileStatus] = useState("");
   const [profileError, setProfileError] = useState("");
 
@@ -1967,6 +2480,55 @@ export default function App() {
     return () => window.removeEventListener("resize", onResize);
   }, [TOP_BAR_H]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(DRAWER_SIZES_KEY, JSON.stringify(drawerSizes));
+    } catch {
+      // ignore storage write errors
+    }
+  }, [drawerSizes]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(
+        DRAWER_FULLSCREEN_KEY,
+        JSON.stringify({
+          main: Boolean(mainDrawerFullscreen),
+          user: Boolean(userDrawerFullscreen),
+          project: Boolean(projectDrawerFullscreen),
+        })
+      );
+    } catch {
+      // ignore storage write errors
+    }
+  }, [mainDrawerFullscreen, userDrawerFullscreen, projectDrawerFullscreen]);
+
+  useEffect(() => {
+    const fitToViewport = () => {
+      const el = svgRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const viewW = Math.max(1, Number(rect.width) || 0);
+      const viewH = Math.max(1, Number(rect.height) || 0);
+      const worldW = Math.max(1, Number(vbW) || 0);
+      const worldH = Math.max(1, Number(vbH) || 0);
+      const nextZoom = clampZoom(Math.min(viewW / worldW, viewH / worldH));
+      const nextPan = {
+        x: (viewW - worldW * nextZoom) / 2,
+        y: (viewH - worldH * nextZoom) / 2,
+      };
+      setZoom(nextZoom);
+      setPan(nextPan);
+    };
+    const onResizeFit = () => {
+      window.requestAnimationFrame(fitToViewport);
+    };
+    window.addEventListener("resize", onResizeFit);
+    return () => window.removeEventListener("resize", onResizeFit);
+  }, [vbW, vbH]);
+
   const [altDown, setAltDown] = useState(false);
   useEffect(() => {
     zoomPosRef.current = zoomPos;
@@ -2052,23 +2614,88 @@ export default function App() {
     };
   }, []);
 
-  function openDrawer(view) {
+  function openDrawer(view, options = {}) {
     const next = view || "ai";
     setMainDrawerFullscreen(false);
     setDrawerView(next);
-    if (next === "database")
-      setDatabaseTab((prev) => (prev === "dataset" || prev === "config" || prev === "designer" ? prev : "data"));
+    if (next === "database") {
+      const forceDataOnly = options?.forceDatabaseDataTab === true && isLiveMode;
+      setDatabaseDataOnlyMode(forceDataOnly);
+      if (options?.forceDatabaseDataTab === true) {
+        setDatabaseTab("data");
+      } else {
+        setDatabaseTab((prev) => (prev === "dataset" || prev === "config" || prev === "designer" ? prev : "data"));
+      }
+      const requested = String(options?.databasePath || "").trim();
+      if (requested) {
+        const normalized = requested.startsWith("/data/")
+          ? requested
+          : `/data/${requested.replace(/^\/+/, "")}`;
+        setDatabaseEmbeddedPath(normalized);
+      }
+    } else {
+      setDatabaseDataOnlyMode(false);
+    }
     setShowMainDrawer(true);
   }
 
   useEffect(() => {
     if (!user) return;
+    if (profileEditing) return;
     setProfileDraft({
       username: user.username || "",
       display_name: user.display_name || "",
       avatar_url: user.avatar_url || "",
     });
-  }, [user]);
+  }, [user, profileEditing]);
+
+  function resetProfileDraftFromUser() {
+    setProfileDraft({
+      username: user?.username || "",
+      display_name: user?.display_name || "",
+      avatar_url: user?.avatar_url || "",
+    });
+  }
+
+  function cancelProfileEdit() {
+    resetProfileDraftFromUser();
+    setProfileEditing(false);
+  }
+
+  async function saveProfileEdit() {
+    setProfileError("");
+    setProfileStatus("");
+    try {
+      await updateProfile({
+        username: profileDraft.username,
+        display_name: profileDraft.display_name,
+        avatar_url: profileDraft.avatar_url,
+      });
+      await refresh();
+      setProfileStatus("Profile updated.");
+      setProfileEditing(false);
+    } catch (err) {
+      setProfileError(err?.message || "Update failed.");
+    }
+  }
+
+  function cancelPasswordEdit() {
+    setPasswordDraft({ current: "", next: "" });
+    setPasswordEditing(false);
+  }
+
+  async function savePasswordEdit() {
+    setProfileError("");
+    setProfileStatus("");
+    try {
+      await changePassword(passwordDraft.current, passwordDraft.next);
+      setPasswordDraft({ current: "", next: "" });
+      setProfileStatus("Password updated.");
+      setPasswordEditing(false);
+    } catch (err) {
+      setProfileError(err?.message || "Password update failed.");
+    }
+  }
 
   useEffect(() => {
     const next = theme === "dark" ? "dark" : "light";
@@ -2088,6 +2715,19 @@ export default function App() {
     if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
     return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
   }, [user]);
+  const canManageSecurity = useMemo(
+    () => Boolean(user?.permissions?.security?.can_edit),
+    [user]
+  );
+  const hasUserPermissions = useMemo(
+    () => Boolean(user?.permissions && typeof user.permissions === "object"),
+    [user]
+  );
+  const canViewArea = (areaKey) => {
+    if (!areaKey) return true;
+    if (!hasUserPermissions) return true;
+    return Boolean(user?.permissions?.[areaKey]?.can_view || user?.permissions?.[areaKey]?.can_edit);
+  };
 
 
   // ✅ ZOOM (main svg)
@@ -2323,6 +2963,21 @@ export default function App() {
   };
 
   const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+  function fitViewToCanvas() {
+    const el = svgRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const viewW = Math.max(1, Number(rect.width) || 0);
+    const viewH = Math.max(1, Number(rect.height) || 0);
+    const worldW = Math.max(1, Number(vbW) || 0);
+    const worldH = Math.max(1, Number(vbH) || 0);
+    const nextZoom = clampZoom(Math.min(viewW / worldW, viewH / worldH));
+    setZoom(nextZoom);
+    setPan({
+      x: (viewW - worldW * nextZoom) / 2,
+      y: (viewH - worldH * nextZoom) / 2,
+    });
+  }
 
   function zoomIn() {
     setZoom((z) => clampZoom(+(z * ZOOM_STEP).toFixed(4)));
@@ -2330,9 +2985,26 @@ export default function App() {
   function zoomOut() {
     setZoom((z) => clampZoom(+(z / ZOOM_STEP).toFixed(4)));
   }
-  function zoomReset() {
+  function resetZoomToActual100() {
+    const el = svgRef.current;
+    if (!el) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const viewW = Math.max(1, Number(rect.width) || 0);
+    const viewH = Math.max(1, Number(rect.height) || 0);
+    const worldW = Math.max(1, Number(vbW) || 0);
+    const worldH = Math.max(1, Number(vbH) || 0);
     setZoom(1);
-    setPan({ x: 0, y: 0 });
+    setPan({
+      x: (viewW - worldW) / 2,
+      y: (viewH - worldH) / 2,
+    });
+  }
+  function zoomReset() {
+    resetZoomToActual100();
   }
 
   async function onPickProjectFile(e) {
@@ -2623,8 +3295,7 @@ export default function App() {
 
 
   function resetView() {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    resetZoomToActual100();
   }
 
   function rectsIntersect(a, b) {
@@ -2726,6 +3397,20 @@ export default function App() {
     }));
     return [...base, ...generated].sort((a, b) => a.name.localeCompare(b.name));
   }, [generatedSvgs]);
+
+  const aiSvgCatalog = useMemo(() => {
+    return (Array.isArray(svgFiles) ? svgFiles : [])
+      .map((file) => {
+        const key = String(file?.key || "").trim();
+        const name = String(file?.name || "").trim();
+        if (!key || !name) return null;
+        const folder = getFolderFromKey(key);
+        const tags = tokenizeSvgCatalogText(`${name} ${folder}`);
+        return { key, name, tags };
+      })
+      .filter(Boolean)
+      .slice(0, 450);
+  }, [svgFiles]);
 
   const contextGrouped = useMemo(() => {
     const q = String(contextImportQuery || "").trim().toLowerCase();
@@ -2854,10 +3539,11 @@ export default function App() {
       for (const o of svgOverlays) {
         const bb = overlayLocalBBox(o.id);
         if (!bb) continue;
-        const ox = o.tx + o.scale * bb.x;
-        const oy = o.ty + o.scale * bb.y;
-        const ow = o.scale * bb.width;
-        const oh = o.scale * bb.height;
+        const wr = overlayWorldRect(o, bb);
+        const ox = wr.x;
+        const oy = wr.y;
+        const ow = wr.w;
+        const oh = wr.h;
         const cx = ox + ow / 2;
         const cy = oy + oh / 2;
         const candidates = [
@@ -2982,10 +3668,35 @@ export default function App() {
     return null;
   }
 
+  function overlayScaleX(o) {
+    const sx = Number(o?.scaleX);
+    if (Number.isFinite(sx) && sx > 0) return sx;
+    const s = Number(o?.scale);
+    return Number.isFinite(s) && s > 0 ? s : 1;
+  }
 
+  function overlayScaleY(o) {
+    const sy = Number(o?.scaleY);
+    if (Number.isFinite(sy) && sy > 0) return sy;
+    const s = Number(o?.scale);
+    return Number.isFinite(s) && s > 0 ? s : 1;
+  }
+
+  function overlayWorldRect(o, bb) {
+    const sx = overlayScaleX(o);
+    const sy = overlayScaleY(o);
+    return {
+      x: o.tx + sx * bb.x,
+      y: o.ty + sy * bb.y,
+      w: sx * bb.width,
+      h: sy * bb.height,
+    };
+  }
 
   function worldFromLocal(o, lx, ly) {
-    return { x: o.tx + o.scale * lx, y: o.ty + o.scale * ly };
+    const sx = overlayScaleX(o);
+    const sy = overlayScaleY(o);
+    return { x: o.tx + sx * lx, y: o.ty + sy * ly };
   }
 
   // ---------- Multi-drag ----------
@@ -3364,11 +4075,12 @@ export default function App() {
       if (!o) continue;
       const bb = overlayLocalBBox(id);
       if (!bb) continue;
+      const wr = overlayWorldRect(o, bb);
       items.push({
-        x: o.tx + o.scale * bb.x,
-        y: o.ty + o.scale * bb.y,
-        w: o.scale * bb.width,
-        h: o.scale * bb.height,
+        x: wr.x,
+        y: wr.y,
+        w: wr.w,
+        h: wr.h,
       });
     }
 
@@ -3595,11 +4307,12 @@ export default function App() {
       for (const o of clip.overlays) {
         const bb = o.bbox || overlayLocalBBox(o.id);
         if (!bb) continue;
+        const wr = overlayWorldRect(o, bb);
         boxes.push({
-          x: o.tx + o.scale * bb.x,
-          y: o.ty + o.scale * bb.y,
-          w: o.scale * bb.width,
-          h: o.scale * bb.height,
+          x: wr.x,
+          y: wr.y,
+          w: wr.w,
+          h: wr.h,
         });
       }
       if (boxes.length) {
@@ -3726,6 +4439,7 @@ export default function App() {
 
     setDrawing(null);
     clearSelection();
+    setTool("select");
     scheduleProjectAutoSave();
   }
 
@@ -3742,6 +4456,10 @@ export default function App() {
   }
 
   function deleteSelected() {
+    const hasShapeSelection = selectedIds.length > 0;
+    const hasOverlaySelection = selectedOverlayIds.length > 0;
+    if (!hasShapeSelection && !hasOverlaySelection) return;
+    pushHistory();
     if (selectedIds.length) {
       setShapes((prev) => prev.filter((s) => !selectedIds.includes(s.id)));
       if (editingId && selectedIds.includes(editingId)) setEditingId(null);
@@ -3751,6 +4469,7 @@ export default function App() {
     }
     clearSelection();
     exitEditMode();
+    scheduleProjectAutoSave();
   }
 
   function onShapeMouseDown(e, id) {
@@ -4022,7 +4741,8 @@ export default function App() {
       anchorLocal,
       anchorWorld,
       startDist,
-      origScale: o.scale,
+      origScaleX: overlayScaleX(o),
+      origScaleY: overlayScaleY(o),
     });
   }
 
@@ -4157,7 +4877,30 @@ export default function App() {
     exitEditMode();
     setShowHUD(false);
     setImportAnchor(null);
+    setTool("select");
+    setDrawing(null);
     scheduleProjectAutoSave();
+  }
+
+  async function handleAiInsertSvg(rawSelection) {
+    const selected = String(rawSelection || "").trim();
+    if (!selected) return { ok: false, error: "No SVG key provided." };
+    const byExactKey = (Array.isArray(svgFiles) ? svgFiles : []).find(
+      (file) => String(file?.key || "").trim().toLowerCase() === selected.toLowerCase()
+    );
+    const byName = (Array.isArray(svgFiles) ? svgFiles : []).find(
+      (file) => String(file?.name || "").trim().toLowerCase() === selected.toLowerCase()
+    );
+    const target = byExactKey || byName || null;
+    if (!target?.key) {
+      return { ok: false, error: `SVG not found: ${selected}` };
+    }
+    try {
+      await onPickSvg(target.key, lastContextPoint ?? undefined);
+      return { ok: true, key: target.key, name: target.name || target.key };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || "Failed to add SVG.") };
+    }
   }
 
   function finishRectDrawing(rectId) {
@@ -4171,6 +4914,7 @@ export default function App() {
       })
     );
     setDrawing(null);
+    setTool("select");
     scheduleProjectAutoSave();
   }
 
@@ -4183,6 +4927,8 @@ export default function App() {
     }, tmpl.raw);
     setWidgetOpen(false);
     setContextMenu(null);
+    setTool("select");
+    setDrawing(null);
   }
 
   async function swapOverlayTemplate(overlayId, fileKey) {
@@ -4191,10 +4937,11 @@ export default function App() {
     const bb = overlayLocalBBox(overlayId);
     if (!bb) return;
 
-    const worldX = o.tx + o.scale * bb.x;
-    const worldY = o.ty + o.scale * bb.y;
-    const worldW = o.scale * bb.width;
-    const worldH = o.scale * bb.height;
+    const wr = overlayWorldRect(o, bb);
+    const worldX = wr.x;
+    const worldY = wr.y;
+    const worldW = wr.w;
+    const worldH = wr.h;
     const center = { x: worldX + worldW / 2, y: worldY + worldH / 2 };
 
     const nextOverlay = await buildOverlayFromKey(fileKey, center, worldW || undefined);
@@ -4273,12 +5020,13 @@ export default function App() {
       if (!o) continue;
       const bb = overlayLocalBBox(id);
       if (!bb) continue;
+      const wr = overlayWorldRect(o, bb);
 
       boxes.push({
-        x: o.tx + o.scale * bb.x,
-        y: o.ty + o.scale * bb.y,
-        w: o.scale * bb.width,
-        h: o.scale * bb.height,
+        x: wr.x,
+        y: wr.y,
+        w: wr.w,
+        h: wr.h,
       });
     }
 
@@ -4342,6 +5090,8 @@ export default function App() {
     widgetShowPoints: "true",
     widgetSeriesTags: "",
     widgetAxisMode: "auto",
+    widgetTimerPreTag: "",
+    widgetTimerAccTag: "",
   });
 
 
@@ -4382,6 +5132,8 @@ export default function App() {
         widgetShowPoints: "true",
         widgetSeriesTags: "",
         widgetAxisMode: "auto",
+        widgetTimerPreTag: "",
+        widgetTimerAccTag: "",
       });
       return;
     }
@@ -4464,6 +5216,8 @@ export default function App() {
           widgetShowPoints: String(w.showPoints !== false),
           widgetSeriesTags: normalizeSeriesTagsValue(w.seriesTags, tagPath).join("\n"),
           widgetAxisMode: String(w.axisMode === "manual" ? "manual" : "auto"),
+          widgetTimerPreTag: String(w.timerPreTag || ""),
+          widgetTimerAccTag: String(w.timerAccTag || ""),
           widgetBarSourceMode: barSourceMode,
           widgetBarTable: String(w.barTable || parsedDb?.table || ""),
           widgetBarField: String(w.barField || parsedDb?.field || ""),
@@ -4517,6 +5271,8 @@ export default function App() {
           widgetShowPoints: "true",
           widgetSeriesTags: "",
           widgetAxisMode: "auto",
+          widgetTimerPreTag: "",
+          widgetTimerAccTag: "",
           widgetBarSourceMode: "table",
           widgetBarTable: "",
           widgetBarField: "",
@@ -4565,6 +5321,8 @@ export default function App() {
       widgetShowPoints: "true",
       widgetSeriesTags: "",
       widgetAxisMode: "auto",
+      widgetTimerPreTag: "",
+      widgetTimerAccTag: "",
       widgetBarSourceMode: "table",
       widgetBarTable: "",
       widgetBarField: "",
@@ -4627,6 +5385,8 @@ export default function App() {
     const axisMode = String(source.widgetAxisMode || "").trim().toLowerCase() === "manual"
       ? "manual"
       : "auto";
+    const timerPreTag = String(source.widgetTimerPreTag || "").trim();
+    const timerAccTag = String(source.widgetTimerAccTag || "").trim();
     const rawBarSourceMode = String(source.widgetBarSourceMode || "table").trim().toLowerCase();
     const barSourceMode = rawBarSourceMode === "query"
       ? "query"
@@ -4689,6 +5449,8 @@ export default function App() {
           } else if (barSourceMode === "query" && barQuery) {
             nextTagPath = `dbq:${barQuery}`;
           }
+        } else if (kind === "countdownBar" && timerAccTag) {
+          nextTagPath = timerAccTag;
         }
         const sourceHasSeriesTags = Object.prototype.hasOwnProperty.call(source, "widgetSeriesTags");
         const sourceSeriesTags = normalizeSeriesTagsValue(source.widgetSeriesTags, nextTagPath);
@@ -4725,6 +5487,8 @@ export default function App() {
             showPoints,
             seriesTags,
             axisMode,
+            timerPreTag,
+            timerAccTag,
             barSourceMode,
             barTable,
             barField,
@@ -4888,7 +5652,8 @@ export default function App() {
     scheduleProjectAutoSave();
   }
 
-  function applyBBoxFromHud(next) {
+  function applyBBoxFromHud(next, options = {}) {
+    const aspectLocked = options?.aspectLocked !== false;
     const X = numOrNull(next.x);
     const Y = numOrNull(next.y);
     const W = numOrNull(next.w);
@@ -4908,30 +5673,34 @@ export default function App() {
       const targetX = X == null ? selectedBBox.x : X;
       const targetY = Y == null ? selectedBBox.y : Y;
 
-      // compute scale from desired W/H
-      let nextScale = o.scale;
+      let nextScaleX = overlayScaleX(o);
+      let nextScaleY = overlayScaleY(o);
 
-      // If user typed W, scale must be W / bb.width
-      if (W != null && bb.width > 0) nextScale = W / bb.width;
-
-      // If user typed H (and not W), scale must be H / bb.height
-      if (W == null && H != null && bb.height > 0) nextScale = H / bb.height;
-
-      // If they typed BOTH, we cannot satisfy both unless aspect matches (uniform scale).
-      // We'll prefer W (so "exact W" works). If you prefer "fit inside", use Math.min().
-      if (W != null && H != null && bb.width > 0 && bb.height > 0) {
-        nextScale = W / bb.width; // ✅ prefer exact W
-        // alternative: nextScale = Math.min(W / bb.width, H / bb.height);
+      if (aspectLocked) {
+        let nextScale = nextScaleX;
+        if (W != null && bb.width > 0) nextScale = W / bb.width;
+        if (W == null && H != null && bb.height > 0) nextScale = H / bb.height;
+        if (W != null && H != null && bb.width > 0 && bb.height > 0) {
+          nextScale = W / bb.width;
+        }
+        nextScale = Math.max(0.05, nextScale);
+        nextScaleX = nextScale;
+        nextScaleY = nextScale;
+      } else {
+        if (W != null && bb.width > 0) nextScaleX = Math.max(0.05, W / bb.width);
+        if (H != null && bb.height > 0) nextScaleY = Math.max(0.05, H / bb.height);
       }
 
-      nextScale = Math.max(0.05, nextScale);
-
-      // Make top-left match targetX/targetY
-      const newTx = targetX - nextScale * bb.x;
-      const newTy = targetY - nextScale * bb.y;
+      // Make top-left match targetX/targetY using per-axis scale
+      const newTx = targetX - nextScaleX * bb.x;
+      const newTy = targetY - nextScaleY * bb.y;
 
       setSvgOverlays((prev) =>
-        prev.map((x) => (x.id === id ? { ...x, tx: newTx, ty: newTy, scale: nextScale } : x))
+        prev.map((x) =>
+          x.id === id
+            ? { ...x, tx: newTx, ty: newTy, scale: nextScaleX, scaleX: nextScaleX, scaleY: nextScaleY }
+            : x
+        )
       );
 
       return; // ✅ stop here so old min(sx,sy) logic doesn't interfere
@@ -5012,16 +5781,16 @@ export default function App() {
 
     // Overlays: uniform scale only
     if (selectedOverlayIds.length) {
-      const sUni = Math.max(0.05, Math.min(sx, sy));
       setSvgOverlays((prev) =>
         prev.map((o) => {
           if (!selectedOverlayIds.includes(o.id)) return o;
 
           const newTx = base.x + (o.tx - base.x) * sx + dx;
           const newTy = base.y + (o.ty - base.y) * sy + dy;
-          const newScale = Math.max(0.05, o.scale * sUni);
+          const newScaleX = Math.max(0.05, overlayScaleX(o) * sx);
+          const newScaleY = Math.max(0.05, overlayScaleY(o) * sy);
 
-          return { ...o, tx: newTx, ty: newTy, scale: newScale };
+          return { ...o, tx: newTx, ty: newTy, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY };
         })
       );
     }
@@ -5029,6 +5798,7 @@ export default function App() {
 
   // ---------- Mouse / Keyboard ----------
   useKeyboardShortcuts({
+    disabled: isLiveMode,
     drawing,
     editingId,
     importOpen,
@@ -5044,6 +5814,53 @@ export default function App() {
     clearImportAnchor: () => setImportAnchor(null),
     deleteSelected,
   });
+
+  useEffect(() => {
+    if (!isLiveMode) return;
+    setShowMainDrawer(false);
+    setShowProjectDrawer(false);
+    setShowHUD(false);
+    setImportOpen(false);
+    setWidgetOpen(false);
+    setContextMenu(null);
+    setContextSvgMenuOpen(false);
+    setTool("select");
+    setDrawing(null);
+    setInlineEdit(null);
+    setSelectedIds([]);
+    setSelectedOverlayIds([]);
+    exitEditMode();
+  }, [isLiveMode]);
+
+  useEffect(() => {
+    if (isLiveMode) return;
+    setLiveEquipmentOverlayIds([]);
+  }, [isLiveMode]);
+
+  function onLiveOverlayMouseDown(e, id) {
+    e.stopPropagation();
+    e.preventDefault();
+    const nextId = String(id || "").trim();
+    if (!nextId) return;
+    setLiveEquipmentOverlayIds((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      const without = list.filter((x) => String(x || "") !== nextId);
+      return [...without, nextId];
+    });
+  }
+
+  function closeLiveEquipmentCard(id) {
+    const nextId = String(id || "").trim();
+    if (!nextId) return;
+    setLiveEquipmentOverlayIds((prev) => (Array.isArray(prev) ? prev.filter((x) => String(x || "") !== nextId) : []));
+  }
+
+  useEffect(() => {
+    if (!isLiveMode || !liveEquipmentOverlays.length) return undefined;
+    const onResize = () => setLiveEquipmentDockTick((v) => v + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [isLiveMode, liveEquipmentOverlays.length]);
 
   function onSvgMouseDown(e) {
     if (e.button === 2) return;
@@ -5219,11 +6036,12 @@ export default function App() {
       for (const o of overlaysRef.current || []) {
         const bb = o.bbox || overlayLocalBBox(o.id);
         if (!bb) continue;
+        const wr = overlayWorldRect(o, bb);
         const r = {
-          x: o.tx + o.scale * bb.x,
-          y: o.ty + o.scale * bb.y,
-          w: o.scale * bb.width,
-          h: o.scale * bb.height,
+          x: wr.x,
+          y: wr.y,
+          w: wr.w,
+          h: wr.h,
         };
         if (pointInRect(p, r)) { hit = true; hitOverlayId = o.id; break; }
       }
@@ -5324,7 +6142,27 @@ export default function App() {
     }
 
     if (overlayResize) {
-      const { id, isWidget, anchorLocal, anchorWorld, startDist, origScale } = overlayResize;
+      if (overlayResize?.kind === "group") {
+        const anchorWorld = overlayResize.anchorWorld || { x: 0, y: 0 };
+        const startDist = Math.max(1, Number(overlayResize.startDist || 1));
+        const d = Math.max(1, distance(p, anchorWorld));
+        const ratio = d / startDist;
+        const base = Array.isArray(overlayResize.overlays) ? overlayResize.overlays : [];
+        const byId = new Map(base.map((o) => [String(o.id), o]));
+        setSvgOverlays((prev) =>
+          prev.map((o) => {
+            const rec = byId.get(String(o.id));
+            if (!rec) return o;
+            const sx = Math.max(0.05, Number(rec.sx || 1) * ratio);
+            const sy = Math.max(0.05, Number(rec.sy || 1) * ratio);
+            const tx = anchorWorld.x + (Number(rec.tx || 0) - anchorWorld.x) * ratio;
+            const ty = anchorWorld.y + (Number(rec.ty || 0) - anchorWorld.y) * ratio;
+            return { ...o, tx, ty, scale: sx, scaleX: sx, scaleY: sy };
+          })
+        );
+        return;
+      }
+      const { id, isWidget, anchorLocal, anchorWorld, startDist, origScaleX, origScaleY } = overlayResize;
       const o = svgOverlays.find((x) => x.id === id);
       if (!o) return;
 
@@ -5343,6 +6181,8 @@ export default function App() {
               ? {
                   ...x,
                   scale: 1,
+                  scaleX: 1,
+                  scaleY: 1,
                   tx: leftRaw,
                   ty: topRaw,
                   bbox: { x: 0, y: 0, width, height },
@@ -5355,13 +6195,18 @@ export default function App() {
 
       const d = Math.max(1, distance(p, anchorWorld));
       const ratio = d / startDist;
-      const newScale = Math.max(0.05, origScale * ratio);
+      const newScaleX = Math.max(0.05, origScaleX * ratio);
+      const newScaleY = Math.max(0.05, origScaleY * ratio);
 
-      const newTx = anchorWorld.x - newScale * anchorLocal.x;
-      const newTy = anchorWorld.y - newScale * anchorLocal.y;
+      const newTx = anchorWorld.x - newScaleX * anchorLocal.x;
+      const newTy = anchorWorld.y - newScaleY * anchorLocal.y;
 
       setSvgOverlays((prev) =>
-        prev.map((x) => (x.id === id ? { ...x, scale: newScale, tx: newTx, ty: newTy } : x))
+        prev.map((x) =>
+          x.id === id
+            ? { ...x, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY, tx: newTx, ty: newTy }
+            : x
+        )
       );
       return;
     }
@@ -5492,13 +6337,8 @@ export default function App() {
         .filter((o) => {
           const bb = overlayLocalBBox(o.id);
           if (!bb) return false;
-          const wr = {
-            x: o.tx + o.scale * bb.x,
-            y: o.ty + o.scale * bb.y,
-            w: o.scale * bb.width,
-            h: o.scale * bb.height,
-          };
-          return rectsIntersect(r, wr);
+          const worldRect = overlayWorldRect(o, bb);
+          return rectsIntersect(r, worldRect);
         })
         .map((o) => o.id);
 
@@ -5565,11 +6405,12 @@ export default function App() {
   function overlaySelectionUI(o) {
     const bb = overlayLocalBBox(o.id);
     if (!bb) return null;
+    const wr = overlayWorldRect(o, bb);
 
-    const x = o.tx + o.scale * bb.x;
-    const y = o.ty + o.scale * bb.y;
-    const w = o.scale * bb.width;
-    const h = o.scale * bb.height;
+    const x = wr.x;
+    const y = wr.y;
+    const w = wr.w;
+    const h = wr.h;
 
     const corners = [
       { key: "TL", cx: x, cy: y },
@@ -5602,6 +6443,116 @@ export default function App() {
               fill="transparent"
               style={{ cursor: altDown ? "move" : "nwse-resize" }}
               onMouseDown={(e) => onOverlayHandleDown(e, o.id, c.key)}
+            />
+          </g>
+        ))}
+      </g>
+    );
+  }
+
+  function getSelectedOverlayGroupBBox(ids = selectedOverlayIds) {
+    const list = Array.isArray(ids) ? ids : [];
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let hit = 0;
+    for (const id of list) {
+      const o = svgOverlays.find((x) => x.id === id);
+      if (!o) continue;
+      const bb = overlayLocalBBox(o.id);
+      if (!bb) continue;
+      const wr = overlayWorldRect(o, bb);
+      minX = Math.min(minX, wr.x);
+      minY = Math.min(minY, wr.y);
+      maxX = Math.max(maxX, wr.x + wr.w);
+      maxY = Math.max(maxY, wr.y + wr.h);
+      hit += 1;
+    }
+    if (!hit || !Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return null;
+    }
+    return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
+  }
+
+  function onOverlayGroupHandleDown(e, corner) {
+    if (tool !== "select") return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (selectedIds.length > 0 || selectedOverlayIds.length < 2) return;
+
+    const group = getSelectedOverlayGroupBBox(selectedOverlayIds);
+    if (!group) return;
+    const TL = { x: group.x, y: group.y };
+    const TR = { x: group.x + group.w, y: group.y };
+    const BR = { x: group.x + group.w, y: group.y + group.h };
+    const BL = { x: group.x, y: group.y + group.h };
+    const corners = { TL, TR, BR, BL };
+    const opposite = { TL: BR, TR: BL, BR: TL, BL: TR };
+    const startWorld = corners[corner];
+    const anchorWorld = opposite[corner];
+    if (!startWorld || !anchorWorld) return;
+    const startDist = Math.max(1, distance(startWorld, anchorWorld));
+    const overlays = (selectedOverlayIds || [])
+      .map((id) => {
+        const o = svgOverlays.find((x) => x.id === id);
+        if (!o) return null;
+        return {
+          id: o.id,
+          tx: Number(o.tx || 0),
+          ty: Number(o.ty || 0),
+          sx: overlayScaleX(o),
+          sy: overlayScaleY(o),
+        };
+      })
+      .filter(Boolean);
+    if (!overlays.length) return;
+    pushHistory();
+    setOverlayResize({
+      kind: "group",
+      anchorWorld,
+      startDist,
+      overlays,
+    });
+  }
+
+  function overlayGroupSelectionUI() {
+    if (selectedIds.length > 0 || selectedOverlayIds.length < 2) return null;
+    const group = getSelectedOverlayGroupBBox(selectedOverlayIds);
+    if (!group) return null;
+    const x = group.x;
+    const y = group.y;
+    const w = group.w;
+    const h = group.h;
+    const corners = [
+      { key: "TL", cx: x, cy: y },
+      { key: "TR", cx: x + w, cy: y },
+      { key: "BR", cx: x + w, cy: y + h },
+      { key: "BL", cx: x, cy: y + h },
+    ];
+    return (
+      <g>
+        <rect
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          fill="none"
+          stroke="#2b6cff"
+          strokeWidth={2}
+          strokeDasharray="8 5"
+          pointerEvents="none"
+        />
+        {corners.map((c) => (
+          <g key={`group-resize-${c.key}`}>
+            <circle cx={c.cx} cy={c.cy} r={8} fill="white" stroke="#2b6cff" strokeWidth={2} />
+            <circle
+              cx={c.cx}
+              cy={c.cy}
+              r={16}
+              fill="transparent"
+              style={{ cursor: "nwse-resize" }}
+              onMouseDown={(e) => onOverlayGroupHandleDown(e, c.key)}
             />
           </g>
         ))}
@@ -5690,23 +6641,19 @@ export default function App() {
   };
   const topMenuDeleteButtonStyle = (enabled = true) => ({
     ...topMenuIconButtonStyle,
-    border: "1px solid #f04438",
-    background: enabled ? "#f04438" : "rgba(244,68,56,0.55)",
-    color: "#ffffff",
+    border: "1px solid var(--danger)",
+    background: enabled ? "var(--danger)" : "color-mix(in srgb, var(--danger) 55%, transparent)",
+    color: "var(--danger-text)",
     cursor: enabled ? "pointer" : "not-allowed",
     opacity: enabled ? 1 : 0.9,
   });
   const topMenuIconSize = 14;
   const topMenuModeButtonStyle = (active) => ({
     ...topMenuIconButtonStyle,
-    border: topMenuTextButtonStyle.border,
-    color: active ? (theme === "dark" ? "#0b1220" : "#ffffff") : topMenuTextButtonStyle.color,
-    background: active
-      ? theme === "dark"
-        ? "linear-gradient(180deg, #cfd4dc 0%, #aeb7c4 100%)"
-        : "#2b6cff"
-      : topMenuIconButtonStyle.background,
-    boxShadow: "none",
+    border: active ? "1px solid var(--selected-border)" : topMenuTextButtonStyle.border,
+    color: active ? "var(--selected-text)" : topMenuTextButtonStyle.color,
+    background: active ? "var(--selected-bg)" : topMenuIconButtonStyle.background,
+    boxShadow: active ? "var(--selected-shadow)" : "none",
   });
   const drawerHeaderButtonStyle = {
     border: "1px solid var(--border)",
@@ -5722,22 +6669,48 @@ export default function App() {
     display: "grid",
     placeItems: "center",
   };
+  const drawerContentPadding = 16;
+  const drawerContentShellStyle = {
+    height: "100%",
+    overflow: "auto",
+    padding: drawerContentPadding,
+    boxSizing: "border-box",
+  };
   const drawerTabButtonStyle = (active) => ({
-    border: `1px solid ${active ? "#2b6cff" : "var(--border)"}`,
-    background: active ? "#2b6cff" : "var(--bg-soft)",
-    color: active ? "#ffffff" : "var(--text)",
-    borderRadius: 10,
-    minWidth: 96,
-    height: 34,
-    padding: "0 12px",
+    border: "none",
+    borderBottom: `2px solid ${active ? "var(--accent)" : "transparent"}`,
+    background: "transparent",
+    color: active ? "var(--accent)" : "var(--text-muted)",
+    borderRadius: 0,
+    minWidth: 0,
+    height: 30,
+    padding: "0 10px",
     fontSize: 12,
     fontWeight: 700,
     cursor: "pointer",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    boxShadow: active ? "0 0 0 1px rgba(43,108,255,0.3)" : "none",
+    boxShadow: "none",
+    transition: "color 140ms ease, border-color 140ms ease, background-color 140ms ease",
   });
+  const projectDrawerContentStyle = {
+    flex: "1 1 auto",
+    minHeight: 0,
+    overflow: "auto",
+    padding: "10px 14px 10px 10px",
+    display: "grid",
+    gap: 8,
+    alignContent: "start",
+  };
+  const projectDrawerCardStyle = {
+    display: "grid",
+    gap: 8,
+    padding: 10,
+    border: "1px solid var(--border)",
+    borderRadius: 10,
+    background: "var(--bg-elev)",
+  };
   const activeProject = useMemo(
     () => projects.find((p) => p.id === activeProjectId) || null,
     [projects, activeProjectId]
@@ -5746,6 +6719,59 @@ export default function App() {
     if (!Array.isArray(screens) || !screens.length) return null;
     return screens.find((s) => s.id === activeScreenId) || screens[0];
   }, [screens, activeScreenId]);
+  const liveMenuGroupsForRender = useMemo(
+    () => normalizeLiveMenuGroups(liveMenuGroups, screens),
+    [liveMenuGroups, screens]
+  );
+  const activeDatabaseTable = useMemo(() => {
+    const raw = String(databaseEmbeddedPath || "").trim();
+    if (!raw) return "";
+    const normalized = raw.startsWith("/data/") ? raw : `/data/${raw.replace(/^\/+/, "")}`;
+    const m = normalized.match(/^\/data\/([^/]+)(?:\/([^/]+))?$/i);
+    if (!m) return "";
+    return decodeURIComponent(String(m[1] || "")).trim();
+  }, [databaseEmbeddedPath]);
+  const activeMenuLabel = useMemo(() => {
+    const fallback = activeScreen?.name || screenName || "None";
+    if (!isLiveMode) return fallback;
+    for (const group of liveMenuGroupsForRender) {
+      const items = Array.isArray(group?.items) ? group.items : [];
+      for (const item of items) {
+        const isData = item?.type === "data";
+        if (isData) {
+          const configuredTable = String(item?.dataTable || "").trim();
+          const isActiveData =
+            showMainDrawer &&
+            drawerView === "database" &&
+            (configuredTable ? configuredTable === activeDatabaseTable : true);
+          if (!isActiveData) continue;
+          return String(item?.label || "").trim() || normalizeTableDisplayName(configuredTable) || "Data";
+        }
+        const screenId = String(item?.screenId || "");
+        if (!screenId || screenId !== String(activeScreenId || "")) continue;
+        const screen = screens.find((s) => String(s?.id || "") === screenId) || null;
+        return String(item?.label || "").trim() || String(screen?.name || "Screen");
+      }
+    }
+    return fallback;
+  }, [
+    activeDatabaseTable,
+    activeScreen?.name,
+    activeScreenId,
+    drawerView,
+    isLiveMode,
+    liveMenuGroupsForRender,
+    screenName,
+    screens,
+    showMainDrawer,
+  ]);
+
+  useEffect(() => {
+    const valid = new Set(liveMenuGroupsForRender.map((group) => String(group.id || "")));
+    setCollapsedLiveGroupIds((prev) =>
+      (Array.isArray(prev) ? prev : []).filter((id) => valid.has(String(id || "")))
+    );
+  }, [liveMenuGroupsForRender]);
 
   function switchToScreen(nextScreenId) {
     const committed = commitCurrentScreenState(screens);
@@ -5757,6 +6783,7 @@ export default function App() {
   }
 
   function addScreen() {
+    if (!projectNameEditing) return;
     const committed = commitCurrentScreenState(screens);
     const existingIds = new Set(committed.list.map((s) => String(s.id || "")));
     let id = `screen-${uid()}`;
@@ -5779,9 +6806,26 @@ export default function App() {
         vbH: 900,
         pan: { x: 0, y: 0 },
         zoom: 1,
+        showInLiveMenu: true,
       }),
     ];
     setScreens(next);
+    setLiveMenuGroups((prev) => {
+      const normalized = normalizeLiveMenuGroups(prev, next);
+      if (!normalized.length) return normalized;
+      const firstGroup = normalized[0];
+      return normalized.map((group, idx) =>
+        idx === 0
+          ? {
+              ...group,
+              items: [
+                ...group.items,
+                { id: `live-item-${uid()}`, type: "screen", screenId: id, label: "" },
+              ],
+            }
+          : group
+      );
+    });
     hydrateScreenState(next[next.length - 1]);
     setProjectStatus(`Added ${name}`);
     scheduleProjectAutoSave();
@@ -5793,8 +6837,69 @@ export default function App() {
     const removed = committed.list.find((s) => s.id === committed.currentId);
     const filtered = committed.list.filter((s) => s.id !== committed.currentId);
     const target = filtered[0] || null;
+    screensRef.current = filtered;
+    if (target) {
+      activeScreenIdRef.current = target.id;
+      screenNameRef.current = target.name;
+      shapesRef.current = target.shapes;
+      overlaysRef.current = target.svgOverlays;
+      vbWRef.current = target.vbW;
+      vbHRef.current = target.vbH;
+      panRef.current = target.pan;
+      zoomRef.current = target.zoom;
+    }
     setScreens(filtered);
+    setLiveMenuGroups((prev) => {
+      const normalized = normalizeLiveMenuGroups(prev, filtered);
+      return normalized.map((group) => ({
+        ...group,
+        items: group.items.filter(
+          (item) => !(item.type === "screen" && String(item.screenId || "") === String(committed.currentId))
+        ),
+      }));
+    });
     if (target) hydrateScreenState(target);
+    setProjectStatus(`Deleted ${removed?.name || "screen"}`);
+    scheduleProjectAutoSave();
+  }
+
+  function deleteScreenById(screenId) {
+    if (!projectNameEditing) return;
+    const committed = commitCurrentScreenState(screens);
+    if (committed.list.length <= 1) return;
+    const removeId = String(screenId || "");
+    if (!removeId) return;
+    const removed = committed.list.find((s) => s.id === removeId);
+    if (!removed) return;
+    const filtered = committed.list.filter((s) => s.id !== removeId);
+    const target =
+      removeId === committed.currentId
+        ? filtered[0] || null
+        : filtered.find((s) => s.id === committed.currentId) || filtered[0] || null;
+    screensRef.current = filtered;
+    if (removeId === committed.currentId && target) {
+      activeScreenIdRef.current = target.id;
+      screenNameRef.current = target.name;
+      shapesRef.current = target.shapes;
+      overlaysRef.current = target.svgOverlays;
+      vbWRef.current = target.vbW;
+      vbHRef.current = target.vbH;
+      panRef.current = target.pan;
+      zoomRef.current = target.zoom;
+    }
+    setScreens(filtered);
+    setLiveMenuGroups((prev) => {
+      const normalized = normalizeLiveMenuGroups(prev, filtered);
+      return normalized.map((group) => ({
+        ...group,
+        items: group.items.filter(
+          (item) => !(item.type === "screen" && String(item.screenId || "") === removeId)
+        ),
+      }));
+    });
+    if (removeId === committed.currentId && target) {
+      hydrateScreenState(target);
+    }
     setProjectStatus(`Deleted ${removed?.name || "screen"}`);
     scheduleProjectAutoSave();
   }
@@ -5810,6 +6915,179 @@ export default function App() {
     scheduleProjectAutoSave();
   }
 
+  function renameScreenById(screenId, value) {
+    if (!projectNameEditing) return;
+    const id = String(screenId || "");
+    if (!id) return;
+    const nextName = String(value ?? "");
+    setScreens((prev) =>
+      (Array.isArray(prev) ? prev : []).map((s) =>
+        String(s?.id || "") === id ? { ...s, name: nextName } : s
+      )
+    );
+    if (String(activeScreenId || "") === id) {
+      setScreenName(nextName);
+    }
+    scheduleProjectAutoSave();
+  }
+
+  function addLiveMenuGroup() {
+    if (!projectNameEditing) return;
+    setLiveMenuGroups((prev) => {
+      const normalized = normalizeLiveMenuGroups(prev, screens);
+      return [
+        ...normalized,
+        {
+          id: `live-group-${uid()}`,
+          name: `Group ${normalized.length + 1}`,
+          items: [],
+        },
+      ];
+    });
+    scheduleProjectAutoSave();
+  }
+
+  function renameLiveMenuGroup(groupId, nextName) {
+    if (!projectNameEditing) return;
+    const id = String(groupId || "");
+    if (!id) return;
+    setLiveMenuGroups((prev) =>
+      normalizeLiveMenuGroups(prev, screens).map((group) =>
+        group.id === id ? { ...group, name: String(nextName ?? "") } : group
+      )
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function deleteLiveMenuGroup(groupId) {
+    if (!projectNameEditing) return;
+    const id = String(groupId || "");
+    if (!id) return;
+    setLiveMenuGroups((prev) => {
+      const normalized = normalizeLiveMenuGroups(prev, screens);
+      const remaining = normalized.filter((group) => group.id !== id);
+      return remaining.length ? remaining : defaultLiveMenuGroupsFromScreens(screens);
+    });
+    scheduleProjectAutoSave();
+  }
+
+  function addLiveMenuItem(groupId, type = "screen") {
+    if (!projectNameEditing) return;
+    const id = String(groupId || "");
+    if (!id) return;
+    const normalizedType = String(type || "").toLowerCase() === "data" ? "data" : "screen";
+    setLiveMenuGroups((prev) =>
+      normalizeLiveMenuGroups(prev, screens).map((group) => {
+        if (group.id !== id) return group;
+        const screenId = screens[0]?.id || "";
+        const item =
+          normalizedType === "data"
+            ? { id: `live-item-${uid()}`, type: "data", dataTable: String(databaseTablesForMenu[0] || "").trim(), label: "" }
+            : { id: `live-item-${uid()}`, type: "screen", screenId, label: "" };
+        return { ...group, items: [...group.items, item] };
+      })
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function updateLiveMenuItem(groupId, itemId, patch = {}) {
+    if (!projectNameEditing) return;
+    const gId = String(groupId || "");
+    const iId = String(itemId || "");
+    if (!gId || !iId) return;
+    setLiveMenuGroups((prev) =>
+      normalizeLiveMenuGroups(prev, screens).map((group) => {
+        if (group.id !== gId) return group;
+        return {
+          ...group,
+          items: group.items.map((item) => {
+            if (item.id !== iId) return item;
+            const nextType = String(patch?.type || item.type || "").toLowerCase() === "data" ? "data" : "screen";
+            if (nextType === "data") {
+              return {
+                id: item.id,
+                type: "data",
+                dataTable: String(patch?.dataTable ?? item.dataTable ?? "").trim(),
+                label: String(patch?.label ?? item.label ?? "").trim(),
+              };
+            }
+            const fallbackScreenId = screens[0]?.id || "";
+            const screenId = String(patch?.screenId ?? item.screenId ?? fallbackScreenId);
+            return {
+              id: item.id,
+              type: "screen",
+              screenId: screens.some((s) => s.id === screenId) ? screenId : fallbackScreenId,
+              label: String(patch?.label ?? item.label ?? "").trim(),
+            };
+          }),
+        };
+      })
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function deleteLiveMenuItem(groupId, itemId) {
+    if (!projectNameEditing) return;
+    const gId = String(groupId || "");
+    const iId = String(itemId || "");
+    if (!gId || !iId) return;
+    setLiveMenuGroups((prev) =>
+      normalizeLiveMenuGroups(prev, screens).map((group) =>
+        group.id === gId ? { ...group, items: group.items.filter((item) => item.id !== iId) } : group
+      )
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function moveLiveMenuItem(groupId, itemId, delta) {
+    if (!projectNameEditing) return;
+    const gId = String(groupId || "");
+    const iId = String(itemId || "");
+    if (!gId || !iId || !Number.isInteger(delta) || delta === 0) return;
+    setLiveMenuGroups((prev) =>
+      normalizeLiveMenuGroups(prev, screens).map((group) => {
+        if (group.id !== gId) return group;
+        const index = group.items.findIndex((item) => item.id === iId);
+        if (index < 0) return group;
+        const target = index + delta;
+        if (target < 0 || target >= group.items.length) return group;
+        const nextItems = [...group.items];
+        const [item] = nextItems.splice(index, 1);
+        nextItems.splice(target, 0, item);
+        return { ...group, items: nextItems };
+      })
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function activateLiveMenuItem(item) {
+    if (!item || typeof item !== "object") return;
+    if (item.type === "data") {
+      const table = String(item.dataTable || "").trim();
+      if (table) {
+        openDrawer("database", {
+          forceDatabaseDataTab: true,
+          databasePath: `/data/${encodeURIComponent(table)}`,
+        });
+        return;
+      }
+      openDrawer("database", { forceDatabaseDataTab: true });
+      return;
+    }
+    const screenId = String(item.screenId || "");
+    if (!screenId) return;
+    switchToScreen(screenId);
+  }
+
+  function toggleLiveMenuGroupCollapse(groupId) {
+    const id = String(groupId || "");
+    if (!id) return;
+    setCollapsedLiveGroupIds((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+    });
+  }
+
   const formatProjectTime = (value) => {
     const t = String(value || "").trim();
     if (!t) return "";
@@ -5819,8 +7097,61 @@ export default function App() {
   };
   const activeCanvasBackgroundColor =
     theme === "dark" ? projectCanvasBackground.dark : projectCanvasBackground.light;
-  const projectDrawerInset =
-    showProjectDrawer && !projectDrawerFullscreen ? `${Math.round(drawerSizes.project.w)}px` : "0px";
+  const projectDrawerInsetPx = showProjectDrawer && !projectDrawerFullscreen ? Math.round(drawerSizes.project.w) : 0;
+  const projectDrawerInset = `${projectDrawerInsetPx}px`;
+  const liveMenuIsExpanded = !liveMenuCollapsed;
+  const liveMenuRailWidthPx = isLiveMode ? (liveMenuIsExpanded ? 248 : 72) : 0;
+  const canvasLeftInsetPx = projectDrawerInsetPx + liveMenuRailWidthPx;
+  const mainDrawerAppendFromLeft =
+    isLiveMode && drawerView === "database" && databaseDataOnlyMode;
+  const mainDrawerAppendLeftPx = projectDrawerInsetPx + liveMenuRailWidthPx;
+  const liveAlarmBarOffset = isLiveMode ? LIVE_ALARM_BAR_H : 0;
+  const [liveAlarmOccurredAtById, setLiveAlarmOccurredAtById] = useState({});
+  const liveActiveAlarmsWithOccurred = useMemo(
+    () =>
+      (liveActiveAlarms || []).map((alarm) => ({
+        ...alarm,
+        occurredAt: Number(liveAlarmOccurredAtById?.[alarm.id] || 0),
+      })),
+    [liveActiveAlarms, liveAlarmOccurredAtById]
+  );
+  const hasLiveAlarms = liveActiveAlarmsWithOccurred.length > 0;
+  const liveAlarmMarqueeItems = useMemo(() => {
+    return (liveActiveAlarmsWithOccurred || []).map((alarm) => {
+      const at =
+        Number(alarm?.occurredAt || 0) > 0
+          ? new Date(alarm.occurredAt).toLocaleString()
+          : "";
+      return {
+        id: String(alarm.id || ""),
+        label: `${alarm.label}: ${alarm.value} ${alarm.operator} ${alarm.threshold}`,
+        at,
+        title: `${alarm.topic ? `${alarm.topic} • ` : ""}${alarm.label}: ${alarm.value} ${alarm.operator} ${alarm.threshold}${at ? ` • ${at}` : ""}`,
+      };
+    });
+  }, [liveActiveAlarmsWithOccurred]);
+  const liveAlarmMarqueeDurationSec = LIVE_ALARM_MARQUEE_DURATION_SEC;
+  const useLightLiveDataSurface = isLiveMode && databaseDataOnlyMode && theme !== "dark";
+
+  useEffect(() => {
+    const activeIds = new Set((liveActiveAlarms || []).map((a) => String(a?.id || "")).filter(Boolean));
+    const now = Date.now();
+    setLiveAlarmOccurredAtById((prev) => {
+      const next = {};
+      let changed = false;
+      activeIds.forEach((id) => {
+        const existing = Number(prev?.[id] || 0);
+        if (existing > 0) next[id] = existing;
+        else {
+          next[id] = now;
+          changed = true;
+        }
+      });
+      const prevKeys = Object.keys(prev || {});
+      if (!changed && prevKeys.length === Object.keys(next).length) return prev;
+      return next;
+    });
+  }, [liveActiveAlarms]);
 
   return (
     <div
@@ -5833,8 +7164,8 @@ export default function App() {
         fontFamily: "system-ui",
         userSelect: "none",
         WebkitUserSelect: "none",
-        paddingTop: TOP_BAR_H,
-        paddingLeft: projectDrawerInset,
+        paddingTop: TOP_BAR_H + liveAlarmBarOffset,
+        paddingLeft: `${canvasLeftInsetPx}px`,
         boxSizing: "border-box",
       }}
     >
@@ -5846,6 +7177,10 @@ export default function App() {
         @keyframes drawer-slide-in-left {
           from { transform: translateX(-18px); opacity: 0; }
           to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes live-menu-arrow-pulse {
+          0%, 100% { transform: translateX(0); }
+          50% { transform: translateX(2px); }
         }
       `}</style>
       <ViewBoxModal
@@ -5923,11 +7258,14 @@ export default function App() {
           svgRef={svgRef}
           theme={theme}
           canvasBackgroundColor={activeCanvasBackgroundColor}
+          viewportTopOffset={TOP_BAR_H + liveAlarmBarOffset}
+          viewportLeftOffset={canvasLeftInsetPx}
+          liveClickable={isLiveMode}
           zoom={zoom}          // ✅ NEW
           onWheel={onWheelZoom} // ✅ NEW
           vbW={vbW}
           vbH={vbH}
-          tool={tool}
+          tool={isLiveMode ? "select" : tool}
           shapes={shapes}
           selectedIds={selectedIds}
           setSelectedIds={setSelectedIds}
@@ -5936,32 +7274,34 @@ export default function App() {
           selectedSegment={selectedSegment}
           editingId={editingId}
         showTagPaths={showTagPaths}
-        showGrid={showGrid}
-        onSvgMouseDown={onSvgMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onContextMenu={onContextMenu}
-        onShapeMouseDown={onShapeMouseDown}
-        onShapeDoubleClick={onShapeDoubleClick}
-        onEditPolylineClick={onEditPolylineClick}
-        onHandleMouseDown={onHandleMouseDown}
-        onHandleDoubleClick={onHandleDoubleClick}
-        onHandleContextMenu={onHandleContextMenu}
-        onSegmentMouseDown={onSegmentMouseDown}
+        showGrid={!isLiveMode && showGrid}
+        showRulers={!isLiveMode}
+        onSvgMouseDown={isLiveMode ? () => {} : onSvgMouseDown}
+        onMouseMove={isLiveMode ? () => {} : onMouseMove}
+        onMouseUp={isLiveMode ? () => {} : onMouseUp}
+        onContextMenu={isLiveMode ? undefined : onContextMenu}
+        onShapeMouseDown={isLiveMode ? () => {} : onShapeMouseDown}
+        onShapeDoubleClick={isLiveMode ? () => {} : onShapeDoubleClick}
+        onEditPolylineClick={isLiveMode ? () => {} : onEditPolylineClick}
+        onHandleMouseDown={isLiveMode ? () => {} : onHandleMouseDown}
+        onHandleDoubleClick={isLiveMode ? () => {} : onHandleDoubleClick}
+        onHandleContextMenu={isLiveMode ? undefined : onHandleContextMenu}
+        onSegmentMouseDown={isLiveMode ? () => {} : onSegmentMouseDown}
         setShapes={setShapes}
         svgOverlays={svgOverlays}
         setSvgOverlays={setSvgOverlays}
         selectedOverlayIds={selectedOverlayIds}
         singleSelectedOverlayId={singleSelectedOverlayId}
         setOverlayRef={setOverlayRef}
-        onOverlayMouseDown={onOverlayMouseDown}
-        onOverlayDoubleClick={onOverlayDoubleClick}
+        onOverlayMouseDown={isLiveMode ? onLiveOverlayMouseDown : onOverlayMouseDown}
+        onOverlayDoubleClick={isLiveMode ? onLiveOverlayMouseDown : onOverlayDoubleClick}
         overlaySelectionUI={overlaySelectionUI}
+        overlayGroupSelectionUI={overlayGroupSelectionUI}
         overlayLocalBBox={overlayLocalBBox}
         marquee={marquee}
         pan={pan}
         importAnchor={importAnchor}
-        onSvgDoubleClick={onSvgDoubleClick}
+        onSvgDoubleClick={isLiveMode ? undefined : onSvgDoubleClick}
         tagStateColorsByPath={tagStateColorsByPath}
         routeColorsBySvgKey={routeColorsBySvgKey}
         routeStrokeColorByGroupPath={routeStrokeColorByGroupPath}
@@ -5976,7 +7316,122 @@ export default function App() {
         collaboratorCursors={projectCursors}
       />
 
-      {inlineEdit && inlineEditPos && (
+      {isLiveMode && liveEquipmentOverlays.length > 0 ? (
+        <div
+          style={{
+            position: "fixed",
+            left: projectDrawerInsetPx + liveMenuRailWidthPx + 10,
+            right: 10,
+            bottom: 10,
+            zIndex: 205,
+            pointerEvents: "none",
+          }}
+        >
+          {liveEquipmentConnectorLines.length ? (
+            <svg
+              style={{
+                position: "fixed",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                pointerEvents: "none",
+                zIndex: 204,
+                overflow: "visible",
+              }}
+            >
+              {liveEquipmentConnectorLines.map((line) => {
+                const midY = line.toY - 26;
+                const d = `M ${line.fromX} ${line.fromY} C ${line.fromX} ${midY}, ${line.toX} ${midY}, ${line.toX} ${line.toY}`;
+                return (
+                  <g key={`live-eq-link-${line.id}`}>
+                    <path d={d} fill="none" stroke="rgba(43,108,255,0.24)" strokeWidth="6" strokeLinecap="round" />
+                    <path d={d} fill="none" stroke="rgba(255,255,255,0.62)" strokeWidth="1.3" strokeLinecap="round" />
+                    <circle cx={line.fromX} cy={line.fromY} r="3.2" fill="rgba(43,108,255,0.8)" />
+                  </g>
+                );
+              })}
+            </svg>
+          ) : null}
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="vizi-live-equipment-dock vizi-scroll"
+            style={{
+              display: "flex",
+              gap: 10,
+              overflowX: "auto",
+              overflowY: "hidden",
+              paddingBottom: 2,
+              pointerEvents: "auto",
+              scrollSnapType: "x mandatory",
+            }}
+            onScroll={() => setLiveEquipmentDockTick((v) => v + 1)}
+          >
+            {liveEquipmentOverlays.map(({ overlay, details }) => (
+              <div
+                key={`live-equipment-card-${overlay.id}`}
+                ref={(node) => {
+                  const id = String(overlay.id || "");
+                  if (!id) return;
+                  if (node) liveEquipmentCardRefs.current.set(id, node);
+                  else liveEquipmentCardRefs.current.delete(id);
+                }}
+                style={{
+                  scrollSnapAlign: "start",
+                  flex: "0 0 min(300px, 68vw)",
+                  maxHeight: "34vh",
+                  overflow: "auto",
+                  borderRadius: 10,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  boxShadow: "0 12px 26px rgba(0,0,0,0.28)",
+                  padding: 9,
+                  display: "grid",
+                  gap: 6,
+                }}
+                className="vizi-scroll"
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+                    {String(overlay.name || "Equipment")}
+                  </div>
+                  <button
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={() => closeLiveEquipmentCard(overlay.id)}
+                    style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, padding: "2px 6px", cursor: "pointer", color: "var(--text)", fontSize: 11 }}
+                    aria-label="Close equipment info"
+                    title="Close"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Tag Path: {String(overlay.tagPath || "-")}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Overlay ID: {String(overlay.id || "-")}
+                </div>
+                <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, color: "var(--text)" }}>Live Data</div>
+                  {details.length ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "4px 8px", fontSize: 10 }}>
+                      {details.map((row, idx) => (
+                        <Fragment key={`live-equipment-row-${overlay.id}-${idx}`}>
+                          <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
+                          <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
+                        </Fragment>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {!isLiveMode && inlineEdit && inlineEditPos && (
         <input
           autoFocus
           value={inlineEdit.value}
@@ -6085,25 +7540,26 @@ export default function App() {
 
 
 
-      {showZoom && (
+      {!isLiveMode && showZoom && (
         <div
           ref={zoomPanelRef}
           style={{
             position: "fixed",
-            left: Math.max(zoomPos.x, 8),
+            left: isLiveMode ? undefined : Math.max(zoomPos.x, 8),
+            right: isLiveMode ? 16 : undefined,
             bottom: 16,
             zIndex: 80,
             boxShadow: "0 12px 30px rgba(0,0,0,0.4)",
             display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            padding: 10,
+            flexDirection: isLiveMode ? "row" : "column",
+            gap: isLiveMode ? 4 : 6,
+            padding: isLiveMode ? "6px 8px" : 8,
             background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
             border: "1px solid var(--border)",
-            borderRadius: 14,
+            borderRadius: 12,
             alignItems: "center",
           }}
-          onMouseDown={startZoomDrag}
+          onMouseDown={isLiveMode ? undefined : startZoomDrag}
           onPointerDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
@@ -6119,9 +7575,9 @@ export default function App() {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={btn.onClick}
               style={{
-                width: 38,
-                height: 38,
-                borderRadius: 12,
+                width: isLiveMode ? 30 : 34,
+                height: isLiveMode ? 30 : 34,
+                borderRadius: 10,
                 border: "1px solid var(--border)",
                 background: "var(--bg-elev)",
                 cursor: "pointer",
@@ -6130,7 +7586,7 @@ export default function App() {
                 display: "grid",
                 placeItems: "center",
                 padding: 0,
-                fontSize: 18,
+                fontSize: isLiveMode ? 14 : 16,
                 lineHeight: 1,
               }}
             >
@@ -6141,9 +7597,11 @@ export default function App() {
           {/* zoom % */}
           <div
             style={{
-              fontSize: 12,
-              opacity: 0.6,
-              marginTop: 2,
+              fontSize: isLiveMode ? 11 : 12,
+              opacity: 0.7,
+              marginTop: isLiveMode ? 0 : 2,
+              marginLeft: isLiveMode ? 4 : 0,
+              marginRight: isLiveMode ? 2 : 0,
               userSelect: "none",
             }}
           >
@@ -6156,10 +7614,10 @@ export default function App() {
             onMouseDown={(e) => e.stopPropagation()}
             onClick={() => setShowZoom(false)}
             style={{
-              width: 38,
-              height: 38,
-              marginTop: 6,
-              borderRadius: 12,
+              width: isLiveMode ? 30 : 34,
+              height: isLiveMode ? 30 : 34,
+              marginTop: isLiveMode ? 0 : 6,
+              borderRadius: 10,
               border: "1px solid var(--border)",
               background: "var(--bg-elev)",
               cursor: "pointer",
@@ -6168,7 +7626,7 @@ export default function App() {
               display: "grid",
               placeItems: "center",
               padding: 0,
-              fontSize: 16,
+              fontSize: isLiveMode ? 12 : 14,
               lineHeight: 1,
             }}
           >
@@ -6177,7 +7635,7 @@ export default function App() {
         </div>
       )}
 
-      {contextMenu && (
+      {!isLiveMode && contextMenu && (
         <div
           style={{
             position: "fixed",
@@ -6648,30 +8106,46 @@ export default function App() {
         <div
           style={{
             position: "fixed",
-            top: TOP_BAR_H,
+            top: TOP_BAR_H + (isLiveMode ? liveAlarmBarOffset : 0),
             left: 0,
             right: 0,
             bottom: 0,
             zIndex: 220,
+            pointerEvents: mainDrawerAppendFromLeft ? "none" : "auto",
           }}
         >
           <div
             ref={mainDrawerRef}
             style={{
               position: "absolute",
-              right: 0,
-              left: mainDrawerFullscreen ? 0 : undefined,
+              right: mainDrawerFullscreen || mainDrawerAppendFromLeft ? undefined : 0,
+              left: mainDrawerFullscreen
+                ? (mainDrawerAppendFromLeft ? mainDrawerAppendLeftPx : 0)
+                : mainDrawerAppendFromLeft
+                ? mainDrawerAppendLeftPx
+                : undefined,
               top: 0,
               height: "100%",
-              width: mainDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.main.w)}px`,
+              width: mainDrawerFullscreen
+                ? (mainDrawerAppendFromLeft
+                    ? `calc(100% - ${mainDrawerAppendLeftPx}px)`
+                    : "100%")
+                : `${Math.round(drawerSizes.main.w)}px`,
               background: "var(--bg-soft)",
-              boxShadow: "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
+              boxShadow:
+                mainDrawerFullscreen || mainDrawerAppendFromLeft
+                  ? "none"
+                  : "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
-              borderLeft: mainDrawerFullscreen ? "none" : "1px solid var(--border)",
+              borderLeft: mainDrawerFullscreen || mainDrawerAppendFromLeft ? "none" : "1px solid var(--border)",
+              borderRight: mainDrawerAppendFromLeft ? "1px solid var(--border)" : "none",
               color: "var(--text)",
               transform: "translate(0px, 0px)",
-              animation: "drawer-slide-in-right 220ms ease-out",
+              animation: mainDrawerAppendFromLeft
+                ? "drawer-slide-in-left 220ms ease-out"
+                : "drawer-slide-in-right 220ms ease-out",
+              pointerEvents: "auto",
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
@@ -6699,7 +8173,9 @@ export default function App() {
                     : drawerView === "server"
                     ? "Server Diagnostics"
                     : drawerView === "database"
-                    ? "Database"
+                    ? (isLiveMode && databaseDataOnlyMode
+                        ? (normalizeTableDisplayName(activeDatabaseTable) || "Data")
+                        : "Database")
                     : drawerView === "tags"
                     ? "Tags"
                   : drawerView === "logs"
@@ -6732,82 +8208,137 @@ export default function App() {
             </div>
             <div style={{ flex: "1 1 auto", overflow: "hidden" }}>
               {drawerView === "tags" ? (
-                <div style={{ height: "100%", overflow: "auto" }}>
+                <div style={drawerContentShellStyle}>
                   <OpcConfig embedded mode="tags" />
                 </div>
               ) : drawerView === "logs" ? (
-                <div style={{ height: "100%", overflow: "auto" }}>
+                <div style={drawerContentShellStyle}>
                   <OpcConfig embedded mode="logs" onDrawerViewChange={setDrawerView} />
                 </div>
               ) : drawerView === "diagnostics" ? (
-                <div style={{ height: "100%", overflow: "auto" }}>
+                <div style={drawerContentShellStyle}>
                   <OpcConfig embedded mode="diagnostics" onDrawerViewChange={setDrawerView} />
                 </div>
               ) : drawerView === "opc" ? (
-                <div style={{ height: "100%", overflow: "auto", padding: 16, boxSizing: "border-box" }}>
+                <div style={drawerContentShellStyle}>
                   <OpcConfig embedded onDrawerViewChange={setDrawerView} />
                 </div>
               ) : drawerView === "help" ? (
-                <div style={{ height: "100%", overflow: "hidden", padding: 16, boxSizing: "border-box" }}>
+                <div style={{ height: "100%", overflow: "hidden", padding: drawerContentPadding, boxSizing: "border-box" }}>
                   <HelpPanel inline onClose={() => setShowMainDrawer(false)} />
                 </div>
               ) : drawerView === "plc" ? (
-                <div style={{ height: "100%", overflow: "auto", padding: 16, boxSizing: "border-box" }}>
-                  <PlcAnalyzer plcItems={projectPlcs} onChange={setProjectPlcs} />
+                <div style={drawerContentShellStyle}>
+                  <PlcAnalyzer
+                    plcItems={projectPlcs}
+                    onChange={setProjectPlcs}
+                    svgCatalog={aiSvgCatalog}
+                    onInsertSvg={handleAiInsertSvg}
+                  />
                 </div>
               ) : drawerView === "server" ? (
-                <ServerDiagnosticsPanel />
+                <div style={drawerContentShellStyle}>
+                  <ServerDiagnosticsPanel embedded />
+                </div>
               ) : drawerView === "database" ? (
-                <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
-                  <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
-                    <button
-                      data-preserve-style="true"
-                      onClick={() => setDatabaseTab("data")}
-                      style={drawerTabButtonStyle(databaseTab === "data")}
-                    >
-                      Data
-                    </button>
-                    <button
-                      data-preserve-style="true"
-                      onClick={() => setDatabaseTab("dataset")}
-                      style={drawerTabButtonStyle(databaseTab === "dataset")}
-                    >
-                      Dataset
-                    </button>
-                    <button
-                      data-preserve-style="true"
-                      onClick={() => setDatabaseTab("config")}
-                      style={drawerTabButtonStyle(databaseTab === "config")}
-                    >
-                      Config
-                    </button>
-                    <button
-                      data-preserve-style="true"
-                      onClick={() => setDatabaseTab("designer")}
-                      style={drawerTabButtonStyle(databaseTab === "designer")}
-                    >
-                      Designer
-                    </button>
-                  </div>
+                <div
+                  style={{
+                    ...drawerContentShellStyle,
+                    background: useLightLiveDataSurface ? "#ffffff" : "var(--bg-soft)",
+                  }}
+                >
+                <div
+                  style={{
+                    height: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    minHeight: 0,
+                    background: useLightLiveDataSurface ? "#ffffff" : "var(--bg-soft)",
+                  }}
+                >
+                  {!databaseDataOnlyMode ? (
+                    <div style={{ display: "flex", gap: 8, padding: `10px ${drawerContentPadding}px`, borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
+	                      <button
+	                        data-preserve-style="true"
+	                        onClick={() => setDatabaseTab("data")}
+	                        style={drawerTabButtonStyle(databaseTab === "data")}
+	                        title="Data"
+	                      >
+	                        Data
+	                      </button>
+	                      <button
+	                        data-preserve-style="true"
+	                        onClick={() => setDatabaseTab("dataset")}
+	                        style={drawerTabButtonStyle(databaseTab === "dataset")}
+	                        title="Dataset"
+	                      >
+	                        Dataset
+	                      </button>
+	                      <button
+	                        data-preserve-style="true"
+	                        onClick={() => setDatabaseTab("config")}
+	                        style={drawerTabButtonStyle(databaseTab === "config")}
+	                        title="Config"
+	                      >
+	                        Config
+	                      </button>
+	                      <button
+	                        data-preserve-style="true"
+	                        onClick={() => setDatabaseTab("designer")}
+	                        style={drawerTabButtonStyle(databaseTab === "designer")}
+	                        title="Designer"
+	                      >
+	                        Designer
+	                      </button>
+                    </div>
+                  ) : null}
                   <div style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
-                    {databaseTab === "dataset" ? (
+                    {databaseDataOnlyMode ? (
+                      <DataBrowser
+                        embedded
+                        embeddedPath={databaseEmbeddedPath}
+                        hideTableSelector={isLiveMode && databaseDataOnlyMode}
+                        hideListFieldControls={isLiveMode && databaseDataOnlyMode}
+                        useWhiteBackground={useLightLiveDataSurface}
+                      />
+                    ) : databaseTab === "dataset" ? (
                       <DatasetBuilder embedded />
                     ) : databaseTab === "designer" ? (
-                      <SqlDesigner embedded />
+                      <SqlDesigner embedded selectedTableHint={activeDatabaseTable} />
                     ) : databaseTab === "config" ? (
                       <DatabaseConfigPanel embedded />
                     ) : (
-                      <DataBrowser embedded />
+                      <DataBrowser
+                        embedded
+                        embeddedPath={databaseEmbeddedPath}
+                        hideTableSelector={isLiveMode && databaseDataOnlyMode}
+                        hideListFieldControls={isLiveMode && databaseDataOnlyMode}
+                        useWhiteBackground={useLightLiveDataSurface}
+                      />
                     )}
                   </div>
                 </div>
+                </div>
               ) : drawerView === "reports" ? (
-                <iframe
-                  key={`drawer-reports-${theme}`}
-                  title="Report Designer"
-                  src={`/report-designer?theme=${theme}`}
-                  style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-                />
+                <div style={drawerContentShellStyle}>
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      border: "1px solid var(--border)",
+                      borderRadius: 12,
+                      overflow: "hidden",
+                      background: "var(--bg-elev)",
+                    }}
+                  >
+                    <iframe
+                      key={`drawer-reports-${theme}`}
+                      title="Report Designer"
+                      src={`/report-designer?theme=${theme}`}
+                      style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+                    />
+                  </div>
+                </div>
               ) : (
                 <iframe
                   key={`drawer-ai-${theme}`}
@@ -6842,7 +8373,10 @@ export default function App() {
         <div
           style={{
             position: "fixed",
-            inset: 0,
+            top: TOP_BAR_H + (isLiveMode ? liveAlarmBarOffset : 0),
+            left: 0,
+            right: 0,
+            bottom: 0,
             zIndex: 230,
           }}
         >
@@ -6884,7 +8418,7 @@ export default function App() {
                   User Settings
                 </div>
                 <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  Profile, security and session preferences
+                  Profile and session preferences
                 </div>
               </div>
               <div style={{ display: "flex", gap: 6 }}>
@@ -6942,15 +8476,18 @@ export default function App() {
                       onChange={(e) =>
                         setProfileDraft((p) => ({ ...p, display_name: e.target.value }))
                       }
+                      readOnly={!profileEditing}
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
-                        borderRadius: 10,
-                        padding: "9px 10px",
-                        minHeight: 38,
-                        fontSize: 13,
+                        borderRadius: 8,
+                        padding: "6px 8px",
+                        minHeight: 32,
+                        fontSize: 12,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                        opacity: profileEditing ? 1 : 0.82,
+                        cursor: profileEditing ? "text" : "default",
                       }}
                     />
                   </label>
@@ -6959,15 +8496,18 @@ export default function App() {
                     <input
                       value={profileDraft.username}
                       onChange={(e) => setProfileDraft((p) => ({ ...p, username: e.target.value }))}
+                      readOnly={!profileEditing}
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
-                        borderRadius: 10,
-                        padding: "9px 10px",
-                        minHeight: 38,
-                        fontSize: 13,
+                        borderRadius: 8,
+                        padding: "6px 8px",
+                        minHeight: 32,
+                        fontSize: 12,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                        opacity: profileEditing ? 1 : 0.82,
+                        cursor: profileEditing ? "text" : "default",
                       }}
                     />
                   </label>
@@ -6979,50 +8519,66 @@ export default function App() {
                     onChange={(e) =>
                       setProfileDraft((p) => ({ ...p, avatar_url: e.target.value }))
                     }
+                    readOnly={!profileEditing}
                     placeholder="https://..."
                     style={{
                       border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
-                      borderRadius: 10,
-                      padding: "9px 10px",
-                      minHeight: 38,
-                      fontSize: 13,
+                      borderRadius: 8,
+                      padding: "6px 8px",
+                      minHeight: 32,
+                      fontSize: 12,
                       background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                       color: "var(--text)",
                       boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                      opacity: profileEditing ? 1 : 0.82,
+                      cursor: profileEditing ? "text" : "default",
                     }}
                   />
                 </label>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  {profileEditing ? (
+                    <button
+                      onClick={cancelProfileEdit}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        minHeight: 32,
+                        minWidth: 86,
+                        fontSize: 11,
+                        cursor: "pointer",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
                   <button
-                    onClick={async () => {
-                      setProfileError("");
-                      setProfileStatus("");
-                      try {
-                        await updateProfile({
-                          username: profileDraft.username,
-                          display_name: profileDraft.display_name,
-                          avatar_url: profileDraft.avatar_url,
-                        });
-                        setProfileStatus("Profile updated.");
-                      } catch (err) {
-                        setProfileError(err?.message || "Update failed.");
+                    onClick={() => {
+                      if (!profileEditing) {
+                        resetProfileDraftFromUser();
+                        setProfileEditing(true);
+                        return;
                       }
+                      void saveProfileEdit();
                     }}
                     style={{
                       border: "1px solid #2f6dff",
                       background: "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
                       color: "white",
-                      borderRadius: 10,
-                      padding: "8px 14px",
-                      minHeight: 38,
-                      minWidth: 132,
-                      fontSize: 12,
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      minHeight: 32,
+                      minWidth: 104,
+                      fontSize: 11,
                       cursor: "pointer",
                       fontWeight: 700,
                       boxShadow: "0 8px 18px rgba(43,108,255,0.35)",
                     }}
                   >
-                    Save Changes
+                    {profileEditing ? "Save" : "Edit"}
                   </button>
                 </div>
               </div>
@@ -7061,15 +8617,18 @@ export default function App() {
                       type="password"
                       value={passwordDraft.current}
                       onChange={(e) => setPasswordDraft((p) => ({ ...p, current: e.target.value }))}
+                      readOnly={!passwordEditing}
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
-                        borderRadius: 10,
-                        padding: "9px 10px",
-                        minHeight: 38,
-                        fontSize: 13,
+                        borderRadius: 8,
+                        padding: "6px 8px",
+                        minHeight: 32,
+                        fontSize: 12,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                        opacity: passwordEditing ? 1 : 0.82,
+                        cursor: passwordEditing ? "text" : "default",
                       }}
                     />
                   </label>
@@ -7079,47 +8638,66 @@ export default function App() {
                       type="password"
                       value={passwordDraft.next}
                       onChange={(e) => setPasswordDraft((p) => ({ ...p, next: e.target.value }))}
+                      readOnly={!passwordEditing}
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
-                        borderRadius: 10,
-                        padding: "9px 10px",
-                        minHeight: 38,
-                        fontSize: 13,
+                        borderRadius: 8,
+                        padding: "6px 8px",
+                        minHeight: 32,
+                        fontSize: 12,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                        opacity: passwordEditing ? 1 : 0.82,
+                        cursor: passwordEditing ? "text" : "default",
                       }}
                     />
                   </label>
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                  {passwordEditing ? (
+                    <button
+                      onClick={cancelPasswordEdit}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        minHeight: 32,
+                        minWidth: 86,
+                        fontSize: 11,
+                        cursor: "pointer",
+                        fontWeight: 700,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
                   <button
-                    onClick={async () => {
-                      setProfileError("");
-                      setProfileStatus("");
-                      try {
-                        await changePassword(passwordDraft.current, passwordDraft.next);
+                    onClick={() => {
+                      if (!passwordEditing) {
                         setPasswordDraft({ current: "", next: "" });
-                        setProfileStatus("Password updated.");
-                      } catch (err) {
-                        setProfileError(err?.message || "Password update failed.");
+                        setPasswordEditing(true);
+                        return;
                       }
+                      void savePasswordEdit();
                     }}
                     style={{
                       border: "1px solid color-mix(in srgb, var(--border) 70%, #9ca3af 30%)",
                       background: "linear-gradient(180deg, #273445 0%, #1b2533 100%)",
                       color: "white",
-                      borderRadius: 10,
-                      padding: "8px 14px",
-                      minHeight: 38,
-                      minWidth: 132,
-                      fontSize: 12,
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      minHeight: 32,
+                      minWidth: 104,
+                      fontSize: 11,
                       cursor: "pointer",
                       fontWeight: 700,
                       boxShadow: "0 8px 16px rgba(0,0,0,0.28)",
                     }}
                   >
-                    Update Password
+                    {passwordEditing ? "Save" : "Edit"}
                   </button>
                 </div>
               </div>
@@ -7149,11 +8727,11 @@ export default function App() {
                     border: "1px solid #f04438",
                     background: "linear-gradient(180deg, #f75b51 0%, #f04438 100%)",
                     color: "white",
-                    borderRadius: 10,
-                    padding: "8px 14px",
-                    minHeight: 38,
-                    minWidth: 100,
-                    fontSize: 12,
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    minHeight: 32,
+                    minWidth: 86,
+                    fontSize: 11,
                     cursor: "pointer",
                     fontWeight: 700,
                     boxShadow: "0 8px 16px rgba(240,68,56,0.35)",
@@ -7161,6 +8739,113 @@ export default function App() {
                 >
                   Logout
                 </button>
+              </div>
+            </div>
+            {!userDrawerFullscreen ? (
+              <div
+                onMouseDown={(e) => beginDrawerResize("user", e, userDrawerFullscreen)}
+                title="Resize"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 10,
+                  cursor: "ew-resize",
+                  borderRight: "1px solid var(--border)",
+                  background: "color-mix(in srgb, var(--bg-elev) 90%, transparent)",
+                  zIndex: 2,
+                }}
+              />
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {showSecurityDrawer && (
+        <div
+          style={{
+            position: "fixed",
+            top: TOP_BAR_H + (isLiveMode ? liveAlarmBarOffset : 0),
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 230,
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              right: 0,
+              left: userDrawerFullscreen ? 0 : undefined,
+              top: 0,
+              height: "100%",
+              width: userDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.user.w)}px`,
+              background:
+                "linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 96%, white 4%) 0%, color-mix(in srgb, var(--bg-soft) 90%, black 10%) 100%)",
+              boxShadow: "-24px 0 52px rgba(0,0,0,0.36), -8px 0 22px rgba(0,0,0,0.18)",
+              display: "flex",
+              flexDirection: "column",
+              borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
+              color: "var(--text)",
+              transform: "translate(0px, 0px)",
+              animation: "drawer-slide-in-right 220ms ease-out",
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "12px 14px",
+                borderBottom: "1px solid var(--border)",
+                background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
+                gap: 10,
+                cursor: "default",
+              }}
+            >
+              <div style={{ display: "grid", gap: 2 }}>
+                <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "0.02em" }}>
+                  Security
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  Users, roles and access areas
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={() => setUserDrawerFullscreen((v) => !v)}
+                  style={drawerHeaderButtonStyle}
+                  title={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
+                  aria-label={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
+                >
+                  {userDrawerFullscreen ? "❐" : "⛶"}
+                </button>
+                <button
+                  onClick={() => setShowSecurityDrawer(false)}
+                  style={drawerHeaderButtonStyle}
+                  title="Close"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div style={{ flex: "1 1 auto", overflow: "auto", padding: 14, display: "grid", gap: 12 }}>
+              <div
+                style={{
+                  background:
+                    "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
+                  border: "1px solid color-mix(in srgb, var(--border) 82%, white 18%)",
+                  borderRadius: 12,
+                  padding: 14,
+                  display: "grid",
+                  gap: 10,
+                  boxShadow: "0 8px 16px rgba(0,0,0,0.16)",
+                }}
+              >
+                <SecurityManager canManage={canManageSecurity} currentUserId={user?.id} />
               </div>
             </div>
             {!userDrawerFullscreen ? (
@@ -7203,28 +8888,27 @@ export default function App() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <img
-            src="/mesora-wordmark.svg"
-            alt="Mesora"
-            style={{ height: 34, width: "auto", display: "block" }}
-          />
+          <button
+            onClick={() => setShowProjectDrawer((v) => !v)}
+            title={showProjectDrawer ? "Hide Project Drawer" : "Show Project Drawer"}
+            style={{
+              border: "none",
+              background: "transparent",
+              padding: 0,
+              margin: 0,
+              cursor: "pointer",
+              display: "block",
+            }}
+            aria-label={showProjectDrawer ? "Hide Project Drawer" : "Show Project Drawer"}
+          >
+            <img
+              src={appLogo}
+              alt="Mesora"
+              style={{ height: 34, width: "auto", display: "block" }}
+            />
+          </button>
           <div style={{ width: 1, height: 18, background: "var(--border)" }} />
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button
-              className="top-menu-btn"
-              onClick={() => setShowProjectDrawer((v) => !v)}
-              title={showProjectDrawer ? "Hide Project Drawer" : "Show Project Drawer"}
-              style={topMenuModeButtonStyle(!!showProjectDrawer)}
-            >
-              <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M4 7h16M4 12h16M4 17h16"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
             <div
               title={activeProject?.name || projectName || "No project selected"}
               style={{
@@ -7241,10 +8925,10 @@ export default function App() {
                 textOverflow: "ellipsis",
               }}
             >
-              Project: {activeProject?.name || projectName || "None"}
+              {activeProject?.name || projectName || "None"}
             </div>
             <div
-              title={activeScreen?.name || screenName || "No screen selected"}
+              title={isLiveMode ? activeMenuLabel || "No menu selected" : activeScreen?.name || screenName || "No screen selected"}
               style={{
                 maxWidth: 180,
                 border: "1px solid var(--border)",
@@ -7259,18 +8943,20 @@ export default function App() {
                 textOverflow: "ellipsis",
               }}
             >
-              Screen: {activeScreen?.name || screenName || "None"}
+              {isLiveMode ? activeMenuLabel || "None" : activeScreen?.name || screenName || "None"}
             </div>
-            <div style={{ width: 1, height: 20, background: "var(--border)", margin: "0 4px" }} />
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                maxWidth: "44vw",
-                overflowX: "auto",
-              }}
-            >
+            {!isLiveMode ? (
+              <>
+                <div style={{ width: 1, height: 20, background: "var(--border)", margin: "0 4px" }} />
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    maxWidth: "44vw",
+                    overflowX: "auto",
+                  }}
+                >
               <button title="Export SVG" style={topMenuIconButtonStyle} onClick={exportSVG}>
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <path
@@ -7283,32 +8969,15 @@ export default function App() {
                   <path d="M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                 </svg>
               </button>
-              <button title="Export Ignition" style={topMenuIconButtonStyle} onClick={exportIgnitionJson}>
-                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
-                  <path
-                    d="M9 4c-2 0-3 1-3 3v1c0 1-.5 2-2 2 1.5 0 2 1 2 2v1c0 2 1 3 3 3"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                  />
-                  <path
-                    d="M15 4c2 0 3 1 3 3v1c0 1 .5 2 2 2-1.5 0-2 1-2 2v1c0 2-1 3-3 3"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-              <button title="Add SVG" style={topMenuIconButtonStyle} onClick={() => setImportOpen(true)}>
-                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
-                  <path
-                    d="M12 21V11m0 0l4 4m-4-4l-4 4"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path d="M5 7h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              <button
+                title="Add SVG"
+                onClick={() => setImportOpen(true)}
+                style={topMenuIconButtonStyle}
+              >
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <path d="M14 3v5h5" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <path d="M12 11v6M9 14h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                 </svg>
               </button>
               <button title="Add Widget" style={topMenuIconButtonStyle} onClick={() => setWidgetOpen(true)}>
@@ -7421,27 +9090,36 @@ export default function App() {
                   />
                 </svg>
               </button>
-            </div>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {[
-              { key: "theme", label: "Theme" },
-              { key: "plc", label: "PLC" },
-              { key: "opc", label: "OPC" },
-              { key: "server", label: "Server" },
-              { key: "tags", label: "Tag" },
-              { key: "database", label: "Database" },
-              { key: "reports", label: "Reports" },
-              { key: "ai", label: "AI" },
-              { key: "help", label: "Help" },
-            ].map((item) => (
-              (() => {
+              { key: "theme", label: "Theme", alwaysVisible: true },
+              { key: "plc", label: "PLC", areaKey: "plc" },
+              { key: "opc", label: "OPC", areaKey: "opc" },
+              { key: "server", label: "Server", areaKey: "server" },
+              { key: "tags", label: "Tag", areaKey: "tags" },
+              { key: "database", label: "Database", areaKey: "database" },
+              { key: "reports", label: "Reports", areaKey: "reports" },
+              { key: "ai", label: "AI", areaKey: "ai" },
+              { key: "security", label: "Security", areaKey: "security" },
+              { key: "help", label: "Help", areaKey: "help" },
+            ]
+              .filter((item) => (item.alwaysVisible || !isLiveMode) && canViewArea(item.areaKey))
+              .map((item) => {
                 const isActiveView =
                   drawerView === item.key ||
                   (item.key === "opc" && (drawerView === "logs" || drawerView === "diagnostics"));
-                const isActive = item.key === "theme" ? false : (showMainDrawer && isActiveView);
+                const isActive =
+                  item.key === "theme"
+                    ? false
+                    : item.key === "security"
+                    ? showSecurityDrawer
+                    : (showMainDrawer && isActiveView);
                 return (
                   <button
                     key={`top-nav-${item.key}`}
@@ -7458,12 +9136,17 @@ export default function App() {
                         setTheme((t) => (t === "dark" ? "light" : "dark"));
                         return;
                       }
+                      if (item.key === "security") {
+                        setShowUserDrawer(false);
+                        setShowSecurityDrawer(true);
+                        return;
+                      }
                       openDrawer(item.key);
                     }}
                     style={{
-                      border: `1px solid ${isActive ? "#2b6cff" : "var(--border)"}`,
-                      background: isActive ? "#2b6cff" : "var(--bg-elev)",
-                      color: isActive ? "#ffffff" : "var(--text)",
+                      border: `1px solid ${isActive ? "var(--selected-border)" : "var(--border)"}`,
+                      background: isActive ? "var(--selected-bg)" : "var(--bg-elev)",
+                      color: isActive ? "var(--selected-text)" : "var(--text)",
                       borderRadius: 999,
                       padding: item.key === "theme" ? "4px 8px" : "4px 10px",
                       fontSize: 11,
@@ -7473,7 +9156,7 @@ export default function App() {
                       display: "inline-flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      boxShadow: isActive ? "0 0 0 1px rgba(43,108,255,0.35)" : "0 6px 16px rgba(15, 23, 42, 0.08)",
+                      boxShadow: isActive ? "var(--selected-shadow)" : "0 6px 16px rgba(15, 23, 42, 0.08)",
                     }}
                   >
                     {item.key === "theme" ? (
@@ -7492,11 +9175,13 @@ export default function App() {
                     )}
                   </button>
                 );
-              })()
-            ))}
+              })}
           </div>
           <button
-            onClick={() => setShowUserDrawer(true)}
+            onClick={() => {
+              setShowSecurityDrawer(false);
+              setShowUserDrawer(true);
+            }}
             style={{
               display: "flex",
               alignItems: "center",
@@ -7538,6 +9223,324 @@ export default function App() {
         </div>
       </div>
 
+      {isLiveMode ? (
+        <div
+          className={`vizi-live-alarmbar vizi-scroll ${hasLiveAlarms ? "is-alert" : "is-clear"}`}
+          style={{
+            position: "fixed",
+            top: TOP_BAR_H,
+            left: projectDrawerInsetPx,
+            right: 0,
+            height: LIVE_ALARM_BAR_H,
+            zIndex: 205,
+            borderBottom: "1px solid var(--border)",
+            background:
+              hasLiveAlarms
+                ? "linear-gradient(180deg, color-mix(in srgb, #f04438 18%, var(--bg-elev) 82%) 0%, color-mix(in srgb, #f04438 12%, var(--bg) 88%) 100%)"
+                : "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, #0b2448 6%) 0%, color-mix(in srgb, var(--bg) 92%, #040d1f 8%) 100%)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "0 10px",
+            overflowX: "auto",
+            whiteSpace: "nowrap",
+          }}
+        >
+          <div
+            className="vizi-live-alarmbar-title"
+            style={{
+              fontSize: 11,
+              fontWeight: 800,
+              color: hasLiveAlarms ? "#fca5a5" : "var(--text-muted)",
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+              flex: "0 0 auto",
+            }}
+          >
+            {hasLiveAlarms ? `Alarms (${liveActiveAlarmsWithOccurred.length})` : "Alarms clear"}
+          </div>
+          {hasLiveAlarms ? (
+            <div className="vizi-live-alarm-marquee">
+              <div
+                className="vizi-live-alarm-marquee-track"
+                style={{ ["--alarm-marquee-duration"]: `${liveAlarmMarqueeDurationSec}s` }}
+              >
+                <div className="vizi-live-alarm-marquee-group">
+                  {liveAlarmMarqueeItems.map((item, idx) => (
+                    <div
+                      key={`alarm-marquee-a-${item.id || idx}`}
+                      className="vizi-live-alarm-marquee-item"
+                      title={item.title}
+                    >
+                      <span className="vizi-live-alarm-marquee-item-label">{item.label}</span>
+                      {item.at ? <span className="vizi-live-alarm-marquee-item-time">{item.at}</span> : null}
+                    </div>
+                  ))}
+                </div>
+                <div className="vizi-live-alarm-marquee-group" aria-hidden="true">
+                  {liveAlarmMarqueeItems.map((item, idx) => (
+                    <div
+                      key={`alarm-marquee-b-${item.id || idx}`}
+                      className="vizi-live-alarm-marquee-item"
+                      title={item.title}
+                    >
+                      <span className="vizi-live-alarm-marquee-item-label">{item.label}</span>
+                      {item.at ? <span className="vizi-live-alarm-marquee-item-time">{item.at}</span> : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {isLiveMode ? (
+        <div
+          style={{
+            position: "fixed",
+            left: projectDrawerInsetPx,
+            top: TOP_BAR_H + liveAlarmBarOffset,
+            bottom: 0,
+            width: liveMenuIsExpanded ? 248 : 72,
+            zIndex: 210,
+            border: "1px solid color-mix(in srgb, var(--border) 88%, #2b6cff 12%)",
+            borderRadius: 0,
+            background:
+              "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 92%, #0b2448 8%) 0%, color-mix(in srgb, var(--bg) 90%, #040d1f 10%) 100%)",
+            boxShadow: "0 24px 36px rgba(2,8,23,0.28), inset 0 1px 0 rgba(255,255,255,0.05)",
+            backdropFilter: "blur(8px)",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            transition: "width 180ms ease, left 180ms ease",
+            animation: "drawer-slide-in-left 220ms ease-out",
+          }}
+        >
+          <div
+            style={{
+              padding: liveMenuIsExpanded ? "4px 8px" : "6px 8px",
+              minHeight: liveMenuIsExpanded ? 32 : 38,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: liveMenuIsExpanded ? "flex-end" : "center",
+              gap: 4,
+            }}
+          >
+	            <button
+	              onClick={() => setLiveMenuCollapsed((v) => !v)}
+	              title={liveMenuCollapsed ? "Expand menu" : "Collapse menu"}
+	              aria-label={liveMenuCollapsed ? "Expand live menu" : "Collapse live menu"}
+	              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "color-mix(in srgb, var(--bg-elev) 86%, #0f274d 14%)",
+                color: "var(--text)",
+                display: "grid",
+                placeItems: "center",
+                cursor: "pointer",
+                flex: "0 0 auto",
+                padding: 0,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d={liveMenuCollapsed ? "M9 6l6 6-6 6" : "M15 6l-6 6 6 6"}
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{
+                    animation: liveMenuCollapsed ? "live-menu-arrow-pulse 1s ease-in-out infinite" : "none",
+                    transition: "transform 180ms ease",
+                  }}
+                />
+              </svg>
+            </button>
+          </div>
+          <div
+            style={{
+              flex: "1 1 auto",
+              minHeight: 0,
+              overflow: "auto",
+              padding: liveMenuIsExpanded ? 8 : 6,
+              display: "grid",
+              alignContent: "start",
+              gap: 6,
+            }}
+            className="vizi-scroll"
+          >
+            {liveMenuGroupsForRender.some((group) => Array.isArray(group.items) && group.items.length) ? (
+              liveMenuGroupsForRender.map((group) => (
+                <div key={`live-menu-group-${group.id}`} style={{ display: "grid", gap: 6 }}>
+                  {liveMenuIsExpanded ? (
+	                    <button
+	                      onClick={() => toggleLiveMenuGroupCollapse(group.id)}
+	                      title={`Toggle group ${group.name || "Group"}`}
+	                      style={{
+                        border: "none",
+                        background: "transparent",
+                        padding: "6px 2px 4px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "flex-start",
+                        gap: 8,
+                        cursor: "pointer",
+                        outline: "none",
+                        boxShadow: "none",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 900,
+                          letterSpacing: "0.08em",
+                          color: "color-mix(in srgb, var(--text-muted) 88%, #9fb8ff 12%)",
+                          textTransform: "uppercase",
+                          textAlign: "left",
+                        }}
+                      >
+                        {group.name || "Group"}
+                      </span>
+                    </button>
+                  ) : (
+                    <div
+                      title={group.name || "Group"}
+                      style={{
+                        display: "grid",
+                        justifyItems: "center",
+                        gap: 2,
+                        padding: "4px 0",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 8,
+                          fontWeight: 900,
+                          letterSpacing: "0.1em",
+                          color: "color-mix(in srgb, var(--text-muted) 84%, #b7cbff 16%)",
+                          textTransform: "uppercase",
+                          lineHeight: 1,
+                          border: "1px solid color-mix(in srgb, var(--border) 82%, #2b6cff 18%)",
+                          borderRadius: 999,
+                          padding: "2px 6px",
+                          background: "color-mix(in srgb, var(--bg-elev) 86%, #0f274d 14%)",
+                        }}
+                      >
+                        {(String(group.name || "GRP").trim().replace(/[^a-z0-9]/gi, "").slice(0, 3) || "GRP").toUpperCase()}
+                      </span>
+                      <span
+                        style={{
+                          width: 30,
+                          height: 1,
+                          background: "color-mix(in srgb, var(--border) 84%, transparent)",
+                        }}
+                      />
+                    </div>
+                  )}
+                  {!collapsedLiveGroupIds.includes(String(group.id || "")) && group.items.map((item) => {
+                    const isData = item.type === "data";
+                    const screen = !isData ? screens.find((s) => s.id === item.screenId) || null : null;
+                    const label =
+                      String(item.label || "").trim() ||
+                      (isData
+                        ? String(item.dataTable || "").trim() || "Data"
+                        : String(screen?.name || "Screen"));
+                    const active = isData
+                      ? showMainDrawer &&
+                        drawerView === "database" &&
+                        (String(item.dataTable || "").trim()
+                          ? String(item.dataTable || "").trim() === activeDatabaseTable
+                          : true)
+                      : String(item.screenId || "") === String(activeScreenId);
+                    const initials = label
+                      .split(/\s+/)
+                      .filter(Boolean)
+                      .join(" ")
+                      .replace(/[^a-zA-Z0-9]/g, "")
+                      .slice(0, 3)
+                      .toUpperCase() || (isData ? "DAT" : "SCR");
+                    return (
+                      <button
+                        key={`live-menu-item-${item.id}`}
+                        onClick={() => activateLiveMenuItem(item)}
+                        data-preserve-style="true"
+                        style={{
+                          width: "100%",
+                          minHeight: liveMenuIsExpanded ? 30 : 38,
+                          borderRadius: 10,
+                          border: `1px solid ${active ? "var(--selected-border)" : "var(--border)"}`,
+                          background: active
+                            ? isData
+                              ? "var(--bg-elev)"
+                              : "var(--selected-bg)"
+                            : "color-mix(in srgb, var(--bg) 88%, #0b1729 12%)",
+                          color: active
+                            ? isData
+                              ? "var(--selected-border)"
+                              : "var(--selected-text)"
+                            : "var(--text)",
+                          boxShadow: active
+                            ? isData
+                              ? "none"
+                              : "var(--selected-shadow)"
+                            : "none",
+                          padding: liveMenuIsExpanded ? "5px 8px" : "6px 6px",
+                          fontSize: 11,
+                          fontWeight: active ? 800 : 700,
+                          textAlign: "left",
+                          cursor: "pointer",
+                          display: "grid",
+                          gridTemplateColumns: liveMenuIsExpanded ? "22px 1fr" : "1fr",
+                          alignItems: "center",
+                          gap: liveMenuIsExpanded ? 8 : 0,
+                          transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
+                        }}
+                        title={label}
+                      >
+                        <span
+                          style={{
+                            width: liveMenuIsExpanded ? 22 : 36,
+                            height: liveMenuIsExpanded ? 18 : 24,
+                            borderRadius: liveMenuIsExpanded ? 7 : 8,
+                            border: active
+                              ? "1px solid color-mix(in srgb, #ffffff 56%, var(--selected-border) 44%)"
+                              : "1px solid var(--border)",
+                            background: active
+                              ? "rgba(255,255,255,0.2)"
+                              : "color-mix(in srgb, var(--bg-elev) 85%, transparent)",
+                            color: "inherit",
+                            display: "grid",
+                            placeItems: "center",
+                            fontSize: liveMenuIsExpanded ? 9 : 10,
+                            fontWeight: 900,
+                            margin: liveMenuIsExpanded ? 0 : "0 auto",
+                            letterSpacing: liveMenuIsExpanded ? "0.02em" : "0.06em",
+                          }}
+                        >
+                          {initials}
+                        </span>
+                        {liveMenuIsExpanded ? (
+                          <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {label}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))
+            ) : (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", padding: 6, textAlign: liveMenuIsExpanded ? "left" : "center" }}>
+                No live menu items configured.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
       {showProjectDrawer && (
         <div
           ref={projectDrawerRef}
@@ -7572,12 +9575,9 @@ export default function App() {
               cursor: "default",
             }}
           >
-            <div style={{ display: "grid", gap: 2 }}>
+            <div style={{ display: "grid" }}>
               <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: "0.02em", color: "var(--text)" }}>
                 Project
-              </div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                One app project
               </div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -7618,283 +9618,580 @@ export default function App() {
           ) : null}
 
           <div
-            style={{
-              margin: 12,
-              marginBottom: 8,
-              padding: 12,
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              background: "var(--bg-elev)",
-              display: "grid",
-              gap: 6,
-            }}
+            style={
+              projectDrawerTab === "screens" || projectDrawerTab === "menu"
+                ? { ...projectDrawerContentStyle, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }
+                : projectDrawerContentStyle
+            }
+            className="vizi-scroll"
           >
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Current Project</div>
-            <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text)" }}>
-              {activeProject?.name || projectName || "Untitled"}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              Active Screen: {activeScreen?.name || screenName || "Screen 1"}
-            </div>
-            {activeProjectUpdatedBy ? (
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                Updated by {activeProjectUpdatedBy}
+            <div style={{ ...projectDrawerCardStyle, padding: 6, flex: "0 0 auto" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                <button
+                  onClick={() => setProjectDrawerTab("project")}
+                  style={drawerTabButtonStyle(projectDrawerTab === "project")}
+                  title="Project Settings"
+                >
+                  Project
+                </button>
+                <button
+                  onClick={() => setProjectDrawerTab("menu")}
+                  style={drawerTabButtonStyle(projectDrawerTab === "menu")}
+                  title="Menu Config"
+                >
+                  Menu
+                </button>
+                <button
+                  onClick={() => setProjectDrawerTab("screens")}
+                  style={drawerTabButtonStyle(projectDrawerTab === "screens")}
+                  title="Manage Screens"
+                >
+                  Screens
+                </button>
               </div>
-            ) : null}
-            {activeProjectUpdatedAt ? (
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {formatProjectTime(activeProjectUpdatedAt)}
-              </div>
-            ) : null}
-          </div>
+            </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6, padding: "0 12px 12px" }}>
-            <button
-              onClick={saveProjectToDb}
-              style={{
-                ...topMenuTextButtonStyle,
-                fontSize: 11,
-                padding: "7px 10px",
-                border: "1px solid #2b6cff",
-                background: "#2b6cff",
-                color: "#ffffff",
-              }}
-              title="Save Project"
-            >
-              Save Project
-            </button>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gap: 8,
-              padding: 12,
-              margin: "0 12px 12px",
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              background: "var(--bg-elev)",
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
-              SVG Background Colors
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center" }}>
-              <div style={{ fontSize: 12, color: "var(--text)" }}>Light</div>
-              <input
-                type="color"
-                value={projectCanvasBackground.light || DEFAULT_CANVAS_BG_LIGHT}
-                onChange={(e) => {
-                  const next = normalizeProjectCanvasBackground({
-                    ...projectCanvasBackground,
-                    light: e.target.value,
-                  });
-                  setProjectCanvasBackground(next);
-                  scheduleProjectAutoSave();
-                }}
-                style={{ width: "100%", height: 32, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}
-                title="Canvas background color in light mode"
-              />
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{projectCanvasBackground.light}</div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center" }}>
-              <div style={{ fontSize: 12, color: "var(--text)" }}>Dark</div>
-              <input
-                type="color"
-                value={projectCanvasBackground.dark || DEFAULT_CANVAS_BG_DARK}
-                onChange={(e) => {
-                  const next = normalizeProjectCanvasBackground({
-                    ...projectCanvasBackground,
-                    dark: e.target.value,
-                  });
-                  setProjectCanvasBackground(next);
-                  scheduleProjectAutoSave();
-                }}
-                style={{ width: "100%", height: 32, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}
-                title="Canvas background color in dark mode"
-              />
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{projectCanvasBackground.dark}</div>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <button
-                onClick={() => {
-                  const next = normalizeProjectCanvasBackground(null);
-                  setProjectCanvasBackground(next);
-                  scheduleProjectAutoSave();
-                }}
-                style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 10px" }}
-                title="Reset canvas background colors to defaults"
-              >
-                Reset Defaults
-              </button>
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gap: 10,
-              padding: 12,
-              margin: "0 12px 12px",
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              background: "var(--bg-elev)",
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Project Name</div>
-            <input
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== "Enter") return;
-                e.preventDefault();
-                saveProjectToDb();
-              }}
-              placeholder="Project name"
-              style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                color: "var(--text)",
-                borderRadius: 8,
-                padding: "8px 10px",
-                fontSize: 12,
-                fontWeight: 600,
-              }}
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
-              <button
-                onClick={saveProjectToDb}
-                style={{
-                  ...topMenuTextButtonStyle,
-                  fontSize: 11,
-                  padding: "6px 10px",
-                  border: "1px solid #2b6cff",
-                  background: "#2b6cff",
-                  color: "#ffffff",
-                }}
-                title="Save Project Name"
-              >
-                Save Name
-              </button>
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gap: 8,
-              padding: 12,
-              margin: "0 12px 12px",
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              background: "var(--bg-elev)",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Screens</div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{screens.length} total</div>
-            </div>
-            <input
-              value={screenName}
-              onChange={(e) => renameActiveScreen(e.target.value)}
-              placeholder="Screen name"
-              style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                color: "var(--text)",
-                borderRadius: 8,
-                padding: "9px 10px",
-                fontSize: 12,
-                fontWeight: 600,
-              }}
-            />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-              <button
-                onClick={addScreen}
-                style={{
-                  ...topMenuTextButtonStyle,
-                  fontSize: 11,
-                  padding: "8px 10px",
-                  border: "1px solid #2b6cff",
-                  background: "#2b6cff",
-                  color: "#ffffff",
-                  fontWeight: 800,
-                }}
-                title="Add Screen"
-              >
-                + New Screen
-              </button>
-              <button
-                onClick={deleteActiveScreen}
-                disabled={screens.length <= 1}
-                style={{
-                  ...topMenuTextButtonStyle,
-                  fontSize: 11,
-                  padding: "8px 10px",
-                  border: "1px solid #f04438",
-                  background: screens.length > 1 ? "#f04438" : "rgba(244,68,56,0.55)",
-                  color: "#fff",
-                  cursor: screens.length > 1 ? "pointer" : "not-allowed",
-                  opacity: screens.length > 1 ? 1 : 0.6,
-                  fontWeight: 800,
-                }}
-                title="Delete Active Screen"
-              >
-                Delete
-              </button>
-            </div>
-            <div style={{ maxHeight: 220, overflow: "auto", paddingRight: 2 }} className="vizi-scroll">
-              {(screens || []).map((s) => {
-                const active = s.id === activeScreenId;
-                return (
-                  <button
-                    key={`screen-item-${s.id}`}
-                    data-preserve-style="true"
-                    onClick={() => switchToScreen(s.id)}
+            {projectDrawerTab === "project" ? (
+              <>
+            <div style={{ ...projectDrawerCardStyle, gap: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Current Project</div>
+              <label style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Project Name</span>
+                {projectNameEditing ? (
+                  <input
+                    value={projectNameDraft}
+                    onChange={(e) => setProjectNameDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void saveProjectNameFromSettings();
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelProjectNameEditFromSettings();
+                      }
+                    }}
                     style={{
-                      width: "100%",
-                      textAlign: "left",
-                      marginBottom: 6,
-                      border: active ? "1px solid #2b6cff" : "1px solid var(--border)",
-                      background: active ? "#2b6cff" : "var(--bg)",
-                      color: active ? "#ffffff" : "var(--text)",
+                      border: "1px solid var(--border)",
+                      background: "#ffffff",
+                      color: "#111827",
                       borderRadius: 8,
                       padding: "8px 10px",
                       fontSize: 12,
-                      fontWeight: active ? 800 : 600,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
+                      fontWeight: 600,
                     }}
-                    title={s.name}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text)",
+                      borderRadius: 8,
+                      padding: "8px 10px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
                   >
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: 8 }}>
-                      {s.name || "Screen"}
-                    </span>
-                    {active ? (
-                      <span
+                    {projectName || "Untitled"}
+                  </div>
+                )}
+              </label>
+              <div style={{ display: "grid", gap: 4 }}>
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Mode</span>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: projectModeDraft === "design" ? "var(--text)" : "var(--text-muted)",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Design
+                  </span>
+                  <button
+                    data-preserve-style="true"
+                    onClick={() =>
+                      projectNameEditing
+                        ? setProjectModeDraft((current) =>
+                            normalizeProjectMode(current) === "live" ? "design" : "live"
+                          )
+                        : undefined
+                    }
+                    disabled={!projectNameEditing}
+                    title={projectNameEditing ? "Toggle Project Mode" : "Click Edit to change mode"}
+                    aria-label="Toggle Project Mode"
+                    style={{
+                      width: 44,
+                      height: 24,
+                      borderRadius: 999,
+                      border: `1px solid ${projectModeDraft === "live" ? "#2b6cff" : "var(--border)"}`,
+                      background: projectModeDraft === "live" ? "#2b6cff" : "var(--bg-soft)",
+                      padding: 2,
+                      cursor: projectNameEditing ? "pointer" : "not-allowed",
+                      position: "relative",
+                      transition: "all 140ms ease",
+                      opacity: projectNameEditing ? 1 : 0.55,
+                    }}
+                  >
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 2,
+                        left: projectModeDraft === "live" ? 22 : 2,
+                        width: 18,
+                        height: 18,
+                        borderRadius: "50%",
+                        background: "#ffffff",
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.24)",
+                        transition: "left 140ms ease",
+                      }}
+                    />
+                  </button>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: projectModeDraft === "live" ? "var(--text)" : "var(--text-muted)",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Live
+                  </span>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginTop: 4 }}>
+                SVG Background Colors
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center" }}>
+                <div style={{ fontSize: 12, color: "var(--text)" }}>Light</div>
+                <input
+                  type="color"
+                  value={projectCanvasBackgroundDraft.light || DEFAULT_CANVAS_BG_LIGHT}
+                  onChange={(e) => {
+                    const next = normalizeProjectCanvasBackground({
+                      ...projectCanvasBackgroundDraft,
+                      light: e.target.value,
+                    });
+                    setProjectCanvasBackgroundDraft(next);
+                  }}
+                  disabled={!projectNameEditing}
+                  style={{ width: "100%", height: 32, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}
+                  title="Canvas background color in light mode"
+                />
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{projectCanvasBackgroundDraft.light}</div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center" }}>
+                <div style={{ fontSize: 12, color: "var(--text)" }}>Dark</div>
+                <input
+                  type="color"
+                  value={projectCanvasBackgroundDraft.dark || DEFAULT_CANVAS_BG_DARK}
+                  onChange={(e) => {
+                    const next = normalizeProjectCanvasBackground({
+                      ...projectCanvasBackgroundDraft,
+                      dark: e.target.value,
+                    });
+                    setProjectCanvasBackgroundDraft(next);
+                  }}
+                  disabled={!projectNameEditing}
+                  style={{ width: "100%", height: 32, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}
+                  title="Canvas background color in dark mode"
+                />
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{projectCanvasBackgroundDraft.dark}</div>
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  onClick={() => {
+                    const next = normalizeProjectCanvasBackground(null);
+                    setProjectCanvasBackgroundDraft(next);
+                  }}
+                  style={{
+                    ...topMenuTextButtonStyle,
+                    fontSize: 11,
+                    padding: "6px 10px",
+                    opacity: projectNameEditing ? 1 : 0.45,
+                    cursor: projectNameEditing ? "pointer" : "not-allowed",
+                  }}
+                  title="Reset canvas background colors to defaults"
+                  disabled={!projectNameEditing}
+                >
+                  Reset Defaults
+                </button>
+              </div>
+              {activeProjectUpdatedAt ? (
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {formatProjectTime(activeProjectUpdatedAt)}
+                </div>
+              ) : null}
+            </div>
+              </>
+            ) : null}
+
+            {projectDrawerTab === "screens" ? (
+            <div style={{ display: "grid", gap: 8, minHeight: 0 }}>
+              <fieldset
+                style={{ border: "none", margin: 0, padding: 0, minWidth: 0, display: "grid", gap: 8, minHeight: 0 }}
+              >
+              <div style={{ ...projectDrawerCardStyle }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Canvas Screens</div>
+                  <button
+                    onClick={addScreen}
+                    disabled={!projectNameEditing}
+                    style={{
+                      ...topMenuTextButtonStyle,
+                      border: "1px solid #2b6cff",
+                      background: projectNameEditing ? "#2b6cff" : "var(--bg-soft)",
+                      color: projectNameEditing ? "#ffffff" : "var(--text-muted)",
+                      fontSize: 11,
+                      padding: "6px 10px",
+                      cursor: projectNameEditing ? "pointer" : "not-allowed",
+                      opacity: projectNameEditing ? 1 : 0.65,
+                    }}
+                    title="Add Canvas Screen"
+                  >
+                    Add Screen
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Choose the active design screen.
+                </div>
+                <div style={{ display: "grid", gap: 6, maxHeight: 180, overflow: "auto" }} className="vizi-scroll">
+                  {(screens || []).map((s) => {
+                    const active = s.id === activeScreenId;
+                    return (
+                      <div
+                        key={`screen-item-${s.id}`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => switchToScreen(s.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            switchToScreen(s.id);
+                          }
+                        }}
                         style={{
-                          fontSize: 10,
-                          fontWeight: 800,
-                          border: "1px solid rgba(255,255,255,0.7)",
-                          color: "#ffffff",
-                          borderRadius: 999,
-                          padding: "2px 6px",
-                          background: "rgba(255,255,255,0.14)",
-                          flex: "0 0 auto",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          background: active
+                            ? "color-mix(in srgb, var(--bg-elev) 88%, #2b6cff 12%)"
+                            : "var(--bg)",
+                          padding: "6px 8px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          cursor: "pointer",
+                          outline: "none",
+                          boxShadow: "none",
                         }}
                       >
-                        Active
-                      </span>
-                    ) : null}
-                  </button>
-                );
-              })}
+                        <input
+                          value={String(s.name || "")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            switchToScreen(s.id);
+                          }}
+                          onFocus={() => switchToScreen(s.id)}
+                          onKeyDown={(e) => e.stopPropagation()}
+                          onChange={(e) => renameScreenById(s.id, e.target.value)}
+                          onBlur={() => {
+                            if (String(s.name || "").trim()) return;
+                            renameScreenById(s.id, "Screen");
+                          }}
+                          readOnly={!projectNameEditing}
+                          style={{
+                            color: "var(--text)",
+                            fontSize: 12,
+                            fontWeight: active ? 800 : 600,
+                            textAlign: "left",
+                            padding: "4px 6px",
+                            flex: "1 1 auto",
+                            minWidth: 0,
+                            border: projectNameEditing ? "1px solid var(--border)" : "1px solid transparent",
+                            borderRadius: 6,
+                            background: projectNameEditing ? "var(--bg-elev)" : "transparent",
+                            outline: "none",
+                            cursor: projectNameEditing ? "text" : "pointer",
+                          }}
+                          title={s.name}
+                        />
+                        {active ? (
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 800, flex: "0 0 auto" }}>Active</span>
+                        ) : null}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteScreenById(s.id);
+                          }}
+                          disabled={screens.length <= 1 || !projectNameEditing}
+                          style={{
+                            width: 22,
+                            height: 22,
+                            borderRadius: 6,
+                            border: "1px solid #f04438",
+                            background: screens.length > 1 && projectNameEditing ? "#f04438" : "rgba(244,68,56,0.45)",
+                            color: "#fff",
+                            cursor: screens.length > 1 && projectNameEditing ? "pointer" : "not-allowed",
+                            opacity: screens.length > 1 && projectNameEditing ? 1 : 0.65,
+                            padding: 0,
+                            flex: "0 0 auto",
+                          }}
+                          title={`Delete ${s.name || "screen"}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              </fieldset>
             </div>
-          </div>
+            ) : null}
 
-          <div style={{ flex: 1 }} />
+            {projectDrawerTab === "menu" ? (
+            <div style={{ display: "grid", gap: 8, minHeight: 0, flex: "1 1 auto" }}>
+              <fieldset
+                disabled={!projectNameEditing}
+                style={{ border: "none", margin: 0, padding: 0, minWidth: 0, display: "grid", gap: 8, minHeight: 0, height: "100%" }}
+              >
+              <div style={{ ...projectDrawerCardStyle, minHeight: 0, display: "flex", flexDirection: "column", flex: "1 1 auto" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Menu Config</div>
+                  <button
+                    onClick={addLiveMenuGroup}
+                    style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 10px" }}
+                    title="Add Menu Group"
+                  >
+                    Add Group
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Build grouped live menu entries from canvas screens or data tables.
+                </div>
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 8,
+                    flex: "1 1 auto",
+                    minHeight: 0,
+                    overflow: "auto",
+                    alignContent: "start",
+                    gridAutoRows: "max-content",
+                  }}
+                  className="vizi-scroll"
+                >
+                  {liveMenuGroupsForRender.map((group) => (
+                    <div
+                      key={`menu-group-${group.id}`}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: 8,
+                        display: "grid",
+                        gap: 6,
+                        background: "var(--bg)",
+                        alignSelf: "start",
+                      }}
+                    >
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 6, alignItems: "center" }}>
+                        <input
+                          value={group.name}
+                          onChange={(e) => renameLiveMenuGroup(group.id, e.target.value)}
+                          placeholder="Group name"
+                          style={{
+                            border: "1px solid var(--border)",
+                            background: "var(--bg-elev)",
+                            color: "var(--text)",
+                            borderRadius: 7,
+                            padding: "6px 8px",
+                            fontSize: 12,
+                            fontWeight: 600,
+                          }}
+                        />
+                        <button
+                          onClick={() => addLiveMenuItem(group.id, "screen")}
+                          style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 8px" }}
+                          title="Add Canvas Screen Item"
+                        >
+                          + Screen
+                        </button>
+                        <button
+                          onClick={() => addLiveMenuItem(group.id, "data")}
+                          style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 8px" }}
+                          title="Add Data Screen Item"
+                        >
+                          + Data
+                        </button>
+                      </div>
+                      <div style={{ display: "grid", gap: 6 }}>
+                        {group.items.map((item, index) => (
+                          <div
+                            key={`menu-item-${item.id}`}
+                            style={{
+                              border: "1px solid var(--border)",
+                              borderRadius: 7,
+                              padding: 6,
+                              display: "grid",
+                              gridTemplateColumns: "82px 1fr 1fr auto auto auto",
+                              gap: 6,
+                              alignItems: "center",
+                              background: "var(--bg-elev)",
+                            }}
+                          >
+                            <select
+                              value={item.type}
+                              onChange={(e) => updateLiveMenuItem(group.id, item.id, { type: e.target.value })}
+                              style={{
+                                border: "1px solid var(--border)",
+                                background: "var(--bg)",
+                                color: "var(--text)",
+                                borderRadius: 6,
+                                padding: "5px 6px",
+                                fontSize: 11,
+                                fontWeight: 600,
+                              }}
+                            >
+                              <option value="screen">Canvas</option>
+                              <option value="data">Data</option>
+                            </select>
+                            {item.type === "data" ? (
+                              <select
+                                value={String(item.dataTable || "").trim()}
+                                onChange={(e) => updateLiveMenuItem(group.id, item.id, { dataTable: e.target.value })}
+                                style={{
+                                  border: "1px solid var(--border)",
+                                  background: "var(--bg)",
+                                  color: "var(--text)",
+                                  borderRadius: 6,
+                                  padding: "5px 6px",
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {databaseTablesForMenu.length ? (
+                                  databaseTablesForMenu.map((table) => (
+                                    <option key={`data-table-option-${table}`} value={table}>
+                                      {table}
+                                    </option>
+                                  ))
+                                ) : (
+                                  <option value="">No tables</option>
+                                )}
+                              </select>
+                            ) : (
+                              <select
+                                value={item.screenId || ""}
+                                onChange={(e) => updateLiveMenuItem(group.id, item.id, { screenId: e.target.value })}
+                                style={{
+                                  border: "1px solid var(--border)",
+                                  background: "var(--bg)",
+                                  color: "var(--text)",
+                                  borderRadius: 6,
+                                  padding: "5px 6px",
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {screens.map((screen) => (
+                                  <option key={`menu-screen-option-${screen.id}`} value={screen.id}>
+                                    {screen.name || "Screen"}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            <input
+                              value={item.label || ""}
+                              onChange={(e) => updateLiveMenuItem(group.id, item.id, { label: e.target.value })}
+                              placeholder="Label (optional)"
+                              style={{
+                                border: "1px solid var(--border)",
+                                background: "var(--bg)",
+                                color: "var(--text)",
+                                borderRadius: 6,
+                                padding: "5px 6px",
+                                fontSize: 11,
+                                fontWeight: 600,
+                              }}
+                            />
+                            <button
+                              onClick={() => moveLiveMenuItem(group.id, item.id, -1)}
+                              disabled={index === 0}
+                              style={{
+                                width: 22,
+                                height: 22,
+                                borderRadius: 6,
+                                border: "1px solid var(--border)",
+                                background: "var(--bg)",
+                                cursor: index === 0 ? "not-allowed" : "pointer",
+                                opacity: index === 0 ? 0.45 : 1,
+                                padding: 0,
+                              }}
+                              title="Move up"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              onClick={() => moveLiveMenuItem(group.id, item.id, 1)}
+                              disabled={index >= group.items.length - 1}
+                              style={{
+                                width: 22,
+                                height: 22,
+                                borderRadius: 6,
+                                border: "1px solid var(--border)",
+                                background: "var(--bg)",
+                                cursor: index >= group.items.length - 1 ? "not-allowed" : "pointer",
+                                opacity: index >= group.items.length - 1 ? 0.45 : 1,
+                                padding: 0,
+                              }}
+                              title="Move down"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              onClick={() => deleteLiveMenuItem(group.id, item.id)}
+                              style={{
+                                width: 22,
+                                height: 22,
+                                borderRadius: 6,
+                                border: "1px solid #f04438",
+                                background: "#f04438",
+                                color: "#fff",
+                                padding: 0,
+                              }}
+                              title="Delete item"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+                        <button
+                          onClick={() => deleteLiveMenuGroup(group.id)}
+                          style={{
+                            ...topMenuTextButtonStyle,
+                            fontSize: 11,
+                            padding: "6px 10px",
+                            minHeight: 30,
+                            border: "1px solid #f04438",
+                            background: "#f04438",
+                            color: "#fff",
+                          }}
+                          title="Delete Group"
+                        >
+                          Delete Group
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              </fieldset>
+            </div>
+            ) : null}
+          </div>
           {!!projectStatus && (
             <div
               style={{
@@ -7907,26 +10204,73 @@ export default function App() {
               {projectStatus}
             </div>
           )}
+          {showProjectDrawer ? (
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                padding: "10px 10px 12px",
+                background: "var(--bg-soft)",
+              }}
+            >
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <button
+                  onClick={cancelProjectNameEditFromSettings}
+                  disabled={!projectNameEditing}
+                  style={{
+                    ...topMenuTextButtonStyle,
+                    fontSize: 12,
+                    padding: "8px 10px",
+                    opacity: projectNameEditing ? 1 : 0.45,
+                    cursor: projectNameEditing ? "pointer" : "not-allowed",
+                  }}
+                  title="Cancel Project Changes"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    if (!projectNameEditing) {
+                      beginProjectDrawerEdit();
+                      return;
+                    }
+                    void saveProjectNameFromSettings();
+                  }}
+                  style={{
+                    ...topMenuTextButtonStyle,
+                    fontSize: 12,
+                    padding: "8px 10px",
+                    border: projectNameEditing ? "1px solid #2b6cff" : topMenuTextButtonStyle.border,
+                    background: projectNameEditing ? "#2b6cff" : topMenuTextButtonStyle.background,
+                    color: projectNameEditing ? "#ffffff" : topMenuTextButtonStyle.color,
+                  }}
+                  title={projectNameEditing ? "Save Project Changes" : "Edit Project"}
+                >
+                  {projectNameEditing ? "Save" : "Edit"}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 
-      {!showZoom && (
+      {!isLiveMode && !showZoom && (
         <button
           title="Show Zoom"
           onClick={() => setShowZoom(true)}
           style={{
             position: "fixed",
-            left: Math.max(zoomPos.x, 8),
+            left: isLiveMode ? undefined : Math.max(zoomPos.x, 8),
+            right: isLiveMode ? 16 : undefined,
             bottom: 16,
             zIndex: 92,
-            padding: "6px 10px",
+            padding: isLiveMode ? "4px 8px" : "6px 10px",
             borderRadius: 8,
             border: "1px solid var(--border)",
             background: "var(--bg-elev)",
             cursor: "pointer",
             boxShadow: "0 6px 14px rgba(0,0,0,0.10)",
             color: "var(--text)",
-            fontSize: 12,
+            fontSize: isLiveMode ? 11 : 12,
             fontWeight: 600,
             letterSpacing: "0.02em",
           }}
@@ -7937,9 +10281,3 @@ export default function App() {
     </div>
   );
 }
-
-
-
-
-
-

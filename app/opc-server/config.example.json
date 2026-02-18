@@ -13,6 +13,9 @@
     "name": "ControlLogix"
   },
   "pollMs": 500,
+  "runtime": {
+    "opcConnectionEnabled": true
+  },
   "topics": [
     {
       "name": "Main",

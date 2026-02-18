@@ -7,6 +7,9 @@ const WIDGETS = [
   { key: "gauge", name: "Gauge", group: "Indicators", desc: "Dial style value." },
   { key: "kpi", name: "KPI Card", group: "Indicators", desc: "Large single metric." },
   { key: "displayBox", name: "Display Box", group: "Indicators", desc: "Live tag read/write with units." },
+  { key: "countdownBar", name: "Countdown Bar", group: "Indicators", desc: "PLC timer PRE/ACC countdown progress." },
+  { key: "pushButton", name: "Push Button", group: "Controls", desc: "Momentary PLC write while pressed." },
+  { key: "onOffButton", name: "On/Off Button", group: "Controls", desc: "Toggle PLC write 1/0 from tag state." },
   { key: "statusTable", name: "Status Table", group: "Tables", desc: "Compact status rows." },
 ];
 

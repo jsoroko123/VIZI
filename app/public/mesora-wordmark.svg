@@ -1,50 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="620" height="180" viewBox="0 0 620 180" role="img" aria-label="Mesora wordmark">
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="180" viewBox="0 0 640 180" role="img" aria-label="Mesora wordmark">
   <defs>
-    <linearGradient id="word-accent" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#3B82F6" />
-      <stop offset="100%" stop-color="#06B6D4" />
+    <linearGradient id="mesora-word-accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60A5FA" />
+      <stop offset="100%" stop-color="#22D3EE" />
     </linearGradient>
   </defs>
 
-  <text
-    x="18"
-    y="120"
-    font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif"
-    font-size="120"
-    font-weight="700"
-    letter-spacing="0.4"
-    fill="#FFFFFF"
-    stroke="url(#word-accent)"
-    stroke-width="2.2"
-    paint-order="stroke fill"
-  >Mesora</text>
+  <g transform="translate(14 26)">
+    <rect x="0" y="0" width="122" height="122" rx="28" fill="#0F172A" />
+    <path d="M24 95V28h15l22 28 22-28h15v67H84V50L65 74h-8L38 50v45H24z" fill="#EAF2FF" />
+    <circle cx="94" cy="95" r="13" fill="url(#mesora-word-accent)" />
+    <path d="M88 90 L100 95 L88 100 Z" fill="#FFFFFF" />
+  </g>
 
-  <line
-    x1="24"
-    y1="142"
-    x2="408"
-    y2="142"
-    stroke="#38BDF8"
-    stroke-width="14"
-    stroke-linecap="round"
-  />
-  <line
-    x1="426"
-    y1="142"
-    x2="520"
-    y2="142"
-    stroke="#38BDF8"
-    stroke-width="14"
-    stroke-linecap="round"
-    stroke-dasharray="1 12"
-  />
-  <circle
-    cx="560"
-    cy="142"
-    r="34"
-    fill="none"
-    stroke="#38BDF8"
-    stroke-width="5"
-  />
-  <path d="M546 130 L578 142 L546 154 Z" fill="#38BDF8" />
+  <g transform="translate(160 48)">
+    <text
+      x="0"
+      y="70"
+      font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif"
+      font-size="94"
+      font-weight="800"
+      letter-spacing="0.3"
+      fill="#FFFFFF"
+      stroke="url(#mesora-word-accent)"
+      stroke-width="1.5"
+      paint-order="stroke fill"
+    >Mesora</text>
+    <rect x="2" y="96" width="290" height="6" rx="3" fill="url(#mesora-word-accent)" />
+  </g>
 </svg>

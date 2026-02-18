@@ -1,21 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Mesora M logo">
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Mesora icon">
   <defs>
-    <linearGradient id="m-bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0F172A" />
-      <stop offset="100%" stop-color="#1E293B" />
-    </linearGradient>
-    <linearGradient id="m-stroke" x1="0%" y1="0%" x2="100%" y2="100%">
+    <linearGradient id="mesora-icon-accent" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#3B82F6" />
       <stop offset="100%" stop-color="#06B6D4" />
     </linearGradient>
   </defs>
 
-  <rect x="16" y="16" width="224" height="224" rx="44" fill="url(#m-bg)" />
+  <rect x="16" y="16" width="224" height="224" rx="44" fill="#0F172A" />
   <path
-    d="M60 176V72h22l46 58 46-58h22v104h-20V101l-43 53h-10l-43-53v75H60z"
-    fill="#E2E8F0"
-    stroke="url(#m-stroke)"
-    stroke-width="5"
-    stroke-linejoin="round"
+    d="M54 182V70h21l53 66 53-66h21v112h-19V99l-49 59h-12L73 99v83H54z"
+    fill="#EAF2FF"
   />
+  <circle cx="182" cy="184" r="21" fill="url(#mesora-icon-accent)" />
+  <path d="M172 175 L191 184 L172 193 Z" fill="#FFFFFF" />
 </svg>

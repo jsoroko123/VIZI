@@ -7,6 +7,7 @@ import process from "process";
 import OpenAI from "openai";
 import pkg from "pg";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { gzipSync, gunzipSync } from "node:zlib";
 
 const { Pool } = pkg;
@@ -17,6 +18,8 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "64mb";
 const REPO_ROOT = process.env.VIZI_ROOT || path.resolve(process.cwd(), "..");
 const OPC_CONFIG_PATH = path.resolve(REPO_ROOT, "opc-server", "config.json");
+const AI_SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DESIGNER_SCHEMA_PATH = path.resolve(AI_SERVER_DIR, "designer-schema.json");
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
@@ -119,6 +122,19 @@ let pool = null;
 
 const SESSION_COOKIE = "vizi_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SECURITY_AREA_KEYS = [
+  "project",
+  "plc",
+  "opc",
+  "server",
+  "tags",
+  "database",
+  "reports",
+  "ai",
+  "security",
+  "help",
+];
+const SECURITY_AREA_SET = new Set(SECURITY_AREA_KEYS);
 const OPC_TREND_CHUNK_POINTS = Math.max(
   60,
   Number.parseInt(process.env.OPC_TREND_CHUNK_POINTS || "240", 10) || 240
@@ -414,6 +430,205 @@ function normalizeTrendMode(value) {
   return v === "time" ? "time" : "value";
 }
 
+function normalizeAlarmOperator(value) {
+  const op = String(value || "").trim();
+  return ["==", "!=", ">", ">=", "<", "<="].includes(op) ? op : "==";
+}
+
+function isTruthyAlarmFlag(value) {
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  const text = String(value).trim().toLowerCase();
+  return text === "true" || text === "1" || text === "yes" || text === "on";
+}
+
+function normalizeAlarmComparable(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return { raw, lower: "", num: null, bool: null };
+  const lower = raw.toLowerCase();
+  const n = Number(raw);
+  const bool =
+    lower === "true" || lower === "1"
+      ? true
+      : lower === "false" || lower === "0"
+      ? false
+      : null;
+  return { raw, lower, num: Number.isFinite(n) ? n : null, bool };
+}
+
+function evaluateAlarmCondition(liveValue, operator, threshold) {
+  const left = normalizeAlarmComparable(liveValue);
+  const right = normalizeAlarmComparable(threshold);
+  const op = normalizeAlarmOperator(operator);
+  if (!left.raw || !right.raw) return false;
+  if (op === ">" || op === ">=" || op === "<" || op === "<=") {
+    if (left.num == null || right.num == null) return false;
+    if (op === ">") return left.num > right.num;
+    if (op === ">=") return left.num >= right.num;
+    if (op === "<") return left.num < right.num;
+    return left.num <= right.num;
+  }
+  if (left.num != null && right.num != null) return op === "==" ? left.num === right.num : left.num !== right.num;
+  if (left.bool != null && right.bool != null) return op === "==" ? left.bool === right.bool : left.bool !== right.bool;
+  return op === "==" ? left.lower === right.lower : left.lower !== right.lower;
+}
+
+function buildOpcAlarmCandidates(tag) {
+  const topic = String(tag?.topic || "").trim();
+  const group = String(tag?.groupName || "").trim();
+  const tagPath = String(tag?.tagPath || "").trim();
+  const name = String(tag?.name || tagPath || "").trim();
+  return [
+    topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
+    topic && group && name ? `${topic}.${group}.${name}` : "",
+    topic && tagPath ? `${topic}.${tagPath}` : "",
+    topic && name ? `${topic}.${name}` : "",
+    group && tagPath ? `${group}.${tagPath}` : "",
+    group && name ? `${group}.${name}` : "",
+    tagPath,
+    name,
+  ]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+}
+
+function findAlarmLiveValue(statusValues, tag) {
+  const values = statusValues && typeof statusValues === "object" ? statusValues : {};
+  const candidates = buildOpcAlarmCandidates(tag);
+  for (const key of candidates) {
+    if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
+    const lower = key.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(values, lower)) return values[lower];
+  }
+  return "";
+}
+
+function buildOpcAlarmKey(tag, idx) {
+  const topic = String(tag?.topic || "").trim();
+  const group = String(tag?.groupName || "").trim();
+  const tagPath = String(tag?.tagPath || "").trim();
+  const name = String(tag?.name || tagPath || "").trim() || `tag-${idx + 1}`;
+  const op = normalizeAlarmOperator(tag?.alarmOperator);
+  const threshold = String(tag?.alarmValue || "").trim();
+  return `${topic}|${group}|${name}|${tagPath}|${op}|${threshold}`.toLowerCase();
+}
+
+async function refreshActiveOpcAlarms(statusObj = {}) {
+  let cfg = null;
+  try {
+    const { rows } = await pool.query("SELECT config FROM opc_config WHERE id = 1 LIMIT 1");
+    if (rows.length && rows[0]?.config && typeof rows[0].config === "object") cfg = rows[0].config;
+  } catch {
+    cfg = null;
+  }
+  if (!cfg && fs.existsSync(OPC_CONFIG_PATH)) {
+    try {
+      const raw = fs.readFileSync(OPC_CONFIG_PATH, "utf8");
+      cfg = JSON.parse(raw || "{}");
+    } catch {
+      cfg = null;
+    }
+  }
+  const tags = Array.isArray(cfg?.tags) ? cfg.tags : [];
+  const values = statusObj?.values && typeof statusObj.values === "object" ? statusObj.values : {};
+  const at = normalizeTrendTimestamp(statusObj?.at);
+  const active = [];
+  tags.forEach((tag, idx) => {
+    if (!isTruthyAlarmFlag(tag?.alarmEnabled)) return;
+    const threshold = String(tag?.alarmValue || "").trim();
+    if (!threshold) return;
+    const operator = normalizeAlarmOperator(tag?.alarmOperator);
+    const liveValue = findAlarmLiveValue(values, tag);
+    if (!evaluateAlarmCondition(liveValue, operator, threshold)) return;
+    const topic = String(tag?.topic || "").trim();
+    const groupName = String(tag?.groupName || "").trim();
+    const tagPath = String(tag?.tagPath || "").trim();
+    const label = String(tag?.name || tagPath || `Tag ${idx + 1}`).trim();
+    active.push({
+      alarmKey: buildOpcAlarmKey(tag, idx),
+      topic,
+      groupName,
+      tagPath,
+      label,
+      operator,
+      threshold,
+      lastValue: liveValue == null || liveValue === "" ? "-" : String(liveValue),
+      detectedAt: at,
+    });
+  });
+
+  const db = await pool.connect();
+  try {
+    await db.query("BEGIN");
+    const activeKeys = active.map((row) => row.alarmKey);
+    const currentActive = await db.query(
+      "SELECT alarm_key FROM opc_alarm_state WHERE is_active = true"
+    );
+    const currentSet = new Set(
+      currentActive.rows.map((r) => String(r?.alarm_key || "").trim()).filter(Boolean)
+    );
+    for (const row of active) {
+      await db.query(
+        `
+        INSERT INTO opc_alarm_state (
+          alarm_key, topic, group_name, tag_path, label, operator, threshold, last_value,
+          is_active, first_triggered_at, last_seen_at, updated_at, occurrence_count
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,to_timestamp($9 / 1000.0),to_timestamp($9 / 1000.0),now(),1)
+        ON CONFLICT (alarm_key)
+        DO UPDATE SET
+          topic = EXCLUDED.topic,
+          group_name = EXCLUDED.group_name,
+          tag_path = EXCLUDED.tag_path,
+          label = EXCLUDED.label,
+          operator = EXCLUDED.operator,
+          threshold = EXCLUDED.threshold,
+          last_value = EXCLUDED.last_value,
+          is_active = true,
+          last_seen_at = EXCLUDED.last_seen_at,
+          updated_at = now(),
+          cleared_at = NULL,
+          occurrence_count = CASE
+            WHEN opc_alarm_state.is_active = true THEN opc_alarm_state.occurrence_count
+            ELSE opc_alarm_state.occurrence_count + 1
+          END,
+          first_triggered_at = CASE
+            WHEN opc_alarm_state.is_active = true THEN opc_alarm_state.first_triggered_at
+            ELSE EXCLUDED.first_triggered_at
+          END
+        `,
+        [
+          row.alarmKey,
+          row.topic,
+          row.groupName,
+          row.tagPath,
+          row.label,
+          row.operator,
+          row.threshold,
+          row.lastValue,
+          row.detectedAt,
+        ]
+      );
+    }
+    for (const key of currentSet) {
+      if (activeKeys.includes(key)) continue;
+      await db.query(
+        `
+        UPDATE opc_alarm_state
+        SET is_active = false, cleared_at = now(), updated_at = now()
+        WHERE alarm_key = $1
+        `,
+        [key]
+      );
+    }
+    await db.query("COMMIT");
+  } catch (err) {
+    await db.query("ROLLBACK");
+    throw err;
+  } finally {
+    db.release();
+  }
+}
+
 function normalizeOpcName(value, fallback = "") {
   const text = String(value || "")
     .trim()
@@ -586,6 +801,85 @@ function normalizeControllerTags(rawTags, limit = 300) {
     if (out.length >= limit) break;
   }
   return out;
+}
+
+function normalizeSvgCatalog(rawCatalog, limit = 450) {
+  const rows = Array.isArray(rawCatalog) ? rawCatalog : [];
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const key = String(row?.key || "").trim();
+    if (!key) continue;
+    const lower = key.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    const fallbackName = key.split("/").pop() || key;
+    const name = String(row?.name || fallbackName).trim() || fallbackName;
+    const tags = Array.isArray(row?.tags)
+      ? row.tags.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 16)
+      : [];
+    out.push({ key, name, tags });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function tokenizeSvgText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[_/.-]+/g, " ")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .split(/\s+/)
+    .map((x) => x.trim())
+    .filter((x) => x && x.length > 1);
+}
+
+function scoreSvgCandidate(promptTokens, candidate, selectedTagNames = []) {
+  const tokenSet = new Set(promptTokens);
+  for (const tagName of selectedTagNames) {
+    for (const token of tokenizeSvgText(tagName)) tokenSet.add(token);
+  }
+  const candidateTokens = new Set([
+    ...tokenizeSvgText(candidate?.key || ""),
+    ...tokenizeSvgText(candidate?.name || ""),
+    ...(Array.isArray(candidate?.tags)
+      ? candidate.tags.flatMap((x) => tokenizeSvgText(x))
+      : []),
+  ]);
+  let score = 0;
+  for (const token of tokenSet) {
+    if (!token || token.length < 2) continue;
+    if (candidateTokens.has(token)) {
+      score += token.length >= 5 ? 3 : 2;
+    } else {
+      for (const ctoken of candidateTokens) {
+        if (ctoken.startsWith(token) || token.startsWith(ctoken)) {
+          score += 1;
+          break;
+        }
+      }
+    }
+  }
+  if (/bin|hopper|tank|silo/.test(String(candidate?.name || "").toLowerCase())) score += 0.2;
+  return score;
+}
+
+function suggestSvgHeuristic({ prompt = "", catalog = [], selectedTagNames = [] }) {
+  const list = Array.isArray(catalog) ? catalog : [];
+  if (!list.length) return { picked: null, alternatives: [] };
+  const promptTokens = tokenizeSvgText(prompt);
+  const ranked = list
+    .map((row) => ({
+      ...row,
+      score: scoreSvgCandidate(promptTokens, row, selectedTagNames),
+    }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+  const picked = ranked[0] || null;
+  const alternatives = ranked.slice(1, 4);
+  return { picked, alternatives };
 }
 
 function buildOpcConnectionPlan({ prompt = "", plc = {}, overrides = {} }) {
@@ -1028,6 +1322,170 @@ async function verifyPassword(password, salt, hash) {
   return crypto.timingSafeEqual(Buffer.from(next, "hex"), Buffer.from(hash, "hex"));
 }
 
+function normalizePermissionRows(input) {
+  const rows = Array.isArray(input) ? input : [];
+  const byArea = new Map();
+  for (const row of rows) {
+    const areaKey = String(row?.area_key || row?.areaKey || "").trim().toLowerCase();
+    if (!SECURITY_AREA_SET.has(areaKey)) continue;
+    const canView = Boolean(row?.can_view ?? row?.canView ?? false);
+    const canEdit = Boolean(row?.can_edit ?? row?.canEdit ?? false);
+    byArea.set(areaKey, {
+      area_key: areaKey,
+      can_view: canView || canEdit,
+      can_edit: canEdit,
+    });
+  }
+  for (const areaKey of SECURITY_AREA_KEYS) {
+    if (!byArea.has(areaKey)) {
+      byArea.set(areaKey, {
+        area_key: areaKey,
+        can_view: false,
+        can_edit: false,
+      });
+    }
+  }
+  return SECURITY_AREA_KEYS.map((areaKey) => byArea.get(areaKey));
+}
+
+function defaultRolePermissionRows(roleName) {
+  const name = String(roleName || "").trim().toLowerCase();
+  const allEdit = SECURITY_AREA_KEYS.map((areaKey) => ({
+    area_key: areaKey,
+    can_view: true,
+    can_edit: true,
+  }));
+  if (name === "administrator") return allEdit;
+  if (name === "operator") {
+    return normalizePermissionRows([
+      { area_key: "project", can_view: true, can_edit: false },
+      { area_key: "plc", can_view: true, can_edit: false },
+      { area_key: "opc", can_view: true, can_edit: false },
+      { area_key: "server", can_view: true, can_edit: false },
+      { area_key: "tags", can_view: true, can_edit: false },
+      { area_key: "database", can_view: true, can_edit: false },
+      { area_key: "reports", can_view: true, can_edit: false },
+      { area_key: "ai", can_view: false, can_edit: false },
+      { area_key: "security", can_view: false, can_edit: false },
+      { area_key: "help", can_view: true, can_edit: false },
+    ]);
+  }
+  return normalizePermissionRows([]);
+}
+
+async function getUserAccess(userId) {
+  const id = Number.parseInt(String(userId || ""), 10);
+  if (!Number.isFinite(id) || id <= 0) {
+    return { roles: [], permissions: {} };
+  }
+  const { rows } = await pool.query(
+    `
+    SELECT
+      r.id AS role_id,
+      r.name AS role_name,
+      COALESCE(r.description, '') AS role_description,
+      rp.area_key,
+      rp.can_view,
+      rp.can_edit
+    FROM user_roles ur
+    JOIN roles r ON r.id = ur.role_id
+    LEFT JOIN role_area_permissions rp ON rp.role_id = r.id
+    WHERE ur.user_id = $1
+    ORDER BY r.name ASC, rp.area_key ASC
+    `,
+    [id]
+  );
+  const rolesById = new Map();
+  const permissions = {};
+  for (const key of SECURITY_AREA_KEYS) {
+    permissions[key] = { can_view: false, can_edit: false };
+  }
+  for (const row of rows) {
+    const roleId = Number(row.role_id);
+    if (!rolesById.has(roleId)) {
+      rolesById.set(roleId, {
+        id: roleId,
+        name: row.role_name,
+        description: row.role_description || "",
+      });
+    }
+    const areaKey = String(row.area_key || "").trim().toLowerCase();
+    if (!SECURITY_AREA_SET.has(areaKey)) continue;
+    const canView = Boolean(row.can_view);
+    const canEdit = Boolean(row.can_edit);
+    permissions[areaKey] = {
+      can_view: permissions[areaKey].can_view || canView || canEdit,
+      can_edit: permissions[areaKey].can_edit || canEdit,
+    };
+  }
+  return {
+    roles: Array.from(rolesById.values()),
+    permissions,
+  };
+}
+
+async function canUserEditArea(userId, areaKey) {
+  const key = String(areaKey || "").trim().toLowerCase();
+  if (!SECURITY_AREA_SET.has(key)) return false;
+  const id = Number.parseInt(String(userId || ""), 10);
+  if (!Number.isFinite(id) || id <= 0) return false;
+  const { rows } = await pool.query(
+    `
+    SELECT 1
+    FROM user_roles ur
+    JOIN role_area_permissions rp ON rp.role_id = ur.role_id
+    WHERE ur.user_id = $1
+      AND rp.area_key = $2
+      AND rp.can_edit = true
+    LIMIT 1
+    `,
+    [id, key]
+  );
+  return rows.length > 0;
+}
+
+async function canUserViewArea(userId, areaKey) {
+  const key = String(areaKey || "").trim().toLowerCase();
+  if (!SECURITY_AREA_SET.has(key)) return false;
+  const id = Number.parseInt(String(userId || ""), 10);
+  if (!Number.isFinite(id) || id <= 0) return false;
+  const { rows } = await pool.query(
+    `
+    SELECT 1
+    FROM user_roles ur
+    JOIN role_area_permissions rp ON rp.role_id = ur.role_id
+    WHERE ur.user_id = $1
+      AND rp.area_key = $2
+      AND (rp.can_view = true OR rp.can_edit = true)
+    LIMIT 1
+    `,
+    [id, key]
+  );
+  return rows.length > 0;
+}
+
+async function canManageSecurity(userId) {
+  return canUserEditArea(userId, "security");
+}
+
+async function requireSecurityManage(req, res, next) {
+  try {
+    const authUser = req.user || (await getUserFromRequest(req));
+    if (!authUser) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const allowed = await canManageSecurity(authUser.id);
+    if (!allowed) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+    next();
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Authorization failed." });
+  }
+}
+
 async function getUserFromRequest(req) {
   if (!pool) return null;
   const cookies = parseCookies(req.headers.cookie || "");
@@ -1039,7 +1497,7 @@ async function getUserFromRequest(req) {
     SELECT u.id, u.username
     FROM user_sessions s
     JOIN users u ON u.id = s.user_id
-    WHERE s.token_hash = $1 AND s.expires_at > now()
+    WHERE s.token_hash = $1 AND s.expires_at > now() AND COALESCE(u.disabled, false) = false
     `,
     [tokenHash]
   );
@@ -1053,6 +1511,7 @@ async function requireAuth(req, res, next) {
     if (
       (req.path === "/api/ai/plc-insights" &&
         (req.method === "POST" || req.method === "GET")) ||
+      (req.path === "/api/ai/plc-svg-suggest" && req.method === "POST") ||
       (req.path === "/api/ai/plc-opc-connect" && req.method === "POST") ||
       req.path.startsWith("/api/ai/plc-debug-sessions")
     ) {
@@ -1116,6 +1575,9 @@ function normalizeDbIdentifier(value, label = "identifier") {
 
 function normalizeSqlType(value) {
   const raw = String(value || "").trim().toLowerCase();
+  if (raw === "timestamp with time zone") return "timestamptz";
+  if (raw === "timestamp without time zone") return "timestamp";
+  if (raw === "character varying") return "character varying";
   const allow = new Set([
     "text",
     "integer",
@@ -1131,9 +1593,13 @@ function normalizeSqlType(value) {
     "jsonb",
     "serial",
     "bigserial",
+    "character varying",
+    "numeric",
   ]);
   if (allow.has(raw)) return raw;
   if (/^varchar\(\d+\)$/.test(raw)) return raw;
+  if (/^character varying\(\d+\)$/.test(raw)) return raw;
+  if (/^numeric\(\d+\)$/.test(raw)) return raw.replace(/\s+/g, "");
   if (/^numeric\(\d+\s*,\s*\d+\)$/.test(raw)) return raw.replace(/\s+/g, "");
   throw new Error("Unsupported SQL type.");
 }
@@ -1148,6 +1614,155 @@ function toSqlDefaultLiteral(value) {
   if (/^-?\d+(\.\d+)?$/.test(text)) return text;
   if (lower === "now()" || lower === "current_timestamp") return "CURRENT_TIMESTAMP";
   return `'${text.replace(/'/g, "''")}'`;
+}
+
+function emptyDesignerSchemaDoc() {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    tables: {},
+  };
+}
+
+function loadDesignerSchemaDoc() {
+  try {
+    if (!fs.existsSync(DESIGNER_SCHEMA_PATH)) return emptyDesignerSchemaDoc();
+    const raw = fs.readFileSync(DESIGNER_SCHEMA_PATH, "utf8");
+    const parsed = JSON.parse(raw || "{}");
+    if (!parsed || typeof parsed !== "object") return emptyDesignerSchemaDoc();
+    const tables = parsed.tables && typeof parsed.tables === "object" ? parsed.tables : {};
+    return {
+      version: Number.isFinite(Number(parsed.version)) ? Number(parsed.version) : 1,
+      updatedAt: String(parsed.updatedAt || new Date().toISOString()),
+      tables,
+    };
+  } catch {
+    return emptyDesignerSchemaDoc();
+  }
+}
+
+function saveDesignerSchemaDoc(doc) {
+  const next = doc && typeof doc === "object" ? doc : emptyDesignerSchemaDoc();
+  next.updatedAt = new Date().toISOString();
+  next.tables = next.tables && typeof next.tables === "object" ? next.tables : {};
+  fs.writeFileSync(DESIGNER_SCHEMA_PATH, JSON.stringify(next, null, 2));
+}
+
+async function readTableSchemaFromDb(tableName, db) {
+  const table = normalizeDbIdentifier(tableName, "table name");
+  const client = db || pool;
+  const [{ rows: metaRows }, pk] = await Promise.all([
+    client.query(
+      `
+      SELECT column_name, data_type, is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = $1
+      ORDER BY ordinal_position
+      `,
+      [table]
+    ),
+    getPrimaryKey(table),
+  ]);
+  return {
+    name: table,
+    primaryKey: pk || null,
+    columns: (metaRows || []).map((c) => ({
+      name: String(c.column_name || ""),
+      type: String(c.data_type || "text"),
+      nullable: String(c.is_nullable || "").toUpperCase() !== "NO",
+      defaultSql: c.column_default == null ? "" : String(c.column_default),
+      primaryKey: pk ? String(c.column_name || "") === pk : false,
+    })),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function syncDesignerSchemaTable(tableName, db) {
+  const snapshot = await readTableSchemaFromDb(tableName, db);
+  const doc = loadDesignerSchemaDoc();
+  doc.tables[snapshot.name] = snapshot;
+  saveDesignerSchemaDoc(doc);
+}
+
+function removeDesignerSchemaTable(tableName) {
+  const table = normalizeDbIdentifier(tableName, "table name");
+  const doc = loadDesignerSchemaDoc();
+  delete doc.tables[table];
+  saveDesignerSchemaDoc(doc);
+}
+
+function renameDesignerSchemaTable(currentName, newName) {
+  const current = normalizeDbIdentifier(currentName, "table name");
+  const next = normalizeDbIdentifier(newName, "new table name");
+  const doc = loadDesignerSchemaDoc();
+  const existing = doc.tables[current];
+  if (existing) {
+    existing.name = next;
+    existing.updatedAt = new Date().toISOString();
+    doc.tables[next] = existing;
+    delete doc.tables[current];
+    saveDesignerSchemaDoc(doc);
+  }
+}
+
+async function ensureDesignerTablesFromSchema(db) {
+  const client = db || pool;
+  const doc = loadDesignerSchemaDoc();
+  const tables = doc.tables && typeof doc.tables === "object" ? doc.tables : {};
+  for (const [tableName, spec] of Object.entries(tables)) {
+    try {
+      const table = normalizeDbIdentifier(tableName, "table name");
+      const rawColumns = Array.isArray(spec?.columns) ? spec.columns : [];
+      if (!rawColumns.length) continue;
+      const columns = rawColumns
+        .map((c) => {
+          try {
+            const name = normalizeDbIdentifier(c?.name, "column name");
+            const type = normalizeSqlType(c?.type || "text");
+            const nullable = c?.nullable !== false;
+            const primaryKey = c?.primaryKey === true;
+            const defaultSql = String(c?.defaultSql || "").trim();
+            return { name, type, nullable, primaryKey, defaultSql };
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      if (!columns.length) continue;
+
+      const pkCols = columns.filter((c) => c.primaryKey).map((c) => c.name);
+      const primaryKeyColumn = pkCols[0] || "";
+      const defs = columns.map((c) => {
+        if (primaryKeyColumn && c.name === primaryKeyColumn) {
+          return `${safeIdent(c.name)} BIGINT GENERATED BY DEFAULT AS IDENTITY NOT NULL PRIMARY KEY`;
+        }
+        const nullableSql = c.primaryKey ? "NOT NULL" : c.nullable ? "" : "NOT NULL";
+        const defaultSql = c.defaultSql ? ` DEFAULT ${c.defaultSql}` : "";
+        return `${safeIdent(c.name)} ${c.type}${nullableSql ? ` ${nullableSql}` : ""}${defaultSql}`;
+      });
+
+      await client.query(`CREATE TABLE IF NOT EXISTS ${safeIdent(table)} (${defs.join(", ")})`);
+      for (const c of columns) {
+        if (primaryKeyColumn && c.name === primaryKeyColumn) {
+          await client.query(
+            `ALTER TABLE ${safeIdent(table)} ADD COLUMN IF NOT EXISTS ${safeIdent(c.name)} BIGINT GENERATED BY DEFAULT AS IDENTITY`
+          );
+          continue;
+        }
+        const defaultSql = c.defaultSql ? ` DEFAULT ${c.defaultSql}` : "";
+        const nullableSql = c.nullable ? "" : " NOT NULL";
+        await client.query(
+          `ALTER TABLE ${safeIdent(table)} ADD COLUMN IF NOT EXISTS ${safeIdent(c.name)} ${c.type}${defaultSql}${nullableSql}`
+        );
+      }
+      await ensureStandardTableColumns(client, table);
+      if (primaryKeyColumn) {
+        await applyPrimaryKeyState(client, table, primaryKeyColumn, true);
+      }
+    } catch {
+      // Ignore malformed schema entries so startup doesn't fail.
+    }
+  }
 }
 
 async function getPrimaryKey(table) {
@@ -1177,6 +1792,105 @@ async function getPrimaryKey(table) {
     [tableName, pk]
   );
   return check.rows.length ? pk : null;
+}
+
+async function getPrimaryKeyConstraintInfo(db, table) {
+  const tableName = normalizeDbIdentifier(table, "table name");
+  const client = db || pool;
+  const { rows } = await client.query(
+    `
+    SELECT
+      con.conname AS constraint_name,
+      att.attname AS column_name,
+      ord.ordinality AS ord
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+    JOIN unnest(con.conkey) WITH ORDINALITY AS ord(attnum, ordinality) ON TRUE
+    JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = ord.attnum
+    WHERE con.contype = 'p'
+      AND nsp.nspname = 'public'
+      AND rel.relname = $1
+    ORDER BY ord.ordinality
+    `,
+    [tableName]
+  );
+  if (!rows.length) return { constraintName: "", columns: [] };
+  return {
+    constraintName: String(rows[0]?.constraint_name || ""),
+    columns: rows.map((r) => String(r?.column_name || "")).filter(Boolean),
+  };
+}
+
+async function ensureIdentityPrimaryKeyColumn(db, table, column) {
+  const tableName = normalizeDbIdentifier(table, "table name");
+  const columnName = normalizeDbIdentifier(column, "column name");
+  const client = db || pool;
+  const { rows } = await client.query(
+    `
+    SELECT data_type, is_identity
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+    LIMIT 1
+    `,
+    [tableName, columnName]
+  );
+  const meta = rows?.[0] || null;
+  if (!meta) throw new Error(`Column "${columnName}" not found on table "${tableName}".`);
+
+  const dataType = String(meta?.data_type || "").toLowerCase();
+  const isIdentity = String(meta?.is_identity || "").toUpperCase() === "YES";
+
+  if (dataType !== "bigint") {
+    await client.query(
+      `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} DROP DEFAULT`
+    );
+    await client.query(
+      `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} TYPE BIGINT USING ${safeIdent(columnName)}::BIGINT`
+    );
+  }
+  if (!isIdentity) {
+    await client.query(
+      `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} DROP DEFAULT`
+    );
+    await client.query(
+      `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} ADD GENERATED BY DEFAULT AS IDENTITY`
+    );
+  }
+}
+
+async function applyPrimaryKeyState(db, table, column, shouldBePrimary) {
+  const tableName = normalizeDbIdentifier(table, "table name");
+  const columnName = normalizeDbIdentifier(column, "column name");
+  const client = db || pool;
+  const info = await getPrimaryKeyConstraintInfo(client, tableName);
+  const hasColumnAsPk = info.columns.some((c) => c.toLowerCase() === columnName.toLowerCase());
+  const hasSingleTargetPk = info.columns.length === 1 && hasColumnAsPk;
+
+  if (shouldBePrimary === true) {
+    await ensureIdentityPrimaryKeyColumn(client, tableName, columnName);
+    if (!hasSingleTargetPk && info.constraintName) {
+      await client.query(
+        `ALTER TABLE ${safeIdent(tableName)} DROP CONSTRAINT ${safeIdent(info.constraintName)}`
+      );
+    }
+    await client.query(
+      `ALTER TABLE ${safeIdent(tableName)} ALTER COLUMN ${safeIdent(columnName)} SET NOT NULL`
+    );
+    if (!hasSingleTargetPk) {
+      const constraintName = normalizeDbIdentifier(`${tableName}_pkey`.slice(0, 60), "constraint name");
+      await client.query(
+        `ALTER TABLE ${safeIdent(tableName)} ADD CONSTRAINT ${safeIdent(constraintName)} PRIMARY KEY (${safeIdent(columnName)})`
+      );
+    }
+    return;
+  }
+
+  if (shouldBePrimary === false && hasColumnAsPk && info.constraintName) {
+    await client.query(
+      `ALTER TABLE ${safeIdent(tableName)} DROP CONSTRAINT ${safeIdent(info.constraintName)}`
+    );
+  }
 }
 
 function pickReferenceLabelColumn(columnNames, referencedColumn) {
@@ -1416,8 +2130,11 @@ async function buildSchemaContext() {
 async function verifySchemaCoverage() {
   const expected = {
     ui_table_config: ["table_name", "list_fields", "detail_fields"],
-    users: ["id", "username", "password_hash", "password_salt", "created_at", "display_name", "avatar_url"],
+    users: ["id", "username", "password_hash", "password_salt", "created_at", "display_name", "avatar_url", "disabled"],
     user_sessions: ["id", "user_id", "token_hash", "created_at", "expires_at"],
+    roles: ["id", "name", "description", "is_system", "created_at"],
+    user_roles: ["user_id", "role_id"],
+    role_area_permissions: ["role_id", "area_key", "can_view", "can_edit"],
     opc_tag_templates: ["name", "fields", "parent_name", "state_mappings", "group_name"],
     opc_tag_state_mappings: ["tag_key", "field", "state", "color", "updated_at"],
     opc_mapping_sets: ["name", "mappings", "updated_at"],
@@ -1501,7 +2218,15 @@ app.get("/api/auth/me", async (req, res) => {
       "SELECT id, username, display_name, avatar_url FROM users WHERE id = $1",
       [user.id]
     );
-    res.json({ user: rows[0] || user });
+    const profile = rows[0] || user;
+    const access = await getUserAccess(profile.id);
+    res.json({
+      user: {
+        ...profile,
+        roles: access.roles,
+        permissions: access.permissions,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load user." });
   }
@@ -1516,12 +2241,20 @@ app.post("/api/auth/login", async (req, res) => {
       return;
     }
     const { rows } = await pool.query(
-      "SELECT id, username, password_hash, password_salt FROM users WHERE username = $1",
+      `
+      SELECT id, username, display_name, avatar_url, password_hash, password_salt, COALESCE(disabled, false) AS disabled
+      FROM users
+      WHERE username = $1
+      `,
       [username]
     );
     const user = rows[0];
     if (!user) {
       res.status(401).json({ error: "Invalid credentials." });
+      return;
+    }
+    if (user.disabled) {
+      res.status(403).json({ error: "User is disabled." });
       return;
     }
     const ok = await verifyPassword(password, user.password_salt, user.password_hash);
@@ -1542,12 +2275,15 @@ app.post("/api/auth/login", async (req, res) => {
         SESSION_TTL_MS / 1000
       )}`
     );
+    const access = await getUserAccess(user.id);
     res.json({
       user: {
         id: user.id,
         username: user.username,
         display_name: user.display_name || null,
         avatar_url: user.avatar_url || null,
+        roles: access.roles,
+        permissions: access.permissions,
       },
     });
   } catch (err) {
@@ -1610,7 +2346,28 @@ app.post("/api/auth/register", async (req, res) => {
       res.status(409).json({ error: "Username already exists." });
       return;
     }
-    res.json({ user });
+    try {
+      const { rows: existingRoles } = await pool.query("SELECT COUNT(*)::int AS count FROM user_roles");
+      if (Number(existingRoles?.[0]?.count || 0) === 0) {
+        const { rows: adminRoleRows } = await pool.query(
+          "SELECT id FROM roles WHERE lower(name) = 'administrator' LIMIT 1"
+        );
+        if (adminRoleRows.length) {
+          await pool.query(
+            `
+            INSERT INTO user_roles (user_id, role_id)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id, role_id) DO NOTHING
+            `,
+            [user.id, adminRoleRows[0].id]
+          );
+        }
+      }
+    } catch {
+      // keep registration successful even if role assignment fails
+    }
+    const access = await getUserAccess(user.id);
+    res.json({ user: { ...user, roles: access.roles, permissions: access.permissions } });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Registration failed." });
   }
@@ -1701,6 +2458,400 @@ app.put("/api/auth/password", async (req, res) => {
 
 app.use(requireAuth);
 
+async function listRolesWithPermissions() {
+  const { rows } = await pool.query(
+    `
+    SELECT
+      r.id,
+      r.name,
+      COALESCE(r.description, '') AS description,
+      COALESCE(r.is_system, false) AS is_system,
+      rp.area_key,
+      rp.can_view,
+      rp.can_edit
+    FROM roles r
+    LEFT JOIN role_area_permissions rp ON rp.role_id = r.id
+    ORDER BY r.name ASC, rp.area_key ASC
+    `
+  );
+  const byRole = new Map();
+  for (const row of rows) {
+    const roleId = Number(row.id);
+    if (!byRole.has(roleId)) {
+      byRole.set(roleId, {
+        id: roleId,
+        name: row.name,
+        description: row.description || "",
+        is_system: Boolean(row.is_system),
+        permissions: {},
+      });
+    }
+    const role = byRole.get(roleId);
+    for (const key of SECURITY_AREA_KEYS) {
+      if (!role.permissions[key]) {
+        role.permissions[key] = { can_view: false, can_edit: false };
+      }
+    }
+    const areaKey = String(row.area_key || "").trim().toLowerCase();
+    if (SECURITY_AREA_SET.has(areaKey)) {
+      role.permissions[areaKey] = {
+        can_view: Boolean(row.can_view) || Boolean(row.can_edit),
+        can_edit: Boolean(row.can_edit),
+      };
+    }
+  }
+  return Array.from(byRole.values());
+}
+
+app.get("/api/security/areas", async (_req, res) => {
+  res.json({
+    areas: SECURITY_AREA_KEYS.map((key) => ({ key, label: key.charAt(0).toUpperCase() + key.slice(1) })),
+  });
+});
+
+app.get("/api/security/roles", requireSecurityManage, async (_req, res) => {
+  try {
+    const roles = await listRolesWithPermissions();
+    res.json({ roles });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load roles." });
+  }
+});
+
+app.post("/api/security/roles", requireSecurityManage, async (req, res) => {
+  try {
+    const name = String(req.body?.name || "").trim();
+    const description = String(req.body?.description || "").trim();
+    const permissions = normalizePermissionRows(req.body?.permissions);
+    if (!name) {
+      res.status(400).json({ error: "Role name is required." });
+      return;
+    }
+    const created = await pool.query(
+      `
+      INSERT INTO roles (name, description, is_system)
+      VALUES ($1, $2, false)
+      RETURNING id, name, description, is_system
+      `,
+      [name, description]
+    );
+    const role = created.rows[0];
+    for (const row of permissions) {
+      await pool.query(
+        `
+        INSERT INTO role_area_permissions (role_id, area_key, can_view, can_edit)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (role_id, area_key)
+        DO UPDATE SET can_view = EXCLUDED.can_view, can_edit = EXCLUDED.can_edit
+        `,
+        [role.id, row.area_key, row.can_view, row.can_edit]
+      );
+    }
+    const roles = await listRolesWithPermissions();
+    const next = roles.find((r) => r.id === role.id) || null;
+    res.json({ role: next });
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("duplicate")) {
+      res.status(409).json({ error: "Role name already exists." });
+      return;
+    }
+    res.status(500).json({ error: err?.message || "Failed to create role." });
+  }
+});
+
+app.put("/api/security/roles/:id", requireSecurityManage, async (req, res) => {
+  try {
+    const roleId = Number.parseInt(String(req.params?.id || ""), 10);
+    if (!Number.isFinite(roleId) || roleId <= 0) {
+      res.status(400).json({ error: "Invalid role id." });
+      return;
+    }
+    const { rows: roleRows } = await pool.query("SELECT id, is_system FROM roles WHERE id = $1", [roleId]);
+    const role = roleRows[0];
+    if (!role) {
+      res.status(404).json({ error: "Role not found." });
+      return;
+    }
+    const name = String(req.body?.name || "").trim();
+    const description = String(req.body?.description || "").trim();
+    if (name) {
+      await pool.query(
+        "UPDATE roles SET name = $1, description = $2 WHERE id = $3",
+        [name, description, roleId]
+      );
+    } else {
+      await pool.query("UPDATE roles SET description = $1 WHERE id = $2", [description, roleId]);
+    }
+    if (Array.isArray(req.body?.permissions)) {
+      const permissions = normalizePermissionRows(req.body.permissions);
+      for (const row of permissions) {
+        await pool.query(
+          `
+          INSERT INTO role_area_permissions (role_id, area_key, can_view, can_edit)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (role_id, area_key)
+          DO UPDATE SET can_view = EXCLUDED.can_view, can_edit = EXCLUDED.can_edit
+          `,
+          [roleId, row.area_key, row.can_view, row.can_edit]
+        );
+      }
+    }
+    const roles = await listRolesWithPermissions();
+    const next = roles.find((r) => r.id === roleId) || null;
+    res.json({ role: next });
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("duplicate")) {
+      res.status(409).json({ error: "Role name already exists." });
+      return;
+    }
+    res.status(500).json({ error: err?.message || "Failed to update role." });
+  }
+});
+
+app.delete("/api/security/roles/:id", requireSecurityManage, async (req, res) => {
+  try {
+    const roleId = Number.parseInt(String(req.params?.id || ""), 10);
+    if (!Number.isFinite(roleId) || roleId <= 0) {
+      res.status(400).json({ error: "Invalid role id." });
+      return;
+    }
+    const { rows: roleRows } = await pool.query("SELECT id, is_system FROM roles WHERE id = $1", [roleId]);
+    if (!roleRows.length) {
+      res.status(404).json({ error: "Role not found." });
+      return;
+    }
+    if (roleRows[0].is_system) {
+      res.status(400).json({ error: "System roles cannot be deleted." });
+      return;
+    }
+    await pool.query("DELETE FROM roles WHERE id = $1", [roleId]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to delete role." });
+  }
+});
+
+app.get("/api/security/users", requireSecurityManage, async (_req, res) => {
+  try {
+    const { rows: users } = await pool.query(
+      `
+      SELECT id, username, COALESCE(display_name, '') AS display_name, COALESCE(avatar_url, '') AS avatar_url, COALESCE(disabled, false) AS disabled, created_at
+      FROM users
+      ORDER BY username ASC
+      `
+    );
+    const { rows: roleRows } = await pool.query(
+      `
+      SELECT ur.user_id, r.id AS role_id, r.name AS role_name
+      FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+      ORDER BY r.name ASC
+      `
+    );
+    const rolesByUser = new Map();
+    for (const row of roleRows) {
+      const key = Number(row.user_id);
+      if (!rolesByUser.has(key)) rolesByUser.set(key, []);
+      rolesByUser.get(key).push({ id: Number(row.role_id), name: row.role_name });
+    }
+    res.json({
+      users: users.map((user) => ({
+        ...user,
+        roles: rolesByUser.get(Number(user.id)) || [],
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load users." });
+  }
+});
+
+app.post("/api/security/users", requireSecurityManage, async (req, res) => {
+  try {
+    const username = String(req.body?.username || "").trim();
+    const displayName = String(req.body?.display_name || "").trim();
+    const password = String(req.body?.password || "");
+    const roleIdsRaw = Array.isArray(req.body?.role_ids) ? req.body.role_ids : [];
+    const roleIds = Array.from(
+      new Set(
+        roleIdsRaw
+          .map((item) => Number.parseInt(String(item), 10))
+          .filter((item) => Number.isFinite(item) && item > 0)
+      )
+    );
+    if (!username || !password) {
+      res.status(400).json({ error: "Username and password required." });
+      return;
+    }
+    if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) {
+      res.status(400).json({ error: "Username must be 3-32 chars (a-z, 0-9, _, ., -)." });
+      return;
+    }
+    if (password.length < 8) {
+      res.status(400).json({ error: "Password must be at least 8 characters." });
+      return;
+    }
+    const { salt, hash } = await createPasswordHash(password);
+    const inserted = await pool.query(
+      `
+      INSERT INTO users (username, password_hash, password_salt, display_name, disabled)
+      VALUES ($1, $2, $3, $4, false)
+      RETURNING id, username, display_name, avatar_url, disabled, created_at
+      `,
+      [username, hash, salt, displayName || username]
+    );
+    const user = inserted.rows[0];
+    for (const roleId of roleIds) {
+      await pool.query(
+        `
+        INSERT INTO user_roles (user_id, role_id)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id, role_id) DO NOTHING
+        `,
+        [user.id, roleId]
+      );
+    }
+    const roles = await pool.query(
+      `
+      SELECT r.id, r.name
+      FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+      WHERE ur.user_id = $1
+      ORDER BY r.name ASC
+      `,
+      [user.id]
+    );
+    res.json({ user: { ...user, roles: roles.rows } });
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("duplicate")) {
+      res.status(409).json({ error: "Username already exists." });
+      return;
+    }
+    res.status(500).json({ error: err?.message || "Failed to create user." });
+  }
+});
+
+app.put("/api/security/users/:id", requireSecurityManage, async (req, res) => {
+  try {
+    const userId = Number.parseInt(String(req.params?.id || ""), 10);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      res.status(400).json({ error: "Invalid user id." });
+      return;
+    }
+    const { rows: existingRows } = await pool.query("SELECT id, username FROM users WHERE id = $1", [userId]);
+    if (!existingRows.length) {
+      res.status(404).json({ error: "User not found." });
+      return;
+    }
+    const username = String(req.body?.username || "").trim();
+    const displayName = String(req.body?.display_name || "").trim();
+    const disabled = req.body?.disabled == null ? null : Boolean(req.body.disabled);
+    const password = String(req.body?.password || "");
+    const roleIdsRaw = Array.isArray(req.body?.role_ids) ? req.body.role_ids : null;
+
+    if (username && !/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) {
+      res.status(400).json({ error: "Username must be 3-32 chars (a-z, 0-9, _, ., -)." });
+      return;
+    }
+
+    if (username) {
+      const dup = await pool.query("SELECT id FROM users WHERE username = $1 AND id <> $2", [username, userId]);
+      if (dup.rows.length) {
+        res.status(409).json({ error: "Username already exists." });
+        return;
+      }
+    }
+
+    await pool.query(
+      `
+      UPDATE users
+      SET username = COALESCE($1, username),
+          display_name = COALESCE($2, display_name),
+          disabled = COALESCE($3, disabled)
+      WHERE id = $4
+      `,
+      [username || null, displayName || null, disabled, userId]
+    );
+
+    if (password) {
+      if (password.length < 8) {
+        res.status(400).json({ error: "Password must be at least 8 characters." });
+        return;
+      }
+      const { salt, hash } = await createPasswordHash(password);
+      await pool.query("UPDATE users SET password_hash = $1, password_salt = $2 WHERE id = $3", [hash, salt, userId]);
+    }
+
+    if (Array.isArray(roleIdsRaw)) {
+      const roleIds = Array.from(
+        new Set(
+          roleIdsRaw
+            .map((item) => Number.parseInt(String(item), 10))
+            .filter((item) => Number.isFinite(item) && item > 0)
+        )
+      );
+      await pool.query("DELETE FROM user_roles WHERE user_id = $1", [userId]);
+      for (const roleId of roleIds) {
+        await pool.query(
+          `
+          INSERT INTO user_roles (user_id, role_id)
+          VALUES ($1, $2)
+          ON CONFLICT (user_id, role_id) DO NOTHING
+          `,
+          [userId, roleId]
+        );
+      }
+    }
+
+    const { rows: updatedRows } = await pool.query(
+      `
+      SELECT id, username, COALESCE(display_name, '') AS display_name, COALESCE(avatar_url, '') AS avatar_url, COALESCE(disabled, false) AS disabled, created_at
+      FROM users
+      WHERE id = $1
+      `,
+      [userId]
+    );
+    const { rows: rolesRows } = await pool.query(
+      `
+      SELECT r.id, r.name
+      FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+      WHERE ur.user_id = $1
+      ORDER BY r.name ASC
+      `,
+      [userId]
+    );
+    res.json({ user: { ...updatedRows[0], roles: rolesRows } });
+  } catch (err) {
+    if (String(err?.message || "").toLowerCase().includes("duplicate")) {
+      res.status(409).json({ error: "Username already exists." });
+      return;
+    }
+    res.status(500).json({ error: err?.message || "Failed to update user." });
+  }
+});
+
+app.delete("/api/security/users/:id", requireSecurityManage, async (req, res) => {
+  try {
+    const userId = Number.parseInt(String(req.params?.id || ""), 10);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      res.status(400).json({ error: "Invalid user id." });
+      return;
+    }
+    if (Number(req.user?.id) === userId) {
+      res.status(400).json({ error: "You cannot delete your own account." });
+      return;
+    }
+    const deleted = await pool.query("DELETE FROM users WHERE id = $1 RETURNING id", [userId]);
+    if (!deleted.rows.length) {
+      res.status(404).json({ error: "User not found." });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to delete user." });
+  }
+});
+
 function extractJson(text) {
   if (!text) return null;
   let trimmed = String(text).trim();
@@ -1774,10 +2925,38 @@ function extractCreatedTableNames(statements) {
 async function ensureStandardTableColumns(db, tableName) {
   const table = String(tableName || "").trim();
   if (!/^[a-zA-Z0-9_]+$/.test(table)) return;
+  const client = db || pool;
   const tableIdent = safeIdent(table);
-  await db.query(`ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS id BIGINT GENERATED BY DEFAULT AS IDENTITY`);
-  await db.query(`ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`);
-  await db.query(`ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`);
+  await client.query(
+    `ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS id BIGINT GENERATED BY DEFAULT AS IDENTITY`
+  );
+  await client.query(`ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`);
+  await client.query(
+    `ALTER TABLE ${tableIdent} ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`
+  );
+
+  const pk = await getPrimaryKey(table);
+  if (!pk) {
+    await client.query(`UPDATE ${tableIdent} SET id = DEFAULT WHERE id IS NULL`);
+    const { rows } = await client.query(
+      `
+      SELECT
+        COUNT(*)::int AS total_rows,
+        COUNT(id)::int AS non_null_rows,
+        COUNT(DISTINCT id)::int AS distinct_ids
+      FROM ${tableIdent}
+      `
+    );
+    const totalRows = Number(rows?.[0]?.total_rows || 0);
+    const nonNullRows = Number(rows?.[0]?.non_null_rows || 0);
+    const distinctIds = Number(rows?.[0]?.distinct_ids || 0);
+    if (totalRows === nonNullRows && nonNullRows === distinctIds) {
+      const constraintName = normalizeDbIdentifier(`${table}_pkey`.slice(0, 60), "constraint name");
+      await client.query(
+        `ALTER TABLE ${tableIdent} ADD CONSTRAINT ${safeIdent(constraintName)} PRIMARY KEY (id)`
+      );
+    }
+  }
 }
 
 function mergeByIdArray(base, incoming) {
@@ -2004,10 +3183,30 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/opc/config", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT config FROM opc_config WHERE id = 1"
+      "SELECT config, updated_at FROM opc_config WHERE id = 1"
     );
     if (rows.length) {
-      res.json(rows[0].config);
+      const row = rows[0] || {};
+      const dbUpdatedAtMs = row?.updated_at ? new Date(row.updated_at).getTime() : 0;
+      if (fs.existsSync(OPC_CONFIG_PATH)) {
+        try {
+          const fileStat = fs.statSync(OPC_CONFIG_PATH);
+          const fileUpdatedAtMs = fileStat?.mtimeMs || 0;
+          if (fileUpdatedAtMs > dbUpdatedAtMs) {
+            const raw = fs.readFileSync(OPC_CONFIG_PATH, "utf-8");
+            const parsed = JSON.parse(raw || "{}");
+            await pool.query(
+              "INSERT INTO opc_config (id, config) VALUES (1, $1::jsonb) ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now()",
+              [JSON.stringify(parsed)]
+            );
+            res.json(parsed);
+            return;
+          }
+        } catch {
+          // If file read/sync fails, fall back to DB config.
+        }
+      }
+      res.json(row.config);
       return;
     }
     if (fs.existsSync(OPC_CONFIG_PATH)) {
@@ -2283,6 +3482,87 @@ app.get("/api/opc/status", async (_req, res) => {
   }
 });
 
+app.get("/api/alarms", async (req, res) => {
+  try {
+    const activeOnly = String(req.query.activeOnly || "").toLowerCase() === "true";
+    if (activeOnly) {
+      const { rows } = await pool.query(
+        `
+        SELECT
+          alarm_key,
+          topic,
+          group_name,
+          tag_path,
+          label,
+          operator,
+          threshold,
+          last_value,
+          is_active,
+          first_triggered_at,
+          last_seen_at,
+          cleared_at,
+          occurrence_count,
+          updated_at
+        FROM opc_alarm_state
+        WHERE is_active = true
+        ORDER BY first_triggered_at DESC NULLS LAST, updated_at DESC
+        `
+      );
+      res.json({ active: rows, recent: [] });
+      return;
+    }
+    const [active, recent] = await Promise.all([
+      pool.query(
+        `
+        SELECT
+          alarm_key,
+          topic,
+          group_name,
+          tag_path,
+          label,
+          operator,
+          threshold,
+          last_value,
+          is_active,
+          first_triggered_at,
+          last_seen_at,
+          cleared_at,
+          occurrence_count,
+          updated_at
+        FROM opc_alarm_state
+        WHERE is_active = true
+        ORDER BY first_triggered_at DESC NULLS LAST, updated_at DESC
+        `
+      ),
+      pool.query(
+        `
+        SELECT
+          alarm_key,
+          topic,
+          group_name,
+          tag_path,
+          label,
+          operator,
+          threshold,
+          last_value,
+          is_active,
+          first_triggered_at,
+          last_seen_at,
+          cleared_at,
+          occurrence_count,
+          updated_at
+        FROM opc_alarm_state
+        ORDER BY updated_at DESC
+        LIMIT 250
+        `
+      ),
+    ]);
+    res.json({ active: active.rows, recent: recent.rows });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load alarms." });
+  }
+});
+
 app.get("/api/opc/trends/tags", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -2496,6 +3776,11 @@ app.post("/api/opc/status", async (req, res) => {
       trendLastCleanupAt = at;
       const cutoff = at - OPC_TREND_RETENTION_MS;
       await pool.query("DELETE FROM opc_tag_trend_chunks WHERE to_ts < $1", [cutoff]);
+    }
+    try {
+      await refreshActiveOpcAlarms(mergedStatus);
+    } catch {
+      // alarm refresh is best-effort and should not fail opc status ingestion
     }
     res.json({ ok: true });
   } catch (err) {
@@ -3061,36 +4346,34 @@ app.post("/api/db/designer/table", async (req, res) => {
   try {
     const tableName = normalizeDbIdentifier(req.body?.tableName, "table name");
     const rawColumns = Array.isArray(req.body?.columns) ? req.body.columns : [];
-    if (!rawColumns.length) {
-      res.status(400).json({ error: "At least one column is required." });
-      return;
-    }
     const cols = rawColumns.map((c, idx) => {
       const name = normalizeDbIdentifier(c?.name, `column name #${idx + 1}`);
       const type = normalizeSqlType(c?.type);
       const nullable = c?.nullable !== false;
       const defaultSql = toSqlDefaultLiteral(c?.defaultValue);
-      const isPrimary = c?.primaryKey === true;
-      return { name, type, nullable, defaultSql, isPrimary };
+      return { name, type, nullable, defaultSql };
     });
     const uniqueNames = new Set(cols.map((c) => c.name.toLowerCase()));
     if (uniqueNames.size !== cols.length) {
       res.status(400).json({ error: "Duplicate column names are not allowed." });
       return;
     }
-    const pkCols = cols.filter((c) => c.isPrimary).map((c) => c.name);
-    const colDefs = cols.map((c) => {
-      const nullableSql = c.isPrimary ? "NOT NULL" : c.nullable ? "" : "NOT NULL";
+    const reserved = new Set(["id", "name", "description"]);
+    const extraCols = cols.filter((c) => !reserved.has(String(c.name || "").toLowerCase()));
+    const colDefs = [
+      `${safeIdent("id")} BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY`,
+      `${safeIdent("name")} TEXT NOT NULL DEFAULT ''`,
+      `${safeIdent("description")} TEXT NOT NULL DEFAULT ''`,
+      ...extraCols.map((c) => {
+      const nullableSql = c.nullable ? "" : "NOT NULL";
       const defaultSql = c.defaultSql ? ` DEFAULT ${c.defaultSql}` : "";
       return `${safeIdent(c.name)} ${c.type}${nullableSql ? ` ${nullableSql}` : ""}${defaultSql}`;
-    });
-    if (pkCols.length === 1) {
-      colDefs[cols.findIndex((c) => c.name === pkCols[0])] += " PRIMARY KEY";
-    } else if (pkCols.length > 1) {
-      colDefs.push(`PRIMARY KEY (${pkCols.map((n) => safeIdent(n)).join(", ")})`);
-    }
+    }),
+    ];
     const sql = `CREATE TABLE IF NOT EXISTS ${safeIdent(tableName)} (${colDefs.join(", ")})`;
     await pool.query(sql);
+    await ensureStandardTableColumns(pool, tableName);
+    await syncDesignerSchemaTable(tableName);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to create table." });
@@ -3102,27 +4385,51 @@ app.put("/api/db/designer/table/:table/rename", async (req, res) => {
     const currentName = normalizeDbIdentifier(req.params.table, "table name");
     const newName = normalizeDbIdentifier(req.body?.newName, "new table name");
     await pool.query(`ALTER TABLE ${safeIdent(currentName)} RENAME TO ${safeIdent(newName)}`);
+    renameDesignerSchemaTable(currentName, newName);
+    await syncDesignerSchemaTable(newName);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to rename table." });
   }
 });
 
+app.delete("/api/db/designer/table/:table", async (req, res) => {
+  try {
+    const tableName = normalizeDbIdentifier(req.params.table, "table name");
+    await pool.query(`DROP TABLE IF EXISTS ${safeIdent(tableName)}`);
+    removeDesignerSchemaTable(tableName);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to delete table." });
+  }
+});
+
 app.post("/api/db/designer/table/:table/column", async (req, res) => {
+  const db = await pool.connect();
   try {
     const tableName = normalizeDbIdentifier(req.params.table, "table name");
     const columnName = normalizeDbIdentifier(req.body?.name, "column name");
     const type = normalizeSqlType(req.body?.type);
     const nullable = req.body?.nullable !== false;
     const defaultSql = toSqlDefaultLiteral(req.body?.defaultValue);
+    const primaryKey = req.body?.primaryKey === true;
     const notNullSql = nullable ? "" : " NOT NULL";
     const defaultClause = defaultSql ? ` DEFAULT ${defaultSql}` : "";
-    await pool.query(
+    await db.query("BEGIN");
+    await db.query(
       `ALTER TABLE ${safeIdent(tableName)} ADD COLUMN IF NOT EXISTS ${safeIdent(columnName)} ${type}${defaultClause}${notNullSql}`
     );
+    if (primaryKey) {
+      await applyPrimaryKeyState(db, tableName, columnName, true);
+    }
+    await db.query("COMMIT");
+    await syncDesignerSchemaTable(tableName);
     res.json({ ok: true });
   } catch (err) {
+    await db.query("ROLLBACK");
     res.status(500).json({ error: err?.message || "Failed to add column." });
+  } finally {
+    db.release();
   }
 });
 
@@ -3136,6 +4443,8 @@ app.put("/api/db/designer/table/:table/column/:column", async (req, res) => {
     const typeRaw = String(req.body?.type || "").trim();
     const nullableSet = Object.prototype.hasOwnProperty.call(req.body || {}, "nullable");
     const defaultSet = Object.prototype.hasOwnProperty.call(req.body || {}, "defaultValue");
+    const primaryKeySet = Object.prototype.hasOwnProperty.call(req.body || {}, "primaryKey");
+    let effectiveColumnName = columnName;
     await db.query("BEGIN");
     if (typeRaw) {
       const nextType = normalizeSqlType(typeRaw);
@@ -3170,14 +4479,33 @@ app.put("/api/db/designer/table/:table/column/:column", async (req, res) => {
       await db.query(
         `ALTER TABLE ${safeIdent(tableName)} RENAME COLUMN ${safeIdent(columnName)} TO ${safeIdent(newName)}`
       );
+      effectiveColumnName = newName;
+    }
+    if (primaryKeySet) {
+      await applyPrimaryKeyState(db, tableName, effectiveColumnName, req.body?.primaryKey === true);
     }
     await db.query("COMMIT");
+    await syncDesignerSchemaTable(tableName);
     res.json({ ok: true });
   } catch (err) {
     await db.query("ROLLBACK");
     res.status(500).json({ error: err?.message || "Failed to update column." });
   } finally {
     db.release();
+  }
+});
+
+app.delete("/api/db/designer/table/:table/column/:column", async (req, res) => {
+  try {
+    const tableName = normalizeDbIdentifier(req.params.table, "table name");
+    const columnName = normalizeDbIdentifier(req.params.column, "column name");
+    await pool.query(
+      `ALTER TABLE ${safeIdent(tableName)} DROP COLUMN IF EXISTS ${safeIdent(columnName)}`
+    );
+    await syncDesignerSchemaTable(tableName);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to delete column." });
   }
 });
 
@@ -3349,15 +4677,21 @@ app.post("/api/db/:table", async (req, res) => {
       res.status(400).json({ error: "Invalid table name." });
       return;
     }
-    const keys = Object.keys(body);
+    const pk = await getPrimaryKey(table);
+    const keys = Object.keys(body).filter((k) => !pk || k !== pk);
+
+    let sql = "";
+    let params = [];
     if (!keys.length) {
-      res.status(400).json({ error: "No fields provided." });
-      return;
+      // Let database defaults/identity constraints drive insert behavior.
+      sql = `INSERT INTO ${safeIdent(table)} DEFAULT VALUES RETURNING *`;
+    } else {
+      const cols = keys.map((k) => safeIdent(k)).join(", ");
+      const vals = keys.map((_, i) => `$${i + 1}`).join(", ");
+      sql = `INSERT INTO ${safeIdent(table)} (${cols}) VALUES (${vals}) RETURNING *`;
+      params = keys.map((k) => body[k]);
     }
-    const cols = keys.map((k) => safeIdent(k)).join(", ");
-    const vals = keys.map((_, i) => `$${i + 1}`).join(", ");
-    const sql = `INSERT INTO ${safeIdent(table)} (${cols}) VALUES (${vals}) RETURNING *`;
-    const { rows } = await pool.query(sql, keys.map((k) => body[k]));
+    const { rows } = await pool.query(sql, params);
     res.json({ row: rows[0] || null });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Insert failed." });
@@ -3426,7 +4760,7 @@ app.get("/api/reports", async (req, res) => {
     }
     const { rows } = await pool.query(
       `
-      SELECT id, name, description, sql, created_at, updated_at
+      SELECT id, name, description, sql, layout_json, created_at, updated_at
       FROM ai_reports
       WHERE user_id = $1
       ORDER BY updated_at DESC
@@ -3450,6 +4784,9 @@ app.post("/api/reports", async (req, res) => {
     const name = String(req.body?.name || "").trim();
     const description = String(req.body?.description || "").trim();
     const sql = sanitizeReadOnlyQuery(String(req.body?.sql || ""));
+    const layoutRaw = req.body?.layout;
+    const layoutJson =
+      layoutRaw && typeof layoutRaw === "object" && !Array.isArray(layoutRaw) ? layoutRaw : {};
     if (!name) {
       res.status(400).json({ error: "Report name required." });
       return;
@@ -3459,10 +4796,10 @@ app.post("/api/reports", async (req, res) => {
       const { rowCount } = await pool.query(
         `
         UPDATE ai_reports
-        SET name = $1, description = $2, sql = $3, updated_at = now()
-        WHERE id = $4 AND user_id = $5
+        SET name = $1, description = $2, sql = $3, layout_json = $4::jsonb, updated_at = now()
+        WHERE id = $5 AND user_id = $6
         `,
-        [name, description || null, sql, id, userId]
+        [name, description || null, sql, JSON.stringify(layoutJson), id, userId]
       );
       if (!rowCount) {
         res.status(404).json({ error: "Report not found." });
@@ -3471,15 +4808,15 @@ app.post("/api/reports", async (req, res) => {
     } else {
       await pool.query(
         `
-        INSERT INTO ai_reports (id, user_id, name, description, sql)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO ai_reports (id, user_id, name, description, sql, layout_json)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         `,
-        [id, userId, name, description || null, sql]
+        [id, userId, name, description || null, sql, JSON.stringify(layoutJson)]
       );
     }
     const { rows } = await pool.query(
       `
-      SELECT id, name, description, sql, created_at, updated_at
+      SELECT id, name, description, sql, layout_json, created_at, updated_at
       FROM ai_reports
       WHERE id = $1 AND user_id = $2
       LIMIT 1
@@ -4266,6 +5603,154 @@ async function handlePlcInsights(req, res) {
 app.post("/api/ai/plc-insights", handlePlcInsights);
 app.get("/api/ai/plc-insights", handlePlcInsights);
 
+app.post("/api/ai/plc-svg-suggest", async (req, res) => {
+  try {
+    const source = req.body && typeof req.body === "object" ? req.body : {};
+    const prompt = String(source?.prompt || "").trim();
+    if (!prompt) {
+      res.status(400).json({ error: "Missing prompt." });
+      return;
+    }
+    const catalog = normalizeSvgCatalog(source?.svgCatalog || [], 450);
+    if (!catalog.length) {
+      res.status(400).json({ error: "SVG catalog is empty." });
+      return;
+    }
+    const history = Array.isArray(source?.history) ? source.history : [];
+    const safeHistory = history
+      .slice(-8)
+      .map((item) => {
+        const role = String(item?.role || "").toLowerCase();
+        if (role !== "user" && role !== "assistant") return null;
+        const content = String(item?.content || "").slice(0, 2000).trim();
+        if (!content) return null;
+        return { role, content };
+      })
+      .filter(Boolean);
+    const plc = source?.plc && typeof source.plc === "object" ? source.plc : {};
+    const controllerTags = normalizeControllerTags(plc?.controllerTags || [], 240);
+    const selectedTagNames = controllerTags
+      .slice(0, 120)
+      .map((t) => String(t?.name || "").trim())
+      .filter(Boolean);
+    const hasAiProvider =
+      !!String(process.env.OLLAMA_NATIVE_URL || "").trim() ||
+      !!String(process.env.OPENAI_BASE_URL || "").trim() ||
+      !!String(process.env.OPENAI_API_KEY || "").trim();
+
+    let pickedKey = "";
+    let answer = "";
+    let aiAlternatives = [];
+
+    if (hasAiProvider) {
+      const system = [
+        "You select the best SVG asset for PLC/HMI diagrams.",
+        "Use only the provided catalog entries.",
+        "Return ONLY valid JSON with keys: answer, picked_key, alternatives.",
+        "alternatives must be an array of up to 3 objects with keys: key, reason.",
+        "If no strong match exists, pick the closest practical symbol by equipment type.",
+      ].join(" ");
+      const catalogLines = catalog
+        .map((row, idx) => {
+          const tagText = row.tags.length ? ` | tags: ${row.tags.join(", ")}` : "";
+          return `${idx + 1}. ${row.key} | ${row.name}${tagText}`;
+        })
+        .join("\n");
+      const tagsText = selectedTagNames.length ? selectedTagNames.slice(0, 80).join(", ") : "(none)";
+      const input = [
+        { role: "system", content: system },
+        { role: "system", content: `Available SVG catalog:\n${catalogLines}` },
+        { role: "system", content: `Detected PLC tags/context: ${tagsText}` },
+        ...safeHistory,
+        { role: "user", content: prompt },
+      ];
+      let rawText = "";
+      try {
+        if (OLLAMA_NATIVE_URL) {
+          const resp = await fetch(`${OLLAMA_NATIVE_URL.replace(/\/$/, "")}/api/generate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: OPENAI_MODEL,
+              prompt: input
+                .map((m) => `${String(m.role || "user").toUpperCase()}: ${String(m.content || "")}`)
+                .join("\n\n"),
+              stream: false,
+            }),
+          });
+          if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`);
+          const data = await resp.json().catch(() => ({}));
+          rawText = String(data?.response || "").trim();
+        } else {
+          const response = await client.responses.create({
+            model: OPENAI_MODEL,
+            input,
+            max_output_tokens: 420,
+          });
+          rawText = String(response?.output_text || "").trim();
+        }
+      } catch {
+        rawText = "";
+      }
+
+      const parsed = extractJson(rawText) || repairJson(rawText) || {};
+      pickedKey = String(parsed?.picked_key || "").trim();
+      answer = String(parsed?.answer || "").trim();
+      aiAlternatives = Array.isArray(parsed?.alternatives) ? parsed.alternatives : [];
+    }
+
+    const byKey = new Map(catalog.map((row) => [String(row.key || "").toLowerCase(), row]));
+    let picked = byKey.get(pickedKey.toLowerCase()) || null;
+    let alternatives = [];
+    if (picked) {
+      alternatives = aiAlternatives
+        .map((row) => {
+          const key = String(row?.key || "").trim();
+          const found = byKey.get(key.toLowerCase());
+          if (!found) return null;
+          return {
+            key: found.key,
+            name: found.name,
+            reason: String(row?.reason || "").trim() || "",
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 3);
+    }
+    if (!picked) {
+      const guessed = suggestSvgHeuristic({ prompt, catalog, selectedTagNames });
+      picked = guessed.picked;
+      alternatives = guessed.alternatives.map((row) => ({
+        key: row.key,
+        name: row.name,
+        reason: "Close name/tag match.",
+      }));
+    }
+    if (!picked) {
+      res.status(404).json({ error: "No matching SVG could be suggested." });
+      return;
+    }
+    if (!answer) {
+      answer = [
+        `Best SVG: ${picked.name} (${picked.key}).`,
+        alternatives.length
+          ? `Alternatives: ${alternatives.map((row) => row.name).join(", ")}.`
+          : "No strong alternatives found.",
+      ].join(" ");
+    }
+    res.json({
+      answer,
+      picked: {
+        key: picked.key,
+        name: picked.name,
+      },
+      alternatives,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to suggest SVG." });
+  }
+});
+
 app.post("/api/ai/plc-opc-connect", async (req, res) => {
   try {
     const source = req.body && typeof req.body === "object" ? req.body : {};
@@ -4372,6 +5857,10 @@ app.post("/api/ai/apply", async (req, res) => {
       db.release();
     }
 
+    for (const table of createdTables) {
+      await syncDesignerSchemaTable(table);
+    }
+
     res.json({ ok: true, applied: statements.length });
   } catch (err) {
     res.status(400).json({ error: err?.message || "Apply failed." });
@@ -4381,6 +5870,7 @@ app.post("/api/ai/apply", async (req, res) => {
 async function start() {
   await ensureDatabaseExists();
   pool = new Pool({ connectionString: DATABASE_URL });
+  await ensureDesignerTablesFromSchema(pool);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ui_table_config (
       table_name TEXT PRIMARY KEY,
@@ -4398,6 +5888,7 @@ async function start() {
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
+      disabled BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
@@ -4434,6 +5925,41 @@ async function start() {
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS avatar_url TEXT;
   `);
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false;
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS roles (
+      id SERIAL PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      is_system BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_roles (
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role_id INT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+      PRIMARY KEY (user_id, role_id)
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS role_area_permissions (
+      role_id INT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+      area_key TEXT NOT NULL,
+      can_view BOOLEAN NOT NULL DEFAULT false,
+      can_edit BOOLEAN NOT NULL DEFAULT false,
+      PRIMARY KEY (role_id, area_key)
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS user_roles_role_id_idx ON user_roles(role_id);
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS role_area_permissions_area_idx ON role_area_permissions(area_key);
+  `);
   try {
     const { rows } = await pool.query(
       `
@@ -4457,6 +5983,62 @@ async function start() {
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users(username);
   `);
+  const defaultRoles = [
+    {
+      name: "Administrator",
+      description: "Full access to all app areas and security administration.",
+      is_system: true,
+    },
+    {
+      name: "Operator",
+      description: "Read-only access to runtime and process screens.",
+      is_system: true,
+    },
+  ];
+  for (const role of defaultRoles) {
+    await pool.query(
+      `
+      INSERT INTO roles (name, description, is_system)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (name) DO UPDATE
+      SET description = EXCLUDED.description, is_system = EXCLUDED.is_system
+      `,
+      [role.name, role.description, role.is_system]
+    );
+  }
+  const { rows: roleRows } = await pool.query("SELECT id, name FROM roles");
+  const roleMap = new Map(roleRows.map((row) => [String(row.name || "").trim().toLowerCase(), Number(row.id)]));
+  for (const [roleName, roleId] of roleMap.entries()) {
+    const permissionRows = defaultRolePermissionRows(roleName);
+    for (const permission of permissionRows) {
+      await pool.query(
+        `
+        INSERT INTO role_area_permissions (role_id, area_key, can_view, can_edit)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (role_id, area_key) DO UPDATE
+        SET can_view = EXCLUDED.can_view, can_edit = EXCLUDED.can_edit
+        `,
+        [roleId, permission.area_key, permission.can_view, permission.can_edit]
+      );
+    }
+  }
+  const { rows: userRoleCountRows } = await pool.query("SELECT COUNT(*)::int AS count FROM user_roles");
+  if (Number(userRoleCountRows?.[0]?.count || 0) === 0) {
+    const { rows: firstUserRows } = await pool.query(
+      "SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1"
+    );
+    const adminRoleId = roleMap.get("administrator");
+    if (firstUserRows.length && Number.isFinite(adminRoleId)) {
+      await pool.query(
+        `
+        INSERT INTO user_roles (user_id, role_id)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id, role_id) DO NOTHING
+        `,
+        [firstUserRows[0].id, adminRoleId]
+      );
+    }
+  }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS opc_tag_templates (
       name TEXT PRIMARY KEY,
@@ -4526,6 +6108,32 @@ async function start() {
     ON opc_tag_trend_chunks(to_ts DESC);
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS opc_alarm_state (
+      alarm_key TEXT PRIMARY KEY,
+      topic TEXT NOT NULL DEFAULT '',
+      group_name TEXT NOT NULL DEFAULT '',
+      tag_path TEXT NOT NULL DEFAULT '',
+      label TEXT NOT NULL DEFAULT '',
+      operator TEXT NOT NULL DEFAULT '==',
+      threshold TEXT NOT NULL DEFAULT '',
+      last_value TEXT NOT NULL DEFAULT '',
+      is_active BOOLEAN NOT NULL DEFAULT false,
+      first_triggered_at TIMESTAMPTZ,
+      last_seen_at TIMESTAMPTZ,
+      cleared_at TIMESTAMPTZ,
+      occurrence_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS opc_alarm_state_active_idx
+    ON opc_alarm_state(is_active, updated_at DESC);
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS opc_alarm_state_updated_idx
+    ON opc_alarm_state(updated_at DESC);
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -4553,6 +6161,46 @@ async function start() {
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS projects_name_idx ON projects(name);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS routes (
+      id BIGSERIAL PRIMARY KEY,
+      route_id TEXT,
+      route_number TEXT,
+      state TEXT,
+      route_color TEXT,
+      project_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE routes
+    ADD COLUMN IF NOT EXISTS route_id TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE routes
+    ADD COLUMN IF NOT EXISTS route_number TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE routes
+    ADD COLUMN IF NOT EXISTS state TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE routes
+    ADD COLUMN IF NOT EXISTS route_color TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE routes
+    ADD COLUMN IF NOT EXISTS project_id TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE routes
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    ALTER TABLE routes
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS equipment (
@@ -4626,9 +6274,14 @@ async function start() {
       name TEXT NOT NULL,
       description TEXT,
       sql TEXT NOT NULL,
+      layout_json JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+  `);
+  await pool.query(`
+    ALTER TABLE ai_reports
+    ADD COLUMN IF NOT EXISTS layout_json JSONB NOT NULL DEFAULT '{}'::jsonb;
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ai_reports_user_name_idx ON ai_reports(user_id, name);

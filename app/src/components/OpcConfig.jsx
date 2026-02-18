@@ -2,6 +2,8 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { dismissToast, showToast, toastError, toastSuccess } from "../utils/toast";
 
 const DIAGNOSTICS_UI_MAX_ROWS = 500;
+const RESTART_PENDING_TIMEOUT_MS = 15000;
+const ALARM_OPERATORS = ["==", "!=", ">", ">=", "<", "<="];
 
 function normalizeTagName(name) {
   return String(name || "")
@@ -54,6 +56,16 @@ function normalizeTrendMode(value) {
   return v === "time" ? "time" : "value";
 }
 
+function normalizeAlarmOperator(value) {
+  const v = String(value || "").trim();
+  return ALARM_OPERATORS.includes(v) ? v : "==";
+}
+
+function normalizeAlarmThreshold(value) {
+  if (value == null) return "";
+  return String(value).trim();
+}
+
 function TrashCanIcon({ size = 12 }) {
   return (
     <svg
@@ -79,6 +91,7 @@ function TrashCanIcon({ size = 12 }) {
 
 function defaultRuntimeConfig() {
   return {
+    opcConnectionEnabled: true,
     readTimeoutMs: 2000,
     errorBackoffEnabled: true,
     errorBackoffBaseMs: 1000,
@@ -96,6 +109,7 @@ function normalizeRuntimeConfig(value) {
   const incoming = value && typeof value === "object" ? value : {};
   const defaults = defaultRuntimeConfig();
   return {
+    opcConnectionEnabled: incoming.opcConnectionEnabled !== false,
     readTimeoutMs: parseOptionalMs(incoming.readTimeoutMs) || defaults.readTimeoutMs,
     errorBackoffEnabled: incoming.errorBackoffEnabled !== false,
     errorBackoffBaseMs: parseOptionalMs(incoming.errorBackoffBaseMs) || defaults.errorBackoffBaseMs,
@@ -179,7 +193,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [templates, setTemplates] = useState([]);
   const [templateName, setTemplateName] = useState("");
   const [templateFieldRows, setTemplateFieldRows] = useState([
-    { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 },
+    {
+      name: "",
+      tagPath: "",
+      uaType: "",
+      pollMs: "",
+      samplingInterval: "",
+      topic: "",
+      enabled: true,
+      mappingSet: "",
+      scale: 1,
+      decimals: 0,
+      alarmEnabled: false,
+      alarmOperator: "==",
+      alarmValue: "",
+    },
   ]);
   const [templateStateMappings, setTemplateStateMappings] = useState([
     { field: "", state: "", color: "" },
@@ -220,6 +248,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     trendEnabled: false,
     trendMode: "value",
     trendSampleMs: "",
+    alarmEnabled: false,
+    alarmOperator: "==",
+    alarmValue: "",
   });
   const [tagTableEditing, setTagTableEditing] = useState(false);
   const [editingTagIndex, setEditingTagIndex] = useState(null);
@@ -234,6 +265,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   });
   const [showPlcForm, setShowPlcForm] = useState(false);
   const [opcConfigSectionTab, setOpcConfigSectionTab] = useState("opcua");
+  const [opcUaEditing, setOpcUaEditing] = useState(false);
   const [manualPlc, setManualPlc] = useState({
     name: "",
     host: "",
@@ -292,6 +324,25 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     restartStartedAtRef.current = 0;
     setRestartPending(false);
   }, [restartPending, opcConnected, opcLastPollAt]);
+
+  useEffect(() => {
+    if (!restartPending) return;
+    const timer = setTimeout(() => {
+      const toastId = String(restartToastIdRef.current || "").trim();
+      if (toastId) {
+        showToast("Restart requested. OPC is still disconnected.", {
+          id: toastId,
+          type: "error",
+          duration: 5000,
+        });
+        restartToastIdRef.current = "";
+      }
+      restartSawDisconnectRef.current = false;
+      restartStartedAtRef.current = 0;
+      setRestartPending(false);
+    }, RESTART_PENDING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [restartPending]);
 
   useEffect(
     () => () => {
@@ -352,6 +403,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const autoSaveTimerRef = useRef(null);
   const autoSaveReadyRef = useRef(false);
   const lastSavedRef = useRef("");
+  const opcUaSnapshotRef = useRef(null);
   const lastLiveErrorsRef = useRef({});
   const mappingSetAutoSelectedRef = useRef(false);
   const drawerMenuRef = useRef(null);
@@ -373,37 +425,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         const res = await fetch("/api/opc/config");
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || "Failed to load.");
-        const cleanedTags = (data.tags || [])
-          .map((t) => {
-            const name = normalizeTagName(t.name);
-            const tagPath = normalizeTagName(t.tagPath || name);
-            const topic = normalizeTagName(t.topic || "");
-            const samplingInterval = parseOptionalMs(t?.samplingInterval);
-            return {
-              ...t,
-              name,
-              tagPath,
-              topic,
-              samplingInterval,
-              deadband: parseOptionalNonNegative(t?.deadband),
-              muted: t?.muted === true,
-              trendEnabled: t?.trendEnabled === true,
-              trendMode: normalizeTrendMode(t?.trendMode),
-              trendSampleMs: parseOptionalMs(t?.trendSampleMs),
-              mappingSet: t?.mappingSet || "",
-            };
-          })
-          .filter((t) => t.name);
-        const cleanedPlcs = Array.isArray(data.plcs) && data.plcs.length
-          ? data.plcs
-              .map((p, idx) => ({
-                id: String(p?.id || makeId()),
-                name: normalizeTopicValue(p?.name || `PLC-${idx + 1}`),
-                host: normalizeTopicValue(p?.host || ""),
-                slot: Number.isFinite(Number(p?.slot)) ? Number(p.slot) : 0,
-                pollMs: parseOptionalMs(p?.pollMs),
-              }))
-              .filter((p) => p.name)
+        const cleanedTags = buildCleanedTags(data?.tags);
+        const cleanedPlcs = Array.isArray(data?.plcs) && data.plcs.length
+          ? buildCleanedPlcs(data.plcs)
           : data?.plc?.host
           ? [
               {
@@ -415,15 +439,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               },
             ]
           : [];
-        const cleanedTopics = (data.topics || [])
-          .map((t) => ({
-            name: normalizeTopicValue(t?.name || ""),
-            prefix: normalizeTopicValue(t?.prefix || ""),
-            plcName: normalizeTopicValue(t?.plcName || t?.plc || ""),
-            samplingInterval: parseOptionalMs(t?.samplingInterval),
-            enabled: t?.enabled !== false,
-          }))
-          .filter((t) => t.name);
+        const cleanedTopics = buildCleanedTopics(data?.topics);
         const loadedConfig = {
           ...data,
           runtime: normalizeRuntimeConfig(data?.runtime),
@@ -448,6 +464,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   useEffect(() => {
     if (!autoSaveReadyRef.current) return;
+    if (opcUaEditing) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(() => {
       const cleanedTags = buildCleanedTags(config.tags);
@@ -477,7 +494,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return () => {
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     };
-  }, [config]);
+  }, [config, opcUaEditing]);
 
   useEffect(() => {
     async function loadTemplates() {
@@ -543,6 +560,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               mappingSet: "",
               scale: 1,
               decimals: 0,
+              alarmEnabled: false,
+              alarmOperator: "==",
+              alarmValue: "",
             };
           }
           return {
@@ -556,13 +576,30 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             mappingSet: String(f?.mappingSet || ""),
             scale: Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1,
             decimals: Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 0,
+            alarmEnabled: f?.alarmEnabled === true,
+            alarmOperator: normalizeAlarmOperator(f?.alarmOperator),
+            alarmValue: normalizeAlarmThreshold(f?.alarmValue),
           };
         })
       : [];
     setTemplateFieldRows(
       nextFields.length
         ? nextFields
-        : [{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 }]
+        : [{
+            name: "",
+            tagPath: "",
+            uaType: "",
+            pollMs: "",
+            samplingInterval: "",
+            topic: "",
+            enabled: true,
+            mappingSet: "",
+            scale: 1,
+            decimals: 0,
+            alarmEnabled: false,
+            alarmOperator: "==",
+            alarmValue: "",
+          }]
     );
     const nextMappings = Array.isArray(tmpl.state_mappings)
       ? tmpl.state_mappings.map((m) => ({
@@ -642,7 +679,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           setOpcLastPollAt(data.lastPollAt || null);
         }
       } catch {
-        // ignore
+        if (alive) {
+          setOpcConnected(false);
+          setOpcLastPollAt(null);
+        }
       }
     }
     poll();
@@ -665,9 +705,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return () => window.removeEventListener("mousedown", onDocClick);
   }, [showDrawerMenu]);
 
-  const plcs = useMemo(() => config.plcs || [], [config.plcs]);
-  const topics = useMemo(() => config.topics || [], [config.topics]);
-  const tags = useMemo(() => config.tags || [], [config.tags]);
+  const plcs = useMemo(() => (Array.isArray(config?.plcs) ? config.plcs : []), [config?.plcs]);
+  const topics = useMemo(() => (Array.isArray(config?.topics) ? config.topics : []), [config?.topics]);
+  const opcConnectionEnabled = config?.runtime?.opcConnectionEnabled !== false;
+  const tags = useMemo(() => (Array.isArray(config?.tags) ? config.tags : []), [config?.tags]);
   const trendTagOptions = useMemo(() => {
     const out = [];
     const seen = new Set();
@@ -1012,6 +1053,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               enabled: true,
               mappingSet: "",
               scale: 1,
+              decimals: 0,
+              alarmEnabled: false,
+              alarmOperator: "==",
+              alarmValue: "",
             });
             return;
           }
@@ -1039,6 +1084,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             mappingSet: mappingSetVal,
             scale: scaleVal,
             decimals: decimalsVal,
+            alarmEnabled: f?.alarmEnabled === true,
+            alarmOperator: normalizeAlarmOperator(f?.alarmOperator),
+            alarmValue: normalizeAlarmThreshold(f?.alarmValue),
           });
         });
       }
@@ -1115,25 +1163,29 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           trendEnabled: false,
           trendMode: "value",
           trendSampleMs: "",
+          alarmEnabled: false,
+          alarmOperator: "==",
+          alarmValue: "",
         },
       ],
     }));
   }
 
   function buildCleanedTags(tags) {
-    return (tags || [])
+    return (Array.isArray(tags) ? tags : [])
       .map((t) => {
-        const name = normalizeTagName(t.name);
-        const tagPath = normalizeTagName(t.tagPath || name);
-        const topic = normalizeTagName(t.topic || "");
-        const groupName = normalizeTagName(t.groupName || "");
-        const samplingInterval = parseOptionalMs(t?.samplingInterval);
-        const pollMs = parseOptionalMs(t?.pollMs);
-        const deadband = parseOptionalNonNegative(t?.deadband);
-        const scale = Number.isFinite(Number(t?.scale)) ? Number(t.scale) : 1;
-        const decimals = Number.isFinite(Number(t?.decimals)) ? Number(t.decimals) : 0;
+        const row = t && typeof t === "object" ? t : {};
+        const name = normalizeTagName(row?.name);
+        const tagPath = normalizeTagName(row?.tagPath || name);
+        const topic = normalizeTagName(row?.topic || "");
+        const groupName = normalizeTagName(row?.groupName || "");
+        const samplingInterval = parseOptionalMs(row?.samplingInterval);
+        const pollMs = parseOptionalMs(row?.pollMs);
+        const deadband = parseOptionalNonNegative(row?.deadband);
+        const scale = Number.isFinite(Number(row?.scale)) ? Number(row.scale) : 1;
+        const decimals = Number.isFinite(Number(row?.decimals)) ? Number(row.decimals) : 0;
         return {
-          ...t,
+          ...row,
           name,
           tagPath,
           topic,
@@ -1143,37 +1195,42 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           decimals,
           samplingInterval,
           deadband,
-          muted: t?.muted === true,
-          trendEnabled: t?.trendEnabled === true,
-          trendMode: normalizeTrendMode(t?.trendMode),
-          trendSampleMs: parseOptionalMs(t?.trendSampleMs),
-          mappingSet: t?.mappingSet || "",
+          muted: row?.muted === true,
+          trendEnabled: row?.trendEnabled === true,
+          trendMode: normalizeTrendMode(row?.trendMode),
+          trendSampleMs: parseOptionalMs(row?.trendSampleMs),
+          alarmEnabled: row?.alarmEnabled === true,
+          alarmOperator: normalizeAlarmOperator(row?.alarmOperator),
+          alarmValue: normalizeAlarmThreshold(row?.alarmValue),
+          mappingSet: row?.mappingSet || "",
         };
       })
       .filter((t) => t.name);
   }
 
   function buildCleanedPlcs(plcs) {
-    return (plcs || [])
+    return (Array.isArray(plcs) ? plcs : [])
       .map((p, idx) => {
+        const row = p && typeof p === "object" ? p : {};
         const id = String(p?.id || makeId());
         const name = normalizeTopicValue(p?.name || `PLC-${idx + 1}`);
         const host = normalizeTopicValue(p?.host || "");
         const slot = Number.isFinite(Number(p?.slot)) ? Number(p.slot) : 0;
         const pollMs = parseOptionalMs(p?.pollMs);
-        return { ...p, id, name, host, slot, pollMs };
+        return { ...row, id, name, host, slot, pollMs };
       })
       .filter((p) => p.name);
   }
 
   function buildCleanedTopics(topics) {
-    return (topics || [])
+    return (Array.isArray(topics) ? topics : [])
       .map((t) => {
+        const row = t && typeof t === "object" ? t : {};
         const name = normalizeTopicValue(t?.name || "");
         const prefix = normalizeTopicValue(t?.prefix || "");
         const plcName = normalizeTopicValue(t?.plcName || t?.plc || "");
         const samplingInterval = parseOptionalMs(t?.samplingInterval);
-        return { ...t, name, prefix, plcName, samplingInterval, enabled: t?.enabled !== false };
+        return { ...row, name, prefix, plcName, samplingInterval, enabled: t?.enabled !== false };
       })
       .filter((t) => t.name);
   }
@@ -1199,6 +1256,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       if (tag?.deadband !== "" && parseOptionalNonNegative(tag?.deadband) === "") warnings.push(`Tag ${name || `row ${idx + 1}`}: Deadband must be >= 0.`);
       if (tag?.trendEnabled === true && normalizeTrendMode(tag?.trendMode) === "time" && tag?.trendSampleMs !== "" && parseOptionalMs(tag?.trendSampleMs) === "")
         warnings.push(`Tag ${name || `row ${idx + 1}`}: Trend Every (ms) must be > 0.`);
+      if (tag?.alarmEnabled === true && normalizeAlarmThreshold(tag?.alarmValue) === "") {
+        warnings.push(`Tag ${name || `row ${idx + 1}`}: Alarm value is required when alarm is enabled.`);
+      }
     });
     return warnings;
   }
@@ -1248,6 +1308,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         trendEnabled: manualTag.trendEnabled === true,
         trendMode: normalizeTrendMode(manualTag.trendMode),
         trendSampleMs: parseOptionalMs(manualTag.trendSampleMs) || undefined,
+        alarmEnabled: manualTag.alarmEnabled === true,
+        alarmOperator: normalizeAlarmOperator(manualTag.alarmOperator),
+        alarmValue: normalizeAlarmThreshold(manualTag.alarmValue),
         mappingSet: String(manualTag.mappingSet || "").trim(),
       },
     ];
@@ -1291,6 +1354,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       trendEnabled: false,
       trendMode: "value",
       trendSampleMs: "",
+      alarmEnabled: false,
+      alarmOperator: "==",
+      alarmValue: "",
       mappingSet: "",
       groupName: "",
       deadband: "",
@@ -1339,7 +1405,30 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     }
   }
 
+  function beginOpcUaEdit() {
+    opcUaSnapshotRef.current = JSON.parse(JSON.stringify(config || {}));
+    setOpcUaEditing(true);
+  }
+
+  function cancelOpcUaEdit() {
+    if (opcUaSnapshotRef.current) {
+      setConfig(opcUaSnapshotRef.current);
+    }
+    setOpcUaEditing(false);
+    opcUaSnapshotRef.current = null;
+  }
+
+  async function saveOpcUaEdit() {
+    await saveConfig();
+    setOpcUaEditing(false);
+    opcUaSnapshotRef.current = null;
+  }
+
   async function requestRestart() {
+    if (!opcConnectionEnabled) {
+      setError("OPC connection is disabled. Enable OPC PLC connection before restart.");
+      return;
+    }
     setError("");
     setStatus("");
     try {
@@ -1407,6 +1496,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         mappingSet: String(row?.mappingSet || "").trim(),
         scale: Number.isFinite(Number(row?.scale)) ? Number(row.scale) : 1,
         decimals: Number.isFinite(Number(row?.decimals)) ? Number(row.decimals) : 0,
+        alarmEnabled: row?.alarmEnabled === true,
+        alarmOperator: normalizeAlarmOperator(row?.alarmOperator),
+        alarmValue: normalizeAlarmThreshold(row?.alarmValue),
       }))
       .filter((row) => row.name || row.tagPath);
     const stateMappings = (templateStateMappings || [])
@@ -1521,6 +1613,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         mappingSet: fieldMappingSet || String(applyMappingSet || "").trim(),
         scale: fieldScale,
         decimals: fieldDecimals,
+        alarmEnabled: f?.alarmEnabled === true,
+        alarmOperator: normalizeAlarmOperator(f?.alarmOperator),
+        alarmValue: normalizeAlarmThreshold(f?.alarmValue),
       };
     });
     const nextTags = [...(config.tags || []), ...newTags];
@@ -1587,6 +1682,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           mappingSet: String(tag?.mappingSet || "").trim(),
           scale: Number.isFinite(Number(tag?.scale)) ? Number(tag.scale) : 1,
           decimals: Number.isFinite(Number(tag?.decimals)) ? Number(tag.decimals) : 0,
+          alarmEnabled: tag?.alarmEnabled === true,
+          alarmOperator: normalizeAlarmOperator(tag?.alarmOperator),
+          alarmValue: normalizeAlarmThreshold(tag?.alarmValue),
         };
       })
       .filter(Boolean);
@@ -1909,22 +2007,42 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     ? { width: "100%", height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }
     : { width: "100%", maxWidth: 1400, margin: "0 auto" };
   const isTagsOnly = mode === "tags" || mode === "logs" || mode === "diagnostics";
+  const drawerTabButtonStyle = (active) => ({
+    border: "none",
+    borderBottom: `2px solid ${active ? "var(--accent)" : "transparent"}`,
+    background: "transparent",
+    color: active ? "var(--accent)" : "var(--text-muted)",
+    borderRadius: 0,
+    minWidth: 0,
+    height: 30,
+    padding: "0 10px",
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    textAlign: "center",
+    boxShadow: "none",
+    transition: "color 140ms ease, border-color 140ms ease, background-color 140ms ease",
+  });
 
   function renderTagsPanel() {
     const activeTagTab =
       mode === "logs" ? "logs" : mode === "diagnostics" ? "diagnostics" : tagSectionTab;
+    const isConfigMode = mode !== "logs" && mode !== "diagnostics";
+    const drawerButtonStyle = {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      textAlign: "center",
+    };
     const sectionCardStyle = {
       border: "1px solid var(--border)",
       background: "var(--bg-elev)",
       borderRadius: 12,
       padding: 12,
       boxShadow: "0 1px 2px rgba(16,24,40,0.06)",
-    };
-    const drawerButtonStyle = {
-      display: "inline-flex",
-      alignItems: "center",
-      justifyContent: "center",
-      textAlign: "center",
     };
     const dangerIconButtonStyle = {
       display: "inline-flex",
@@ -1942,97 +2060,105 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     };
     const showDrawerViewButtons = typeof onDrawerViewChange === "function";
     return (
-      <div style={{ flex: "1 1 auto", overflow: "auto", padding: 16 }}>
+      <div style={{ flex: "1 1 auto", overflow: "auto", padding: embedded ? 0 : 16 }}>
         <div style={{ marginBottom: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 0, flexWrap: "wrap" }}>
-            <div
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
+              <div
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: 999,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  background:
+                    restartPending
+                      ? "#fff6ed"
+                      : !opcConnectionEnabled
+                      ? "#f2f4f7"
+                      : opcConnected === true
+                      ? "#ecfdf3"
+                      : opcConnected === false
+                      ? "#fef3f2"
+                      : "#f2f4f7",
+                  color:
+                    restartPending
+                      ? "#b54708"
+                      : !opcConnectionEnabled
+                      ? "var(--text-muted)"
+                      : opcConnected === true
+                      ? "#027a48"
+                      : opcConnected === false
+                      ? "#b42318"
+                      : "var(--text-muted)",
+                  border:
+                    restartPending
+                      ? "1px solid #fed7aa"
+                      : !opcConnectionEnabled
+                      ? "1px solid var(--border)"
+                      : opcConnected === true
+                      ? "1px solid #abefc6"
+                      : opcConnected === false
+                      ? "1px solid #fecdca"
+                      : "1px solid var(--border)",
+                }}
+              >
+                {restartPending
+                  ? "Restarting..."
+                  : !opcConnectionEnabled
+                  ? "Connection Disabled"
+                  : opcConnected === true
+                  ? "Connected"
+                  : opcConnected === false
+                  ? "Disconnected"
+                  : "Status Unknown"}
+              </div>
+              {opcLastPollAt ? (
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Last poll {new Date(opcLastPollAt).toLocaleTimeString()}
+                </div>
+              ) : null}
+            </div>
+            <button
+              onClick={requestRestart}
+              disabled={restartPending || !opcConnectionEnabled}
               style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 8,
                 padding: "4px 8px",
-                borderRadius: 999,
                 fontSize: 11,
                 fontWeight: 700,
-                background:
-                  restartPending
-                    ? "#fff6ed"
-                    : opcConnected === true
-                    ? "#ecfdf3"
-                    : opcConnected === false
-                    ? "#fef3f2"
-                    : "#f2f4f7",
-                color:
-                  restartPending
-                    ? "#b54708"
-                    : opcConnected === true
-                    ? "#027a48"
-                    : opcConnected === false
-                    ? "#b42318"
-                    : "var(--text-muted)",
-                border:
-                  restartPending
-                    ? "1px solid #fed7aa"
-                    : opcConnected === true
-                    ? "1px solid #abefc6"
-                    : opcConnected === false
-                    ? "1px solid #fecdca"
-                    : "1px solid var(--border)",
+                cursor: restartPending || !opcConnectionEnabled ? "not-allowed" : "pointer",
+                opacity: restartPending || !opcConnectionEnabled ? 0.65 : 1,
+                flex: "0 0 auto",
               }}
+              title="Restart OPC Server"
             >
-              {restartPending
-                ? "Restarting..."
-                : opcConnected === true
-                ? "Connected"
-                : opcConnected === false
-                ? "Disconnected"
-                : "Status Unknown"}
-            </div>
-            {opcLastPollAt ? (
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                Last poll {new Date(opcLastPollAt).toLocaleTimeString()}
-              </div>
-            ) : null}
+              Restart OPC Server
+            </button>
           </div>
         </div>
         {showDrawerViewButtons ? (
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
             <button
+              data-preserve-style="true"
               onClick={() => onDrawerViewChange("opc")}
-              style={{
-                ...drawerButtonStyle,
-                border: "1px solid var(--border)",
-                background: mode === "logs" || mode === "diagnostics" ? "var(--bg-soft)" : "#2b6cff",
-                color: mode === "logs" || mode === "diagnostics" ? "var(--text)" : "white",
-                borderRadius: 999,
-                padding: "6px 12px",
-                fontWeight: 600,
-              }}
+              style={drawerTabButtonStyle(isConfigMode)}
             >
               Config
             </button>
             <button
+              data-preserve-style="true"
               onClick={() => onDrawerViewChange("logs")}
-              style={{
-                ...drawerButtonStyle,
-                border: "1px solid var(--border)",
-                background: mode === "logs" ? "#2b6cff" : "var(--bg-soft)",
-                color: mode === "logs" ? "white" : "var(--text)",
-                borderRadius: 999,
-                padding: "6px 12px",
-                fontWeight: 600,
-              }}
+              style={drawerTabButtonStyle(mode === "logs")}
             >
               Logs
             </button>
             <button
+              data-preserve-style="true"
               onClick={() => onDrawerViewChange("diagnostics")}
-              style={{
-                ...drawerButtonStyle,
-                border: "1px solid var(--border)",
-                background: mode === "diagnostics" ? "#2b6cff" : "var(--bg-soft)",
-                color: mode === "diagnostics" ? "white" : "var(--text)",
-                borderRadius: 999,
-                padding: "6px 12px",
-                fontWeight: 600,
-              }}
+              style={drawerTabButtonStyle(mode === "diagnostics")}
             >
               Diagnostics
             </button>
@@ -2043,75 +2169,35 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <button
             data-preserve-style="true"
             onClick={() => setTagSectionTab("tags")}
-            style={{
-              ...drawerButtonStyle,
-              border: "1px solid var(--border)",
-              background: tagSectionTab === "tags" ? "#2b6cff" : "var(--bg-soft)",
-              color: tagSectionTab === "tags" ? "white" : "var(--text)",
-              borderRadius: 999,
-              padding: "6px 12px",
-              fontWeight: 600,
-            }}
+            style={drawerTabButtonStyle(tagSectionTab === "tags")}
           >
             Tags
           </button>
           <button
             data-preserve-style="true"
             onClick={() => setTagSectionTab("templates")}
-            style={{
-              ...drawerButtonStyle,
-              border: "1px solid var(--border)",
-              background: tagSectionTab === "templates" ? "#2b6cff" : "var(--bg-soft)",
-              color: tagSectionTab === "templates" ? "white" : "var(--text)",
-              borderRadius: 999,
-              padding: "6px 12px",
-              fontWeight: 600,
-            }}
+            style={drawerTabButtonStyle(tagSectionTab === "templates")}
           >
             Templates
           </button>
           <button
             data-preserve-style="true"
             onClick={() => setTagSectionTab("mappings")}
-            style={{
-              ...drawerButtonStyle,
-              border: "1px solid var(--border)",
-              background: tagSectionTab === "mappings" ? "#2b6cff" : "var(--bg-soft)",
-              color: tagSectionTab === "mappings" ? "white" : "var(--text)",
-              borderRadius: 999,
-              padding: "6px 12px",
-              fontWeight: 600,
-            }}
+            style={drawerTabButtonStyle(tagSectionTab === "mappings")}
           >
             Mappings
           </button>
           <button
             data-preserve-style="true"
             onClick={() => setTagSectionTab("logs")}
-            style={{
-              ...drawerButtonStyle,
-              border: "1px solid var(--border)",
-              background: tagSectionTab === "logs" ? "#2b6cff" : "var(--bg-soft)",
-              color: tagSectionTab === "logs" ? "white" : "var(--text)",
-              borderRadius: 999,
-              padding: "6px 12px",
-              fontWeight: 600,
-            }}
+            style={drawerTabButtonStyle(tagSectionTab === "logs")}
           >
             Logs
           </button>
           <button
             data-preserve-style="true"
             onClick={() => setTagSectionTab("diagnostics")}
-            style={{
-              ...drawerButtonStyle,
-              border: "1px solid var(--border)",
-              background: tagSectionTab === "diagnostics" ? "#2b6cff" : "var(--bg-soft)",
-              color: tagSectionTab === "diagnostics" ? "white" : "var(--text)",
-              borderRadius: 999,
-              padding: "6px 12px",
-              fontWeight: 600,
-            }}
+            style={drawerTabButtonStyle(tagSectionTab === "diagnostics")}
           >
             Diagnostics
           </button>
@@ -2363,7 +2449,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 </button>
                 <button
                   onClick={() => {
-                    setManualTag({ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "" });
+                    setManualTag({
+                      name: "",
+                      tagPath: "",
+                      uaType: "",
+                      pollMs: "",
+                      samplingInterval: "",
+                      topic: "",
+                      enabled: true,
+                      mappingSet: "",
+                      alarmEnabled: false,
+                      alarmOperator: "==",
+                      alarmValue: "",
+                    });
                     setShowManualTagForm(false);
                   }}
                   style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
@@ -3337,6 +3435,41 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                         disabled={t.trendEnabled !== true || normalizeTrendMode(t.trendMode) !== "time"}
                                                       />
                                                     </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Enable alarm criteria for this tag.">
+                                                      Alarm
+                                                      <div>
+                                                        <input
+                                                          type="checkbox"
+                                                          checked={t.alarmEnabled === true}
+                                                          onChange={(e) => updateTag(idx, "alarmEnabled", e.target.checked)}
+                                                        />
+                                                      </div>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Alarm Operator
+                                                      <select
+                                                        value={normalizeAlarmOperator(t.alarmOperator)}
+                                                        onChange={(e) => updateTag(idx, "alarmOperator", e.target.value)}
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12, minWidth: 90 }}
+                                                        disabled={t.alarmEnabled !== true}
+                                                      >
+                                                        {ALARM_OPERATORS.map((op) => (
+                                                          <option key={`alarm-op-${op}`} value={op}>
+                                                            {op}
+                                                          </option>
+                                                        ))}
+                                                      </select>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                                                      Alarm Value
+                                                      <input
+                                                        value={t.alarmValue ?? ""}
+                                                        onChange={(e) => updateTag(idx, "alarmValue", e.target.value)}
+                                                        placeholder="e.g. 1"
+                                                        style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", fontSize: 12, maxWidth: 140 }}
+                                                        disabled={t.alarmEnabled !== true}
+                                                      />
+                                                    </label>
                                                   </div>
                                                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
                                                     <button
@@ -3435,7 +3568,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         setTemplateOriginalName("");
                         setTemplateName("");
                         setTemplateParent("");
-                    setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 }]);
+                    setTemplateFieldRows([{
+                      name: "",
+                      tagPath: "",
+                      uaType: "",
+                      pollMs: "",
+                      samplingInterval: "",
+                      topic: "",
+                      enabled: true,
+                      mappingSet: "",
+                      scale: 1,
+                      decimals: 0,
+                      alarmEnabled: false,
+                      alarmOperator: "==",
+                      alarmValue: "",
+                    }]);
                     setTemplateStateMappings([{ field: "", state: "", color: "" }]);
                     setTemplateEditing(true);
                   }
@@ -3457,7 +3604,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       setTemplateOriginalName("");
                       setTemplateName("");
                       setTemplateParent("");
-                      setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 }]);
+                      setTemplateFieldRows([{
+                        name: "",
+                        tagPath: "",
+                        uaType: "",
+                        pollMs: "",
+                        samplingInterval: "",
+                        topic: "",
+                        enabled: true,
+                        mappingSet: "",
+                        scale: 1,
+                        decimals: 0,
+                        alarmEnabled: false,
+                        alarmOperator: "==",
+                        alarmValue: "",
+                      }]);
                       setTemplateStateMappings([{ field: "", state: "", color: "" }]);
                       setTemplateEditing(true);
                     }}
@@ -3474,7 +3635,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       setTemplateOriginalName("");
                       setTemplateName("");
                       setTemplateParent("");
-                      setTemplateFieldRows([{ name: "", tagPath: "", mappingSet: "", scale: 1, decimals: 0 }]);
+                      setTemplateFieldRows([{
+                        name: "",
+                        tagPath: "",
+                        uaType: "",
+                        pollMs: "",
+                        samplingInterval: "",
+                        topic: "",
+                        enabled: true,
+                        mappingSet: "",
+                        scale: 1,
+                        decimals: 0,
+                        alarmEnabled: false,
+                        alarmOperator: "==",
+                        alarmValue: "",
+                      }]);
                       setTemplateStateMappings([{ field: "", state: "", color: "" }]);
                       setTemplateEditing(true);
                     }}
@@ -3516,17 +3691,20 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
               <div style={{ fontSize: 12, marginBottom: 8 }}>Fields</div>
               <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflowX: "auto", overflowY: "auto", maxHeight: 320, padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
-                <table style={{ width: 1200, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
+                <table style={{ width: 1460, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
                   <colgroup>
-                    <col style={{ width: "13%" }} />
-                    <col style={{ width: "15%" }} />
-                    <col style={{ width: "15%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "9%" }} />
                     <col style={{ width: "11%" }} />
-                    <col style={{ width: "6%" }} />
+                    <col style={{ width: "14%" }} />
+                    <col style={{ width: "12%" }} />
+                    <col style={{ width: "8%" }} />
                     <col style={{ width: "8%" }} />
                     <col style={{ width: "10%" }} />
+                    <col style={{ width: "5%" }} />
+                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "9%" }} />
+                    <col style={{ width: "7%" }} />
+                    <col style={{ width: "8%" }} />
                     <col style={{ width: "4%" }} />
                   </colgroup>
                   <thead>
@@ -3541,6 +3719,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>Scale</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>Decimals</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>Mapping Set</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Alarm</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Alarm Op</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Alarm Value</th>
                       <th />
                     </tr>
                   </thead>
@@ -3718,6 +3899,57 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                             ))}
                           </select>
                         </td>
+                        <td style={{ padding: "8px 10px 8px 10px" }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={row.alarmEnabled === true}
+                              onChange={(e) =>
+                                setTemplateFieldRows((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = { ...next[idx], alarmEnabled: e.target.checked };
+                                  return next;
+                                })
+                              }
+                              disabled={!templateEditing}
+                            />
+                          </label>
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <select
+                            value={normalizeAlarmOperator(row.alarmOperator)}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], alarmOperator: e.target.value };
+                                return next;
+                              })
+                            }
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing || row.alarmEnabled !== true}
+                          >
+                            {ALARM_OPERATORS.map((op) => (
+                              <option key={`tmpl-alarm-op-${op}`} value={op}>
+                                {op}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px" }}>
+                          <input
+                            value={row.alarmValue ?? ""}
+                            onChange={(e) =>
+                              setTemplateFieldRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], alarmValue: e.target.value };
+                                return next;
+                              })
+                            }
+                            placeholder="e.g. 1"
+                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
+                            disabled={!templateEditing || row.alarmEnabled !== true}
+                          />
+                        </td>
                         <td style={{ padding: "8px 10px 8px 14px" }}>
                           <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                             <button
@@ -3735,7 +3967,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     ))}
                     {templateFieldRows.length === 0 && (
                       <tr>
-                        <td colSpan={10} style={{ padding: "8px", color: "var(--text-muted)" }}>
+                        <td colSpan={13} style={{ padding: "8px", color: "var(--text-muted)" }}>
                           No fields yet.
                         </td>
                       </tr>
@@ -3748,7 +3980,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   onClick={() =>
                     setTemplateFieldRows((prev) => [
                       ...prev,
-                      { name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 },
+                      {
+                        name: "",
+                        tagPath: "",
+                        uaType: "",
+                        pollMs: "",
+                        samplingInterval: "",
+                        topic: "",
+                        enabled: true,
+                        mappingSet: "",
+                        scale: 1,
+                        decimals: 0,
+                        alarmEnabled: false,
+                        alarmOperator: "==",
+                        alarmValue: "",
+                      },
                     ])
                   }
                   title="Add Tag"
@@ -3785,7 +4031,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     setTemplateOriginalName("");
                     setTemplateName("");
                     setTemplateParent("");
-                    setTemplateFieldRows([{ name: "", tagPath: "", uaType: "", pollMs: "", samplingInterval: "", topic: "", enabled: true, mappingSet: "", scale: 1, decimals: 0 }]);
+                    setTemplateFieldRows([{
+                      name: "",
+                      tagPath: "",
+                      uaType: "",
+                      pollMs: "",
+                      samplingInterval: "",
+                      topic: "",
+                      enabled: true,
+                      mappingSet: "",
+                      scale: 1,
+                      decimals: 0,
+                      alarmEnabled: false,
+                      alarmOperator: "==",
+                      alarmValue: "",
+                    }]);
                     setTemplateStateMappings([{ field: "", state: "", color: "" }]);
                     setTemplateEditing(true);
                   }}
@@ -4157,6 +4417,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         trendEnabled: false,
         trendMode: "value",
         trendSampleMs: "",
+        alarmEnabled: false,
+        alarmOperator: "==",
+        alarmValue: "",
         mappingSet: "",
         groupName,
         deadband: "",
@@ -4544,7 +4807,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     <div style={outerStyle}>
       <div style={innerStyle}>
         <div style={contentStyle}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16, alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, alignItems: "center" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div
               style={{
@@ -4555,6 +4818,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 background:
                   restartPending
                     ? "#fff6ed"
+                    : !opcConnectionEnabled
+                    ? "#f2f4f7"
                     : opcConnected === true
                     ? "#ecfdf3"
                     : opcConnected === false
@@ -4563,6 +4828,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 color:
                   restartPending
                     ? "#b54708"
+                    : !opcConnectionEnabled
+                    ? "var(--text-muted)"
                     : opcConnected === true
                     ? "#027a48"
                     : opcConnected === false
@@ -4571,6 +4838,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 border:
                   restartPending
                     ? "1px solid #fed7aa"
+                    : !opcConnectionEnabled
+                    ? "1px solid var(--border)"
                     : opcConnected === true
                     ? "1px solid #abefc6"
                     : opcConnected === false
@@ -4580,6 +4849,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             >
               {restartPending
                 ? "Restarting..."
+                : !opcConnectionEnabled
+                ? "Connection Disabled"
                 : opcConnected === true
                 ? "Connected"
                 : opcConnected === false
@@ -4622,58 +4893,46 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
             ) : null}
           </div>
-          {null}
+          <button
+            onClick={requestRestart}
+            disabled={restartPending || !opcConnectionEnabled}
+            style={{
+              border: "1px solid var(--border)",
+              background: "var(--bg-elev)",
+              color: "var(--text)",
+              borderRadius: 8,
+              padding: "4px 8px",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: restartPending || !opcConnectionEnabled ? "not-allowed" : "pointer",
+              opacity: restartPending || !opcConnectionEnabled ? 0.65 : 1,
+              flex: "0 0 auto",
+            }}
+            title="Restart OPC Server"
+          >
+            Restart OPC Server
+          </button>
         </div>
         {typeof onDrawerViewChange === "function" ? (
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
             <button
+              data-preserve-style="true"
               onClick={() => onDrawerViewChange("opc")}
-              style={{
-                border: "1px solid var(--border)",
-                background: "#2b6cff",
-                color: "white",
-                borderRadius: 999,
-                padding: "6px 12px",
-                fontWeight: 600,
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                textAlign: "center",
-              }}
+              style={drawerTabButtonStyle(mode !== "logs" && mode !== "diagnostics")}
             >
               Config
             </button>
             <button
+              data-preserve-style="true"
               onClick={() => onDrawerViewChange("logs")}
-              style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg-soft)",
-                color: "var(--text)",
-                borderRadius: 999,
-                padding: "6px 12px",
-                fontWeight: 600,
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                textAlign: "center",
-              }}
+              style={drawerTabButtonStyle(mode === "logs")}
             >
               Logs
             </button>
             <button
+              data-preserve-style="true"
               onClick={() => onDrawerViewChange("diagnostics")}
-              style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg-soft)",
-                color: "var(--text)",
-                borderRadius: 999,
-                padding: "6px 12px",
-                fontWeight: 600,
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                textAlign: "center",
-              }}
+              style={drawerTabButtonStyle(mode === "diagnostics")}
             >
               Diagnostics
             </button>
@@ -4684,57 +4943,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <button
             data-preserve-style="true"
             onClick={() => setOpcConfigSectionTab("opcua")}
-            style={{
-              border: `1px solid ${opcConfigSectionTab === "opcua" ? "#2b6cff" : "var(--border)"}`,
-              background: opcConfigSectionTab === "opcua" ? "#2b6cff" : "var(--bg-soft)",
-              color: opcConfigSectionTab === "opcua" ? "white" : "var(--text)",
-              borderRadius: 999,
-              padding: "6px 12px",
-              fontWeight: 600,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              textAlign: "center",
-              fontSize: 12,
-            }}
+            style={drawerTabButtonStyle(opcConfigSectionTab === "opcua")}
           >
             OPC UA
           </button>
           <button
             data-preserve-style="true"
             onClick={() => setOpcConfigSectionTab("plcs")}
-            style={{
-              border: `1px solid ${opcConfigSectionTab === "plcs" ? "#2b6cff" : "var(--border)"}`,
-              background: opcConfigSectionTab === "plcs" ? "#2b6cff" : "var(--bg-soft)",
-              color: opcConfigSectionTab === "plcs" ? "white" : "var(--text)",
-              borderRadius: 999,
-              padding: "6px 12px",
-              fontWeight: 600,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              textAlign: "center",
-              fontSize: 12,
-            }}
+            style={drawerTabButtonStyle(opcConfigSectionTab === "plcs")}
           >
             PLC Instances
           </button>
           <button
             data-preserve-style="true"
             onClick={() => setOpcConfigSectionTab("topics")}
-            style={{
-              border: `1px solid ${opcConfigSectionTab === "topics" ? "#2b6cff" : "var(--border)"}`,
-              background: opcConfigSectionTab === "topics" ? "#2b6cff" : "var(--bg-soft)",
-              color: opcConfigSectionTab === "topics" ? "white" : "var(--text)",
-              borderRadius: 999,
-              padding: "6px 12px",
-              fontWeight: 600,
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              textAlign: "center",
-              fontSize: 12,
-            }}
+            style={drawerTabButtonStyle(opcConfigSectionTab === "topics")}
           >
             PLC Topics
           </button>
@@ -4742,19 +4965,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             <button
               data-preserve-style="true"
               onClick={() => setOpcConfigSectionTab("diagnostics")}
-              style={{
-                border: `1px solid ${opcConfigSectionTab === "diagnostics" ? "#2b6cff" : "var(--border)"}`,
-                background: opcConfigSectionTab === "diagnostics" ? "#2b6cff" : "var(--bg-soft)",
-                color: opcConfigSectionTab === "diagnostics" ? "white" : "var(--text)",
-                borderRadius: 999,
-                padding: "6px 12px",
-                fontWeight: 600,
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                textAlign: "center",
-                fontSize: 12,
-              }}
+              style={drawerTabButtonStyle(opcConfigSectionTab === "diagnostics")}
             >
               Diagnostics
             </button>
@@ -4769,6 +4980,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               <input
                 type="number"
                 value={config.opcua?.port ?? 4840}
+                disabled={!opcUaEditing}
                 onChange={(e) =>
                   setConfig((p) => ({ ...p, opcua: { ...p.opcua, port: Number(e.target.value) } }))
                 }
@@ -4779,6 +4991,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               Resource Path
               <input
                 value={config.opcua?.resourcePath || ""}
+                disabled={!opcUaEditing}
                 onChange={(e) =>
                   setConfig((p) => ({ ...p, opcua: { ...p.opcua, resourcePath: e.target.value } }))
                 }
@@ -4789,6 +5002,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               Name
               <input
                 value={config.opcua?.name || ""}
+                disabled={!opcUaEditing}
                 onChange={(e) => setConfig((p) => ({ ...p, opcua: { ...p.opcua, name: e.target.value } }))}
                 style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
               />
@@ -4797,12 +5011,22 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               Runtime
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, gridColumn: "1 / span 2" }} title="Disable PLC connect/reconnect and polling attempts. Save config and restart OPC server to apply.">
+                <input
+                  type="checkbox"
+                  checked={config.runtime?.opcConnectionEnabled !== false}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), opcConnectionEnabled: e.target.checked } }))}
+                />
+                Enable OPC PLC Connection
+              </label>
               <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Maximum wait for a PLC read before marking it as timeout/error.">
                 Read Timeout (ms)
                 <input
                   type="number"
                   min="100"
                   value={config.runtime?.readTimeoutMs ?? 2000}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), readTimeoutMs: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
@@ -4813,6 +5037,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   type="number"
                   min="100"
                   value={config.runtime?.heartbeatMs ?? 5000}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), heartbeatMs: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
@@ -4823,6 +5048,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   type="number"
                   min="100"
                   value={config.runtime?.reconnectDelayMs ?? 2000}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), reconnectDelayMs: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
@@ -4833,6 +5059,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   type="number"
                   min="1"
                   value={config.runtime?.reconnectMaxAttempts ?? ""}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), reconnectMaxAttempts: e.target.value } }))}
                   placeholder="Blank = infinite"
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
@@ -4844,6 +5071,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   type="number"
                   min="100"
                   value={config.runtime?.errorBackoffBaseMs ?? 1000}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffBaseMs: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
@@ -4854,6 +5082,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   type="number"
                   min="100"
                   value={config.runtime?.errorBackoffMaxMs ?? 15000}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffMaxMs: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
@@ -4864,6 +5093,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   type="number"
                   min="1"
                   value={config.runtime?.errorBackoffThreshold ?? 3}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffThreshold: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
@@ -4874,6 +5104,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   type="number"
                   min="0"
                   value={config.runtime?.pollJitterMs ?? 0}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), pollJitterMs: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
@@ -4885,6 +5116,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   min="0"
                   step="any"
                   value={config.runtime?.deadbandDefault ?? ""}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), deadbandDefault: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
@@ -4893,17 +5125,29 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 <input
                   type="checkbox"
                   checked={config.runtime?.errorBackoffEnabled !== false}
+                  disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffEnabled: e.target.checked } }))}
                 />
                 Enable Error Backoff
               </label>
             </div>
             <div style={{ marginTop: "auto", display: "flex", gap: 8, paddingTop: 10, position: "sticky", bottom: 0, background: "var(--bg-elev)" }}>
-              <button onClick={saveConfig} style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 10, padding: "8px 12px" }}>
-                Save Config
-              </button>
-              <button onClick={requestRestart} style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 10, padding: "8px 12px" }}>
-                Restart OPC Server
+              {opcUaEditing ? (
+                <button onClick={cancelOpcUaEdit} style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 10, padding: "8px 12px" }}>
+                  Cancel
+                </button>
+              ) : null}
+              <button
+                onClick={() => {
+                  if (!opcUaEditing) {
+                    beginOpcUaEdit();
+                    return;
+                  }
+                  void saveOpcUaEdit();
+                }}
+                style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 10, padding: "8px 12px" }}
+              >
+                {opcUaEditing ? "Save" : "Edit"}
               </button>
             </div>
           </div>
@@ -5134,7 +5378,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
             ) : null}
             <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", maxHeight: 300, overflowY: "auto" }}>
-              {(!config.topics || config.topics.length === 0) ? (
+              {topics.length === 0 ? (
                 <div style={{ padding: 8, color: "var(--text-muted)", fontSize: 12 }}>No topics.</div>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -5155,7 +5399,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     </tr>
                   </thead>
                   <tbody>
-                    {(config.topics || []).map((topic, idx) => (
+                    {topics.map((topic, idx) => (
                       <tr key={`topic-${topic.name}-${idx}`} style={{ borderTop: "1px solid var(--border)" }}>
                         <td style={{ padding: "6px 8px" }}>{topic.name || ""}</td>
                         <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>{topic.prefix || ""}</td>
@@ -5168,7 +5412,20 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                             onClick={() => removeTopic(idx)}
                             title="Delete topic"
                             aria-label="Delete topic"
-                            style={dangerIconButtonStyle}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: 28,
+                              height: 28,
+                              border: "1px solid #f04438",
+                              background: "#f04438",
+                              color: "#ffffff",
+                              borderRadius: 8,
+                              padding: 0,
+                              lineHeight: 1,
+                              boxShadow: "0 4px 12px rgba(240,68,56,0.28)",
+                            }}
                           >
                             <TrashCanIcon />
                           </button>
@@ -5337,7 +5594,3 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   </div>
   );
 }
-
-
-
-

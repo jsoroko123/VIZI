@@ -1,3 +1,12 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 100%;
+}
+
 :root {
   --bg: #fafafa;
   --bg-elev: #ffffff;
@@ -5,6 +14,14 @@
   --text: #111111;
   --text-muted: #667085;
   --border: rgba(15, 23, 42, 0.15);
+  --accent: #2b6cff;
+  --accent-strong: #1f5ce6;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+  --accent-text: #ffffff;
+  --accent-ring: color-mix(in srgb, var(--accent) 36%, transparent);
+  --danger: #f04438;
+  --danger-strong: #d92d20;
+  --danger-text: #ffffff;
   --topbar-grad: linear-gradient(
       90deg,
       rgba(30, 64, 175, 0.45) 0%,
@@ -16,6 +33,10 @@
   --canvas-bg: #ffffff;
   --ruler-text: #2f3a4a;
   --ruler-line: #5a6577;
+  --selected-bg: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  --selected-border: var(--accent);
+  --selected-text: var(--accent-text);
+  --selected-shadow: 0 0 0 1px var(--accent-ring), 0 8px 18px color-mix(in srgb, var(--accent) 24%, transparent);
 
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
@@ -33,21 +54,20 @@
 
 a {
   font-weight: 500;
-  color: #646cff;
+  color: var(--accent);
   text-decoration: inherit;
 }
 a:hover {
-  color: #535bf2;
+  color: var(--accent-strong);
 }
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
   min-width: 320px;
-  min-height: 100vh;
+  min-height: 100dvh;
   color: var(--text);
   background-color: var(--bg);
+  overflow: hidden;
 }
 
 h1 {
@@ -57,17 +77,18 @@ h1 {
 
 button {
   border-radius: 8px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   padding: 0.6em 1.2em;
   font-size: 1em;
   font-weight: 500;
   font-family: inherit;
-  background-color: #1a1a1a;
+  background-color: var(--bg-elev);
+  color: var(--text);
   cursor: pointer;
-  transition: border-color 0.25s;
+  transition: border-color 0.2s ease, background-color 0.2s ease, color 0.2s ease;
 }
 button:hover {
-  border-color: #646cff;
+  border-color: var(--selected-border);
 }
 button:focus,
 button:focus-visible {
@@ -75,21 +96,7 @@ button:focus-visible {
 }
 
 button:active {
-  outline: 2px solid #2b6cff;
-  outline-offset: 2px;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+  outline: none;
 }
 
 /* Stylish scrollbars (WebKit) */
@@ -124,6 +131,14 @@ body[data-theme="dark"] {
   --text: #e6edf7;
   --text-muted: #a7b4c7;
   --border: rgba(148, 163, 184, 0.35);
+  --accent: #5b8fff;
+  --accent-strong: #3a7bff;
+  --accent-soft: color-mix(in srgb, var(--accent) 20%, var(--bg-elev));
+  --accent-text: #ffffff;
+  --accent-ring: color-mix(in srgb, var(--accent) 45%, transparent);
+  --danger: #f97066;
+  --danger-strong: #f04438;
+  --danger-text: #ffffff;
   --topbar-grad: linear-gradient(
       90deg,
       rgba(37, 99, 235, 0.28) 0%,
@@ -135,10 +150,13 @@ body[data-theme="dark"] {
   --canvas-bg: #0f141c;
   --ruler-text: #e6edf7;
   --ruler-line: #b7c2d3;
+  --selected-bg: linear-gradient(180deg, var(--accent-strong) 0%, var(--accent) 100%);
+  --selected-border: var(--accent);
+  --selected-text: var(--accent-text);
+  --selected-shadow: 0 0 0 1px var(--accent-ring), 0 10px 22px color-mix(in srgb, var(--accent) 34%, transparent);
   color-scheme: dark;
 }
 
-:root[data-theme="dark"] button:not(.top-menu-btn):not([data-preserve-style="true"]),
 :root[data-theme="dark"] input:not([type="checkbox"]),
 :root[data-theme="dark"] select,
 :root[data-theme="dark"] textarea {
@@ -153,4 +171,190 @@ body[data-theme="dark"] {
 
 :root[data-theme="dark"] input[type="checkbox"]:disabled {
   opacity: 1;
+}
+
+@keyframes vizi-live-alarm-flip-in {
+  0% {
+    transform: perspective(920px) rotateX(90deg) translateY(-12px) translateZ(10px);
+    opacity: 0;
+  }
+  55% {
+    transform: perspective(920px) rotateX(-16deg) translateY(1px) translateZ(4px);
+    opacity: 1;
+  }
+  100% {
+    transform: perspective(920px) rotateX(0deg) translateY(0) translateZ(0);
+    opacity: 1;
+  }
+}
+
+@keyframes vizi-live-alarm-marquee {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+.vizi-live-alarmbar {
+  backdrop-filter: blur(10px) saturate(110%);
+}
+
+.vizi-live-alarmbar.is-alert {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 -1px 0 rgba(127, 29, 29, 0.35);
+}
+
+.vizi-live-alarmbar-title {
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.28);
+}
+
+.vizi-live-alarm-chip {
+  transform-origin: 50% 55%;
+  animation: vizi-live-alarm-flip-in 460ms cubic-bezier(0.18, 0.8, 0.28, 1)
+    var(--alarm-flip-delay, 0ms) both;
+  box-shadow: 0 6px 16px rgba(127, 29, 29, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.vizi-live-alarm-marquee {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  position: relative;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 2%, black 98%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, black 2%, black 98%, transparent 100%);
+}
+
+.vizi-live-alarm-marquee-track {
+  display: inline-flex;
+  align-items: center;
+  min-width: max-content;
+  gap: 22px;
+  padding-left: 8px;
+  will-change: transform;
+  animation: vizi-live-alarm-marquee var(--alarm-marquee-duration, 42s) linear infinite;
+  transform: translate3d(0, 0, 0);
+}
+
+.vizi-live-alarm-marquee-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vizi-live-alarm-marquee-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, #f04438 44%, var(--border) 56%);
+  background: color-mix(in srgb, var(--bg-elev) 80%, #f04438 20%);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 3px 10px;
+  box-shadow: 0 1px 2px rgba(2, 6, 23, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.vizi-live-alarm-marquee-item-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+
+.vizi-live-alarm-marquee-item-time {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  border-left: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  padding-left: 8px;
+}
+
+.vizi-live-alarm-board {
+  position: relative;
+  margin-left: 4px;
+  min-width: 260px;
+  max-width: 58vw;
+  display: inline-grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, #f04438 72%, var(--border) 28%);
+  border-radius: 10px;
+  padding: 5px 10px;
+  color: #fee2e2;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, #be123c 38%, transparent) 0%,
+      color-mix(in srgb, #4a0d0d 56%, transparent) 49%,
+      color-mix(in srgb, #7f1d1d 46%, transparent) 100%
+    );
+  box-shadow:
+    0 12px 24px rgba(127, 29, 29, 0.36),
+    0 2px 5px rgba(2, 6, 23, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  animation: vizi-live-alarm-flip-in 520ms cubic-bezier(0.22, 0.78, 0.22, 1) both;
+  transform-origin: 50% 40%;
+  transform-style: preserve-3d;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.vizi-live-alarm-board::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 48%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.02));
+  pointer-events: none;
+}
+
+.vizi-live-alarm-board::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 50%;
+  height: 1px;
+  background: rgba(10, 10, 10, 0.44);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.14);
+  pointer-events: none;
+}
+
+.vizi-live-alarm-board-label {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #fecaca;
+}
+
+.vizi-live-alarm-board-value {
+  font-size: 11px;
+  font-weight: 800;
+  color: #ffe4e6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vizi-live-alarm-board-time {
+  font-size: 10px;
+  font-weight: 700;
+  color: #fbcaca;
+  letter-spacing: 0.02em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vizi-live-alarm-chip {
+    animation: none;
+  }
+  .vizi-live-alarm-marquee-track {
+    animation: none;
+  }
+  .vizi-live-alarm-board {
+    animation: none;
+  }
 }

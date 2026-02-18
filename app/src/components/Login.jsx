@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import { toastError } from "../utils/toast";
+import appLogo from "../assets/Images/logo.png";
 
 export default function Login() {
   const { user, login, register } = useAuth();
@@ -146,9 +147,15 @@ export default function Login() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <div>
             <img
-              src="/mesora-logo.svg"
+              src={appLogo}
               alt="Mesora"
-              style={{ height: 38, width: "auto", display: "block" }}
+              style={{
+                height: 42,
+                width: "auto",
+                maxWidth: "min(58vw, 260px)",
+                display: "block",
+                objectFit: "contain",
+              }}
             />
             <div style={{ fontSize: 12, color: "#475467", marginTop: 4 }}>
               {mode === "login" ? "Sign in to continue." : "Create your first user."}

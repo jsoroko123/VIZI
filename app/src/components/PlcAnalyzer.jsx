@@ -218,7 +218,7 @@ function analyzeL5x(xmlText) {
   };
 }
 
-export default function PlcAnalyzer({ plcItems = [], onChange }) {
+export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], onInsertSvg = null }) {
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
@@ -352,6 +352,22 @@ export default function PlcAnalyzer({ plcItems = [], onChange }) {
   const detectOpcAction = (text) => {
     const value = String(text || "");
     return /\b(opc|opcua)\b/i.test(value) && /\b(connect|connection|configure|setup|bind|link|map|add)\b/i.test(value);
+  };
+
+  const detectSvgRecommendationIntent = (text) => {
+    const value = String(text || "");
+    if (!value) return false;
+    if (/\b(svg|symbol|icon)\b/i.test(value)) return true;
+    return /\bwhat\b[\s\S]{0,40}\b(use|pick|choose)\b/i.test(value) && /\btags?\b/i.test(value);
+  };
+
+  const detectSvgInsertIntent = (text) => {
+    const value = String(text || "");
+    if (!value) return false;
+    return (
+      /\b(add|insert|place|drop|put|use)\b[\s\S]{0,40}\b(svg|symbol|icon)\b/i.test(value) ||
+      /\badd\s+svgs?\b/i.test(value)
+    );
   };
 
   const findMentionedOpcConnection = (text, names) => {
@@ -1097,6 +1113,74 @@ export default function PlcAnalyzer({ plcItems = [], onChange }) {
         return;
       }
 
+      const hasSvgCatalog = Array.isArray(svgCatalog) && svgCatalog.length > 0;
+      const wantsSvgRecommendation = hasSvgCatalog && detectSvgRecommendationIntent(text);
+      if (wantsSvgRecommendation) {
+        const svgRes = await fetch("/api/ai/plc-svg-suggest", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: text,
+            history: nextMessages
+              .slice(-10)
+              .map((m) => ({
+                role: String(m?.role || "user"),
+                content: String(m?.content || ""),
+              })),
+            plc: {
+              name: String(selected?.name || "PLC"),
+              controllerTags: getSelectedControllerTags(),
+            },
+            svgCatalog: svgCatalog.slice(0, 450),
+          }),
+        });
+        const svgData = await svgRes.json().catch(() => ({}));
+        if (!svgRes.ok) {
+          throw new Error(String(svgData?.error || "Failed to suggest SVG."));
+        }
+        const answer = String(svgData?.answer || "").trim();
+        const pickedKey = String(svgData?.picked?.key || "").trim();
+        const pickedName = String(svgData?.picked?.name || "").trim();
+        const alternatives = Array.isArray(svgData?.alternatives) ? svgData.alternatives : [];
+        const altLine = alternatives.length
+          ? `\nAlternatives: ${alternatives
+              .map((row) => String(row?.name || row?.key || "").trim())
+              .filter(Boolean)
+              .join(", ")}`
+          : "";
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content:
+              answer ||
+              `Best SVG match: ${pickedName || pickedKey || "Unknown"} (${pickedKey || "n/a"}).${altLine}`,
+          },
+        ]);
+        if (pickedKey && typeof onInsertSvg === "function" && detectSvgInsertIntent(text)) {
+          const insertResult = await onInsertSvg(pickedKey);
+          if (insertResult?.ok) {
+            setChatMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content: `Added SVG to canvas: ${String(insertResult?.name || pickedName || pickedKey)}.`,
+              },
+            ]);
+          } else {
+            setChatMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content: `SVG matched (${pickedKey}) but insert failed: ${String(insertResult?.error || "unknown error")}.`,
+              },
+            ]);
+          }
+        }
+        return;
+      }
+
       const history = nextMessages
         .slice(-12)
         .map((m) => ({
@@ -1805,7 +1889,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange }) {
                   ))
                 ) : (
                   <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                    Ask for logic summaries, tag usage, routine lookup, IO/module checks, or cleanup ideas.
+                    Ask for logic summaries, tag usage, routine lookup, OPC setup, or SVG recommendations from tag lists.
                   </div>
                 )}
               </div>

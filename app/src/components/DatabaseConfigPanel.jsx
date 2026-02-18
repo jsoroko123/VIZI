@@ -61,7 +61,7 @@ export default function DatabaseConfigPanel({ embedded = false }) {
         height: "100%",
         boxSizing: "border-box",
         overflow: embedded ? "auto" : "visible",
-        padding: 12,
+        padding: embedded ? 0 : 12,
         display: "grid",
         gap: 10,
         alignContent: "start",

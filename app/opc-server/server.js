@@ -98,6 +98,7 @@ function sleep(ms) {
 async function main() {
   const config = await loadConfig();
   const runtime = config?.runtime || {};
+  let opcConnectionEnabled = runtime?.opcConnectionEnabled !== false;
   const readTimeoutMs = parsePositiveMs(runtime?.readTimeoutMs, 2000);
   const errorBackoffEnabled = runtime?.errorBackoffEnabled !== false;
   const errorBackoffBaseMs = parsePositiveMs(runtime?.errorBackoffBaseMs, 1000);
@@ -156,7 +157,7 @@ async function main() {
         .filter((t) => t.name)
     : [];
 
-  if (!plcs.length) {
+  if (opcConnectionEnabled && !plcs.length) {
     // eslint-disable-next-line no-console
     console.error("Config missing PLC instances.");
     process.exit(1);
@@ -166,7 +167,7 @@ async function main() {
     console.warn("Config has no enabled tags yet. Waiting for tags to be added.");
   }
 
-  const defaultPlcName = plcs[0].name;
+  const defaultPlcName = plcs[0]?.name || "PLC-1";
   const topicsByName = new Map();
   const ensuredTopics = [];
   if (!topics.length) {
@@ -348,8 +349,16 @@ async function main() {
   tagsWithMeta.forEach(createVariable);
 
   async function connectPlcWithRetry(name, plc) {
+    if (!opcConnectionEnabled) {
+      plcConnected.set(name, false);
+      return;
+    }
     let attempts = 0;
     while (true) {
+      if (!opcConnectionEnabled) {
+        plcConnected.set(name, false);
+        return;
+      }
       attempts += 1;
       try {
         await plc.connect();
@@ -377,9 +386,49 @@ async function main() {
     plcPollInFlight.set(p.name, false);
   });
 
-  await Promise.all(
-    Array.from(plcClients.entries()).map(([name, plc]) => connectPlcWithRetry(name, plc))
-  );
+  if (opcConnectionEnabled) {
+    await Promise.all(
+      Array.from(plcClients.entries()).map(([name, plc]) => connectPlcWithRetry(name, plc))
+    );
+  } else {
+    // eslint-disable-next-line no-console
+    console.log("OPC PLC connection is disabled (runtime.opcConnectionEnabled=false).");
+  }
+
+  async function closeAllPlcConnections() {
+    await Promise.all(
+      Array.from(plcClients.values()).map(async (plc) => {
+        try {
+          await plc.close();
+        } catch {
+          // ignore close failures
+        }
+      })
+    );
+    plcConnected.forEach((_, key) => {
+      plcConnected.set(key, false);
+    });
+  }
+
+  setInterval(async () => {
+    try {
+      const latest = await loadConfig();
+      const nextEnabled = latest?.runtime?.opcConnectionEnabled !== false;
+      if (nextEnabled === opcConnectionEnabled) return;
+      opcConnectionEnabled = nextEnabled;
+      if (!opcConnectionEnabled) {
+        // eslint-disable-next-line no-console
+        console.log("OPC PLC connection disabled at runtime. Closing PLC connections.");
+        await closeAllPlcConnections();
+      } else {
+        // eslint-disable-next-line no-console
+        console.log("OPC PLC connection enabled at runtime. Reconnecting PLC clients.");
+      }
+      writeStatus();
+    } catch {
+      // ignore runtime toggle read failures
+    }
+  }, 1500);
 
   let lastRestartSeen = 0;
   setInterval(() => {
@@ -497,6 +546,7 @@ async function main() {
         qualities,
         diagnostics,
         runtime: {
+          opcConnectionEnabled,
           readTimeoutMs,
           errorBackoffEnabled,
           errorBackoffBaseMs,
@@ -535,6 +585,10 @@ async function main() {
       )
     );
     setInterval(async () => {
+      if (!opcConnectionEnabled) {
+        writeStatus();
+        return;
+      }
       if (!plcConnected.get(plcName)) return;
       if (plcPollInFlight.get(plcName)) return;
       plcPollInFlight.set(plcName, true);
@@ -631,6 +685,11 @@ async function main() {
 
   plcClients.forEach((plc, plcName) => {
     setInterval(async () => {
+      if (!opcConnectionEnabled) {
+        plcConnected.set(plcName, false);
+        writeStatus();
+        return;
+      }
       try {
         if (!plcConnected.get(plcName)) {
           await connectPlcWithRetry(plcName, plc);
@@ -653,6 +712,8 @@ async function main() {
       }
     }, heartbeatMs);
   });
+
+  writeStatus();
 
   await server.start();
   const endpoint = server.endpoints[0].endpointDescriptions()[0].endpointUrl;

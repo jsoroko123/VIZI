@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toastError, toastSuccess } from "../utils/toast";
+import { showConfirmDialog } from "../utils/confirmDialog";
 
 const TYPE_OPTIONS = [
   "text",
@@ -19,12 +20,20 @@ const TYPE_OPTIONS = [
 ];
 
 const FK_ACTIONS = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
+const NEW_COLUMN_KEY = "__new_column__";
 
 function blankColumn() {
   return { name: "", type: "text", nullable: true, defaultValue: "", primaryKey: false };
 }
 
-export default function SqlDesigner({ embedded = false }) {
+function typeOptionsFor(currentType) {
+  const current = String(currentType || "").trim();
+  if (!current) return TYPE_OPTIONS;
+  const hasCurrent = TYPE_OPTIONS.some((t) => String(t).toLowerCase() === current.toLowerCase());
+  return hasCurrent ? TYPE_OPTIONS : [current, ...TYPE_OPTIONS];
+}
+
+export default function SqlDesigner({ embedded = false, selectedTableHint = "" }) {
   const [tables, setTables] = useState([]);
   const [tableFilter, setTableFilter] = useState("");
   const [schemaCatalog, setSchemaCatalog] = useState({});
@@ -32,21 +41,15 @@ export default function SqlDesigner({ embedded = false }) {
   const [schemaRows, setSchemaRows] = useState([]);
   const [primaryKey, setPrimaryKey] = useState(null);
   const [foreignKeys, setForeignKeys] = useState({});
-  const [status, setStatus] = useState("");
-  const [error, setError] = useState("");
 
   const [newTableName, setNewTableName] = useState("");
   const [newTableColumns, setNewTableColumns] = useState([blankColumn()]);
 
   const [renameTableTo, setRenameTableTo] = useState("");
-  const [newColumn, setNewColumn] = useState({ name: "", type: "text", nullable: true, defaultValue: "" });
-  const [updateColumnName, setUpdateColumnName] = useState("");
-  const [updateColumnDraft, setUpdateColumnDraft] = useState({
-    newName: "",
-    type: "",
-    nullable: true,
-    defaultValue: "",
-  });
+  const [editingTableName, setEditingTableName] = useState(false);
+  const [editingAllColumns, setEditingAllColumns] = useState(false);
+  const renameInputRef = useRef(null);
+  const [showAddColumnRow, setShowAddColumnRow] = useState(false);
   const [inlineColumnEdits, setInlineColumnEdits] = useState({});
 
   const [fkDraft, setFkDraft] = useState({
@@ -81,6 +84,16 @@ export default function SqlDesigner({ embedded = false }) {
     background: "#2b6cff",
     color: "white",
   };
+  const dangerButtonStyle = {
+    ...buttonStyle,
+    border: "1px solid #f04438",
+    background: "#f04438",
+    color: "white",
+  };
+  const disabledButtonStyle = {
+    opacity: 0.55,
+    cursor: "not-allowed",
+  };
 
   const inputStyle = {
     border: "1px solid var(--border)",
@@ -108,6 +121,13 @@ export default function SqlDesigner({ embedded = false }) {
     if (!q) return tables;
     return tables.filter((t) => String(t || "").toLowerCase().includes(q));
   }, [tables, tableFilter]);
+  const canEditTable = !!selectedTable && !editingTableName && !editingAllColumns;
+  const canSaveTable =
+    !!selectedTable &&
+    editingTableName &&
+    String(renameTableTo || "").trim().length > 0 &&
+    String(renameTableTo || "").trim() !== String(selectedTable || "").trim();
+  const canDeleteTable = !!selectedTable && !editingTableName && !editingAllColumns;
 
   async function loadTables() {
     try {
@@ -147,13 +167,8 @@ export default function SqlDesigner({ embedded = false }) {
         if (prev && names.includes(prev)) return prev;
         return names[0] || "";
       });
-      if (!names.length) {
-        setError("No tables found.");
-      } else {
-        setError("");
-      }
+      // Empty-table state is already shown in the table list panel.
     } catch (err) {
-      setError(String(err?.message || "Failed to load schema."));
       toastError(String(err?.message || "Failed to load schema."));
     }
   }
@@ -175,12 +190,7 @@ export default function SqlDesigner({ embedded = false }) {
       setPrimaryKey(data?.primaryKey || null);
       setForeignKeys(data?.foreignKeys && typeof data.foreignKeys === "object" ? data.foreignKeys : {});
       setRenameTableTo(table);
-      setUpdateColumnName((prev) => {
-        if (prev && cols.some((c) => c?.column_name === prev)) return prev;
-        return cols[0]?.column_name || "";
-      });
     } catch (err) {
-      setError(String(err?.message || "Failed to load table metadata."));
       toastError(String(err?.message || "Failed to load table metadata."));
     }
   }
@@ -230,18 +240,11 @@ export default function SqlDesigner({ embedded = false }) {
   }, [fkToColumns, fkDraft.toColumn]);
 
   useEffect(() => {
-    const row = schemaRows.find((r) => r?.column_name === updateColumnName);
-    if (!row) {
-      setUpdateColumnDraft({ newName: "", type: "", nullable: true, defaultValue: "" });
-      return;
-    }
-    setUpdateColumnDraft({
-      newName: String(row.column_name || ""),
-      type: String(row.data_type || ""),
-      nullable: String(row.is_nullable || "").toUpperCase() === "YES",
-      defaultValue: row.column_default == null ? "" : String(row.column_default),
-    });
-  }, [updateColumnName, schemaRows]);
+    const hint = String(selectedTableHint || "").trim();
+    if (!hint) return;
+    if (!tables.includes(hint)) return;
+    setSelectedTable(hint);
+  }, [selectedTableHint, tables]);
 
   useEffect(() => {
     const next = {};
@@ -253,23 +256,21 @@ export default function SqlDesigner({ embedded = false }) {
         type: String(row?.data_type || ""),
         nullable: String(row?.is_nullable || "").toUpperCase() === "YES",
         defaultValue: row?.column_default == null ? "" : String(row.column_default),
+        primaryKey: primaryKey === originalName,
       };
     });
     setInlineColumnEdits(next);
-  }, [schemaRows]);
+    setEditingAllColumns(false);
+  }, [schemaRows, primaryKey]);
 
   async function runAction(fn, successMessage) {
-    setError("");
-    setStatus("");
     try {
       await fn();
-      setStatus(successMessage);
       toastSuccess(successMessage);
       await loadTables();
       await loadTableMeta(selectedTable);
     } catch (err) {
       const msg = String(err?.message || "Operation failed.");
-      setError(msg);
       toastError(msg);
     }
   }
@@ -309,42 +310,56 @@ export default function SqlDesigner({ embedded = false }) {
     setSelectedTable(String(renameTableTo || "").trim());
   }
 
-  async function addColumn() {
+  async function deleteTable() {
     if (!selectedTable) throw new Error("Select a table first.");
+    const res = await fetch(`/api/db/designer/table/${encodeURIComponent(selectedTable)}`, {
+      method: "DELETE",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.error || "Failed to delete table."));
+  }
+
+  function openAddColumnRow() {
+    if (!selectedTable) return;
+    setShowAddColumnRow(true);
+    setInlineColumnEdits((prev) => ({
+      ...prev,
+      [NEW_COLUMN_KEY]: {
+        newName: "",
+        type: "text",
+        nullable: true,
+        defaultValue: "",
+        primaryKey: false,
+      },
+    }));
+  }
+
+  function closeAddColumnRow() {
+    setShowAddColumnRow(false);
+    setInlineColumnEdits((prev) => {
+      const next = { ...prev };
+      delete next[NEW_COLUMN_KEY];
+      return next;
+    });
+  }
+
+  async function addColumnFromDraft(draft) {
+    if (!selectedTable) throw new Error("Select a table first.");
+    const next = draft && typeof draft === "object" ? draft : {};
     const res = await fetch(`/api/db/designer/table/${encodeURIComponent(selectedTable)}/column`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: String(newColumn.name || "").trim(),
-        type: String(newColumn.type || "").trim(),
-        nullable: newColumn.nullable !== false,
-        defaultValue: String(newColumn.defaultValue || "").trim(),
+        name: String(next.newName || "").trim(),
+        type: String(next.type || "").trim(),
+        nullable: next.nullable !== false,
+        defaultValue: String(next.defaultValue || "").trim(),
+        primaryKey: next.primaryKey === true,
       }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(String(data?.error || "Failed to add column."));
-    setNewColumn({ name: "", type: "text", nullable: true, defaultValue: "" });
-  }
-
-  async function updateColumn() {
-    if (!selectedTable) throw new Error("Select a table first.");
-    if (!updateColumnName) throw new Error("Select a column first.");
-    const res = await fetch(
-      `/api/db/designer/table/${encodeURIComponent(selectedTable)}/column/${encodeURIComponent(updateColumnName)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          newName: String(updateColumnDraft.newName || "").trim(),
-          type: String(updateColumnDraft.type || "").trim(),
-          nullable: updateColumnDraft.nullable !== false,
-          defaultValue: String(updateColumnDraft.defaultValue || "").trim(),
-        }),
-      }
-    );
-    const data = await res.json();
-    if (!res.ok) throw new Error(String(data?.error || "Failed to update column."));
-    setUpdateColumnName(String(updateColumnDraft.newName || updateColumnName));
+    closeAddColumnRow();
   }
 
   async function saveInlineColumn(originalName) {
@@ -363,14 +378,66 @@ export default function SqlDesigner({ embedded = false }) {
           type: String(draft.type || "").trim(),
           nullable: draft.nullable !== false,
           defaultValue: String(draft.defaultValue || "").trim(),
+          primaryKey: draft.primaryKey === true,
         }),
       }
     );
     const data = await res.json();
     if (!res.ok) throw new Error(String(data?.error || "Failed to update column."));
-    if (updateColumnName === baseName) {
-      setUpdateColumnName(String(draft.newName || baseName));
+  }
+
+  async function saveAllColumnChanges() {
+    if (!selectedTable) throw new Error("Select a table first.");
+    const changed = schemaRows
+      .map((row) => String(row?.column_name || "").trim())
+      .filter(Boolean)
+      .filter((name) => {
+        const draft = inlineColumnEdits[name];
+        const row = schemaRows.find((r) => String(r?.column_name || "").trim() === name);
+        if (!draft || !row) return false;
+        const rowType = String(row?.data_type || "").trim();
+        const rowNullable = String(row?.is_nullable || "").toUpperCase() === "YES";
+        const rowDefault = row?.column_default == null ? "" : String(row.column_default);
+        const rowPrimaryKey = primaryKey === name;
+        return (
+          String(draft.newName || "").trim() !== name ||
+          String(draft.type || "").trim() !== rowType ||
+          (draft.nullable !== false) !== rowNullable ||
+          String(draft.defaultValue || "").trim() !== rowDefault ||
+          (draft.primaryKey === true) !== rowPrimaryKey
+        );
+      });
+    for (const name of changed) {
+      await saveInlineColumn(name);
     }
+  }
+
+  async function deleteColumn(columnName) {
+    const baseName = String(columnName || "").trim();
+    if (!selectedTable) throw new Error("Select a table first.");
+    if (!baseName) throw new Error("Invalid column.");
+    const res = await fetch(
+      `/api/db/designer/table/${encodeURIComponent(selectedTable)}/column/${encodeURIComponent(baseName)}`,
+      { method: "DELETE" }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.error || "Failed to delete column."));
+  }
+
+  function setDraftPrimaryKey(columnName, enabled) {
+    const target = String(columnName || "").trim();
+    if (!target) return;
+    setInlineColumnEdits((prev) => {
+      const next = { ...prev };
+      if (enabled) {
+        Object.keys(next).forEach((key) => {
+          next[key] = { ...(next[key] || {}), primaryKey: key === target };
+        });
+      } else if (next[target]) {
+        next[target] = { ...(next[target] || {}), primaryKey: false };
+      }
+      return next;
+    });
   }
 
   async function connectTables() {
@@ -398,7 +465,7 @@ export default function SqlDesigner({ embedded = false }) {
         height: "100%",
         minHeight: 0,
         overflow: "auto",
-        padding: embedded ? 12 : 16,
+        padding: embedded ? 0 : 16,
         boxSizing: "border-box",
         background: "var(--bg-soft)",
         color: "var(--text)",
@@ -408,49 +475,81 @@ export default function SqlDesigner({ embedded = false }) {
         <div style={{ fontSize: 16, fontWeight: 800 }}>SQL Designer</div>
         <button style={buttonStyle} onClick={loadTables}>Refresh</button>
       </div>
-      {error ? (
-        <div style={{ ...cardStyle, marginBottom: 10, borderColor: "#f04438", color: "#b42318" }}>{error}</div>
-      ) : null}
-      {status ? (
-        <div style={{ ...cardStyle, marginBottom: 10, borderColor: "#12b76a", color: "#067647" }}>{status}</div>
-      ) : null}
-
-      <div style={{ display: "grid", gridTemplateColumns: "220px minmax(0, 1fr)", gap: 10, minHeight: 0 }}>
-        <div style={{ ...cardStyle, display: "grid", gap: 6, alignContent: "start", minHeight: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
-            Tables ({tables.length})
+      <div style={{ display: "grid", gridTemplateColumns: embedded ? "minmax(0, 1fr)" : "220px minmax(0, 1fr)", gap: 10, minHeight: 0 }}>
+        {!embedded ? (
+          <div style={{ ...cardStyle, display: "grid", gap: 6, alignContent: "start", minHeight: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+              Tables ({tables.length})
+            </div>
+            <select
+              style={inputStyle}
+              value={selectedTable}
+              onChange={(e) => setSelectedTable(e.target.value)}
+              disabled={!tables.length}
+              title="Select table"
+            >
+              {!tables.length ? <option value="">No tables</option> : null}
+              {tables.map((t) => (
+                <option key={`designer-select-${t}`} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+            <input
+              style={inputStyle}
+              value={tableFilter}
+              placeholder="Search tables..."
+              onChange={(e) => setTableFilter(e.target.value)}
+            />
+            <div style={{ display: "grid", gap: 6, maxHeight: "65vh", overflow: "auto", paddingRight: 4 }}>
+              {filteredTables.map((t) => (
+                <button
+                  key={t}
+                  style={{
+                    ...buttonStyle,
+                    textAlign: "left",
+                    borderColor: selectedTable === t ? "var(--selected-border)" : "var(--border)",
+                    background: selectedTable === t ? "var(--selected-bg)" : "var(--bg-soft)",
+                    color: selectedTable === t ? "var(--selected-text)" : "var(--text)",
+                    boxShadow: selectedTable === t ? "var(--selected-shadow)" : "none",
+                  }}
+                  onClick={() => setSelectedTable(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            {!tables.length ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No tables found.</div> : null}
+            {!!tables.length && !filteredTables.length ? (
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No matching tables.</div>
+            ) : null}
           </div>
-          <input
-            style={inputStyle}
-            value={tableFilter}
-            placeholder="Search tables..."
-            onChange={(e) => setTableFilter(e.target.value)}
-          />
-          <div style={{ display: "grid", gap: 6, maxHeight: "65vh", overflow: "auto", paddingRight: 4 }}>
-            {filteredTables.map((t) => (
-              <button
-                key={t}
-                style={{
-                  ...buttonStyle,
-                  textAlign: "left",
-                  borderColor: selectedTable === t ? "#2b6cff" : "var(--border)",
-                  background: selectedTable === t ? "#2b6cff" : "var(--bg-soft)",
-                  color: selectedTable === t ? "#ffffff" : "var(--text)",
-                  boxShadow: selectedTable === t ? "0 0 0 1px rgba(43,108,255,0.35), 0 6px 14px rgba(43,108,255,0.22)" : "none",
-                }}
-                onClick={() => setSelectedTable(t)}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-          {!tables.length ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No tables found.</div> : null}
-          {!!tables.length && !filteredTables.length ? (
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No matching tables.</div>
-          ) : null}
-        </div>
+        ) : null}
 
         <div style={{ display: "grid", gap: 10 }}>
+          {embedded ? (
+            <div style={cardStyle}>
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+                  Table
+                </div>
+                <select
+                  style={{ ...inputStyle, width: "100%" }}
+                  value={selectedTable}
+                  onChange={(e) => setSelectedTable(e.target.value)}
+                  disabled={!tables.length}
+                  title="Select table"
+                >
+                  {!tables.length ? <option value="">No tables</option> : null}
+                  {tables.map((t) => (
+                    <option key={`designer-embedded-select-${t}`} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          ) : null}
           <div style={cardStyle}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Create Table</div>
             <div style={{ display: "grid", gap: 8 }}>
@@ -526,96 +625,22 @@ export default function SqlDesigner({ embedded = false }) {
           <div style={cardStyle}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Update Table</div>
             <div style={{ display: "grid", gap: 8 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6 }}>
                 <input
+                  ref={renameInputRef}
                   style={inputStyle}
                   value={renameTableTo}
                   placeholder="new_table_name"
+                  disabled={!editingTableName}
                   onChange={(e) => setRenameTableTo(e.target.value)}
                 />
-                <button style={buttonStyle} onClick={() => runAction(renameTable, "Table renamed.")} disabled={!selectedTable}>
-                  Rename Table
-                </button>
               </div>
-              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, display: "grid", gap: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>Add Column</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr auto auto", gap: 6 }}>
-                  <input
-                    style={inputStyle}
-                    value={newColumn.name}
-                    placeholder="column_name"
-                    onChange={(e) => setNewColumn((prev) => ({ ...prev, name: e.target.value }))}
-                  />
-                  <select
-                    style={inputStyle}
-                    value={newColumn.type}
-                    onChange={(e) => setNewColumn((prev) => ({ ...prev, type: e.target.value }))}
-                  >
-                    {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                  <input
-                    style={inputStyle}
-                    value={newColumn.defaultValue}
-                    placeholder="default"
-                    onChange={(e) => setNewColumn((prev) => ({ ...prev, defaultValue: e.target.value }))}
-                  />
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                    <input
-                      type="checkbox"
-                      checked={newColumn.nullable}
-                      onChange={(e) => setNewColumn((prev) => ({ ...prev, nullable: e.target.checked }))}
-                    />
-                    Nullable
-                  </label>
-                  <button style={buttonStyle} onClick={() => runAction(addColumn, "Column added.")} disabled={!selectedTable}>
-                    Add
-                  </button>
-                </div>
-              </div>
-              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 8, display: "grid", gap: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>Update Column</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto auto", gap: 6 }}>
-                  <select
-                    style={inputStyle}
-                    value={updateColumnName}
-                    onChange={(e) => setUpdateColumnName(e.target.value)}
-                  >
-                    <option value="">Select column</option>
-                    {tableColumns.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <input
-                    style={inputStyle}
-                    value={updateColumnDraft.newName}
-                    placeholder="new_name"
-                    onChange={(e) => setUpdateColumnDraft((prev) => ({ ...prev, newName: e.target.value }))}
-                  />
-                  <input
-                    style={inputStyle}
-                    value={updateColumnDraft.type}
-                    placeholder="type (optional)"
-                    onChange={(e) => setUpdateColumnDraft((prev) => ({ ...prev, type: e.target.value }))}
-                  />
-                  <input
-                    style={inputStyle}
-                    value={updateColumnDraft.defaultValue}
-                    placeholder="default (blank clears)"
-                    onChange={(e) => setUpdateColumnDraft((prev) => ({ ...prev, defaultValue: e.target.value }))}
-                  />
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                    <input
-                      type="checkbox"
-                      checked={updateColumnDraft.nullable}
-                      onChange={(e) => setUpdateColumnDraft((prev) => ({ ...prev, nullable: e.target.checked }))}
-                    />
-                    Nullable
-                  </label>
-                  <button style={buttonStyle} onClick={() => runAction(updateColumn, "Column updated.")} disabled={!selectedTable || !updateColumnName}>
-                    Update
-                  </button>
-                </div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {editingTableName
+                  ? "Editing table name. Save to apply or Cancel to discard."
+                  : "Use Edit to change table name. Delete is disabled while editing."}
               </div>
             </div>
-          </div>
 
           <div style={cardStyle}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Connect Tables (Foreign Key)</div>
@@ -698,7 +723,49 @@ export default function SqlDesigner({ embedded = false }) {
           </div>
 
           <div style={cardStyle}>
-            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Selected Table Schema (Inline Editable)</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 800 }}>Selected Table Schema (Inline Editable)</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  style={!selectedTable || editingAllColumns ? { ...buttonStyle, ...disabledButtonStyle } : buttonStyle}
+                  onClick={() => setEditingAllColumns(true)}
+                  disabled={!selectedTable || editingAllColumns}
+                >
+                  Edit Columns
+                </button>
+                <button
+                  style={selectedTable && editingAllColumns ? primaryButtonStyle : { ...primaryButtonStyle, ...disabledButtonStyle }}
+                  onClick={async () => {
+                    await runAction(saveAllColumnChanges, "Column updates saved.");
+                    setEditingAllColumns(false);
+                  }}
+                  disabled={!selectedTable || !editingAllColumns}
+                >
+                  Save Columns
+                </button>
+                <button
+                  style={selectedTable && editingAllColumns ? buttonStyle : { ...buttonStyle, ...disabledButtonStyle }}
+                  onClick={() => {
+                    loadTableMeta(selectedTable);
+                    setEditingAllColumns(false);
+                  }}
+                  disabled={!selectedTable || !editingAllColumns}
+                >
+                  Cancel
+                </button>
+                <button
+                  style={buttonStyle}
+                  onClick={() => {
+                    if (showAddColumnRow) closeAddColumnRow();
+                    else openAddColumnRow();
+                  }}
+                  disabled={!selectedTable}
+                  title="Add column row"
+                >
+                  {showAddColumnRow ? "Cancel +" : "+ Column"}
+                </button>
+              </div>
+            </div>
             {selectedTable ? (
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -713,12 +780,119 @@ export default function SqlDesigner({ embedded = false }) {
                     </tr>
                   </thead>
                   <tbody>
+                    {showAddColumnRow ? (
+                      <tr>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                          <input
+                            style={{ ...inputStyle, width: "100%" }}
+                            value={inlineColumnEdits[NEW_COLUMN_KEY]?.newName || ""}
+                            placeholder="column_name"
+                            onChange={(e) =>
+                              setInlineColumnEdits((prev) => ({
+                                ...prev,
+                                [NEW_COLUMN_KEY]: {
+                                  ...(prev[NEW_COLUMN_KEY] || {}),
+                                  newName: e.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                          <select
+                            style={{ ...inputStyle, width: "100%" }}
+                            value={inlineColumnEdits[NEW_COLUMN_KEY]?.type || "text"}
+                            onChange={(e) =>
+                              setInlineColumnEdits((prev) => ({
+                                ...prev,
+                                [NEW_COLUMN_KEY]: {
+                                  ...(prev[NEW_COLUMN_KEY] || {}),
+                                  type: e.target.value,
+                                },
+                              }))
+                            }
+                          >
+                            {TYPE_OPTIONS.map((t) => (
+                              <option key={`new-type-${t}`} value={t}>
+                                {t}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={inlineColumnEdits[NEW_COLUMN_KEY]?.nullable !== false}
+                              onChange={(e) =>
+                                setInlineColumnEdits((prev) => ({
+                                  ...prev,
+                                  [NEW_COLUMN_KEY]: {
+                                    ...(prev[NEW_COLUMN_KEY] || {}),
+                                    nullable: e.target.checked,
+                                  },
+                                }))
+                              }
+                            />
+                            {inlineColumnEdits[NEW_COLUMN_KEY]?.nullable !== false ? "YES" : "NO"}
+                          </label>
+                        </td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                          <input
+                            style={{ ...inputStyle, width: "100%" }}
+                            value={inlineColumnEdits[NEW_COLUMN_KEY]?.defaultValue || ""}
+                            placeholder="default"
+                            onChange={(e) =>
+                              setInlineColumnEdits((prev) => ({
+                                ...prev,
+                                [NEW_COLUMN_KEY]: {
+                                  ...(prev[NEW_COLUMN_KEY] || {}),
+                                  defaultValue: e.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={inlineColumnEdits[NEW_COLUMN_KEY]?.primaryKey === true}
+                              onChange={(e) => setDraftPrimaryKey(NEW_COLUMN_KEY, e.target.checked)}
+                            />
+                            {inlineColumnEdits[NEW_COLUMN_KEY]?.primaryKey === true ? "Yes" : ""}
+                          </label>
+                        </td>
+                        <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              style={buttonStyle}
+                              onClick={() =>
+                                runAction(
+                                  () => addColumnFromDraft(inlineColumnEdits[NEW_COLUMN_KEY]),
+                                  `Column ${String(inlineColumnEdits[NEW_COLUMN_KEY]?.newName || "").trim()} added.`
+                                )
+                              }
+                            >
+                              Save
+                            </button>
+                            <button
+                              style={buttonStyle}
+                              onClick={closeAddColumnRow}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
                     {schemaRows.map((col) => (
                       <tr key={`schema-row-${col.column_name}`}>
                         <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
                           <input
                             style={{ ...inputStyle, width: "100%" }}
                             value={inlineColumnEdits[col.column_name]?.newName || ""}
+                            disabled={!editingAllColumns}
                             onChange={(e) =>
                               setInlineColumnEdits((prev) => ({
                                 ...prev,
@@ -731,9 +905,10 @@ export default function SqlDesigner({ embedded = false }) {
                           />
                         </td>
                         <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
-                          <input
+                          <select
                             style={{ ...inputStyle, width: "100%" }}
-                            value={inlineColumnEdits[col.column_name]?.type || ""}
+                            value={inlineColumnEdits[col.column_name]?.type || "text"}
+                            disabled={!editingAllColumns}
                             onChange={(e) =>
                               setInlineColumnEdits((prev) => ({
                                 ...prev,
@@ -743,13 +918,20 @@ export default function SqlDesigner({ embedded = false }) {
                                 },
                               }))
                             }
-                          />
+                          >
+                            {typeOptionsFor(inlineColumnEdits[col.column_name]?.type || "").map((t) => (
+                              <option key={`edit-type-${col.column_name}-${t}`} value={t}>
+                                {t}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                         <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
                           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>
                             <input
                               type="checkbox"
                               checked={inlineColumnEdits[col.column_name]?.nullable !== false}
+                              disabled={!editingAllColumns}
                               onChange={(e) =>
                                 setInlineColumnEdits((prev) => ({
                                   ...prev,
@@ -768,6 +950,7 @@ export default function SqlDesigner({ embedded = false }) {
                             style={{ ...inputStyle, width: "100%" }}
                             value={inlineColumnEdits[col.column_name]?.defaultValue || ""}
                             placeholder="blank clears default"
+                            disabled={!editingAllColumns}
                             onChange={(e) =>
                               setInlineColumnEdits((prev) => ({
                                 ...prev,
@@ -780,20 +963,38 @@ export default function SqlDesigner({ embedded = false }) {
                           />
                         </td>
                         <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
-                          {primaryKey && primaryKey === col.column_name ? "Yes" : ""}
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={inlineColumnEdits[col.column_name]?.primaryKey === true}
+                              disabled={!editingAllColumns}
+                              onChange={(e) => setDraftPrimaryKey(col.column_name, e.target.checked)}
+                            />
+                            {inlineColumnEdits[col.column_name]?.primaryKey === true ? "Yes" : ""}
+                          </label>
                         </td>
                         <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
-                          <button
-                            style={buttonStyle}
-                            onClick={() =>
-                              runAction(
-                                () => saveInlineColumn(col.column_name),
-                                `Column ${String(inlineColumnEdits[col.column_name]?.newName || col.column_name)} updated.`
-                              )
-                            }
-                          >
-                            Save
-                          </button>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              style={editingAllColumns ? { ...buttonStyle, ...disabledButtonStyle } : buttonStyle}
+                              disabled={editingAllColumns}
+                              onClick={async () => {
+                                const ok = await showConfirmDialog({
+                                  title: "Delete Column",
+                                  message: `Delete column "${col.column_name}" from ${selectedTable}?`,
+                                  confirmText: "Delete",
+                                  danger: true,
+                                });
+                                if (!ok) return;
+                                await runAction(
+                                  () => deleteColumn(col.column_name),
+                                  `Column ${String(col.column_name)} deleted.`
+                                );
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -803,6 +1004,98 @@ export default function SqlDesigner({ embedded = false }) {
             ) : (
               <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Select a table to view schema.</div>
             )}
+          </div>
+          <div
+            style={{
+              position: "sticky",
+              bottom: 0,
+              paddingTop: 8,
+              marginTop: 4,
+              borderTop: "1px solid var(--border)",
+              background: "var(--bg-elev)",
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 6,
+            }}
+          >
+            <button
+              style={canEditTable ? buttonStyle : { ...buttonStyle, ...disabledButtonStyle }}
+              onClick={() => {
+                setEditingTableName(true);
+                setEditingAllColumns(true);
+                setTimeout(() => {
+                  if (!renameInputRef.current) return;
+                  renameInputRef.current.focus();
+                  renameInputRef.current.select?.();
+                }, 0);
+              }}
+              disabled={!canEditTable}
+            >
+              Edit
+            </button>
+            <button
+              style={selectedTable && (editingTableName || editingAllColumns) ? primaryButtonStyle : { ...primaryButtonStyle, ...disabledButtonStyle }}
+              onClick={async () => {
+                const renameChanged =
+                  String(renameTableTo || "").trim().length > 0 &&
+                  String(renameTableTo || "").trim() !== String(selectedTable || "").trim();
+                const saveColumns = editingAllColumns;
+                if (!renameChanged && !saveColumns) return;
+                await runAction(
+                  async () => {
+                    if (saveColumns) await saveAllColumnChanges();
+                    if (renameChanged) await renameTable();
+                  },
+                  renameChanged && saveColumns
+                    ? "Table and columns updated."
+                    : renameChanged
+                    ? "Table renamed."
+                    : "Column updates saved."
+                );
+                setEditingTableName(false);
+                setEditingAllColumns(false);
+              }}
+              disabled={!selectedTable || (!editingTableName && !editingAllColumns)}
+            >
+              Save
+            </button>
+            <button
+              style={!selectedTable || (!editingTableName && !editingAllColumns) ? { ...buttonStyle, ...disabledButtonStyle } : buttonStyle}
+              onClick={() => {
+                setRenameTableTo(selectedTable || "");
+                setEditingTableName(false);
+                setEditingAllColumns(false);
+                loadTableMeta(selectedTable);
+              }}
+              disabled={!selectedTable || (!editingTableName && !editingAllColumns)}
+            >
+              Cancel
+            </button>
+            <button
+              style={canDeleteTable ? dangerButtonStyle : { ...dangerButtonStyle, ...disabledButtonStyle }}
+              disabled={!canDeleteTable}
+              onClick={async () => {
+                if (!selectedTable) return;
+                const ok = await showConfirmDialog({
+                  title: "Delete Table",
+                  message: `Delete table "${selectedTable}"? This cannot be undone.`,
+                  confirmText: "Delete",
+                  danger: true,
+                });
+                if (!ok) return;
+                try {
+                  await deleteTable();
+                  toastSuccess(`Table ${selectedTable} deleted.`);
+                  await loadTables();
+                } catch (err) {
+                  const msg = String(err?.message || "Failed to delete table.");
+                  toastError(msg);
+                }
+              }}
+            >
+              Delete Table
+            </button>
+          </div>
           </div>
         </div>
       </div>

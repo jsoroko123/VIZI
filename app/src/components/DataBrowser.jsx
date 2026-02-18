@@ -1,13 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toastError, toastSuccess } from "../utils/toast";
+import { showConfirmDialog } from "../utils/confirmDialog";
 
-export default function DataBrowser({ embedded = false }) {
+export default function DataBrowser({
+  embedded = false,
+  embeddedPath = "",
+  hideTableSelector = false,
+  hideListFieldControls = false,
+  useWhiteBackground = false,
+}) {
   const { table, id } = useParams();
   const navigate = useNavigate();
   const [embeddedTable, setEmbeddedTable] = useState("");
   const [embeddedDetailId, setEmbeddedDetailId] = useState("");
   const currentTable = embedded ? String(embeddedTable || "") : String(table || "");
+  const hideTopSelector = hideTableSelector || currentTable === "routes";
   const detailId = embedded ? String(embeddedDetailId || "") : id ? String(id) : "";
   const [tables, setTables] = useState([]);
   const [columns, setColumns] = useState([]);
@@ -34,11 +42,6 @@ export default function DataBrowser({ embedded = false }) {
 
   const tableList = useMemo(() => tables || [], [tables]);
   const isNewDetail = detailId === "new";
-  const tableTitle = currentTable
-    ? currentTable
-        .replace(/_/g, " ")
-        .replace(/\b\w/g, (m) => m.toUpperCase())
-    : "";
   const labelize = (value) => {
     const raw = String(value || "").trim();
     const withoutId = raw.replace(/_id$/i, "").replace(/Id$/, "");
@@ -92,14 +95,18 @@ export default function DataBrowser({ embedded = false }) {
         position: "relative",
         width: "100%",
         height: "100%",
-        background: "var(--bg-soft)",
+        background: useWhiteBackground
+          ? "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)"
+          : "var(--bg-soft)",
         color: "var(--text)",
         overflow: "hidden",
       }
     : {
         position: "fixed",
         inset: 0,
-        background: "var(--bg-soft)",
+        background: useWhiteBackground
+          ? "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)"
+          : "var(--bg-soft)",
         color: "var(--text)",
         overflow: "hidden",
       };
@@ -107,18 +114,19 @@ export default function DataBrowser({ embedded = false }) {
     width: "100%",
     height: "100%",
     margin: 0,
-    padding: embedded ? "12px 12px 30px" : "0 0 30px",
+    padding: embedded ? "0 0 30px" : "0 0 30px",
     boxSizing: "border-box",
     display: "flex",
     flexDirection: "column",
   };
   const cardStyle = {
-    background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
-    border: "1px solid var(--border)",
+    background: useWhiteBackground ? "rgba(255,255,255,0.92)" : "transparent",
+    border: useWhiteBackground ? "1px solid #dbe7ff" : "none",
     borderRadius: 16,
     padding: 16,
-    boxShadow:
-      "0 20px 40px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.7)",
+    boxShadow: useWhiteBackground
+      ? "0 8px 24px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.85)"
+      : "0 20px 40px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.7)",
     backdropFilter: "blur(6px)",
   };
   const headerStyle = {
@@ -149,22 +157,36 @@ export default function DataBrowser({ embedded = false }) {
   };
   const primaryButton = {
     ...buttonBase,
-    border: "1px solid #2b6cff",
-    background: "linear-gradient(180deg, #2b6cff 0%, #1f5ce6 100%)",
-    color: "white",
-    boxShadow: "0 8px 18px rgba(43,108,255,0.25)",
+    border: "1px solid var(--accent)",
+    background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
+    color: "var(--accent-text)",
+    boxShadow: "0 8px 18px color-mix(in srgb, var(--accent) 25%, transparent)",
   };
   const dangerButton = {
     ...buttonBase,
-    border: "1px solid #f04438",
-    background: "linear-gradient(180deg, #f04438 0%, #d92d20 100%)",
-    color: "white",
-    boxShadow: "0 8px 18px rgba(240,68,56,0.25)",
+    border: "1px solid var(--danger)",
+    background: "linear-gradient(180deg, var(--danger) 0%, var(--danger-strong) 100%)",
+    color: "var(--danger-text)",
+    boxShadow: "0 8px 18px color-mix(in srgb, var(--danger) 24%, transparent)",
   };
   const ghostButton = {
     ...buttonBase,
     background: "transparent",
   };
+  const formFieldBackground = useWhiteBackground ? "#ffffff" : "var(--bg-elev)";
+  const formFieldDisabledBackground = useWhiteBackground ? "#f3f6fc" : "var(--bg-soft)";
+  const formFieldBorder = useWhiteBackground ? "#cfdcf6" : "var(--border)";
+  const formFieldStyle = (enabled) => ({
+    border: `1px solid ${formFieldBorder}`,
+    borderRadius: 8,
+    padding: "4px 8px",
+    fontSize: 12,
+    outline: "none",
+    background: enabled ? formFieldBackground : formFieldDisabledBackground,
+    boxShadow: enabled && useWhiteBackground ? "inset 0 1px 2px rgba(15,23,42,0.05)" : "none",
+    height: 28,
+    width: "100%",
+  });
   useEffect(() => {
     const msg = String(status || "").trim();
     if (!msg) return;
@@ -198,6 +220,19 @@ export default function DataBrowser({ embedded = false }) {
     setEmbeddedTable(String(tableList[0] || ""));
     setEmbeddedDetailId("");
   }, [embedded, currentTable, tableList]);
+
+  useEffect(() => {
+    if (!embedded) return;
+    const raw = String(embeddedPath || "").trim();
+    if (!raw) return;
+    const normalized = raw.startsWith("/data/") ? raw : `/data/${raw.replace(/^\/+/, "")}`;
+    const m = normalized.match(/^\/data\/([^/]+)(?:\/([^/]+))?$/i);
+    if (!m) return;
+    const nextTable = decodeURIComponent(String(m[1] || "")).trim();
+    const nextDetailId = decodeURIComponent(String(m[2] || "")).trim();
+    if (nextTable) setEmbeddedTable(nextTable);
+    setEmbeddedDetailId(nextDetailId);
+  }, [embedded, embeddedPath]);
 
   useEffect(() => {
     function handleStorage(event) {
@@ -398,6 +433,7 @@ export default function DataBrowser({ embedded = false }) {
       await saveDetailFields(pendingDetailOrder);
       await reloadRows();
       setFormEnabled(false);
+      navigateData(`/data/${currentTable}`);
     } catch (err) {
       setError(err?.message || "Save failed.");
     }
@@ -405,7 +441,13 @@ export default function DataBrowser({ embedded = false }) {
 
   async function deleteRow() {
     if (!currentTable || !selectedId) return;
-    if (!window.confirm("Delete this row?")) return;
+    const confirmed = await showConfirmDialog({
+      title: "Delete Row",
+      message: "Delete this row?",
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
     setError("");
     try {
       const pk = primaryKey ? `?pk=${encodeURIComponent(primaryKey)}` : "";
@@ -419,6 +461,7 @@ export default function DataBrowser({ embedded = false }) {
       setFormDraft({});
       setFormEnabled(false);
       await reloadRows();
+      navigateData(`/data/${currentTable}`);
     } catch (err) {
       setError(err?.message || "Delete failed.");
     }
@@ -540,6 +583,19 @@ export default function DataBrowser({ embedded = false }) {
     }
   }
 
+  const navigateData = (path) => {
+    const next = String(path || "").trim();
+    if (!next) return;
+    if (!embedded) {
+      navigate(next);
+      return;
+    }
+    const m = next.match(/^\/data\/([^/]+)(?:\/([^/]+))?$/i);
+    if (!m) return;
+    setEmbeddedTable(decodeURIComponent(String(m[1] || "")));
+    setEmbeddedDetailId(decodeURIComponent(String(m[2] || "")));
+  };
+
   return (
     <div style={pageStyle}>
       <div style={shellStyle}>
@@ -548,43 +604,41 @@ export default function DataBrowser({ embedded = false }) {
           style={{
             display: "grid",
             gridTemplateColumns: "1fr",
-            gridTemplateRows: "auto minmax(0, 1fr)",
+            gridTemplateRows: hideTopSelector ? "minmax(0, 1fr)" : "auto minmax(0, 1fr)",
             rowGap: 12,
             flex: 1,
             height: "100%",
             minHeight: 0,
           }}
         >
-          <div style={{ ...cardStyle }}>
-            <div style={sectionTitleStyle}>Tables</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "stretch" }}>
-              {tableList.map((t) => (
-                <button
-                  key={t}
-                  onClick={() => navigateData(`/data/${t}`)}
+          {!hideTopSelector ? (
+            <div style={{ ...cardStyle }}>
+              <div style={sectionTitleStyle}>Tables</div>
+              <div style={{ display: "grid", gap: 8 }}>
+                <select
+                  value={currentTable || ""}
+                  onChange={(e) => navigateData(`/data/${e.target.value}`)}
+                  disabled={!tableList.length}
                   style={{
-                    textAlign: "left",
                     border: "1px solid var(--border)",
-                    background:
-                      t === currentTable
-                        ? "color-mix(in srgb, #2b6cff 16%, var(--bg-elev))"
-                        : "var(--bg-elev)",
-                    padding: "8px 12px",
-                    borderRadius: 12,
-                    cursor: "pointer",
-                    fontWeight: t === currentTable ? 700 : 500,
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    padding: "8px 10px",
+                    borderRadius: 10,
                     fontSize: 12,
-                    height: "100%",
+                    fontWeight: 600,
                   }}
                 >
-                  {labelize(t)}
-                </button>
-              ))}
-              {!tableList.length && (
-                <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No tables found.</div>
-              )}
+                  {!tableList.length ? <option value="">No tables found</option> : null}
+                  {tableList.map((t) => (
+                    <option key={`table-select-${t}`} value={t}>
+                      {labelize(t)}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-          </div>
+          ) : null}
 
 
           {detailId ? (
@@ -617,8 +671,8 @@ export default function DataBrowser({ embedded = false }) {
                       overflowY: "auto",
                       padding: 12,
                       borderRadius: 12,
-                      border: "1px solid var(--border)",
-                      background: "var(--bg-soft)",
+                      border: useWhiteBackground ? "1px solid #e4ecfb" : "none",
+                      background: useWhiteBackground ? "#f8fbff" : "var(--bg-soft)",
                       flex: 1,
                       minHeight: 0,
                       alignContent: "start",
@@ -712,14 +766,7 @@ export default function DataBrowser({ embedded = false }) {
                               }
                               disabled={!formEnabled}
                               style={{
-                                border: "1px solid var(--border)",
-                                borderRadius: 8,
-                                padding: "4px 8px",
-                                fontSize: 12,
-                                outline: "none",
-                                background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
-                                height: 28,
-                                width: "100%",
+                                ...formFieldStyle(formEnabled),
                               }}
                             >
                               <option value="">Unassigned</option>
@@ -743,14 +790,7 @@ export default function DataBrowser({ embedded = false }) {
                               }
                               disabled={!formEnabled}
                               style={{
-                                border: "1px solid var(--border)",
-                                borderRadius: 8,
-                                padding: "4px 8px",
-                                fontSize: 12,
-                                outline: "none",
-                                background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
-                                height: 28,
-                                width: "100%",
+                                ...formFieldStyle(formEnabled),
                               }}
                             >
                               <option value="">Unassigned</option>
@@ -771,14 +811,7 @@ export default function DataBrowser({ embedded = false }) {
                               }
                               disabled={!formEnabled}
                               style={{
-                                border: "1px solid var(--border)",
-                                borderRadius: 8,
-                                padding: "4px 8px",
-                                fontSize: 12,
-                                outline: "none",
-                                background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
-                                height: 28,
-                                width: "100%",
+                                ...formFieldStyle(formEnabled),
                               }}
                             >
                               <option value="">Unassigned</option>
@@ -814,14 +847,18 @@ export default function DataBrowser({ embedded = false }) {
                               }
                               disabled={!formEnabled}
                               style={{
-                                border: "1px solid var(--border)",
+                                border: `1px solid ${formFieldBorder}`,
                                 borderRadius: 8,
                                 padding: inputTypeFor(c.column_name) === "checkbox" ? 0 : "4px 8px",
                                 fontSize: 12,
                                 outline: "none",
-                                background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
+                                background: formEnabled ? formFieldBackground : formFieldDisabledBackground,
                                 height: inputTypeFor(c.column_name) === "checkbox" ? 16 : 28,
                                 width: inputTypeFor(c.column_name) === "checkbox" ? 16 : "100%",
+                                boxShadow:
+                                  formEnabled && useWhiteBackground && inputTypeFor(c.column_name) !== "checkbox"
+                                    ? "inset 0 1px 2px rgba(15,23,42,0.05)"
+                                    : "none",
                               }}
                             />
                           )}
@@ -839,15 +876,19 @@ export default function DataBrowser({ embedded = false }) {
                       gap: 8,
                       marginTop: "auto",
                       justifyContent: "flex-end",
-                      background: "var(--bg-elev)",
+                      background: useWhiteBackground ? "rgba(248, 251, 255, 0.96)" : "var(--bg-elev)",
                       paddingTop: 12,
                       paddingBottom: 16,
-                      borderTop: "1px solid var(--border)",
+                      borderTop: useWhiteBackground ? "1px solid #e4ecfb" : "1px solid var(--border)",
                       flexShrink: 0,
                     }}
                   >
                     <button
                       onClick={() => {
+                        if (isNewDetail && currentTable) {
+                          navigateData(`/data/${currentTable}`);
+                          return;
+                        }
                         if (detail) {
                           setFormDraft(detail || {});
                         } else {
@@ -871,7 +912,7 @@ export default function DataBrowser({ embedded = false }) {
                       style={{
                         ...primaryButton,
                         background: formEnabled
-                          ? "linear-gradient(180deg, #2b6cff 0%, #1f5ce6 100%)"
+                          ? "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)"
                           : "#e2e8f0",
                         color: formEnabled ? "white" : "var(--text-muted)",
                         cursor: formEnabled ? "pointer" : "not-allowed",
@@ -889,8 +930,8 @@ export default function DataBrowser({ embedded = false }) {
                       disabled={!detail}
                       style={{
                         ...ghostButton,
-                        color: detail ? "#2b6cff" : "var(--text-muted)",
-                        border: "1px solid rgba(43,108,255,0.35)",
+                        color: detail ? "var(--accent)" : "var(--text-muted)",
+                        border: "1px solid color-mix(in srgb, var(--accent) 35%, transparent)",
                         background: detail ? "var(--bg-elev)" : "var(--bg-soft)",
                         cursor: detail ? "pointer" : "not-allowed",
                       }}
@@ -899,15 +940,15 @@ export default function DataBrowser({ embedded = false }) {
                     </button>
                     <button
                       onClick={deleteRow}
-                      disabled={!selectedId}
+                      disabled={!selectedId || formEnabled}
                       style={{
                         ...dangerButton,
-                        background: selectedId
+                        background: selectedId && !formEnabled
                           ? "linear-gradient(180deg, #f04438 0%, #d92d20 100%)"
                           : "#f2f4f7",
-                        color: selectedId ? "white" : "var(--text-muted)",
-                        cursor: selectedId ? "pointer" : "not-allowed",
-                        boxShadow: selectedId ? dangerButton.boxShadow : "none",
+                        color: selectedId && !formEnabled ? "white" : "var(--text-muted)",
+                        cursor: selectedId && !formEnabled ? "pointer" : "not-allowed",
+                        boxShadow: selectedId && !formEnabled ? dangerButton.boxShadow : "none",
                       }}
                     >
                       Delete
@@ -927,7 +968,7 @@ export default function DataBrowser({ embedded = false }) {
                 marginBottom: 0,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginBottom: 6 }}>
                 {currentTable ? (
                   <button
                     onClick={() => {
@@ -945,7 +986,7 @@ export default function DataBrowser({ embedded = false }) {
                 </div>
               ) : (
                 <>
-                  {columns.length > 0 && (
+                  {columns.length > 0 && !hideListFieldControls && (
                     <div style={{ marginBottom: 8, ...subtleText }}>
                       List fields:
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
@@ -962,7 +1003,7 @@ export default function DataBrowser({ embedded = false }) {
                                 borderRadius: 999,
                                 padding: "2px 8px",
                                 background: checked
-                                  ? "color-mix(in srgb, #2b6cff 16%, var(--bg-elev))"
+                                  ? "color-mix(in srgb, var(--accent) 16%, var(--bg-elev))"
                                   : "var(--bg-elev)",
                                 cursor: "pointer",
                               }}
@@ -1001,7 +1042,6 @@ export default function DataBrowser({ embedded = false }) {
                       </div>
                     </div>
                   )}
-                  <div style={{ ...subtleText, marginBottom: 8 }}>Primary key: {primaryKey || "none"}</div>
                   <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
                     {rows.length === 0 ? (
                       <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No rows.</div>
@@ -1046,13 +1086,15 @@ export default function DataBrowser({ embedded = false }) {
                                 style={{
                                   textAlign: "left",
                                   padding: "6px 8px",
-                                  borderBottom: "1px solid var(--border)",
+                                  borderBottom: useWhiteBackground ? "1px solid #e6eefc" : "1px solid var(--border)",
                                   color: "var(--text-muted)",
                                   position: "sticky",
                                   top: 0,
-                                  background: "var(--bg-elev)",
+                                  background: useWhiteBackground ? "#f3f7ff" : "var(--bg-elev)",
                                   zIndex: 1,
                                   cursor: "grab",
+                                  fontWeight: 700,
+                                  letterSpacing: "0.02em",
                                 }}
                               >
                                 {labelize(f)}
@@ -1069,7 +1111,11 @@ export default function DataBrowser({ embedded = false }) {
                                 key={`${rowId}-${i}`}
                                 onClick={() => navigateData(`/data/${currentTable}/${rowId}`)}
                                 style={{
-                                  background: "var(--bg-elev)",
+                                  background: useWhiteBackground
+                                    ? i % 2 === 0
+                                      ? "#ffffff"
+                                      : "#f8fbff"
+                                    : "var(--bg-elev)",
                                   cursor: "pointer",
                                 }}
                               >
@@ -1078,7 +1124,7 @@ export default function DataBrowser({ embedded = false }) {
                                     key={`${rowId}-${f}`}
                                     style={{
                                       padding: "6px 8px",
-                                      borderBottom: "1px solid var(--border)",
+                                      borderBottom: useWhiteBackground ? "1px solid #eef3fd" : "1px solid var(--border)",
                                       color: "var(--text)",
                                       whiteSpace: "nowrap",
                                       maxWidth: 200,
@@ -1106,16 +1152,3 @@ export default function DataBrowser({ embedded = false }) {
     </div>
   );
 }
-
-  const navigateData = (path) => {
-    const next = String(path || "").trim();
-    if (!next) return;
-    if (!embedded) {
-      navigate(next);
-      return;
-    }
-    const m = next.match(/^\/data\/([^/]+)(?:\/([^/]+))?$/i);
-    if (!m) return;
-    setEmbeddedTable(decodeURIComponent(String(m[1] || "")));
-    setEmbeddedDetailId(decodeURIComponent(String(m[2] || "")));
-  };

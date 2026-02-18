@@ -25,7 +25,7 @@ function cardStyle(accent = "var(--border)") {
   };
 }
 
-export default function ServerDiagnosticsPanel() {
+export default function ServerDiagnosticsPanel({ embedded = false }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState(0);
@@ -204,8 +204,8 @@ export default function ServerDiagnosticsPanel() {
       style={{
         height: "100%",
         boxSizing: "border-box",
-        overflow: "auto",
-        padding: 16,
+        overflow: embedded ? "visible" : "auto",
+        padding: embedded ? 0 : 16,
         display: "grid",
         gap: 12,
         alignContent: "start",

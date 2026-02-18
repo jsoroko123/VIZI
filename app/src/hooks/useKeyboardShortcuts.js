@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 export function useKeyboardShortcuts({
+  disabled = false,
   drawing,
   editingId,
   importOpen,
@@ -18,6 +19,7 @@ export function useKeyboardShortcuts({
   deleteSelected,
 }) {
   useEffect(() => {
+    if (disabled) return undefined;
     function isTypingTarget(target) {
       if (!target) return false;
       const tag = (target.tagName || "").toLowerCase();
@@ -126,6 +128,7 @@ export function useKeyboardShortcuts({
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [
+    disabled,
     drawing,
     editingId,
     importOpen,
