@@ -3187,6 +3187,7 @@ function flushScheduledProjectSave() {
     startX: 0,
     originW: 0,
   });
+  const [activeDrawerResize, setActiveDrawerResize] = useState("");
   const mainDrawerRef = useRef(null);
   const userDrawerRef = useRef(null);
   const projectDrawerRef = useRef(null);
@@ -3239,6 +3240,7 @@ function flushScheduledProjectSave() {
       startX: e.clientX,
       originW: Number(current.w) || 0,
     };
+    setActiveDrawerResize(String(which || ""));
     e.preventDefault();
     e.stopPropagation();
   }
@@ -3270,6 +3272,7 @@ function flushScheduledProjectSave() {
     }
     function onUp() {
       drawerResizeRef.current.active = null;
+      setActiveDrawerResize("");
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -10146,6 +10149,18 @@ function flushScheduledProjectSave() {
           </div>
         </div>
       )}
+
+      {activeDrawerResize ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 999,
+            cursor: "ew-resize",
+            background: "transparent",
+          }}
+        />
+      ) : null}
 
       {showUserDrawer && (
         <div
