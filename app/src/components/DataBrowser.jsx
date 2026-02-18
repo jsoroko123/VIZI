@@ -39,6 +39,7 @@ export default function DataBrowser({
   const [typeMap, setTypeMap] = useState({});
   const [foreignKeyMeta, setForeignKeyMeta] = useState({});
   const [formEnabled, setFormEnabled] = useState(false);
+  const [alarmViewTab, setAlarmViewTab] = useState("active");
 
   const tableList = useMemo(() => tables || [], [tables]);
   const isNewDetail = detailId === "new";
@@ -89,6 +90,47 @@ export default function DataBrowser({
     });
     return out;
   }, [opcTags]);
+  const isAlarmTable = useMemo(() => {
+    const t = String(currentTable || "").trim().toLowerCase();
+    if (!t) return false;
+    return t.includes("alarm");
+  }, [currentTable]);
+  const isManagedAlarmTable = useMemo(
+    () => String(currentTable || "").trim().toLowerCase() === "opc_alarm_state",
+    [currentTable]
+  );
+  const hasAlarmActiveColumn = useMemo(() => {
+    if (!isAlarmTable) return false;
+    return (columns || []).some((c) => String(c?.column_name || "").toLowerCase() === "is_active");
+  }, [columns, isAlarmTable]);
+  const hasAlarmShelvedColumn = useMemo(() => {
+    if (!isAlarmTable) return false;
+    return (columns || []).some((c) => String(c?.column_name || "").toLowerCase() === "shelved_until");
+  }, [columns, isAlarmTable]);
+  const isRowActiveAlarm = (row) => {
+    const value = row?.is_active;
+    if (value === true || value === 1) return true;
+    const text = String(value ?? "").trim().toLowerCase();
+    return text === "true" || text === "1" || text === "t" || text === "yes" || text === "y" || text === "on";
+  };
+  const isRowShelvedAlarm = (row) => {
+    const raw = row?.shelved_until;
+    if (!raw) return false;
+    const at = Number(new Date(raw).getTime() || 0);
+    if (!Number.isFinite(at) || at <= 0) return false;
+    return at > Date.now();
+  };
+  const displayedRows = useMemo(() => {
+    if (!hasAlarmActiveColumn) return rows || [];
+    if (alarmViewTab === "active") return (rows || []).filter((r) => isRowActiveAlarm(r));
+    if (alarmViewTab === "shelved" && hasAlarmShelvedColumn) return (rows || []).filter((r) => isRowShelvedAlarm(r));
+    return rows || [];
+  }, [rows, hasAlarmActiveColumn, hasAlarmShelvedColumn, alarmViewTab]);
+
+  useEffect(() => {
+    if (isAlarmTable) setAlarmViewTab("active");
+    else setAlarmViewTab("all");
+  }, [isAlarmTable, currentTable]);
 
   const pageStyle = embedded
     ? {
@@ -359,18 +401,7 @@ export default function DataBrowser({
   useEffect(() => {
     async function loadDetail() {
       if (!currentTable || !selectedId || isNewDetail) return;
-      try {
-        const pk = primaryKey ? `?pk=${encodeURIComponent(primaryKey)}` : "";
-        const res = await fetch(`/api/db/${currentTable}/${selectedId}${pk}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load detail.");
-        const row = data.row || null;
-        setDetail(row);
-        setFormDraft(row || {});
-        setFormEnabled(false);
-      } catch (err) {
-        setError(err?.message || "Failed to load detail.");
-      }
+      await reloadDetailRow(selectedId);
     }
     loadDetail();
   }, [currentTable, selectedId, primaryKey, isNewDetail]);
@@ -396,6 +427,80 @@ export default function DataBrowser({
       }
     } catch (err) {
       setError(err?.message || "Failed to load rows.");
+    }
+  }
+
+  async function reloadDetailRow(rowId = selectedId) {
+    const rowKey = String(rowId || "").trim();
+    if (!currentTable || !rowKey || rowKey === "new") return;
+    try {
+      const pk = primaryKey ? `?pk=${encodeURIComponent(primaryKey)}` : "";
+      const res = await fetch(`/api/db/${currentTable}/${encodeURIComponent(rowKey)}${pk}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to load detail.");
+      const row = data.row || null;
+      setDetail(row);
+      setFormDraft(row || {});
+      setFormEnabled(false);
+    } catch (err) {
+      setError(err?.message || "Failed to load detail.");
+    }
+  }
+
+  async function acknowledgeAlarm() {
+    if (!isManagedAlarmTable || !selectedId) return;
+    setError("");
+    try {
+      const res = await fetch(`/api/alarms/${encodeURIComponent(String(selectedId))}/ack`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to acknowledge alarm.");
+      setStatus("Alarm acknowledged.");
+      await reloadRows();
+      await reloadDetailRow(selectedId);
+    } catch (err) {
+      setError(err?.message || "Failed to acknowledge alarm.");
+    }
+  }
+
+  async function shelveAlarm(minutes) {
+    if (!isManagedAlarmTable || !selectedId) return;
+    setError("");
+    const mins = Number.isFinite(Number(minutes)) ? Number(minutes) : 60;
+    try {
+      const res = await fetch(`/api/alarms/${encodeURIComponent(String(selectedId))}/shelve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ minutes: mins }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to shelve alarm.");
+      setStatus(`Alarm shelved for ${mins} minute${mins === 1 ? "" : "s"}.`);
+      await reloadRows();
+      await reloadDetailRow(selectedId);
+    } catch (err) {
+      setError(err?.message || "Failed to shelve alarm.");
+    }
+  }
+
+  async function unshelveAlarm() {
+    if (!isManagedAlarmTable || !selectedId) return;
+    setError("");
+    try {
+      const res = await fetch(`/api/alarms/${encodeURIComponent(String(selectedId))}/unshelve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to unshelve alarm.");
+      setStatus("Alarm unshelved.");
+      await reloadRows();
+      await reloadDetailRow(selectedId);
+    } catch (err) {
+      setError(err?.message || "Failed to unshelve alarm.");
     }
   }
 
@@ -870,19 +975,70 @@ export default function DataBrowser({
                       })}
                   </div>
 
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 8,
-                      marginTop: "auto",
-                      justifyContent: "flex-end",
-                      background: useWhiteBackground ? "rgba(248, 251, 255, 0.96)" : "var(--bg-elev)",
-                      paddingTop: 12,
-                      paddingBottom: 16,
-                      borderTop: useWhiteBackground ? "1px solid #e4ecfb" : "1px solid var(--border)",
-                      flexShrink: 0,
-                    }}
-                  >
+                  {isManagedAlarmTable ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        marginTop: "auto",
+                        justifyContent: "flex-end",
+                        background: useWhiteBackground ? "rgba(248, 251, 255, 0.96)" : "var(--bg-elev)",
+                        paddingTop: 12,
+                        paddingBottom: 16,
+                        borderTop: useWhiteBackground ? "1px solid #e4ecfb" : "1px solid var(--border)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <button
+                        onClick={acknowledgeAlarm}
+                        disabled={!selectedId || Boolean(detail?.is_acknowledged)}
+                        style={{
+                          ...primaryButton,
+                          background:
+                            !selectedId || Boolean(detail?.is_acknowledged)
+                              ? "#e2e8f0"
+                              : "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
+                          color: !selectedId || Boolean(detail?.is_acknowledged) ? "var(--text-muted)" : "white",
+                          cursor: !selectedId || Boolean(detail?.is_acknowledged) ? "not-allowed" : "pointer",
+                          boxShadow:
+                            !selectedId || Boolean(detail?.is_acknowledged) ? "none" : primaryButton.boxShadow,
+                        }}
+                      >
+                        {Boolean(detail?.is_acknowledged) ? "Acknowledged" : "Acknowledge"}
+                      </button>
+                      <button onClick={() => shelveAlarm(15)} disabled={!selectedId} style={ghostButton}>
+                        Shelve 15m
+                      </button>
+                      <button onClick={() => shelveAlarm(60)} disabled={!selectedId} style={ghostButton}>
+                        Shelve 1h
+                      </button>
+                      <button
+                        onClick={unshelveAlarm}
+                        disabled={!selectedId || !detail?.shelved_until}
+                        style={{
+                          ...ghostButton,
+                          cursor: !selectedId || !detail?.shelved_until ? "not-allowed" : "pointer",
+                          color: !selectedId || !detail?.shelved_until ? "var(--text-muted)" : "var(--text)",
+                        }}
+                      >
+                        Unshelve
+                      </button>
+                    </div>
+                  ) : null}
+                  {!isAlarmTable ? (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        marginTop: "auto",
+                        justifyContent: "flex-end",
+                        background: useWhiteBackground ? "rgba(248, 251, 255, 0.96)" : "var(--bg-elev)",
+                        paddingTop: 12,
+                        paddingBottom: 16,
+                        borderTop: useWhiteBackground ? "1px solid #e4ecfb" : "1px solid var(--border)",
+                        flexShrink: 0,
+                      }}
+                    >
                     <button
                       onClick={() => {
                         if (isNewDetail && currentTable) {
@@ -953,7 +1109,8 @@ export default function DataBrowser({
                     >
                       Delete
                     </button>
-                  </div>
+                    </div>
+                  ) : null}
                 </>
               )}
             </div>
@@ -969,16 +1126,56 @@ export default function DataBrowser({
               }}
             >
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginBottom: 6 }}>
-                {currentTable ? (
-                  <button
-                    onClick={() => {
-                      navigateData(`/data/${currentTable}/new`);
-                    }}
-                    style={primaryButton}
-                  >
-                    New
-                  </button>
-                ) : null}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: 10 }}>
+                  {hasAlarmActiveColumn ? (
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <button
+                        onClick={() => setAlarmViewTab("active")}
+                        style={{
+                          ...(alarmViewTab === "active" ? primaryButton : ghostButton),
+                          padding: "6px 10px",
+                          fontSize: 11,
+                        }}
+                      >
+                        Active Alarms
+                      </button>
+                      {hasAlarmShelvedColumn ? (
+                        <button
+                          onClick={() => setAlarmViewTab("shelved")}
+                          style={{
+                            ...(alarmViewTab === "shelved" ? primaryButton : ghostButton),
+                            padding: "6px 10px",
+                            fontSize: 11,
+                          }}
+                        >
+                          Shelved
+                        </button>
+                      ) : null}
+                      <button
+                        onClick={() => setAlarmViewTab("all")}
+                        style={{
+                          ...(alarmViewTab === "all" ? primaryButton : ghostButton),
+                          padding: "6px 10px",
+                          fontSize: 11,
+                        }}
+                      >
+                        All Alarms
+                      </button>
+                    </div>
+                  ) : (
+                    <div />
+                  )}
+                  {currentTable && !isAlarmTable ? (
+                    <button
+                      onClick={() => {
+                        navigateData(`/data/${currentTable}/new`);
+                      }}
+                      style={primaryButton}
+                    >
+                      New
+                    </button>
+                  ) : null}
+                </div>
               </div>
               {!currentTable ? (
                 <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
@@ -1043,8 +1240,14 @@ export default function DataBrowser({
                     </div>
                   )}
                   <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
-                    {rows.length === 0 ? (
-                      <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No rows.</div>
+                    {displayedRows.length === 0 ? (
+                      <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                        {hasAlarmActiveColumn && alarmViewTab === "active"
+                          ? "No active alarms."
+                          : hasAlarmShelvedColumn && alarmViewTab === "shelved"
+                          ? "No shelved alarms."
+                          : "No rows."}
+                      </div>
                     ) : (
                       <table
                         style={{
@@ -1056,7 +1259,7 @@ export default function DataBrowser({
                       >
                         <thead>
                           <tr>
-                            {getVisibleFields(rows[0] || {}).map((f) => (
+                            {getVisibleFields(displayedRows[0] || {}).map((f) => (
                               <th
                                 key={`head-${f}`}
                                 draggable
@@ -1073,7 +1276,7 @@ export default function DataBrowser({
                                 onDrop={(e) => {
                                   if (!dragColumn || dragColumn === f) return;
                                   e.preventDefault();
-                                  const current = getVisibleFields(rows[0] || {});
+                                  const current = getVisibleFields(displayedRows[0] || {});
                                   const from = current.indexOf(dragColumn);
                                   const to = current.indexOf(f);
                                   if (from < 0 || to < 0) return;
@@ -1103,7 +1306,7 @@ export default function DataBrowser({
                           </tr>
                         </thead>
                         <tbody>
-                          {rows.map((r, i) => {
+                          {displayedRows.map((r, i) => {
                             const rowId = primaryKey ? r[primaryKey] : i;
                             const visibleFields = getVisibleFields(r || {});
                             return (

@@ -1,5 +1,5 @@
 // src/App.jsx
-import { Suspense, lazy, useMemo, useRef, useState, useEffect } from "react";
+import { Fragment, Suspense, lazy, useMemo, useRef, useState, useEffect } from "react";
 import PropertiesPanel from "./components/PropertiesPanel";
 import ImportModal from "./components/ImportModal";
 import WidgetSelectorModal from "./components/WidgetSelectorModal";
@@ -50,8 +50,8 @@ const PROJECT_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const SVG_RAW_CACHE_MAX = 96;
 const DEFAULT_CANVAS_BG_LIGHT = "#ffffff";
 const DEFAULT_CANVAS_BG_DARK = "#0f141c";
-const LIVE_ALARM_BAR_H = 52;
-const LIVE_ALARM_MARQUEE_DURATION_SEC = 140;
+const LIVE_ALARM_BAR_H = 44;
+const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
 function normalizeProjectMode(value) {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "design";
 }
@@ -603,6 +603,8 @@ export default function App() {
   const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
   const [liveEquipmentDrawerOverlayId, setLiveEquipmentDrawerOverlayId] = useState("");
   const liveEquipmentDockScrollRafRef = useRef(0);
+  const liveAlarmMarqueeViewportRef = useRef(null);
+  const liveAlarmMarqueeTrackRef = useRef(null);
   const [marquee, setMarquee] = useState(null);
 
   const [vbW, setVbW] = useState(1600);
@@ -689,6 +691,8 @@ export default function App() {
   const [databaseEmbeddedPath, setDatabaseEmbeddedPath] = useState("");
   const [databaseDataOnlyMode, setDatabaseDataOnlyMode] = useState(false);
   const [databaseTablesForMenu, setDatabaseTablesForMenu] = useState([]);
+  const [liveActiveAlarmsDb, setLiveActiveAlarmsDb] = useState([]);
+  const [liveActiveAlarmsDbLoaded, setLiveActiveAlarmsDbLoaded] = useState(false);
   const [svgCatalogFiles, setSvgCatalogFiles] = useState([]);
   const [liveMenuGroups, setLiveMenuGroups] = useState(() =>
     defaultLiveMenuGroupsFromScreens([
@@ -818,6 +822,53 @@ export default function App() {
       alive = false;
     };
   }, [isPageVisible]);
+
+  useEffect(() => {
+    if (!isLiveMode) {
+      setLiveActiveAlarmsDb([]);
+      setLiveActiveAlarmsDbLoaded(false);
+      return undefined;
+    }
+    let cancelled = false;
+    let timer = 0;
+    const pollMs = isPageVisible ? 2000 : 6000;
+    const fetchActiveAlarms = async () => {
+      try {
+        const res = await fetch("/api/alarms?activeOnly=true");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load alarms.");
+        if (cancelled) return;
+        const rows = Array.isArray(data?.active) ? data.active : [];
+        setLiveActiveAlarmsDb(
+          rows.map((row, idx) => {
+            const occurredAt = Number(new Date(row?.first_triggered_at || 0).getTime() || 0);
+            return {
+              id: String(row?.alarm_key || `${row?.topic || "alarm"}.${row?.label || idx}.${idx}`),
+              label: String(row?.label || row?.tag_path || `Alarm ${idx + 1}`),
+              topic: String(row?.topic || ""),
+              operator: String(row?.operator || ""),
+              threshold: String(row?.threshold ?? ""),
+              value: row?.last_value == null || row?.last_value === "" ? "-" : String(row?.last_value),
+              occurredAt,
+            };
+          })
+        );
+        setLiveActiveAlarmsDbLoaded(true);
+      } catch {
+        if (cancelled) return;
+        setLiveActiveAlarmsDb([]);
+        setLiveActiveAlarmsDbLoaded(true);
+      } finally {
+        if (cancelled) return;
+        timer = window.setTimeout(fetchActiveAlarms, pollMs);
+      }
+    };
+    fetchActiveAlarms();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [isLiveMode, isPageVisible]);
 
   useEffect(() => {
     let alive = true;
@@ -1542,7 +1593,7 @@ export default function App() {
     return map;
   }, [opcTags, opcLiveValues]);
 
-  const liveActiveAlarms = useMemo(() => {
+  const liveActiveAlarmsComputed = useMemo(() => {
     const live = opcLiveValues || {};
     const alarms = [];
     const buildTestAlarmValue = (operator, thresholdRaw) => {
@@ -1607,6 +1658,10 @@ export default function App() {
     });
     return alarms;
   }, [opcTags, opcLiveValues]);
+  const liveActiveAlarms = useMemo(() => {
+    if (liveActiveAlarmsDbLoaded) return liveActiveAlarmsDb;
+    return liveActiveAlarmsComputed;
+  }, [liveActiveAlarmsDbLoaded, liveActiveAlarmsDb, liveActiveAlarmsComputed]);
   const buildLiveEquipmentDetails = (overlay) => {
     if (!overlay) return [];
     const path = String(overlay.tagPath || "").trim();
@@ -8088,7 +8143,7 @@ export default function App() {
     () =>
       (liveActiveAlarms || []).map((alarm) => ({
         ...alarm,
-        occurredAt: Number(liveAlarmOccurredAtById?.[alarm.id] || 0),
+        occurredAt: Number(liveAlarmOccurredAtById?.[alarm.id] || alarm?.occurredAt || 0),
       })),
     [liveActiveAlarms, liveAlarmOccurredAtById]
   );
@@ -8107,26 +8162,21 @@ export default function App() {
       };
     });
   }, [liveActiveAlarmsWithOccurred]);
-  const liveAlarmMarqueeLoopItems = useMemo(() => {
-    const base = Array.isArray(liveAlarmMarqueeItems) ? liveAlarmMarqueeItems : [];
-    if (!base.length) return [];
-    if (base.length >= 10) return base;
-    const out = [];
-    let rep = 0;
-    while (out.length < 10) {
-      base.forEach((item, idx) => {
-        out.push({
-          ...item,
-          _loopKey: `${String(item.id || idx)}-${rep}-${idx}`,
-        });
-      });
-      rep += 1;
-      if (rep > 30) break;
-    }
-    return out;
-  }, [liveAlarmMarqueeItems]);
-  const liveAlarmMarqueeDurationSec = LIVE_ALARM_MARQUEE_DURATION_SEC;
+  const [liveAlarmMarqueeDurationSec, setLiveAlarmMarqueeDurationSec] = useState(
+    LIVE_ALARM_MARQUEE_DURATION_SEC
+  );
   const useLightLiveDataSurface = isLiveMode && databaseDataOnlyMode && theme !== "dark";
+  const alarmDatabasePath = useMemo(() => {
+    const list = Array.isArray(databaseTablesForMenu) ? databaseTablesForMenu : [];
+    const lowered = list.map((t) => String(t || "").trim()).filter(Boolean);
+    const exactOpcAlarmState = lowered.find((t) => t.toLowerCase() === "opc_alarm_state");
+    if (exactOpcAlarmState) return exactOpcAlarmState;
+    const exactAlarms = lowered.find((t) => t.toLowerCase() === "alarms");
+    if (exactAlarms) return exactAlarms;
+    const containsAlarm = lowered.find((t) => t.toLowerCase().includes("alarm"));
+    if (containsAlarm) return containsAlarm;
+    return "opc_alarm_state";
+  }, [databaseTablesForMenu]);
   const projectDrawerTabs = isLiveMode
     ? [{ key: "project", label: "Project", title: "Project Settings" }]
     : [
@@ -8137,17 +8187,29 @@ export default function App() {
 
   useEffect(() => {
     const activeIds = new Set((liveActiveAlarms || []).map((a) => String(a?.id || "")).filter(Boolean));
+    const byIdOccurred = new Map(
+      (liveActiveAlarms || [])
+        .map((a) => [String(a?.id || ""), Number(a?.occurredAt || 0)])
+        .filter(([id]) => !!id)
+    );
     const now = Date.now();
     setLiveAlarmOccurredAtById((prev) => {
       const next = {};
       let changed = false;
       activeIds.forEach((id) => {
         const existing = Number(prev?.[id] || 0);
-        if (existing > 0) next[id] = existing;
-        else {
-          next[id] = now;
-          changed = true;
+        if (existing > 0) {
+          next[id] = existing;
+          return;
         }
+        const fromAlarm = Number(byIdOccurred.get(id) || 0);
+        if (fromAlarm > 0) {
+          next[id] = fromAlarm;
+          changed = true;
+          return;
+        }
+        next[id] = now;
+        changed = true;
       });
       const prevKeys = Object.keys(prev || {});
       if (!changed && prevKeys.length === Object.keys(next).length) return prev;
@@ -8166,6 +8228,46 @@ export default function App() {
       y: Number(p?.y || 0),
     }));
   }, [canvasLeftInsetBasePx]);
+
+  useEffect(() => {
+    const viewport = liveAlarmMarqueeViewportRef.current;
+    const track = liveAlarmMarqueeTrackRef.current;
+    if (!viewport || !track || !hasLiveAlarms) {
+      setLiveAlarmMarqueeDurationSec(LIVE_ALARM_MARQUEE_DURATION_SEC);
+      return undefined;
+    }
+
+    const pxPerSec = 52; // keep scroll speed visually constant
+    const compute = () => {
+      const total = Number(track.scrollWidth || 0);
+      // track is rendered as three identical segments (group+gap x3)
+      const oneLoopDistance = total > 0 ? total / 3 : 0;
+      if (!Number.isFinite(oneLoopDistance) || oneLoopDistance <= 0) return;
+      const next = Math.max(18, Math.min(240, oneLoopDistance / pxPerSec));
+      setLiveAlarmMarqueeDurationSec((prev) =>
+        Math.abs(Number(prev || 0) - next) >= 0.25 ? next : prev
+      );
+    };
+
+    compute();
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        compute();
+      });
+    };
+    const ro = new ResizeObserver(schedule);
+    ro.observe(viewport);
+    ro.observe(track);
+    window.addEventListener("resize", schedule);
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener("resize", schedule);
+    };
+  }, [hasLiveAlarms, liveAlarmMarqueeItems, theme]);
 
   return (
     <div
@@ -10394,6 +10496,11 @@ export default function App() {
       {isLiveMode ? (
         <div
           className={`vizi-live-alarmbar vizi-scroll ${hasLiveAlarms ? "is-alert" : "is-clear"}`}
+          onClick={() => {
+            setLiveMenuCollapsed(false);
+            openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath });
+          }}
+          title="Open alarms"
           style={{
             position: "fixed",
             top: TOP_BAR_H,
@@ -10412,8 +10519,9 @@ export default function App() {
             alignItems: "center",
             gap: 8,
             padding: "0 10px",
-            overflowX: "auto",
+            overflowX: "hidden",
             whiteSpace: "nowrap",
+            cursor: "pointer",
           }}
         >
             <div
@@ -10430,35 +10538,32 @@ export default function App() {
             {hasLiveAlarms ? `Alarms (${liveActiveAlarmsWithOccurred.length})` : "Alarms clear"}
           </div>
           {hasLiveAlarms ? (
-            <div className="vizi-live-alarm-marquee">
+            <div ref={liveAlarmMarqueeViewportRef} className="vizi-live-alarm-marquee">
               <div
+                ref={liveAlarmMarqueeTrackRef}
                 className="vizi-live-alarm-marquee-track"
                 style={{ ["--alarm-marquee-duration"]: `${liveAlarmMarqueeDurationSec}s` }}
               >
-                <div className="vizi-live-alarm-marquee-group">
-                  {liveAlarmMarqueeLoopItems.map((item, idx) => (
+                {[0, 1, 2].map((segment) => (
+                  <Fragment key={`alarm-marquee-segment-${segment}`}>
                     <div
-                      key={`alarm-marquee-a-${item._loopKey || item.id || idx}`}
-                      className="vizi-live-alarm-marquee-item"
-                      title={item.title}
+                      className="vizi-live-alarm-marquee-group"
+                      aria-hidden={segment > 0 ? "true" : undefined}
                     >
-                      <span className="vizi-live-alarm-marquee-item-label">{item.label}</span>
-                      {item.at ? <span className="vizi-live-alarm-marquee-item-time">{item.at}</span> : null}
+                      {liveAlarmMarqueeItems.map((item, idx) => (
+                        <div
+                          key={`alarm-marquee-${segment}-${item.id || idx}`}
+                          className="vizi-live-alarm-marquee-item"
+                          title={item.title}
+                        >
+                          <span className="vizi-live-alarm-marquee-item-label">{item.label}</span>
+                          {item.at ? <span className="vizi-live-alarm-marquee-item-time">{item.at}</span> : null}
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-                <div className="vizi-live-alarm-marquee-group" aria-hidden="true">
-                  {liveAlarmMarqueeLoopItems.map((item, idx) => (
-                    <div
-                      key={`alarm-marquee-b-${item._loopKey || item.id || idx}`}
-                      className="vizi-live-alarm-marquee-item"
-                      title={item.title}
-                    >
-                      <span className="vizi-live-alarm-marquee-item-label">{item.label}</span>
-                      {item.at ? <span className="vizi-live-alarm-marquee-item-time">{item.at}</span> : null}
-                    </div>
-                  ))}
-                </div>
+                    <div className="vizi-live-alarm-marquee-gap" aria-hidden="true" />
+                  </Fragment>
+                ))}
               </div>
             </div>
           ) : null}

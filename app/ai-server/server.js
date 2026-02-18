@@ -651,6 +651,26 @@ async function refreshActiveOpcAlarms(statusObj = {}) {
           last_seen_at = EXCLUDED.last_seen_at,
           updated_at = now(),
           cleared_at = NULL,
+          is_acknowledged = CASE
+            WHEN opc_alarm_state.is_active = true THEN opc_alarm_state.is_acknowledged
+            ELSE false
+          END,
+          acknowledged_at = CASE
+            WHEN opc_alarm_state.is_active = true THEN opc_alarm_state.acknowledged_at
+            ELSE NULL
+          END,
+          acknowledged_by = CASE
+            WHEN opc_alarm_state.is_active = true THEN opc_alarm_state.acknowledged_by
+            ELSE ''
+          END,
+          shelved_until = CASE
+            WHEN opc_alarm_state.is_active = true THEN opc_alarm_state.shelved_until
+            ELSE NULL
+          END,
+          shelved_reason = CASE
+            WHEN opc_alarm_state.is_active = true THEN opc_alarm_state.shelved_reason
+            ELSE ''
+          END,
           occurrence_count = CASE
             WHEN opc_alarm_state.is_active = true THEN opc_alarm_state.occurrence_count
             ELSE opc_alarm_state.occurrence_count + 1
@@ -678,7 +698,15 @@ async function refreshActiveOpcAlarms(statusObj = {}) {
       await db.query(
         `
         UPDATE opc_alarm_state
-        SET is_active = false, cleared_at = now(), updated_at = now()
+        SET
+          is_active = false,
+          cleared_at = now(),
+          updated_at = now(),
+          is_acknowledged = false,
+          acknowledged_at = NULL,
+          acknowledged_by = '',
+          shelved_until = NULL,
+          shelved_reason = ''
         WHERE alarm_key = $1
         `,
         [key]
@@ -3649,13 +3677,18 @@ app.get("/api/alarms", async (req, res) => {
           threshold,
           last_value,
           is_active,
+          is_acknowledged,
+          acknowledged_at,
+          acknowledged_by,
+          shelved_until,
+          shelved_reason,
           first_triggered_at,
           last_seen_at,
           cleared_at,
           occurrence_count,
           updated_at
         FROM opc_alarm_state
-        WHERE is_active = true
+        WHERE is_active = true AND (shelved_until IS NULL OR shelved_until <= now())
         ORDER BY first_triggered_at DESC NULLS LAST, updated_at DESC
         `
       );
@@ -3675,13 +3708,18 @@ app.get("/api/alarms", async (req, res) => {
           threshold,
           last_value,
           is_active,
+          is_acknowledged,
+          acknowledged_at,
+          acknowledged_by,
+          shelved_until,
+          shelved_reason,
           first_triggered_at,
           last_seen_at,
           cleared_at,
           occurrence_count,
           updated_at
         FROM opc_alarm_state
-        WHERE is_active = true
+        WHERE is_active = true AND (shelved_until IS NULL OR shelved_until <= now())
         ORDER BY first_triggered_at DESC NULLS LAST, updated_at DESC
         `
       ),
@@ -3697,6 +3735,11 @@ app.get("/api/alarms", async (req, res) => {
           threshold,
           last_value,
           is_active,
+          is_acknowledged,
+          acknowledged_at,
+          acknowledged_by,
+          shelved_until,
+          shelved_reason,
           first_triggered_at,
           last_seen_at,
           cleared_at,
@@ -3711,6 +3754,98 @@ app.get("/api/alarms", async (req, res) => {
     res.json({ active: active.rows, recent: recent.rows });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load alarms." });
+  }
+});
+
+app.post("/api/alarms/:alarmKey/ack", async (req, res) => {
+  try {
+    const alarmKey = String(req.params.alarmKey || "").trim();
+    const acknowledgedBy = String(req.body?.acknowledgedBy || "").trim();
+    if (!alarmKey) {
+      res.status(400).json({ error: "Alarm key is required." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      UPDATE opc_alarm_state
+      SET
+        is_acknowledged = true,
+        acknowledged_at = now(),
+        acknowledged_by = $2,
+        updated_at = now()
+      WHERE alarm_key = $1
+      RETURNING *
+      `,
+      [alarmKey, acknowledgedBy]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: "Alarm not found." });
+      return;
+    }
+    res.json({ ok: true, alarm: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to acknowledge alarm." });
+  }
+});
+
+app.post("/api/alarms/:alarmKey/shelve", async (req, res) => {
+  try {
+    const alarmKey = String(req.params.alarmKey || "").trim();
+    const minutesRaw = Number(req.body?.minutes);
+    const minutes = Number.isFinite(minutesRaw) ? Math.max(1, Math.min(7 * 24 * 60, Math.floor(minutesRaw))) : 60;
+    const reason = String(req.body?.reason || "").trim();
+    if (!alarmKey) {
+      res.status(400).json({ error: "Alarm key is required." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      UPDATE opc_alarm_state
+      SET
+        shelved_until = now() + make_interval(mins => $2),
+        shelved_reason = $3,
+        updated_at = now()
+      WHERE alarm_key = $1
+      RETURNING *
+      `,
+      [alarmKey, minutes, reason]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: "Alarm not found." });
+      return;
+    }
+    res.json({ ok: true, alarm: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to shelve alarm." });
+  }
+});
+
+app.post("/api/alarms/:alarmKey/unshelve", async (req, res) => {
+  try {
+    const alarmKey = String(req.params.alarmKey || "").trim();
+    if (!alarmKey) {
+      res.status(400).json({ error: "Alarm key is required." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      UPDATE opc_alarm_state
+      SET
+        shelved_until = NULL,
+        shelved_reason = '',
+        updated_at = now()
+      WHERE alarm_key = $1
+      RETURNING *
+      `,
+      [alarmKey]
+    );
+    if (!rows.length) {
+      res.status(404).json({ error: "Alarm not found." });
+      return;
+    }
+    res.json({ ok: true, alarm: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to unshelve alarm." });
   }
 });
 
@@ -6443,6 +6578,26 @@ async function start() {
       occurrence_count INTEGER NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+  `);
+  await pool.query(`
+    ALTER TABLE opc_alarm_state
+    ADD COLUMN IF NOT EXISTS is_acknowledged BOOLEAN NOT NULL DEFAULT false;
+  `);
+  await pool.query(`
+    ALTER TABLE opc_alarm_state
+    ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ;
+  `);
+  await pool.query(`
+    ALTER TABLE opc_alarm_state
+    ADD COLUMN IF NOT EXISTS acknowledged_by TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE opc_alarm_state
+    ADD COLUMN IF NOT EXISTS shelved_until TIMESTAMPTZ;
+  `);
+  await pool.query(`
+    ALTER TABLE opc_alarm_state
+    ADD COLUMN IF NOT EXISTS shelved_reason TEXT NOT NULL DEFAULT '';
   `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS opc_alarm_state_active_idx

@@ -193,7 +193,19 @@ body[data-theme="dark"] {
     transform: translate3d(0, 0, 0);
   }
   to {
-    transform: translate3d(-50%, 0, 0);
+    transform: translate3d(-33.333333%, 0, 0);
+  }
+}
+
+@keyframes vizi-live-alarm-text-flash {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.6;
+    filter: brightness(1.25);
   }
 }
 
@@ -248,8 +260,13 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  min-width: 100%;
+  min-width: max-content;
   gap: 10px;
+}
+
+.vizi-live-alarm-marquee-gap {
+  flex: 0 0 auto;
+  width: 16px;
 }
 
 .vizi-live-alarm-marquee-item {
@@ -269,6 +286,10 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
   font-weight: 800;
   letter-spacing: 0.01em;
   color: var(--text);
+}
+
+.vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title {
+  animation: vizi-live-alarm-text-flash 1.1s ease-in-out infinite;
 }
 
 .vizi-live-alarm-marquee-item-time {
@@ -326,6 +347,12 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarm-marquee-i
   transform-style: preserve-3d;
   white-space: nowrap;
   overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title {
+    animation: none;
+  }
 }
 
 .vizi-live-alarm-board::before {
