@@ -205,6 +205,12 @@ body[data-theme="dark"] {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 -1px 0 rgba(127, 29, 29, 0.35);
 }
 
+:root[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title,
+body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title {
+  color: #7f1d1d !important;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
 .vizi-live-alarmbar-title {
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.28);
 }
@@ -230,6 +236,7 @@ body[data-theme="dark"] {
   display: inline-flex;
   align-items: center;
   min-width: max-content;
+  width: max-content;
   gap: 22px;
   padding-left: 8px;
   will-change: transform;
@@ -240,6 +247,8 @@ body[data-theme="dark"] {
 .vizi-live-alarm-marquee-group {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
+  min-width: 100%;
   gap: 10px;
 }
 
@@ -268,6 +277,24 @@ body[data-theme="dark"] {
   color: var(--text-muted);
   border-left: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   padding-left: 8px;
+}
+
+:root[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarm-marquee-item,
+body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarm-marquee-item {
+  border-color: #b91c1c;
+  background: color-mix(in srgb, #fecaca 70%, #ffffff 30%);
+  box-shadow: 0 1px 2px rgba(127, 29, 29, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+:root[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarm-marquee-item-label,
+body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarm-marquee-item-label {
+  color: #7f1d1d;
+}
+
+:root[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarm-marquee-item-time,
+body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarm-marquee-item-time {
+  color: #991b1b;
+  border-left-color: rgba(153, 27, 27, 0.35);
 }
 
 .vizi-live-alarm-board {

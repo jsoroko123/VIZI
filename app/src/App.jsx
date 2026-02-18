@@ -51,7 +51,7 @@ const SVG_RAW_CACHE_MAX = 96;
 const DEFAULT_CANVAS_BG_LIGHT = "#ffffff";
 const DEFAULT_CANVAS_BG_DARK = "#0f141c";
 const LIVE_ALARM_BAR_H = 44;
-const LIVE_ALARM_MARQUEE_DURATION_SEC = 42;
+const LIVE_ALARM_MARQUEE_DURATION_SEC = 140;
 function normalizeProjectMode(value) {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "design";
 }
@@ -8107,6 +8107,24 @@ export default function App() {
       };
     });
   }, [liveActiveAlarmsWithOccurred]);
+  const liveAlarmMarqueeLoopItems = useMemo(() => {
+    const base = Array.isArray(liveAlarmMarqueeItems) ? liveAlarmMarqueeItems : [];
+    if (!base.length) return [];
+    if (base.length >= 10) return base;
+    const out = [];
+    let rep = 0;
+    while (out.length < 10) {
+      base.forEach((item, idx) => {
+        out.push({
+          ...item,
+          _loopKey: `${String(item.id || idx)}-${rep}-${idx}`,
+        });
+      });
+      rep += 1;
+      if (rep > 30) break;
+    }
+    return out;
+  }, [liveAlarmMarqueeItems]);
   const liveAlarmMarqueeDurationSec = LIVE_ALARM_MARQUEE_DURATION_SEC;
   const useLightLiveDataSurface = isLiveMode && databaseDataOnlyMode && theme !== "dark";
   const projectDrawerTabs = isLiveMode
@@ -10386,7 +10404,9 @@ export default function App() {
             borderBottom: "1px solid var(--border)",
             background:
               hasLiveAlarms
-                ? "linear-gradient(180deg, color-mix(in srgb, #f04438 18%, var(--bg-elev) 82%) 0%, color-mix(in srgb, #f04438 12%, var(--bg) 88%) 100%)"
+                ? theme === "dark"
+                  ? "linear-gradient(180deg, color-mix(in srgb, #f04438 18%, var(--bg-elev) 82%) 0%, color-mix(in srgb, #f04438 12%, var(--bg) 88%) 100%)"
+                  : "linear-gradient(180deg, color-mix(in srgb, #f04438 40%, #ffffff 60%) 0%, color-mix(in srgb, #dc2626 32%, #ffffff 68%) 100%)"
                 : "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, #0b2448 6%) 0%, color-mix(in srgb, var(--bg) 92%, #040d1f 8%) 100%)",
             display: "flex",
             alignItems: "center",
@@ -10396,17 +10416,17 @@ export default function App() {
             whiteSpace: "nowrap",
           }}
         >
-          <div
-            className="vizi-live-alarmbar-title"
-            style={{
-              fontSize: 11,
-              fontWeight: 800,
-              color: hasLiveAlarms ? "#fca5a5" : "var(--text-muted)",
-              textTransform: "uppercase",
-              letterSpacing: "0.04em",
-              flex: "0 0 auto",
-            }}
-          >
+            <div
+              className="vizi-live-alarmbar-title"
+              style={{
+                fontSize: 11,
+                fontWeight: 800,
+              color: hasLiveAlarms ? (theme === "dark" ? "#fca5a5" : "#7f1d1d") : "var(--text-muted)",
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+                flex: "0 0 auto",
+              }}
+            >
             {hasLiveAlarms ? `Alarms (${liveActiveAlarmsWithOccurred.length})` : "Alarms clear"}
           </div>
           {hasLiveAlarms ? (
@@ -10416,9 +10436,9 @@ export default function App() {
                 style={{ ["--alarm-marquee-duration"]: `${liveAlarmMarqueeDurationSec}s` }}
               >
                 <div className="vizi-live-alarm-marquee-group">
-                  {liveAlarmMarqueeItems.map((item, idx) => (
+                  {liveAlarmMarqueeLoopItems.map((item, idx) => (
                     <div
-                      key={`alarm-marquee-a-${item.id || idx}`}
+                      key={`alarm-marquee-a-${item._loopKey || item.id || idx}`}
                       className="vizi-live-alarm-marquee-item"
                       title={item.title}
                     >
@@ -10428,9 +10448,9 @@ export default function App() {
                   ))}
                 </div>
                 <div className="vizi-live-alarm-marquee-group" aria-hidden="true">
-                  {liveAlarmMarqueeItems.map((item, idx) => (
+                  {liveAlarmMarqueeLoopItems.map((item, idx) => (
                     <div
-                      key={`alarm-marquee-b-${item.id || idx}`}
+                      key={`alarm-marquee-b-${item._loopKey || item.id || idx}`}
                       className="vizi-live-alarm-marquee-item"
                       title={item.title}
                     >
