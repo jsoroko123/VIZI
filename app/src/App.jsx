@@ -52,6 +52,10 @@ const DEFAULT_CANVAS_BG_LIGHT = "#ffffff";
 const DEFAULT_CANVAS_BG_DARK = "#0f141c";
 const LIVE_ALARM_BAR_H = 44;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
+const LIVE_MENU_EXPANDED_WIDTH_KEY = "vizi_live_menu_expanded_width";
+const LIVE_MENU_EXPANDED_WIDTH_DEFAULT = 248;
+const LIVE_MENU_EXPANDED_WIDTH_MIN = 200;
+const LIVE_MENU_EXPANDED_WIDTH_MAX = 520;
 function normalizeProjectMode(value) {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "design";
 }
@@ -155,10 +159,28 @@ function normalizeProjectUiPreferences(raw, fallback = {}) {
     if (typeof fb[key] === "boolean") return fb[key];
     return defaultValue;
   };
+  const pickLiveMenuExpandedWidth = () => {
+    const rawWidth = Number(src.liveMenuExpandedWidth);
+    if (Number.isFinite(rawWidth) && rawWidth > 0) {
+      return Math.max(
+        LIVE_MENU_EXPANDED_WIDTH_MIN,
+        Math.min(LIVE_MENU_EXPANDED_WIDTH_MAX, Math.floor(rawWidth))
+      );
+    }
+    const fallbackWidth = Number(fb.liveMenuExpandedWidth);
+    if (Number.isFinite(fallbackWidth) && fallbackWidth > 0) {
+      return Math.max(
+        LIVE_MENU_EXPANDED_WIDTH_MIN,
+        Math.min(LIVE_MENU_EXPANDED_WIDTH_MAX, Math.floor(fallbackWidth))
+      );
+    }
+    return LIVE_MENU_EXPANDED_WIDTH_DEFAULT;
+  };
   return {
     showGrid: pickBool("showGrid", true),
     showTagPaths: pickBool("showTagPaths", false),
     liveMenuCollapsed: pickBool("liveMenuCollapsed", false),
+    liveMenuExpandedWidth: pickLiveMenuExpandedWidth(),
   };
 }
 
@@ -698,6 +720,21 @@ export default function App() {
       return false;
     }
   });
+  const [liveMenuExpandedWidth, setLiveMenuExpandedWidth] = useState(() => {
+    if (typeof window === "undefined") return LIVE_MENU_EXPANDED_WIDTH_DEFAULT;
+    try {
+      const stored = Number(localStorage.getItem(LIVE_MENU_EXPANDED_WIDTH_KEY));
+      if (Number.isFinite(stored) && stored > 0) {
+        return Math.max(
+          LIVE_MENU_EXPANDED_WIDTH_MIN,
+          Math.min(LIVE_MENU_EXPANDED_WIDTH_MAX, Math.floor(stored))
+        );
+      }
+    } catch {
+      // ignore storage read errors
+    }
+    return LIVE_MENU_EXPANDED_WIDTH_DEFAULT;
+  });
   const [mainDrawerFullscreen, setMainDrawerFullscreen] = useState(() => readStoredDrawerFullscreen("main"));
   const [userDrawerFullscreen, setUserDrawerFullscreen] = useState(() => readStoredDrawerFullscreen("user"));
   const [projectDrawerFullscreen, setProjectDrawerFullscreen] = useState(() => readStoredDrawerFullscreen("project"));
@@ -735,6 +772,7 @@ export default function App() {
   const showGridRef = useRef(showGrid);
   const showTagPathsRef = useRef(showTagPaths);
   const liveMenuCollapsedRef = useRef(liveMenuCollapsed);
+  const liveMenuExpandedWidthRef = useRef(liveMenuExpandedWidth);
   const projectCanvasBackgroundRef = useRef(projectCanvasBackground);
   const projectPlcsRef = useRef(projectPlcs);
   const screensRef = useRef(screens);
@@ -760,6 +798,7 @@ export default function App() {
     showGridRef.current = showGrid;
     showTagPathsRef.current = showTagPaths;
     liveMenuCollapsedRef.current = liveMenuCollapsed;
+    liveMenuExpandedWidthRef.current = liveMenuExpandedWidth;
     projectCanvasBackgroundRef.current = projectCanvasBackground;
     projectPlcsRef.current = projectPlcs;
     screensRef.current = screens;
@@ -771,7 +810,7 @@ export default function App() {
     vbHRef.current = vbH;
     panRef.current = pan;
     zoomRef.current = zoom;
-  }, [projectName, showGrid, showTagPaths, liveMenuCollapsed, projectCanvasBackground, projectPlcs, screens, activeProjectId, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+  }, [projectName, showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth, projectCanvasBackground, projectPlcs, screens, activeProjectId, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
 
   useEffect(() => {
     setSvgOverlays((prev) => {
@@ -819,6 +858,23 @@ export default function App() {
       // ignore storage write errors
     }
   }, [liveMenuCollapsed]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(
+        LIVE_MENU_EXPANDED_WIDTH_KEY,
+        String(
+          Math.max(
+            LIVE_MENU_EXPANDED_WIDTH_MIN,
+            Math.min(LIVE_MENU_EXPANDED_WIDTH_MAX, Math.floor(Number(liveMenuExpandedWidth) || LIVE_MENU_EXPANDED_WIDTH_DEFAULT))
+          )
+        )
+      );
+    } catch {
+      // ignore storage write errors
+    }
+  }, [liveMenuExpandedWidth]);
 
   useEffect(() => {
     const nextMode = readStoredProjectMode(activeProjectId || "");
@@ -2081,8 +2137,14 @@ export default function App() {
           showGrid,
           showTagPaths,
           liveMenuCollapsed,
+          liveMenuExpandedWidth,
         },
-        { showGrid: true, showTagPaths: false, liveMenuCollapsed: false }
+        {
+          showGrid: true,
+          showTagPaths: false,
+          liveMenuCollapsed: false,
+          liveMenuExpandedWidth: LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
+        }
       ),
       screens: committed.list,
       liveMenuGroups: normalizedMenuGroups,
@@ -2114,8 +2176,14 @@ export default function App() {
           showGrid: showGridRef.current,
           showTagPaths: showTagPathsRef.current,
           liveMenuCollapsed: liveMenuCollapsedRef.current,
+          liveMenuExpandedWidth: liveMenuExpandedWidthRef.current,
         },
-        { showGrid: true, showTagPaths: false, liveMenuCollapsed: false }
+        {
+          showGrid: true,
+          showTagPaths: false,
+          liveMenuCollapsed: false,
+          liveMenuExpandedWidth: LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
+        }
       ),
       screens: committed.list,
       liveMenuGroups: normalizedMenuGroups,
@@ -2144,6 +2212,7 @@ export default function App() {
         showGrid: true,
         showTagPaths: false,
         liveMenuCollapsed: false,
+        liveMenuExpandedWidth: LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
       }),
       screens: normalizedScreens,
       liveMenuGroups: normalizeLiveMenuGroups(payload.liveMenuGroups, normalizedScreens),
@@ -2170,10 +2239,12 @@ export default function App() {
       showGrid: showGridRef.current,
       showTagPaths: showTagPathsRef.current,
       liveMenuCollapsed: liveMenuCollapsedRef.current,
+      liveMenuExpandedWidth: liveMenuExpandedWidthRef.current,
     });
     setShowGrid(uiPreferences.showGrid);
     setShowTagPaths(uiPreferences.showTagPaths);
     setLiveMenuCollapsed(uiPreferences.liveMenuCollapsed);
+    setLiveMenuExpandedWidth(uiPreferences.liveMenuExpandedWidth);
     const fallbackScreen = normalizeScreenPayload(
       {
         id: data?.activeScreenId || "screen-1",
@@ -2211,10 +2282,12 @@ export default function App() {
       showGrid: showGridRef.current,
       showTagPaths: showTagPathsRef.current,
       liveMenuCollapsed: liveMenuCollapsedRef.current,
+      liveMenuExpandedWidth: liveMenuExpandedWidthRef.current,
     });
     setShowGrid(uiPreferences.showGrid);
     setShowTagPaths(uiPreferences.showTagPaths);
     setLiveMenuCollapsed(uiPreferences.liveMenuCollapsed);
+    setLiveMenuExpandedWidth(uiPreferences.liveMenuExpandedWidth);
     const fallbackScreen = normalizeScreenPayload(
       {
         id: data?.activeScreenId || "screen-1",
@@ -2795,7 +2868,7 @@ export default function App() {
     }
     if (projectNameEditing) return;
     scheduleProjectAutoSave(180);
-  }, [showGrid, showTagPaths, liveMenuCollapsed, projectNameEditing]);
+  }, [showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth, projectNameEditing]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -3062,7 +3135,10 @@ export default function App() {
   function beginDrawerResize(which, e, disabled = false) {
     if (disabled) return;
     if (e.button !== 0) return;
-    const current = drawerSizes?.[which] || { w: 0 };
+    const current =
+      which === "liveMenu"
+        ? { w: liveMenuExpandedWidth }
+        : drawerSizes?.[which] || { w: 0 };
     drawerResizeRef.current = {
       active: which,
       startX: e.clientX,
@@ -3079,9 +3155,16 @@ export default function App() {
       if (resize?.active) {
         const key = resize.active;
         const vpW = window.innerWidth;
+        const dx = e.clientX - resize.startX;
+        if (key === "liveMenu") {
+          const minW = LIVE_MENU_EXPANDED_WIDTH_MIN;
+          const maxW = Math.max(minW, Math.min(LIVE_MENU_EXPANDED_WIDTH_MAX, Math.floor(vpW * 0.5)));
+          const nextW = clamp(resize.originW + dx, minW, maxW);
+          setLiveMenuExpandedWidth(nextW);
+          return;
+        }
         const minW = key === "project" ? 280 : 420;
         const maxW = Math.max(minW, Math.floor(vpW * (key === "project" ? 0.92 : 0.96)));
-        const dx = e.clientX - resize.startX;
         const widthDelta = key === "project" ? dx : -dx;
         const nextW = clamp(resize.originW + widthDelta, minW, maxW);
         setDrawerSizes((prev) => ({
@@ -3116,6 +3199,16 @@ export default function App() {
           w: clamp(prev.project.w, 280, Math.max(280, Math.floor(vpW * 0.92))),
         },
       }));
+      setLiveMenuExpandedWidth((prev) =>
+        clamp(
+          Number(prev) || LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
+          LIVE_MENU_EXPANDED_WIDTH_MIN,
+          Math.max(
+            LIVE_MENU_EXPANDED_WIDTH_MIN,
+            Math.min(LIVE_MENU_EXPANDED_WIDTH_MAX, Math.floor(vpW * 0.5))
+          )
+        )
+      );
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -8213,7 +8306,6 @@ export default function App() {
     const id = String(groupId || "");
     if (!id) return;
     const normalizedType = String(type || "").toLowerCase() === "data" ? "data" : "screen";
-    if (!projectNameEditing && normalizedType !== "screen") return;
     setLiveMenuGroups((prev) =>
       normalizeLiveMenuGroups(prev, screens).map((group) => {
         if (group.id !== id) return group;
@@ -8236,7 +8328,6 @@ export default function App() {
   }
 
   function updateLiveMenuItem(groupId, itemId, patch = {}) {
-    if (!projectNameEditing) return;
     const gId = String(groupId || "");
     const iId = String(itemId || "");
     if (!gId || !iId) return;
@@ -8358,10 +8449,20 @@ export default function App() {
   const projectDrawerInsetPx = showProjectDrawer && !projectDrawerFullscreen ? Math.round(drawerSizes.project.w) : 0;
   const projectDrawerInset = `${projectDrawerInsetPx}px`;
   const liveMenuIsExpanded = !liveMenuCollapsed;
+  const liveMenuExpandedWidthClamped = Math.max(
+    LIVE_MENU_EXPANDED_WIDTH_MIN,
+    Math.min(
+      LIVE_MENU_EXPANDED_WIDTH_MAX,
+      Math.min(
+        Math.max(LIVE_MENU_EXPANDED_WIDTH_MIN, Math.floor((winW || 1400) * 0.5)),
+        Math.floor(Number(liveMenuExpandedWidth) || LIVE_MENU_EXPANDED_WIDTH_DEFAULT)
+      )
+    )
+  );
   const liveMenuExpandedWidthPx = isLiveMode
     ? isLiveMobile
       ? Math.min(220, Math.max(176, Math.floor(winW * 0.62)))
-      : 248
+      : liveMenuExpandedWidthClamped
     : 0;
   const liveMenuCollapsedWidthPx = isLiveMode ? (isLiveMobile ? 54 : 72) : 0;
   const liveMenuRailWidthPx = isLiveMode
@@ -11060,6 +11161,32 @@ export default function App() {
             animation: "drawer-slide-in-left 220ms ease-out",
           }}
         >
+          {!isLiveMobile && liveMenuIsExpanded ? (
+            <div
+              onMouseDown={(e) => beginDrawerResize("liveMenu", e, false)}
+              title="Resize menu"
+              style={{
+                position: "absolute",
+                top: 0,
+                right: 0,
+                bottom: 0,
+                width: 8,
+                cursor: "ew-resize",
+                zIndex: 4,
+                display: "flex",
+                justifyContent: "center",
+              }}
+            >
+              <span
+                style={{
+                  width: 2,
+                  height: "100%",
+                  background: "color-mix(in srgb, var(--border) 76%, #2b6cff 24%)",
+                  opacity: 0.8,
+                }}
+              />
+            </div>
+          ) : null}
           <div
             style={{
               padding: liveMenuIsExpanded ? (isLiveMobile ? "6px 8px" : "4px 8px") : "6px 8px",
