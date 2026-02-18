@@ -251,6 +251,7 @@ export default function PropertiesPanel({
   applySingleFill,
   applySingleStroke,
   applySingleSvgStrokeWidth,
+  applySingleFaultSim,
   applyBBoxFromHud,
 
   applySingleArrowStart,
@@ -341,6 +342,7 @@ export default function PropertiesPanel({
     applySingleFill,
     applySingleStroke,
     applySingleSvgStrokeWidth,
+    applySingleFaultSim,
     applySingleArrowStart,
     applySingleArrowEnd,
     applySingleLineStyle,
@@ -665,6 +667,7 @@ export default function PropertiesPanel({
 
       if (isSvg) {
         a.applySingleSvgStrokeWidth?.(next.strokeWidth);
+        a.applySingleFaultSim?.(Boolean(next.faultSimulated));
         const w = Number.parseFloat(next.w);
         const h = Number.parseFloat(next.h);
         if (Number.isFinite(w) && Number.isFinite(h)) {
@@ -1321,6 +1324,33 @@ export default function PropertiesPanel({
                 onBlur={() => {}}
                 placeholder=""
               />
+            )}
+
+            {isSvg && (
+              <>
+                <div style={labelStyle}>Fault Sim</div>
+                <label
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    minHeight: 26,
+                    cursor: "pointer",
+                    color: "var(--text)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={Boolean(hudFields.faultSimulated)}
+                    onChange={(e) => {
+                      const checked = Boolean(e.target.checked);
+                      setHudFields((p) => ({ ...p, faultSimulated: checked }));
+                      applySingleFaultSim?.(checked);
+                    }}
+                  />
+                  Flash red
+                </label>
+              </>
             )}
 
             {/* Polyline controls */}

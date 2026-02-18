@@ -91,7 +91,7 @@ export default function CanvasSvg({
   const rulerSize = showRulers ? RULER : 0;
   const isLineMode = tool === "polyline" || tool === "rect";
   const isCrosshair = isLineMode || marquee;
-  const themeStrokeDefault = String(theme || "").toLowerCase() === "dark" ? "#ffffff" : "#808080";
+  const themeStrokeDefault = "#808080";
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
 
   // wrapper size for rulers
@@ -3601,6 +3601,8 @@ export default function CanvasSvg({
                       }
                       const tagFill = getTagColor(o.tagPath);
                       const routeStroke = getRouteStrokeColorForOverlay(o);
+                      const isFaultSimulated = Boolean(o.faultSimulated);
+                      const faultColor = "#ff3b30";
                       if (tagFill) {
                         const key = String(o.tagPath || o.id || "");
                         const prev = lastTagColorRef.current.get(key);
@@ -3616,13 +3618,22 @@ export default function CanvasSvg({
                         : useForcedStroke
                         ? overrideSvgStrokeOnly(o.inner)
                         : o.inner;
+                      if (isFaultSimulated) {
+                        // Fault simulation should only affect fill, not stroke.
+                        inner = inner
+                          .replace(/fill=['"][^'"]*['"]/gi, `fill="${faultColor}"`)
+                          .replace(/fill:\s*[^;\"']+/gi, `fill:${faultColor}`);
+                      }
                       if (!routeStroke) {
                         inner = forceSvgStrokeColor(inner, themeStrokeDefault);
                       }
                       return (
                         <g
+                          className={isFaultSimulated ? "vizi-svg-fault-flash" : undefined}
                           style={{
-                            fill: tagFill || o.fill || "none",
+                            fill: isFaultSimulated
+                              ? faultColor
+                              : tagFill || o.fill || "none",
                             stroke: routeStroke || themeStrokeDefault,
                             strokeWidth:
                               Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0

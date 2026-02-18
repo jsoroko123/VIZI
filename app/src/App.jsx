@@ -6,6 +6,7 @@ import WidgetSelectorModal from "./components/WidgetSelectorModal";
 import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
 import TopBarRightControls from "./components/TopBarRightControls";
+import LiveAlarmBar from "./components/live/LiveAlarmBar";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -65,7 +66,7 @@ const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
 // (no eager:true)
 
 const SVG_RAW_CACHE_MAX = 96;
-const LIVE_ALARM_BAR_H = 44;
+const LIVE_ALARM_BAR_H = 34;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
 
 function readStoredDrawerFullscreen(name) {
@@ -467,6 +468,10 @@ export default function App() {
   });
   const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
   const [liveEquipmentOverlayIds, setLiveEquipmentOverlayIds] = useState([]);
+  const [liveEquipmentConnectFxById, setLiveEquipmentConnectFxById] = useState({});
+  const MAX_LIVE_EQUIPMENT_POPUPS = 10;
+  const prevLiveEquipmentOverlayIdsRef = useRef([]);
+  const liveEquipmentConnectFxTimersRef = useRef(new Map());
   const liveEquipmentCardRefs = useRef(new Map());
   const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
   const [liveEquipmentDrawerOverlayId, setLiveEquipmentDrawerOverlayId] = useState("");
@@ -3780,6 +3785,41 @@ function flushScheduledProjectSave() {
   };
 
   const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+  const clampPanToViewport = (nextPanRaw, zoomValue = zoomRef.current) => {
+    const el = svgRef.current;
+    const z = Math.max(0.0001, Number(zoomValue) || 1);
+    const worldW = Math.max(1, Number(vbW) || 1);
+    const worldH = Math.max(1, Number(vbH) || 1);
+    const scaledW = worldW * z;
+    const scaledH = worldH * z;
+    const rect = el?.getBoundingClientRect?.();
+    const viewW = Math.max(1, Number(rect?.width) || 1);
+    const viewH = Math.max(1, Number(rect?.height) || 1);
+
+    const nextPan = {
+      x: Number(nextPanRaw?.x) || 0,
+      y: Number(nextPanRaw?.y) || 0,
+    };
+
+    if (scaledW <= viewW) {
+      nextPan.x = (viewW - scaledW) / 2;
+    } else {
+      const minX = viewW - scaledW;
+      const maxX = 0;
+      nextPan.x = Math.min(maxX, Math.max(minX, nextPan.x));
+    }
+
+    if (scaledH <= viewH) {
+      nextPan.y = (viewH - scaledH) / 2;
+    } else {
+      const minY = viewH - scaledH;
+      const maxY = 0;
+      nextPan.y = Math.min(maxY, Math.max(minY, nextPan.y));
+    }
+
+    return nextPan;
+  };
+
   function fitViewToCanvas() {
     const el = svgRef.current;
     if (!el) return;
@@ -3797,10 +3837,18 @@ function flushScheduledProjectSave() {
   }
 
   function zoomIn() {
-    setZoom((z) => clampZoom(+(z * ZOOM_STEP).toFixed(4)));
+    setZoom((z) => {
+      const next = clampZoom(+(z * ZOOM_STEP).toFixed(4));
+      setPan((p) => clampPanToViewport(p, next));
+      return next;
+    });
   }
   function zoomOut() {
-    setZoom((z) => clampZoom(+(z / ZOOM_STEP).toFixed(4)));
+    setZoom((z) => {
+      const next = clampZoom(+(z / ZOOM_STEP).toFixed(4));
+      setPan((p) => clampPanToViewport(p, next));
+      return next;
+    });
   }
   function resetZoomToActual100() {
     const el = svgRef.current;
@@ -4199,7 +4247,11 @@ function flushScheduledProjectSave() {
       if (!isCanvasTarget(e.target)) return;
       const direction = e.deltaY < 0 ? 1 : -1;
       const factor = direction > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
-      setZoom((z) => clampZoom(+(z * factor).toFixed(4)));
+      setZoom((z) => {
+        const next = clampZoom(+(z * factor).toFixed(4));
+        setPan((p) => clampPanToViewport(p, next));
+        return next;
+      });
     };
 
     const onKeyDownBlockPageZoom = (e) => {
@@ -4667,6 +4719,156 @@ function flushScheduledProjectSave() {
     return svgCatalogMap.get(fileKey)?.url || null;
   }
 
+  function clampOverlayTransformToCanvas(tx, ty, scaleX, scaleY, bbox) {
+    const bb = bbox || { x: 0, y: 0, width: 1, height: 1 };
+    const sx = Math.max(0.0001, Number(scaleX) || 1);
+    const sy = Math.max(0.0001, Number(scaleY) || 1);
+    const bw = Math.max(1, Number(bb.width) || 1);
+    const bh = Math.max(1, Number(bb.height) || 1);
+    const bx = Number(bb.x) || 0;
+    const by = Number(bb.y) || 0;
+    const canvasW = Math.max(1, Number(vbW) || 1);
+    const canvasH = Math.max(1, Number(vbH) || 1);
+    const svgRect = svgRef.current?.getBoundingClientRect?.();
+    const pxToWorldX =
+      svgRect && Number(svgRect.width) > 0 ? canvasW / Number(svgRect.width) : 1;
+    const pxToWorldY =
+      svgRect && Number(svgRect.height) > 0 ? canvasH / Number(svgRect.height) : 1;
+    const designTopRulerWorld =
+      !isLiveMode ? Math.max(0, Number(RULER_SIZE) || 0) * pxToWorldY : 0;
+    const designRightRulerWorld =
+      !isLiveMode ? Math.max(0, Number(RULER_SIZE) || 0) * pxToWorldX : 0;
+    const boundLeft = 0;
+    const boundTop = designTopRulerWorld;
+    const boundRight = Math.max(boundLeft + 1, canvasW - designRightRulerWorld);
+    const boundBottom = canvasH;
+
+    let nextTx = Number(tx) || 0;
+    let nextTy = Number(ty) || 0;
+
+    const worldW = bw * sx;
+    const worldH = bh * sy;
+
+    const boundW = Math.max(1, boundRight - boundLeft);
+    const boundH = Math.max(1, boundBottom - boundTop);
+
+    if (worldW <= boundW) {
+      const minTx = boundLeft - sx * bx;
+      const maxTx = boundRight - sx * (bx + bw);
+      nextTx = Math.min(minTx, Math.max(maxTx, nextTx));
+    } else {
+      nextTx = boundLeft + (boundW - worldW) / 2 - sx * bx;
+    }
+
+    if (worldH <= boundH) {
+      const minTy = boundTop - sy * by;
+      const maxTy = boundBottom - sy * (by + bh);
+      nextTy = Math.min(minTy, Math.max(maxTy, nextTy));
+    } else {
+      nextTy = boundTop + (boundH - worldH) / 2 - sy * by;
+    }
+
+    return { tx: nextTx, ty: nextTy };
+  }
+
+  function clampExistingOverlaysToCanvasBounds() {
+    setSvgOverlays((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      if (!list.length) return list;
+      const canvasW = Math.max(1, Number(vbW) || 1);
+      const canvasH = Math.max(1, Number(vbH) || 1);
+      const svgRect = svgRef.current?.getBoundingClientRect?.();
+      const pxToWorldX =
+        svgRect && Number(svgRect.width) > 0 ? canvasW / Number(svgRect.width) : 1;
+      const pxToWorldY =
+        svgRect && Number(svgRect.height) > 0 ? canvasH / Number(svgRect.height) : 1;
+      const topRulerWorld =
+        !isLiveMode ? Math.max(0, Number(RULER_SIZE) || 0) * pxToWorldY : 0;
+      const rightRulerWorld =
+        !isLiveMode ? Math.max(0, Number(RULER_SIZE) || 0) * pxToWorldX : 0;
+      const boundLeft = 0;
+      const boundTop = topRulerWorld;
+      const boundRight = Math.max(boundLeft + 1, canvasW - rightRulerWorld);
+      const boundBottom = canvasH;
+      const boundW = Math.max(1, boundRight - boundLeft);
+      const boundH = Math.max(1, boundBottom - boundTop);
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+
+      for (const o of list) {
+        const sx = Number.isFinite(Number(o?.scaleX)) && Number(o?.scaleX) > 0
+          ? Number(o.scaleX)
+          : Number.isFinite(Number(o?.scale)) && Number(o?.scale) > 0
+          ? Number(o.scale)
+          : 1;
+        const sy = Number.isFinite(Number(o?.scaleY)) && Number(o?.scaleY) > 0
+          ? Number(o.scaleY)
+          : Number.isFinite(Number(o?.scale)) && Number(o?.scale) > 0
+          ? Number(o.scale)
+          : 1;
+        const bb = o?.bbox || { x: 0, y: 0, width: 1, height: 1 };
+        const bx = Number(bb.x) || 0;
+        const by = Number(bb.y) || 0;
+        const bw = Math.max(1, Number(bb.width) || 1);
+        const bh = Math.max(1, Number(bb.height) || 1);
+        const tx = Number(o?.tx) || 0;
+        const ty = Number(o?.ty) || 0;
+        const left = tx + sx * bx;
+        const top = ty + sy * by;
+        const right = tx + sx * (bx + bw);
+        const bottom = ty + sy * (by + bh);
+        minX = Math.min(minX, left);
+        minY = Math.min(minY, top);
+        maxX = Math.max(maxX, right);
+        maxY = Math.max(maxY, bottom);
+      }
+
+      if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+        return list;
+      }
+
+      let dx = 0;
+      let dy = 0;
+      const snapPad = 8;
+      // Only correct when the full overlay set is outside the canvas bounds.
+      // This avoids jumpy repositioning while resizing the browser.
+      if (maxX < boundLeft) dx = boundLeft - maxX + snapPad;
+      else if (minX > boundRight) dx = boundRight - minX - snapPad;
+
+      if (maxY < boundTop) dy = boundTop - maxY + snapPad;
+      else if (minY > boundBottom) dy = boundBottom - minY - snapPad;
+
+      if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return list;
+
+      return list.map((o) => ({
+        ...o,
+        tx: (Number(o?.tx) || 0) + dx,
+        ty: (Number(o?.ty) || 0) + dy,
+      }));
+    });
+  }
+
+  useEffect(() => {
+    let resizeTimer = null;
+    const handleResize = () => {
+      if (resizeTimer) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        clampExistingOverlaysToCanvasBounds();
+      }, 260);
+    };
+    window.addEventListener("resize", handleResize);
+    // One pass after layout settles for mode/viewbox changes.
+    const t = window.setTimeout(() => clampExistingOverlaysToCanvasBounds(), 260);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      if (resizeTimer) window.clearTimeout(resizeTimer);
+      window.clearTimeout(t);
+    };
+  }, [isLiveMode, vbW, vbH]);
+
   function cacheSvgRawByUrl(url, raw) {
     const cache = svgRawCacheRef.current;
     if (!cache) return;
@@ -4744,18 +4946,20 @@ function flushScheduledProjectSave() {
     if (!entry) {
       const w = Math.max(40, Number(targetW) || 120);
       const h = Math.max(30, w * 0.6);
+      const bbox = { x: 0, y: 0, width: w, height: h };
+      const clamped = clampOverlayTransformToCanvas(center.x - w / 2, center.y - h / 2, 1, 1, bbox);
       return {
         id: uid(),
         sourceKey: fileKey || "__unknown__",
         name: fileKey ? fileKey.split("/").pop() || fileKey : "Unknown",
         inner: `<rect x="0" y="0" width="${w}" height="${h}" fill="${DEFAULT_FILL}" stroke="${DEFAULT_STROKE}" stroke-width="2" />`,
-        tx: center.x - w / 2,
-        ty: center.y - h / 2,
+        tx: clamped.tx,
+        ty: clamped.ty,
         scale: 1,
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         tagPath: "",
-        bbox: { x: 0, y: 0, width: w, height: h },
+        bbox,
       };
     }
 
@@ -4763,18 +4967,20 @@ function flushScheduledProjectSave() {
     if (typeof raw !== "string") {
       const w = Math.max(40, Number(targetW) || 120);
       const h = Math.max(30, w * 0.6);
+      const bbox = { x: 0, y: 0, width: w, height: h };
+      const clamped = clampOverlayTransformToCanvas(center.x - w / 2, center.y - h / 2, 1, 1, bbox);
       return {
         id: uid(),
         sourceKey: fileKey || "__unknown__",
         name: fileKey ? fileKey.split("/").pop() || fileKey : "Unknown",
         inner: `<rect x="0" y="0" width="${w}" height="${h}" fill="${DEFAULT_FILL}" stroke="${DEFAULT_STROKE}" stroke-width="2" />`,
-        tx: center.x - w / 2,
-        ty: center.y - h / 2,
+        tx: clamped.tx,
+        ty: clamped.ty,
         scale: 1,
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         tagPath: "",
-        bbox: { x: 0, y: 0, width: w, height: h },
+        bbox,
       };
     }
 
@@ -4782,18 +4988,20 @@ function flushScheduledProjectSave() {
     if (!parsed) {
       const w = Math.max(40, Number(targetW) || 120);
       const h = Math.max(30, w * 0.6);
+      const bbox = { x: 0, y: 0, width: w, height: h };
+      const clamped = clampOverlayTransformToCanvas(center.x - w / 2, center.y - h / 2, 1, 1, bbox);
       return {
         id: uid(),
         sourceKey: fileKey || "__unknown__",
         name: fileKey ? fileKey.split("/").pop() || fileKey : "Unknown",
         inner: `<rect x="0" y="0" width="${w}" height="${h}" fill="${DEFAULT_FILL}" stroke="${DEFAULT_STROKE}" stroke-width="2" />`,
-        tx: center.x - w / 2,
-        ty: center.y - h / 2,
+        tx: clamped.tx,
+        ty: clamped.ty,
         scale: 1,
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         tagPath: "",
-        bbox: { x: 0, y: 0, width: w, height: h },
+        bbox,
       };
     }
 
@@ -4823,18 +5031,20 @@ function flushScheduledProjectSave() {
     const tx = center.x - scale * srcCx;
     const ty = center.y - scale * srcCy;
 
+    const bbox = { x: localVb.x, y: localVb.y, width: localVb.w, height: localVb.h };
+    const clamped = clampOverlayTransformToCanvas(tx, ty, scale, scale, bbox);
     return {
       id: uid(),
       sourceKey: fileKey,
       name: fileKey.split("/").pop() || fileKey,
       inner,
-      tx,
-      ty,
+      tx: clamped.tx,
+      ty: clamped.ty,
       scale,
       fill: DEFAULT_FILL,
       stroke: DEFAULT_STROKE,
       tagPath: "",
-      bbox: { x: localVb.x, y: localVb.y, width: localVb.w, height: localVb.h },
+      bbox,
     };
   }
 
@@ -5066,6 +5276,7 @@ function flushScheduledProjectSave() {
     exitEditMode();
     setDrawing(null);
     setTool("select");
+    scheduleProjectAutoSave(120);
   }
 
 
@@ -5156,6 +5367,7 @@ function flushScheduledProjectSave() {
     exitEditMode();
     setDrawing(null);
     setTool("select");
+    scheduleProjectAutoSave(120);
   }
 
   function handleDuplicate() {
@@ -5780,6 +5992,7 @@ function flushScheduledProjectSave() {
 
     // ✅ bbox must be in the SAME local coordinate system the overlay uses
     const bbox = { x: localVb.x, y: localVb.y, width: localVb.w, height: localVb.h };
+    const clamped = clampOverlayTransformToCanvas(tx, ty, scale, scale, bbox);
 
     const normalizedInner = inner;
     const id = uid();
@@ -5790,8 +6003,8 @@ function flushScheduledProjectSave() {
         sourceKey: fileKey,
         name: fileKey.split("/").pop() || fileKey,
         inner: normalizedInner,
-        tx,
-        ty,
+        tx: clamped.tx,
+        ty: clamped.ty,
         scale,
         fill: DEFAULT_FILL,
         tagPath: "",
@@ -6167,6 +6380,7 @@ function flushScheduledProjectSave() {
     widgetAxisMode: "auto",
     widgetTimerPreTag: "",
     widgetTimerAccTag: "",
+    faultSimulated: false,
   });
 
 
@@ -6209,6 +6423,7 @@ function flushScheduledProjectSave() {
         widgetAxisMode: "auto",
         widgetTimerPreTag: "",
         widgetTimerAccTag: "",
+        faultSimulated: false,
       });
       return;
     }
@@ -6293,6 +6508,7 @@ function flushScheduledProjectSave() {
           widgetAxisMode: String(w.axisMode === "manual" ? "manual" : "auto"),
           widgetTimerPreTag: String(w.timerPreTag || ""),
           widgetTimerAccTag: String(w.timerAccTag || ""),
+          faultSimulated: Boolean(o.faultSimulated),
           widgetBarSourceMode: barSourceMode,
           widgetBarTable: String(w.barTable || parsedDb?.table || ""),
           widgetBarField: String(w.barField || parsedDb?.field || ""),
@@ -6348,6 +6564,7 @@ function flushScheduledProjectSave() {
           widgetAxisMode: "auto",
           widgetTimerPreTag: "",
           widgetTimerAccTag: "",
+          faultSimulated: false,
           widgetBarSourceMode: "table",
           widgetBarTable: "",
           widgetBarField: "",
@@ -6398,6 +6615,7 @@ function flushScheduledProjectSave() {
       widgetAxisMode: "auto",
       widgetTimerPreTag: "",
       widgetTimerAccTag: "",
+      faultSimulated: false,
       widgetBarSourceMode: "table",
       widgetBarTable: "",
       widgetBarField: "",
@@ -6439,6 +6657,15 @@ function flushScheduledProjectSave() {
     } else if (singleKind === "SVG" || singleKind === "Widget") {
       setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, tagPath: v } : o)));
     }
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleFaultSim(nextValue) {
+    if (!isSingle || singleKind !== "SVG" || !singleId) return;
+    const enabled = Boolean(nextValue);
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.id === singleId ? { ...o, faultSimulated: enabled } : o))
+    );
     scheduleProjectAutoSave();
   }
 
@@ -6940,6 +7167,49 @@ function flushScheduledProjectSave() {
     if (projectDrawerTab !== "project") setProjectDrawerTab("project");
   }, [isLiveMode, projectDrawerTab]);
 
+  useEffect(() => {
+    const prev = Array.isArray(prevLiveEquipmentOverlayIdsRef.current)
+      ? prevLiveEquipmentOverlayIdsRef.current
+      : [];
+    const next = Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds : [];
+    const prevSet = new Set(prev.map((id) => String(id || "")));
+    const added = next
+      .map((id) => String(id || "").trim())
+      .filter((id) => id && !prevSet.has(id));
+    if (added.length) {
+      setLiveEquipmentConnectFxById((cur) => {
+        const out = { ...(cur || {}) };
+        for (const id of added) out[id] = true;
+        return out;
+      });
+      for (const id of added) {
+        const existing = liveEquipmentConnectFxTimersRef.current.get(id);
+        if (existing) window.clearTimeout(existing);
+        const timer = window.setTimeout(() => {
+          setLiveEquipmentConnectFxById((cur) => {
+            if (!cur || !cur[id]) return cur;
+            const out = { ...cur };
+            delete out[id];
+            return out;
+          });
+          liveEquipmentConnectFxTimersRef.current.delete(id);
+        }, 900);
+        liveEquipmentConnectFxTimersRef.current.set(id, timer);
+      }
+    }
+    prevLiveEquipmentOverlayIdsRef.current = next.slice();
+  }, [liveEquipmentOverlayIds]);
+
+  useEffect(
+    () => () => {
+      for (const timer of liveEquipmentConnectFxTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      liveEquipmentConnectFxTimersRef.current.clear();
+    },
+    []
+  );
+
   function onLiveOverlayMouseDown(e, id) {
     const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === String(id || ""));
     if (overlay?.widget) return;
@@ -6965,7 +7235,7 @@ function flushScheduledProjectSave() {
       const list = Array.isArray(prev) ? prev : [];
       if (list.some((x) => String(x || "") === nextId)) return list;
       const without = list.filter((x) => String(x || "") !== nextId);
-      return [...without, nextId];
+      return [...without, nextId].slice(-MAX_LIVE_EQUIPMENT_POPUPS);
     });
   }
 
@@ -6977,7 +7247,8 @@ function flushScheduledProjectSave() {
         const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === String(id || ""));
         return overlay && !overlay.widget;
       });
-      return keep.length === list.length ? list : keep;
+      const capped = keep.slice(-MAX_LIVE_EQUIPMENT_POPUPS);
+      return capped.length === list.length ? list : capped;
     });
     if (String(liveEquipmentDrawerOverlayId || "").trim()) {
       const drawerOverlay = (svgOverlays || []).find(
@@ -6985,7 +7256,7 @@ function flushScheduledProjectSave() {
       );
       if (drawerOverlay?.widget) setLiveEquipmentDrawerOverlayId("");
     }
-  }, [svgOverlays, liveEquipmentDrawerOverlayId]);
+  }, [svgOverlays, liveEquipmentDrawerOverlayId, MAX_LIVE_EQUIPMENT_POPUPS]);
 
   function closeLiveEquipmentCard(id) {
     const nextId = String(id || "").trim();
@@ -8414,7 +8685,7 @@ function flushScheduledProjectSave() {
   const liveMenuRailWidthPx = isLiveMode
     ? (isLiveMobile ? 0 : liveMenuIsExpanded ? liveMenuExpandedWidthPx : liveMenuCollapsedWidthPx)
     : 0;
-  const liveCanvasMenuGapPx = isLiveMode ? (isLiveMobile ? 6 : 10) : 0;
+  const liveCanvasMenuGapPx = 0;
   const liveBottomCarouselHeightPx = isLiveMode && isLiveMobile ? 84 : 0;
   const canvasReadOnly = isLiveMode || !canEditProject;
   const liveEquipmentDrawerWidthPx =
@@ -8427,7 +8698,6 @@ function flushScheduledProjectSave() {
   const mainDrawerAppendLeftPx =
     projectDrawerInsetPx + liveMenuRailWidthPx + liveEquipmentDrawerWidthPx;
   const liveAlarmBarOffset = isLiveMode ? LIVE_ALARM_BAR_H : 0;
-  const previousCanvasLeftInsetRef = useRef(canvasLeftInsetBasePx);
   const [liveAlarmOccurredAtById, setLiveAlarmOccurredAtById] = useState({});
   const liveActiveAlarmsWithOccurred = useMemo(
     () =>
@@ -8508,18 +8778,6 @@ function flushScheduledProjectSave() {
   }, [liveActiveAlarms]);
 
   useEffect(() => {
-    const prev = Number(previousCanvasLeftInsetRef.current || 0);
-    const next = Number(canvasLeftInsetBasePx || 0);
-    const dx = next - prev;
-    previousCanvasLeftInsetRef.current = next;
-    if (!Number.isFinite(dx) || Math.abs(dx) < 0.01) return;
-    setPan((p) => ({
-      x: Number((p?.x || 0) + dx),
-      y: Number(p?.y || 0),
-    }));
-  }, [canvasLeftInsetBasePx]);
-
-  useEffect(() => {
     const viewport = liveAlarmMarqueeViewportRef.current;
     const track = liveAlarmMarqueeTrackRef.current;
     if (!viewport || !track || !hasLiveAlarms) {
@@ -8571,7 +8829,7 @@ function flushScheduledProjectSave() {
         userSelect: "none",
         WebkitUserSelect: "none",
         paddingTop: TOP_BAR_H + liveAlarmBarOffset,
-        paddingLeft: `${canvasLeftInsetPx}px`,
+        paddingLeft: 0,
         boxSizing: "border-box",
       }}
     >
@@ -8587,6 +8845,15 @@ function flushScheduledProjectSave() {
         @keyframes live-menu-arrow-pulse {
           0%, 100% { transform: translateX(0); }
           50% { transform: translateX(2px); }
+        }
+        @keyframes live-eq-link-grow {
+          0% { stroke-dashoffset: var(--link-len, 1px); opacity: 1; }
+          100% { stroke-dashoffset: 0; opacity: 0; }
+        }
+        @keyframes live-eq-link-dot-connect {
+          0% { transform: scale(0.8); opacity: 0.35; }
+          45% { transform: scale(1.45); opacity: 1; }
+          100% { transform: scale(1); opacity: 0.85; }
         }
       `}</style>
       <ViewBoxModal
@@ -8624,6 +8891,7 @@ function flushScheduledProjectSave() {
         applySingleFill={applySingleFill}
         applySingleStroke={applySingleStroke}
         applySingleSvgStrokeWidth={applySingleSvgStrokeWidth}
+        applySingleFaultSim={applySingleFaultSim}
         applyBBoxFromHud={applyBBoxFromHud}
         applySingleArrowStart={applySingleArrowStart}
         applySingleArrowEnd={applySingleArrowEnd}
@@ -8665,7 +8933,7 @@ function flushScheduledProjectSave() {
           theme={theme}
           canvasBackgroundColor={activeCanvasBackgroundColor}
           viewportTopOffset={TOP_BAR_H + liveAlarmBarOffset}
-          viewportLeftOffset={canvasLeftInsetPx}
+          viewportLeftOffset={0}
           liveClickable={isLiveMode}
           zoom={zoom}          // ✅ NEW
           onWheel={onWheelZoom} // ✅ NEW
@@ -8848,11 +9116,41 @@ function flushScheduledProjectSave() {
               {liveEquipmentConnectorLines.map((line) => {
                 const midY = line.toY - 26;
                 const d = `M ${line.fromX} ${line.fromY} C ${line.fromX} ${midY}, ${line.toX} ${midY}, ${line.toX} ${line.toY}`;
+                const showConnectFx = Boolean(liveEquipmentConnectFxById?.[line.id]);
                 return (
                   <g key={`live-eq-link-${line.id}`}>
                     <path d={d} fill="none" stroke="rgba(43,108,255,0.24)" strokeWidth="6" strokeLinecap="round" />
                     <path d={d} fill="none" stroke="rgba(255,255,255,0.62)" strokeWidth="1.3" strokeLinecap="round" />
-                    <circle cx={line.fromX} cy={line.fromY} r="3.2" fill="rgba(43,108,255,0.8)" />
+                    {showConnectFx ? (
+                      (() => {
+                        const approxLen = Math.max(24, Math.hypot(line.toX - line.fromX, line.toY - line.fromY) * 1.15);
+                        return (
+                          <path
+                            d={d}
+                            fill="none"
+                            stroke="rgba(147,197,253,0.95)"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                            strokeDasharray={approxLen}
+                            strokeDashoffset={approxLen}
+                            style={{
+                              ["--link-len"]: `${approxLen}px`,
+                              animation: "live-eq-link-grow 1.2s ease-out 1",
+                            }}
+                          />
+                        );
+                      })()
+                    ) : null}
+                    <circle
+                      cx={line.fromX}
+                      cy={line.fromY}
+                      r="3.2"
+                      fill="rgba(43,108,255,0.8)"
+                      style={{
+                        transformOrigin: `${line.fromX}px ${line.fromY}px`,
+                        animation: showConnectFx ? "live-eq-link-dot-connect 0.9s ease-out 1" : undefined,
+                      }}
+                    />
                   </g>
                 );
               })}
@@ -9116,7 +9414,7 @@ function flushScheduledProjectSave() {
           {[
             { label: "+", onClick: zoomIn, title: "Zoom In" },
             { label: "−", onClick: zoomOut, title: "Zoom Out" },
-            { label: "⟲", onClick: resetView, title: "Reset View" },
+            { label: "⟲", onClick: zoomReset, title: "Reset Zoom (100%)" },
             {
               label: isAppFullscreen ? "⤢" : "⛶",
               onClick: toggleAppFullscreen,
@@ -10755,83 +11053,23 @@ function flushScheduledProjectSave() {
         />
       </div>
 
-      {isLiveMode ? (
-        <div
-          className={`vizi-live-alarmbar vizi-scroll ${hasLiveAlarms ? "is-alert" : "is-clear"}`}
-          onClick={() => {
-            setLiveMenuCollapsed(false);
-            openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath });
-          }}
-          title="Open alarms"
-          style={{
-            position: "fixed",
-            top: TOP_BAR_H,
-            left: projectDrawerInsetPx,
-            right: 0,
-            height: LIVE_ALARM_BAR_H,
-            zIndex: 205,
-            borderBottom: "1px solid var(--border)",
-            background:
-              hasLiveAlarms
-                ? theme === "dark"
-                  ? "linear-gradient(180deg, color-mix(in srgb, #f04438 18%, var(--bg-elev) 82%) 0%, color-mix(in srgb, #f04438 12%, var(--bg) 88%) 100%)"
-                  : "linear-gradient(180deg, color-mix(in srgb, #f04438 40%, #ffffff 60%) 0%, color-mix(in srgb, #dc2626 32%, #ffffff 68%) 100%)"
-                : "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, #0b2448 6%) 0%, color-mix(in srgb, var(--bg) 92%, #040d1f 8%) 100%)",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "0 10px",
-            overflowX: "hidden",
-            overflowY: "visible",
-            whiteSpace: "nowrap",
-            cursor: "pointer",
-          }}
-        >
-            <div
-              className="vizi-live-alarmbar-title"
-              style={{
-                fontSize: 11,
-                fontWeight: 800,
-              color: hasLiveAlarms ? (theme === "dark" ? "#fca5a5" : "#7f1d1d") : "var(--text-muted)",
-                textTransform: "uppercase",
-                letterSpacing: "0.04em",
-                flex: "0 0 auto",
-              }}
-            >
-            {hasLiveAlarms ? `Alarms (${liveActiveAlarmsWithOccurred.length})` : "Alarms clear"}
-          </div>
-          {hasLiveAlarms ? (
-            <div ref={liveAlarmMarqueeViewportRef} className="vizi-live-alarm-marquee">
-              <div
-                ref={liveAlarmMarqueeTrackRef}
-                className="vizi-live-alarm-marquee-track"
-                style={{ ["--alarm-marquee-duration"]: `${liveAlarmMarqueeDurationSec}s` }}
-              >
-                {[0, 1, 2].map((segment) => (
-                  <Fragment key={`alarm-marquee-segment-${segment}`}>
-                    <div
-                      className="vizi-live-alarm-marquee-group"
-                      aria-hidden={segment > 0 ? "true" : undefined}
-                    >
-                      {liveAlarmMarqueeItems.map((item, idx) => (
-                        <div
-                          key={`alarm-marquee-${segment}-${item.id || idx}`}
-                          className="vizi-live-alarm-marquee-item"
-                          title={item.title}
-                        >
-                          <span className="vizi-live-alarm-marquee-item-label">{item.label}</span>
-                          {item.at ? <span className="vizi-live-alarm-marquee-item-time">{item.at}</span> : null}
-                        </div>
-                      ))}
-                    </div>
-                    <div className="vizi-live-alarm-marquee-gap" aria-hidden="true" />
-                  </Fragment>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      <LiveAlarmBar
+        visible={isLiveMode}
+        hasLiveAlarms={hasLiveAlarms}
+        theme={theme}
+        top={TOP_BAR_H}
+        left={projectDrawerInsetPx}
+        height={LIVE_ALARM_BAR_H}
+        alarmCount={liveActiveAlarmsWithOccurred.length}
+        liveAlarmMarqueeViewportRef={liveAlarmMarqueeViewportRef}
+        liveAlarmMarqueeTrackRef={liveAlarmMarqueeTrackRef}
+        liveAlarmMarqueeDurationSec={liveAlarmMarqueeDurationSec}
+        liveAlarmMarqueeItems={liveAlarmMarqueeItems}
+        onOpenAlarms={() => {
+          setLiveMenuCollapsed(false);
+          openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath });
+        }}
+      />
 
       {isLiveMode && isLiveMobile ? (
         <div
