@@ -2648,8 +2648,8 @@ export default function CanvasSvg({
   const vbHeight = Math.max(1, Number(vbH) || 1);
   const viewportScale =
     innerW > 0 && innerH > 0 ? Math.min(innerW / vbWidth, innerH / vbHeight) : 1;
-  const viewportOffsetX = (innerW - vbWidth * viewportScale) / 2;
-  const viewportOffsetY = (innerH - vbHeight * viewportScale) / 2;
+  const viewportOffsetX = 0;
+  const viewportOffsetY = 0;
 
   // current transform values (WORLD -> SCREEN)
   const z = zoom || 1;
@@ -3164,7 +3164,7 @@ export default function CanvasSvg({
           width="100%"
           height="100%"
           viewBox={vb}
-          preserveAspectRatio="xMidYMid meet"
+          preserveAspectRatio="xMinYMin meet"
           data-canvas-zoom-root="true"
           ref={svgRef}
           tabIndex={0}
