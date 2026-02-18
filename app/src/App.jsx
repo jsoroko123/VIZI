@@ -295,6 +295,8 @@ function defaultLiveMenuGroupsFromScreens(sourceScreens) {
       type: "screen",
       screenId: String(screen?.id || ""),
       label: "",
+      restricted: false,
+      allowedRoleIds: [],
     }))
     .filter((item) => item.screenId);
   return [
@@ -304,6 +306,14 @@ function defaultLiveMenuGroupsFromScreens(sourceScreens) {
       items,
     },
   ];
+}
+
+function normalizeRoleIdList(value) {
+  const list = Array.isArray(value) ? value : [];
+  const ids = list
+    .map((x) => Number.parseInt(String(x), 10))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return Array.from(new Set(ids));
 }
 
 function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
@@ -324,6 +334,8 @@ function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
               type,
               screenId,
               label: String(item?.label || "").trim(),
+              restricted: Boolean(item?.restricted),
+              allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
             };
           }
           return {
@@ -331,6 +343,8 @@ function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
             type: "data",
             dataTable: String(item?.dataTable || "").trim(),
             label: String(item?.label || "").trim(),
+            restricted: Boolean(item?.restricted),
+            allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
           };
         })
         .filter(Boolean);
@@ -691,6 +705,15 @@ export default function App() {
   const [databaseEmbeddedPath, setDatabaseEmbeddedPath] = useState("");
   const [databaseDataOnlyMode, setDatabaseDataOnlyMode] = useState(false);
   const [databaseTablesForMenu, setDatabaseTablesForMenu] = useState([]);
+  const [securityRolesForMenu, setSecurityRolesForMenu] = useState([]);
+  const [showTeamChat, setShowTeamChat] = useState(false);
+  const [teamChatMessages, setTeamChatMessages] = useState([]);
+  const [teamChatDraft, setTeamChatDraft] = useState("");
+  const [teamChatLoading, setTeamChatLoading] = useState(false);
+  const [teamChatSending, setTeamChatSending] = useState(false);
+  const [teamChatUnreadCount, setTeamChatUnreadCount] = useState(0);
+  const [teamChatLastSeenId, setTeamChatLastSeenId] = useState(0);
+  const teamChatBodyRef = useRef(null);
   const [liveActiveAlarmsDb, setLiveActiveAlarmsDb] = useState([]);
   const [liveActiveAlarmsDbLoaded, setLiveActiveAlarmsDbLoaded] = useState(false);
   const [svgCatalogFiles, setSvgCatalogFiles] = useState([]);
@@ -822,6 +845,88 @@ export default function App() {
       alive = false;
     };
   }, [isPageVisible]);
+
+  async function loadTeamChatMessages({ silent = false } = {}) {
+    if (!silent) setTeamChatLoading(true);
+    try {
+      const res = await fetch("/api/chat/messages");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to load chat.");
+      const next = Array.isArray(data?.messages) ? data.messages : [];
+      setTeamChatMessages(next);
+      return next;
+    } catch (err) {
+      if (!silent) toastError(err?.message || "Failed to load chat.");
+      return [];
+    } finally {
+      if (!silent) setTeamChatLoading(false);
+    }
+  }
+
+  async function sendTeamChatMessage() {
+    const msg = String(teamChatDraft || "").trim();
+    if (!msg || teamChatSending) return;
+    setTeamChatSending(true);
+    try {
+      const res = await fetch("/api/chat/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to send message.");
+      setTeamChatDraft("");
+      const next = await loadTeamChatMessages({ silent: true });
+      const latestId = next.reduce((maxId, row) => Math.max(maxId, Number(row?.id) || 0), 0);
+      if (latestId > 0) setTeamChatLastSeenId((prev) => Math.max(prev, latestId));
+      setTeamChatUnreadCount(0);
+    } catch (err) {
+      toastError(err?.message || "Failed to send message.");
+    } finally {
+      setTeamChatSending(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    let cancelled = false;
+    let timer = 0;
+    const pollMs = isPageVisible ? 2500 : 7000;
+    const run = async () => {
+      const next = await loadTeamChatMessages({ silent: true });
+      if (cancelled) return;
+      const latestId = next.reduce((maxId, row) => Math.max(maxId, Number(row?.id) || 0), 0);
+      if (showTeamChat) {
+        if (latestId > 0) setTeamChatLastSeenId((prev) => Math.max(prev, latestId));
+        setTeamChatUnreadCount(0);
+      } else if (latestId > teamChatLastSeenId) {
+        const currentUserId = Number(user?.id || 0);
+        const unread = next.filter((row) => {
+          const rowId = Number(row?.id || 0);
+          if (!(rowId > teamChatLastSeenId)) return false;
+          const authorId = Number(row?.user_id || 0);
+          if (currentUserId > 0 && authorId === currentUserId) return false;
+          return true;
+        }).length;
+        setTeamChatUnreadCount(unread);
+      }
+      timer = window.setTimeout(run, pollMs);
+    };
+    run();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [user?.id, isPageVisible, showTeamChat, teamChatLastSeenId]);
+
+  useEffect(() => {
+    if (!showTeamChat) return;
+    const latestId = teamChatMessages.reduce((maxId, row) => Math.max(maxId, Number(row?.id) || 0), 0);
+    if (latestId > 0) setTeamChatLastSeenId((prev) => Math.max(prev, latestId));
+    setTeamChatUnreadCount(0);
+    const el = teamChatBodyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [showTeamChat, teamChatMessages]);
 
   useEffect(() => {
     if (!isLiveMode) {
@@ -1658,10 +1763,34 @@ export default function App() {
     });
     return alarms;
   }, [opcTags, opcLiveValues]);
+  const liveTestAlarms = useMemo(
+    () => [
+      {
+        id: "test.alarm.high_pressure",
+        label: "TEST High Pressure",
+        topic: "TEST",
+        operator: ">",
+        threshold: "120",
+        value: "128",
+        occurredAt: Date.now() - 60_000,
+      },
+      {
+        id: "test.alarm.motor_fault",
+        label: "TEST Motor Fault",
+        topic: "TEST",
+        operator: "==",
+        threshold: "1",
+        value: "1",
+        occurredAt: Date.now() - 15_000,
+      },
+    ],
+    []
+  );
   const liveActiveAlarms = useMemo(() => {
-    if (liveActiveAlarmsDbLoaded) return liveActiveAlarmsDb;
-    return liveActiveAlarmsComputed;
-  }, [liveActiveAlarmsDbLoaded, liveActiveAlarmsDb, liveActiveAlarmsComputed]);
+    const source = liveActiveAlarmsDbLoaded ? liveActiveAlarmsDb : liveActiveAlarmsComputed;
+    if (Array.isArray(source) && source.length) return source;
+    return liveTestAlarms;
+  }, [liveActiveAlarmsDbLoaded, liveActiveAlarmsDb, liveActiveAlarmsComputed, liveTestAlarms]);
   const buildLiveEquipmentDetails = (overlay) => {
     if (!overlay) return [];
     const path = String(overlay.tagPath || "").trim();
@@ -2904,8 +3033,7 @@ export default function App() {
   });
   const [profileDraft, setProfileDraft] = useState({ username: "", display_name: "", avatar_url: "" });
   const [passwordDraft, setPasswordDraft] = useState({ current: "", next: "" });
-  const [profileEditing, setProfileEditing] = useState(false);
-  const [passwordEditing, setPasswordEditing] = useState(false);
+  const [userSettingsEditing, setUserSettingsEditing] = useState(false);
   const [profileStatus, setProfileStatus] = useState("");
   const [profileError, setProfileError] = useState("");
 
@@ -3213,28 +3341,38 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    if (profileEditing) return;
+    if (userSettingsEditing) return;
     setProfileDraft({
       username: user.username || "",
       display_name: user.display_name || "",
       avatar_url: user.avatar_url || "",
     });
-  }, [user, profileEditing]);
+  }, [user, userSettingsEditing]);
 
-  function resetProfileDraftFromUser() {
+  function resetUserSettingsDraftsFromUser() {
     setProfileDraft({
       username: user?.username || "",
       display_name: user?.display_name || "",
       avatar_url: user?.avatar_url || "",
     });
+    setPasswordDraft({ current: "", next: "" });
   }
 
-  function cancelProfileEdit() {
-    resetProfileDraftFromUser();
-    setProfileEditing(false);
+  function beginUserSettingsEdit() {
+    resetUserSettingsDraftsFromUser();
+    setProfileError("");
+    setProfileStatus("");
+    setUserSettingsEditing(true);
   }
 
-  async function saveProfileEdit() {
+  function cancelUserSettingsEdit() {
+    resetUserSettingsDraftsFromUser();
+    setProfileError("");
+    setProfileStatus("");
+    setUserSettingsEditing(false);
+  }
+
+  async function saveUserSettingsEdit() {
     setProfileError("");
     setProfileStatus("");
     try {
@@ -3245,25 +3383,24 @@ export default function App() {
       });
       await refresh();
       setProfileStatus("Profile updated.");
-      setProfileEditing(false);
+      setUserSettingsEditing(false);
     } catch (err) {
-      setProfileError(err?.message || "Update failed.");
+      setProfileError(err?.message || "Profile update failed.");
     }
   }
 
-  function cancelPasswordEdit() {
-    setPasswordDraft({ current: "", next: "" });
-    setPasswordEditing(false);
-  }
-
-  async function savePasswordEdit() {
+  async function saveSecurityPassword() {
     setProfileError("");
     setProfileStatus("");
     try {
+      const hasCurrentPassword = String(passwordDraft.current || "").trim().length > 0;
+      const hasNextPassword = String(passwordDraft.next || "").trim().length > 0;
+      if (!hasCurrentPassword || !hasNextPassword) {
+        throw new Error("Enter both current and new password.");
+      }
       await changePassword(passwordDraft.current, passwordDraft.next);
       setPasswordDraft({ current: "", next: "" });
       setProfileStatus("Password updated.");
-      setPasswordEditing(false);
     } catch (err) {
       setProfileError(err?.message || "Password update failed.");
     }
@@ -3320,8 +3457,68 @@ export default function App() {
   };
   const canViewScreenPages = canViewArea("project");
   const canViewDataPages = canViewArea("database");
-  const canAccessLiveMenuItem = (item) =>
-    String(item?.type || "").toLowerCase() === "data" ? canViewDataPages : canViewScreenPages;
+  const currentUserRoleIds = useMemo(
+    () =>
+      new Set(
+        (Array.isArray(user?.roles) ? user.roles : [])
+          .map((r) => Number(r?.id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    [user]
+  );
+  const canAccessLiveMenuItem = (item) => {
+    const areaAllowed =
+      String(item?.type || "").toLowerCase() === "data" ? canViewDataPages : canViewScreenPages;
+    if (!areaAllowed) return false;
+    const restricted = Boolean(item?.restricted);
+    if (!restricted) return true;
+    const allowedRoleIds = normalizeRoleIdList(item?.allowedRoleIds);
+    if (!allowedRoleIds.length) return false;
+    for (const id of allowedRoleIds) {
+      if (currentUserRoleIds.has(id)) return true;
+    }
+    return false;
+  };
+  const isLiveMenuItemRoleRestricted = (item) => {
+    const restricted = Boolean(item?.restricted);
+    if (!restricted) return false;
+    const allowedRoleIds = normalizeRoleIdList(item?.allowedRoleIds);
+    if (!allowedRoleIds.length) return true;
+    for (const id of allowedRoleIds) {
+      if (currentUserRoleIds.has(id)) return false;
+    }
+    return true;
+  };
+
+  useEffect(() => {
+    if (!canManageSecurity) {
+      setSecurityRolesForMenu([]);
+      return;
+    }
+    let cancelled = false;
+    async function loadSecurityRoles() {
+      try {
+        const res = await fetch("/api/security/roles");
+        const data = await res.json();
+        if (!res.ok || cancelled) return;
+        const roles = Array.isArray(data?.roles)
+          ? data.roles
+              .map((r) => ({
+                id: Number(r?.id),
+                name: String(r?.name || "").trim(),
+              }))
+              .filter((r) => Number.isFinite(r.id) && r.id > 0 && r.name)
+          : [];
+        setSecurityRolesForMenu(roles);
+      } catch {
+        if (!cancelled) setSecurityRolesForMenu([]);
+      }
+    }
+    loadSecurityRoles();
+    return () => {
+      cancelled = true;
+    };
+  }, [canManageSecurity]);
 
 
   // ✅ ZOOM (main svg)
@@ -7583,6 +7780,8 @@ export default function App() {
   const menuSize = isEmptyMenu ? { w: 210, h: 260 } : { w: 190, h: 240 };
   const winW = typeof window !== "undefined" ? window.innerWidth : 0;
   const winH = typeof window !== "undefined" ? window.innerHeight : 0;
+  const isLiveMobile = isLiveMode && winW > 0 && winW <= 900;
+  const showLiveIdentityChips = !isLiveMode || winW > 900;
   const menuLeft = contextMenu
     ? Math.min(Math.max(12, contextMenu.x), Math.max(12, winW - menuSize.w - 12))
     : 0;
@@ -7651,7 +7850,9 @@ export default function App() {
     display: "grid",
     placeItems: "center",
   };
-  const drawerContentPadding = 16;
+  const rightDrawerHeaderPadding = "12px 14px";
+  const rightDrawerBodyPadding = 14;
+  const drawerContentPadding = rightDrawerBodyPadding;
   const drawerContentShellStyle = {
     height: "100%",
     overflow: "auto",
@@ -7708,12 +7909,19 @@ export default function App() {
   const liveMenuGroupsVisible = useMemo(
     () =>
       (Array.isArray(liveMenuGroupsForRender) ? liveMenuGroupsForRender : [])
-        .map((group) => ({
-          ...group,
-          items: (Array.isArray(group?.items) ? group.items : []).filter((item) => canAccessLiveMenuItem(item)),
-        }))
+        .map((group) => ({ ...group, items: Array.isArray(group?.items) ? group.items : [] }))
         .filter((group) => group.items.length > 0),
-    [liveMenuGroupsForRender, canViewScreenPages, canViewDataPages]
+    [liveMenuGroupsForRender]
+  );
+  const liveMenuMobileItems = useMemo(
+    () =>
+      liveMenuGroupsVisible.flatMap((group) =>
+        (Array.isArray(group?.items) ? group.items : []).map((item) => ({
+          groupName: String(group?.name || "Group"),
+          item,
+        }))
+      ),
+    [liveMenuGroupsVisible]
   );
   const activeDatabaseTable = useMemo(() => {
     const raw = String(databaseEmbeddedPath || "").trim();
@@ -7789,9 +7997,20 @@ export default function App() {
   }, [showUserDrawer]);
 
   useEffect(() => {
+    if (showUserDrawer) return;
+    setUserSettingsEditing(false);
+    setPasswordDraft({ current: "", next: "" });
+  }, [showUserDrawer]);
+
+  useEffect(() => {
     if (!showSecurityDrawer) return;
     setShowUserDrawer(false);
     setShowMainDrawer(false);
+  }, [showSecurityDrawer]);
+
+  useEffect(() => {
+    if (showSecurityDrawer) return;
+    setPasswordDraft({ current: "", next: "" });
   }, [showSecurityDrawer]);
 
   function switchToScreen(nextScreenId) {
@@ -7804,7 +8023,6 @@ export default function App() {
   }
 
   function addScreen() {
-    if (!projectNameEditing) return;
     const committed = commitCurrentScreenState(screens);
     const existingIds = new Set(committed.list.map((s) => String(s.id || "")));
     let id = `screen-${uid()}`;
@@ -7841,7 +8059,7 @@ export default function App() {
               ...group,
               items: [
                 ...group.items,
-                { id: `live-item-${uid()}`, type: "screen", screenId: id, label: "" },
+                { id: `live-item-${uid()}`, type: "screen", screenId: id, label: "", restricted: false, allowedRoleIds: [] },
               ],
             }
           : group
@@ -7953,7 +8171,6 @@ export default function App() {
   }
 
   function addLiveMenuGroup() {
-    if (!projectNameEditing) return;
     setLiveMenuGroups((prev) => {
       const normalized = normalizeLiveMenuGroups(prev, screens);
       return [
@@ -7993,18 +8210,25 @@ export default function App() {
   }
 
   function addLiveMenuItem(groupId, type = "screen") {
-    if (!projectNameEditing) return;
     const id = String(groupId || "");
     if (!id) return;
     const normalizedType = String(type || "").toLowerCase() === "data" ? "data" : "screen";
+    if (!projectNameEditing && normalizedType !== "screen") return;
     setLiveMenuGroups((prev) =>
       normalizeLiveMenuGroups(prev, screens).map((group) => {
         if (group.id !== id) return group;
         const screenId = screens[0]?.id || "";
         const item =
           normalizedType === "data"
-            ? { id: `live-item-${uid()}`, type: "data", dataTable: String(databaseTablesForMenu[0] || "").trim(), label: "" }
-            : { id: `live-item-${uid()}`, type: "screen", screenId, label: "" };
+            ? {
+                id: `live-item-${uid()}`,
+                type: "data",
+                dataTable: String(databaseTablesForMenu[0] || "").trim(),
+                label: "",
+                restricted: false,
+                allowedRoleIds: [],
+              }
+            : { id: `live-item-${uid()}`, type: "screen", screenId, label: "", restricted: false, allowedRoleIds: [] };
         return { ...group, items: [...group.items, item] };
       })
     );
@@ -8030,6 +8254,8 @@ export default function App() {
                 type: "data",
                 dataTable: String(patch?.dataTable ?? item.dataTable ?? "").trim(),
                 label: String(patch?.label ?? item.label ?? "").trim(),
+                restricted: Boolean(patch?.restricted ?? item?.restricted),
+                allowedRoleIds: normalizeRoleIdList(patch?.allowedRoleIds ?? item?.allowedRoleIds),
               };
             }
             const fallbackScreenId = screens[0]?.id || "";
@@ -8039,6 +8265,8 @@ export default function App() {
               type: "screen",
               screenId: screens.some((s) => s.id === screenId) ? screenId : fallbackScreenId,
               label: String(patch?.label ?? item.label ?? "").trim(),
+              restricted: Boolean(patch?.restricted ?? item?.restricted),
+              allowedRoleIds: normalizeRoleIdList(patch?.allowedRoleIds ?? item?.allowedRoleIds),
             };
           }),
         };
@@ -8084,7 +8312,12 @@ export default function App() {
   function activateLiveMenuItem(item) {
     if (!item || typeof item !== "object") return;
     if (!canAccessLiveMenuItem(item)) {
-      toastError("You do not have permission to open this page.");
+      const roleRestricted = isLiveMenuItemRoleRestricted(item);
+      toastError(
+        roleRestricted
+          ? "This menu item is locked for your role."
+          : "You do not have permission to open this page."
+      );
       return;
     }
     if (item.type === "data") {
@@ -8125,8 +8358,17 @@ export default function App() {
   const projectDrawerInsetPx = showProjectDrawer && !projectDrawerFullscreen ? Math.round(drawerSizes.project.w) : 0;
   const projectDrawerInset = `${projectDrawerInsetPx}px`;
   const liveMenuIsExpanded = !liveMenuCollapsed;
-  const liveMenuRailWidthPx = isLiveMode ? (liveMenuIsExpanded ? 248 : 72) : 0;
-  const liveCanvasMenuGapPx = isLiveMode ? 10 : 0;
+  const liveMenuExpandedWidthPx = isLiveMode
+    ? isLiveMobile
+      ? Math.min(220, Math.max(176, Math.floor(winW * 0.62)))
+      : 248
+    : 0;
+  const liveMenuCollapsedWidthPx = isLiveMode ? (isLiveMobile ? 54 : 72) : 0;
+  const liveMenuRailWidthPx = isLiveMode
+    ? (isLiveMobile ? 0 : liveMenuIsExpanded ? liveMenuExpandedWidthPx : liveMenuCollapsedWidthPx)
+    : 0;
+  const liveCanvasMenuGapPx = isLiveMode ? (isLiveMobile ? 6 : 10) : 0;
+  const liveBottomCarouselHeightPx = isLiveMode && isLiveMobile ? 84 : 0;
   const liveEquipmentDrawerWidthPx =
     isLiveMode && liveEquipmentDrawerEntry ? 360 : 0;
   const canvasLeftInsetBasePx =
@@ -8801,7 +9043,7 @@ export default function App() {
           style={{
             position: "fixed",
             left: isLiveMode ? undefined : Math.max(zoomPos.x, 8),
-            right: isLiveMode ? 16 : undefined,
+            right: isLiveMode ? 72 : undefined,
             bottom: 16,
             zIndex: 80,
             boxShadow: "0 12px 30px rgba(0,0,0,0.4)",
@@ -9414,7 +9656,7 @@ export default function App() {
                 display: "flex",
                 alignItems: "flex-start",
                 justifyContent: "space-between",
-                padding: "12px 16px",
+                padding: rightDrawerHeaderPadding,
                 borderBottom: "1px solid var(--border)",
                 background: "var(--bg-elev)",
                 gap: 12,
@@ -9673,7 +9915,7 @@ export default function App() {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                padding: "12px 14px",
+                padding: rightDrawerHeaderPadding,
                 borderBottom: "1px solid var(--border)",
                 background: "var(--bg-elev)",
                 gap: 10,
@@ -9707,9 +9949,22 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <div style={{ flex: "1 1 auto", overflow: "auto", padding: 14, display: "grid", gap: 12 }}>
+            <div
+              style={{
+                flex: "1 1 auto",
+                overflow: "auto",
+                padding: rightDrawerBodyPadding,
+                scrollbarGutter: "stable both-edges",
+                display: "grid",
+                gap: 12,
+                alignContent: "start",
+              }}
+            >
               <div
                 style={{
+                  width: "100%",
+                  maxWidth: 1120,
+                  boxSizing: "border-box",
                   background:
                     "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
                   border: "1px solid color-mix(in srgb, var(--border) 82%, white 18%)",
@@ -9735,15 +9990,15 @@ export default function App() {
                     Public info
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                  <label style={{ display: "grid", gap: 4, minWidth: 0, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                     Display Name
                     <input
                       value={profileDraft.display_name}
                       onChange={(e) =>
                         setProfileDraft((p) => ({ ...p, display_name: e.target.value }))
                       }
-                      readOnly={!profileEditing}
+                      readOnly={!userSettingsEditing}
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 8,
@@ -9753,17 +10008,17 @@ export default function App() {
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
-                        opacity: profileEditing ? 1 : 0.82,
-                        cursor: profileEditing ? "text" : "default",
+                        opacity: userSettingsEditing ? 1 : 0.82,
+                        cursor: userSettingsEditing ? "text" : "default",
                       }}
                     />
                   </label>
-                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                  <label style={{ display: "grid", gap: 4, minWidth: 0, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                     Username
                     <input
                       value={profileDraft.username}
                       onChange={(e) => setProfileDraft((p) => ({ ...p, username: e.target.value }))}
-                      readOnly={!profileEditing}
+                      readOnly={!userSettingsEditing}
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 8,
@@ -9773,8 +10028,8 @@ export default function App() {
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
-                        opacity: profileEditing ? 1 : 0.82,
-                        cursor: profileEditing ? "text" : "default",
+                        opacity: userSettingsEditing ? 1 : 0.82,
+                        cursor: userSettingsEditing ? "text" : "default",
                       }}
                     />
                   </label>
@@ -9786,7 +10041,7 @@ export default function App() {
                     onChange={(e) =>
                       setProfileDraft((p) => ({ ...p, avatar_url: e.target.value }))
                     }
-                    readOnly={!profileEditing}
+                    readOnly={!userSettingsEditing}
                     placeholder="https://..."
                     style={{
                       border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
@@ -9797,61 +10052,18 @@ export default function App() {
                       background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                       color: "var(--text)",
                       boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
-                      opacity: profileEditing ? 1 : 0.82,
-                      cursor: profileEditing ? "text" : "default",
+                      opacity: userSettingsEditing ? 1 : 0.82,
+                      cursor: userSettingsEditing ? "text" : "default",
                     }}
                   />
                 </label>
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                  {profileEditing ? (
-                    <button
-                      onClick={cancelProfileEdit}
-                      style={{
-                        border: "1px solid var(--border)",
-                        background: "var(--bg-elev)",
-                        color: "var(--text)",
-                        borderRadius: 8,
-                        padding: "6px 10px",
-                        minHeight: 32,
-                        minWidth: 86,
-                        fontSize: 11,
-                        cursor: "pointer",
-                        fontWeight: 700,
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  ) : null}
-                  <button
-                    onClick={() => {
-                      if (!profileEditing) {
-                        resetProfileDraftFromUser();
-                        setProfileEditing(true);
-                        return;
-                      }
-                      void saveProfileEdit();
-                    }}
-                    style={{
-                      border: "1px solid #2f6dff",
-                      background: "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
-                      color: "white",
-                      borderRadius: 8,
-                      padding: "6px 10px",
-                      minHeight: 32,
-                      minWidth: 104,
-                      fontSize: 11,
-                      cursor: "pointer",
-                      fontWeight: 700,
-                      boxShadow: "0 8px 18px rgba(43,108,255,0.35)",
-                    }}
-                  >
-                    {profileEditing ? "Save" : "Edit"}
-                  </button>
-                </div>
               </div>
 
               <div
                 style={{
+                  width: "100%",
+                  maxWidth: 1120,
+                  boxSizing: "border-box",
                   background:
                     "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
                   border: "1px solid color-mix(in srgb, var(--border) 82%, white 18%)",
@@ -9877,14 +10089,13 @@ export default function App() {
                     Update password
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                  <label style={{ display: "grid", gap: 4, minWidth: 0, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                     Current Password
                     <input
                       type="password"
                       value={passwordDraft.current}
                       onChange={(e) => setPasswordDraft((p) => ({ ...p, current: e.target.value }))}
-                      readOnly={!passwordEditing}
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 8,
@@ -9894,18 +10105,15 @@ export default function App() {
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
-                        opacity: passwordEditing ? 1 : 0.82,
-                        cursor: passwordEditing ? "text" : "default",
                       }}
                     />
                   </label>
-                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                  <label style={{ display: "grid", gap: 4, minWidth: 0, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
                     New Password
                     <input
                       type="password"
                       value={passwordDraft.next}
                       onChange={(e) => setPasswordDraft((p) => ({ ...p, next: e.target.value }))}
-                      readOnly={!passwordEditing}
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 8,
@@ -9915,62 +10123,37 @@ export default function App() {
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
-                        opacity: passwordEditing ? 1 : 0.82,
-                        cursor: passwordEditing ? "text" : "default",
                       }}
                     />
                   </label>
                 </div>
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                  {passwordEditing ? (
-                    <button
-                      onClick={cancelPasswordEdit}
-                      style={{
-                        border: "1px solid var(--border)",
-                        background: "var(--bg-elev)",
-                        color: "var(--text)",
-                        borderRadius: 8,
-                        padding: "6px 10px",
-                        minHeight: 32,
-                        minWidth: 86,
-                        fontSize: 11,
-                        cursor: "pointer",
-                        fontWeight: 700,
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  ) : null}
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
                   <button
-                    onClick={() => {
-                      if (!passwordEditing) {
-                        setPasswordDraft({ current: "", next: "" });
-                        setPasswordEditing(true);
-                        return;
-                      }
-                      void savePasswordEdit();
-                    }}
+                    onClick={() => void saveSecurityPassword()}
                     style={{
-                      border: "1px solid color-mix(in srgb, var(--border) 70%, #9ca3af 30%)",
-                      background: "linear-gradient(180deg, #273445 0%, #1b2533 100%)",
+                      border: "1px solid #2f6dff",
+                      background: "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
                       color: "white",
                       borderRadius: 8,
-                      padding: "6px 10px",
+                      padding: "6px 12px",
                       minHeight: 32,
-                      minWidth: 104,
-                      fontSize: 11,
+                      minWidth: 102,
+                      fontSize: 12,
                       cursor: "pointer",
                       fontWeight: 700,
-                      boxShadow: "0 8px 16px rgba(0,0,0,0.28)",
+                      boxShadow: "0 8px 16px rgba(43,108,255,0.32)",
                     }}
                   >
-                    {passwordEditing ? "Save" : "Edit"}
+                    Update
                   </button>
                 </div>
               </div>
 
               <div
                 style={{
+                  width: "100%",
+                  maxWidth: 1120,
+                  boxSizing: "border-box",
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
@@ -10007,6 +10190,60 @@ export default function App() {
                   Logout
                 </button>
               </div>
+            </div>
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                padding: "12px 14px",
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+              }}
+            >
+              {userSettingsEditing ? (
+                <button
+                  onClick={cancelUserSettingsEdit}
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "8px 12px",
+                    minHeight: 34,
+                    minWidth: 92,
+                    fontSize: 12,
+                    cursor: "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  Cancel
+                </button>
+              ) : null}
+              <button
+                onClick={() => {
+                  if (!userSettingsEditing) {
+                    beginUserSettingsEdit();
+                    return;
+                  }
+                  void saveUserSettingsEdit();
+                }}
+                style={{
+                  border: "1px solid #2f6dff",
+                  background: "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
+                  color: "white",
+                  borderRadius: 8,
+                  padding: "8px 12px",
+                  minHeight: 34,
+                  minWidth: 110,
+                  fontSize: 12,
+                  cursor: "pointer",
+                  fontWeight: 700,
+                  boxShadow: "0 8px 18px rgba(43,108,255,0.32)",
+                }}
+              >
+                {userSettingsEditing ? "Save" : "Edit"}
+              </button>
             </div>
             {!userDrawerFullscreen ? (
               <div
@@ -10064,7 +10301,7 @@ export default function App() {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                padding: "12px 14px",
+                padding: rightDrawerHeaderPadding,
                 borderBottom: "1px solid var(--border)",
                 background: "var(--bg-elev)",
                 gap: 10,
@@ -10098,7 +10335,16 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <div style={{ flex: "1 1 auto", overflow: "auto", padding: 14, display: "grid", gap: 12 }}>
+            <div
+              style={{
+                flex: "1 1 auto",
+                overflow: "auto",
+                padding: rightDrawerBodyPadding,
+                scrollbarGutter: "stable both-edges",
+                display: "grid",
+                gap: 12,
+              }}
+            >
               <div
                 style={{
                   background:
@@ -10177,42 +10423,46 @@ export default function App() {
           </button>
           <div style={{ width: 1, height: 18, background: "var(--border)" }} />
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div
-              title={activeProject?.name || projectName || "No project selected"}
-              style={{
-                maxWidth: 220,
-                border: "1px solid var(--border)",
-                background: "var(--bg-elev)",
-                color: "var(--text)",
-                borderRadius: 999,
-                padding: "4px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {activeProject?.name || projectName || "None"}
-            </div>
-            <div
-              title={isLiveMode ? activeMenuLabel || "No menu selected" : activeScreen?.name || screenName || "No screen selected"}
-              style={{
-                maxWidth: 180,
-                border: "1px solid var(--border)",
-                background: "var(--bg-elev)",
-                color: "var(--text)",
-                borderRadius: 999,
-                padding: "4px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {isLiveMode ? activeMenuLabel || "None" : activeScreen?.name || screenName || "None"}
-            </div>
+            {showLiveIdentityChips ? (
+              <>
+                <div
+                  title={activeProject?.name || projectName || "No project selected"}
+                  style={{
+                    maxWidth: 220,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 999,
+                    padding: "4px 10px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {activeProject?.name || projectName || "None"}
+                </div>
+                <div
+                  title={isLiveMode ? activeMenuLabel || "No menu selected" : activeScreen?.name || screenName || "No screen selected"}
+                  style={{
+                    maxWidth: 180,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 999,
+                    padding: "4px 10px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {isLiveMode ? activeMenuLabel || "None" : activeScreen?.name || screenName || "None"}
+                </div>
+              </>
+            ) : null}
             {!isLiveMode ? (
               <>
                 <div style={{ width: 1, height: 20, background: "var(--border)", margin: "0 4px" }} />
@@ -10520,6 +10770,7 @@ export default function App() {
             gap: 8,
             padding: "0 10px",
             overflowX: "hidden",
+            overflowY: "visible",
             whiteSpace: "nowrap",
             cursor: "pointer",
           }}
@@ -10570,6 +10821,222 @@ export default function App() {
         </div>
       ) : null}
 
+      {isLiveMode && isLiveMobile ? (
+        <div
+          style={{
+            position: "fixed",
+            left: projectDrawerInsetPx + 8,
+            right: 8,
+            bottom: 8,
+            height: liveBottomCarouselHeightPx,
+            zIndex: 210,
+            border: "1px solid color-mix(in srgb, var(--border) 88%, #2b6cff 12%)",
+            borderRadius: 12,
+            background:
+              "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 92%, #0b2448 8%) 0%, color-mix(in srgb, var(--bg) 90%, #040d1f 10%) 100%)",
+            boxShadow: "0 10px 24px rgba(0,0,0,0.24)",
+            overflow: "hidden",
+            display: "flex",
+            alignItems: "stretch",
+          }}
+        >
+          <div
+            className="vizi-scroll"
+            style={{
+              flex: "1 1 auto",
+              overflowX: "auto",
+              overflowY: "hidden",
+              display: "flex",
+              gap: 8,
+              padding: "8px",
+              scrollSnapType: "x mandatory",
+            }}
+          >
+            {liveMenuMobileItems.length ? (
+              liveMenuMobileItems.map(({ groupName, item }, idx) => {
+                const isData = item?.type === "data";
+                const screen = !isData ? screens.find((s) => s.id === item.screenId) || null : null;
+                const label =
+                  String(item?.label || "").trim() ||
+                  (isData
+                    ? normalizeTableDisplayName(String(item?.dataTable || "").trim()) || "Data"
+                    : String(screen?.name || "Screen"));
+                const active = isData
+                  ? showMainDrawer &&
+                    drawerView === "database" &&
+                    (String(item?.dataTable || "").trim()
+                      ? String(item?.dataTable || "").trim() === activeDatabaseTable
+                      : true)
+                  : String(item?.screenId || "") === String(activeScreenId);
+                const locked = !canAccessLiveMenuItem(item);
+                const initials = label
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .join(" ")
+                  .replace(/[^a-zA-Z0-9]/g, "")
+                  .slice(0, 3)
+                  .toUpperCase() || (isData ? "DAT" : "SCR");
+                return (
+                  <button
+                    key={`live-menu-mobile-item-${item?.id || idx}`}
+                    onClick={locked ? undefined : () => activateLiveMenuItem(item)}
+                    disabled={locked}
+                    data-preserve-style="true"
+                    title={locked ? `${label} (Locked)` : label}
+                    style={{
+                      flex: "0 0 auto",
+                      width: 172,
+                      minHeight: "100%",
+                      borderRadius: 10,
+                      border: `1px solid ${
+                        locked
+                          ? "color-mix(in srgb, #f59e0b 55%, var(--border) 45%)"
+                          : active
+                          ? "var(--selected-border)"
+                          : "var(--border)"
+                      }`,
+                      background: active ? "var(--selected-bg)" : "color-mix(in srgb, var(--bg) 88%, #0b1729 12%)",
+                      color: active ? "var(--selected-text)" : "var(--text)",
+                      boxShadow: active ? "var(--selected-shadow)" : "none",
+                      padding: "8px 10px",
+                      cursor: locked ? "not-allowed" : "pointer",
+                      opacity: locked ? 0.78 : 1,
+                      display: "grid",
+                      alignContent: "space-between",
+                      gap: 4,
+                      textAlign: "left",
+                      scrollSnapAlign: "start",
+                    }}
+                  >
+                    <span style={{ fontSize: 9, fontWeight: 800, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                      {groupName}
+                    </span>
+                    <span style={{ fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {label}
+                    </span>
+                    <span
+                      style={{
+                        width: 28,
+                        height: 18,
+                        borderRadius: 8,
+                        border: "1px solid color-mix(in srgb, #ffffff 46%, var(--border) 54%)",
+                        display: "grid",
+                        placeItems: "center",
+                        fontSize: 9,
+                        fontWeight: 900,
+                        background: "rgba(255,255,255,0.12)",
+                        letterSpacing: "0.04em",
+                      }}
+                    >
+                      {initials}
+                    </span>
+                  </button>
+                );
+              })
+            ) : (
+              <div
+                style={{
+                  minWidth: "100%",
+                  color: "var(--text-muted)",
+                  fontSize: 12,
+                  display: "grid",
+                  placeItems: "center",
+                }}
+              >
+                No live menu items configured.
+              </div>
+            )}
+          </div>
+          <div
+            style={{
+              width: 58,
+              borderLeft: "1px solid color-mix(in srgb, var(--border) 82%, #2b6cff 18%)",
+              background: "color-mix(in srgb, var(--bg-elev) 88%, #0f274d 12%)",
+              display: "grid",
+              alignContent: "center",
+              justifyItems: "center",
+              gap: 8,
+              padding: "8px 6px",
+              boxSizing: "border-box",
+            }}
+          >
+            <button
+              title={showZoom ? "Hide zoom controls" : "Show zoom controls"}
+              onClick={() => setShowZoom((v) => !v)}
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                border: "1px solid color-mix(in srgb, var(--border) 70%, #2b6cff 30%)",
+                background: showZoom ? "var(--selected-bg)" : "var(--bg-elev)",
+                color: showZoom ? "var(--selected-text)" : "var(--text)",
+                boxShadow: showZoom ? "var(--selected-shadow)" : "0 6px 16px rgba(0,0,0,0.16)",
+                display: "grid",
+                placeItems: "center",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                <path d="M20 20l-4.2-4.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </button>
+            <button
+              title="Team Chat"
+              onClick={() => setShowTeamChat((v) => !v)}
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                border: "1px solid color-mix(in srgb, var(--border) 70%, #2b6cff 30%)",
+                background: showTeamChat ? "var(--selected-bg)" : "var(--bg-elev)",
+                color: showTeamChat ? "var(--selected-text)" : "var(--text)",
+                boxShadow: showTeamChat ? "var(--selected-shadow)" : "0 6px 16px rgba(0,0,0,0.16)",
+                display: "grid",
+                placeItems: "center",
+                cursor: "pointer",
+                padding: 0,
+                position: "relative",
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M4 7.25C4 5.73 5.23 4.5 6.75 4.5h10.5C18.77 4.5 20 5.73 20 7.25v6.5c0 1.52-1.23 2.75-2.75 2.75h-5.4l-3.55 2.95c-.62.51-1.55.07-1.55-.74V16.5h0c-1.52 0-2.75-1.23-2.75-2.75v-6.5Z"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {teamChatUnreadCount > 0 ? (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: -4,
+                    right: -4,
+                    minWidth: 14,
+                    height: 14,
+                    borderRadius: 999,
+                    background: "#ef4444",
+                    color: "#fff",
+                    fontSize: 8,
+                    fontWeight: 800,
+                    display: "grid",
+                    placeItems: "center",
+                    border: "1px solid rgba(255,255,255,0.6)",
+                    padding: "0 3px",
+                    boxSizing: "border-box",
+                  }}
+                >
+                  {teamChatUnreadCount > 99 ? "99+" : String(teamChatUnreadCount)}
+                </span>
+              ) : null}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {isLiveMode ? (
         <div
           style={{
@@ -10577,7 +11044,7 @@ export default function App() {
             left: projectDrawerInsetPx,
             top: TOP_BAR_H + liveAlarmBarOffset,
             bottom: 0,
-            width: liveMenuIsExpanded ? 248 : 72,
+            width: liveMenuRailWidthPx,
             zIndex: 210,
             border: "1px solid color-mix(in srgb, var(--border) 88%, #2b6cff 12%)",
             borderRight: "1px solid color-mix(in srgb, var(--border) 92%, #2b6cff 8%)",
@@ -10595,8 +11062,8 @@ export default function App() {
         >
           <div
             style={{
-              padding: liveMenuIsExpanded ? "4px 8px" : "6px 8px",
-              minHeight: liveMenuIsExpanded ? 32 : 38,
+              padding: liveMenuIsExpanded ? (isLiveMobile ? "6px 8px" : "4px 8px") : "6px 8px",
+              minHeight: liveMenuIsExpanded ? (isLiveMobile ? 38 : 32) : (isLiveMobile ? 42 : 38),
               display: "flex",
               alignItems: "center",
               justifyContent: liveMenuIsExpanded ? "flex-end" : "center",
@@ -10607,10 +11074,10 @@ export default function App() {
 	              onClick={() => setLiveMenuCollapsed((v) => !v)}
 	              title={liveMenuCollapsed ? "Expand menu" : "Collapse menu"}
 	              aria-label={liveMenuCollapsed ? "Expand live menu" : "Collapse live menu"}
-	              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
+		              style={{
+	                width: isLiveMobile ? 32 : 28,
+	                height: isLiveMobile ? 32 : 28,
+	                borderRadius: 8,
                 border: "1px solid var(--border)",
                 background: "color-mix(in srgb, var(--bg-elev) 86%, #0f274d 14%)",
                 color: "var(--text)",
@@ -10637,14 +11104,14 @@ export default function App() {
             </button>
           </div>
           <div
-            style={{
-              flex: "1 1 auto",
-              minHeight: 0,
-              overflow: "auto",
-              padding: liveMenuIsExpanded ? 8 : 6,
-              display: "grid",
-              alignContent: "start",
-              gap: 6,
+	            style={{
+	              flex: "1 1 auto",
+	              minHeight: 0,
+	              overflow: "auto",
+	              padding: liveMenuIsExpanded ? (isLiveMobile ? 10 : 8) : 6,
+	              display: "grid",
+	              alignContent: "start",
+	              gap: 6,
             }}
             className="vizi-scroll"
           >
@@ -10731,6 +11198,7 @@ export default function App() {
                           ? String(item.dataTable || "").trim() === activeDatabaseTable
                           : true)
                       : String(item.screenId || "") === String(activeScreenId);
+                    const locked = !canAccessLiveMenuItem(item);
                     const initials = label
                       .split(/\s+/)
                       .filter(Boolean)
@@ -10741,13 +11209,22 @@ export default function App() {
                     return (
                       <button
                         key={`live-menu-item-${item.id}`}
-                        onClick={() => activateLiveMenuItem(item)}
+                        onClick={locked ? undefined : () => activateLiveMenuItem(item)}
+                        disabled={locked}
                         data-preserve-style="true"
-                        style={{
-                          width: "100%",
-                          minHeight: liveMenuIsExpanded ? 30 : 38,
-                          borderRadius: 10,
-                          border: `1px solid ${active ? "var(--selected-border)" : "var(--border)"}`,
+	                        style={{
+	                          width: "100%",
+	                          minHeight: liveMenuIsExpanded
+                              ? (isLiveMobile ? 38 : 30)
+                              : (isLiveMobile ? 42 : 38),
+	                          borderRadius: 10,
+                          border: `1px solid ${
+                            locked
+                              ? "color-mix(in srgb, #f59e0b 55%, var(--border) 45%)"
+                              : active
+                              ? "var(--selected-border)"
+                              : "var(--border)"
+                          }`,
                           background: active
                             ? isData
                               ? "var(--bg-elev)"
@@ -10763,18 +11240,21 @@ export default function App() {
                               ? "none"
                               : "var(--selected-shadow)"
                             : "none",
-                          padding: liveMenuIsExpanded ? "5px 8px" : "6px 6px",
-                          fontSize: 11,
+	                          padding: liveMenuIsExpanded
+                              ? (isLiveMobile ? "8px 10px" : "5px 8px")
+                              : "6px 6px",
+	                          fontSize: 11,
                           fontWeight: active ? 800 : 700,
                           textAlign: "left",
-                          cursor: "pointer",
+                          cursor: locked ? "not-allowed" : "pointer",
+                          opacity: locked ? 0.78 : 1,
                           display: "grid",
-                          gridTemplateColumns: liveMenuIsExpanded ? "22px 1fr" : "1fr",
+                          gridTemplateColumns: liveMenuIsExpanded ? "22px 1fr auto" : "1fr",
                           alignItems: "center",
                           gap: liveMenuIsExpanded ? 8 : 0,
                           transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
                         }}
-                        title={label}
+                        title={locked ? `${label} (Locked)` : label}
                       >
                         <span
                           style={{
@@ -10801,6 +11281,14 @@ export default function App() {
                         {liveMenuIsExpanded ? (
                           <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {label}
+                          </span>
+                        ) : null}
+                        {liveMenuIsExpanded && locked ? (
+                          <span style={{ display: "inline-grid", placeItems: "center", width: 14, height: 14, marginLeft: 4 }} aria-hidden="true">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                              <path d="M7 10V7a5 5 0 1110 0v3" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" />
+                              <rect x="5" y="10" width="14" height="10" rx="2" stroke="#f59e0b" strokeWidth="2" />
+                            </svg>
                           </span>
                         ) : null}
                       </button>
@@ -11303,7 +11791,7 @@ export default function App() {
                               borderRadius: 7,
                               padding: 6,
                               display: "grid",
-                              gridTemplateColumns: "82px 1fr 1fr auto auto auto",
+                              gridTemplateColumns: "82px 1fr 1fr auto auto auto auto",
                               gap: 6,
                               alignItems: "center",
                               background: "var(--bg-elev)",
@@ -11385,6 +11873,37 @@ export default function App() {
                               }}
                             />
                             <button
+                              onClick={() =>
+                                updateLiveMenuItem(group.id, item.id, {
+                                  restricted: !Boolean(item?.restricted),
+                                })
+                              }
+                              style={{
+                                width: 24,
+                                height: 22,
+                                borderRadius: 6,
+                                border: `1px solid ${
+                                  item?.restricted
+                                    ? "color-mix(in srgb, #f59e0b 64%, var(--border) 36%)"
+                                    : "var(--border)"
+                                }`,
+                                background: item?.restricted
+                                  ? "color-mix(in srgb, #f59e0b 12%, var(--bg))"
+                                  : "var(--bg)",
+                                color: item?.restricted ? "#f59e0b" : "var(--text-muted)",
+                                cursor: "pointer",
+                                padding: 0,
+                                display: "grid",
+                                placeItems: "center",
+                              }}
+                              title={item?.restricted ? "Unlock item" : "Lock item by role"}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <path d="M7 10V7a5 5 0 1110 0v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                <rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
+                              </svg>
+                            </button>
+                            <button
                               onClick={() => moveLiveMenuItem(group.id, item.id, -1)}
                               disabled={index === 0}
                               style={{
@@ -11433,6 +11952,59 @@ export default function App() {
                             >
                               ×
                             </button>
+                            {item?.restricted ? (
+                              <div
+                                style={{
+                                  gridColumn: "1 / -1",
+                                  border: "1px solid color-mix(in srgb, #f59e0b 34%, var(--border) 66%)",
+                                  borderRadius: 6,
+                                  padding: "6px 8px",
+                                  display: "grid",
+                                  gap: 6,
+                                  background: "color-mix(in srgb, #f59e0b 6%, var(--bg))",
+                                }}
+                              >
+                                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)" }}>
+                                  Allowed Roles
+                                </div>
+                                {securityRolesForMenu.length ? (
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                    {securityRolesForMenu.map((role) => {
+                                      const checked = normalizeRoleIdList(item?.allowedRoleIds).includes(role.id);
+                                      return (
+                                        <label
+                                          key={`menu-item-role-${item.id}-${role.id}`}
+                                          style={{
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: 5,
+                                            fontSize: 11,
+                                            color: "var(--text)",
+                                          }}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={(e) => {
+                                              const next = normalizeRoleIdList(item?.allowedRoleIds);
+                                              const updated = e.target.checked
+                                                ? Array.from(new Set([...next, role.id]))
+                                                : next.filter((id) => id !== role.id);
+                                              updateLiveMenuItem(group.id, item.id, { allowedRoleIds: updated });
+                                            }}
+                                          />
+                                          {role.name}
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                                    No roles loaded. Open Security to create roles first.
+                                  </div>
+                                )}
+                              </div>
+                            ) : null}
                           </div>
                         ))}
                       </div>
@@ -11522,15 +12094,235 @@ export default function App() {
         </div>
       )}
 
-      {!showZoom && (
+      {showTeamChat ? (
+        <div
+          style={{
+            position: "fixed",
+            top: isLiveMode && isLiveMobile ? TOP_BAR_H + liveAlarmBarOffset : undefined,
+            left: isLiveMode && isLiveMobile ? projectDrawerInsetPx : undefined,
+            right: isLiveMode && isLiveMobile ? 0 : (isLiveMode ? 16 : 52),
+            bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 8 : 72,
+            width: isLiveMode && isLiveMobile ? "auto" : 360,
+            maxWidth: isLiveMode && isLiveMobile ? "none" : "calc(100vw - 24px)",
+            height: isLiveMode && isLiveMobile ? "auto" : 420,
+            maxHeight: isLiveMode && isLiveMobile ? "none" : "62vh",
+            zIndex: isLiveMode && isLiveMobile ? 221 : 215,
+            border: "1px solid var(--border)",
+            borderRadius: isLiveMode && isLiveMobile ? 0 : 12,
+            background: "var(--bg-elev)",
+            boxShadow: "0 18px 42px rgba(0,0,0,0.34)",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              height: 42,
+              padding: "0 10px",
+              borderBottom: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              background: "color-mix(in srgb, var(--bg-soft) 78%, var(--bg-elev) 22%)",
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>Team Chat</div>
+            <button
+              onClick={() => setShowTeamChat(false)}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 8,
+                padding: "4px 8px",
+                fontSize: 11,
+                cursor: "pointer",
+              }}
+            >
+              Close
+            </button>
+          </div>
+          <div
+            ref={teamChatBodyRef}
+            className="vizi-scroll"
+            style={{
+              flex: "1 1 auto",
+              overflowY: "auto",
+              padding: 10,
+              display: "grid",
+              alignContent: "start",
+              gap: 8,
+              background: "var(--bg-soft)",
+            }}
+          >
+            {teamChatLoading ? (
+              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading chat...</div>
+            ) : teamChatMessages.length ? (
+              teamChatMessages.map((row, idx) => {
+                const id = Number(row?.id || 0);
+                const mine = Number(row?.user_id || 0) === Number(user?.id || 0);
+                const at = row?.created_at ? new Date(row.created_at) : null;
+                return (
+                  <div
+                    key={`team-chat-msg-${id || idx}`}
+                    style={{
+                      justifySelf: mine ? "end" : "start",
+                      maxWidth: "88%",
+                      border: "1px solid var(--border)",
+                      borderRadius: 10,
+                      padding: "6px 8px",
+                      background: mine
+                        ? "linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, var(--bg-elev) 78%) 0%, color-mix(in srgb, var(--accent) 14%, var(--bg-elev) 86%) 100%)"
+                        : "var(--bg-elev)",
+                    }}
+                  >
+                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", marginBottom: 2 }}>
+                      {String(row?.author || "User")}
+                      {at && !Number.isNaN(at.getTime()) ? ` • ${at.toLocaleString()}` : ""}
+                    </div>
+                    <div style={{ fontSize: 12, lineHeight: 1.35, color: "var(--text)", whiteSpace: "pre-wrap" }}>
+                      {String(row?.message || "")}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No messages yet.</div>
+            )}
+          </div>
+          <div
+            style={{
+              borderTop: "1px solid var(--border)",
+              background: "var(--bg-elev)",
+              padding: 8,
+              display: "grid",
+              gap: 8,
+            }}
+          >
+            <textarea
+              value={teamChatDraft}
+              onChange={(e) => setTeamChatDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void sendTeamChatMessage();
+                }
+              }}
+              placeholder="Type message..."
+              rows={2}
+              style={{
+                resize: "none",
+                width: "100%",
+                boxSizing: "border-box",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                background: "var(--bg)",
+                color: "var(--text)",
+                padding: "6px 8px",
+                fontSize: 12,
+                outline: "none",
+              }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => void sendTeamChatMessage()}
+                disabled={teamChatSending || !String(teamChatDraft || "").trim()}
+                style={{
+                  border: "1px solid var(--accent)",
+                  background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
+                  color: "var(--accent-text)",
+                  borderRadius: 8,
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: teamChatSending ? "wait" : "pointer",
+                  opacity: teamChatSending || !String(teamChatDraft || "").trim() ? 0.55 : 1,
+                }}
+              >
+                {teamChatSending ? "Sending..." : "Send"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {!(isLiveMode && isLiveMobile) ? (
+        <button
+          title="Team Chat"
+          onClick={() => setShowTeamChat((v) => !v)}
+          style={{
+            position: "fixed",
+            right: isLiveMode ? 16 : 52,
+            bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 10 : 16,
+            width: 44,
+            height: 44,
+            zIndex: 216,
+            borderRadius: 12,
+            padding: 0,
+            lineHeight: 0,
+            border: "1px solid color-mix(in srgb, var(--accent) 36%, var(--border) 64%)",
+            background:
+              "linear-gradient(180deg, color-mix(in srgb, var(--accent) 34%, var(--bg-elev) 66%) 0%, color-mix(in srgb, var(--accent) 20%, var(--bg-elev) 80%) 58%, color-mix(in srgb, var(--accent-strong) 22%, var(--bg-elev) 78%) 100%)",
+            color: "var(--text)",
+            cursor: "pointer",
+            display: "grid",
+            placeItems: "center",
+            boxShadow: showTeamChat
+              ? "0 12px 28px rgba(37, 99, 235, 0.34), inset 0 1px 0 rgba(255,255,255,0.26)"
+              : "0 10px 24px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.18)",
+            outline: showTeamChat ? "2px solid color-mix(in srgb, var(--accent) 42%, transparent)" : "none",
+            outlineOffset: 1,
+            transition: "transform 120ms ease, box-shadow 160ms ease, outline-color 160ms ease",
+          }}
+        >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ display: "block" }}>
+          <path
+            d="M4 7.25C4 5.73 5.23 4.5 6.75 4.5h10.5C18.77 4.5 20 5.73 20 7.25v6.5c0 1.52-1.23 2.75-2.75 2.75h-5.4l-3.55 2.95c-.62.51-1.55.07-1.55-.74V16.5h0c-1.52 0-2.75-1.23-2.75-2.75v-6.5Z"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle cx="9" cy="10.6" r="1.1" fill="currentColor" />
+          <circle cx="12" cy="10.6" r="1.1" fill="currentColor" />
+          <circle cx="15" cy="10.6" r="1.1" fill="currentColor" />
+        </svg>
+        {teamChatUnreadCount > 0 ? (
+          <span
+            style={{
+              position: "absolute",
+              top: -4,
+              right: -4,
+              minWidth: 17,
+              height: 17,
+              borderRadius: 999,
+              background: "#ef4444",
+              color: "#fff",
+              fontSize: 9,
+              fontWeight: 800,
+              display: "grid",
+              placeItems: "center",
+              border: "1px solid rgba(255,255,255,0.6)",
+              padding: "0 4px",
+              boxSizing: "border-box",
+            }}
+          >
+            {teamChatUnreadCount > 99 ? "99+" : String(teamChatUnreadCount)}
+          </span>
+        ) : null}
+        </button>
+      ) : null}
+
+      {!showZoom && !(isLiveMode && isLiveMobile) && (
         <button
           title="Show Zoom"
           onClick={() => setShowZoom(true)}
           style={{
             position: "fixed",
             left: isLiveMode ? undefined : Math.max(zoomPos.x, 8),
-            right: isLiveMode ? 16 : undefined,
-            bottom: 16,
+            right: isLiveMode ? (isLiveMobile ? 68 : 72) : undefined,
+            bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 10 : 16,
             zIndex: 92,
             padding: isLiveMode ? "4px 8px" : "6px 10px",
             borderRadius: 8,

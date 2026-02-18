@@ -2298,6 +2298,79 @@ const client = new OpenAI({
 });
 
 const OLLAMA_NATIVE_URL = process.env.OLLAMA_NATIVE_URL || "";
+const OLLAMA_IDLE_UNLOAD_MS = Math.max(
+  30000,
+  Number.parseInt(process.env.OLLAMA_IDLE_UNLOAD_MS || "180000", 10) || 180000
+);
+
+function resolveOllamaNativeBaseUrl() {
+  const direct = String(OLLAMA_NATIVE_URL || "").trim();
+  if (direct) return direct.replace(/\/$/, "");
+  const compat = String(process.env.OPENAI_BASE_URL || "").trim();
+  if (!compat) return "";
+  try {
+    const u = new URL(compat);
+    if (!/^https?:$/i.test(String(u.protocol || ""))) return "";
+    const host = String(u.hostname || "").trim().toLowerCase();
+    if (!host) return "";
+    if (host !== "localhost" && host !== "127.0.0.1" && host !== "::1") return "";
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return "";
+  }
+}
+
+const OLLAMA_NATIVE_BASE_URL = resolveOllamaNativeBaseUrl();
+let ollamaUnloadTimer = null;
+let ollamaLastUsedAt = 0;
+let ollamaLastModel = String(OPENAI_MODEL || "").trim() || "llama3";
+let ollamaUnloadInFlight = false;
+
+function markOllamaModelUsed(model = OPENAI_MODEL) {
+  if (!OLLAMA_NATIVE_BASE_URL) return;
+  const nextModel = String(model || "").trim();
+  if (nextModel) ollamaLastModel = nextModel;
+  ollamaLastUsedAt = Date.now();
+  if (ollamaUnloadTimer) clearTimeout(ollamaUnloadTimer);
+  ollamaUnloadTimer = setTimeout(() => {
+    void unloadOllamaModelIfIdle();
+  }, OLLAMA_IDLE_UNLOAD_MS);
+}
+
+async function unloadOllamaModelIfIdle(force = false) {
+  if (!OLLAMA_NATIVE_BASE_URL) return false;
+  if (ollamaUnloadInFlight) return false;
+  const idleForMs = Date.now() - Number(ollamaLastUsedAt || 0);
+  if (!force && idleForMs < OLLAMA_IDLE_UNLOAD_MS - 250) return false;
+  ollamaUnloadInFlight = true;
+  try {
+    const model = String(ollamaLastModel || OPENAI_MODEL || "llama3").trim() || "llama3";
+    await fetch(`${OLLAMA_NATIVE_BASE_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        prompt: "",
+        stream: false,
+        keep_alive: 0,
+      }),
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    ollamaUnloadInFlight = false;
+  }
+}
+
+if (OLLAMA_NATIVE_BASE_URL) {
+  process.on("SIGINT", () => {
+    void unloadOllamaModelIfIdle(true).finally(() => process.exit(0));
+  });
+  process.on("SIGTERM", () => {
+    void unloadOllamaModelIfIdle(true).finally(() => process.exit(0));
+  });
+}
 
 app.get("/api/auth/me", async (req, res) => {
   try {
@@ -3754,6 +3827,68 @@ app.get("/api/alarms", async (req, res) => {
     res.json({ active: active.rows, recent: recent.rows });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load alarms." });
+  }
+});
+
+app.get("/api/chat/messages", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        m.id,
+        m.message,
+        m.created_at,
+        m.user_id,
+        COALESCE(NULLIF(u.display_name, ''), u.username, CONCAT('User ', m.user_id::text)) AS author
+      FROM support_chat_messages m
+      LEFT JOIN users u ON u.id = m.user_id
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 200
+      `
+    );
+    res.json({ messages: rows.reverse() });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load chat messages." });
+  }
+});
+
+app.post("/api/chat/messages", async (req, res) => {
+  try {
+    const authUser = req.user || (await getUserFromRequest(req));
+    if (!authUser) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const message = String(req.body?.message || "").trim();
+    if (!message) {
+      res.status(400).json({ error: "Message is required." });
+      return;
+    }
+    if (message.length > 2000) {
+      res.status(400).json({ error: "Message is too long (max 2000 chars)." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      INSERT INTO support_chat_messages (user_id, message)
+      VALUES ($1, $2)
+      RETURNING id, user_id, message, created_at
+      `,
+      [authUser.id, message]
+    );
+    const row = rows[0] || null;
+    if (!row) {
+      res.status(500).json({ error: "Failed to create message." });
+      return;
+    }
+    res.status(201).json({
+      message: {
+        ...row,
+        author: String(authUser.display_name || authUser.username || `User ${authUser.id}`),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to send chat message." });
   }
 });
 
@@ -5549,8 +5684,9 @@ app.post("/api/ai/table-preview", async (req, res) => {
     ];
 
     async function getModelText(promptInput) {
-      if (OLLAMA_NATIVE_URL) {
-        const resp = await fetch(`${OLLAMA_NATIVE_URL.replace(/\/$/, "")}/api/generate`, {
+      if (OLLAMA_NATIVE_BASE_URL) {
+        markOllamaModelUsed(OPENAI_MODEL);
+        const resp = await fetch(`${OLLAMA_NATIVE_BASE_URL}/api/generate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -5566,6 +5702,7 @@ app.post("/api/ai/table-preview", async (req, res) => {
         const data = await resp.json();
         return data.response || "";
       }
+      if (OLLAMA_NATIVE_BASE_URL) markOllamaModelUsed(OPENAI_MODEL);
       const response = await client.responses.create({
         model: OPENAI_MODEL,
         input: promptInput,
@@ -5682,6 +5819,24 @@ app.post("/api/ai/table-preview", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Server error." });
+  }
+});
+
+app.post("/api/ai/ollama/release", async (_req, res) => {
+  try {
+    if (!OLLAMA_NATIVE_BASE_URL) {
+      res.json({ ok: false, released: false, message: "Ollama native endpoint is not configured." });
+      return;
+    }
+    const released = await unloadOllamaModelIfIdle(true);
+    res.json({
+      ok: true,
+      released,
+      model: String(ollamaLastModel || OPENAI_MODEL || ""),
+      idleUnloadMs: OLLAMA_IDLE_UNLOAD_MS,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to release Ollama model memory." });
   }
 });
 
@@ -5941,8 +6096,9 @@ async function handlePlcInsights(req, res) {
     }
 
     async function getModelText(promptInput) {
-      if (OLLAMA_NATIVE_URL) {
-        const resp = await fetch(`${OLLAMA_NATIVE_URL.replace(/\/$/, "")}/api/generate`, {
+      if (OLLAMA_NATIVE_BASE_URL) {
+        markOllamaModelUsed(OPENAI_MODEL);
+        const resp = await fetch(`${OLLAMA_NATIVE_BASE_URL}/api/generate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -5958,6 +6114,7 @@ async function handlePlcInsights(req, res) {
         const data = await resp.json();
         return data.response || "";
       }
+      if (OLLAMA_NATIVE_BASE_URL) markOllamaModelUsed(OPENAI_MODEL);
       const response = await client.responses.create({
         model: OPENAI_MODEL,
         input: promptInput,
@@ -6075,8 +6232,9 @@ app.post("/api/ai/plc-svg-suggest", async (req, res) => {
       ];
       let rawText = "";
       try {
-        if (OLLAMA_NATIVE_URL) {
-          const resp = await fetch(`${OLLAMA_NATIVE_URL.replace(/\/$/, "")}/api/generate`, {
+        if (OLLAMA_NATIVE_BASE_URL) {
+          markOllamaModelUsed(OPENAI_MODEL);
+          const resp = await fetch(`${OLLAMA_NATIVE_BASE_URL}/api/generate`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -6091,6 +6249,7 @@ app.post("/api/ai/plc-svg-suggest", async (req, res) => {
           const data = await resp.json().catch(() => ({}));
           rawText = String(data?.response || "").trim();
         } else {
+          if (OLLAMA_NATIVE_BASE_URL) markOllamaModelUsed(OPENAI_MODEL);
           const response = await client.responses.create({
             model: OPENAI_MODEL,
             input,
@@ -6309,6 +6468,18 @@ async function start() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       expires_at TIMESTAMPTZ NOT NULL
     );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS support_chat_messages (
+      id BIGSERIAL PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      message TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS support_chat_messages_created_idx
+    ON support_chat_messages(created_at DESC, id DESC);
   `);
   await pool.query(`
     ALTER TABLE users

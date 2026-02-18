@@ -259,14 +259,17 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
 .vizi-live-alarm-marquee-group {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   flex: 0 0 auto;
-  min-width: max-content;
+  min-width: 100%;
+  width: max-content;
   gap: 10px;
+  padding-right: 10px;
 }
 
 .vizi-live-alarm-marquee-gap {
   flex: 0 0 auto;
-  width: 16px;
+  width: 10px;
 }
 
 .vizi-live-alarm-marquee-item {
@@ -278,6 +281,8 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
   color: var(--text);
   border-radius: 999px;
   padding: 3px 10px;
+  min-height: 22px;
+  line-height: 1.15;
   box-shadow: 0 1px 2px rgba(2, 6, 23, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
