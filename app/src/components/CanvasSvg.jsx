@@ -91,6 +91,7 @@ export default function CanvasSvg({
   const rulerSize = showRulers ? RULER : 0;
   const isLineMode = tool === "polyline" || tool === "rect";
   const isCrosshair = isLineMode || marquee;
+  const themeStrokeDefault = String(theme || "").toLowerCase() === "dark" ? "#ffffff" : "#808080";
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
 
   // wrapper size for rulers
@@ -3362,7 +3363,7 @@ export default function CanvasSvg({
                 const stroke =
                   isSelected
                     ? "#2b6cff"
-                    : dynamicColor || (theme === "dark" ? "#ffffff" : s.stroke || "#111111");
+                    : dynamicColor || themeStrokeDefault;
                 const fill = s.fill ?? "transparent";
 
                 return (
@@ -3488,7 +3489,7 @@ export default function CanvasSvg({
                     stroke={
                       isSelected
                         ? "#2b6cff"
-                        : touchColor || dynamicColor || (theme === "dark" ? "#ffffff" : s.stroke)
+                        : touchColor || dynamicColor || themeStrokeDefault
                     }
                     strokeWidth={s.strokeWidth}
                     // ✅ Apply styleProps FIRST so our explicit defaults don’t overwrite it
@@ -3615,14 +3616,14 @@ export default function CanvasSvg({
                         : useForcedStroke
                         ? overrideSvgStrokeOnly(o.inner)
                         : o.inner;
-                      if (theme === "dark" && !routeStroke) {
-                        inner = forceSvgStrokeColor(inner, "#ffffff");
+                      if (!routeStroke) {
+                        inner = forceSvgStrokeColor(inner, themeStrokeDefault);
                       }
                       return (
                         <g
                           style={{
                             fill: tagFill || o.fill || "none",
-                            stroke: routeStroke || (theme === "dark" ? "#ffffff" : (o.stroke ?? "none")),
+                            stroke: routeStroke || themeStrokeDefault,
                             strokeWidth:
                               Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0
                                 ? Number(o.strokeWidth)

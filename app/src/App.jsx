@@ -5,6 +5,7 @@ import ImportModal from "./components/ImportModal";
 import WidgetSelectorModal from "./components/WidgetSelectorModal";
 import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
+import TopBarRightControls from "./components/TopBarRightControls";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -25,8 +26,26 @@ import {
 } from "./utils/geometry";
 
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useLiveMenuAccess } from "./hooks/useLiveMenuAccess";
 import { exportToIgnitionJson, downloadIgnitionJson } from "./utils/ignitionExport";
 import { toastError, toastSuccess } from "./utils/toast";
+import { clearProjectDraft, getProjectDraftStorageKey } from "./utils/projectDraftStorage";
+import {
+  DEFAULT_CANVAS_BG_DARK,
+  DEFAULT_CANVAS_BG_LIGHT,
+  LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
+  LIVE_MENU_EXPANDED_WIDTH_KEY,
+  LIVE_MENU_EXPANDED_WIDTH_MAX,
+  LIVE_MENU_EXPANDED_WIDTH_MIN,
+  defaultLiveMenuGroupsFromScreens,
+  normalizeLiveMenuGroups,
+  normalizeProjectCanvasBackground,
+  normalizeProjectMode,
+  normalizeProjectUiPreferences,
+  normalizeRoleIdList,
+  readStoredActiveProjectId,
+  readStoredProjectMode,
+} from "./utils/projectHelpers";
 import appLogo from "./assets/Images/logo.png";
 
 const HelpPanel = lazy(() => import("./components/HelpPanel"));
@@ -43,76 +62,11 @@ const SHOW_GRID_KEY = "vizi_show_grid";
 const SHOW_TAG_PATHS_KEY = "vizi_show_tag_paths";
 const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
 const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
-const PROJECT_DRAFT_KEY_PREFIX = "vizi_project_draft:";
-const PROJECT_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // (no eager:true)
 
 const SVG_RAW_CACHE_MAX = 96;
-const DEFAULT_CANVAS_BG_LIGHT = "#ffffff";
-const DEFAULT_CANVAS_BG_DARK = "#0f141c";
 const LIVE_ALARM_BAR_H = 44;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
-const LIVE_MENU_EXPANDED_WIDTH_KEY = "vizi_live_menu_expanded_width";
-const LIVE_MENU_EXPANDED_WIDTH_DEFAULT = 248;
-const LIVE_MENU_EXPANDED_WIDTH_MIN = 200;
-const LIVE_MENU_EXPANDED_WIDTH_MAX = 520;
-function normalizeProjectMode(value) {
-  return String(value || "").trim().toLowerCase() === "live" ? "live" : "design";
-}
-
-function readStoredProjectMode(projectId = "") {
-  if (typeof window === "undefined") return "design";
-  const key = `vizi_project_mode:${String(projectId || "default")}`;
-  try {
-    const byProject = localStorage.getItem(key);
-    if (byProject != null) return normalizeProjectMode(byProject);
-    const last = localStorage.getItem("vizi_project_mode:last");
-    if (last != null) return normalizeProjectMode(last);
-  } catch {
-    // ignore storage read errors
-  }
-  return "design";
-}
-
-function readStoredActiveProjectId() {
-  if (typeof window === "undefined") return "";
-  try {
-    return String(localStorage.getItem("vizi_active_project_id") || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-function readProjectDraft(projectId) {
-  if (typeof window === "undefined") return null;
-  const id = String(projectId || "").trim();
-  if (!id) return null;
-  try {
-    const raw = localStorage.getItem(`${PROJECT_DRAFT_KEY_PREFIX}${id}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    const savedAt = Number(parsed.savedAt || 0);
-    if (!Number.isFinite(savedAt) || Date.now() - savedAt > PROJECT_DRAFT_MAX_AGE_MS) {
-      localStorage.removeItem(`${PROJECT_DRAFT_KEY_PREFIX}${id}`);
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function clearProjectDraft(projectId) {
-  if (typeof window === "undefined") return;
-  const id = String(projectId || "").trim();
-  if (!id) return;
-  try {
-    localStorage.removeItem(`${PROJECT_DRAFT_KEY_PREFIX}${id}`);
-  } catch {
-    // ignore
-  }
-}
 
 function readStoredDrawerFullscreen(name) {
   if (typeof window === "undefined") return false;
@@ -133,56 +87,6 @@ function isSvgMarkup(value) {
   return text.startsWith("<svg") || text.startsWith("<?xml");
 }
 
-function normalizeProjectCanvasBackground(raw) {
-  const fallback = {
-    light: DEFAULT_CANVAS_BG_LIGHT,
-    dark: DEFAULT_CANVAS_BG_DARK,
-  };
-  const src = raw && typeof raw === "object" ? raw : {};
-  const normalizeColor = (value, defaultColor) => {
-    const text = String(value || "").trim();
-    if (!text) return defaultColor;
-    if (/^#[0-9a-fA-F]{6}$/.test(text) || /^#[0-9a-fA-F]{3}$/.test(text)) return text;
-    return defaultColor;
-  };
-  return {
-    light: normalizeColor(src.light, fallback.light),
-    dark: normalizeColor(src.dark, fallback.dark),
-  };
-}
-
-function normalizeProjectUiPreferences(raw, fallback = {}) {
-  const src = raw && typeof raw === "object" ? raw : {};
-  const fb = fallback && typeof fallback === "object" ? fallback : {};
-  const pickBool = (key, defaultValue) => {
-    if (typeof src[key] === "boolean") return src[key];
-    if (typeof fb[key] === "boolean") return fb[key];
-    return defaultValue;
-  };
-  const pickLiveMenuExpandedWidth = () => {
-    const rawWidth = Number(src.liveMenuExpandedWidth);
-    if (Number.isFinite(rawWidth) && rawWidth > 0) {
-      return Math.max(
-        LIVE_MENU_EXPANDED_WIDTH_MIN,
-        Math.min(LIVE_MENU_EXPANDED_WIDTH_MAX, Math.floor(rawWidth))
-      );
-    }
-    const fallbackWidth = Number(fb.liveMenuExpandedWidth);
-    if (Number.isFinite(fallbackWidth) && fallbackWidth > 0) {
-      return Math.max(
-        LIVE_MENU_EXPANDED_WIDTH_MIN,
-        Math.min(LIVE_MENU_EXPANDED_WIDTH_MAX, Math.floor(fallbackWidth))
-      );
-    }
-    return LIVE_MENU_EXPANDED_WIDTH_DEFAULT;
-  };
-  return {
-    showGrid: pickBool("showGrid", true),
-    showTagPaths: pickBool("showTagPaths", false),
-    liveMenuCollapsed: pickBool("liveMenuCollapsed", false),
-    liveMenuExpandedWidth: pickLiveMenuExpandedWidth(),
-  };
-}
 
 function normalizeProjectPlcEntries(raw, options = {}) {
   const includeRawText = options?.includeRawText !== false;
@@ -308,78 +212,6 @@ function evaluateAlarmCondition(liveValue, operator, threshold) {
   return op === "==" ? left.lower === right.lower : left.lower !== right.lower;
 }
 
-function defaultLiveMenuGroupsFromScreens(sourceScreens) {
-  const screens = Array.isArray(sourceScreens) ? sourceScreens : [];
-  const items = screens
-    .filter((screen) => screen?.showInLiveMenu !== false)
-    .map((screen) => ({
-      id: `live-item-${uid()}`,
-      type: "screen",
-      screenId: String(screen?.id || ""),
-      label: "",
-      restricted: false,
-      allowedRoleIds: [],
-    }))
-    .filter((item) => item.screenId);
-  return [
-    {
-      id: `live-group-${uid()}`,
-      name: "Main",
-      items,
-    },
-  ];
-}
-
-function normalizeRoleIdList(value) {
-  const list = Array.isArray(value) ? value : [];
-  const ids = list
-    .map((x) => Number.parseInt(String(x), 10))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  return Array.from(new Set(ids));
-}
-
-function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
-  const screens = Array.isArray(sourceScreens) ? sourceScreens : [];
-  const screenIds = new Set(screens.map((s) => String(s?.id || "")).filter(Boolean));
-  const groups = Array.isArray(rawGroups) ? rawGroups : [];
-  const normalized = groups
-    .map((group) => {
-      const name = String(group?.name ?? "");
-      const items = (Array.isArray(group?.items) ? group.items : [])
-        .map((item) => {
-          const type = String(item?.type || "").toLowerCase() === "data" ? "data" : "screen";
-          if (type === "screen") {
-            const screenId = String(item?.screenId || "").trim();
-            if (!screenId || !screenIds.has(screenId)) return null;
-            return {
-              id: String(item?.id || `live-item-${uid()}`),
-              type,
-              screenId,
-              label: String(item?.label || "").trim(),
-              restricted: Boolean(item?.restricted),
-              allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
-            };
-          }
-          return {
-            id: String(item?.id || `live-item-${uid()}`),
-            type: "data",
-            dataTable: String(item?.dataTable || "").trim(),
-            label: String(item?.label || "").trim(),
-            restricted: Boolean(item?.restricted),
-            allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
-          };
-        })
-        .filter(Boolean);
-      return {
-        id: String(group?.id || `live-group-${uid()}`),
-        name,
-        items,
-      };
-    });
-
-  if (!normalized.length) return defaultLiveMenuGroupsFromScreens(screens);
-  return normalized;
-}
 
 function normalizeRouteTagKey(value) {
   return normalizeTagValue(value).replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
@@ -568,6 +400,7 @@ function toDatetimeLocalInput(value) {
 
 export default function App() {
   const { user, logout, updateProfile, changePassword, refresh } = useAuth();
+  const initialStoredProjectId = readStoredActiveProjectId();
   const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect"
   const DEFAULT_STROKE = "#808080";
   const DEFAULT_FILL = "#cccccc";
@@ -701,9 +534,10 @@ export default function App() {
   const [activeScreenId, setActiveScreenId] = useState("screen-1");
   const [screenName, setScreenName] = useState("Screen 1");
   const [projects, setProjects] = useState([]);
-  const [activeProjectId, setActiveProjectId] = useState(() => readStoredActiveProjectId());
+  const [activeProjectId, setActiveProjectId] = useState(() => initialStoredProjectId);
   const [projectRouteRows, setProjectRouteRows] = useState([]);
   const [projectStatus, setProjectStatus] = useState("");
+  const [projectIdentityReady, setProjectIdentityReady] = useState(() => !initialStoredProjectId);
   const [lastProjectSaveAt, setLastProjectSaveAt] = useState("");
   const [lastProjectSaveKind, setLastProjectSaveKind] = useState(""); // "auto" | "manual" | ""
   const [activeProjectUpdatedAt, setActiveProjectUpdatedAt] = useState("");
@@ -711,9 +545,7 @@ export default function App() {
   const [projectCursors, setProjectCursors] = useState([]);
   const [showProjectNameInput, setShowProjectNameInput] = useState(false);
   const [showProjectDrawer, setShowProjectDrawer] = useState(false);
-  const [projectMode, setProjectMode] = useState(() =>
-    readStoredProjectMode(readStoredActiveProjectId())
-  );
+  const [projectMode, setProjectMode] = useState(() => readStoredProjectMode(initialStoredProjectId));
   const isLiveMode = projectMode === "live";
   const [liveMenuCollapsed, setLiveMenuCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -767,7 +599,7 @@ export default function App() {
   const projectSaveInFlightRef = useRef(false);
   const autoSaveTimerRef = useRef(null);
   const pendingSilentSaveRef = useRef(false);
-  const queuedSaveAfterFlightRef = useRef(null); // null | "silent" | "manual"
+  const queuedSaveAfterFlightRef = useRef(null); // null | save options
   const uiPreferenceAutosaveReadyRef = useRef(false);
   const projectHydrationReadyRef = useRef(false);
   const isInteractingRef = useRef(false);
@@ -794,7 +626,7 @@ export default function App() {
     [activeProjectId]
   );
   const projectDraftStorageKey = useMemo(
-    () => `${PROJECT_DRAFT_KEY_PREFIX}${String(activeProjectId || "").trim()}`,
+    () => getProjectDraftStorageKey(activeProjectId),
     [activeProjectId]
   );
 
@@ -1143,7 +975,7 @@ export default function App() {
       if (!id) return;
       try {
         localStorage.setItem(
-          `${PROJECT_DRAFT_KEY_PREFIX}${id}`,
+          getProjectDraftStorageKey(id),
           JSON.stringify({ savedAt: Date.now(), payload: getProjectPayloadFromRefs() })
         );
       } catch {
@@ -2437,16 +2269,11 @@ export default function App() {
   }
 
 
-  // optional: remember last project name across reloads
-  useEffect(() => {
-    const savedName = localStorage.getItem("vizi_project_name");
-    if (savedName) setProjectName(savedName);
-  }, []);
-
   useEffect(() => {
     if (!user?.id) {
       setProjects([]);
       setActiveProjectId("");
+      setProjectIdentityReady(true);
       return;
     }
     let alive = true;
@@ -2464,11 +2291,13 @@ export default function App() {
           const preferred = list.find((p) => p?.id === stored) || list[0];
           if (preferred?.id) {
             bootstrappedProject = true;
+            setProjectIdentityReady(false);
             setActiveProjectId(preferred.id);
             openProjectFromDb(preferred.id);
           }
         } else if (!bootstrappedProject && !list.length) {
           bootstrappedProject = true;
+          setProjectIdentityReady(true);
           setTimeout(() => {
             saveProjectToDb({ silent: true });
           }, 0);
@@ -2564,9 +2393,21 @@ export default function App() {
         return false;
       }
       if (projectSaveInFlightRef.current) {
-        const nextMode = silent ? "silent" : "manual";
-        const prevMode = queuedSaveAfterFlightRef.current;
-        if (prevMode !== "manual") queuedSaveAfterFlightRef.current = nextMode;
+        const nextQueued = {
+          ...options,
+          silent,
+        };
+        const prevQueued = queuedSaveAfterFlightRef.current;
+        if (!prevQueued) {
+          queuedSaveAfterFlightRef.current = nextQueued;
+        } else {
+          queuedSaveAfterFlightRef.current = {
+            ...prevQueued,
+            ...nextQueued,
+            silent: prevQueued.silent === false || nextQueued.silent === false ? false : true,
+            payloadOverride: nextQueued.payloadOverride ?? prevQueued.payloadOverride,
+          };
+        }
         if (!silent) setProjectStatus("Saving...");
         return false;
       }
@@ -2680,7 +2521,7 @@ export default function App() {
       if (queued) {
         queuedSaveAfterFlightRef.current = null;
         setTimeout(() => {
-          saveProjectToDb({ silent: queued !== "manual" });
+          saveProjectToDb(queued);
         }, 0);
       }
     }
@@ -2743,6 +2584,7 @@ function flushScheduledProjectSave() {
   async function openProjectFromDb(id) {
     if (!id) return;
     try {
+      setProjectIdentityReady(false);
       projectHydrationReadyRef.current = false;
       setProjectStatus("");
       const res = await fetch(`/api/projects/${id}`);
@@ -2765,9 +2607,11 @@ function flushScheduledProjectSave() {
       setProjectStatus(by ? `Loaded (last update by ${by})` : "Loaded");
       setShowProjectNameInput(false);
       projectHydrationReadyRef.current = true;
+      setProjectIdentityReady(true);
     } catch (err) {
       setProjectStatus(err?.message || "Load failed.");
       projectHydrationReadyRef.current = true;
+      setProjectIdentityReady(true);
     }
   }
 
@@ -2840,6 +2684,7 @@ function flushScheduledProjectSave() {
     setProjectStatus("");
     setShowProjectNameInput(true);
     projectHydrationReadyRef.current = true;
+    setProjectIdentityReady(true);
   }
 
   function cancelNewProjectInput() {
@@ -3665,29 +3510,11 @@ function flushScheduledProjectSave() {
       ),
     [user]
   );
-  const canAccessLiveMenuItem = (item) => {
-    const areaAllowed =
-      String(item?.type || "").toLowerCase() === "data" ? canViewDataPages : canViewScreenPages;
-    if (!areaAllowed) return false;
-    const restricted = Boolean(item?.restricted);
-    if (!restricted) return true;
-    const allowedRoleIds = normalizeRoleIdList(item?.allowedRoleIds);
-    if (!allowedRoleIds.length) return false;
-    for (const id of allowedRoleIds) {
-      if (currentUserRoleIds.has(id)) return true;
-    }
-    return false;
-  };
-  const isLiveMenuItemRoleRestricted = (item) => {
-    const restricted = Boolean(item?.restricted);
-    if (!restricted) return false;
-    const allowedRoleIds = normalizeRoleIdList(item?.allowedRoleIds);
-    if (!allowedRoleIds.length) return true;
-    for (const id of allowedRoleIds) {
-      if (currentUserRoleIds.has(id)) return false;
-    }
-    return true;
-  };
+  const { canAccessLiveMenuItem, isLiveMenuItemRoleRestricted } = useLiveMenuAccess({
+    canViewDataPages,
+    canViewScreenPages,
+    currentUserRoleIds,
+  });
 
   useEffect(() => {
     if (!canManageSecurity) {
@@ -10712,7 +10539,11 @@ function flushScheduledProjectSave() {
             {showLiveIdentityChips ? (
               <>
                 <div
-                  title={activeProject?.name || projectName || "No project selected"}
+                  title={
+                    projectIdentityReady
+                      ? activeProject?.name || projectName || "No project selected"
+                      : "Loading project..."
+                  }
                   style={{
                     maxWidth: 220,
                     border: "1px solid var(--border)",
@@ -10727,10 +10558,16 @@ function flushScheduledProjectSave() {
                     textOverflow: "ellipsis",
                   }}
                 >
-                  {activeProject?.name || projectName || "None"}
+                  {projectIdentityReady ? activeProject?.name || projectName || "None" : "Loading..."}
                 </div>
                 <div
-                  title={isLiveMode ? activeMenuLabel || "No menu selected" : activeScreen?.name || screenName || "No screen selected"}
+                  title={
+                    projectIdentityReady
+                      ? (isLiveMode
+                          ? activeMenuLabel || "No menu selected"
+                          : activeScreen?.name || screenName || "No screen selected")
+                      : "Loading screen..."
+                  }
                   style={{
                     maxWidth: 180,
                     border: "1px solid var(--border)",
@@ -10745,7 +10582,9 @@ function flushScheduledProjectSave() {
                     textOverflow: "ellipsis",
                   }}
                 >
-                  {isLiveMode ? activeMenuLabel || "None" : activeScreen?.name || screenName || "None"}
+                  {projectIdentityReady
+                    ? (isLiveMode ? activeMenuLabel || "None" : activeScreen?.name || screenName || "None")
+                    : "Loading..."}
                 </div>
               </>
             ) : null}
@@ -10899,134 +10738,21 @@ function flushScheduledProjectSave() {
             ) : null}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[
-              { key: "theme", label: "Theme", alwaysVisible: true },
-              { key: "plc", label: "PLC", areaKey: "plc" },
-              { key: "opc", label: "OPC", areaKey: "opc" },
-              { key: "server", label: "Server", areaKey: "server" },
-              { key: "tags", label: "Tag", areaKey: "tags" },
-              { key: "database", label: "Database", areaKey: "database" },
-              { key: "reports", label: "Reports", areaKey: "reports" },
-              { key: "ai", label: "AI", areaKey: "ai" },
-              { key: "security", label: "Security", areaKey: "security" },
-              { key: "help", label: "Help", areaKey: "help" },
-            ]
-              .filter((item) => (item.alwaysVisible || !isLiveMode) && canViewArea(item.areaKey))
-              .map((item) => {
-                const isActiveView =
-                  drawerView === item.key ||
-                  (item.key === "opc" && (drawerView === "logs" || drawerView === "diagnostics"));
-                const isActive =
-                  item.key === "theme"
-                    ? false
-                    : item.key === "security"
-                    ? showSecurityDrawer || (showMainDrawer && drawerView === "security")
-                    : (showMainDrawer && isActiveView);
-                return (
-                  <button
-                    key={`top-nav-${item.key}`}
-                    data-preserve-style="true"
-                    title={
-                      item.key === "theme"
-                        ? theme === "dark"
-                          ? "Switch to light mode"
-                          : "Switch to dark mode"
-                        : item.label
-                    }
-                    onClick={() => {
-                      if (item.key === "theme") {
-                        setTheme((t) => (t === "dark" ? "light" : "dark"));
-                        return;
-                      }
-                      if (item.key === "security") {
-                        setShowMainDrawer(false);
-                        setShowUserDrawer(false);
-                        setShowSecurityDrawer(true);
-                        return;
-                      }
-                      openDrawer(item.key);
-                    }}
-                    style={{
-                      border: `1px solid ${isActive ? "var(--selected-border)" : "var(--border)"}`,
-                      background: isActive ? "var(--selected-bg)" : "var(--bg-elev)",
-                      color: isActive ? "var(--selected-text)" : "var(--text)",
-                      borderRadius: 999,
-                      padding: item.key === "theme" ? "4px 8px" : "4px 10px",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      minWidth: item.key === "theme" ? 34 : undefined,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      boxShadow: isActive ? "var(--selected-shadow)" : "0 6px 16px rgba(15, 23, 42, 0.08)",
-                    }}
-                  >
-                    {item.key === "theme" ? (
-                      theme === "dark" ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                          <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2" />
-                          <path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                        </svg>
-                      ) : (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      )
-                    ) : (
-                      item.label
-                    )}
-                  </button>
-                );
-              })}
-          </div>
-          <button
-            onClick={() => {
-              setShowMainDrawer(false);
-              setShowSecurityDrawer(false);
-              setShowUserDrawer(true);
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              border: "1px solid var(--border)",
-              background: "color-mix(in srgb, var(--bg-elev) 90%, transparent)",
-              borderRadius: 999,
-              padding: "4px 10px",
-              cursor: "pointer",
-            }}
-          >
-            {user?.avatar_url ? (
-              <img
-                src={user.avatar_url}
-                alt="avatar"
-                style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }}
-              />
-            ) : (
-              <div
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: "50%",
-                  background: theme === "dark" ? "#ffffff" : "#111827",
-                  color: theme === "dark" ? "#111827" : "white",
-                  display: "grid",
-                  placeItems: "center",
-                  fontSize: 12,
-                  fontWeight: 800,
-                }}
-              >
-                {avatarLabel}
-              </div>
-            )}
-            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>
-              {user?.display_name || user?.username || "User"}
-            </div>
-          </button>
-        </div>
+        <TopBarRightControls
+          isLiveMode={isLiveMode}
+          canViewArea={canViewArea}
+          drawerView={drawerView}
+          showMainDrawer={showMainDrawer}
+          showSecurityDrawer={showSecurityDrawer}
+          theme={theme}
+          setTheme={setTheme}
+          setShowMainDrawer={setShowMainDrawer}
+          setShowUserDrawer={setShowUserDrawer}
+          setShowSecurityDrawer={setShowSecurityDrawer}
+          openDrawer={openDrawer}
+          user={user}
+          avatarLabel={avatarLabel}
+        />
       </div>
 
       {isLiveMode ? (
@@ -11764,7 +11490,7 @@ function flushScheduledProjectSave() {
                       fontWeight: 600,
                     }}
                   >
-                    {projectName || "Untitled"}
+                    {projectIdentityReady ? projectName || "Untitled" : "Loading..."}
                   </div>
                 )}
               </label>
