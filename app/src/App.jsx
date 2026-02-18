@@ -375,8 +375,7 @@ function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
         name,
         items,
       };
-    })
-    .filter((group) => group.items.length > 0 || String(group.name || "").trim());
+    });
 
   if (!normalized.length) return defaultLiveMenuGroupsFromScreens(screens);
   return normalized;
@@ -2134,7 +2133,7 @@ export default function App() {
 
 
   function getProjectPayload() {
-    const committed = commitCurrentScreenState(screens);
+    const committed = commitCurrentScreenState();
     const effectiveScreenId = committed.currentId || committed.list[0]?.id || "";
     const normalizedMenuGroups = normalizeLiveMenuGroups(liveMenuGroups, committed.list);
     return {
@@ -2553,22 +2552,23 @@ export default function App() {
 
   async function saveProjectToDb(options = {}) {
     let retryAfterConflict = null;
+    let savedOk = false;
     try {
       const silent = options?.silent === true;
       const keepalive = options?.keepalive === true;
       const skipListReload = options?.skipListReload === true;
       const conflictRetried = options?._conflictRetried === true;
-      const teamMerge = options?.teamMerge === true;
-      const ignoreBaseUpdatedAt = options?.ignoreBaseUpdatedAt === true;
+      const teamMerge = options?.teamMerge !== false;
+      const ignoreBaseUpdatedAt = options?.ignoreBaseUpdatedAt !== false;
       if (silent && activeProjectId && !projectHydrationReadyRef.current) {
-        return;
+        return false;
       }
       if (projectSaveInFlightRef.current) {
         const nextMode = silent ? "silent" : "manual";
         const prevMode = queuedSaveAfterFlightRef.current;
         if (prevMode !== "manual") queuedSaveAfterFlightRef.current = nextMode;
         if (!silent) setProjectStatus("Saving...");
-        return;
+        return false;
       }
       projectSaveInFlightRef.current = true;
       if (!silent) setProjectStatus("");
@@ -2613,7 +2613,7 @@ export default function App() {
               skipListReload: true,
             };
             if (!silent) setProjectStatus("Syncing latest project state...");
-            return;
+            return false;
           }
           if (!silent && !ignoreBaseUpdatedAt) {
             retryAfterConflict = {
@@ -2624,7 +2624,7 @@ export default function App() {
               skipListReload: true,
             };
             setProjectStatus("Retrying save...");
-            return;
+            return false;
           }
           if (!silent) {
             const by = String(remote?.updated_by_username || "").trim();
@@ -2634,7 +2634,7 @@ export default function App() {
                 : "Save blocked: newer remote changes detected. Reload project to merge."
             );
           }
-          return;
+          return false;
         }
         throw new Error(data?.error || "Save failed.");
       }
@@ -2658,6 +2658,7 @@ export default function App() {
       clearProjectDraft(next?.id || activeProjectId);
       setShowProjectNameInput(false);
       projectHydrationReadyRef.current = true;
+      savedOk = true;
       if (!keepalive && !skipListReload) {
         const reload = await fetch("/api/projects");
         const payloadList = await reload.json();
@@ -2666,13 +2667,14 @@ export default function App() {
     } catch (err) {
       const message = err?.message || "Save failed.";
       setProjectStatus(options?.silent ? `Autosave failed: ${message}` : message);
+      savedOk = false;
     } finally {
       projectSaveInFlightRef.current = false;
       if (retryAfterConflict) {
         setTimeout(() => {
           saveProjectToDb(retryAfterConflict);
         }, 0);
-        return;
+        return savedOk;
       }
       const queued = queuedSaveAfterFlightRef.current;
       if (queued) {
@@ -2682,16 +2684,13 @@ export default function App() {
         }, 0);
       }
     }
+    return savedOk;
   }
 
-  function flushScheduledProjectSave() {
+function flushScheduledProjectSave() {
     if (!pendingSilentSaveRef.current) return;
     if (!projectHydrationReadyRef.current) {
       pendingSilentSaveRef.current = false;
-      return;
-    }
-    if (projectNameEditing) {
-      autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, 350);
       return;
     }
     if (projectSaveInFlightRef.current) {
@@ -2725,7 +2724,6 @@ export default function App() {
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const flushForLifecycle = () => {
-      if (projectNameEditing) return;
       if (projectSaveInFlightRef.current) return;
       if (!hasUnsavedProjectChangesFromRefs()) return;
       saveProjectToDb({ silent: true, keepalive: true, skipListReload: true });
@@ -2740,7 +2738,7 @@ export default function App() {
       window.removeEventListener("pagehide", onPageHide);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [projectNameEditing]);
+  }, []);
 
   async function openProjectFromDb(id) {
     if (!id) return;
@@ -2866,8 +2864,7 @@ export default function App() {
     projectNameRef.current = nextName;
     projectModeRef.current = nextMode;
     projectCanvasBackgroundRef.current = nextCanvasBackground;
-    setProjectNameEditing(false);
-    await saveProjectToDb({
+    const saved = await saveProjectToDb({
       teamMerge: true,
       payloadOverride: {
         name: nextName,
@@ -2875,6 +2872,9 @@ export default function App() {
         canvasBackground: nextCanvasBackground,
       },
     });
+    if (saved) {
+      setProjectNameEditing(false);
+    }
   }
 
   function cancelProjectNameEditFromSettings() {
@@ -2945,7 +2945,7 @@ export default function App() {
   }, [activeProjectId, activeProjectUpdatedAt, isPageVisible]);
 
   useEffect(() => {
-    if (!activeProjectId || !isPageVisible || projectNameEditing) return;
+    if (!activeProjectId || !isPageVisible) return;
     if (!projectHydrationReadyRef.current) return;
     const id = setInterval(() => {
       if (!projectHydrationReadyRef.current) return;
@@ -2955,16 +2955,15 @@ export default function App() {
       saveProjectToDb({ silent: true });
     }, 5000);
     return () => clearInterval(id);
-  }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, liveMenuGroups, projectMode, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible, projectNameEditing]);
+  }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, liveMenuGroups, projectMode, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible]);
 
   useEffect(() => {
     if (!uiPreferenceAutosaveReadyRef.current) {
       uiPreferenceAutosaveReadyRef.current = true;
       return;
     }
-    if (projectNameEditing) return;
     scheduleProjectAutoSave(180);
-  }, [showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth, projectNameEditing]);
+  }, [showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -4037,7 +4036,7 @@ export default function App() {
   }
 
   function buildProjectPayload() {
-    const committed = commitCurrentScreenState(screens);
+    const committed = commitCurrentScreenState();
     return {
       version: 1,
       name: projectName,
@@ -8228,7 +8227,7 @@ export default function App() {
   }, [showSecurityDrawer]);
 
   function switchToScreen(nextScreenId) {
-    const committed = commitCurrentScreenState(screens);
+    const committed = commitCurrentScreenState();
     const target = committed.list.find((s) => s.id === nextScreenId) || committed.list[0];
     setScreens(committed.list);
     if (!target) return;
@@ -8237,7 +8236,7 @@ export default function App() {
   }
 
   function addScreen() {
-    const committed = commitCurrentScreenState(screens);
+    const committed = commitCurrentScreenState();
     const existingIds = new Set(committed.list.map((s) => String(s.id || "")));
     let id = `screen-${uid()}`;
     while (existingIds.has(id)) id = `screen-${uid()}`;
@@ -8262,6 +8261,7 @@ export default function App() {
         showInLiveMenu: true,
       }),
     ];
+    screensRef.current = next;
     setScreens(next);
     setLiveMenuGroups((prev) => {
       const normalized = normalizeLiveMenuGroups(prev, next);
@@ -8285,7 +8285,7 @@ export default function App() {
   }
 
   function deleteActiveScreen() {
-    const committed = commitCurrentScreenState(screens);
+    const committed = commitCurrentScreenState();
     if (committed.list.length <= 1) return;
     const removed = committed.list.find((s) => s.id === committed.currentId);
     const filtered = committed.list.filter((s) => s.id !== committed.currentId);
@@ -8317,7 +8317,7 @@ export default function App() {
   }
 
   function deleteScreenById(screenId) {
-    const committed = commitCurrentScreenState(screens);
+    const committed = commitCurrentScreenState();
     if (committed.list.length <= 1) return;
     const removeId = String(screenId || "");
     if (!removeId) return;
@@ -10230,8 +10230,8 @@ export default function App() {
             >
               <div
                 style={{
-                  width: "100%",
-                  maxWidth: 1120,
+                  width: "min(100%, 920px)",
+                  margin: "0 auto",
                   boxSizing: "border-box",
                   background:
                     "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
@@ -10329,8 +10329,8 @@ export default function App() {
 
               <div
                 style={{
-                  width: "100%",
-                  maxWidth: 1120,
+                  width: "min(100%, 920px)",
+                  margin: "0 auto",
                   boxSizing: "border-box",
                   background:
                     "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, white 6%) 0%, color-mix(in srgb, var(--bg-elev) 90%, black 10%) 100%)",
@@ -10419,8 +10419,8 @@ export default function App() {
 
               <div
                 style={{
-                  width: "100%",
-                  maxWidth: 1120,
+                  width: "min(100%, 920px)",
+                  margin: "0 auto",
                   boxSizing: "border-box",
                   display: "flex",
                   justifyContent: "space-between",
@@ -11818,7 +11818,7 @@ export default function App() {
               <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginTop: 4 }}>
                 SVG Background Colors
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "56px minmax(0, 1fr) 88px", gap: 8, alignItems: "center" }}>
                 <div style={{ fontSize: 12, color: "var(--text)" }}>Light</div>
                 <input
                   type="color"
@@ -11834,9 +11834,11 @@ export default function App() {
                   style={{ width: "100%", height: 32, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}
                   title="Canvas background color in light mode"
                 />
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{projectCanvasBackgroundDraft.light}</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", textAlign: "right" }}>
+                  {String(projectCanvasBackgroundDraft.light || "").toUpperCase()}
+                </div>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "56px minmax(0, 1fr) 88px", gap: 8, alignItems: "center" }}>
                 <div style={{ fontSize: 12, color: "var(--text)" }}>Dark</div>
                 <input
                   type="color"
@@ -11852,7 +11854,9 @@ export default function App() {
                   style={{ width: "100%", height: 32, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}
                   title="Canvas background color in dark mode"
                 />
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{projectCanvasBackgroundDraft.dark}</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", textAlign: "right" }}>
+                  {String(projectCanvasBackgroundDraft.dark || "").toUpperCase()}
+                </div>
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
                 <button
@@ -11913,7 +11917,19 @@ export default function App() {
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Choose the active design screen.
                 </div>
-                <div style={{ display: "grid", gap: 6, minHeight: 0, flex: "1 1 auto", overflow: "auto" }} className="vizi-scroll">
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    flex: "1 1 auto",
+                    minHeight: 0,
+                    overflow: "auto",
+                    alignItems: "stretch",
+                    justifyContent: "flex-start",
+                  }}
+                  className="vizi-scroll"
+                >
                   {(screens || []).map((s) => {
                     const active = s.id === activeScreenId;
                     return (
