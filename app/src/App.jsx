@@ -50,7 +50,7 @@ const PROJECT_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const SVG_RAW_CACHE_MAX = 96;
 const DEFAULT_CANVAS_BG_LIGHT = "#ffffff";
 const DEFAULT_CANVAS_BG_DARK = "#0f141c";
-const LIVE_ALARM_BAR_H = 44;
+const LIVE_ALARM_BAR_H = 52;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 140;
 function normalizeProjectMode(value) {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "design";
