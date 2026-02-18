@@ -22,6 +22,28 @@ function scanNamedElements(xmlText, elementName, maxNames = 8) {
   return out;
 }
 
+function scanNamedElementsL5k(text, keyword, maxNames = 8) {
+  const out = { count: 0, names: [] };
+  const seen = new Set();
+  const escaped = String(keyword || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^\\s*${escaped}\\s+([^\\r\\n;]+)`, "gmi");
+  let match = re.exec(String(text || ""));
+  while (match) {
+    out.count += 1;
+    if (out.names.length < maxNames) {
+      const rawName = String(match[1] || "").trim();
+      const name = rawName.replace(/^"|"$/g, "").trim();
+      const key = name.toLowerCase();
+      if (name && !seen.has(key)) {
+        seen.add(key);
+        out.names.push(name);
+      }
+    }
+    match = re.exec(String(text || ""));
+  }
+  return out;
+}
+
 function scanControllerTags(xmlText, maxTags = 1200) {
   const out = { count: 0, tags: [] };
   const seen = new Set();
@@ -78,6 +100,46 @@ function scanControllerTags(xmlText, maxTags = 1200) {
     const attrs = match[1] || "";
     pushTag(extractAttr(attrs, "Name"), extractAttr(attrs, "DataType"), extractAttr(attrs, "TagType"));
     match = selfRe.exec(xmlText);
+  }
+  return out;
+}
+
+function scanControllerTagsL5k(text, maxTags = 1200) {
+  const out = { count: 0, tags: [] };
+  const seen = new Set();
+  const pushTag = (name, plcType = "", tagType = "", parent = "", value = "") => {
+    const trimmed = String(name || "").trim().replace(/^"|"$/g, "");
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key) || out.tags.length >= maxTags) return;
+    seen.add(key);
+    out.tags.push({
+      name: trimmed,
+      tagPath: trimmed,
+      plcType: String(plcType || "").trim(),
+      tagType: String(tagType || "").trim(),
+      parent: String(parent || "").trim(),
+      value: String(value || "").trim(),
+    });
+  };
+
+  const src = String(text || "");
+  const blockRe = /^\s*TAG\b([\s\S]*?)^\s*END_TAG\b/gmi;
+  let block = blockRe.exec(src);
+  while (block) {
+    const body = String(block[1] || "");
+    const lineRe = /^\s*("?[\w\.\[\]:]+"?)\s*:\s*([\w]+)\b([^;\r\n]*);/gmi;
+    let line = lineRe.exec(body);
+    while (line) {
+      out.count += 1;
+      const tagName = String(line[1] || "").trim();
+      const plcType = String(line[2] || "").trim();
+      const extra = String(line[3] || "");
+      const valueMatch = extra.match(/:=\s*([^;\r\n]+)/i);
+      pushTag(tagName, plcType, "Tag", "", valueMatch ? valueMatch[1] : "");
+      line = lineRe.exec(body);
+    }
+    block = blockRe.exec(src);
   }
   return out;
 }
@@ -178,9 +240,66 @@ function formatBytes(n) {
   return `${(size / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-function analyzeL5x(xmlText) {
-  const rootMatch = xmlText.match(/<RSLogix5000Content\b([^>]*)>/i);
-  const controllerMatch = xmlText.match(/<Controller\b([^>]*)>/i);
+function analyzeL5x(xmlText, fileName = "") {
+  const raw = String(xmlText || "");
+  const lowerName = String(fileName || "").trim().toLowerCase();
+  const isExtL5k = lowerName.endsWith(".l5k");
+  const looksL5x = /<RSLogix5000Content\b/i.test(raw);
+  const looksL5k =
+    /^\s*CONTROLLER\b/m.test(raw) ||
+    /^\s*PROGRAM\b/m.test(raw) ||
+    /^\s*ADD_ON_INSTRUCTION_DEFINITION\b/m.test(raw);
+
+  if ((isExtL5k || looksL5k) && !looksL5x) {
+    const sections = [
+      { label: "Tasks", key: "Task", keyword: "TASK" },
+      { label: "Programs", key: "Program", keyword: "PROGRAM" },
+      { label: "Routines", key: "Routine", keyword: "ROUTINE" },
+      { label: "Controller Tags", key: "Tag", keyword: "TAG" },
+      { label: "Modules", key: "Module", keyword: "MODULE" },
+      {
+        label: "AOIs",
+        key: "AddOnInstructionDefinition",
+        keyword: "ADD_ON_INSTRUCTION_DEFINITION",
+      },
+      { label: "Data Types", key: "DataType", keyword: "DATATYPE" },
+    ].map((s) => ({
+      label: s.label,
+      key: s.key,
+      ...scanNamedElementsL5k(raw, s.keyword, 8),
+    }));
+    const controllerNameMatch = raw.match(/^\s*CONTROLLER\s+([^\r\n]+)/mi);
+    const revisionMatch = raw.match(/^\s*REVISION\s+([^\r\n]+)/mi);
+    const controllerTags = scanControllerTagsL5k(raw);
+    return {
+      isLikelyL5x: false,
+      isLikelyL5k: looksL5k || isExtL5k,
+      fileFormat: "l5k",
+      hasParserError: false,
+      metadata: {
+        schemaRevision: "",
+        softwareRevision: revisionMatch ? String(revisionMatch[1] || "").trim() : "",
+        targetName: "",
+        targetType: "",
+        containsContext: "",
+        owner: "",
+        exportDate: "",
+        controllerName: controllerNameMatch
+          ? String(controllerNameMatch[1] || "").replace(/^"|"$/g, "").trim()
+          : "",
+        processorType: "",
+        majorRev: "",
+        minorRev: "",
+        projectCreationDate: "",
+        lastModifiedDate: "",
+      },
+      sections,
+      controllerTags,
+    };
+  }
+
+  const rootMatch = raw.match(/<RSLogix5000Content\b([^>]*)>/i);
+  const controllerMatch = raw.match(/<Controller\b([^>]*)>/i);
   const rootAttrs = rootMatch ? rootMatch[1] : "";
   const controllerAttrs = controllerMatch ? controllerMatch[1] : "";
   const sections = [
@@ -194,9 +313,11 @@ function analyzeL5x(xmlText) {
   ].map((s) => ({ ...s, ...scanNamedElements(xmlText, s.key) }));
   const controllerTags = scanControllerTags(xmlText);
 
-  const parserError = xmlText.match(/<parsererror[\s>]/i);
+  const parserError = raw.match(/<parsererror[\s>]/i);
   return {
-    isLikelyL5x: /<RSLogix5000Content\b/i.test(xmlText),
+    isLikelyL5x: /<RSLogix5000Content\b/i.test(raw),
+    isLikelyL5k: false,
+    fileFormat: "l5x",
     hasParserError: !!parserError,
     metadata: {
       schemaRevision: extractAttr(rootAttrs, "SchemaRevision"),
@@ -299,6 +420,47 @@ function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
     });
     match = defRe.exec(text);
   }
+
+  if (!out.length && /^\s*ADD_ON_INSTRUCTION_DEFINITION\b/m.test(text)) {
+    const l5kDefRe =
+      /^\s*ADD_ON_INSTRUCTION_DEFINITION\s+([^\r\n;]+)([\s\S]*?)^\s*END_ADD_ON_INSTRUCTION_DEFINITION\b/gmi;
+    let l5kMatch = l5kDefRe.exec(text);
+    while (l5kMatch && out.length < maxAois) {
+      const aoiName = String(l5kMatch[1] || "").replace(/^"|"$/g, "").trim();
+      const body = String(l5kMatch[2] || "");
+      const fields = [];
+      const seen = new Set();
+      const pushField = (name, plcType, usage) => {
+        const trimmed = String(name || "").trim().replace(/^"|"$/g, "");
+        if (!trimmed) return;
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        const dataType = String(plcType || "").trim();
+        fields.push({
+          name: trimmed,
+          tagPath: trimmed,
+          plcType: dataType,
+          uaType: mapPlcTypeToUaType(dataType),
+          usage: String(usage || "").trim(),
+          enabled: true,
+        });
+      };
+      const paramLineRe = /^\s*("?[\w\.\[\]:]+"?)\s*:\s*([\w]+)\s*(?:\(([^)]*)\))?[^;\r\n]*;/gmi;
+      let line = paramLineRe.exec(body);
+      while (line && fields.length < maxFieldsPerAoi) {
+        pushField(line[1], line[2], line[3] || "");
+        line = paramLineRe.exec(body);
+      }
+      out.push({
+        name: aoiName || "AOI",
+        description: "",
+        revision: "",
+        fields,
+      });
+      l5kMatch = l5kDefRe.exec(text);
+    }
+  }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -382,7 +544,20 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
           continue;
         }
       }
-      out[key] = scanNamedElements(raw, key, 50000).names;
+      if (String(analysis?.fileFormat || "").toLowerCase() === "l5k") {
+        const l5kKeywordByKey = {
+          Task: "TASK",
+          Program: "PROGRAM",
+          Routine: "ROUTINE",
+          Module: "MODULE",
+          AddOnInstructionDefinition: "ADD_ON_INSTRUCTION_DEFINITION",
+          DataType: "DATATYPE",
+        };
+        const keyword = l5kKeywordByKey[key];
+        out[key] = keyword ? scanNamedElementsL5k(raw, keyword, 50000).names : [];
+      } else {
+        out[key] = scanNamedElements(raw, key, 50000).names;
+      }
     }
     return out;
   }, [analysis, selected?.rawText]);
@@ -719,7 +894,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     try {
       const text = await file.text();
       const rawText = String(text || "");
-      const nextAnalysis = analyzeL5x(rawText);
+      const nextAnalysis = analyzeL5x(rawText, file.name);
       const id = `plc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const next = [
         ...(Array.isArray(plcItems) ? plcItems : []),
@@ -1099,7 +1274,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         if (!baseTag) {
           setChatMessages((prev) => [
             ...prev,
-            { role: "assistant", content: `I could not find controller tag "${requested}" in the loaded L5X.` },
+            { role: "assistant", content: `I could not find controller tag "${requested}" in the loaded PLC file.` },
           ]);
           return;
         }
@@ -1142,7 +1317,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         if (!baseTag) {
           setChatMessages((prev) => [
             ...prev,
-            { role: "assistant", content: `I could not find controller tag "${requested}" in the loaded L5X.` },
+            { role: "assistant", content: `I could not find controller tag "${requested}" in the loaded PLC file.` },
           ]);
           return;
         }
@@ -1650,9 +1825,9 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
       }}
     >
       <div style={{ display: "grid", gap: 2 }}>
-        <div style={{ fontSize: 14, fontWeight: 800 }}>PLC L5X Analyzer</div>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>PLC L5X/L5K Analyzer</div>
         <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          Upload an <code>.l5x</code> file to scan controller metadata, tags, programs, routines, modules, and AOIs.
+          Upload an <code>.l5x</code> or <code>.l5k</code> file to scan controller metadata, tags, programs, routines, modules, and AOIs.
         </div>
       </div>
 
@@ -1728,8 +1903,8 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                 gap: 8,
               }}
             >
-              Upload L5X
-              <input type="file" accept=".l5x,.xml,text/xml,application/xml" onChange={onFileChange} style={{ display: "none" }} />
+              Upload PLC
+              <input type="file" accept=".l5x,.l5k,.xml,text/xml,application/xml,text/plain" onChange={onFileChange} style={{ display: "none" }} />
             </label>
             {selected ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
@@ -1811,9 +1986,9 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
 
           {analysis ? (
             <>
-              {!analysis.isLikelyL5x ? (
+              {!analysis.isLikelyL5x && !analysis.isLikelyL5k ? (
                 <div style={{ border: "1px solid #f59e0b", background: "rgba(245,158,11,0.08)", color: "#f59e0b", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
-                  This file does not look like an L5X export (`RSLogix5000Content` not found), but scan results are shown.
+                  This file does not look like an L5X/L5K export, but scan results are shown.
                 </div>
               ) : null}
               {analysis.hasParserError ? (
@@ -2080,7 +2255,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
               {chatError ? <div style={{ fontSize: 12, color: "#f04438" }}>{chatError}</div> : null}
               <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 {analysis?.controllerTags?.count
-                  ? `${analysis.controllerTags.count} tags detected in selected L5X`
+                  ? `${analysis.controllerTags.count} tags detected in selected PLC file`
                   : "Upload/select a PLC with controller tags to map into OPC"}
               </div>
               {opcApplyError ? <div style={{ fontSize: 12, color: "#f04438" }}>{opcApplyError}</div> : null}
@@ -2271,7 +2446,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
           </div>
           {!selected ? (
             <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
-              Select or upload an L5X file in Overview first.
+              Select or upload an L5X/L5K file in Overview first.
             </div>
           ) : !aoiTemplates.length ? (
             <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>

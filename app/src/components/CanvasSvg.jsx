@@ -286,8 +286,36 @@ export default function CanvasSvg({
   const [widgetWriteDraftByOverlay, setWidgetWriteDraftByOverlay] = useState({});
   const [widgetWriteBusyByOverlay, setWidgetWriteBusyByOverlay] = useState({});
   const [widgetWriteErrorByOverlay, setWidgetWriteErrorByOverlay] = useState({});
+  const [widgetPressByOverlay, setWidgetPressByOverlay] = useState({});
+  const widgetPulseTimersRef = useRef(new Map());
   const trendLiveKeyListRef = useRef([]);
   const trendTagCandidateCacheRef = useRef(new Map());
+
+  const setWidgetPressed = (overlayId, pressed) => {
+    const key = String(overlayId || "").trim();
+    if (!key) return;
+    setWidgetPressByOverlay((prev) => {
+      if (Boolean(prev?.[key]) === Boolean(pressed)) return prev;
+      return { ...prev, [key]: Boolean(pressed) };
+    });
+  };
+
+  const pulseWidgetPress = (overlayId, ms = 170) => {
+    const key = String(overlayId || "").trim();
+    if (!key) return;
+    const timers = widgetPulseTimersRef.current;
+    const prev = timers.get(key);
+    if (prev) {
+      clearTimeout(prev);
+      timers.delete(key);
+    }
+    setWidgetPressed(key, true);
+    const t = setTimeout(() => {
+      setWidgetPressed(key, false);
+      timers.delete(key);
+    }, Math.max(80, Number(ms) || 170));
+    timers.set(key, t);
+  };
 
   const coerceWidgetWriteValue = (raw) => {
     const text = String(raw ?? "").trim();
@@ -454,7 +482,17 @@ export default function CanvasSvg({
     setWidgetWriteDraftByOverlay(pruneMap);
     setWidgetWriteBusyByOverlay(pruneMap);
     setWidgetWriteErrorByOverlay(pruneMap);
+    setWidgetPressByOverlay(pruneMap);
   }, [svgOverlays]);
+
+  useEffect(
+    () => () => {
+      const timers = widgetPulseTimersRef.current;
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    },
+    []
+  );
 
   const parseWidgetSeriesTags = (overlay) => {
     const out = [];
@@ -1040,7 +1078,7 @@ export default function CanvasSvg({
       Math.max(min, Math.min(max, Math.round(Number(base || 0) * widgetScale)));
     const headH = dense ? 20 : compact ? 24 : 28;
     const pad = dense ? 6 : compact ? 8 : 10;
-    const cardTitle = title || label;
+    const cardTitle = title || "";
     const titleSize = dense ? 8 : compact ? 9 : 10;
     const valueSize = scaledFont(dense ? 14 : compact ? 18 : 22, 10, 56);
     const valueColor = "var(--text)";
@@ -1297,51 +1335,57 @@ export default function CanvasSvg({
       const safeAcc = validTimer ? Math.max(0, Math.min(Number(accMs), safePre)) : 0;
       const remainingMs = validTimer ? Math.max(0, safePre - safeAcc) : null;
       const completePct = validTimer ? Math.max(0, Math.min(100, (safeAcc / safePre) * 100)) : 0;
-      const barX = x + pad;
-      const barY = y + headH + (dense ? 14 : 18);
-      const barW = Math.max(24, w - pad * 2);
-      const barH = Math.max(12, Math.min(24, Math.round(h * 0.15)));
-      const fillW = Math.max(0, Math.min(barW, Math.round((barW * completePct) / 100)));
-      const statusText = validTimer
-        ? `${formatDuration(remainingMs, decimals, unit)} remaining`
-        : "Bind PRE and ACC tags";
-      const sourceText = resolvedAccTagPath || resolvedPreTagPath || "Unbound";
+      const countdownPad = Math.max(5, Math.min(14, Math.round(w * 0.06)));
+      const barX = x + countdownPad;
+      const barW = Math.max(24, w - countdownPad * 2);
+      const labelText = cardTitle;
+      const showLabel = h >= 52 && Boolean(labelText);
+      const labelFont = scaledFont(dense ? 11 : 14, 10, 24);
+      const topInset = Math.max(4, Math.round(h * 0.06));
+      const bottomInset = Math.max(4, Math.round(h * 0.08));
+      const gapAfterLabel = showLabel ? Math.max(2, Math.round(h * 0.03)) : 0;
+      const labelY = y + topInset + labelFont;
+      const barAreaTop = showLabel ? labelY + gapAfterLabel : y + topInset;
+      const barAreaBottom = y + h - bottomInset;
+      const barAreaH = Math.max(8, barAreaBottom - barAreaTop);
+      const targetBarH = Math.round(barAreaH * 0.72);
+      const barH = Math.max(10, Math.min(34, targetBarH));
+      const barY = barAreaTop + Math.max(0, Math.round((barAreaH - barH) / 2));
+      const barR = Math.max(4, Math.round(barH / 2));
+      const fillW = Math.max(0, Math.min(barW, (barW * completePct) / 100));
+      const valueText = validTimer ? formatDuration(remainingMs, decimals, unit) : "Unbound";
+      const valueFont = Math.max(
+        8,
+        Math.min(20, Math.round(Math.min(barH * 0.52, barW * 0.11)))
+      );
       return (
         <g pointerEvents="none">
-          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
-          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
-            {cardTitle || "Countdown"}
-          </text>
-          <rect x={barX} y={barY} width={barW} height={barH} rx={Math.min(10, Math.round(barH / 2))} fill="var(--bg-elev)" stroke="var(--border)" />
-          <rect x={barX} y={barY} width={fillW} height={barH} rx={Math.min(10, Math.round(barH / 2))} fill={remainingMs === 0 ? "#16a34a" : accent} />
-          <text
-            x={x + pad}
-            y={barY + barH + (dense ? 12 : 16)}
-            fill={valueColor}
-            fontSize={scaledFont(dense ? 9 : 11, 8, 20)}
-            fontFamily="system-ui"
-            fontWeight={700}
-          >
-            {statusText}
-          </text>
-          <text
-            x={x + w - pad}
-            y={barY + barH + (dense ? 12 : 16)}
-            fill={subdued}
-            fontSize={scaledFont(dense ? 8 : 10, 7, 16)}
-            fontFamily="system-ui"
-            textAnchor="end"
-          >
-            {validTimer ? `${completePct.toFixed(1)}%` : ""}
-          </text>
-          {!dense ? (
-            <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={scaledFont(9, 7, 16)} fontFamily="system-ui">
-              {validTimer
-                ? `ACC ${Math.round(safeAcc)} / PRE ${Math.round(safePre)}`
-                : sourceText}
+          {showLabel ? (
+            <text
+              x={barX + barW / 2}
+              y={labelY}
+              fill={subdued}
+              fontSize={labelFont}
+              fontFamily="system-ui"
+              fontWeight={800}
+              textAnchor="middle"
+            >
+              {labelText}
             </text>
           ) : null}
-          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
+          <rect x={barX} y={barY} width={barW} height={barH} rx={barR} fill="transparent" stroke="var(--border)" />
+          <rect x={barX} y={barY} width={fillW} height={barH} rx={barR} fill={remainingMs === 0 ? "#16a34a" : accent} />
+          <text
+            x={barX + barW / 2}
+            y={barY + barH / 2 + Math.max(2, Math.round(barH * 0.16))}
+            fill={theme === "dark" ? "#ffffff" : "#111827"}
+            fontSize={valueFont}
+            fontFamily="system-ui"
+            fontWeight={800}
+            textAnchor="middle"
+          >
+            {valueText}
+          </text>
         </g>
       );
     }
@@ -1374,7 +1418,15 @@ export default function CanvasSvg({
       return (
         <g>
           <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
-          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+          <text
+            x={x + w / 2}
+            y={y + headH - 7}
+            fill={subdued}
+            fontSize={titleSize}
+            fontFamily="system-ui"
+            fontWeight={700}
+            textAnchor="middle"
+          >
             {cardTitle}
           </text>
           <text x={x + pad} y={y + Math.max(headH + 26, h * 0.54)} fill={valueColor} fontSize={valueSize} fontFamily="system-ui" fontWeight={800}>
@@ -1391,16 +1443,33 @@ export default function CanvasSvg({
             </text>
           ) : null}
           {showControls ? (
-            <foreignObject x={x + pad} y={controlsY} width={controlsW} height={inputH}>
+            <foreignObject
+              x={x + pad}
+              y={controlsY}
+              width={controlsW}
+              height={inputH}
+              style={{ pointerEvents: liveClickable ? "auto" : "none" }}
+            >
               <div
                 xmlns="http://www.w3.org/1999/xhtml"
-                style={{ display: "grid", gridTemplateColumns: `${Math.max(20, controlsW - btnW - 6)}px ${btnW}px`, gap: 6, width: "100%", height: "100%" }}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: `${Math.max(20, controlsW - btnW - 6)}px ${btnW}px`,
+                  gap: 6,
+                  width: "100%",
+                  height: "100%",
+                  pointerEvents: liveClickable ? "auto" : "none",
+                }}
               >
                 <input
                   data-widget-control="true"
                   value={writeDraft}
-                  onMouseDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => {
+                    if (!liveClickable) return;
+                    e.stopPropagation();
+                  }}
                   onChange={(e) => {
+                    if (!liveClickable) return;
                     const nextVal = e.target.value;
                     setWidgetWriteDraftByOverlay((prev) => ({ ...prev, [overlayId]: nextVal }));
                     if (widgetWriteErrorByOverlay?.[overlayId]) {
@@ -1408,12 +1477,13 @@ export default function CanvasSvg({
                     }
                   }}
                   onKeyDown={(e) => {
+                    if (!liveClickable) return;
                     if (e.key !== "Enter" || writeBusy || !canWrite) return;
                     e.preventDefault();
                     submitWidgetWrite(overlay, writeDraft);
                   }}
                   placeholder={canWrite ? "Write value" : "Bind OPC tag to write"}
-                  disabled={!canWrite || writeBusy}
+                  disabled={!liveClickable || !canWrite || writeBusy}
                   style={{
                     width: "100%",
                     height: "100%",
@@ -1429,10 +1499,14 @@ export default function CanvasSvg({
                 <button
                   data-widget-control="true"
                   onMouseDown={(e) => {
+                    if (!liveClickable) return;
                     e.stopPropagation();
                   }}
-                  onClick={() => submitWidgetWrite(overlay, writeDraft)}
-                  disabled={!canWrite || writeBusy}
+                  onClick={() => {
+                    if (!liveClickable) return;
+                    submitWidgetWrite(overlay, writeDraft);
+                  }}
+                  disabled={!liveClickable || !canWrite || writeBusy}
                   style={{
                     width: "100%",
                     height: "100%",
@@ -1442,7 +1516,7 @@ export default function CanvasSvg({
                     borderRadius: 7,
                     fontSize: dense ? 10 : 11,
                     fontWeight: 700,
-                    cursor: !canWrite || writeBusy ? "default" : "pointer",
+                    cursor: !liveClickable || !canWrite || writeBusy ? "default" : "pointer",
                     opacity: !canWrite || writeBusy ? 0.7 : 1,
                   }}
                 >
@@ -1456,11 +1530,6 @@ export default function CanvasSvg({
               {writeError}
             </text>
           ) : null}
-          {!canWrite ? (
-            <text x={x + pad} y={showControls ? controlsY - 4 : y + h - 8} fill={subdued} fontSize={9} fontFamily="system-ui">
-              Bind OPC tag path to enable write.
-            </text>
-          ) : null}
           <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
         </g>
       );
@@ -1472,78 +1541,179 @@ export default function CanvasSvg({
       const writeBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
       const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
       const pressed = toBooleanLike(rawVal);
-      const buttonW = Math.max(54, Math.round(w - pad * 2));
-      const buttonH = Math.max(26, Math.round(Math.min(52, h - headH - 16)));
-      const buttonX = x + pad;
-      const buttonY = Math.max(y + headH + 8, y + h - buttonH - 8);
+      const localPressed = widgetPressByOverlay?.[overlayId] === true;
+      const visualPressed = localPressed || pressed;
+      const titleText = cardTitle;
+      const titleFont = scaledFont(dense ? 11 : 13, 10, 22);
+      const contentPadX = Math.max(6, Math.min(14, Math.round(w * 0.06)));
+      const topInset = Math.max(4, Math.round(h * 0.06));
+      const bottomInset = Math.max(4, Math.round(h * 0.08));
+      const showTitle = h >= 50 && Boolean(titleText);
+      const titleY = y + topInset + titleFont;
+      const contentTop = showTitle ? titleY + Math.max(2, Math.round(h * 0.03)) : y + topInset;
+      const buttonW = Math.max(40, Math.round(w - contentPadX * 2));
+      const buttonH = Math.max(18, Math.round(y + h - bottomInset - contentTop));
+      const buttonX = x + contentPadX;
+      const buttonY = contentTop;
       return (
         <g>
-          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
-          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
-            {cardTitle || "Push Button"}
-          </text>
-          {!dense ? (
-            <text x={x + pad} y={y + headH + 16} fill={subdued} fontSize={10} fontFamily="system-ui" fontWeight={600}>
-              {label}
+          {showTitle ? (
+            <text
+              x={buttonX + buttonW / 2}
+              y={titleY}
+              fill={subdued}
+              fontSize={titleFont}
+              fontFamily="system-ui"
+              fontWeight={800}
+              textAnchor="middle"
+            >
+              {titleText}
             </text>
           ) : null}
-          <foreignObject x={buttonX} y={buttonY} width={buttonW} height={buttonH}>
-            <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%" }}>
+          <foreignObject
+            x={buttonX}
+            y={buttonY}
+            width={buttonW}
+            height={buttonH}
+            style={{ pointerEvents: "none" }}
+          >
+            <div
+              xmlns="http://www.w3.org/1999/xhtml"
+              style={{ width: "100%", height: "100%", pointerEvents: "none" }}
+            >
               <button
-                data-widget-control="true"
+                data-widget-control={liveClickable ? "true" : undefined}
                 onMouseDown={(e) => {
+                  if (!liveClickable) return;
                   e.stopPropagation();
-                  if (!canWrite || writeBusy) return;
+                  setWidgetPressed(overlayId, true);
+                  if (writeBusy) return;
+                  if (!canWrite) {
+                    setWidgetWriteErrorByOverlay((prev) => ({
+                      ...prev,
+                      [overlayId]: "Bind OPC tag to enable write.",
+                    }));
+                    return;
+                  }
                   submitWidgetWrite(overlay, 1);
                 }}
                 onMouseUp={(e) => {
+                  if (!liveClickable) return;
                   e.stopPropagation();
-                  if (!canWrite || writeBusy) return;
+                  setWidgetPressed(overlayId, false);
+                  if (writeBusy || !canWrite) return;
                   submitWidgetWrite(overlay, 0);
                 }}
                 onMouseLeave={() => {
-                  if (!canWrite || writeBusy) return;
+                  if (!liveClickable) return;
+                  setWidgetPressed(overlayId, false);
+                  if (writeBusy || !canWrite) return;
                   submitWidgetWrite(overlay, 0);
                 }}
                 onTouchStart={(e) => {
+                  if (!liveClickable) return;
                   e.stopPropagation();
-                  if (!canWrite || writeBusy) return;
+                  setWidgetPressed(overlayId, true);
+                  if (writeBusy) return;
+                  if (!canWrite) {
+                    setWidgetWriteErrorByOverlay((prev) => ({
+                      ...prev,
+                      [overlayId]: "Bind OPC tag to enable write.",
+                    }));
+                    return;
+                  }
                   submitWidgetWrite(overlay, 1);
                 }}
                 onTouchEnd={() => {
-                  if (!canWrite || writeBusy) return;
+                  if (!liveClickable) return;
+                  setWidgetPressed(overlayId, false);
+                  if (writeBusy || !canWrite) return;
                   submitWidgetWrite(overlay, 0);
                 }}
-                disabled={!canWrite || writeBusy}
+                disabled={!liveClickable || writeBusy}
                 style={{
                   width: "100%",
                   height: "100%",
                   border: "1px solid var(--border)",
-                  borderRadius: 9,
-                  background: pressed ? "#1d4ed8" : "#2b6cff",
+                  borderRadius: Math.max(8, Math.round(buttonH * 0.22)),
+                  background: visualPressed
+                    ? "linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%)"
+                    : "linear-gradient(180deg, #4f8dff 0%, #2b6cff 100%)",
                   color: "white",
-                  fontSize: dense ? 10 : 12,
+                  fontSize: Math.max(9, Math.min(20, Math.round(buttonH * 0.42))),
                   fontWeight: 800,
-                  cursor: !canWrite || writeBusy ? "default" : "pointer",
+                  cursor: !liveClickable || writeBusy ? "default" : "pointer",
                   opacity: !canWrite ? 0.65 : 1,
-                  boxShadow: pressed ? "inset 0 2px 8px rgba(0,0,0,0.28)" : "0 6px 14px rgba(43,108,255,0.25)",
+                  boxShadow: visualPressed
+                    ? "inset 0 4px 10px rgba(2,6,23,0.38), inset 0 -1px 2px rgba(255,255,255,0.12)"
+                    : "inset 0 1px 0 rgba(255,255,255,0.35), 0 8px 16px rgba(43,108,255,0.26)",
+                  transform: visualPressed ? "translateY(1px) scale(0.99)" : "translateY(0) scale(1)",
+                  transition: "transform 80ms ease, box-shadow 120ms ease, filter 120ms ease",
+                  pointerEvents: "none",
                 }}
               >
-                {writeBusy ? "..." : "PRESS"}
+                <span
+                  aria-hidden="true"
+                  style={{
+                    display: "inline-block",
+                    width: Math.max(10, Math.round(buttonH * 0.28)),
+                    height: Math.max(10, Math.round(buttonH * 0.28)),
+                    borderRadius: "999px",
+                    border: "1px solid rgba(255,255,255,0.72)",
+                    background: writeBusy
+                      ? "rgba(255,255,255,0.45)"
+                      : visualPressed
+                      ? "rgba(255,255,255,0.35)"
+                      : "rgba(255,255,255,0.22)",
+                    boxShadow: visualPressed
+                      ? "inset 0 1px 2px rgba(2,6,23,0.35)"
+                      : "0 0 0 2px rgba(255,255,255,0.08)",
+                  }}
+                />
               </button>
             </div>
           </foreignObject>
+          {liveClickable ? (
+            <rect
+              x={buttonX}
+              y={buttonY}
+              width={buttonW}
+              height={buttonH}
+              rx={Math.max(8, Math.round(buttonH * 0.22))}
+              fill="transparent"
+              pointerEvents="all"
+              style={{ cursor: writeBusy ? "default" : "pointer" }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                setWidgetPressed(overlayId, true);
+                if (writeBusy) return;
+                if (!canWrite) {
+                  setWidgetWriteErrorByOverlay((prev) => ({
+                    ...prev,
+                    [overlayId]: "Bind OPC tag to enable write.",
+                  }));
+                  return;
+                }
+                submitWidgetWrite(overlay, 1);
+              }}
+              onMouseUp={(e) => {
+                e.stopPropagation();
+                setWidgetPressed(overlayId, false);
+                if (writeBusy || !canWrite) return;
+                submitWidgetWrite(overlay, 0);
+              }}
+              onMouseLeave={() => {
+                setWidgetPressed(overlayId, false);
+                if (writeBusy || !canWrite) return;
+                submitWidgetWrite(overlay, 0);
+              }}
+            />
+          ) : null}
           {writeError ? (
-            <text x={x + pad} y={buttonY - 4} fill="#f04438" fontSize={9} fontFamily="system-ui" fontWeight={700}>
+            <text x={buttonX} y={Math.max(y + 10, buttonY - 4)} fill="#f04438" fontSize={9} fontFamily="system-ui" fontWeight={700}>
               {writeError}
             </text>
           ) : null}
-          {!canWrite ? (
-            <text x={x + pad} y={buttonY - 4} fill={subdued} fontSize={9} fontFamily="system-ui">
-              Bind OPC tag path to enable write.
-            </text>
-          ) : null}
-          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
         </g>
       );
     }
@@ -1554,6 +1724,7 @@ export default function CanvasSvg({
       const writeBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
       const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
       const isOn = toBooleanLike(rawVal);
+      const localPressed = widgetPressByOverlay?.[overlayId] === true;
       const buttonW = Math.max(54, Math.round(w - pad * 2));
       const buttonH = Math.max(26, Math.round(Math.min(52, h - headH - 16)));
       const buttonX = x + pad;
@@ -1562,53 +1733,140 @@ export default function CanvasSvg({
         <g>
           <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
           <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
-            {cardTitle || "On/Off Button"}
+            {cardTitle}
           </text>
-          {!dense ? (
-            <text x={x + pad} y={y + headH + 16} fill={subdued} fontSize={10} fontFamily="system-ui" fontWeight={600}>
-              {label}
-            </text>
-          ) : null}
-          <foreignObject x={buttonX} y={buttonY} width={buttonW} height={buttonH}>
-            <div xmlns="http://www.w3.org/1999/xhtml" style={{ width: "100%", height: "100%" }}>
+          <foreignObject
+            x={buttonX}
+            y={buttonY}
+            width={buttonW}
+            height={buttonH}
+            style={{ pointerEvents: "none" }}
+          >
+            <div
+              xmlns="http://www.w3.org/1999/xhtml"
+              style={{ width: "100%", height: "100%", pointerEvents: "none" }}
+            >
               <button
-                data-widget-control="true"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
+                data-widget-control={liveClickable ? "true" : undefined}
+                onMouseDown={(e) => {
+                  if (!liveClickable) return;
                   e.stopPropagation();
-                  if (!canWrite || writeBusy) return;
+                  setWidgetPressed(overlayId, true);
+                }}
+                onMouseUp={() => setWidgetPressed(overlayId, false)}
+                onMouseLeave={() => setWidgetPressed(overlayId, false)}
+                onClick={(e) => {
+                  if (!liveClickable) return;
+                  e.stopPropagation();
+                  pulseWidgetPress(overlayId, 180);
+                  if (writeBusy) return;
+                  if (!canWrite) {
+                    setWidgetWriteErrorByOverlay((prev) => ({
+                      ...prev,
+                      [overlayId]: "Bind OPC tag to enable write.",
+                    }));
+                    return;
+                  }
                   submitWidgetWrite(overlay, isOn ? 0 : 1);
                 }}
-                disabled={!canWrite || writeBusy}
+                disabled={!liveClickable || writeBusy}
                 style={{
                   width: "100%",
                   height: "100%",
                   border: "1px solid var(--border)",
-                  borderRadius: 9,
-                  background: isOn ? "#16a34a" : "#334155",
+                  borderRadius: Math.max(8, Math.round(buttonH * 0.22)),
+                  background: isOn
+                    ? "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)"
+                    : "linear-gradient(180deg, #64748b 0%, #334155 100%)",
                   color: "white",
-                  fontSize: dense ? 10 : 12,
+                  fontSize: Math.max(9, Math.min(20, Math.round(buttonH * 0.42))),
                   fontWeight: 800,
-                  cursor: !canWrite || writeBusy ? "default" : "pointer",
+                  cursor: !liveClickable || writeBusy ? "default" : "pointer",
                   opacity: !canWrite ? 0.65 : 1,
-                  boxShadow: isOn ? "0 6px 14px rgba(22,163,74,0.24)" : "none",
+                  boxShadow: isOn
+                    ? "inset 0 1px 0 rgba(255,255,255,0.32), 0 8px 16px rgba(22,163,74,0.26)"
+                    : "inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 16px rgba(51,65,85,0.24)",
+                  transform: localPressed ? "translateY(1px) scale(0.99)" : "translateY(0) scale(1)",
+                  transition: "transform 80ms ease, box-shadow 120ms ease, filter 120ms ease",
+                  pointerEvents: "none",
                 }}
               >
-                {writeBusy ? "..." : (isOn ? "ON" : "OFF")}
+                <span
+                  aria-hidden="true"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: Math.max(6, Math.round(buttonH * 0.14)),
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: Math.max(10, Math.round(buttonH * 0.28)),
+                      height: Math.max(10, Math.round(buttonH * 0.28)),
+                      borderRadius: "999px",
+                      border: "1px solid rgba(255,255,255,0.72)",
+                      background: writeBusy
+                        ? "rgba(255,255,255,0.45)"
+                        : isOn
+                        ? "rgba(255,255,255,0.28)"
+                        : "rgba(255,255,255,0.18)",
+                      boxShadow: isOn
+                        ? "0 0 0 2px rgba(255,255,255,0.12), 0 0 12px rgba(255,255,255,0.25)"
+                        : "0 0 0 2px rgba(255,255,255,0.08)",
+                    }}
+                  />
+                  <span
+                    style={{
+                      fontSize: Math.max(9, Math.min(18, Math.round(buttonH * 0.38))),
+                      fontWeight: 800,
+                      letterSpacing: "0.02em",
+                      color: "rgba(255,255,255,0.96)",
+                    }}
+                  >
+                    {writeBusy ? "..." : (isOn ? "ON" : "OFF")}
+                  </span>
+                </span>
               </button>
             </div>
           </foreignObject>
+          {liveClickable ? (
+            <rect
+              x={buttonX}
+              y={buttonY}
+              width={buttonW}
+              height={buttonH}
+              rx={Math.max(8, Math.round(buttonH * 0.22))}
+              fill="transparent"
+              pointerEvents="all"
+              style={{ cursor: writeBusy ? "default" : "pointer" }}
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                setWidgetPressed(overlayId, true);
+              }}
+              onMouseUp={() => setWidgetPressed(overlayId, false)}
+              onMouseLeave={() => setWidgetPressed(overlayId, false)}
+              onClick={(e) => {
+                e.stopPropagation();
+                pulseWidgetPress(overlayId, 180);
+                if (writeBusy) return;
+                if (!canWrite) {
+                  setWidgetWriteErrorByOverlay((prev) => ({
+                    ...prev,
+                    [overlayId]: "Bind OPC tag to enable write.",
+                  }));
+                  return;
+                }
+                submitWidgetWrite(overlay, isOn ? 0 : 1);
+              }}
+            />
+          ) : null}
           {writeError ? (
             <text x={x + pad} y={buttonY - 4} fill="#f04438" fontSize={9} fontFamily="system-ui" fontWeight={700}>
               {writeError}
             </text>
           ) : null}
-          {!canWrite ? (
-            <text x={x + pad} y={buttonY - 4} fill={subdued} fontSize={9} fontFamily="system-ui">
-              Bind OPC tag path to enable write.
-            </text>
-          ) : null}
-          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
         </g>
       );
     }
@@ -3298,14 +3556,20 @@ export default function CanvasSvg({
                   data-overlay-id={o.id}
                   onDoubleClick={(e) => onOverlayDoubleClick?.(e, o.id)}
                 >
-                  <g
-                    ref={(node) => setOverlayRef(o.id, node)}
-                    transform={`translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`}
-                    onMouseDown={(e) => onOverlayMouseDown(e, o.id)}
-                    onDoubleClick={(e) => onOverlayDoubleClick?.(e, o.id)}
-                    onMouseEnter={() => setHoverOverlayId(o.id)}
-                    onMouseLeave={() => setHoverOverlayId((prev) => (prev === o.id ? null : prev))}
-                    style={{
+                <g
+                  ref={(node) => setOverlayRef(o.id, node)}
+                  transform={`translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`}
+                  onMouseDown={(e) => {
+                    if (liveClickable && o.widget) return;
+                    onOverlayMouseDown(e, o.id);
+                  }}
+                  onDoubleClick={(e) => {
+                    if (liveClickable && o.widget) return;
+                    onOverlayDoubleClick?.(e, o.id);
+                  }}
+                  onMouseEnter={() => setHoverOverlayId(o.id)}
+                  onMouseLeave={() => setHoverOverlayId((prev) => (prev === o.id ? null : prev))}
+                  style={{
                       cursor: liveClickable ? "pointer" : tool === "select" ? "move" : "crosshair",
                       pointerEvents: o.widget ? "all" : "visiblePainted",
                     }}
@@ -3313,6 +3577,8 @@ export default function CanvasSvg({
                     {(() => {
                       if (o.widget) {
                         const bb = o?.bbox || { x: 0, y: 0, width: 320, height: 180 };
+                        const widgetKind = String(o?.widget?.kind || "").trim();
+                        const isCountdownBar = widgetKind === "countdownBar";
                         const wx = Number(bb.x) || 0;
                         const wy = Number(bb.y) || 0;
                         const ww = Math.max(80, Number(bb.width) || 320);
@@ -3325,8 +3591,8 @@ export default function CanvasSvg({
                               width={ww}
                               height={wh}
                               rx={12}
-                              fill="var(--bg-elev)"
-                              stroke="var(--border)"
+                              fill={isCountdownBar ? "transparent" : "var(--bg-elev)"}
+                              stroke={isCountdownBar ? "none" : "var(--border)"}
                               strokeWidth={2}
                             />
                           </g>

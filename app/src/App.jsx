@@ -147,6 +147,21 @@ function normalizeProjectCanvasBackground(raw) {
   };
 }
 
+function normalizeProjectUiPreferences(raw, fallback = {}) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const fb = fallback && typeof fallback === "object" ? fallback : {};
+  const pickBool = (key, defaultValue) => {
+    if (typeof src[key] === "boolean") return src[key];
+    if (typeof fb[key] === "boolean") return fb[key];
+    return defaultValue;
+  };
+  return {
+    showGrid: pickBool("showGrid", true),
+    showTagPaths: pickBool("showTagPaths", false),
+    liveMenuCollapsed: pickBool("liveMenuCollapsed", false),
+  };
+}
+
 function normalizeProjectPlcEntries(raw, options = {}) {
   const includeRawText = options?.includeRawText !== false;
   const maxRawText =
@@ -437,7 +452,7 @@ function widgetTemplate(widgetKey) {
     },
     countdownBar: {
       name: "Widget-CountdownBar.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Countdown</text><rect x="20" y="72" width="280" height="30" rx="10" fill="#111827" stroke="#334155"/><rect x="24" y="76" width="164" height="22" rx="8" fill="#2b6cff"/><text x="20" y="122" fill="#94a3b8" font-size="12" font-family="system-ui">ACC 3500 / PRE 7500 ms</text><text x="20" y="145" fill="#22c55e" font-size="16" font-family="system-ui" font-weight="700">4.0s remaining</text></svg>`,
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72"><rect x="12" y="8" width="296" height="14" rx="7" fill="#111827" stroke="#334155"/><rect x="12" y="8" width="168" height="14" rx="7" fill="#2b6cff"/><text x="12" y="40" fill="#94a3b8" font-size="12" font-family="system-ui" font-weight="700">Countdown</text><text x="160" y="20" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">4.0s</text></svg>`,
     },
     pushButton: {
       name: "Widget-PushButton.svg",
@@ -686,9 +701,13 @@ export default function App() {
   const autoSaveTimerRef = useRef(null);
   const pendingSilentSaveRef = useRef(false);
   const queuedSaveAfterFlightRef = useRef(null); // null | "silent" | "manual"
+  const uiPreferenceAutosaveReadyRef = useRef(false);
   const isInteractingRef = useRef(false);
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
   const projectNameRef = useRef(projectName);
+  const showGridRef = useRef(showGrid);
+  const showTagPathsRef = useRef(showTagPaths);
+  const liveMenuCollapsedRef = useRef(liveMenuCollapsed);
   const projectCanvasBackgroundRef = useRef(projectCanvasBackground);
   const projectPlcsRef = useRef(projectPlcs);
   const screensRef = useRef(screens);
@@ -711,6 +730,9 @@ export default function App() {
 
   useEffect(() => {
     projectNameRef.current = projectName;
+    showGridRef.current = showGrid;
+    showTagPathsRef.current = showTagPaths;
+    liveMenuCollapsedRef.current = liveMenuCollapsed;
     projectCanvasBackgroundRef.current = projectCanvasBackground;
     projectPlcsRef.current = projectPlcs;
     screensRef.current = screens;
@@ -722,7 +744,38 @@ export default function App() {
     vbHRef.current = vbH;
     panRef.current = pan;
     zoomRef.current = zoom;
-  }, [projectName, projectCanvasBackground, projectPlcs, screens, activeProjectId, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+  }, [projectName, showGrid, showTagPaths, liveMenuCollapsed, projectCanvasBackground, projectPlcs, screens, activeProjectId, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+
+  useEffect(() => {
+    setSvgOverlays((prev) => {
+      let changed = false;
+      const next = prev.map((o) => {
+        const kind = String(o?.widget?.kind || "").trim();
+        const bb = o?.bbox;
+        if (kind !== "countdownBar" || !bb) return o;
+        const width = Number(bb.width);
+        const height = Number(bb.height);
+        // One-time migration for legacy countdown widgets created from the old 320x180 template.
+        if (
+          Number.isFinite(width) &&
+          Number.isFinite(height) &&
+          Math.abs(width - 320) <= 1 &&
+          Math.abs(height - 180) <= 1
+        ) {
+          changed = true;
+          return {
+            ...o,
+            bbox: {
+              ...bb,
+              height: 72,
+            },
+          };
+        }
+        return o;
+      });
+      return changed ? next : prev;
+    });
+  }, []);
 
   useEffect(() => {
     if (projectNameEditing) return;
@@ -1839,6 +1892,14 @@ export default function App() {
       plcs: normalizeProjectPlcEntries(projectPlcs, { includeRawText: true }),
       activeScreenId: effectiveScreenId,
       projectMode: normalizeProjectMode(projectMode),
+      uiPreferences: normalizeProjectUiPreferences(
+        {
+          showGrid,
+          showTagPaths,
+          liveMenuCollapsed,
+        },
+        { showGrid: true, showTagPaths: false, liveMenuCollapsed: false }
+      ),
       screens: committed.list,
       liveMenuGroups: normalizedMenuGroups,
       savedAt: new Date().toISOString(),
@@ -1864,6 +1925,14 @@ export default function App() {
       plcs: normalizeProjectPlcEntries(projectPlcsRef.current, { includeRawText: true }),
       activeScreenId: effectiveScreenId,
       projectMode: normalizeProjectMode(projectMode),
+      uiPreferences: normalizeProjectUiPreferences(
+        {
+          showGrid: showGridRef.current,
+          showTagPaths: showTagPathsRef.current,
+          liveMenuCollapsed: liveMenuCollapsedRef.current,
+        },
+        { showGrid: true, showTagPaths: false, liveMenuCollapsed: false }
+      ),
       screens: committed.list,
       liveMenuGroups: normalizedMenuGroups,
       savedAt: new Date().toISOString(),
@@ -1887,6 +1956,11 @@ export default function App() {
       plcs: normalizeProjectPlcEntries(payload.plcs || payload.plcLibrary, { includeRawText: false }),
       activeScreenId: payload.activeScreenId || "",
       projectMode: normalizeProjectMode(payload.projectMode),
+      uiPreferences: normalizeProjectUiPreferences(payload.uiPreferences || payload.ui, {
+        showGrid: true,
+        showTagPaths: false,
+        liveMenuCollapsed: false,
+      }),
       screens: normalizedScreens,
       liveMenuGroups: normalizeLiveMenuGroups(payload.liveMenuGroups, normalizedScreens),
       vbW: payload.vbW,
@@ -1908,6 +1982,14 @@ export default function App() {
       normalizeProjectCanvasBackground(data?.canvasBackground || data?.canvasBackgroundByTheme)
     );
     setProjectPlcs(normalizeProjectPlcEntries(data?.plcs || data?.plcLibrary));
+    const uiPreferences = normalizeProjectUiPreferences(data?.uiPreferences || data?.ui, {
+      showGrid: showGridRef.current,
+      showTagPaths: showTagPathsRef.current,
+      liveMenuCollapsed: liveMenuCollapsedRef.current,
+    });
+    setShowGrid(uiPreferences.showGrid);
+    setShowTagPaths(uiPreferences.showTagPaths);
+    setLiveMenuCollapsed(uiPreferences.liveMenuCollapsed);
     const fallbackScreen = normalizeScreenPayload(
       {
         id: data?.activeScreenId || "screen-1",
@@ -1941,6 +2023,14 @@ export default function App() {
       normalizeProjectCanvasBackground(data?.canvasBackground || data?.canvasBackgroundByTheme)
     );
     setProjectPlcs(normalizeProjectPlcEntries(data?.plcs || data?.plcLibrary));
+    const uiPreferences = normalizeProjectUiPreferences(data?.uiPreferences || data?.ui, {
+      showGrid: showGridRef.current,
+      showTagPaths: showTagPathsRef.current,
+      liveMenuCollapsed: liveMenuCollapsedRef.current,
+    });
+    setShowGrid(uiPreferences.showGrid);
+    setShowTagPaths(uiPreferences.showTagPaths);
+    setLiveMenuCollapsed(uiPreferences.liveMenuCollapsed);
     const fallbackScreen = normalizeScreenPayload(
       {
         id: data?.activeScreenId || "screen-1",
@@ -2188,6 +2278,8 @@ export default function App() {
   async function saveProjectToDb(options = {}) {
     try {
       const silent = options?.silent === true;
+      const keepalive = options?.keepalive === true;
+      const skipListReload = options?.skipListReload === true;
       if (projectSaveInFlightRef.current) {
         const nextMode = silent ? "silent" : "manual";
         const prevMode = queuedSaveAfterFlightRef.current;
@@ -2206,15 +2298,31 @@ export default function App() {
       const res = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        keepalive,
         body: JSON.stringify({
           id: activeProjectId || undefined,
           name: effectiveName,
           data: { ...payload, name: effectiveName },
+          baseUpdatedAt: activeProjectUpdatedAt || undefined,
           teamMerge: false,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Save failed.");
+      if (!res.ok) {
+        if (res.status === 409 && String(data?.code || "") === "PROJECT_CONFLICT") {
+          const remote = data?.project && typeof data.project === "object" ? data.project : null;
+          if (remote?.updated_at) setActiveProjectUpdatedAt(String(remote.updated_at));
+          setActiveProjectUpdatedBy(String(remote?.updated_by_username || ""));
+          const by = String(remote?.updated_by_username || "").trim();
+          setProjectStatus(
+            by
+              ? `Save blocked: newer remote changes by ${by}. Reload project to merge.`
+              : "Save blocked: newer remote changes detected. Reload project to merge."
+          );
+          return;
+        }
+        throw new Error(data?.error || "Save failed.");
+      }
       const next = data.project;
       const localSig = projectPayloadSignature(payload);
       const remoteSig = next?.data ? projectPayloadSignature(next.data) : "";
@@ -2228,9 +2336,11 @@ export default function App() {
       }
       clearProjectDraft(next?.id || activeProjectId);
       setShowProjectNameInput(false);
-      const reload = await fetch("/api/projects");
-      const payloadList = await reload.json();
-      if (reload.ok) setProjects(payloadList.projects || []);
+      if (!keepalive && !skipListReload) {
+        const reload = await fetch("/api/projects");
+        const payloadList = await reload.json();
+        if (reload.ok) setProjects(payloadList.projects || []);
+      }
     } catch (err) {
       const message = err?.message || "Save failed.";
       setProjectStatus(options?.silent ? `Autosave failed: ${message}` : message);
@@ -2260,6 +2370,12 @@ export default function App() {
     saveProjectToDb({ silent: true });
   }
 
+  function hasUnsavedProjectChangesFromRefs() {
+    const sig = projectPayloadSignature(getProjectPayloadFromRefs());
+    if (!sig) return false;
+    return sig !== lastProjectSignatureRef.current;
+  }
+
   function scheduleProjectAutoSave(delayMs = 450) {
     pendingSilentSaveRef.current = true;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
@@ -2272,6 +2388,26 @@ export default function App() {
     },
     []
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const flushForLifecycle = () => {
+      if (projectNameEditing) return;
+      if (projectSaveInFlightRef.current) return;
+      if (!hasUnsavedProjectChangesFromRefs()) return;
+      saveProjectToDb({ silent: true, keepalive: true, skipListReload: true });
+    };
+    const onPageHide = () => flushForLifecycle();
+    const onVisibilityChange = () => {
+      if (document.hidden) flushForLifecycle();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [projectNameEditing]);
 
   async function openProjectFromDb(id) {
     if (!id) return;
@@ -2426,13 +2562,18 @@ export default function App() {
         const localSig = projectPayloadSignature(getProjectPayload());
         const localDirty = localSig !== lastProjectSignatureRef.current;
         if (localDirty) {
-          setProjectStatus("Remote update detected. Auto-merging...");
-          await saveProjectToDb({ silent: true });
+          const by = String(data?.updated_by_username || "").trim();
+          setProjectStatus(
+            by
+              ? `Remote update by ${by} detected; local unsaved edits preserved. Reload to sync.`
+              : "Remote update detected; local unsaved edits preserved. Reload to sync."
+          );
+          setActiveProjectUpdatedAt(remoteUpdatedAt);
+          setActiveProjectUpdatedBy(by);
           return;
         }
         if (remoteSig && remoteSig !== localSig) {
-          setProjectStatus("Remote differs from local. Re-saving local project...");
-          await saveProjectToDb({ silent: true });
+          setProjectStatus("Remote differs from local snapshot; reload to sync.");
           return;
         }
         applyRemoteProjectPayload(data?.data || {}, { projectId: activeProjectId });
@@ -2462,6 +2603,15 @@ export default function App() {
     }, 5000);
     return () => clearInterval(id);
   }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible, projectNameEditing]);
+
+  useEffect(() => {
+    if (!uiPreferenceAutosaveReadyRef.current) {
+      uiPreferenceAutosaveReadyRef.current = true;
+      return;
+    }
+    if (projectNameEditing) return;
+    scheduleProjectAutoSave(180);
+  }, [showGrid, showTagPaths, liveMenuCollapsed, projectNameEditing]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -2981,6 +3131,8 @@ export default function App() {
       toastError("You do not have permission to open this page.");
       return;
     }
+    setShowUserDrawer(false);
+    setShowSecurityDrawer(false);
     setMainDrawerFullscreen(false);
     setDrawerView(next);
     if (next === "database") {
@@ -4997,6 +5149,7 @@ export default function App() {
     if (tool !== "select") return;
     e.stopPropagation();
     e.preventDefault();
+    const p = svgPoint(e);
 
     const s = shapes.find((x) => x.id === id);
     if (s?.type === "text") {
@@ -5129,11 +5282,11 @@ export default function App() {
     if (tool !== "select") return;
     const target = e.target;
     const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
-    if (target && typeof target.closest === "function") {
+    if (isLiveMode && target && typeof target.closest === "function") {
       if (target.closest(interactiveSelector)) return;
     }
     const nativeEvent = e.nativeEvent;
-    if (nativeEvent && typeof nativeEvent.composedPath === "function") {
+    if (isLiveMode && nativeEvent && typeof nativeEvent.composedPath === "function") {
       const path = nativeEvent.composedPath();
       const hitInteractive = path.some((node) => {
         if (!node || typeof node !== "object") return false;
@@ -5145,6 +5298,7 @@ export default function App() {
     }
     e.stopPropagation();
     e.preventDefault();
+    const p = svgPoint(e);
 
     if (e.shiftKey) {
       setSelectedOverlayIds((prev) => toggleIn(prev, id));
@@ -5159,13 +5313,13 @@ export default function App() {
       setSelectedIds([]);
       exitEditMode();
       setDrawing(null);
+      beginDragAll(p, [], [id]);
       return;
     }
 
     exitEditMode();
     setDrawing(null);
 
-    const p = svgPoint(e);
     beginDragAll(p, selectedIds, selectedOverlayIds);
   }
 
@@ -6509,8 +6663,24 @@ export default function App() {
   }, [isLiveMode, projectDrawerTab]);
 
   function onLiveOverlayMouseDown(e, id) {
+    const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === String(id || ""));
+    if (overlay?.widget) return;
+    const target = e.target;
+    const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
+    if (target && typeof target.closest === "function") {
+      if (target.closest(interactiveSelector)) return;
+    }
+    const nativeEvent = e.nativeEvent;
+    if (nativeEvent && typeof nativeEvent.composedPath === "function") {
+      const path = nativeEvent.composedPath();
+      const hitInteractive = path.some((node) => {
+        if (!node || typeof node !== "object") return false;
+        const el = node;
+        return typeof el.matches === "function" && el.matches(interactiveSelector);
+      });
+      if (hitInteractive) return;
+    }
     e.stopPropagation();
-    e.preventDefault();
     const nextId = String(id || "").trim();
     if (!nextId) return;
     setLiveEquipmentOverlayIds((prev) => {
@@ -6520,6 +6690,24 @@ export default function App() {
       return [...without, nextId];
     });
   }
+
+  useEffect(() => {
+    setLiveEquipmentOverlayIds((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      if (!list.length) return list;
+      const keep = list.filter((id) => {
+        const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === String(id || ""));
+        return overlay && !overlay.widget;
+      });
+      return keep.length === list.length ? list : keep;
+    });
+    if (String(liveEquipmentDrawerOverlayId || "").trim()) {
+      const drawerOverlay = (svgOverlays || []).find(
+        (o) => String(o?.id || "") === String(liveEquipmentDrawerOverlayId || "")
+      );
+      if (drawerOverlay?.widget) setLiveEquipmentDrawerOverlayId("");
+    }
+  }, [svgOverlays, liveEquipmentDrawerOverlayId]);
 
   function closeLiveEquipmentCard(id) {
     const nextId = String(id || "").trim();
@@ -7538,6 +7726,18 @@ export default function App() {
       setShowMainDrawer(false);
     }
   }, [showMainDrawer, drawerView, canViewDataPages, hasUserPermissions, user]);
+
+  useEffect(() => {
+    if (!showUserDrawer) return;
+    setShowSecurityDrawer(false);
+    setShowMainDrawer(false);
+  }, [showUserDrawer]);
+
+  useEffect(() => {
+    if (!showSecurityDrawer) return;
+    setShowUserDrawer(false);
+    setShowMainDrawer(false);
+  }, [showSecurityDrawer]);
 
   function switchToScreen(nextScreenId) {
     const committed = commitCurrentScreenState(screens);
@@ -9325,7 +9525,7 @@ export default function App() {
             left: 0,
             right: 0,
             bottom: 0,
-            zIndex: 230,
+            zIndex: 220,
           }}
         >
           <div
@@ -9337,9 +9537,8 @@ export default function App() {
               top: 0,
               height: "100%",
               width: userDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.user.w)}px`,
-              background:
-                "linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 96%, white 4%) 0%, color-mix(in srgb, var(--bg-soft) 90%, black 10%) 100%)",
-              boxShadow: "-24px 0 52px rgba(0,0,0,0.36), -8px 0 22px rgba(0,0,0,0.18)",
+              background: "var(--bg-soft)",
+              boxShadow: "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
               borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
@@ -9356,7 +9555,7 @@ export default function App() {
                 justifyContent: "space-between",
                 padding: "12px 14px",
                 borderBottom: "1px solid var(--border)",
-                background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
+                background: "var(--bg-elev)",
                 gap: 10,
                 cursor: "default",
               }}
@@ -9718,7 +9917,7 @@ export default function App() {
             left: 0,
             right: 0,
             bottom: 0,
-            zIndex: 230,
+            zIndex: 220,
           }}
         >
           <div
@@ -9729,9 +9928,8 @@ export default function App() {
               top: 0,
               height: "100%",
               width: userDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.user.w)}px`,
-              background:
-                "linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 96%, white 4%) 0%, color-mix(in srgb, var(--bg-soft) 90%, black 10%) 100%)",
-              boxShadow: "-24px 0 52px rgba(0,0,0,0.36), -8px 0 22px rgba(0,0,0,0.18)",
+              background: "var(--bg-soft)",
+              boxShadow: "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
               borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
@@ -9748,7 +9946,7 @@ export default function App() {
                 justifyContent: "space-between",
                 padding: "12px 14px",
                 borderBottom: "1px solid var(--border)",
-                background: "color-mix(in srgb, var(--bg-elev) 94%, transparent)",
+                background: "var(--bg-elev)",
                 gap: 10,
                 cursor: "default",
               }}
@@ -10068,7 +10266,7 @@ export default function App() {
                   item.key === "theme"
                     ? false
                     : item.key === "security"
-                    ? showSecurityDrawer
+                    ? showSecurityDrawer || (showMainDrawer && drawerView === "security")
                     : (showMainDrawer && isActiveView);
                 return (
                   <button
@@ -10087,6 +10285,7 @@ export default function App() {
                         return;
                       }
                       if (item.key === "security") {
+                        setShowMainDrawer(false);
                         setShowUserDrawer(false);
                         setShowSecurityDrawer(true);
                         return;
@@ -10129,6 +10328,7 @@ export default function App() {
           </div>
           <button
             onClick={() => {
+              setShowMainDrawer(false);
               setShowSecurityDrawer(false);
               setShowUserDrawer(true);
             }}
@@ -10782,16 +10982,15 @@ export default function App() {
                   <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Canvas Screens</div>
                   <button
                     onClick={addScreen}
-                    disabled={!projectNameEditing}
                     style={{
                       ...topMenuTextButtonStyle,
                       border: "1px solid #2b6cff",
-                      background: projectNameEditing ? "#2b6cff" : "var(--bg-soft)",
-                      color: projectNameEditing ? "#ffffff" : "var(--text-muted)",
+                      background: "#2b6cff",
+                      color: "#ffffff",
                       fontSize: 11,
                       padding: "6px 10px",
-                      cursor: projectNameEditing ? "pointer" : "not-allowed",
-                      opacity: projectNameEditing ? 1 : 0.65,
+                      cursor: "pointer",
+                      opacity: 1,
                     }}
                     title="Add Canvas Screen"
                   >
@@ -10899,7 +11098,6 @@ export default function App() {
             {projectDrawerTab === "menu" ? (
             <div style={{ display: "grid", gap: 8, minHeight: 0, flex: "1 1 auto" }}>
               <fieldset
-                disabled={!projectNameEditing}
                 style={{ border: "none", margin: 0, padding: 0, minWidth: 0, display: "grid", gap: 8, minHeight: 0, height: "100%" }}
               >
               <div style={{ ...projectDrawerCardStyle, minHeight: 0, display: "flex", flexDirection: "column", flex: "1 1 auto" }}>

@@ -3047,6 +3047,13 @@ function mergeProjectData(current, incoming) {
   };
 }
 
+function parseTimestampMs(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 const PROJECT_CURSOR_TTL_MS = 10_000;
 const projectCursorPresence = new Map();
 
@@ -3420,6 +3427,8 @@ app.post("/api/projects", async (req, res) => {
     const name = String(req.body?.name || "").trim();
     const data = req.body?.data;
     const teamMerge = req.body?.teamMerge !== false;
+    const baseUpdatedAtMs = parseTimestampMs(req.body?.baseUpdatedAt);
+    const hasBaseUpdatedAt = Number.isFinite(baseUpdatedAtMs);
     if (!name) {
       res.status(400).json({ error: "Project name required." });
       return;
@@ -3439,12 +3448,33 @@ app.post("/api/projects", async (req, res) => {
         return;
       }
       const { rows: existingRows } = await pool.query(
-        "SELECT data FROM projects WHERE id = $1 LIMIT 1",
+        `
+        SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
+        FROM projects p
+        LEFT JOIN users u ON u.id = p.updated_by
+        WHERE p.id = $1
+        LIMIT 1
+        `,
         [id]
       );
+      const existing = existingRows[0] || null;
+      const existingUpdatedAtMs = parseTimestampMs(existing?.updated_at);
+      if (
+        existing &&
+        hasBaseUpdatedAt &&
+        Number.isFinite(existingUpdatedAtMs) &&
+        existingUpdatedAtMs !== baseUpdatedAtMs
+      ) {
+        res.status(409).json({
+          code: "PROJECT_CONFLICT",
+          error: "Project was updated by another session. Reload before saving.",
+          project: existing,
+        });
+        return;
+      }
       const mergedData =
-        existingRows.length && teamMerge
-          ? mergeProjectData(existingRows[0]?.data || {}, data || {})
+        existing && teamMerge
+          ? mergeProjectData(existing?.data || {}, data || {})
           : data;
       await pool.query(
         `
@@ -3468,16 +3498,55 @@ app.post("/api/projects", async (req, res) => {
         `,
         [id]
       );
+      const saved = rows[0] || null;
+      if (saved) {
+        await pool.query(
+          `
+          INSERT INTO project_versions (
+            project_id, saved_by, base_updated_at, previous_data, next_data
+          )
+          VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+          `,
+          [
+            saved.id,
+            userId,
+            hasBaseUpdatedAt ? new Date(baseUpdatedAtMs).toISOString() : null,
+            JSON.stringify(existing?.data || {}),
+            JSON.stringify(saved?.data || {}),
+          ]
+        );
+      }
       res.json({ project: rows[0] });
       return;
     }
     const { rows: existingByName } = await pool.query(
-      "SELECT data FROM projects WHERE name = $1 LIMIT 1",
+      `
+      SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
+      FROM projects p
+      LEFT JOIN users u ON u.id = p.updated_by
+      WHERE p.name = $1
+      LIMIT 1
+      `,
       [name]
     );
+    const existing = existingByName[0] || null;
+    const existingUpdatedAtMs = parseTimestampMs(existing?.updated_at);
+    if (
+      existing &&
+      hasBaseUpdatedAt &&
+      Number.isFinite(existingUpdatedAtMs) &&
+      existingUpdatedAtMs !== baseUpdatedAtMs
+    ) {
+      res.status(409).json({
+        code: "PROJECT_CONFLICT",
+        error: "Project was updated by another session. Reload before saving.",
+        project: existing,
+      });
+      return;
+    }
     const mergedByName =
-      existingByName.length && teamMerge
-        ? mergeProjectData(existingByName[0]?.data || {}, data || {})
+      existing && teamMerge
+        ? mergeProjectData(existing?.data || {}, data || {})
         : data;
     await pool.query(
       `
@@ -3500,7 +3569,25 @@ app.post("/api/projects", async (req, res) => {
       `,
       [name]
     );
-    res.json({ project: rows[0] });
+    const saved = rows[0] || null;
+    if (saved) {
+      await pool.query(
+        `
+        INSERT INTO project_versions (
+          project_id, saved_by, base_updated_at, previous_data, next_data
+        )
+        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+        `,
+        [
+          saved.id,
+          userId,
+          hasBaseUpdatedAt ? new Date(baseUpdatedAtMs).toISOString() : null,
+          JSON.stringify(existing?.data || {}),
+          JSON.stringify(saved?.data || {}),
+        ]
+      );
+    }
+    res.json({ project: saved });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to save project." });
   }
@@ -6393,6 +6480,21 @@ async function start() {
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS projects_name_idx ON projects(name);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS project_versions (
+      id BIGSERIAL PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      saved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      saved_by INT REFERENCES users(id) ON DELETE SET NULL,
+      base_updated_at TIMESTAMPTZ,
+      previous_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      next_data JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS project_versions_project_saved_idx
+    ON project_versions(project_id, saved_at DESC);
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS routes (
