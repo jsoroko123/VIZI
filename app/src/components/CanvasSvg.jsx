@@ -86,6 +86,8 @@ export default function CanvasSvg({
   liveClickable = false,
   viewportTopOffset = 0,
   viewportLeftOffset = 0,
+  viewportScrollTarget = null,
+  onViewportScroll = null,
 }) {
   const vb = useMemo(() => `0 0 ${vbW} ${vbH}`, [vbW, vbH]);
   const rulerSize = showRulers ? RULER : 0;
@@ -108,6 +110,16 @@ export default function CanvasSvg({
     ro.observe(wrapRef.current);
     return () => ro.disconnect();
   }, []);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const x = Number(viewportScrollTarget?.x);
+    const y = Number(viewportScrollTarget?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (Math.abs(el.scrollLeft - x) > 0.5) el.scrollLeft = x;
+    if (Math.abs(el.scrollTop - y) > 0.5) el.scrollTop = y;
+  }, [viewportScrollTarget?.x, viewportScrollTarget?.y]);
 
   // ✅ marquee rect coords (WORLD coords)
   const marqueeRect = useMemo(() => {
@@ -3083,21 +3095,34 @@ export default function CanvasSvg({
   };
 
   const htmlChartLayers = [];
+  const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
 
   return (
     <div
       ref={wrapRef}
+      className="vizi-scroll"
+      onScroll={(e) => {
+        if (typeof onViewportScroll !== "function") return;
+        const target = e.currentTarget;
+        onViewportScroll({
+          x: Number(target?.scrollLeft || 0),
+          y: Number(target?.scrollTop || 0),
+        });
+      }}
       onDoubleClickCapture={(e) => {
         onCanvasDoubleClick?.(e);
       }}
       style={{
         position: "absolute",
         top: viewportTopOffset,
-        left: Math.max(0, Number(viewportLeftOffset) || 0),
+        left: 0,
         right: 0,
         bottom: 0,
-        overflow: "hidden",
+        overflow: "auto",
+        scrollbarGutter: "stable both-edges",
         userSelect: "none",
+        transform: viewportShiftX ? `translateX(${viewportShiftX}px)` : "translateX(0px)",
+        transition: "transform 180ms ease",
       }}
     >
       {showRulers ? <TopRuler /> : null}

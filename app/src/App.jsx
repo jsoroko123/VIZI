@@ -595,6 +595,7 @@ export default function App() {
   const [liveActiveAlarmsDb, setLiveActiveAlarmsDb] = useState([]);
   const [liveActiveAlarmsDbLoaded, setLiveActiveAlarmsDbLoaded] = useState(false);
   const [svgCatalogFiles, setSvgCatalogFiles] = useState([]);
+  const [canvasViewportScrollTarget, setCanvasViewportScrollTarget] = useState({ x: 0, y: 0 });
   const [liveMenuGroups, setLiveMenuGroups] = useState(() =>
     defaultLiveMenuGroupsFromScreens([
       { id: "screen-1", name: "Screen 1", showInLiveMenu: true },
@@ -618,6 +619,8 @@ export default function App() {
   const projectCanvasBackgroundRef = useRef(projectCanvasBackground);
   const projectPlcsRef = useRef(projectPlcs);
   const screensRef = useRef(screens);
+  const liveMenuGroupsRef = useRef(liveMenuGroups);
+  const canvasViewportScrollRef = useRef({ x: 0, y: 0 });
   const activeProjectIdRef = useRef(activeProjectId);
   const activeProjectUpdatedAtRef = useRef(activeProjectUpdatedAt);
   const projectModeRef = useRef(projectMode);
@@ -645,6 +648,7 @@ export default function App() {
     projectCanvasBackgroundRef.current = projectCanvasBackground;
     projectPlcsRef.current = projectPlcs;
     screensRef.current = screens;
+    liveMenuGroupsRef.current = liveMenuGroups;
     activeProjectIdRef.current = activeProjectId;
     activeProjectUpdatedAtRef.current = activeProjectUpdatedAt;
     projectModeRef.current = projectMode;
@@ -654,7 +658,7 @@ export default function App() {
     vbHRef.current = vbH;
     panRef.current = pan;
     zoomRef.current = zoom;
-  }, [projectName, showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth, projectCanvasBackground, projectPlcs, screens, activeProjectId, activeProjectUpdatedAt, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+  }, [projectName, showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth, projectCanvasBackground, projectPlcs, screens, liveMenuGroups, activeProjectId, activeProjectUpdatedAt, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
 
   useEffect(() => {
     setSvgOverlays((prev) => {
@@ -1886,6 +1890,18 @@ export default function App() {
       : Number.isFinite(fallback?.designZoom)
       ? fallback.designZoom
       : zoom;
+    const scroll =
+      screen?.scroll && Number.isFinite(screen.scroll.x) && Number.isFinite(screen.scroll.y)
+        ? { x: screen.scroll.x, y: screen.scroll.y }
+        : fallback?.scroll && Number.isFinite(fallback.scroll.x) && Number.isFinite(fallback.scroll.y)
+        ? { x: fallback.scroll.x, y: fallback.scroll.y }
+        : { x: 0, y: 0 };
+    const designScroll =
+      screen?.designScroll && Number.isFinite(screen.designScroll.x) && Number.isFinite(screen.designScroll.y)
+        ? { x: screen.designScroll.x, y: screen.designScroll.y }
+        : fallback?.designScroll && Number.isFinite(fallback.designScroll.x) && Number.isFinite(fallback.designScroll.y)
+        ? { x: fallback.designScroll.x, y: fallback.designScroll.y }
+        : scroll;
     return {
       id: String(screen?.id || fallback?.id || uid()),
       name,
@@ -1901,6 +1917,8 @@ export default function App() {
       zoom,
       designPan,
       designZoom,
+      scroll,
+      designScroll,
       showInLiveMenu:
         typeof screen?.showInLiveMenu === "boolean"
           ? screen.showInLiveMenu
@@ -1932,6 +1950,20 @@ export default function App() {
         : (Number.isFinite(currentScreen?.designZoom)
             ? currentScreen.designZoom
             : (Number.isFinite(currentScreen?.zoom) ? currentScreen.zoom : 1));
+    const currentScroll =
+      canvasViewportScrollRef.current &&
+      Number.isFinite(canvasViewportScrollRef.current.x) &&
+      Number.isFinite(canvasViewportScrollRef.current.y)
+        ? { x: canvasViewportScrollRef.current.x, y: canvasViewportScrollRef.current.y }
+        : { x: 0, y: 0 };
+    const designScroll =
+      isDesignMode
+        ? currentScroll
+        : (currentScreen?.designScroll && Number.isFinite(currentScreen.designScroll.x) && Number.isFinite(currentScreen.designScroll.y)
+            ? { x: currentScreen.designScroll.x, y: currentScreen.designScroll.y }
+            : (currentScreen?.scroll && Number.isFinite(currentScreen.scroll.x) && Number.isFinite(currentScreen.scroll.y)
+                ? { x: currentScreen.scroll.x, y: currentScreen.scroll.y }
+                : { x: 0, y: 0 }));
     const snapshot = normalizeScreenPayload(
       {
         id: currentId,
@@ -1944,6 +1976,8 @@ export default function App() {
         zoom: zoomRef.current,
         designPan,
         designZoom,
+        scroll: currentScroll,
+        designScroll,
       },
       {
         ...currentScreen,
@@ -1967,20 +2001,26 @@ export default function App() {
     setVbH(next.vbH);
     setPan(next.pan);
     setZoom(next.zoom);
+    const nextScroll =
+      next.scroll && Number.isFinite(next.scroll.x) && Number.isFinite(next.scroll.y)
+        ? { x: next.scroll.x, y: next.scroll.y }
+        : { x: 0, y: 0 };
+    canvasViewportScrollRef.current = nextScroll;
+    setCanvasViewportScrollTarget(nextScroll);
   }
 
 
   function getProjectPayload() {
     const committed = commitCurrentScreenState();
     const effectiveScreenId = committed.currentId || committed.list[0]?.id || "";
-    const normalizedMenuGroups = normalizeLiveMenuGroups(liveMenuGroups, committed.list);
+    const normalizedMenuGroups = normalizeLiveMenuGroups(liveMenuGroupsRef.current, committed.list);
     return {
       version: 1,
       name: projectName || "Untitled",
       canvasBackground: normalizeProjectCanvasBackground(projectCanvasBackground),
       plcs: normalizeProjectPlcEntries(projectPlcs, { includeRawText: true }),
       activeScreenId: effectiveScreenId,
-      projectMode: normalizeProjectMode(projectMode),
+      projectMode: normalizeProjectMode(projectModeRef.current),
       uiPreferences: normalizeProjectUiPreferences(
         {
           showGrid,
@@ -2012,14 +2052,14 @@ export default function App() {
   function getProjectPayloadFromRefs() {
     const committed = commitCurrentScreenState(screensRef.current);
     const effectiveScreenId = committed.currentId || committed.list[0]?.id || "";
-    const normalizedMenuGroups = normalizeLiveMenuGroups(liveMenuGroups, committed.list);
+    const normalizedMenuGroups = normalizeLiveMenuGroups(liveMenuGroupsRef.current, committed.list);
     return {
       version: 1,
       name: projectNameRef.current || "Untitled",
       canvasBackground: normalizeProjectCanvasBackground(projectCanvasBackgroundRef.current),
       plcs: normalizeProjectPlcEntries(projectPlcsRef.current, { includeRawText: true }),
       activeScreenId: effectiveScreenId,
-      projectMode: normalizeProjectMode(projectMode),
+      projectMode: normalizeProjectMode(projectModeRef.current),
       uiPreferences: normalizeProjectUiPreferences(
         {
           showGrid: showGridRef.current,
@@ -2117,7 +2157,9 @@ export default function App() {
     } else {
       setProjectMode(readStoredProjectMode(options?.projectId || activeProjectIdRef.current));
     }
-    setLiveMenuGroups(normalizeLiveMenuGroups(data?.liveMenuGroups, incoming));
+    const normalizedGroups = normalizeLiveMenuGroups(data?.liveMenuGroups, incoming);
+    liveMenuGroupsRef.current = normalizedGroups;
+    setLiveMenuGroups(normalizedGroups);
     setScreens(incoming);
     hydrateScreenState(active);
     projectHydrationReadyRef.current = true;
@@ -2161,7 +2203,9 @@ export default function App() {
     } else {
       setProjectMode(readStoredProjectMode(options?.projectId || activeProjectIdRef.current));
     }
-    setLiveMenuGroups(normalizeLiveMenuGroups(data?.liveMenuGroups, incoming));
+    const normalizedGroups = normalizeLiveMenuGroups(data?.liveMenuGroups, incoming);
+    liveMenuGroupsRef.current = normalizedGroups;
+    setLiveMenuGroups(normalizedGroups);
 
     pushHistory();
     setScreens(incoming);
@@ -2419,7 +2463,7 @@ export default function App() {
       }
       projectSaveInFlightRef.current = true;
       if (!silent) setProjectStatus("");
-      const payloadBase = getProjectPayload();
+      const payloadBase = getProjectPayloadFromRefs();
       const override =
         options?.payloadOverride && typeof options.payloadOverride === "object"
           ? options.payloadOverride
@@ -2664,6 +2708,9 @@ function flushScheduledProjectSave() {
     setScreenName("Screen 1");
     setActiveScreenId("screen-1");
     setScreens(defaultScreens);
+    canvasViewportScrollRef.current = { x: 0, y: 0 };
+    setCanvasViewportScrollTarget({ x: 0, y: 0 });
+    liveMenuGroupsRef.current = defaultMenuGroups;
     setLiveMenuGroups(defaultMenuGroups);
     setActiveProjectId("");
     localStorage.removeItem("vizi_active_project_id");
@@ -4195,6 +4242,12 @@ function flushScheduledProjectSave() {
         ? { x: next.designPan.x, y: next.designPan.y }
         : { x: 0, y: 0 }
     );
+    const nextScroll =
+      next.designScroll && Number.isFinite(next.designScroll.x) && Number.isFinite(next.designScroll.y)
+        ? { x: next.designScroll.x, y: next.designScroll.y }
+        : { x: 0, y: 0 };
+    canvasViewportScrollRef.current = nextScroll;
+    setCanvasViewportScrollTarget(nextScroll);
   }
 
   function rectsIntersect(a, b) {
@@ -8369,7 +8422,7 @@ function flushScheduledProjectSave() {
       const normalized = normalizeLiveMenuGroups(prev, next);
       if (!normalized.length) return normalized;
       const firstGroup = normalized[0];
-      return normalized.map((group, idx) =>
+      const nextGroups = normalized.map((group, idx) =>
         idx === 0
           ? {
               ...group,
@@ -8380,6 +8433,8 @@ function flushScheduledProjectSave() {
             }
           : group
       );
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
     });
     hydrateScreenState(next[next.length - 1]);
     setProjectStatus(`Added ${name}`);
@@ -8406,12 +8461,14 @@ function flushScheduledProjectSave() {
     setScreens(filtered);
     setLiveMenuGroups((prev) => {
       const normalized = normalizeLiveMenuGroups(prev, filtered);
-      return normalized.map((group) => ({
+      const nextGroups = normalized.map((group) => ({
         ...group,
         items: group.items.filter(
           (item) => !(item.type === "screen" && String(item.screenId || "") === String(committed.currentId))
         ),
       }));
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
     });
     if (target) hydrateScreenState(target);
     setProjectStatus(`Deleted ${removed?.name || "screen"}`);
@@ -8444,12 +8501,14 @@ function flushScheduledProjectSave() {
     setScreens(filtered);
     setLiveMenuGroups((prev) => {
       const normalized = normalizeLiveMenuGroups(prev, filtered);
-      return normalized.map((group) => ({
+      const nextGroups = normalized.map((group) => ({
         ...group,
         items: group.items.filter(
           (item) => !(item.type === "screen" && String(item.screenId || "") === removeId)
         ),
       }));
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
     });
     if (removeId === committed.currentId && target) {
       hydrateScreenState(target);
@@ -8487,7 +8546,7 @@ function flushScheduledProjectSave() {
   function addLiveMenuGroup() {
     setLiveMenuGroups((prev) => {
       const normalized = normalizeLiveMenuGroups(prev, screens);
-      return [
+      const nextGroups = [
         ...normalized,
         {
           id: `live-group-${uid()}`,
@@ -8495,6 +8554,8 @@ function flushScheduledProjectSave() {
           items: [],
         },
       ];
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
     });
     scheduleProjectAutoSave();
   }
@@ -8502,11 +8563,13 @@ function flushScheduledProjectSave() {
   function renameLiveMenuGroup(groupId, nextName) {
     const id = String(groupId || "");
     if (!id) return;
-    setLiveMenuGroups((prev) =>
-      normalizeLiveMenuGroups(prev, screens).map((group) =>
+    setLiveMenuGroups((prev) => {
+      const nextGroups = normalizeLiveMenuGroups(prev, screens).map((group) =>
         group.id === id ? { ...group, name: String(nextName ?? "") } : group
-      )
-    );
+      );
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
+    });
     scheduleProjectAutoSave();
   }
 
@@ -8516,7 +8579,9 @@ function flushScheduledProjectSave() {
     setLiveMenuGroups((prev) => {
       const normalized = normalizeLiveMenuGroups(prev, screens);
       const remaining = normalized.filter((group) => group.id !== id);
-      return remaining.length ? remaining : defaultLiveMenuGroupsFromScreens(screens);
+      const nextGroups = remaining.length ? remaining : defaultLiveMenuGroupsFromScreens(screens);
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
     });
     scheduleProjectAutoSave();
   }
@@ -8525,8 +8590,8 @@ function flushScheduledProjectSave() {
     const id = String(groupId || "");
     if (!id) return;
     const normalizedType = String(type || "").toLowerCase() === "data" ? "data" : "screen";
-    setLiveMenuGroups((prev) =>
-      normalizeLiveMenuGroups(prev, screens).map((group) => {
+    setLiveMenuGroups((prev) => {
+      const nextGroups = normalizeLiveMenuGroups(prev, screens).map((group) => {
         if (group.id !== id) return group;
         const screenId = screens[0]?.id || "";
         const item =
@@ -8541,8 +8606,10 @@ function flushScheduledProjectSave() {
               }
             : { id: `live-item-${uid()}`, type: "screen", screenId, label: "", restricted: false, allowedRoleIds: [] };
         return { ...group, items: [...group.items, item] };
-      })
-    );
+      });
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
+    });
     scheduleProjectAutoSave();
   }
 
@@ -8550,8 +8617,8 @@ function flushScheduledProjectSave() {
     const gId = String(groupId || "");
     const iId = String(itemId || "");
     if (!gId || !iId) return;
-    setLiveMenuGroups((prev) =>
-      normalizeLiveMenuGroups(prev, screens).map((group) => {
+    setLiveMenuGroups((prev) => {
+      const nextGroups = normalizeLiveMenuGroups(prev, screens).map((group) => {
         if (group.id !== gId) return group;
         return {
           ...group,
@@ -8580,8 +8647,10 @@ function flushScheduledProjectSave() {
             };
           }),
         };
-      })
-    );
+      });
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
+    });
     scheduleProjectAutoSave();
   }
 
@@ -8589,11 +8658,13 @@ function flushScheduledProjectSave() {
     const gId = String(groupId || "");
     const iId = String(itemId || "");
     if (!gId || !iId) return;
-    setLiveMenuGroups((prev) =>
-      normalizeLiveMenuGroups(prev, screens).map((group) =>
+    setLiveMenuGroups((prev) => {
+      const nextGroups = normalizeLiveMenuGroups(prev, screens).map((group) =>
         group.id === gId ? { ...group, items: group.items.filter((item) => item.id !== iId) } : group
-      )
-    );
+      );
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
+    });
     scheduleProjectAutoSave();
   }
 
@@ -8601,8 +8672,8 @@ function flushScheduledProjectSave() {
     const gId = String(groupId || "");
     const iId = String(itemId || "");
     if (!gId || !iId || !Number.isInteger(delta) || delta === 0) return;
-    setLiveMenuGroups((prev) =>
-      normalizeLiveMenuGroups(prev, screens).map((group) => {
+    setLiveMenuGroups((prev) => {
+      const nextGroups = normalizeLiveMenuGroups(prev, screens).map((group) => {
         if (group.id !== gId) return group;
         const index = group.items.findIndex((item) => item.id === iId);
         if (index < 0) return group;
@@ -8612,8 +8683,10 @@ function flushScheduledProjectSave() {
         const [item] = nextItems.splice(index, 1);
         nextItems.splice(target, 0, item);
         return { ...group, items: nextItems };
-      })
-    );
+      });
+      liveMenuGroupsRef.current = nextGroups;
+      return nextGroups;
+    });
     scheduleProjectAutoSave();
   }
 
@@ -8686,18 +8759,24 @@ function flushScheduledProjectSave() {
   const liveMenuRailWidthPx = isLiveMode
     ? (isLiveMobile ? 0 : liveMenuIsExpanded ? liveMenuExpandedWidthPx : liveMenuCollapsedWidthPx)
     : 0;
+  const liveMenuLayoutInsetPx = isLiveMode ? (isLiveMobile ? 0 : liveMenuRailWidthPx) : 0;
   const liveCanvasMenuGapPx = 0;
   const liveBottomCarouselHeightPx = isLiveMode && isLiveMobile ? 84 : 0;
   const canvasReadOnly = isLiveMode || !canEditProject;
   const liveEquipmentDrawerWidthPx =
     isLiveMode && liveEquipmentDrawerEntry ? 360 : 0;
-  const canvasLeftInsetBasePx =
-    projectDrawerInsetPx + liveMenuRailWidthPx + liveEquipmentDrawerWidthPx;
-  const canvasLeftInsetPx = canvasLeftInsetBasePx + liveCanvasMenuGapPx;
   const mainDrawerAppendFromLeft =
-    isLiveMode && drawerView === "database" && databaseDataOnlyMode;
+    isLiveMode && showMainDrawer && drawerView === "database";
   const mainDrawerAppendLeftPx =
-    projectDrawerInsetPx + liveMenuRailWidthPx + liveEquipmentDrawerWidthPx;
+    projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx;
+  const mainDrawerAppendWidthPx = mainDrawerAppendFromLeft
+    ? (mainDrawerFullscreen
+        ? Math.max(0, (winW || 0) - mainDrawerAppendLeftPx)
+        : Math.max(0, Math.round(drawerSizes.main.w)))
+    : 0;
+  const canvasLeftInsetBasePx =
+    projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx + mainDrawerAppendWidthPx;
+  const canvasLeftInsetPx = canvasLeftInsetBasePx + liveCanvasMenuGapPx;
   const liveAlarmBarOffset = isLiveMode ? LIVE_ALARM_BAR_H : 0;
   const [liveAlarmOccurredAtById, setLiveAlarmOccurredAtById] = useState({});
   const liveActiveAlarmsWithOccurred = useMemo(
@@ -8909,10 +8988,17 @@ function flushScheduledProjectSave() {
       <CanvasSvg
           svgRef={svgRef}
           theme={theme}
-          canvasBackgroundColor={activeCanvasBackgroundColor}
-          viewportTopOffset={TOP_BAR_H + liveAlarmBarOffset}
-          viewportLeftOffset={0}
-          liveClickable={isLiveMode}
+        canvasBackgroundColor={activeCanvasBackgroundColor}
+        viewportTopOffset={TOP_BAR_H + liveAlarmBarOffset}
+        viewportLeftOffset={canvasLeftInsetPx}
+        viewportScrollTarget={canvasViewportScrollTarget}
+        onViewportScroll={(next) => {
+          const x = Number(next?.x);
+          const y = Number(next?.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+          canvasViewportScrollRef.current = { x, y };
+        }}
+        liveClickable={isLiveMode}
           zoom={zoom}          // ✅ NEW
           onWheel={onWheelZoom} // ✅ NEW
           vbW={vbW}
@@ -8976,7 +9062,7 @@ function flushScheduledProjectSave() {
         <div
           style={{
             position: "fixed",
-            left: projectDrawerInsetPx + liveMenuRailWidthPx + 8,
+            left: projectDrawerInsetPx + liveMenuLayoutInsetPx + 8,
             top: TOP_BAR_H + liveAlarmBarOffset + 8,
             bottom: 8,
             width: liveEquipmentDrawerWidthPx - 16,
@@ -9072,7 +9158,7 @@ function flushScheduledProjectSave() {
         <div
           style={{
             position: "fixed",
-            left: projectDrawerInsetPx + liveMenuRailWidthPx + liveEquipmentDrawerWidthPx + 10,
+            left: projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx + 10,
             right: 10,
             bottom: 10,
             zIndex: 205,
@@ -9341,7 +9427,7 @@ function flushScheduledProjectSave() {
           {[
             { label: "+", onClick: zoomIn, title: "Zoom In" },
             { label: "−", onClick: zoomOut, title: "Zoom Out" },
-            { label: "⟲", onClick: zoomReset, title: "Reset Zoom (100%)" },
+            { label: "⟲", onClick: resetView, title: "Reset View" },
             {
               label: isAppFullscreen ? "⤢" : "⛶",
               onClick: toggleAppFullscreen,
@@ -11319,36 +11405,80 @@ function flushScheduledProjectSave() {
             className="vizi-scroll"
           >
             {liveMenuGroupsVisible.some((group) => Array.isArray(group.items) && group.items.length) ? (
-              liveMenuGroupsVisible.map((group) => (
+              liveMenuGroupsVisible.map((group) => {
+                const groupCollapsed = collapsedLiveGroupIds.includes(String(group.id || ""));
+                const groupItemCount = Array.isArray(group.items) ? group.items.length : 0;
+                return (
                 <div key={`live-menu-group-${group.id}`} style={{ display: "grid", gap: 6 }}>
                   {liveMenuIsExpanded ? (
 	                    <button
 	                      onClick={() => toggleLiveMenuGroupCollapse(group.id)}
 	                      title={`Toggle group ${group.name || "Group"}`}
 	                      style={{
-                        border: "none",
-                        background: "transparent",
-                        padding: "6px 2px 4px",
+                        border: "1px solid color-mix(in srgb, var(--border) 84%, #2b6cff 16%)",
+                        background: groupCollapsed
+                          ? "color-mix(in srgb, var(--bg-elev) 90%, #0f274d 10%)"
+                          : "color-mix(in srgb, var(--bg-elev) 82%, #2b6cff 18%)",
+                        padding: "6px 8px",
+                        borderRadius: 10,
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "flex-start",
+                        justifyContent: "space-between",
                         gap: 8,
                         cursor: "pointer",
                         outline: "none",
                         boxShadow: "none",
+                        transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
                       }}
                     >
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <span
+                          style={{
+                            width: 16,
+                            height: 16,
+                            display: "grid",
+                            placeItems: "center",
+                            flex: "0 0 auto",
+                            color: "color-mix(in srgb, var(--text-muted) 82%, #b7cbff 18%)",
+                            transform: groupCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                            transition: "transform 150ms ease",
+                          }}
+                          aria-hidden="true"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                            <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 900,
+                            letterSpacing: "0.08em",
+                            color: "color-mix(in srgb, var(--text-muted) 88%, #9fb8ff 12%)",
+                            textTransform: "uppercase",
+                            textAlign: "left",
+                            minWidth: 0,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {group.name || "Group"}
+                        </span>
+                      </span>
                       <span
                         style={{
-                          fontSize: 11,
-                          fontWeight: 900,
-                          letterSpacing: "0.08em",
-                          color: "color-mix(in srgb, var(--text-muted) 88%, #9fb8ff 12%)",
-                          textTransform: "uppercase",
-                          textAlign: "left",
+                          fontSize: 10,
+                          fontWeight: 800,
+                          color: "var(--text-muted)",
+                          border: "1px solid color-mix(in srgb, var(--border) 84%, #2b6cff 16%)",
+                          borderRadius: 999,
+                          padding: "1px 6px",
+                          lineHeight: 1.4,
+                          flex: "0 0 auto",
                         }}
                       >
-                        {group.name || "Group"}
+                        {groupItemCount}
                       </span>
                     </button>
                   ) : (
@@ -11386,7 +11516,7 @@ function flushScheduledProjectSave() {
                       />
                     </div>
                   )}
-                  {!collapsedLiveGroupIds.includes(String(group.id || "")) && group.items.map((item) => {
+                  {!groupCollapsed && group.items.map((item) => {
                     const isData = item.type === "data";
                     const screen = !isData ? screens.find((s) => s.id === item.screenId) || null : null;
                     const label =
@@ -11498,7 +11628,8 @@ function flushScheduledProjectSave() {
                     );
                   })}
                 </div>
-              ))
+              );
+            })
             ) : (
               <div style={{ fontSize: 11, color: "var(--text-muted)", padding: 6, textAlign: liveMenuIsExpanded ? "left" : "center" }}>
                 No live menu items configured.
