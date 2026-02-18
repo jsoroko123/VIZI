@@ -7665,9 +7665,12 @@ function flushScheduledProjectSave() {
             if (!rec) return o;
             const sx = Math.max(0.05, Number(rec.sx || 1) * ratio);
             const sy = Math.max(0.05, Number(rec.sy || 1) * ratio);
-            const tx = anchorWorld.x + (Number(rec.tx || 0) - anchorWorld.x) * ratio;
-            const ty = anchorWorld.y + (Number(rec.ty || 0) - anchorWorld.y) * ratio;
-            return { ...o, tx, ty, scale: sx, scaleX: sx, scaleY: sy };
+            const txRaw = anchorWorld.x + (Number(rec.tx || 0) - anchorWorld.x) * ratio;
+            const tyRaw = anchorWorld.y + (Number(rec.ty || 0) - anchorWorld.y) * ratio;
+            const bb = o?.bbox || overlayLocalBBox(o.id);
+            if (!bb) return { ...o, tx: txRaw, ty: tyRaw, scale: sx, scaleX: sx, scaleY: sy };
+            const clamped = clampOverlayTransformToCanvas(txRaw, tyRaw, sx, sy, bb);
+            return { ...o, tx: clamped.tx, ty: clamped.ty, scale: sx, scaleX: sx, scaleY: sy };
           })
         );
         return;
@@ -7685,6 +7688,12 @@ function flushScheduledProjectSave() {
         const bottomRaw = Math.max(anchorWorld.y, p.y);
         const width = Math.max(minW, rightRaw - leftRaw);
         const height = Math.max(minH, bottomRaw - topRaw);
+        const clamped = clampOverlayTransformToCanvas(leftRaw, topRaw, 1, 1, {
+          x: 0,
+          y: 0,
+          width,
+          height,
+        });
         setSvgOverlays((prev) =>
           prev.map((x) =>
             x.id === id
@@ -7693,8 +7702,8 @@ function flushScheduledProjectSave() {
                   scale: 1,
                   scaleX: 1,
                   scaleY: 1,
-                  tx: leftRaw,
-                  ty: topRaw,
+                  tx: clamped.tx,
+                  ty: clamped.ty,
                   bbox: { x: 0, y: 0, width, height },
                 }
               : x
@@ -7708,13 +7717,17 @@ function flushScheduledProjectSave() {
       const newScaleX = Math.max(0.05, origScaleX * ratio);
       const newScaleY = Math.max(0.05, origScaleY * ratio);
 
-      const newTx = anchorWorld.x - newScaleX * anchorLocal.x;
-      const newTy = anchorWorld.y - newScaleY * anchorLocal.y;
+      const newTxRaw = anchorWorld.x - newScaleX * anchorLocal.x;
+      const newTyRaw = anchorWorld.y - newScaleY * anchorLocal.y;
+      const bb = o?.bbox || overlayLocalBBox(id);
+      const clamped = bb
+        ? clampOverlayTransformToCanvas(newTxRaw, newTyRaw, newScaleX, newScaleY, bb)
+        : { tx: newTxRaw, ty: newTyRaw };
 
       setSvgOverlays((prev) =>
         prev.map((x) =>
           x.id === id
-            ? { ...x, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY, tx: newTx, ty: newTy }
+            ? { ...x, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY, tx: clamped.tx, ty: clamped.ty }
             : x
         )
       );
