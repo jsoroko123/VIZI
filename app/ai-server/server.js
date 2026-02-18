@@ -1448,6 +1448,34 @@ function defaultRolePermissionRows(roleName) {
     can_edit: true,
   }));
   if (name === "administrator") return allEdit;
+  if (name === "engineer") {
+    return normalizePermissionRows([
+      { area_key: "project", can_view: true, can_edit: true },
+      { area_key: "plc", can_view: true, can_edit: true },
+      { area_key: "opc", can_view: true, can_edit: true },
+      { area_key: "server", can_view: true, can_edit: true },
+      { area_key: "tags", can_view: true, can_edit: true },
+      { area_key: "database", can_view: true, can_edit: true },
+      { area_key: "reports", can_view: true, can_edit: true },
+      { area_key: "ai", can_view: true, can_edit: true },
+      { area_key: "security", can_view: false, can_edit: false },
+      { area_key: "help", can_view: true, can_edit: true },
+    ]);
+  }
+  if (name === "user") {
+    return normalizePermissionRows([
+      { area_key: "project", can_view: true, can_edit: false },
+      { area_key: "plc", can_view: true, can_edit: false },
+      { area_key: "opc", can_view: true, can_edit: false },
+      { area_key: "server", can_view: true, can_edit: false },
+      { area_key: "tags", can_view: true, can_edit: false },
+      { area_key: "database", can_view: true, can_edit: false },
+      { area_key: "reports", can_view: true, can_edit: false },
+      { area_key: "ai", can_view: false, can_edit: false },
+      { area_key: "security", can_view: false, can_edit: false },
+      { area_key: "help", can_view: true, can_edit: false },
+    ]);
+  }
   if (name === "operator") {
     return normalizePermissionRows([
       { area_key: "project", can_view: true, can_edit: false },
@@ -2525,6 +2553,20 @@ app.post("/api/auth/register", async (req, res) => {
             ON CONFLICT (user_id, role_id) DO NOTHING
             `,
             [user.id, adminRoleRows[0].id]
+          );
+        }
+      } else {
+        const { rows: userRoleRows } = await pool.query(
+          "SELECT id FROM roles WHERE lower(name) = 'user' LIMIT 1"
+        );
+        if (userRoleRows.length) {
+          await pool.query(
+            `
+            INSERT INTO user_roles (user_id, role_id)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id, role_id) DO NOTHING
+            `,
+            [user.id, userRoleRows[0].id]
           );
         }
       }
@@ -6570,6 +6612,16 @@ async function start() {
       is_system: true,
     },
     {
+      name: "Engineer",
+      description: "Build and configure projects with design and integration access.",
+      is_system: true,
+    },
+    {
+      name: "User",
+      description: "Operate and monitor with read-only access to runtime pages.",
+      is_system: true,
+    },
+    {
       name: "Operator",
       description: "Read-only access to runtime and process screens.",
       is_system: true,
@@ -6663,6 +6715,21 @@ async function start() {
         [firstUserRows[0].id, adminRoleId]
       );
     }
+  }
+  const userRoleId = roleMap.get("user");
+  if (Number.isFinite(userRoleId)) {
+    await pool.query(
+      `
+      INSERT INTO user_roles (user_id, role_id)
+      SELECT u.id, $1
+      FROM users u
+      WHERE NOT EXISTS (
+        SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id
+      )
+      ON CONFLICT (user_id, role_id) DO NOTHING
+      `,
+      [userRoleId]
+    );
   }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS opc_tag_templates (

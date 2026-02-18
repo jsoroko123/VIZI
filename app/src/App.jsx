@@ -654,6 +654,8 @@ export default function App() {
   const [opcTags, setOpcTags] = useState([]);
   const [opcTemplates, setOpcTemplates] = useState([]);
   const [opcLiveValues, setOpcLiveValues] = useState({});
+  const [opcLiveUpdatedAt, setOpcLiveUpdatedAt] = useState(0);
+  const [opcLiveLastError, setOpcLiveLastError] = useState("");
   const [opcTagMappings, setOpcTagMappings] = useState([]);
   const [opcMappingSets, setOpcMappingSets] = useState([]);
   const [widgetDbValues, setWidgetDbValues] = useState({});
@@ -703,6 +705,8 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState(() => readStoredActiveProjectId());
   const [projectRouteRows, setProjectRouteRows] = useState([]);
   const [projectStatus, setProjectStatus] = useState("");
+  const [lastProjectSaveAt, setLastProjectSaveAt] = useState("");
+  const [lastProjectSaveKind, setLastProjectSaveKind] = useState(""); // "auto" | "manual" | ""
   const [activeProjectUpdatedAt, setActiveProjectUpdatedAt] = useState("");
   const [activeProjectUpdatedBy, setActiveProjectUpdatedBy] = useState("");
   const [projectCursors, setProjectCursors] = useState([]);
@@ -766,6 +770,7 @@ export default function App() {
   const pendingSilentSaveRef = useRef(false);
   const queuedSaveAfterFlightRef = useRef(null); // null | "silent" | "manual"
   const uiPreferenceAutosaveReadyRef = useRef(false);
+  const projectHydrationReadyRef = useRef(false);
   const isInteractingRef = useRef(false);
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
   const projectNameRef = useRef(projectName);
@@ -777,6 +782,7 @@ export default function App() {
   const projectPlcsRef = useRef(projectPlcs);
   const screensRef = useRef(screens);
   const activeProjectIdRef = useRef(activeProjectId);
+  const activeProjectUpdatedAtRef = useRef(activeProjectUpdatedAt);
   const projectModeRef = useRef(projectMode);
   const activeScreenIdRef = useRef(activeScreenId);
   const screenNameRef = useRef(screenName);
@@ -803,6 +809,7 @@ export default function App() {
     projectPlcsRef.current = projectPlcs;
     screensRef.current = screens;
     activeProjectIdRef.current = activeProjectId;
+    activeProjectUpdatedAtRef.current = activeProjectUpdatedAt;
     projectModeRef.current = projectMode;
     activeScreenIdRef.current = activeScreenId;
     screenNameRef.current = screenName;
@@ -810,7 +817,7 @@ export default function App() {
     vbHRef.current = vbH;
     panRef.current = pan;
     zoomRef.current = zoom;
-  }, [projectName, showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth, projectCanvasBackground, projectPlcs, screens, activeProjectId, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+  }, [projectName, showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth, projectCanvasBackground, projectPlcs, screens, activeProjectId, activeProjectUpdatedAt, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
 
   useEffect(() => {
     setSvgOverlays((prev) => {
@@ -1233,8 +1240,13 @@ export default function App() {
         if (!res.ok) throw new Error(data?.error || "Failed to load status.");
         if (!alive) return;
         setOpcLiveValues(data.values || {});
+        const atMs =
+          Number(new Date(data?.at || 0).getTime() || 0) || Date.now();
+        setOpcLiveUpdatedAt(atMs);
+        setOpcLiveLastError("");
       } catch {
-        // ignore
+        if (!alive) return;
+        setOpcLiveLastError("OPC status unavailable");
       }
     }
     pollStatus();
@@ -2271,6 +2283,7 @@ export default function App() {
     setLiveMenuGroups(normalizeLiveMenuGroups(data?.liveMenuGroups, incoming));
     setScreens(incoming);
     hydrateScreenState(active);
+    projectHydrationReadyRef.current = true;
   }
 
   function applyProjectPayload(data, options = {}) {
@@ -2326,6 +2339,7 @@ export default function App() {
     setOverlayResize(null);
     setMarquee(null);
     setImportAnchor(null);
+    projectHydrationReadyRef.current = true;
   }
 
   function downloadTextFile(filename, text, mime = "application/json;charset=utf-8") {
@@ -2431,6 +2445,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!user?.id) {
+      setProjects([]);
+      setActiveProjectId("");
+      return;
+    }
     let alive = true;
     let bootstrappedProject = false;
     async function loadProjects() {
@@ -2468,7 +2487,7 @@ export default function App() {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     let alive = true;
@@ -2533,10 +2552,17 @@ export default function App() {
   }, [activeProjectId]);
 
   async function saveProjectToDb(options = {}) {
+    let retryAfterConflict = null;
     try {
       const silent = options?.silent === true;
       const keepalive = options?.keepalive === true;
       const skipListReload = options?.skipListReload === true;
+      const conflictRetried = options?._conflictRetried === true;
+      const teamMerge = options?.teamMerge === true;
+      const ignoreBaseUpdatedAt = options?.ignoreBaseUpdatedAt === true;
+      if (silent && activeProjectId && !projectHydrationReadyRef.current) {
+        return;
+      }
       if (projectSaveInFlightRef.current) {
         const nextMode = silent ? "silent" : "manual";
         const prevMode = queuedSaveAfterFlightRef.current;
@@ -2546,7 +2572,12 @@ export default function App() {
       }
       projectSaveInFlightRef.current = true;
       if (!silent) setProjectStatus("");
-      const payload = getProjectPayload();
+      const payloadBase = getProjectPayload();
+      const override =
+        options?.payloadOverride && typeof options.payloadOverride === "object"
+          ? options.payloadOverride
+          : null;
+      const payload = override ? { ...payloadBase, ...override } : payloadBase;
       const trimmedName = String(payload?.name || "").trim();
       const effectiveName = trimmedName || "Untitled";
       if (!trimmedName && projectName !== effectiveName) {
@@ -2560,22 +2591,49 @@ export default function App() {
           id: activeProjectId || undefined,
           name: effectiveName,
           data: { ...payload, name: effectiveName },
-          baseUpdatedAt: activeProjectUpdatedAt || undefined,
-          teamMerge: false,
+          baseUpdatedAt: ignoreBaseUpdatedAt ? undefined : (activeProjectUpdatedAtRef.current || undefined),
+          teamMerge,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
         if (res.status === 409 && String(data?.code || "") === "PROJECT_CONFLICT") {
           const remote = data?.project && typeof data.project === "object" ? data.project : null;
-          if (remote?.updated_at) setActiveProjectUpdatedAt(String(remote.updated_at));
+          if (remote?.updated_at) {
+            const nextUpdatedAt = String(remote.updated_at);
+            activeProjectUpdatedAtRef.current = nextUpdatedAt;
+            setActiveProjectUpdatedAt(nextUpdatedAt);
+          }
           setActiveProjectUpdatedBy(String(remote?.updated_by_username || ""));
-          const by = String(remote?.updated_by_username || "").trim();
-          setProjectStatus(
-            by
-              ? `Save blocked: newer remote changes by ${by}. Reload project to merge.`
-              : "Save blocked: newer remote changes detected. Reload project to merge."
-          );
+          if (!conflictRetried) {
+            retryAfterConflict = {
+              ...options,
+              _conflictRetried: true,
+              teamMerge: true,
+              skipListReload: true,
+            };
+            if (!silent) setProjectStatus("Syncing latest project state...");
+            return;
+          }
+          if (!silent && !ignoreBaseUpdatedAt) {
+            retryAfterConflict = {
+              ...options,
+              _conflictRetried: true,
+              teamMerge: true,
+              ignoreBaseUpdatedAt: true,
+              skipListReload: true,
+            };
+            setProjectStatus("Retrying save...");
+            return;
+          }
+          if (!silent) {
+            const by = String(remote?.updated_by_username || "").trim();
+            setProjectStatus(
+              by
+                ? `Save blocked: newer remote changes by ${by}. Reload project to merge.`
+                : "Save blocked: newer remote changes detected. Reload project to merge."
+            );
+          }
           return;
         }
         throw new Error(data?.error || "Save failed.");
@@ -2585,14 +2643,21 @@ export default function App() {
       const remoteSig = next?.data ? projectPayloadSignature(next.data) : "";
       lastProjectSignatureRef.current = remoteSig && remoteSig === localSig ? remoteSig : localSig;
       if (next?.id) setActiveProjectId(next.id);
-      if (next?.updated_at) setActiveProjectUpdatedAt(String(next.updated_at));
+      if (next?.updated_at) {
+        const nextUpdatedAt = String(next.updated_at);
+        activeProjectUpdatedAtRef.current = nextUpdatedAt;
+        setActiveProjectUpdatedAt(nextUpdatedAt);
+      }
       setActiveProjectUpdatedBy(String(next?.updated_by_username || ""));
+      setLastProjectSaveAt(String(next?.updated_at || new Date().toISOString()));
+      setLastProjectSaveKind(silent ? "auto" : "manual");
       if (!silent) {
         const by = String(next?.updated_by_username || "").trim();
         setProjectStatus(by ? `Saved (by ${by})` : "Saved");
       }
       clearProjectDraft(next?.id || activeProjectId);
       setShowProjectNameInput(false);
+      projectHydrationReadyRef.current = true;
       if (!keepalive && !skipListReload) {
         const reload = await fetch("/api/projects");
         const payloadList = await reload.json();
@@ -2603,6 +2668,12 @@ export default function App() {
       setProjectStatus(options?.silent ? `Autosave failed: ${message}` : message);
     } finally {
       projectSaveInFlightRef.current = false;
+      if (retryAfterConflict) {
+        setTimeout(() => {
+          saveProjectToDb(retryAfterConflict);
+        }, 0);
+        return;
+      }
       const queued = queuedSaveAfterFlightRef.current;
       if (queued) {
         queuedSaveAfterFlightRef.current = null;
@@ -2615,6 +2686,10 @@ export default function App() {
 
   function flushScheduledProjectSave() {
     if (!pendingSilentSaveRef.current) return;
+    if (!projectHydrationReadyRef.current) {
+      pendingSilentSaveRef.current = false;
+      return;
+    }
     if (projectNameEditing) {
       autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, 350);
       return;
@@ -2634,6 +2709,7 @@ export default function App() {
   }
 
   function scheduleProjectAutoSave(delayMs = 450) {
+    if (!projectHydrationReadyRef.current) return;
     pendingSilentSaveRef.current = true;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, delayMs);
@@ -2669,37 +2745,31 @@ export default function App() {
   async function openProjectFromDb(id) {
     if (!id) return;
     try {
+      projectHydrationReadyRef.current = false;
       setProjectStatus("");
       const res = await fetch(`/api/projects/${id}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Load failed.");
-      const remoteUpdatedAtMs = data?.updated_at ? new Date(data.updated_at).getTime() : 0;
-      const localDraft = readProjectDraft(data?.id || id);
-      const localDraftPayload =
-        localDraft && localDraft.payload && typeof localDraft.payload === "object"
-          ? localDraft.payload
-          : null;
-      const useLocalDraft =
-        !!localDraftPayload &&
-        Number(localDraft?.savedAt || 0) > Math.max(0, Number(remoteUpdatedAtMs || 0));
-      applyProjectPayload(useLocalDraft ? localDraftPayload : data?.data || {}, { projectId: data?.id || id });
+      applyProjectPayload(data?.data || {}, { projectId: data?.id || id });
       setProjectName(data?.name || "Untitled");
       setActiveProjectId(data?.id || "");
-      setActiveProjectUpdatedAt(String(data?.updated_at || ""));
+      {
+        const nextUpdatedAt = String(data?.updated_at || "");
+        activeProjectUpdatedAtRef.current = nextUpdatedAt;
+        setActiveProjectUpdatedAt(nextUpdatedAt);
+      }
       setActiveProjectUpdatedBy(String(data?.updated_by_username || ""));
-      lastProjectSignatureRef.current = projectPayloadSignature(
-        useLocalDraft ? localDraftPayload : data?.data || {}
-      );
+      setLastProjectSaveAt(String(data?.updated_at || ""));
+      setLastProjectSaveKind("");
+      lastProjectSignatureRef.current = projectPayloadSignature(data?.data || {});
       projectHandleRef.current = null;
       const by = String(data?.updated_by_username || "").trim();
-      if (useLocalDraft) {
-        setProjectStatus("Loaded local draft");
-      } else {
-        setProjectStatus(by ? `Loaded (last update by ${by})` : "Loaded");
-      }
+      setProjectStatus(by ? `Loaded (last update by ${by})` : "Loaded");
       setShowProjectNameInput(false);
+      projectHydrationReadyRef.current = true;
     } catch (err) {
       setProjectStatus(err?.message || "Load failed.");
+      projectHydrationReadyRef.current = true;
     }
   }
 
@@ -2750,7 +2820,10 @@ export default function App() {
     setActiveProjectId("");
     localStorage.removeItem("vizi_active_project_id");
     setActiveProjectUpdatedAt("");
+    activeProjectUpdatedAtRef.current = "";
     setActiveProjectUpdatedBy("");
+    setLastProjectSaveAt("");
+    setLastProjectSaveKind("");
     lastProjectSignatureRef.current = projectPayloadSignature({
       name: "Untitled",
       canvasBackground: normalizeProjectCanvasBackground(null),
@@ -2768,6 +2841,7 @@ export default function App() {
     projectHandleRef.current = null;
     setProjectStatus("");
     setShowProjectNameInput(true);
+    projectHydrationReadyRef.current = true;
   }
 
   function cancelNewProjectInput() {
@@ -2776,6 +2850,10 @@ export default function App() {
   }
 
   async function saveProjectNameFromSettings() {
+    if (!canEditProject) {
+      toastError("You do not have permission to edit project settings.");
+      return;
+    }
     const nextName = String(projectNameDraft || "").trim() || "Untitled";
     const nextMode = normalizeProjectMode(projectModeDraft);
     const nextCanvasBackground = normalizeProjectCanvasBackground(projectCanvasBackgroundDraft);
@@ -2785,8 +2863,18 @@ export default function App() {
     setProjectModeDraft(nextMode);
     setProjectCanvasBackground(nextCanvasBackground);
     setProjectCanvasBackgroundDraft(nextCanvasBackground);
+    projectNameRef.current = nextName;
+    projectModeRef.current = nextMode;
+    projectCanvasBackgroundRef.current = nextCanvasBackground;
     setProjectNameEditing(false);
-    await saveProjectToDb();
+    await saveProjectToDb({
+      teamMerge: true,
+      payloadOverride: {
+        name: nextName,
+        projectMode: nextMode,
+        canvasBackground: nextCanvasBackground,
+      },
+    });
   }
 
   function cancelProjectNameEditFromSettings() {
@@ -2797,6 +2885,10 @@ export default function App() {
   }
 
   function beginProjectDrawerEdit() {
+    if (!canEditProject) {
+      toastError("You do not have permission to edit project settings.");
+      return;
+    }
     setProjectNameDraft(projectName || "");
     setProjectModeDraft(normalizeProjectMode(projectMode));
     setProjectCanvasBackgroundDraft(normalizeProjectCanvasBackground(projectCanvasBackground));
@@ -2825,6 +2917,7 @@ export default function App() {
               ? `Remote update by ${by} detected; local unsaved edits preserved. Reload to sync.`
               : "Remote update detected; local unsaved edits preserved. Reload to sync."
           );
+          activeProjectUpdatedAtRef.current = remoteUpdatedAt;
           setActiveProjectUpdatedAt(remoteUpdatedAt);
           setActiveProjectUpdatedBy(by);
           return;
@@ -2835,6 +2928,7 @@ export default function App() {
         }
         applyRemoteProjectPayload(data?.data || {}, { projectId: activeProjectId });
         lastProjectSignatureRef.current = remoteSig;
+        activeProjectUpdatedAtRef.current = remoteUpdatedAt;
         setActiveProjectUpdatedAt(remoteUpdatedAt);
         const by = String(data?.updated_by_username || "");
         setActiveProjectUpdatedBy(by);
@@ -2852,14 +2946,16 @@ export default function App() {
 
   useEffect(() => {
     if (!activeProjectId || !isPageVisible || projectNameEditing) return;
+    if (!projectHydrationReadyRef.current) return;
     const id = setInterval(() => {
+      if (!projectHydrationReadyRef.current) return;
       const sig = projectPayloadSignature(getProjectPayload());
       if (!sig) return;
       if (sig === lastProjectSignatureRef.current) return;
       saveProjectToDb({ silent: true });
     }, 5000);
     return () => clearInterval(id);
-  }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible, projectNameEditing]);
+  }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, liveMenuGroups, projectMode, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible, projectNameEditing]);
 
   useEffect(() => {
     if (!uiPreferenceAutosaveReadyRef.current) {
@@ -3548,8 +3644,16 @@ export default function App() {
     if (!hasUserPermissions) return true;
     return Boolean(user?.permissions?.[areaKey]?.can_view || user?.permissions?.[areaKey]?.can_edit);
   };
+  const canEditArea = (areaKey) => {
+    if (!areaKey) return true;
+    if (!hasUserPermissions) return true;
+    return Boolean(user?.permissions?.[areaKey]?.can_edit);
+  };
   const canViewScreenPages = canViewArea("project");
   const canViewDataPages = canViewArea("database");
+  const canEditProject = canEditArea("project");
+  const isOpcDrawerView =
+    drawerView === "opc" || drawerView === "logs" || drawerView === "diagnostics";
   const currentUserRoleIds = useMemo(
     () =>
       new Set(
@@ -8058,6 +8162,23 @@ export default function App() {
     screens,
     showMainDrawer,
   ]);
+  const opcLiveValueCount = useMemo(
+    () => Object.keys(opcLiveValues || {}).length,
+    [opcLiveValues]
+  );
+  const opcLiveUpdatedAtLabel = useMemo(() => {
+    if (!Number.isFinite(Number(opcLiveUpdatedAt)) || Number(opcLiveUpdatedAt) <= 0) return "never";
+    try {
+      return new Date(Number(opcLiveUpdatedAt)).toLocaleTimeString();
+    } catch {
+      return "never";
+    }
+  }, [opcLiveUpdatedAt]);
+  const opcLiveIsStale = useMemo(() => {
+    const ts = Number(opcLiveUpdatedAt) || 0;
+    if (!ts) return true;
+    return Date.now() - ts > 10_000;
+  }, [opcLiveUpdatedAt, opcLiveValues]);
 
   useEffect(() => {
     const valid = new Set(liveMenuGroupsVisible.map((group) => String(group.id || "")));
@@ -8196,7 +8317,6 @@ export default function App() {
   }
 
   function deleteScreenById(screenId) {
-    if (!projectNameEditing) return;
     const committed = commitCurrentScreenState(screens);
     if (committed.list.length <= 1) return;
     const removeId = String(screenId || "");
@@ -8248,7 +8368,6 @@ export default function App() {
   }
 
   function renameScreenById(screenId, value) {
-    if (!projectNameEditing) return;
     const id = String(screenId || "");
     if (!id) return;
     const nextName = String(value ?? "");
@@ -8279,7 +8398,6 @@ export default function App() {
   }
 
   function renameLiveMenuGroup(groupId, nextName) {
-    if (!projectNameEditing) return;
     const id = String(groupId || "");
     if (!id) return;
     setLiveMenuGroups((prev) =>
@@ -8291,7 +8409,6 @@ export default function App() {
   }
 
   function deleteLiveMenuGroup(groupId) {
-    if (!projectNameEditing) return;
     const id = String(groupId || "");
     if (!id) return;
     setLiveMenuGroups((prev) => {
@@ -8367,7 +8484,6 @@ export default function App() {
   }
 
   function deleteLiveMenuItem(groupId, itemId) {
-    if (!projectNameEditing) return;
     const gId = String(groupId || "");
     const iId = String(itemId || "");
     if (!gId || !iId) return;
@@ -8380,7 +8496,6 @@ export default function App() {
   }
 
   function moveLiveMenuItem(groupId, itemId, delta) {
-    if (!projectNameEditing) return;
     const gId = String(groupId || "");
     const iId = String(itemId || "");
     if (!gId || !iId || !Number.isInteger(delta) || delta === 0) return;
@@ -8444,6 +8559,7 @@ export default function App() {
     if (Number.isNaN(d.getTime())) return "";
     return d.toLocaleString();
   };
+  const lastProjectSaveLabel = formatProjectTime(lastProjectSaveAt);
   const activeCanvasBackgroundColor =
     theme === "dark" ? projectCanvasBackground.dark : projectCanvasBackground.light;
   const projectDrawerInsetPx = showProjectDrawer && !projectDrawerFullscreen ? Math.round(drawerSizes.project.w) : 0;
@@ -8470,6 +8586,7 @@ export default function App() {
     : 0;
   const liveCanvasMenuGapPx = isLiveMode ? (isLiveMobile ? 6 : 10) : 0;
   const liveBottomCarouselHeightPx = isLiveMode && isLiveMobile ? 84 : 0;
+  const canvasReadOnly = isLiveMode || !canEditProject;
   const liveEquipmentDrawerWidthPx =
     isLiveMode && liveEquipmentDrawerEntry ? 360 : 0;
   const canvasLeftInsetBasePx =
@@ -8735,32 +8852,36 @@ export default function App() {
         showTagPaths={showTagPaths}
         showGrid={!isLiveMode && showGrid}
         showRulers={!isLiveMode}
-        onSvgMouseDown={isLiveMode ? () => {} : onSvgMouseDown}
-        onMouseMove={isLiveMode ? () => {} : onMouseMove}
-        onMouseUp={isLiveMode ? () => {} : onMouseUp}
-        onContextMenu={isLiveMode ? undefined : onContextMenu}
-        onShapeMouseDown={isLiveMode ? () => {} : onShapeMouseDown}
-        onShapeDoubleClick={isLiveMode ? () => {} : onShapeDoubleClick}
-        onEditPolylineClick={isLiveMode ? () => {} : onEditPolylineClick}
-        onHandleMouseDown={isLiveMode ? () => {} : onHandleMouseDown}
-        onHandleDoubleClick={isLiveMode ? () => {} : onHandleDoubleClick}
-        onHandleContextMenu={isLiveMode ? undefined : onHandleContextMenu}
-        onSegmentMouseDown={isLiveMode ? () => {} : onSegmentMouseDown}
+        onSvgMouseDown={canvasReadOnly ? () => {} : onSvgMouseDown}
+        onMouseMove={canvasReadOnly ? () => {} : onMouseMove}
+        onMouseUp={canvasReadOnly ? () => {} : onMouseUp}
+        onContextMenu={canvasReadOnly ? undefined : onContextMenu}
+        onShapeMouseDown={canvasReadOnly ? () => {} : onShapeMouseDown}
+        onShapeDoubleClick={canvasReadOnly ? () => {} : onShapeDoubleClick}
+        onEditPolylineClick={canvasReadOnly ? () => {} : onEditPolylineClick}
+        onHandleMouseDown={canvasReadOnly ? () => {} : onHandleMouseDown}
+        onHandleDoubleClick={canvasReadOnly ? () => {} : onHandleDoubleClick}
+        onHandleContextMenu={canvasReadOnly ? undefined : onHandleContextMenu}
+        onSegmentMouseDown={canvasReadOnly ? () => {} : onSegmentMouseDown}
         setShapes={setShapes}
         svgOverlays={svgOverlays}
         setSvgOverlays={setSvgOverlays}
         selectedOverlayIds={selectedOverlayIds}
         singleSelectedOverlayId={singleSelectedOverlayId}
         setOverlayRef={setOverlayRef}
-        onOverlayMouseDown={isLiveMode ? onLiveOverlayMouseDown : onOverlayMouseDown}
-        onOverlayDoubleClick={isLiveMode ? onLiveOverlayMouseDown : onOverlayDoubleClick}
+        onOverlayMouseDown={
+          isLiveMode ? onLiveOverlayMouseDown : (canEditProject ? onOverlayMouseDown : () => {})
+        }
+        onOverlayDoubleClick={
+          isLiveMode ? onLiveOverlayMouseDown : (canEditProject ? onOverlayDoubleClick : () => {})
+        }
         overlaySelectionUI={overlaySelectionUI}
         overlayGroupSelectionUI={overlayGroupSelectionUI}
         overlayLocalBBox={overlayLocalBBox}
         marquee={marquee}
         pan={pan}
         importAnchor={importAnchor}
-        onSvgDoubleClick={isLiveMode ? undefined : onSvgDoubleClick}
+        onSvgDoubleClick={canvasReadOnly ? undefined : onSvgDoubleClick}
         tagStateColorsByPath={tagStateColorsByPath}
         routeColorsBySvgKey={routeColorsBySvgKey}
         routeStrokeColorByGroupPath={routeStrokeColorByGroupPath}
@@ -9789,6 +9910,52 @@ export default function App() {
                   ? "OPC Configuration"
                   : "Help"}
                 </div>
+                {isOpcDrawerView ? (
+                  <div
+                    title={opcLiveLastError || `Live values: ${opcLiveValueCount} • Last update: ${opcLiveUpdatedAtLabel}`}
+                    style={{
+                      border: `1px solid ${
+                        opcLiveLastError
+                          ? "#f04438"
+                          : opcLiveIsStale
+                          ? "#f59e0b"
+                          : "color-mix(in srgb, #22c55e 60%, var(--border) 40%)"
+                      }`,
+                      background: opcLiveLastError
+                        ? "color-mix(in srgb, #f04438 14%, var(--bg-elev) 86%)"
+                        : opcLiveIsStale
+                        ? "color-mix(in srgb, #f59e0b 14%, var(--bg-elev) 86%)"
+                        : "color-mix(in srgb, #22c55e 14%, var(--bg-elev) 86%)",
+                      color: "var(--text)",
+                      borderRadius: 999,
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      whiteSpace: "nowrap",
+                      width: "fit-content",
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: "50%",
+                        background: opcLiveLastError ? "#f04438" : opcLiveIsStale ? "#f59e0b" : "#22c55e",
+                        boxShadow: opcLiveLastError
+                          ? "0 0 0 2px rgba(240,68,56,0.22)"
+                          : opcLiveIsStale
+                          ? "0 0 0 2px rgba(245,158,11,0.2)"
+                          : "0 0 0 2px rgba(34,197,94,0.2)",
+                      }}
+                    />
+                    <span>OPC {opcLiveValueCount}</span>
+                    <span style={{ color: "var(--text-muted)" }}>{opcLiveUpdatedAtLabel}</span>
+                  </div>
+                ) : null}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button
@@ -10272,6 +10439,9 @@ export default function App() {
                 </div>
                 <button
                   onClick={async () => {
+                    if (activeProjectId && hasUnsavedProjectChangesFromRefs()) {
+                      await saveProjectToDb({ silent: false, teamMerge: true, keepalive: true });
+                    }
                     await logout();
                   }}
                   style={{
@@ -11713,11 +11883,11 @@ export default function App() {
             ) : null}
 
             {projectDrawerTab === "screens" ? (
-            <div style={{ display: "grid", gap: 8, minHeight: 0 }}>
+            <div style={{ display: "grid", gap: 8, minHeight: 0, flex: "1 1 auto" }}>
               <fieldset
-                style={{ border: "none", margin: 0, padding: 0, minWidth: 0, display: "grid", gap: 8, minHeight: 0 }}
+                style={{ border: "none", margin: 0, padding: 0, minWidth: 0, display: "grid", gap: 8, minHeight: 0, height: "100%" }}
               >
-              <div style={{ ...projectDrawerCardStyle }}>
+              <div style={{ ...projectDrawerCardStyle, minHeight: 0, display: "flex", flexDirection: "column", flex: "1 1 auto" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Canvas Screens</div>
                   <button
@@ -11738,9 +11908,12 @@ export default function App() {
                   </button>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Screen changes save automatically.
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Choose the active design screen.
                 </div>
-                <div style={{ display: "grid", gap: 6, maxHeight: 180, overflow: "auto" }} className="vizi-scroll">
+                <div style={{ display: "grid", gap: 6, minHeight: 0, flex: "1 1 auto", overflow: "auto" }} className="vizi-scroll">
                   {(screens || []).map((s) => {
                     const active = s.id === activeScreenId;
                     return (
@@ -11784,7 +11957,7 @@ export default function App() {
                             if (String(s.name || "").trim()) return;
                             renameScreenById(s.id, "Screen");
                           }}
-                          readOnly={!projectNameEditing}
+                          readOnly={false}
                           style={{
                             color: "var(--text)",
                             fontSize: 12,
@@ -11793,11 +11966,11 @@ export default function App() {
                             padding: "4px 6px",
                             flex: "1 1 auto",
                             minWidth: 0,
-                            border: projectNameEditing ? "1px solid var(--border)" : "1px solid transparent",
+                            border: "1px solid var(--border)",
                             borderRadius: 6,
-                            background: projectNameEditing ? "var(--bg-elev)" : "transparent",
+                            background: "var(--bg-elev)",
                             outline: "none",
-                            cursor: projectNameEditing ? "text" : "pointer",
+                            cursor: "text",
                           }}
                           title={s.name}
                         />
@@ -11809,16 +11982,16 @@ export default function App() {
                             e.stopPropagation();
                             deleteScreenById(s.id);
                           }}
-                          disabled={screens.length <= 1 || !projectNameEditing}
+                          disabled={screens.length <= 1}
                           style={{
                             width: 22,
                             height: 22,
                             borderRadius: 6,
                             border: "1px solid #f04438",
-                            background: screens.length > 1 && projectNameEditing ? "#f04438" : "rgba(244,68,56,0.45)",
+                            background: screens.length > 1 ? "#f04438" : "rgba(244,68,56,0.45)",
                             color: "#fff",
-                            cursor: screens.length > 1 && projectNameEditing ? "pointer" : "not-allowed",
-                            opacity: screens.length > 1 && projectNameEditing ? 1 : 0.65,
+                            cursor: screens.length > 1 ? "pointer" : "not-allowed",
+                            opacity: screens.length > 1 ? 1 : 0.65,
                             padding: 0,
                             flex: "0 0 auto",
                           }}
@@ -11853,6 +12026,9 @@ export default function App() {
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Build grouped live menu entries from canvas screens or data tables.
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Menu changes save automatically.
                 </div>
                 <div
                   style={{
@@ -12160,19 +12336,26 @@ export default function App() {
             </div>
             ) : null}
           </div>
-          {!!projectStatus && (
+          {(!!projectStatus || !!lastProjectSaveLabel) && (
             <div
               style={{
                 borderTop: "1px solid var(--border)",
                 padding: "10px 12px",
-                fontSize: 12,
-                color: "var(--text-muted)",
+                display: "grid",
+                gap: 4,
               }}
             >
-              {projectStatus}
+              {!!projectStatus ? (
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{projectStatus}</div>
+              ) : null}
+              {!!lastProjectSaveLabel ? (
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {lastProjectSaveKind === "auto" ? "Last autosave" : "Last save"}: {lastProjectSaveLabel}
+                </div>
+              ) : null}
             </div>
           )}
-          {showProjectDrawer ? (
+          {showProjectDrawer && projectDrawerTab === "project" && canEditProject ? (
             <div
               style={{
                 borderTop: "1px solid var(--border)",
