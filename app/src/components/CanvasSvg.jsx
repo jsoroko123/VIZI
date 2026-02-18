@@ -2824,7 +2824,7 @@ export default function CanvasSvg({
      RULERS (SCREEN-PIXEL)
      ============================ */
   function TopRuler() {
-    const W = Math.max(0, size.w - rulerSize - SCROLLBAR_RESERVE);
+    const W = Math.max(0, size.w - rulerSize - edgeReserve);
     const H = rulerSize;
 
     const majorPx = 100;
@@ -2902,7 +2902,7 @@ export default function CanvasSvg({
 
   function RightRuler() {
     const W = rulerSize;
-    const H = Math.max(0, size.h - rulerSize - SCROLLBAR_RESERVE);
+    const H = Math.max(0, size.h - rulerSize - edgeReserve);
 
     const pxPerMajor = 80;
     const worldPerPx = 1 / z;
@@ -2958,7 +2958,7 @@ export default function CanvasSvg({
         viewBox={`0 0 ${W} ${H}`}
         style={{
           position: "absolute",
-          right: SCROLLBAR_RESERVE,
+          right: edgeReserve,
           top: rulerSize,
           background: "var(--bg-soft)",
           borderLeft: "1px solid var(--border)",
@@ -3097,13 +3097,14 @@ export default function CanvasSvg({
 
   const htmlChartLayers = [];
   const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
+  const edgeReserve = showRulers ? 0 : SCROLLBAR_RESERVE;
   const viewportW = Math.max(1, Number(size.w || 0));
   const viewportH = Math.max(1, Number(size.h || 0));
   const stageW = Math.max(
     viewportW,
-    vbWidth + rulerSize + SCROLLBAR_RESERVE
+    vbWidth + rulerSize + edgeReserve
   );
-  const stageH = Math.max(viewportH, vbHeight + rulerSize + SCROLLBAR_RESERVE);
+  const stageH = Math.max(viewportH, vbHeight + rulerSize + edgeReserve);
 
   return (
     <div
@@ -3135,12 +3136,11 @@ export default function CanvasSvg({
         style={{
           position: "absolute",
           inset: 0,
-          overflow: "scroll",
-          overflowX: "scroll",
-          overflowY: "scroll",
-          scrollbarGutter: "stable both-edges",
-          paddingRight: SCROLLBAR_RESERVE,
-          paddingBottom: SCROLLBAR_RESERVE,
+          overflowX: "auto",
+          overflowY: "hidden",
+          scrollbarGutter: "stable",
+          paddingRight: edgeReserve,
+          paddingBottom: edgeReserve,
           boxSizing: "border-box",
         }}
       >
@@ -3156,8 +3156,8 @@ export default function CanvasSvg({
           position: "absolute",
           left: 0,
           top: rulerSize,
-          right: rulerSize + SCROLLBAR_RESERVE,
-          bottom: SCROLLBAR_RESERVE,
+          right: rulerSize + edgeReserve,
+          bottom: edgeReserve,
         }}
       >
         <svg
@@ -3909,7 +3909,7 @@ export default function CanvasSvg({
         <div
           style={{
             position: "absolute",
-            right: SCROLLBAR_RESERVE,
+            right: edgeReserve,
             top: 0,
             width: rulerSize,
             height: rulerSize,

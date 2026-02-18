@@ -4772,7 +4772,7 @@ function flushScheduledProjectSave() {
     return svgCatalogMap.get(fileKey)?.url || null;
   }
 
-  function clampOverlayTransformToCanvas(tx, ty, scaleX, scaleY, bbox) {
+  function clampOverlayTransformToCanvas(tx, ty, scaleX, scaleY, bbox, bounds = null) {
     const bb = bbox || { x: 0, y: 0, width: 1, height: 1 };
     const sx = Math.max(0.0001, Number(scaleX) || 1);
     const sy = Math.max(0.0001, Number(scaleY) || 1);
@@ -4780,8 +4780,14 @@ function flushScheduledProjectSave() {
     const bh = Math.max(1, Number(bb.height) || 1);
     const bx = Number(bb.x) || 0;
     const by = Number(bb.y) || 0;
-    const canvasW = Math.max(1, Number(vbW) || 1);
-    const canvasH = Math.max(1, Number(vbH) || 1);
+    const canvasW = Math.max(
+      1,
+      Number(bounds && Number.isFinite(Number(bounds.canvasW)) ? bounds.canvasW : vbW) || 1
+    );
+    const canvasH = Math.max(
+      1,
+      Number(bounds && Number.isFinite(Number(bounds.canvasH)) ? bounds.canvasH : vbH) || 1
+    );
     // Clamp in SVG world coordinates, not screen/ruler pixels.
     const boundLeft = 0;
     const boundTop = 0;
@@ -7615,7 +7621,70 @@ function flushScheduledProjectSave() {
   }
 
   function onMouseMove(e) {
-    const p =
+    const maybeAutoPanDuringDrag = (evt) => {
+      const el = svgRef.current;
+      if (!el) return false;
+      const viewportEl = el.closest(".vizi-scroll");
+      const rect = viewportEl?.getBoundingClientRect?.();
+      if (!rect) return false;
+      const edge = 56;
+      const maxStep = 22;
+      const gain = 0.35;
+      let stepX = 0;
+      let stepY = 0;
+      const cx = Number(evt?.clientX) || 0;
+      const cy = Number(evt?.clientY) || 0;
+      const leftEdge = rect.left + edge;
+      const rightEdge = rect.right - edge;
+      const topEdge = rect.top + edge;
+      const bottomEdge = rect.bottom - edge;
+      if (cx < leftEdge) {
+        const d = Math.min(edge, leftEdge - cx);
+        stepX = Math.max(2, Math.min(maxStep, d * gain));
+      } else if (cx > rightEdge) {
+        const d = Math.min(edge, cx - rightEdge);
+        stepX = -Math.max(2, Math.min(maxStep, d * gain));
+      }
+      if (cy < topEdge) {
+        const d = Math.min(edge, topEdge - cy);
+        stepY = Math.max(2, Math.min(maxStep, d * gain));
+      } else if (cy > bottomEdge) {
+        const d = Math.min(edge, cy - bottomEdge);
+        stepY = -Math.max(2, Math.min(maxStep, d * gain));
+      }
+      if (!stepX && !stepY) return false;
+
+      // Prefer moving the actual viewport scroll so horizontal scrollbar follows drag.
+      if (viewportEl) {
+        const cur = {
+          x: Number(viewportEl.scrollLeft || 0),
+          y: Number(viewportEl.scrollTop || 0),
+        };
+        const maxScrollX = Math.max(0, Number(viewportEl.scrollWidth || 0) - Number(viewportEl.clientWidth || 0));
+        const nextX = Math.max(0, Math.min(maxScrollX, Number(cur.x || 0) - stepX));
+        if (Math.abs(nextX - Number(cur.x || 0)) > 0.1) {
+          const next = { x: nextX, y: Number(cur.y || 0) };
+          viewportEl.scrollLeft = nextX;
+          canvasViewportScrollRef.current = next;
+          setCanvasViewportScrollTarget(next);
+          return true;
+        }
+      }
+
+      let applied = null;
+      setPan((prev) => {
+        const next = clampPanToViewport({
+          x: Number(prev?.x || 0) + stepX,
+          y: Number(prev?.y || 0) + stepY,
+        });
+        applied = next;
+        return next;
+      });
+      if (applied) panRef.current = applied;
+      return true;
+    };
+
+    let p =
       drawing?.mode === "draw-poly"
         ? svgPoint(e, { snapToGrid: true })
         : svgPoint(e, { snapToGrid: false });
@@ -7672,6 +7741,9 @@ function flushScheduledProjectSave() {
     }
 
     if (overlayResize) {
+      if (maybeAutoPanDuringDrag(e)) {
+        p = drawing?.mode === "draw-poly" ? svgPoint(e, { snapToGrid: true }) : svgPoint(e, { snapToGrid: false });
+      }
       if (overlayResize?.kind === "group") {
         const anchorWorld = overlayResize.anchorWorld || { x: 0, y: 0 };
         const startDist = Math.max(1, Number(overlayResize.startDist || 1));
@@ -7755,6 +7827,9 @@ function flushScheduledProjectSave() {
     }
 
     if (dragHandle) {
+      if (maybeAutoPanDuringDrag(e)) {
+        p = drawing?.mode === "draw-poly" ? svgPoint(e, { snapToGrid: true }) : svgPoint(e, { snapToGrid: false });
+      }
       setShapes((prev) =>
         prev.map((s) => {
           if (s.id !== dragHandle.id) return s;
@@ -7767,6 +7842,7 @@ function flushScheduledProjectSave() {
     }
 
     if (dragAll) {
+      maybeAutoPanDuringDrag(e);
       const pointer = svgPoint(e, { clampToCanvas: false });
       const dx = pointer.x - dragAll.startWorld.x;
       const dy = pointer.y - dragAll.startWorld.y;
@@ -7780,9 +7856,16 @@ function flushScheduledProjectSave() {
             if (!rec) return s;
 
             if (rec.kind === "text" && s.type === "text") {
+              const fontSize = Number(s.fontSize ?? 24);
+              const txt = String(s.text ?? "");
+              const estW = Math.max(10, txt.length * fontSize * 0.6);
+              const anchor = String(s.anchor || "start");
+              const leftOffset = anchor === "middle" ? estW / 2 : anchor === "end" ? estW : 0;
+              const minTextX = leftOffset;
+              const maxTextX = maxX - Math.max(0, estW - leftOffset);
               return {
                 ...s,
-                x: Math.max(0, Math.min(maxX, rec.origX + dx)),
+                x: Math.max(minTextX, Math.min(Math.max(minTextX, maxTextX), rec.origX + dx)),
                 y: Math.max(0, Math.min(maxY, rec.origY + dy)),
               };
             }
@@ -7823,6 +7906,32 @@ function flushScheduledProjectSave() {
       }
 
     if (dragAll.overlays?.length) {
+      let dynamicCanvasW = maxX;
+      for (const o of svgOverlays) {
+        const rec = dragAll.overlays.find((x) => x.id === o.id);
+        if (!rec) continue;
+        const bb = o?.bbox || overlayLocalBBox(o.id);
+        if (!bb) continue;
+        const sx = overlayScaleX(o);
+        const bx = Number(bb.x) || 0;
+        const bw = Math.max(1, Number(bb.width) || 1);
+        const rawTx = Number(rec.origTx || 0) + dx;
+        const right = rawTx + sx * (bx + bw);
+        if (right + 8 > dynamicCanvasW) dynamicCanvasW = right + 8;
+      }
+
+      if (dynamicCanvasW > maxX + 0.5) {
+        const nextW = Math.ceil(dynamicCanvasW);
+        setVbW(nextW);
+        setScreens((prev) =>
+          (Array.isArray(prev) ? prev : []).map((s) =>
+            String(s?.id || "") === String(activeScreenId || "")
+              ? { ...s, vbW: Math.max(Number(s?.vbW) || 0, nextW) }
+              : s
+          )
+        );
+      }
+
       setSvgOverlays((prev) =>
         prev.map((o) => {
           const rec = dragAll.overlays.find((x) => x.id === o.id);
@@ -7831,7 +7940,14 @@ function flushScheduledProjectSave() {
           const sx = overlayScaleX(o);
           const sy = overlayScaleY(o);
           if (!bb) return { ...o, tx: rec.origTx + dx, ty: rec.origTy + dy };
-          const clamped = clampOverlayTransformToCanvas(rec.origTx + dx, rec.origTy + dy, sx, sy, bb);
+          const clamped = clampOverlayTransformToCanvas(
+            rec.origTx + dx,
+            rec.origTy + dy,
+            sx,
+            sy,
+            bb,
+            { canvasW: dynamicCanvasW, canvasH: maxY }
+          );
           return { ...o, tx: clamped.tx, ty: clamped.ty };
         })
       );
@@ -8611,6 +8727,24 @@ function flushScheduledProjectSave() {
     );
     if (String(activeScreenId || "") === id) {
       setScreenName(nextName);
+    }
+    scheduleProjectAutoSave();
+  }
+
+  function updateScreenSizeById(screenId, axis, rawValue) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const key = axis === "h" ? "vbH" : "vbW";
+    const n = Math.max(100, Math.min(10000, Math.round(Number(rawValue) || 0)));
+    if (!Number.isFinite(n)) return;
+    setScreens((prev) =>
+      (Array.isArray(prev) ? prev : []).map((s) =>
+        String(s?.id || "") === id ? { ...s, [key]: n } : s
+      )
+    );
+    if (String(activeScreenId || "") === id) {
+      if (key === "vbW") setVbW(n);
+      if (key === "vbH") setVbH(n);
     }
     scheduleProjectAutoSave();
   }
@@ -12122,6 +12256,60 @@ function flushScheduledProjectSave() {
                           >
                             ×
                           </button>
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) 18px minmax(0,1fr)", gap: 6, alignItems: "center" }}>
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>W</span>
+                          <input
+                            type="number"
+                            min={100}
+                            max={10000}
+                            step={10}
+                            value={Math.max(100, Math.round(Number(s?.vbW) || 1600))}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                            }}
+                            onFocus={() => switchToScreen(s.id)}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            onChange={(e) => updateScreenSizeById(s.id, "w", e.target.value)}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 6,
+                              padding: "3px 6px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              minWidth: 0,
+                            }}
+                            title="Screen width"
+                          />
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>H</span>
+                          <input
+                            type="number"
+                            min={100}
+                            max={10000}
+                            step={10}
+                            value={Math.max(100, Math.round(Number(s?.vbH) || 900))}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                            }}
+                            onFocus={() => switchToScreen(s.id)}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            onChange={(e) => updateScreenSizeById(s.id, "h", e.target.value)}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 6,
+                              padding: "3px 6px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              minWidth: 0,
+                            }}
+                            title="Screen height"
+                          />
                         </div>
                       </div>
                     );
