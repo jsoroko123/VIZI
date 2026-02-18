@@ -7213,32 +7213,6 @@ function flushScheduledProjectSave() {
   }, [isLiveMode, projectDrawerTab]);
 
   useEffect(() => {
-    if (!isLiveMode) return undefined;
-    let rafA = 0;
-    let rafB = 0;
-    const origin = { x: 0, y: 0 };
-    const runFit = () => {
-      if (rafA) window.cancelAnimationFrame(rafA);
-      if (rafB) window.cancelAnimationFrame(rafB);
-      rafA = window.requestAnimationFrame(() => {
-        rafB = window.requestAnimationFrame(() => {
-          fitViewToCanvas();
-          canvasViewportScrollRef.current = origin;
-          setCanvasViewportScrollTarget(origin);
-        });
-      });
-    };
-    runFit();
-    const onResize = () => runFit();
-    window.addEventListener("resize", onResize);
-    return () => {
-      if (rafA) window.cancelAnimationFrame(rafA);
-      if (rafB) window.cancelAnimationFrame(rafB);
-      window.removeEventListener("resize", onResize);
-    };
-  }, [isLiveMode, activeScreenId, vbW, vbH]);
-
-  useEffect(() => {
     const prev = Array.isArray(prevLiveEquipmentOverlayIdsRef.current)
       ? prevLiveEquipmentOverlayIdsRef.current
       : [];
@@ -8634,24 +8608,6 @@ function flushScheduledProjectSave() {
     );
     if (String(activeScreenId || "") === id) {
       setScreenName(nextName);
-    }
-    scheduleProjectAutoSave();
-  }
-
-  function updateScreenSizeById(screenId, axis, rawValue) {
-    const id = String(screenId || "");
-    if (!id) return;
-    const key = axis === "h" ? "vbH" : "vbW";
-    const n = Math.max(100, Math.min(10000, Math.round(Number(rawValue) || 0)));
-    if (!Number.isFinite(n)) return;
-    setScreens((prev) =>
-      (Array.isArray(prev) ? prev : []).map((s) =>
-        String(s?.id || "") === id ? { ...s, [key]: n } : s
-      )
-    );
-    if (String(activeScreenId || "") === id) {
-      if (key === "vbW") setVbW(n);
-      if (key === "vbH") setVbH(n);
     }
     scheduleProjectAutoSave();
   }
@@ -12163,60 +12119,6 @@ function flushScheduledProjectSave() {
                           >
                             ×
                           </button>
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) 18px minmax(0,1fr)", gap: 6, alignItems: "center" }}>
-                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>W</span>
-                          <input
-                            type="number"
-                            min={100}
-                            max={10000}
-                            step={10}
-                            value={Math.max(100, Math.round(Number(s?.vbW) || 1600))}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              switchToScreen(s.id);
-                            }}
-                            onFocus={() => switchToScreen(s.id)}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            onChange={(e) => updateScreenSizeById(s.id, "w", e.target.value)}
-                            style={{
-                              border: "1px solid var(--border)",
-                              background: "var(--bg-elev)",
-                              color: "var(--text)",
-                              borderRadius: 6,
-                              padding: "3px 6px",
-                              fontSize: 11,
-                              fontWeight: 700,
-                              minWidth: 0,
-                            }}
-                            title="Screen width"
-                          />
-                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>H</span>
-                          <input
-                            type="number"
-                            min={100}
-                            max={10000}
-                            step={10}
-                            value={Math.max(100, Math.round(Number(s?.vbH) || 900))}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              switchToScreen(s.id);
-                            }}
-                            onFocus={() => switchToScreen(s.id)}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            onChange={(e) => updateScreenSizeById(s.id, "h", e.target.value)}
-                            style={{
-                              border: "1px solid var(--border)",
-                              background: "var(--bg-elev)",
-                              color: "var(--text)",
-                              borderRadius: 6,
-                              padding: "3px 6px",
-                              fontSize: 11,
-                              fontWeight: 700,
-                              minWidth: 0,
-                            }}
-                            title="Screen height"
-                          />
                         </div>
                       </div>
                     );
