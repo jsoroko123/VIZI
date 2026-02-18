@@ -1449,18 +1449,7 @@ function defaultRolePermissionRows(roleName) {
   }));
   if (name === "administrator") return allEdit;
   if (name === "engineer") {
-    return normalizePermissionRows([
-      { area_key: "project", can_view: true, can_edit: true },
-      { area_key: "plc", can_view: true, can_edit: true },
-      { area_key: "opc", can_view: true, can_edit: true },
-      { area_key: "server", can_view: true, can_edit: true },
-      { area_key: "tags", can_view: true, can_edit: true },
-      { area_key: "database", can_view: true, can_edit: true },
-      { area_key: "reports", can_view: true, can_edit: true },
-      { area_key: "ai", can_view: true, can_edit: true },
-      { area_key: "security", can_view: false, can_edit: false },
-      { area_key: "help", can_view: true, can_edit: true },
-    ]);
+    return allEdit;
   }
   if (name === "user") {
     return normalizePermissionRows([

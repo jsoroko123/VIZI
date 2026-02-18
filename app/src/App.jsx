@@ -7,6 +7,7 @@ import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
 import TopBarRightControls from "./components/TopBarRightControls";
 import LiveAlarmBar from "./components/live/LiveAlarmBar";
+import LiveEquipmentConnectorLayer from "./components/live/LiveEquipmentConnectorLayer";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -8833,29 +8834,6 @@ function flushScheduledProjectSave() {
         boxSizing: "border-box",
       }}
     >
-      <style>{`
-        @keyframes drawer-slide-in-right {
-          from { transform: translateX(18px); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
-        @keyframes drawer-slide-in-left {
-          from { transform: translateX(-18px); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
-        @keyframes live-menu-arrow-pulse {
-          0%, 100% { transform: translateX(0); }
-          50% { transform: translateX(2px); }
-        }
-        @keyframes live-eq-link-grow {
-          0% { stroke-dashoffset: var(--link-len, 1px); opacity: 1; }
-          100% { stroke-dashoffset: 0; opacity: 0; }
-        }
-        @keyframes live-eq-link-dot-connect {
-          0% { transform: scale(0.8); opacity: 0.35; }
-          45% { transform: scale(1.45); opacity: 1; }
-          100% { transform: scale(1); opacity: 0.85; }
-        }
-      `}</style>
       <ViewBoxModal
         open={viewBoxOpen}
         onClose={() => setViewBoxOpen(false)}
@@ -9101,61 +9079,10 @@ function flushScheduledProjectSave() {
             pointerEvents: "none",
           }}
         >
-          {liveEquipmentConnectorLines.length ? (
-            <svg
-              style={{
-                position: "fixed",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                pointerEvents: "none",
-                zIndex: 204,
-                overflow: "visible",
-              }}
-            >
-              {liveEquipmentConnectorLines.map((line) => {
-                const midY = line.toY - 26;
-                const d = `M ${line.fromX} ${line.fromY} C ${line.fromX} ${midY}, ${line.toX} ${midY}, ${line.toX} ${line.toY}`;
-                const showConnectFx = Boolean(liveEquipmentConnectFxById?.[line.id]);
-                return (
-                  <g key={`live-eq-link-${line.id}`}>
-                    <path d={d} fill="none" stroke="rgba(43,108,255,0.24)" strokeWidth="6" strokeLinecap="round" />
-                    <path d={d} fill="none" stroke="rgba(255,255,255,0.62)" strokeWidth="1.3" strokeLinecap="round" />
-                    {showConnectFx ? (
-                      (() => {
-                        const approxLen = Math.max(24, Math.hypot(line.toX - line.fromX, line.toY - line.fromY) * 1.15);
-                        return (
-                          <path
-                            d={d}
-                            fill="none"
-                            stroke="rgba(147,197,253,0.95)"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            strokeDasharray={approxLen}
-                            strokeDashoffset={approxLen}
-                            style={{
-                              ["--link-len"]: `${approxLen}px`,
-                              animation: "live-eq-link-grow 1.2s ease-out 1",
-                            }}
-                          />
-                        );
-                      })()
-                    ) : null}
-                    <circle
-                      cx={line.fromX}
-                      cy={line.fromY}
-                      r="3.2"
-                      fill="rgba(43,108,255,0.8)"
-                      style={{
-                        transformOrigin: `${line.fromX}px ${line.fromY}px`,
-                        animation: showConnectFx ? "live-eq-link-dot-connect 0.9s ease-out 1" : undefined,
-                      }}
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-          ) : null}
+          <LiveEquipmentConnectorLayer
+            lines={liveEquipmentConnectorLines}
+            connectFxById={liveEquipmentConnectFxById}
+          />
           <div
             onMouseDown={(e) => e.stopPropagation()}
             className="vizi-live-equipment-dock vizi-scroll"
