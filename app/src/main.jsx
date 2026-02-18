@@ -1,16 +1,17 @@
-import { StrictMode } from "react";
+import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
 import "./index.css";
 import App from "./App.jsx";
-import AiTableBuilder from "./components/AiTableBuilder.jsx";
-import DataBrowser from "./components/DataBrowser.jsx";
-import ReportDesigner from "./components/ReportDesigner.jsx";
-import OpcConfig from "./components/OpcConfig.jsx";
 import Login from "./components/Login.jsx";
 import ToastHost from "./components/ToastHost.jsx";
 import { AuthProvider, useAuth } from "./components/AuthContext.jsx";
 import { installAlertToasts } from "./utils/toast";
+
+const AiTableBuilder = lazy(() => import("./components/AiTableBuilder.jsx"));
+const DataBrowser = lazy(() => import("./components/DataBrowser.jsx"));
+const ReportDesigner = lazy(() => import("./components/ReportDesigner.jsx"));
+const OpcConfig = lazy(() => import("./components/OpcConfig.jsx"));
 
 const THEME_KEY = "vizi_theme";
 
@@ -51,69 +52,71 @@ function RequireAuth({ children }) {
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <AuthProvider>
-      <BrowserRouter>
-        <ToastHost />
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route
-            path="/"
-            element={
-              <RequireAuth>
-                <App />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/ai"
-            element={
-              <RequireAuth>
-                <AiTableBuilder />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/data"
-            element={
-              <RequireAuth>
-                <DataBrowser />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/data/:table"
-            element={
-              <RequireAuth>
-                <DataBrowser />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/data/:table/:id"
-            element={
-              <RequireAuth>
-                <DataBrowser />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/report-designer"
-            element={
-              <RequireAuth>
-                <ReportDesigner />
-              </RequireAuth>
-            }
-          />
-          <Route
-            path="/opc"
-            element={
-              <RequireAuth>
-                <OpcConfig />
-              </RequireAuth>
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
+      <Suspense fallback={<div style={{ padding: 24 }}>Loading...</div>}>
+        <BrowserRouter>
+          <ToastHost />
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route
+              path="/"
+              element={
+                <RequireAuth>
+                  <App />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/ai"
+              element={
+                <RequireAuth>
+                  <AiTableBuilder />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/data"
+              element={
+                <RequireAuth>
+                  <DataBrowser />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/data/:table"
+              element={
+                <RequireAuth>
+                  <DataBrowser />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/data/:table/:id"
+              element={
+                <RequireAuth>
+                  <DataBrowser />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/report-designer"
+              element={
+                <RequireAuth>
+                  <ReportDesigner />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/opc"
+              element={
+                <RequireAuth>
+                  <OpcConfig />
+                </RequireAuth>
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </Suspense>
     </AuthProvider>
   </StrictMode>,
 )

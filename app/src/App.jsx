@@ -1,19 +1,10 @@
 // src/App.jsx
-import { useMemo, useRef, useState, useEffect } from "react";
+import { Suspense, lazy, useMemo, useRef, useState, useEffect } from "react";
 import PropertiesPanel from "./components/PropertiesPanel";
-import HelpPanel from "./components/HelpPanel";
 import ImportModal from "./components/ImportModal";
 import WidgetSelectorModal from "./components/WidgetSelectorModal";
 import CanvasSvg from "./components/CanvasSvg";
 import ViewBoxModal from "./components/ViewBoxModal";
-import OpcConfig from "./components/OpcConfig";
-import DataBrowser from "./components/DataBrowser";
-import DatasetBuilder from "./components/DatasetBuilder";
-import DatabaseConfigPanel from "./components/DatabaseConfigPanel";
-import SqlDesigner from "./components/SqlDesigner";
-import PlcAnalyzer from "./components/PlcAnalyzer";
-import ServerDiagnosticsPanel from "./components/ServerDiagnosticsPanel";
-import SecurityManager from "./components/SecurityManager";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -38,14 +29,22 @@ import { exportToIgnitionJson, downloadIgnitionJson } from "./utils/ignitionExpo
 import { toastError, toastSuccess } from "./utils/toast";
 import appLogo from "./assets/Images/logo.png";
 
-// Vite: keep SVG modules as URLs and fetch raw text only when needed.
-const SVG_LIBRARY = import.meta.glob("./assets/SVG_Files/**/*.svg", {
-  import: "default",
-  query: "?url",
-});
+const HelpPanel = lazy(() => import("./components/HelpPanel"));
+const OpcConfig = lazy(() => import("./components/OpcConfig"));
+const DataBrowser = lazy(() => import("./components/DataBrowser"));
+const DatasetBuilder = lazy(() => import("./components/DatasetBuilder"));
+const DatabaseConfigPanel = lazy(() => import("./components/DatabaseConfigPanel"));
+const SqlDesigner = lazy(() => import("./components/SqlDesigner"));
+const PlcAnalyzer = lazy(() => import("./components/PlcAnalyzer"));
+const ServerDiagnosticsPanel = lazy(() => import("./components/ServerDiagnosticsPanel"));
+const SecurityManager = lazy(() => import("./components/SecurityManager"));
 const THEME_KEY = "vizi_theme";
+const SHOW_GRID_KEY = "vizi_show_grid";
+const SHOW_TAG_PATHS_KEY = "vizi_show_tag_paths";
 const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
 const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
+const PROJECT_DRAFT_KEY_PREFIX = "vizi_project_draft:";
+const PROJECT_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // (no eager:true)
 
 const SVG_RAW_CACHE_MAX = 96;
@@ -77,6 +76,37 @@ function readStoredActiveProjectId() {
     return String(localStorage.getItem("vizi_active_project_id") || "").trim();
   } catch {
     return "";
+  }
+}
+
+function readProjectDraft(projectId) {
+  if (typeof window === "undefined") return null;
+  const id = String(projectId || "").trim();
+  if (!id) return null;
+  try {
+    const raw = localStorage.getItem(`${PROJECT_DRAFT_KEY_PREFIX}${id}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const savedAt = Number(parsed.savedAt || 0);
+    if (!Number.isFinite(savedAt) || Date.now() - savedAt > PROJECT_DRAFT_MAX_AGE_MS) {
+      localStorage.removeItem(`${PROJECT_DRAFT_KEY_PREFIX}${id}`);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clearProjectDraft(projectId) {
+  if (typeof window === "undefined") return;
+  const id = String(projectId || "").trim();
+  if (!id) return;
+  try {
+    localStorage.removeItem(`${PROJECT_DRAFT_KEY_PREFIX}${id}`);
+  } catch {
+    // ignore
   }
 }
 
@@ -338,6 +368,47 @@ function parseDbTagPath(value) {
   return { table, field };
 }
 
+function readFirstInnerSvgText(inner) {
+  const source = String(inner || "");
+  if (!source.trim()) return null;
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(
+      `<svg xmlns="http://www.w3.org/2000/svg">${source}</svg>`,
+      "image/svg+xml"
+    );
+    if (doc.querySelector("parsererror")) return null;
+    const firstText = doc.querySelector("text");
+    if (!firstText) return null;
+    return String(firstText.textContent ?? "");
+  } catch {
+    return null;
+  }
+}
+
+function writeFirstInnerSvgText(inner, nextText) {
+  const source = String(inner || "");
+  if (!source.trim()) return source;
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(
+      `<svg xmlns="http://www.w3.org/2000/svg">${source}</svg>`,
+      "image/svg+xml"
+    );
+    if (doc.querySelector("parsererror")) return source;
+    const firstText = doc.querySelector("text");
+    if (!firstText) return source;
+    firstText.textContent = String(nextText ?? "");
+    const serializer = new XMLSerializer();
+    const root = doc.documentElement;
+    return Array.from(root.childNodes)
+      .map((node) => serializer.serializeToString(node))
+      .join("");
+  } catch {
+    return source;
+  }
+}
+
 function widgetTemplate(widgetKey) {
   const templates = {
     lineChart: {
@@ -458,7 +529,7 @@ export default function App() {
 
   // drawing = { mode:"draw-poly"|"draw-rect", id, start?:{x,y} }
   const [drawing, setDrawing] = useState(null);
-  const [inlineEdit, setInlineEdit] = useState(null); // { id, value }
+  const [inlineEdit, setInlineEdit] = useState(null); // { id, value, kind: "shape" | "overlay" }
 
   // unified drag for moving ALL selected items
   // { startWorld, polylines:[{id, origPoints}], overlays:[{id, origTx, origTy}] }
@@ -495,12 +566,28 @@ export default function App() {
   const [exportVB, setExportVB] = useState({ x: 0, y: 0, w: 1600, h: 900 });
   const [exportBasis, setExportBasis] = useState({ w: 1600, h: 900 }); // affects Perspective "basis"
   const [showZoom, setShowZoom] = useState(true);
-  const [showGrid, setShowGrid] = useState(true);
-  const [showTagPaths, setShowTagPaths] = useState(false);
+  const [showGrid, setShowGrid] = useState(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      return localStorage.getItem(SHOW_GRID_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const [showTagPaths, setShowTagPaths] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem(SHOW_TAG_PATHS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
   const [liveEquipmentOverlayIds, setLiveEquipmentOverlayIds] = useState([]);
   const liveEquipmentCardRefs = useRef(new Map());
   const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
+  const [liveEquipmentDrawerOverlayId, setLiveEquipmentDrawerOverlayId] = useState("");
+  const liveEquipmentDockScrollRafRef = useRef(0);
   const [marquee, setMarquee] = useState(null);
 
   const [vbW, setVbW] = useState(1600);
@@ -587,6 +674,7 @@ export default function App() {
   const [databaseEmbeddedPath, setDatabaseEmbeddedPath] = useState("");
   const [databaseDataOnlyMode, setDatabaseDataOnlyMode] = useState(false);
   const [databaseTablesForMenu, setDatabaseTablesForMenu] = useState([]);
+  const [svgCatalogFiles, setSvgCatalogFiles] = useState([]);
   const [liveMenuGroups, setLiveMenuGroups] = useState(() =>
     defaultLiveMenuGroupsFromScreens([
       { id: "screen-1", name: "Screen 1", showInLiveMenu: true },
@@ -604,6 +692,8 @@ export default function App() {
   const projectCanvasBackgroundRef = useRef(projectCanvasBackground);
   const projectPlcsRef = useRef(projectPlcs);
   const screensRef = useRef(screens);
+  const activeProjectIdRef = useRef(activeProjectId);
+  const projectModeRef = useRef(projectMode);
   const activeScreenIdRef = useRef(activeScreenId);
   const screenNameRef = useRef(screenName);
   const vbWRef = useRef(vbW);
@@ -614,19 +704,25 @@ export default function App() {
     () => `vizi_project_mode:${String(activeProjectId || "default")}`,
     [activeProjectId]
   );
+  const projectDraftStorageKey = useMemo(
+    () => `${PROJECT_DRAFT_KEY_PREFIX}${String(activeProjectId || "").trim()}`,
+    [activeProjectId]
+  );
 
   useEffect(() => {
     projectNameRef.current = projectName;
     projectCanvasBackgroundRef.current = projectCanvasBackground;
     projectPlcsRef.current = projectPlcs;
     screensRef.current = screens;
+    activeProjectIdRef.current = activeProjectId;
+    projectModeRef.current = projectMode;
     activeScreenIdRef.current = activeScreenId;
     screenNameRef.current = screenName;
     vbWRef.current = vbW;
     vbHRef.current = vbH;
     panRef.current = pan;
     zoomRef.current = zoom;
-  }, [projectName, projectCanvasBackground, projectPlcs, screens, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+  }, [projectName, projectCanvasBackground, projectPlcs, screens, activeProjectId, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
 
   useEffect(() => {
     if (projectNameEditing) return;
@@ -668,7 +764,62 @@ export default function App() {
     return () => {
       alive = false;
     };
+  }, [isPageVisible]);
+
+  useEffect(() => {
+    let alive = true;
+    async function loadSvgCatalog() {
+      try {
+        const res = await fetch("/api/svg/catalog");
+        const data = await res.json();
+        if (!res.ok || !alive) return;
+        const files = Array.isArray(data?.files)
+          ? data.files
+              .map((f) => ({
+                key: String(f?.key || "").trim(),
+                name: String(f?.name || "").trim(),
+                url: String(f?.url || "").trim(),
+              }))
+              .filter((f) => f.key && f.name && f.url)
+          : [];
+        setSvgCatalogFiles(files);
+      } catch {
+        if (alive) setSvgCatalogFiles([]);
+      }
+    }
+    loadSvgCatalog();
+    return () => {
+      alive = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!importOpen) return undefined;
+    let alive = true;
+    async function loadSvgCatalogOnOpen() {
+      try {
+        const res = await fetch("/api/svg/catalog");
+        const data = await res.json();
+        if (!res.ok || !alive) return;
+        const files = Array.isArray(data?.files)
+          ? data.files
+              .map((f) => ({
+                key: String(f?.key || "").trim(),
+                name: String(f?.name || "").trim(),
+                url: String(f?.url || "").trim(),
+              }))
+              .filter((f) => f.key && f.name && f.url)
+          : [];
+        if (files.length) setSvgCatalogFiles(files);
+      } catch {
+        // keep existing catalog if refresh fails
+      }
+    }
+    loadSvgCatalogOnOpen();
+    return () => {
+      alive = false;
+    };
+  }, [importOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -679,6 +830,58 @@ export default function App() {
       // ignore storage write errors
     }
   }, [projectMode, projectModeStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const id = String(activeProjectId || "").trim();
+    if (!id) return;
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          projectDraftStorageKey,
+          JSON.stringify({ savedAt: Date.now(), payload: getProjectPayloadFromRefs() })
+        );
+      } catch {
+        // ignore draft persistence failures
+      }
+    }, 180);
+    return () => clearTimeout(t);
+  }, [
+    activeProjectId,
+    projectDraftStorageKey,
+    projectMode,
+    projectName,
+    projectCanvasBackground,
+    projectPlcs,
+    screens,
+    activeScreenId,
+    screenName,
+    vbW,
+    vbH,
+    pan,
+    zoom,
+    shapes,
+    svgOverlays,
+    liveMenuGroups,
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onBeforeUnload = () => {
+      const id = String(activeProjectIdRef.current || "").trim();
+      if (!id) return;
+      try {
+        localStorage.setItem(
+          `${PROJECT_DRAFT_KEY_PREFIX}${id}`,
+          JSON.stringify({ savedAt: Date.now(), payload: getProjectPayloadFromRefs() })
+        );
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [projectMode, liveMenuGroups]);
 
   useEffect(() => {
     isInteractingRef.current = Boolean(dragAll || dragHandle || overlayResize || marquee || drawing);
@@ -770,12 +973,15 @@ export default function App() {
       }
     }
     pollStatus();
-    const id = setInterval(pollStatus, isPageVisible ? 1000 : 6000);
+    const id = setInterval(
+      pollStatus,
+      isPageVisible ? (isLiveMode ? 1200 : 3000) : 10000
+    );
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [isPageVisible]);
+  }, [isPageVisible, isLiveMode]);
 
   useEffect(() => {
     let alive = true;
@@ -825,39 +1031,48 @@ export default function App() {
         if (alive) setWidgetDbValues({});
         return;
       }
-      const next = {};
-      await Promise.all(
-        widgetBindings.map(async (b) => {
+      const bindings = widgetBindings
+        .map((b) => {
           const expr = b.tagPath.slice(3).trim();
           const dot = expr.indexOf(".");
-          if (dot <= 0 || dot === expr.length - 1) return;
+          if (dot <= 0 || dot === expr.length - 1) return null;
           const table = expr.slice(0, dot).trim();
           const field = expr.slice(dot + 1).trim();
-          if (!table || !field) return;
-          try {
-            const res = await fetch(`/api/db/${encodeURIComponent(table)}?limit=1`);
-            const data = await res.json();
-            if (!res.ok) return;
-            const row = Array.isArray(data?.rows) ? data.rows[0] : null;
-            if (!row || typeof row !== "object") return;
-            const value = row[field];
-            if (value == null) return;
-            next[b.id] = value;
-          } catch {
-            // ignore per-widget db errors
-          }
+          if (!table || !field) return null;
+          return { overlayId: b.id, table, field };
         })
-      );
+        .filter(Boolean);
+      if (!bindings.length) {
+        if (alive) setWidgetDbValues({});
+        return;
+      }
+      let next = {};
+      try {
+        const res = await fetch("/api/db/batch-first-values", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bindings }),
+        });
+        const data = await res.json();
+        if (res.ok && data?.values && typeof data.values === "object") {
+          next = data.values;
+        }
+      } catch {
+        // ignore batch errors
+      }
       if (!alive) return;
       setWidgetDbValues(next);
     }
     pollWidgetDbValues();
-    const id = setInterval(pollWidgetDbValues, isPageVisible ? 2000 : 8000);
+    const id = setInterval(
+      pollWidgetDbValues,
+      isPageVisible ? (isLiveMode ? 3000 : 4500) : 10000
+    );
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [svgOverlays, isPageVisible]);
+  }, [svgOverlays, isPageVisible, isLiveMode]);
 
   const opcTemplateMap = useMemo(() => {
     const map = new Map();
@@ -1371,12 +1586,26 @@ export default function App() {
         details: buildLiveEquipmentDetails(overlay),
       }));
   }, [svgOverlays, liveEquipmentOverlayIds, svgLiveValuesByGroupPath, opcLiveValues]);
+  const liveEquipmentDrawerEntry = useMemo(() => {
+    const id = String(liveEquipmentDrawerOverlayId || "").trim();
+    if (!id) return null;
+    return (
+      liveEquipmentOverlays.find((entry) => String(entry?.overlay?.id || "") === id) || null
+    );
+  }, [liveEquipmentOverlays, liveEquipmentDrawerOverlayId]);
+  const liveEquipmentDockEntries = useMemo(() => {
+    const drawerId = String(liveEquipmentDrawerOverlayId || "").trim();
+    if (!drawerId) return liveEquipmentOverlays;
+    return liveEquipmentOverlays.filter(
+      (entry) => String(entry?.overlay?.id || "") !== drawerId
+    );
+  }, [liveEquipmentOverlays, liveEquipmentDrawerOverlayId]);
   const liveEquipmentConnectorLines = useMemo(() => {
-    if (!isLiveMode || !svgRef.current || !liveEquipmentOverlays.length) return [];
+    if (!isLiveMode || !svgRef.current || !liveEquipmentDockEntries.length) return [];
     const svgRect = svgRef.current.getBoundingClientRect();
     const z = zoom || 1;
     const lines = [];
-    for (const entry of liveEquipmentOverlays) {
+    for (const entry of liveEquipmentDockEntries) {
       const overlay = entry?.overlay;
       if (!overlay) continue;
       let fromX = NaN;
@@ -1418,7 +1647,7 @@ export default function App() {
       });
     }
     return lines;
-  }, [isLiveMode, liveEquipmentOverlays, pan, zoom, liveEquipmentDockTick]);
+  }, [isLiveMode, liveEquipmentDockEntries, pan, zoom, liveEquipmentDockTick]);
 
   const svgTagGroupMenuOptions = useMemo(() => {
     const options = [{ value: "", label: "Select tag group" }];
@@ -1497,6 +1726,24 @@ export default function App() {
 
   function normalizeScreenPayload(screen, fallback = {}) {
     const name = String(screen?.name || fallback?.name || "Screen 1").trim() || "Screen 1";
+    const pan =
+      screen?.pan && Number.isFinite(screen.pan.x) && Number.isFinite(screen.pan.y)
+        ? { x: screen.pan.x, y: screen.pan.y }
+        : fallback?.pan && Number.isFinite(fallback.pan.x) && Number.isFinite(fallback.pan.y)
+        ? { x: fallback.pan.x, y: fallback.pan.y }
+        : { x: 0, y: 0 };
+    const zoom = Number.isFinite(screen?.zoom) ? screen.zoom : Number.isFinite(fallback?.zoom) ? fallback.zoom : 1;
+    const designPan =
+      screen?.designPan && Number.isFinite(screen.designPan.x) && Number.isFinite(screen.designPan.y)
+        ? { x: screen.designPan.x, y: screen.designPan.y }
+        : fallback?.designPan && Number.isFinite(fallback.designPan.x) && Number.isFinite(fallback.designPan.y)
+        ? { x: fallback.designPan.x, y: fallback.designPan.y }
+        : pan;
+    const designZoom = Number.isFinite(screen?.designZoom)
+      ? screen.designZoom
+      : Number.isFinite(fallback?.designZoom)
+      ? fallback.designZoom
+      : zoom;
     return {
       id: String(screen?.id || fallback?.id || uid()),
       name,
@@ -1508,13 +1755,10 @@ export default function App() {
         : [],
       vbW: Number.isFinite(screen?.vbW) ? screen.vbW : Number.isFinite(fallback?.vbW) ? fallback.vbW : 1600,
       vbH: Number.isFinite(screen?.vbH) ? screen.vbH : Number.isFinite(fallback?.vbH) ? fallback.vbH : 900,
-      pan:
-        screen?.pan && Number.isFinite(screen.pan.x) && Number.isFinite(screen.pan.y)
-          ? { x: screen.pan.x, y: screen.pan.y }
-          : fallback?.pan && Number.isFinite(fallback.pan.x) && Number.isFinite(fallback.pan.y)
-          ? { x: fallback.pan.x, y: fallback.pan.y }
-          : { x: 0, y: 0 },
-      zoom: Number.isFinite(screen?.zoom) ? screen.zoom : Number.isFinite(fallback?.zoom) ? fallback.zoom : 1,
+      pan,
+      zoom,
+      designPan,
+      designZoom,
       showInLiveMenu:
         typeof screen?.showInLiveMenu === "boolean"
           ? screen.showInLiveMenu
@@ -1529,6 +1773,23 @@ export default function App() {
     const fallbackId = list[0]?.id || `screen-${Date.now()}`;
     const currentId = String(activeScreenIdRef.current || fallbackId);
     const currentScreen = list.find((s) => s.id === currentId) || {};
+    const isDesignMode = normalizeProjectMode(projectModeRef.current) === "design";
+    const designPan =
+      isDesignMode
+        ? (panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
+            ? { x: panRef.current.x, y: panRef.current.y }
+            : { x: 0, y: 0 })
+        : (currentScreen?.designPan && Number.isFinite(currentScreen.designPan.x) && Number.isFinite(currentScreen.designPan.y)
+            ? { x: currentScreen.designPan.x, y: currentScreen.designPan.y }
+            : (currentScreen?.pan && Number.isFinite(currentScreen.pan.x) && Number.isFinite(currentScreen.pan.y)
+                ? { x: currentScreen.pan.x, y: currentScreen.pan.y }
+                : { x: 0, y: 0 }));
+    const designZoom =
+      isDesignMode
+        ? (Number.isFinite(zoomRef.current) ? zoomRef.current : 1)
+        : (Number.isFinite(currentScreen?.designZoom)
+            ? currentScreen.designZoom
+            : (Number.isFinite(currentScreen?.zoom) ? currentScreen.zoom : 1));
     const snapshot = normalizeScreenPayload(
       {
         id: currentId,
@@ -1539,6 +1800,8 @@ export default function App() {
         vbH: vbHRef.current,
         pan: panRef.current,
         zoom: zoomRef.current,
+        designPan,
+        designZoom,
       },
       {
         ...currentScreen,
@@ -1583,6 +1846,29 @@ export default function App() {
       shapes: shapesRef.current ?? [],
       svgOverlays: overlaysRef.current ?? [],
 
+      vbW: vbWRef.current,
+      vbH: vbHRef.current,
+      pan: panRef.current,
+      zoom: zoomRef.current,
+    };
+  }
+
+  function getProjectPayloadFromRefs() {
+    const committed = commitCurrentScreenState(screensRef.current);
+    const effectiveScreenId = committed.currentId || committed.list[0]?.id || "";
+    const normalizedMenuGroups = normalizeLiveMenuGroups(liveMenuGroups, committed.list);
+    return {
+      version: 1,
+      name: projectNameRef.current || "Untitled",
+      canvasBackground: normalizeProjectCanvasBackground(projectCanvasBackgroundRef.current),
+      plcs: normalizeProjectPlcEntries(projectPlcsRef.current, { includeRawText: true }),
+      activeScreenId: effectiveScreenId,
+      projectMode: normalizeProjectMode(projectMode),
+      screens: committed.list,
+      liveMenuGroups: normalizedMenuGroups,
+      savedAt: new Date().toISOString(),
+      shapes: shapesRef.current ?? [],
+      svgOverlays: overlaysRef.current ?? [],
       vbW: vbWRef.current,
       vbH: vbHRef.current,
       pan: panRef.current,
@@ -1940,6 +2226,7 @@ export default function App() {
         const by = String(next?.updated_by_username || "").trim();
         setProjectStatus(by ? `Saved (by ${by})` : "Saved");
       }
+      clearProjectDraft(next?.id || activeProjectId);
       setShowProjectNameInput(false);
       const reload = await fetch("/api/projects");
       const payloadList = await reload.json();
@@ -1993,15 +2280,30 @@ export default function App() {
       const res = await fetch(`/api/projects/${id}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Load failed.");
-      applyProjectPayload(data?.data || {}, { projectId: data?.id || id });
+      const remoteUpdatedAtMs = data?.updated_at ? new Date(data.updated_at).getTime() : 0;
+      const localDraft = readProjectDraft(data?.id || id);
+      const localDraftPayload =
+        localDraft && localDraft.payload && typeof localDraft.payload === "object"
+          ? localDraft.payload
+          : null;
+      const useLocalDraft =
+        !!localDraftPayload &&
+        Number(localDraft?.savedAt || 0) > Math.max(0, Number(remoteUpdatedAtMs || 0));
+      applyProjectPayload(useLocalDraft ? localDraftPayload : data?.data || {}, { projectId: data?.id || id });
       setProjectName(data?.name || "Untitled");
       setActiveProjectId(data?.id || "");
       setActiveProjectUpdatedAt(String(data?.updated_at || ""));
       setActiveProjectUpdatedBy(String(data?.updated_by_username || ""));
-      lastProjectSignatureRef.current = projectPayloadSignature(data?.data || {});
+      lastProjectSignatureRef.current = projectPayloadSignature(
+        useLocalDraft ? localDraftPayload : data?.data || {}
+      );
       projectHandleRef.current = null;
       const by = String(data?.updated_by_username || "").trim();
-      setProjectStatus(by ? `Loaded (last update by ${by})` : "Loaded");
+      if (useLocalDraft) {
+        setProjectStatus("Loaded local draft");
+      } else {
+        setProjectStatus(by ? `Loaded (last update by ${by})` : "Loaded");
+      }
       setShowProjectNameInput(false);
     } catch (err) {
       setProjectStatus(err?.message || "Load failed.");
@@ -2016,6 +2318,7 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Delete failed.");
       setProjects((prev) => prev.filter((p) => p.id !== id));
+      clearProjectDraft(id);
       if (activeProjectId === id) setActiveProjectId("");
       setProjectStatus("Deleted");
     } catch (err) {
@@ -2142,7 +2445,7 @@ export default function App() {
         // ignore sync failures
       }
     }
-    const id = setInterval(pollProject, isPageVisible ? 3000 : 12000);
+    const id = setInterval(pollProject, isPageVisible ? 8000 : 20000);
     return () => {
       alive = false;
       clearInterval(id);
@@ -2156,7 +2459,7 @@ export default function App() {
       if (!sig) return;
       if (sig === lastProjectSignatureRef.current) return;
       saveProjectToDb({ silent: true });
-    }, 2500);
+    }, 5000);
     return () => clearInterval(id);
   }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible, projectNameEditing]);
 
@@ -2179,7 +2482,7 @@ export default function App() {
       }
     }
     pollCursors();
-    const id = setInterval(pollCursors, isPageVisible ? 1000 : 5000);
+    const id = setInterval(pollCursors, isPageVisible ? 2500 : 8000);
     return () => {
       alive = false;
       clearInterval(id);
@@ -2334,9 +2637,14 @@ export default function App() {
     x: 16,
     y: TOP_BAR_H + RULER_SIZE + 140,
   });
+  const [isAppFullscreen, setIsAppFullscreen] = useState(() => {
+    if (typeof document === "undefined") return false;
+    return Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+  });
   const zoomDragRef = useRef({ dragging: false, ox: 0, oy: 0, panelW: 64, panelH: 240 });
   const zoomPosRef = useRef(zoomPos);
   const zoomPanelRef = useRef(null);
+  const canvasViewportSizeRef = useRef({ w: 0, h: 0 });
   const [showHUD, setShowHUD] = useState(false);
   const [showMainDrawer, setShowMainDrawer] = useState(false);
   const [drawerView, setDrawerView] = useState("ai");
@@ -2506,33 +2814,68 @@ export default function App() {
   }, [mainDrawerFullscreen, userDrawerFullscreen, projectDrawerFullscreen]);
 
   useEffect(() => {
-    const fitToViewport = () => {
+    const captureInitialSize = () => {
       const el = svgRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const viewW = Math.max(1, Number(rect.width) || 0);
-      const viewH = Math.max(1, Number(rect.height) || 0);
-      const worldW = Math.max(1, Number(vbW) || 0);
-      const worldH = Math.max(1, Number(vbH) || 0);
-      const nextZoom = clampZoom(Math.min(viewW / worldW, viewH / worldH));
-      const nextPan = {
-        x: (viewW - worldW * nextZoom) / 2,
-        y: (viewH - worldH * nextZoom) / 2,
+      canvasViewportSizeRef.current = {
+        w: Math.max(1, Number(rect.width) || 0),
+        h: Math.max(1, Number(rect.height) || 0),
       };
-      setZoom(nextZoom);
+    };
+
+    const keepViewportCenterStable = () => {
+      const el = svgRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const nextW = Math.max(1, Number(rect.width) || 0);
+      const nextH = Math.max(1, Number(rect.height) || 0);
+      const prevW = Math.max(1, Number(canvasViewportSizeRef.current?.w) || nextW);
+      const prevH = Math.max(1, Number(canvasViewportSizeRef.current?.h) || nextH);
+      const z = Math.max(0.0001, Number(zoomRef.current) || 1);
+      const p = panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
+        ? panRef.current
+        : { x: 0, y: 0 };
+      const worldCx = (prevW / 2 - p.x) / z;
+      const worldCy = (prevH / 2 - p.y) / z;
+      const nextPan = {
+        x: nextW / 2 - worldCx * z,
+        y: nextH / 2 - worldCy * z,
+      };
+      canvasViewportSizeRef.current = { w: nextW, h: nextH };
       setPan(nextPan);
     };
-    const onResizeFit = () => {
-      window.requestAnimationFrame(fitToViewport);
+
+    captureInitialSize();
+    const onResize = () => window.requestAnimationFrame(keepViewportCenterStable);
+    window.addEventListener("resize", onResize);
+    document.addEventListener("fullscreenchange", onResize);
+    document.addEventListener("webkitfullscreenchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("fullscreenchange", onResize);
+      document.removeEventListener("webkitfullscreenchange", onResize);
     };
-    window.addEventListener("resize", onResizeFit);
-    return () => window.removeEventListener("resize", onResizeFit);
-  }, [vbW, vbH]);
+  }, []);
 
   const [altDown, setAltDown] = useState(false);
   useEffect(() => {
     zoomPosRef.current = zoomPos;
   }, [zoomPos]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const syncFullscreenState = () => {
+      setIsAppFullscreen(Boolean(document.fullscreenElement || document.webkitFullscreenElement));
+    };
+    syncFullscreenState();
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenState);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+      document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
+    };
+  }, []);
 
   useEffect(() => {
     function onMove(e) {
@@ -2616,6 +2959,28 @@ export default function App() {
 
   function openDrawer(view, options = {}) {
     const next = view || "ai";
+    const areaForView =
+      next === "plc"
+        ? "plc"
+        : next === "opc" || next === "logs" || next === "diagnostics"
+        ? "opc"
+        : next === "tags"
+        ? "tags"
+        : next === "server"
+        ? "server"
+        : next === "database"
+        ? "database"
+        : next === "reports"
+        ? "reports"
+        : next === "ai"
+        ? "ai"
+        : next === "help"
+        ? "help"
+        : "";
+    if (areaForView && !canViewArea(areaForView)) {
+      toastError("You do not have permission to open this page.");
+      return;
+    }
     setMainDrawerFullscreen(false);
     setDrawerView(next);
     if (next === "database") {
@@ -2708,6 +3073,24 @@ export default function App() {
     }
   }, [theme]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(SHOW_GRID_KEY, showGrid ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [showGrid]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(SHOW_TAG_PATHS_KEY, showTagPaths ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [showTagPaths]);
+
   const avatarLabel = useMemo(() => {
     const name = String(user?.display_name || user?.username || "").trim();
     if (!name) return "U";
@@ -2728,6 +3111,10 @@ export default function App() {
     if (!hasUserPermissions) return true;
     return Boolean(user?.permissions?.[areaKey]?.can_view || user?.permissions?.[areaKey]?.can_edit);
   };
+  const canViewScreenPages = canViewArea("project");
+  const canViewDataPages = canViewArea("database");
+  const canAccessLiveMenuItem = (item) =>
+    String(item?.type || "").toLowerCase() === "data" ? canViewDataPages : canViewScreenPages;
 
 
   // ✅ ZOOM (main svg)
@@ -3005,6 +3392,30 @@ export default function App() {
   }
   function zoomReset() {
     resetZoomToActual100();
+  }
+
+  async function toggleAppFullscreen() {
+    if (typeof document === "undefined") return;
+    const doc = document;
+    const root = doc.documentElement;
+    const active = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+    try {
+      if (active) {
+        if (typeof doc.exitFullscreen === "function") {
+          await doc.exitFullscreen();
+        } else if (typeof doc.webkitExitFullscreen === "function") {
+          doc.webkitExitFullscreen();
+        }
+      } else if (root) {
+        if (typeof root.requestFullscreen === "function") {
+          await root.requestFullscreen();
+        } else if (typeof root.webkitRequestFullscreen === "function") {
+          root.webkitRequestFullscreen();
+        }
+      }
+    } catch {
+      // ignore fullscreen errors (browser/user policy)
+    }
   }
 
   async function onPickProjectFile(e) {
@@ -3295,7 +3706,16 @@ export default function App() {
 
 
   function resetView() {
-    resetZoomToActual100();
+    const activeId = String(activeScreenIdRef.current || "");
+    const sourceScreens = Array.isArray(screensRef.current) ? screensRef.current : [];
+    const active = sourceScreens.find((s) => String(s?.id || "") === activeId) || sourceScreens[0] || null;
+    const next = normalizeScreenPayload(active || {}, { id: activeId || "screen-1", name: screenNameRef.current || "Screen 1" });
+    setZoom(Number.isFinite(next.designZoom) ? next.designZoom : 1);
+    setPan(
+      next.designPan && Number.isFinite(next.designPan.x) && Number.isFinite(next.designPan.y)
+        ? { x: next.designPan.x, y: next.designPan.y }
+        : { x: 0, y: 0 }
+    );
   }
 
   function rectsIntersect(a, b) {
@@ -3304,18 +3724,19 @@ export default function App() {
 
   // ✅ Mouse wheel zoom handler
   function onWheelZoom(e) {
-    e.preventDefault();
-
-    // Zoom wins first
-    if (e.ctrlKey || e.metaKey) {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const dir = e.deltaY < 0 ? 1 : -1;
-        setZoom((z) => clampZoom(dir > 0 ? z * ZOOM_STEP : z / ZOOM_STEP));
-        return;
-      }
+    const target = e.target;
+    const interactiveSelector =
+      "[data-widget-control='true'],button,input,select,textarea,label,option";
+    if (target && typeof target.closest === "function" && target.closest(interactiveSelector)) {
       return;
     }
+
+    // Ctrl/Cmd + wheel is handled globally in capture phase.
+    if (e.ctrlKey || e.metaKey) {
+      return;
+    }
+
+    e.preventDefault();
 
     const factor = e.deltaMode === 1 ? 20 : 1; // line → px
 
@@ -3336,6 +3757,48 @@ export default function App() {
       y: p.y - dy * PAN_SPEED,
     }));
   };
+
+  useEffect(() => {
+    const isMac = navigator.platform.toLowerCase().includes("mac");
+    const isCanvasTarget = (target) =>
+      !!(target && typeof target.closest === "function" && target.closest("[data-canvas-zoom-root='true']"));
+
+    const onWheelBlockPageZoom = (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      if (!isCanvasTarget(e.target)) return;
+      const direction = e.deltaY < 0 ? 1 : -1;
+      const factor = direction > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      setZoom((z) => clampZoom(+(z * factor).toFixed(4)));
+    };
+
+    const onKeyDownBlockPageZoom = (e) => {
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) return;
+      const k = String(e.key || "").toLowerCase();
+      if (!["=", "+", "-", "_", "0"].includes(k)) return;
+      if (isCanvasTarget(e.target)) return;
+      e.preventDefault();
+    };
+
+    const onGestureBlockPageZoom = (e) => {
+      if (isCanvasTarget(e.target)) return;
+      e.preventDefault();
+    };
+
+    window.addEventListener("wheel", onWheelBlockPageZoom, { passive: false, capture: true });
+    window.addEventListener("keydown", onKeyDownBlockPageZoom, true);
+    window.addEventListener("gesturestart", onGestureBlockPageZoom, { passive: false, capture: true });
+    window.addEventListener("gesturechange", onGestureBlockPageZoom, { passive: false, capture: true });
+    window.addEventListener("gestureend", onGestureBlockPageZoom, { passive: false, capture: true });
+    return () => {
+      window.removeEventListener("wheel", onWheelBlockPageZoom, true);
+      window.removeEventListener("keydown", onKeyDownBlockPageZoom, true);
+      window.removeEventListener("gesturestart", onGestureBlockPageZoom, true);
+      window.removeEventListener("gesturechange", onGestureBlockPageZoom, true);
+      window.removeEventListener("gestureend", onGestureBlockPageZoom, true);
+    };
+  }, []);
 
 
 
@@ -3389,14 +3852,42 @@ export default function App() {
     return map;
   }, [generatedSvgs]);
 
+  const svgCatalogMap = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(svgCatalogFiles) ? svgCatalogFiles : []).forEach((f) => {
+      const key = String(f?.key || "").trim();
+      if (!key) return;
+      map.set(key, {
+        key,
+        name: String(f?.name || key.split("/").pop() || key).trim(),
+        url: String(f?.url || "").trim(),
+      });
+    });
+    return map;
+  }, [svgCatalogFiles]);
+
+  const svgLibraryMap = useMemo(() => {
+    const obj = {};
+    svgCatalogMap.forEach((value, key) => {
+      obj[key] = value.url;
+    });
+    generatedSvgMap.forEach((raw, key) => {
+      obj[key] = raw;
+    });
+    return obj;
+  }, [svgCatalogMap, generatedSvgMap]);
+
   const svgFiles = useMemo(() => {
-    const base = Object.keys(SVG_LIBRARY).map((k) => ({ key: k, name: k.split("/").pop() || k }));
+    const base = Array.from(svgCatalogMap.values()).map((entry) => ({
+      key: entry.key,
+      name: entry.name || entry.key.split("/").pop() || entry.key,
+    }));
     const generated = generatedSvgs.map((g) => ({
       key: g.key,
       name: g.name || g.key.split("/").pop() || g.key,
     }));
     return [...base, ...generated].sort((a, b) => a.name.localeCompare(b.name));
-  }, [generatedSvgs]);
+  }, [generatedSvgs, svgCatalogMap]);
 
   const aiSvgCatalog = useMemo(() => {
     return (Array.isArray(svgFiles) ? svgFiles : [])
@@ -3602,8 +4093,8 @@ export default function App() {
     setSelectedIds([id]);
     setSelectedOverlayIds([]);
     setEditingId(null);
+    setInlineEdit({ id, value: String(t.text || ""), kind: "shape" });
     setShowHUD(false);
-    scheduleProjectAutoSave();
   }
 
   function startRectAt(p) {
@@ -3743,7 +4234,7 @@ export default function App() {
 
   function getSvgEntry(fileKey) {
     if (generatedSvgMap.has(fileKey)) return generatedSvgMap.get(fileKey);
-    return SVG_LIBRARY[fileKey];
+    return svgCatalogMap.get(fileKey)?.url || null;
   }
 
   function cacheSvgRawByUrl(url, raw) {
@@ -3790,7 +4281,7 @@ export default function App() {
     const base = clean.toLowerCase().endsWith(".svg") ? clean : `${clean}.svg`;
     let key = `__generated__/${base}`;
     let i = 2;
-    while (generatedSvgMap.has(key) || Object.prototype.hasOwnProperty.call(SVG_LIBRARY, key)) {
+    while (generatedSvgMap.has(key) || svgCatalogMap.has(key)) {
       const stem = base.replace(/\.svg$/i, "");
       key = `__generated__/${stem}-${i}.svg`;
       i += 1;
@@ -4512,9 +5003,8 @@ export default function App() {
       setSelectedIds([id]);
       setSelectedOverlayIds([]);
       setEditingId(null);
-      setInlineEdit(null);
-      setPanelCursor({ x: e.clientX, y: e.clientY });
-      setShowHUD(true);
+      setInlineEdit({ id, value: String(s.text || ""), kind: "shape" });
+      setShowHUD(false);
       return;
     }
 
@@ -4683,9 +5173,16 @@ export default function App() {
     if (tool !== "select") return;
     e.stopPropagation();
     e.preventDefault();
+    const overlay = svgOverlays.find((x) => x.id === id);
+    const firstText = overlay && !overlay.widget ? readFirstInnerSvgText(overlay.inner) : null;
     setSelectedOverlayIds([id]);
     setSelectedIds([]);
     setEditingId(null);
+    if (firstText != null) {
+      setInlineEdit({ id, value: firstText, kind: "overlay" });
+      setShowHUD(false);
+      return;
+    }
     setInlineEdit(null);
     setPanelCursor({ x: e.clientX, y: e.clientY });
     setShowHUD(true);
@@ -4852,6 +5349,7 @@ export default function App() {
     // ✅ bbox must be in the SAME local coordinate system the overlay uses
     const bbox = { x: localVb.x, y: localVb.y, width: localVb.w, height: localVb.h };
 
+    const normalizedInner = inner;
     const id = uid();
     setSvgOverlays((prev) => [
       ...prev,
@@ -4859,15 +5357,16 @@ export default function App() {
         id,
         sourceKey: fileKey,
         name: fileKey.split("/").pop() || fileKey,
-        inner,
+        inner: normalizedInner,
         tx,
         ty,
         scale,
         fill: DEFAULT_FILL,
-        stroke: DEFAULT_STROKE,
         tagPath: "",
         bbox,
         ...overlayExtras,
+        stroke: DEFAULT_STROKE,
+        strokeMode: "preserve",
       },
     ]);
 
@@ -4902,6 +5401,150 @@ export default function App() {
       return { ok: false, error: String(err?.message || "Failed to add SVG.") };
     }
   }
+
+  function resolveSvgSelection(rawSelection) {
+    const selected = String(rawSelection || "").trim();
+    if (!selected) return null;
+    const entries = Array.isArray(svgFiles) ? svgFiles : [];
+    const byExactKey = entries.find(
+      (file) => String(file?.key || "").trim().toLowerCase() === selected.toLowerCase()
+    );
+    const byName = entries.find(
+      (file) => String(file?.name || "").trim().toLowerCase() === selected.toLowerCase()
+    );
+    const match = byExactKey || byName || null;
+    if (!match?.key) return null;
+    return {
+      key: String(match.key),
+      name: String(match.name || match.key.split("/").pop() || match.key),
+    };
+  }
+
+  async function applyAiTagSvgBatchPlan(payload) {
+    const source = payload && typeof payload === "object" ? payload : {};
+    const incomingTags = Array.isArray(source.tags) ? source.tags : [];
+    const incomingItems = Array.isArray(source.items) ? source.items : [];
+    const normalizedItems = [];
+    const pushItem = (row, idx) => {
+      const rawTagPath = normalizeTagValue(
+        row?.tagPath || row?.tag || row?.name || incomingTags[idx] || ""
+      );
+      if (!rawTagPath) return;
+      const rawSvg = String(row?.svgKey || row?.svgName || source?.svgKey || source?.svgName || "").trim();
+      const choice = resolveSvgSelection(rawSvg);
+      if (!choice) return;
+      const label = String(row?.label || row?.name || rawTagPath).trim() || `Tag ${idx + 1}`;
+      normalizedItems.push({
+        tagPath: rawTagPath,
+        label,
+        svgKey: choice.key,
+      });
+    };
+
+    if (incomingItems.length) {
+      incomingItems.forEach((row, idx) => pushItem(row, idx));
+    } else {
+      incomingTags.forEach((tag, idx) =>
+        pushItem({ tagPath: tag, name: String(tag || "").trim() }, idx)
+      );
+    }
+    if (!normalizedItems.length) {
+      throw new Error("No valid tags or SVG selection provided.");
+    }
+
+    const layout = source.layout && typeof source.layout === "object" ? source.layout : {};
+    const count = normalizedItems.length;
+    const columns = Math.max(
+      1,
+      Math.min(
+        count,
+        Number.isFinite(Number(layout.columns))
+          ? Math.floor(Number(layout.columns))
+          : Math.ceil(Math.sqrt(count))
+      )
+    );
+    const cellW = Math.max(50, Number(layout.cellW) || Number(layout.targetW) || 120);
+    const cellH = Math.max(40, Number(layout.cellH) || Math.round(cellW * 0.92));
+    const gapX = Math.max(0, Number(layout.gapX) || 24);
+    const gapY = Math.max(0, Number(layout.gapY) || 24);
+    const rows = Math.max(1, Math.ceil(count / columns));
+    const totalW = columns * cellW + Math.max(0, columns - 1) * gapX;
+    const totalH = rows * cellH + Math.max(0, rows - 1) * gapY;
+    const startX = Number.isFinite(Number(layout.startX))
+      ? Number(layout.startX)
+      : Math.max(8, Math.round((vbW - totalW) / 2));
+    const startY = Number.isFinite(Number(layout.startY))
+      ? Number(layout.startY)
+      : Math.max(8, Math.round((vbH - totalH) / 2));
+
+    const overlays = (
+      await Promise.all(
+        normalizedItems.map(async (item, idx) => {
+          const col = idx % columns;
+          const row = Math.floor(idx / columns);
+          const center = {
+            x: startX + col * (cellW + gapX) + cellW / 2,
+            y: startY + row * (cellH + gapY) + cellH / 2,
+          };
+          const overlay = await buildOverlayFromKey(item.svgKey, center, cellW);
+          return {
+            ...overlay,
+            name: item.label || overlay.name,
+            tagPath: item.tagPath,
+          };
+        })
+      )
+    ).filter(Boolean);
+
+    if (!overlays.length) throw new Error("No overlays could be created.");
+
+    pushHistory();
+    setSvgOverlays((prev) => [...prev, ...overlays]);
+    setSelectedIds([]);
+    setSelectedOverlayIds(overlays.map((o) => o.id));
+    setTool("select");
+    setDrawing(null);
+    setShowHUD(false);
+    scheduleProjectAutoSave();
+    return { count: overlays.length };
+  }
+
+  useEffect(() => {
+    const onAiMessage = (event) => {
+      if (event?.origin !== window.location.origin) return;
+      const data = event?.data && typeof event.data === "object" ? event.data : null;
+      if (!data || data.type !== "vizi.ai.add-tag-svgs") return;
+      const requestId = String(data.requestId || "");
+      Promise.resolve(applyAiTagSvgBatchPlan(data.payload || {}))
+        .then((result) => {
+          try {
+            event.source?.postMessage(
+              { type: "vizi.ai.add-tag-svgs:result", requestId, ok: true, result },
+              event.origin || window.location.origin
+            );
+          } catch {
+            // ignore postMessage response failures
+          }
+        })
+        .catch((err) => {
+          try {
+            event.source?.postMessage(
+              {
+                type: "vizi.ai.add-tag-svgs:result",
+                requestId,
+                ok: false,
+                error: String(err?.message || "Failed to add SVG tags."),
+              },
+              event.origin || window.location.origin
+            );
+          } catch {
+            // ignore postMessage response failures
+          }
+        });
+    };
+    window.addEventListener("message", onAiMessage);
+    return () => window.removeEventListener("message", onAiMessage);
+  }, [applyAiTagSvgBatchPlan]);
 
   function finishRectDrawing(rectId) {
     if (!rectId) return;
@@ -5610,7 +6253,7 @@ export default function App() {
     } else if (singleKind === "SVG") {
       setSvgOverlays((prev) =>
         prev.map((o) =>
-          o.id === singleId ? { ...o, stroke: c, inner: updateSvgInnerStroke(o.inner, c) } : o
+          o.id === singleId ? { ...o, stroke: c, strokeMode: "force" } : o
         )
       );
     }
@@ -5796,9 +6439,22 @@ export default function App() {
     }
   }
 
+  function toggleProjectModeShortcut() {
+    let nextMode = normalizeProjectMode(projectMode);
+    setProjectMode((prev) => {
+      nextMode = prev === "live" ? "design" : "live";
+      return nextMode;
+    });
+    setProjectModeDraft(nextMode);
+    setProjectStatus(nextMode === "live" ? "Switched to Live mode" : "Switched to Design mode");
+    scheduleProjectAutoSave(120);
+  }
+
   // ---------- Mouse / Keyboard ----------
   useKeyboardShortcuts({
     disabled: isLiveMode,
+    allowModeToggleWhenDisabled: true,
+    toggleProjectMode: toggleProjectModeShortcut,
     drawing,
     editingId,
     importOpen,
@@ -5835,7 +6491,22 @@ export default function App() {
   useEffect(() => {
     if (isLiveMode) return;
     setLiveEquipmentOverlayIds([]);
+    setLiveEquipmentDrawerOverlayId("");
   }, [isLiveMode]);
+
+  useEffect(() => {
+    const id = String(liveEquipmentDrawerOverlayId || "").trim();
+    if (!id) return;
+    const exists = liveEquipmentOverlays.some(
+      (entry) => String(entry?.overlay?.id || "") === id
+    );
+    if (!exists) setLiveEquipmentDrawerOverlayId("");
+  }, [liveEquipmentDrawerOverlayId, liveEquipmentOverlays]);
+
+  useEffect(() => {
+    if (!isLiveMode) return;
+    if (projectDrawerTab !== "project") setProjectDrawerTab("project");
+  }, [isLiveMode, projectDrawerTab]);
 
   function onLiveOverlayMouseDown(e, id) {
     e.stopPropagation();
@@ -5844,6 +6515,7 @@ export default function App() {
     if (!nextId) return;
     setLiveEquipmentOverlayIds((prev) => {
       const list = Array.isArray(prev) ? prev : [];
+      if (list.some((x) => String(x || "") === nextId)) return list;
       const without = list.filter((x) => String(x || "") !== nextId);
       return [...without, nextId];
     });
@@ -5852,15 +6524,62 @@ export default function App() {
   function closeLiveEquipmentCard(id) {
     const nextId = String(id || "").trim();
     if (!nextId) return;
+    if (String(liveEquipmentDrawerOverlayId || "") === nextId) {
+      setLiveEquipmentDrawerOverlayId("");
+    }
     setLiveEquipmentOverlayIds((prev) => (Array.isArray(prev) ? prev.filter((x) => String(x || "") !== nextId) : []));
   }
 
+  function onLiveEquipmentDockScroll() {
+    if (liveEquipmentDockScrollRafRef.current) return;
+    liveEquipmentDockScrollRafRef.current = window.requestAnimationFrame(() => {
+      liveEquipmentDockScrollRafRef.current = 0;
+      setLiveEquipmentDockTick((v) => v + 1);
+    });
+  }
+
+  useEffect(
+    () => () => {
+      if (liveEquipmentDockScrollRafRef.current) {
+        window.cancelAnimationFrame(liveEquipmentDockScrollRafRef.current);
+        liveEquipmentDockScrollRafRef.current = 0;
+      }
+    },
+    []
+  );
+
   useEffect(() => {
-    if (!isLiveMode || !liveEquipmentOverlays.length) return undefined;
+    if (!isLiveMode || !liveEquipmentDockEntries.length) return undefined;
     const onResize = () => setLiveEquipmentDockTick((v) => v + 1);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [isLiveMode, liveEquipmentOverlays.length]);
+  }, [isLiveMode, liveEquipmentDockEntries.length]);
+
+  useEffect(() => {
+    const isTypingTarget = (target) => {
+      if (!target) return false;
+      const tag = String(target.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || target.isContentEditable;
+    };
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      if (isTypingTarget(e.target)) return;
+      if (!isLiveMode) return;
+      if (!liveEquipmentOverlayIds.length && !String(liveEquipmentDrawerOverlayId || "").trim()) return;
+      e.preventDefault();
+      if (String(liveEquipmentDrawerOverlayId || "").trim()) {
+        setLiveEquipmentDrawerOverlayId("");
+        return;
+      }
+      setLiveEquipmentOverlayIds((prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        if (!list.length) return list;
+        return list.slice(0, -1);
+      });
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [isLiveMode, liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId]);
 
   function onSvgMouseDown(e) {
     if (e.button === 2) return;
@@ -6562,6 +7281,26 @@ export default function App() {
 
   const inlineEditPos = useMemo(() => {
     if (!inlineEdit?.id || !svgRef.current) return null;
+    if (inlineEdit?.kind === "overlay") {
+      const o = svgOverlays.find((x) => x.id === inlineEdit.id);
+      if (!o) return null;
+      const bb = overlayLocalBBox(o.id);
+      if (!bb) return null;
+      const wr = overlayWorldRect(o, bb);
+      const rect = svgRef.current.getBoundingClientRect();
+      const z = zoom || 1;
+      const x = rect.left + (pan?.x || 0) + Number(wr.x || 0) * z;
+      const y = rect.top + (pan?.y || 0) + Number(wr.y || 0) * z;
+      const estW = Math.max(140, Number(wr.w || 0) * z - 8);
+      return {
+        x: x + 4,
+        y: y + 4,
+        fontSize: Math.max(12, 18 * z),
+        fontFamily: "system-ui",
+        fontWeight: "500",
+        width: estW,
+      };
+    }
     const s = shapes.find((x) => x.id === inlineEdit.id);
     if (!s) return null;
     const rect = svgRef.current.getBoundingClientRect();
@@ -6576,7 +7315,7 @@ export default function App() {
     const estW = Math.max(10, text.length * Number(s.fontSize ?? 24) * 0.6 * z);
     const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
     return { x: x + ax, y: y + 2, fontSize, fontFamily, fontWeight, width: Math.max(120, estW + 12) };
-  }, [inlineEdit?.id, shapes, pan, zoom]);
+  }, [inlineEdit?.id, inlineEdit?.kind, shapes, svgOverlays, pan, zoom]);
 
   const panelAnchor = useMemo(() => {
     if (!selectedBBox || !svgRef.current) return null;
@@ -6723,6 +7462,16 @@ export default function App() {
     () => normalizeLiveMenuGroups(liveMenuGroups, screens),
     [liveMenuGroups, screens]
   );
+  const liveMenuGroupsVisible = useMemo(
+    () =>
+      (Array.isArray(liveMenuGroupsForRender) ? liveMenuGroupsForRender : [])
+        .map((group) => ({
+          ...group,
+          items: (Array.isArray(group?.items) ? group.items : []).filter((item) => canAccessLiveMenuItem(item)),
+        }))
+        .filter((group) => group.items.length > 0),
+    [liveMenuGroupsForRender, canViewScreenPages, canViewDataPages]
+  );
   const activeDatabaseTable = useMemo(() => {
     const raw = String(databaseEmbeddedPath || "").trim();
     if (!raw) return "";
@@ -6734,7 +7483,7 @@ export default function App() {
   const activeMenuLabel = useMemo(() => {
     const fallback = activeScreen?.name || screenName || "None";
     if (!isLiveMode) return fallback;
-    for (const group of liveMenuGroupsForRender) {
+    for (const group of liveMenuGroupsVisible) {
       const items = Array.isArray(group?.items) ? group.items : [];
       for (const item of items) {
         const isData = item?.type === "data";
@@ -6760,18 +7509,35 @@ export default function App() {
     activeScreenId,
     drawerView,
     isLiveMode,
-    liveMenuGroupsForRender,
+    liveMenuGroupsVisible,
     screenName,
     screens,
     showMainDrawer,
   ]);
 
   useEffect(() => {
-    const valid = new Set(liveMenuGroupsForRender.map((group) => String(group.id || "")));
+    const valid = new Set(liveMenuGroupsVisible.map((group) => String(group.id || "")));
     setCollapsedLiveGroupIds((prev) =>
       (Array.isArray(prev) ? prev : []).filter((id) => valid.has(String(id || "")))
     );
-  }, [liveMenuGroupsForRender]);
+  }, [liveMenuGroupsVisible]);
+
+  useEffect(() => {
+    if (!showMainDrawer) return;
+    if (
+      (drawerView === "database" && !canViewDataPages) ||
+      (drawerView === "plc" && !canViewArea("plc")) ||
+      ((drawerView === "opc" || drawerView === "logs" || drawerView === "diagnostics") &&
+        !canViewArea("opc")) ||
+      (drawerView === "tags" && !canViewArea("tags")) ||
+      (drawerView === "server" && !canViewArea("server")) ||
+      (drawerView === "reports" && !canViewArea("reports")) ||
+      (drawerView === "ai" && !canViewArea("ai")) ||
+      (drawerView === "help" && !canViewArea("help"))
+    ) {
+      setShowMainDrawer(false);
+    }
+  }, [showMainDrawer, drawerView, canViewDataPages, hasUserPermissions, user]);
 
   function switchToScreen(nextScreenId) {
     const committed = commitCurrentScreenState(screens);
@@ -7062,6 +7828,10 @@ export default function App() {
 
   function activateLiveMenuItem(item) {
     if (!item || typeof item !== "object") return;
+    if (!canAccessLiveMenuItem(item)) {
+      toastError("You do not have permission to open this page.");
+      return;
+    }
     if (item.type === "data") {
       const table = String(item.dataTable || "").trim();
       if (table) {
@@ -7101,11 +7871,18 @@ export default function App() {
   const projectDrawerInset = `${projectDrawerInsetPx}px`;
   const liveMenuIsExpanded = !liveMenuCollapsed;
   const liveMenuRailWidthPx = isLiveMode ? (liveMenuIsExpanded ? 248 : 72) : 0;
-  const canvasLeftInsetPx = projectDrawerInsetPx + liveMenuRailWidthPx;
+  const liveCanvasMenuGapPx = isLiveMode ? 10 : 0;
+  const liveEquipmentDrawerWidthPx =
+    isLiveMode && liveEquipmentDrawerEntry ? 360 : 0;
+  const canvasLeftInsetBasePx =
+    projectDrawerInsetPx + liveMenuRailWidthPx + liveEquipmentDrawerWidthPx;
+  const canvasLeftInsetPx = canvasLeftInsetBasePx + liveCanvasMenuGapPx;
   const mainDrawerAppendFromLeft =
     isLiveMode && drawerView === "database" && databaseDataOnlyMode;
-  const mainDrawerAppendLeftPx = projectDrawerInsetPx + liveMenuRailWidthPx;
+  const mainDrawerAppendLeftPx =
+    projectDrawerInsetPx + liveMenuRailWidthPx + liveEquipmentDrawerWidthPx;
   const liveAlarmBarOffset = isLiveMode ? LIVE_ALARM_BAR_H : 0;
+  const previousCanvasLeftInsetRef = useRef(canvasLeftInsetBasePx);
   const [liveAlarmOccurredAtById, setLiveAlarmOccurredAtById] = useState({});
   const liveActiveAlarmsWithOccurred = useMemo(
     () =>
@@ -7132,6 +7909,13 @@ export default function App() {
   }, [liveActiveAlarmsWithOccurred]);
   const liveAlarmMarqueeDurationSec = LIVE_ALARM_MARQUEE_DURATION_SEC;
   const useLightLiveDataSurface = isLiveMode && databaseDataOnlyMode && theme !== "dark";
+  const projectDrawerTabs = isLiveMode
+    ? [{ key: "project", label: "Project", title: "Project Settings" }]
+    : [
+        { key: "project", label: "Project", title: "Project Settings" },
+        { key: "menu", label: "Menu", title: "Menu Config" },
+        { key: "screens", label: "Screens", title: "Manage Screens" },
+      ];
 
   useEffect(() => {
     const activeIds = new Set((liveActiveAlarms || []).map((a) => String(a?.id || "")).filter(Boolean));
@@ -7152,6 +7936,18 @@ export default function App() {
       return next;
     });
   }, [liveActiveAlarms]);
+
+  useEffect(() => {
+    const prev = Number(previousCanvasLeftInsetRef.current || 0);
+    const next = Number(canvasLeftInsetBasePx || 0);
+    const dx = next - prev;
+    previousCanvasLeftInsetRef.current = next;
+    if (!Number.isFinite(dx) || Math.abs(dx) < 0.01) return;
+    setPan((p) => ({
+      x: Number((p?.x || 0) + dx),
+      y: Number(p?.y || 0),
+    }));
+  }, [canvasLeftInsetBasePx]);
 
   return (
     <div
@@ -7244,7 +8040,7 @@ export default function App() {
         importOpen={importOpen}
         setImportOpen={setImportOpen}
         svgFiles={svgFiles}
-        svgLibrary={SVG_LIBRARY}
+        svgLibrary={svgLibraryMap}
         loadSvgRaw={readSvgRawByKey}
         onPickSvg={onPickSvg}
       />
@@ -7316,11 +8112,107 @@ export default function App() {
         collaboratorCursors={projectCursors}
       />
 
-      {isLiveMode && liveEquipmentOverlays.length > 0 ? (
+      {isLiveMode && liveEquipmentDrawerEntry ? (
         <div
           style={{
             position: "fixed",
-            left: projectDrawerInsetPx + liveMenuRailWidthPx + 10,
+            left: projectDrawerInsetPx + liveMenuRailWidthPx + 8,
+            top: TOP_BAR_H + liveAlarmBarOffset + 8,
+            bottom: 8,
+            width: liveEquipmentDrawerWidthPx - 16,
+            zIndex: 208,
+            pointerEvents: "auto",
+            border: "1px solid var(--border)",
+            borderRadius: 12,
+            background: "var(--bg-elev)",
+            boxShadow: "0 16px 32px rgba(2,8,23,0.22)",
+            display: "grid",
+            gridTemplateRows: "auto auto 1fr",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              padding: "10px 10px 8px",
+              borderBottom: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+              {String(liveEquipmentDrawerEntry.overlay?.name || "Equipment")}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <button
+                onClick={() => setLiveEquipmentDrawerOverlayId("")}
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  borderRadius: 7,
+                  padding: "2px 8px",
+                  cursor: "pointer",
+                  color: "var(--text)",
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+                title="Return to bottom dock"
+              >
+                Dock
+              </button>
+              <button
+                onClick={() => closeLiveEquipmentCard(liveEquipmentDrawerEntry.overlay?.id)}
+                style={{
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  borderRadius: 7,
+                  padding: "2px 6px",
+                  cursor: "pointer",
+                  color: "var(--text)",
+                  fontSize: 11,
+                }}
+                aria-label="Close equipment info"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+          <div style={{ padding: "8px 10px 0", display: "grid", gap: 4 }}>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Tag Path: {String(liveEquipmentDrawerEntry.overlay?.tagPath || "-")}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Overlay ID: {String(liveEquipmentDrawerEntry.overlay?.id || "-")}
+            </div>
+          </div>
+          <div className="vizi-scroll" style={{ overflow: "auto", padding: "8px 10px 10px", display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
+            {Array.isArray(liveEquipmentDrawerEntry.details) &&
+            liveEquipmentDrawerEntry.details.length ? (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 10px", fontSize: 11 }}>
+                {liveEquipmentDrawerEntry.details.map((row, idx) => (
+                  <Fragment key={`live-equipment-drawer-row-${liveEquipmentDrawerEntry.overlay?.id}-${idx}`}>
+                    <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
+                    <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
+                  </Fragment>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                No live values found for this equipment.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {isLiveMode && liveEquipmentDockEntries.length > 0 ? (
+        <div
+          style={{
+            position: "fixed",
+            left: projectDrawerInsetPx + liveMenuRailWidthPx + liveEquipmentDrawerWidthPx + 10,
             right: 10,
             bottom: 10,
             zIndex: 205,
@@ -7364,9 +8256,9 @@ export default function App() {
               pointerEvents: "auto",
               scrollSnapType: "x mandatory",
             }}
-            onScroll={() => setLiveEquipmentDockTick((v) => v + 1)}
+            onScroll={onLiveEquipmentDockScroll}
           >
-            {liveEquipmentOverlays.map(({ overlay, details }) => (
+            {liveEquipmentDockEntries.map(({ overlay, details }) => (
               <div
                 key={`live-equipment-card-${overlay.id}`}
                 ref={(node) => {
@@ -7394,15 +8286,46 @@ export default function App() {
                   <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
                     {String(overlay.name || "Equipment")}
                   </div>
-                  <button
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={() => closeLiveEquipmentCard(overlay.id)}
-                    style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, padding: "2px 6px", cursor: "pointer", color: "var(--text)", fontSize: 11 }}
-                    aria-label="Close equipment info"
-                    title="Close"
-                  >
-                    ✕
-                  </button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <button
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => setLiveEquipmentDrawerOverlayId(String(overlay.id || ""))}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        borderRadius: 7,
+                        cursor: "pointer",
+                        color: "var(--text)",
+                        fontSize: 11,
+                        width: 26,
+                        height: 24,
+                        display: "grid",
+                        placeItems: "center",
+                        padding: 0,
+                      }}
+                      title="Expand to left drawer"
+                      aria-label="Expand to left drawer"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => closeLiveEquipmentCard(overlay.id)}
+                      style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, padding: "2px 6px", cursor: "pointer", color: "var(--text)", fontSize: 11 }}
+                      aria-label="Close equipment info"
+                      title="Close"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Tag Path: {String(overlay.tagPath || "-")}
@@ -7435,14 +8358,26 @@ export default function App() {
         <input
           autoFocus
           value={inlineEdit.value}
+          onFocus={(e) => e.currentTarget.select()}
           onChange={(e) => setInlineEdit((p) => ({ ...p, value: e.target.value }))}
           onBlur={() => {
             const next = inlineEdit.value;
             if (next != null) {
               pushHistory();
-              setShapes((prev) =>
-                prev.map((x) => (x.id === inlineEdit.id ? { ...x, text: String(next) } : x))
-              );
+              if (inlineEdit.kind === "overlay") {
+                setSvgOverlays((prev) =>
+                  prev.map((x) =>
+                    x.id === inlineEdit.id
+                      ? { ...x, inner: writeFirstInnerSvgText(x.inner, String(next)) }
+                      : x
+                  )
+                );
+              } else {
+                setShapes((prev) =>
+                  prev.map((x) => (x.id === inlineEdit.id ? { ...x, text: String(next) } : x))
+                );
+              }
+              scheduleProjectAutoSave();
             }
             setInlineEdit(null);
           }}
@@ -7540,7 +8475,7 @@ export default function App() {
 
 
 
-      {!isLiveMode && showZoom && (
+      {showZoom && (
         <div
           ref={zoomPanelRef}
           style={{
@@ -7568,6 +8503,11 @@ export default function App() {
             { label: "+", onClick: zoomIn, title: "Zoom In" },
             { label: "−", onClick: zoomOut, title: "Zoom Out" },
             { label: "⟲", onClick: resetView, title: "Reset View" },
+            {
+              label: isAppFullscreen ? "⤢" : "⛶",
+              onClick: toggleAppFullscreen,
+              title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
+            },
           ].map((btn) => (
             <button
               key={btn.title}
@@ -8207,6 +9147,13 @@ export default function App() {
               </div>
             </div>
             <div style={{ flex: "1 1 auto", overflow: "hidden" }}>
+              <Suspense
+                fallback={
+                  <div style={{ height: "100%", display: "grid", placeItems: "center", color: "var(--text-muted)" }}>
+                    Loading...
+                  </div>
+                }
+              >
               {drawerView === "tags" ? (
                 <div style={drawerContentShellStyle}>
                   <OpcConfig embedded mode="tags" />
@@ -8347,6 +9294,7 @@ export default function App() {
                   style={{ width: "100%", height: "100%", border: "none", display: "block" }}
                 />
               )}
+              </Suspense>
             </div>
             {!mainDrawerFullscreen ? (
               <div
@@ -8845,7 +9793,9 @@ export default function App() {
                   boxShadow: "0 8px 16px rgba(0,0,0,0.16)",
                 }}
               >
-                <SecurityManager canManage={canManageSecurity} currentUserId={user?.id} />
+                <Suspense fallback={<div style={{ color: "var(--text-muted)" }}>Loading...</div>}>
+                  <SecurityManager canManage={canManageSecurity} currentUserId={user?.id} />
+                </Suspense>
               </div>
             </div>
             {!userDrawerFullscreen ? (
@@ -9305,10 +10255,11 @@ export default function App() {
             width: liveMenuIsExpanded ? 248 : 72,
             zIndex: 210,
             border: "1px solid color-mix(in srgb, var(--border) 88%, #2b6cff 12%)",
+            borderRight: "1px solid color-mix(in srgb, var(--border) 92%, #2b6cff 8%)",
             borderRadius: 0,
             background:
               "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 92%, #0b2448 8%) 0%, color-mix(in srgb, var(--bg) 90%, #040d1f 10%) 100%)",
-            boxShadow: "0 24px 36px rgba(2,8,23,0.28), inset 0 1px 0 rgba(255,255,255,0.05)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
             backdropFilter: "blur(8px)",
             display: "flex",
             flexDirection: "column",
@@ -9372,8 +10323,8 @@ export default function App() {
             }}
             className="vizi-scroll"
           >
-            {liveMenuGroupsForRender.some((group) => Array.isArray(group.items) && group.items.length) ? (
-              liveMenuGroupsForRender.map((group) => (
+            {liveMenuGroupsVisible.some((group) => Array.isArray(group.items) && group.items.length) ? (
+              liveMenuGroupsVisible.map((group) => (
                 <div key={`live-menu-group-${group.id}`} style={{ display: "grid", gap: 6 }}>
                   {liveMenuIsExpanded ? (
 	                    <button
@@ -9626,28 +10577,23 @@ export default function App() {
             className="vizi-scroll"
           >
             <div style={{ ...projectDrawerCardStyle, padding: 6, flex: "0 0 auto" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-                <button
-                  onClick={() => setProjectDrawerTab("project")}
-                  style={drawerTabButtonStyle(projectDrawerTab === "project")}
-                  title="Project Settings"
-                >
-                  Project
-                </button>
-                <button
-                  onClick={() => setProjectDrawerTab("menu")}
-                  style={drawerTabButtonStyle(projectDrawerTab === "menu")}
-                  title="Menu Config"
-                >
-                  Menu
-                </button>
-                <button
-                  onClick={() => setProjectDrawerTab("screens")}
-                  style={drawerTabButtonStyle(projectDrawerTab === "screens")}
-                  title="Manage Screens"
-                >
-                  Screens
-                </button>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: `repeat(${projectDrawerTabs.length}, minmax(0, 1fr))`,
+                  gap: 6,
+                }}
+              >
+                {projectDrawerTabs.map((tab) => (
+                  <button
+                    key={`project-tab-${tab.key}`}
+                    onClick={() => setProjectDrawerTab(tab.key)}
+                    style={drawerTabButtonStyle(projectDrawerTab === tab.key)}
+                    title={tab.title}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -10253,7 +11199,7 @@ export default function App() {
         </div>
       )}
 
-      {!isLiveMode && !showZoom && (
+      {!showZoom && (
         <button
           title="Show Zoom"
           onClick={() => setShowZoom(true)}

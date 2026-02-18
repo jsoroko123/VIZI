@@ -1,70 +1,43 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
 <svg
    width="0.31999999in"
    height="0.25999999in"
    viewBox="0 0 8.1280005 6.6039997"
    version="1.1"
    id="svg1"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="Turbolizer.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="100" keheight="81.25">
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="11.702244"
-     inkscape:cx="9.2289992"
-     inkscape:cy="20.551614"
-     inkscape:window-width="3440"
-     inkscape:window-height="1369"
-     inkscape:window-x="-8"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1"
-     inkscape:clip-to-page="false" />
+   kewidth="100" keheight="81.25">
   <defs
      id="defs1">
     <linearGradient
        id="swatch1"
-       inkscape:swatch="solid">
+      >
       <stop
-         style="stop-color:#ffffff;stop-opacity:1;"
+         style="stop-color:#ffffff;stop-opacity:1"
          offset="0"
          id="stop1" />
     </linearGradient>
   </defs>
   <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
+
      id="layer1"
      transform="translate(-13.156118,-2.2327176)">
     <rect
-       style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.162869;stroke-linecap:square;stroke-dasharray:none;stroke-opacity:1"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.162869;stroke-linecap:square;stroke-dasharray:none"
        id="rect5"
        width="1.4717406"
        height="1.0557227"
        x="13.660561"
        y="5.5689082" />
     <rect
-       style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.155263;stroke-linecap:square;stroke-dasharray:none;stroke-opacity:1"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.155263;stroke-linecap:square;stroke-dasharray:none"
        id="rect4"
        width="2.4234817"
        height="1.3291752"
        x="13.287749"
        y="3.686414" />
     <rect
-       style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.155263;stroke-linecap:square;stroke-dasharray:none;stroke-opacity:1"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.155263;stroke-linecap:square;stroke-dasharray:none"
        id="rect1"
        width="2.4234817"
        height="1.3291752"
@@ -72,25 +45,25 @@
        y="2.4563491" />
     <path
        id="body"
-       style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none;stroke-opacity:1"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none"
        d="m 14.090326,3.2912374 v 4.3800944 h 7.084322 V 3.2912374 Z m -0.0052,4.3950805 v 1.0127108 h 0.492993 V 7.6863179 Z m 6.598563,0 v 1.0127108 h 0.492993 V 7.6863179 Z m -6.105969,0.00207 h 6.086858 z"
-       sodipodi:nodetypes="cccccccccccccccccc" />
+       />
     <rect
-       style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none;stroke-opacity:1"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none"
        id="innerRect"
        width="5.7927985"
        height="0.92268497"
        x="14.758813"
        y="3.7845705" />
     <rect
-       style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none;stroke-opacity:1"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none"
        id="rect2"
        width="5.792798"
        height="0.92268497"
        x="14.758813"
        y="5.0685706" />
     <rect
-       style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none;stroke-opacity:1"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none"
        id="rect3"
        width="5.7927985"
        height="0.92268497"
@@ -98,5 +71,3 @@
        y="6.4015708" />
   </g>
 </svg>
-
-

@@ -1,82 +1,36 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
 <svg
    width="0.020091496in"
    height="0.020091536in"
    viewBox="0 0 0.51032403 0.51032498"
    version="1.1"
    id="svg1"
-   inkscape:version="1.4 (86a8ad7, 2024-10-11)"
-   sodipodi:docname="SpeedSwitch.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="100" keheight="100">
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="256"
-     inkscape:cx="1.7050781"
-     inkscape:cy="1.2402344"
-     inkscape:window-width="1920"
-     inkscape:window-height="1009"
-     inkscape:window-x="3432"
-     inkscape:window-y="172"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1"
-     inkscape:clip-to-page="false"
-     showgrid="true">
-    <inkscape:grid
-       id="grid13"
-       units="mm"
-       originx="-5.3869779"
-       originy="-13.647026"
-       spacingx="1"
-       spacingy="1"
-       empcolor="#0099e5"
-       empopacity="0.30196078"
-       color="#0099e5"
-       opacity="0.14901961"
-       empspacing="5"
-       dotted="false"
-       gridanglex="30"
-       gridanglez="30"
-       visible="true" />
+   kewidth="100" keheight="100">
   </sodipodi:namedview>
   <defs
      id="defs1">
     <linearGradient
        id="swatch1"
-       inkscape:swatch="solid">
+      >
       <stop
-         style="stop-color:#ffffff;stop-opacity:1;"
+         style="stop-color:#ffffff;stop-opacity:1"
          offset="0"
          id="stop1" />
     </linearGradient>
   </defs>
   <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
+
      id="layer1"
      transform="translate(-16.119254,-14.719355)">
     <path
        d="m 16.139254,14.739355 v 0.470325 h 0.470324 v -0.470325 z"
-       style="fill:#cccccc;stroke:#000000;stroke-width:0.04;stroke-dasharray:none"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.04;stroke-dasharray:none"
        id="body" />
     <path
        id="path3"
-       style="fill:none;stroke:#000000;stroke-width:0.03;stroke-dasharray:none"
+       style="fill:none;stroke:#808080;stroke-width:0.03;stroke-dasharray:none"
        d="m 16.314075,14.818057 -0.07803,0.165881 0.103354,2e-6 -0.02481,0.143661 0.188102,-0.219108 -0.12196,-5.08e-4 0.04082,-0.09043 z"
-       sodipodi:nodetypes="cccccccc" />
+       />
   </g>
 </svg>
-
-

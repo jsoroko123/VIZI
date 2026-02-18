@@ -1,70 +1,26 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
 <svg
    width="0.21972221in"
    height="0.39312685in"
    viewBox="0 0 5.5809447 9.9854219"
    version="1.1"
    id="svg1"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="Dampi.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="55.891" keheight="100">
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="16.549473"
-     inkscape:cx="12.447526"
-     inkscape:cy="20.635098"
-     inkscape:window-width="1920"
-     inkscape:window-height="1017"
-     inkscape:window-x="1912"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="group1"
-     inkscape:clip-to-page="false"
-     showgrid="true">
-    <inkscape:grid
-       id="grid13"
-       units="mm"
-       originx="-2.4206998"
-       originy="-8.9962855"
-       spacingx="1"
-       spacingy="1"
-       empcolor="#0099e5"
-       empopacity="0.30196078"
-       color="#0099e5"
-       opacity="0.14901961"
-       empspacing="5"
-       dotted="false"
-       gridanglex="30"
-       gridanglez="30"
-       visible="true" />
+   kewidth="55.891" keheight="100">
   </sodipodi:namedview>
   <defs
      id="defs1">
     <linearGradient
        id="swatch1"
-       inkscape:swatch="solid">
+      >
       <stop
-         style="stop-color:#ffffff;stop-opacity:1;"
+         style="stop-color:#ffffff;stop-opacity:1"
          offset="0"
          id="stop1" />
     </linearGradient>
   </defs>
   <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
+
      id="layer1"
      transform="translate(-13.152977,-10.068614)">
     <g
@@ -72,51 +28,49 @@
        transform="matrix(1.2507261,0,0,0.99761904,-3.9977301,0.03586037)">
       <path
          id="body"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          d="m 15.389624,10.146222 v 0.674377 0 l -0.529167,0.831992 v 0.529166 l -0.529167,0.558046 v 0.577285 l -0.529166,0.529167 v 1.514636 l 1.5875,4.097424 v 0 0.518114 h 1.107425 v -0.518114 0 l 1.5875,-4.160469 V 13.846255 L 17.555383,13.317088 V 12.72237 l -0.529167,-0.540613 v -0.529166 l -0.529167,-0.831992 v 0 -0.674377 z"
-         sodipodi:nodetypes="ccccccccccccccccccccccccc" />
+         />
       <path
          d="m 15.304183,19.557008 h 1.283081 z"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          id="path31"
-         sodipodi:nodetypes="ccc" />
+         />
       <path
          d="m 13.716683,15.210632 h 4.458081 z"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          id="path32"
-         sodipodi:nodetypes="ccc" />
+         />
       <path
          d="m 13.716683,13.98839 h 4.458081 z"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          id="path33"
-         sodipodi:nodetypes="ccc" />
+         />
       <path
          d="m 14.24585,13.250099 h 3.399747 z"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          id="path34"
-         sodipodi:nodetypes="ccc" />
+         />
       <path
          d="m 14.24585,12.856592 h 3.399747 z"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          id="path35"
-         sodipodi:nodetypes="ccc" />
+         />
       <path
          d="M 14.775017,12.118301 H 17.11643 Z"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          id="path36"
-         sodipodi:nodetypes="ccc" />
+         />
       <path
          d="M 14.775017,11.758694 H 17.11643 Z"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          id="path37"
-         sodipodi:nodetypes="ccc" />
+         />
       <path
          d="m 15.304184,10.75688 h 1.283079 z"
-         style="fill:#cccccc;stroke:#000000;stroke-width:0.179047;stroke-dasharray:none"
+         style="fill:#c8c8c8;stroke:#808080;stroke-width:0.179047;stroke-dasharray:none"
          id="path38"
-         sodipodi:nodetypes="ccc" />
+         />
     </g>
   </g>
 </svg>
-
-

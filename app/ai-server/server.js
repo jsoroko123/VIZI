@@ -16,10 +16,38 @@ const PORT = Number(process.env.PORT || 5055);
 const DEBUG_ROUTES = process.env.DEBUG_ROUTES === "1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "64mb";
-const REPO_ROOT = process.env.VIZI_ROOT || path.resolve(process.cwd(), "..");
-const OPC_CONFIG_PATH = path.resolve(REPO_ROOT, "opc-server", "config.json");
 const AI_SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_APP_ROOT = path.resolve(AI_SERVER_DIR, "..");
+
+function pickFirstExisting(candidates = []) {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return "";
+}
+
+const ROOT_HINT = process.env.VIZI_ROOT ? path.resolve(process.env.VIZI_ROOT) : "";
+const ROOT_CANDIDATES = [ROOT_HINT, DEFAULT_APP_ROOT, path.resolve(DEFAULT_APP_ROOT, "..")].filter(Boolean);
+const REPO_ROOT = pickFirstExisting(
+  ROOT_CANDIDATES.map((root) => path.resolve(root, "src", "assets", "SVG_Files"))
+)
+  ? ROOT_CANDIDATES.find((root) =>
+      fs.existsSync(path.resolve(root, "src", "assets", "SVG_Files"))
+    ) || DEFAULT_APP_ROOT
+  : DEFAULT_APP_ROOT;
+
+const OPC_CONFIG_PATH = pickFirstExisting(
+  ROOT_CANDIDATES.map((root) => path.resolve(root, "opc-server", "config.json"))
+) || path.resolve(REPO_ROOT, "opc-server", "config.json");
 const DESIGNER_SCHEMA_PATH = path.resolve(AI_SERVER_DIR, "designer-schema.json");
+const SVG_LIBRARY_DIR = path.resolve(REPO_ROOT, "src", "assets", "SVG_Files");
+const SVG_LIBRARY_DIR_STREAMLINED = path.resolve(
+  REPO_ROOT,
+  "src",
+  "assets",
+  "SVG_Files_Streamlined"
+);
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
@@ -42,6 +70,42 @@ function quoteIdent(name) {
     throw new Error("Database name must be alphanumeric/underscore.");
   }
   return `"${name.replace(/"/g, "\"\"")}"`;
+}
+
+function normalizeSvgCatalogKey(relativePath) {
+  const rel = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  return `./assets/SVG_Files/${rel}`;
+}
+
+function resolveSvgKeyToAbsolutePath(key) {
+  const raw = String(key || "").trim();
+  if (!raw.startsWith("./assets/SVG_Files/")) {
+    throw new Error("Invalid SVG key.");
+  }
+  const relative = raw.slice("./assets/SVG_Files/".length).replace(/\\/g, "/");
+  if (!relative || relative.includes("..")) {
+    throw new Error("Invalid SVG key path.");
+  }
+  if (!relative.toLowerCase().endsWith(".svg")) {
+    throw new Error("SVG key must end with .svg.");
+  }
+  const absolutePrimary = path.resolve(SVG_LIBRARY_DIR, relative);
+  const primaryRoot = `${SVG_LIBRARY_DIR}${path.sep}`;
+  if (!(absolutePrimary === SVG_LIBRARY_DIR || absolutePrimary.startsWith(primaryRoot))) {
+    throw new Error("SVG key resolved outside library root.");
+  }
+  if (fs.existsSync(absolutePrimary)) return absolutePrimary;
+
+  const absoluteStreamlined = path.resolve(SVG_LIBRARY_DIR_STREAMLINED, relative);
+  const streamlinedRoot = `${SVG_LIBRARY_DIR_STREAMLINED}${path.sep}`;
+  if (
+    absoluteStreamlined === SVG_LIBRARY_DIR_STREAMLINED ||
+    absoluteStreamlined.startsWith(streamlinedRoot)
+  ) {
+    if (fs.existsSync(absoluteStreamlined)) return absoluteStreamlined;
+  }
+
+  throw new Error("SVG file not found.");
 }
 
 function parseDatabaseConnectionInfo(connectionString) {
@@ -4201,6 +4265,129 @@ app.get("/api/db/config", async (_req, res) => {
   }
 });
 
+app.get("/api/svg/catalog", async (_req, res) => {
+  try {
+    const files = [];
+    const seen = new Set();
+    const roots = [SVG_LIBRARY_DIR, SVG_LIBRARY_DIR_STREAMLINED];
+    for (const rootDir of roots) {
+      if (!fs.existsSync(rootDir)) continue;
+      const stack = [{ abs: rootDir, rel: "" }];
+      while (stack.length) {
+        const current = stack.pop();
+        const entries = await fs.promises.readdir(current.abs, { withFileTypes: true });
+        for (const entry of entries) {
+          const rel = current.rel ? `${current.rel}/${entry.name}` : entry.name;
+          const abs = path.resolve(current.abs, entry.name);
+          if (entry.isDirectory()) {
+            stack.push({ abs, rel });
+            continue;
+          }
+          if (!entry.isFile()) continue;
+          if (!entry.name.toLowerCase().endsWith(".svg")) continue;
+          const key = normalizeSvgCatalogKey(rel);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          files.push({
+            key,
+            name: entry.name,
+            url: `/api/svg/raw?key=${encodeURIComponent(key)}`,
+          });
+        }
+      }
+    }
+    files.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    res.json({ files });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load SVG catalog." });
+  }
+});
+
+app.get("/api/svg/debug", async (_req, res) => {
+  try {
+    const roots = [SVG_LIBRARY_DIR, SVG_LIBRARY_DIR_STREAMLINED];
+    const summary = [];
+    for (const rootDir of roots) {
+      const exists = fs.existsSync(rootDir);
+      let fileCount = 0;
+      if (exists) {
+        const stack = [rootDir];
+        while (stack.length) {
+          const current = stack.pop();
+          const entries = await fs.promises.readdir(current, { withFileTypes: true });
+          for (const entry of entries) {
+            const abs = path.resolve(current, entry.name);
+            if (entry.isDirectory()) {
+              stack.push(abs);
+            } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".svg")) {
+              fileCount += 1;
+            }
+          }
+        }
+      }
+      summary.push({
+        root: rootDir,
+        exists,
+        fileCount,
+      });
+    }
+    res.json({
+      repoRoot: REPO_ROOT,
+      hintRoot: ROOT_HINT || null,
+      roots: summary,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to build SVG debug summary." });
+  }
+});
+
+app.get("/api/svg/raw", async (req, res) => {
+  try {
+    const key = String(req.query.key || "").trim();
+    const absolute = resolveSvgKeyToAbsolutePath(key);
+    const raw = await fs.promises.readFile(absolute, "utf8");
+    res.type("image/svg+xml").send(raw);
+  } catch (err) {
+    res.status(400).json({ error: err?.message || "Failed to load SVG file." });
+  }
+});
+
+app.post("/api/db/batch-first-values", async (req, res) => {
+  try {
+    const bindings = Array.isArray(req.body?.bindings) ? req.body.bindings : [];
+    const limit = Math.min(300, bindings.length);
+    const tableRowCache = new Map();
+    const values = {};
+
+    for (let i = 0; i < limit; i += 1) {
+      const b = bindings[i] || {};
+      const overlayId = String(b.overlayId || "").trim();
+      const table = String(b.table || "").trim();
+      const field = String(b.field || "").trim();
+      if (!overlayId || !/^[a-zA-Z0-9_]+$/.test(table) || !/^[a-zA-Z0-9_]+$/.test(field)) {
+        continue;
+      }
+      if (!tableRowCache.has(table)) {
+        const pk = await getPrimaryKey(table);
+        const order = pk ? `ORDER BY ${safeIdent(pk)}` : "";
+        const sql = `SELECT * FROM ${safeIdent(table)} ${order} LIMIT 1`;
+        const result = await pool.query(sql);
+        tableRowCache.set(table, result.rows?.[0] || null);
+      }
+      const row = tableRowCache.get(table);
+      if (!row || typeof row !== "object") continue;
+      if (!Object.prototype.hasOwnProperty.call(row, field)) continue;
+      const value = row[field];
+      if (value == null) continue;
+      values[overlayId] = value;
+    }
+
+    res.json({ values });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load batch DB values." });
+  }
+});
+
 app.get("/api/db/tables", async (_req, res) => {
   try {
     const q = `
@@ -6022,12 +6209,57 @@ async function start() {
       );
     }
   }
+  const adminRoleId = roleMap.get("administrator");
+  if (Number.isFinite(adminRoleId)) {
+    const seededAdminUsername = "admin";
+    const seededAdminPassword = "admin";
+    const { salt: seededSalt, hash: seededHash } = await createPasswordHash(seededAdminPassword);
+    const { rows: adminRows } = await pool.query(
+      "SELECT id FROM users WHERE lower(username) = lower($1) LIMIT 1",
+      [seededAdminUsername]
+    );
+    let adminUserId = null;
+    if (adminRows.length) {
+      adminUserId = Number(adminRows[0].id);
+      await pool.query(
+        `
+        UPDATE users
+        SET username = $1,
+            display_name = COALESCE(NULLIF(display_name, ''), $2),
+            password_hash = $3,
+            password_salt = $4,
+            disabled = false
+        WHERE id = $5
+        `,
+        [seededAdminUsername, "Admin", seededHash, seededSalt, adminUserId]
+      );
+    } else {
+      const createdAdmin = await pool.query(
+        `
+        INSERT INTO users (username, password_hash, password_salt, display_name, disabled)
+        VALUES ($1, $2, $3, $4, false)
+        RETURNING id
+        `,
+        [seededAdminUsername, seededHash, seededSalt, "Admin"]
+      );
+      adminUserId = Number(createdAdmin.rows[0]?.id || 0);
+    }
+    if (Number.isFinite(adminUserId) && adminUserId > 0) {
+      await pool.query(
+        `
+        INSERT INTO user_roles (user_id, role_id)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id, role_id) DO NOTHING
+        `,
+        [adminUserId, adminRoleId]
+      );
+    }
+  }
   const { rows: userRoleCountRows } = await pool.query("SELECT COUNT(*)::int AS count FROM user_roles");
   if (Number(userRoleCountRows?.[0]?.count || 0) === 0) {
     const { rows: firstUserRows } = await pool.query(
       "SELECT id FROM users ORDER BY created_at ASC, id ASC LIMIT 1"
     );
-    const adminRoleId = roleMap.get("administrator");
     if (firstUserRows.length && Number.isFinite(adminRoleId)) {
       await pool.query(
         `

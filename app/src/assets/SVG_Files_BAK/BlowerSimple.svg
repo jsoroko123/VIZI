@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="3.9085541mm"
+   height="3.9085481mm"
+   viewBox="0 0 3.908554 3.908548"
+   version="1.1"
+   id="svg190489"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
+   sodipodi:docname="BlowerSimple.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg" kewidth="100" keheight="100">
+  <sodipodi:namedview
+     id="namedview190491"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="true"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     showgrid="false"
+     inkscape:zoom="35.356608"
+     inkscape:cx="11.893109"
+     inkscape:cy="10.280964"
+     inkscape:window-width="1920"
+     inkscape:window-height="1017"
+     inkscape:window-x="1912"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1" />
+  <defs
+     id="defs190486">
+    <inkscape:path-effect
+       is_visible="true"
+       id="path-effect27839"
+       effect="spiro"
+       lpeversion="0" />
+    <inkscape:path-effect
+       is_visible="true"
+       id="path-effect3415-7-1-05-5-5-1-8-8-4-8-7-7-4-3"
+       effect="spiro"
+       lpeversion="0" />
+    <inkscape:path-effect
+       is_visible="true"
+       id="path-effect3419-7-2-5-2-0-6-1-5-0-3-3-0-9"
+       effect="spiro"
+       lpeversion="0" />
+    <inkscape:path-effect
+       effect="spiro"
+       id="path-effect3787-1-1-1-7-8-3-1-4-1-8-1-5-1-3"
+       is_visible="true"
+       lpeversion="0" />
+    <inkscape:path-effect
+       effect="spiro"
+       id="path-effect3067-7-4-0-4-4-8-2-7-6-5-1-8-6-4-4"
+       is_visible="true"
+       lpeversion="0" />
+    <inkscape:path-effect
+       is_visible="true"
+       id="path-effect7822-1"
+       effect="spiro"
+       lpeversion="0" />
+    <inkscape:path-effect
+       effect="spiro"
+       id="path-effect7826-3"
+       is_visible="true"
+       lpeversion="0" />
+  </defs>
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(-73.898125,-39.711305)">
+    <path
+       d="m 75.852143,39.811305 a 1.8542381,1.8542943 0 0 0 -1.854018,1.854009 1.8542381,1.8542943 0 0 0 1.854018,1.854539 1.8542381,1.8542943 0 0 0 1.854536,-1.854539 1.8542381,1.8542943 0 0 0 -1.854536,-1.854009 z"
+       style="fill:#c0c0c0;stroke:#000000;stroke-width:0.2;stroke-dasharray:none"
+       id="body" />
+    <g
+       id="InsideLines"
+       transform="matrix(0,0.18179549,-0.18630394,0,108.3587,11.673168)">
+      <path
+         inkscape:connector-curvature="0"
+         id="path2"
+         d="m 155.50498,177.65371 6.63905,-12.59266"
+         style="display:inline;fill:none;stroke:#000000;stroke-width:1.21737;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1;marker-start:none"
+         sodipodi:nodetypes="cc" />
+      <path
+         inkscape:connector-curvature="0"
+         id="path1"
+         d="m 174.37701,177.73404 -6.88603,-12.67299"
+         style="display:inline;fill:none;stroke:#000000;stroke-width:1.21737;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1;marker-start:none"
+         sodipodi:nodetypes="cc" />
+    </g>
+  </g>
+</svg>
+
+

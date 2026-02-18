@@ -78,6 +78,19 @@ function setSvgMetaPlugin() {
 
 export default defineConfig({
   plugins: [react(), setSvgMetaPlugin()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("react-router")) return "vendor-router";
+          if (id.includes("react-dom") || id.includes("/react/")) return "vendor-react";
+          if (id.includes("chart.js") || id.includes("react-chartjs-2")) return "vendor-chart";
+          return "vendor";
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       "/api": {

@@ -218,6 +218,90 @@ function analyzeL5x(xmlText) {
   };
 }
 
+function mapPlcTypeToUaType(value) {
+  const t = String(value || "").trim().toUpperCase();
+  if (!t) return "";
+  if (["BOOL", "BIT"].includes(t)) return "Boolean";
+  if (["SINT", "INT", "DINT", "LINT"].includes(t)) return "Int32";
+  if (["USINT", "UINT", "UDINT", "ULINT"].includes(t)) return "UInt32";
+  if (["REAL", "LREAL"].includes(t)) return "Double";
+  if (["STRING", "WSTRING"].includes(t)) return "String";
+  return "";
+}
+
+function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
+  const text = String(xmlText || "");
+  if (!text) return [];
+  const out = [];
+  const defRe = /<AddOnInstructionDefinition\b([^>]*)>([\s\S]*?)<\/AddOnInstructionDefinition>/gi;
+  let match = defRe.exec(text);
+  while (match && out.length < maxAois) {
+    const attrs = match[1] || "";
+    const body = match[2] || "";
+    const aoiName = String(extractAttr(attrs, "Name") || "").trim();
+    if (!aoiName) {
+      match = defRe.exec(text);
+      continue;
+    }
+    const fields = [];
+    const seen = new Set();
+    const pushField = (name, plcType, usage) => {
+      const trimmed = String(name || "").trim();
+      if (!trimmed) return;
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const dataType = String(plcType || "").trim();
+      fields.push({
+        name: trimmed,
+        tagPath: trimmed,
+        plcType: dataType,
+        uaType: mapPlcTypeToUaType(dataType),
+        usage: String(usage || "").trim(),
+        enabled: true,
+      });
+    };
+
+    const paramRe = /<Parameter\b([^>]*)\/?>/gi;
+    let param = paramRe.exec(body);
+    while (param && fields.length < maxFieldsPerAoi) {
+      const paramAttrs = param[1] || "";
+      pushField(
+        extractAttr(paramAttrs, "Name"),
+        extractAttr(paramAttrs, "DataType"),
+        extractAttr(paramAttrs, "Usage")
+      );
+      param = paramRe.exec(body);
+    }
+
+    // fallback: if parameters are absent, use local tag names to seed the template
+    if (!fields.length) {
+      const localTagRe = /<LocalTag\b([^>]*)\/?>/gi;
+      let localTag = localTagRe.exec(body);
+      while (localTag && fields.length < maxFieldsPerAoi) {
+        const localAttrs = localTag[1] || "";
+        pushField(
+          extractAttr(localAttrs, "Name"),
+          extractAttr(localAttrs, "DataType"),
+          "LocalTag"
+        );
+        localTag = localTagRe.exec(body);
+      }
+    }
+
+    out.push({
+      name: aoiName,
+      description: String(extractAttr(attrs, "Description") || "").trim(),
+      revision: [extractAttr(attrs, "Revision"), extractAttr(attrs, "RevisionExtended")]
+        .filter(Boolean)
+        .join("."),
+      fields,
+    });
+    match = defRe.exec(text);
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], onInsertSvg = null }) {
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState("");
@@ -242,6 +326,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [memberPickerSelectionByPlc, setMemberPickerSelectionByPlc] = useState({});
   const [memberPickerLoading, setMemberPickerLoading] = useState(false);
   const [expandedSummaryByKey, setExpandedSummaryByKey] = useState({});
+  const [aoiTemplateStatus, setAoiTemplateStatus] = useState("");
+  const [aoiTemplateError, setAoiTemplateError] = useState("");
+  const [aoiTemplateSavingAll, setAoiTemplateSavingAll] = useState(false);
+  const [aoiTemplateSavingName, setAoiTemplateSavingName] = useState("");
   const chatScrollRef = useRef(null);
 
   const selected = useMemo(() => {
@@ -266,6 +354,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const memberPickerSelected = Array.isArray(memberPickerSelectionByPlc?.[chatKey])
     ? memberPickerSelectionByPlc[chatKey]
     : [];
+  const aoiTemplates = useMemo(
+    () => scanAoiTemplates(String(selected?.rawText || "")),
+    [selected?.rawText]
+  );
 
   useEffect(() => {
     setExpandedSummaryByKey({});
@@ -1468,6 +1560,81 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     }
   };
 
+  const createOneAoiTemplate = async (template) => {
+    const name = String(template?.name || "").trim();
+    const fields = Array.isArray(template?.fields) ? template.fields : [];
+    if (!name || !fields.length) {
+      return { ok: false, error: `Template ${name || "Unknown"} has no fields.` };
+    }
+    const payload = {
+      name,
+      fields: fields.map((field) => ({
+        name: String(field?.name || "").trim(),
+        tagPath: String(field?.tagPath || "").trim(),
+        uaType: String(field?.uaType || "").trim(),
+        enabled: field?.enabled !== false,
+      })),
+      parent_name: null,
+      group_name: "AOI",
+      state_mappings: [],
+    };
+    const res = await fetch("/api/opc/templates", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: String(data?.error || `Failed to save template ${name}.`) };
+    }
+    return { ok: true };
+  };
+
+  const onCreateAoiTemplate = async (template) => {
+    const name = String(template?.name || "").trim();
+    if (!name) return;
+    setAoiTemplateStatus("");
+    setAoiTemplateError("");
+    setAoiTemplateSavingName(name);
+    try {
+      const result = await createOneAoiTemplate(template);
+      if (!result.ok) {
+        setAoiTemplateError(result.error || `Failed to create template ${name}.`);
+        return;
+      }
+      setAoiTemplateStatus(`Created template "${name}".`);
+    } catch (err) {
+      setAoiTemplateError(String(err?.message || `Failed to create template ${name}.`));
+    } finally {
+      setAoiTemplateSavingName("");
+    }
+  };
+
+  const onCreateAllAoiTemplates = async () => {
+    if (!aoiTemplates.length || aoiTemplateSavingAll) return;
+    setAoiTemplateStatus("");
+    setAoiTemplateError("");
+    setAoiTemplateSavingAll(true);
+    try {
+      let successCount = 0;
+      const failures = [];
+      for (const template of aoiTemplates) {
+        const result = await createOneAoiTemplate(template);
+        if (result.ok) successCount += 1;
+        else failures.push(result.error || `Failed to save ${String(template?.name || "").trim()}`);
+      }
+      if (failures.length) {
+        setAoiTemplateError(failures.slice(0, 4).join(" | "));
+      }
+      setAoiTemplateStatus(`Created ${successCount}/${aoiTemplates.length} AOI template(s).`);
+    } catch (err) {
+      setAoiTemplateError(String(err?.message || "Failed to create AOI templates."));
+    } finally {
+      setAoiTemplateSavingAll(false);
+    }
+  };
+
   return (
     <div
       style={{
@@ -1523,6 +1690,23 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
           }}
         >
           AI
+        </button>
+        <button
+          type="button"
+          data-preserve-style="true"
+          onClick={() => setActiveTab("aoi-templates")}
+          style={{
+            border: `1px solid ${activeTab === "aoi-templates" ? "#2b6cff" : "var(--border)"}`,
+            background: activeTab === "aoi-templates" ? "#2b6cff" : "var(--bg-elev)",
+            color: activeTab === "aoi-templates" ? "#ffffff" : "var(--text)",
+            borderRadius: 999,
+            padding: "5px 11px",
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          AOI Templates
         </button>
       </div>
 
@@ -2077,6 +2261,130 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
               </div>
             </div>
           </div>
+        </>
+      ) : null}
+
+      {activeTab === "aoi-templates" ? (
+        <>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Source: <strong style={{ color: "var(--text)" }}>{selected?.name || "No PLC selected"}</strong>
+          </div>
+          {!selected ? (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+              Select or upload an L5X file in Overview first.
+            </div>
+          ) : !aoiTemplates.length ? (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+              No AOI definitions found in this file.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={onCreateAllAoiTemplates}
+                  disabled={aoiTemplateSavingAll}
+                  style={{
+                    border: "1px solid #2b6cff",
+                    background: "#2b6cff",
+                    color: "#fff",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: aoiTemplateSavingAll ? "default" : "pointer",
+                    opacity: aoiTemplateSavingAll ? 0.75 : 1,
+                  }}
+                >
+                  {aoiTemplateSavingAll ? "Creating..." : `Create All (${aoiTemplates.length})`}
+                </button>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Saves/updates OPC templates from AOI parameter definitions.
+                </div>
+              </div>
+              {aoiTemplateError ? (
+                <div style={{ border: "1px solid #f04438", background: "rgba(240,68,56,0.08)", color: "#f04438", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+                  {aoiTemplateError}
+                </div>
+              ) : null}
+              {aoiTemplateStatus ? (
+                <div style={{ border: "1px solid #12b76a", background: "rgba(18,183,106,0.08)", color: "#12b76a", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+                  {aoiTemplateStatus}
+                </div>
+              ) : null}
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
+                <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, fontSize: 12 }}>
+                  Parsed AOI Templates ({aoiTemplates.length})
+                </div>
+                <div style={{ display: "grid", gap: 0, maxHeight: 460, overflow: "auto" }}>
+                  {aoiTemplates.map((template) => (
+                    <div
+                      key={`aoi-template-${template.name}`}
+                      style={{
+                        borderTop: "1px solid var(--border)",
+                        padding: "8px 10px",
+                        display: "grid",
+                        gap: 6,
+                      }}
+                    >
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" }}>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>{template.name}</div>
+                          <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                            {template.fields.length} field(s){template.revision ? ` | Rev ${template.revision}` : ""}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          data-preserve-style="true"
+                          onClick={() => void onCreateAoiTemplate(template)}
+                          disabled={aoiTemplateSavingName === template.name || aoiTemplateSavingAll}
+                          style={{
+                            border: "1px solid #2b6cff",
+                            background: "#2b6cff",
+                            color: "#fff",
+                            borderRadius: 8,
+                            padding: "4px 8px",
+                            fontSize: 10,
+                            fontWeight: 700,
+                            cursor: aoiTemplateSavingName === template.name || aoiTemplateSavingAll ? "default" : "pointer",
+                            opacity: aoiTemplateSavingName === template.name || aoiTemplateSavingAll ? 0.7 : 1,
+                          }}
+                        >
+                          {aoiTemplateSavingName === template.name ? "Saving..." : "Create Template"}
+                        </button>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {template.fields.slice(0, 24).map((field) => (
+                          <span
+                            key={`${template.name}-${field.name}`}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-soft)",
+                              color: "var(--text)",
+                              borderRadius: 999,
+                              padding: "2px 7px",
+                              fontSize: 10,
+                              fontWeight: 600,
+                            }}
+                            title={`${field.name}${field.plcType ? ` (${field.plcType})` : ""}`}
+                          >
+                            {field.name}
+                          </span>
+                        ))}
+                        {template.fields.length > 24 ? (
+                          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                            +{template.fields.length - 24} more
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </>
       ) : null}
     </div>

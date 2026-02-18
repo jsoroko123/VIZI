@@ -20,9 +20,27 @@ export default function Login() {
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
     const prevHeight = document.body.style.height;
+    const prevHtmlTheme = document.documentElement.getAttribute("data-theme");
+    const prevBodyTheme = document.body.getAttribute("data-theme");
+    const prevBodyBg = document.body.style.background;
+    const prevBodyColor = document.body.style.color;
+    const prevColorScheme = document.documentElement.style.colorScheme;
+
+    document.documentElement.setAttribute("data-theme", "light");
+    document.body.setAttribute("data-theme", "light");
+    document.documentElement.style.colorScheme = "light";
+    document.body.style.background = "#f6f7fb";
+    document.body.style.color = "#111827";
     document.body.style.overflow = "hidden";
     document.body.style.height = "100vh";
     return () => {
+      if (prevHtmlTheme == null) document.documentElement.removeAttribute("data-theme");
+      else document.documentElement.setAttribute("data-theme", prevHtmlTheme);
+      if (prevBodyTheme == null) document.body.removeAttribute("data-theme");
+      else document.body.setAttribute("data-theme", prevBodyTheme);
+      document.documentElement.style.colorScheme = prevColorScheme;
+      document.body.style.background = prevBodyBg;
+      document.body.style.color = prevBodyColor;
       document.body.style.overflow = prevOverflow;
       document.body.style.height = prevHeight;
     };

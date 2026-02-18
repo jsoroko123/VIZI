@@ -2,6 +2,8 @@ import { useEffect } from "react";
 
 export function useKeyboardShortcuts({
   disabled = false,
+  allowModeToggleWhenDisabled = false,
+  toggleProjectMode,
   drawing,
   editingId,
   importOpen,
@@ -19,7 +21,7 @@ export function useKeyboardShortcuts({
   deleteSelected,
 }) {
   useEffect(() => {
-    if (disabled) return undefined;
+    if (disabled && !allowModeToggleWhenDisabled) return undefined;
     function isTypingTarget(target) {
       if (!target) return false;
       const tag = (target.tagName || "").toLowerCase();
@@ -31,8 +33,19 @@ export function useKeyboardShortcuts({
       if (isTypingTarget(e.target)) return;
 
       const key = (e.key || "").toLowerCase();
+      const code = String(e.code || "");
       const isMac = navigator.platform.toLowerCase().includes("mac");
       const mod = isMac ? e.metaKey : e.ctrlKey;
+
+      // ✅ Toggle project mode (Design <-> Live): Alt + L
+      if (e.altKey && (key === "l" || code === "KeyL") && typeof toggleProjectMode === "function") {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleProjectMode();
+        return;
+      }
+
+      if (disabled) return;
 
       // ESC
       if (key === "escape") {
@@ -129,6 +142,8 @@ export function useKeyboardShortcuts({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [
     disabled,
+    allowModeToggleWhenDisabled,
+    toggleProjectMode,
     drawing,
     editingId,
     importOpen,

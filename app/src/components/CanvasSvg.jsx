@@ -732,12 +732,19 @@ export default function CanvasSvg({
     }
 
     loadWidgetTrends();
-    const id = setInterval(loadWidgetTrends, 2000);
+    const id = setInterval(
+      loadWidgetTrends,
+      typeof document !== "undefined" && document.hidden
+        ? 9000
+        : liveClickable
+        ? 3000
+        : 5000
+    );
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [svgOverlays, widgetTrendReloadNonce]);
+  }, [svgOverlays, widgetTrendReloadNonce, liveClickable]);
 
   useEffect(() => {
     let alive = true;
@@ -884,12 +891,19 @@ export default function CanvasSvg({
     }
 
     loadBarChartDatasets();
-    const id = setInterval(loadBarChartDatasets, 3000);
+    const id = setInterval(
+      loadBarChartDatasets,
+      typeof document !== "undefined" && document.hidden
+        ? 10000
+        : liveClickable
+        ? 4500
+        : 6500
+    );
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [svgOverlays]);
+  }, [svgOverlays, liveClickable]);
 
   const renderWidgetOverlay = (overlay) => {
     if (!overlay?.widget) return null;
@@ -2277,6 +2291,40 @@ export default function CanvasSvg({
     return out;
   };
 
+  const forceSvgStrokeColor = (inner, color) => {
+    if (!inner || !color) return inner;
+    const isProtectedStroke = (value) => {
+      const v = String(value || "").trim().toLowerCase();
+      return (
+        !v ||
+        v === "none" ||
+        v === "transparent" ||
+        v === "currentcolor" ||
+        v === "inherit" ||
+        v.startsWith("url(")
+      );
+    };
+    const strokeAttrRe = /stroke\s*=\s*(["'])([^"']*)\1/gi;
+    const styleAttrRe = /style\s*=\s*(["'])([^"']*)\1/gi;
+
+    let out = inner.replace(strokeAttrRe, (match, quote, strokeValue) => {
+      if (isProtectedStroke(strokeValue)) return match;
+      return `stroke=${quote}${color}${quote}`;
+    });
+
+    out = out.replace(styleAttrRe, (match, quote, styleBody) => {
+      const next = String(styleBody || "").replace(
+        /stroke\s*:\s*([^;]+)(;?)/gi,
+        (strokeMatch, strokeValue, suffix) => {
+          if (isProtectedStroke(strokeValue)) return strokeMatch;
+          return `stroke:${color}${suffix || ";"}`;
+        }
+      );
+      return `style=${quote}${next}${quote}`;
+    });
+    return out;
+  };
+
   const overlayScaleX = (o) => {
     const sx = Number(o?.scaleX);
     if (Number.isFinite(sx) && sx > 0) return sx;
@@ -2827,6 +2875,7 @@ export default function CanvasSvg({
           height="100%"
           viewBox={vb}
           preserveAspectRatio="xMidYMid meet"
+          data-canvas-zoom-root="true"
           ref={svgRef}
           tabIndex={0}
           style={{
@@ -3292,16 +3341,26 @@ export default function CanvasSvg({
                           lastTagColorRef.current.set(key, tagFill);
                         }
                       }
-                      const inner = tagFill
+                      const useForcedStroke = String(o.strokeMode || "").trim().toLowerCase() === "force";
+                      let inner = tagFill
                         ? overrideSvgColors(o.inner, tagFill)
                         : routeStroke
                         ? overrideSvgStrokeOnly(o.inner)
+                        : useForcedStroke
+                        ? overrideSvgStrokeOnly(o.inner)
                         : o.inner;
+                      if (theme === "dark" && !routeStroke) {
+                        inner = forceSvgStrokeColor(inner, "#ffffff");
+                      }
                       return (
                         <g
                           style={{
                             fill: tagFill || o.fill || "none",
-                            stroke: routeStroke || (o.stroke ?? "none"),
+                            stroke: routeStroke || (theme === "dark" ? "#ffffff" : (o.stroke ?? "none")),
+                            strokeWidth:
+                              Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0
+                                ? Number(o.strokeWidth)
+                                : undefined,
                             pointerEvents: "visiblePainted",
                           }}
                           dangerouslySetInnerHTML={{ __html: inner }}

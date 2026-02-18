@@ -15,7 +15,7 @@ export default function DataBrowser({
   const [embeddedTable, setEmbeddedTable] = useState("");
   const [embeddedDetailId, setEmbeddedDetailId] = useState("");
   const currentTable = embedded ? String(embeddedTable || "") : String(table || "");
-  const hideTopSelector = hideTableSelector || currentTable === "routes";
+  const hideTopSelector = hideTableSelector || (!embedded && currentTable === "routes");
   const detailId = embedded ? String(embeddedDetailId || "") : id ? String(id) : "";
   const [tables, setTables] = useState([]);
   const [columns, setColumns] = useState([]);

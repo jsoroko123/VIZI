@@ -1,60 +1,31 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
 <svg
    width="0.17345126in"
    height="0.28477412in"
    viewBox="0 0 4.4056623 7.2332627"
    version="1.1"
    id="svg1"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="BranFinisher.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="60.908" keheight="100">
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="23.404488"
-     inkscape:cx="14.420311"
-     inkscape:cy="15.744843"
-     inkscape:window-width="1920"
-     inkscape:window-height="1017"
-     inkscape:window-x="1912"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1"
-     inkscape:clip-to-page="false" />
+   kewidth="60.908" keheight="100">
   <defs
      id="defs1">
     <linearGradient
        id="swatch1"
-       inkscape:swatch="solid">
+      >
       <stop
-         style="stop-color:#ffffff;stop-opacity:1;"
+         style="stop-color:#ffffff;stop-opacity:1"
          offset="0"
          id="stop1" />
     </linearGradient>
   </defs>
   <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
+
      id="layer1"
      transform="translate(-13.918302,-2.7094656)">
     <path
        id="body"
-       style="fill:#cccccc;stroke:#000000;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.2;stroke-linecap:square;stroke-dasharray:none"
        d="m 14.018302,5.8778489 h 4.19904 m -4.19807,-3.0680023 v 7.0328821 h 0.529167 V 6.6132701 l 1.568331,2.4061065 1.578028,-2.4061065 v 3.2294586 h 0.529166 V 2.825834 Z"
-       sodipodi:nodetypes="cccccccccccc" />
+       />
   </g>
 </svg>
-
-

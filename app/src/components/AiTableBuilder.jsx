@@ -1,6 +1,65 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toastError, toastSuccess } from "../utils/toast";
 
+function normalizeTagToken(value) {
+  return String(value || "").trim().replace(/^["']|["']$/g, "");
+}
+
+function extractTagsFromPrompt(prompt) {
+  const text = String(prompt || "");
+  if (!text.trim()) return [];
+  const fromLines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^(add|use|layout|lay\s*out|set|tag|tags|svg|with|for)\b/i.test(line))
+    .map((line) => line.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+  const fromCsv = text
+    .replace(/\r?\n/g, ",")
+    .split(",")
+    .map((part) => normalizeTagToken(part))
+    .filter(Boolean)
+    .filter((part) => /[A-Za-z]/.test(part));
+  const source = fromCsv.length > 1 ? fromCsv : fromLines;
+  const out = [];
+  const seen = new Set();
+  source.forEach((raw) => {
+    const next = normalizeTagToken(raw);
+    if (!next) return;
+    const key = next.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(next);
+  });
+  return out.slice(0, 200);
+}
+
+function getFolderFromSvgKey(key) {
+  const parts = String(key || "").split("/");
+  const i = parts.findIndex((p) => p === "SVG_Files" || p === "SVG Files");
+  if (i >= 0) {
+    const rest = parts.slice(i + 1);
+    if (rest.length <= 1) return "Root";
+    return rest.slice(0, -1).join(" / ");
+  }
+  if (parts.length <= 2) return "Root";
+  return parts.slice(0, -1).slice(-1)[0] || "Root";
+}
+
+function tokenizeSvgCatalogText(value) {
+  return Array.from(
+    new Set(
+      String(value || "")
+        .replace(/[_/.-]+/g, " ")
+        .replace(/\.svg$/i, "")
+        .split(/\s+/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
 export default function AiTableBuilder() {
   const storageKey = "vizi_ai_table_builder_v1";
   const hydratedRef = useRef(false);
@@ -36,9 +95,14 @@ export default function AiTableBuilder() {
   const [savingReport, setSavingReport] = useState(false);
   const [runningReportId, setRunningReportId] = useState("");
   const [loading, setLoading] = useState(false);
+  const [svgSuggesting, setSvgSuggesting] = useState(false);
+  const [svgCatalogBase, setSvgCatalogBase] = useState([]);
+  const [pendingTagBatch, setPendingTagBatch] = useState(null); // { tags, choices:[{key,name}], selectedKey }
   const [error, setError] = useState("");
   const [applyStatus, setApplyStatus] = useState("");
   const chatScrollRef = useRef(null);
+  const aiRequestSeqRef = useRef(1);
+  const aiRequestResolversRef = useRef(new Map());
 
   useEffect(() => {
     const msg = String(error || "").trim();
@@ -141,6 +205,55 @@ export default function AiTableBuilder() {
     loadReports();
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    async function loadSvgCatalog() {
+      try {
+        const res = await fetch("/api/svg/catalog");
+        const data = await res.json();
+        if (!res.ok || !alive) return;
+        const files = Array.isArray(data?.files)
+          ? data.files.map((f) => ({
+              key: String(f?.key || "").trim(),
+              name: String(f?.name || "").trim(),
+            }))
+          : [];
+        setSvgCatalogBase(files.filter((f) => f.key && f.name));
+      } catch {
+        if (alive) setSvgCatalogBase([]);
+      }
+    }
+    loadSvgCatalog();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const res = await fetch("/api/svg/catalog");
+        const data = await res.json();
+        if (!res.ok || !alive) return;
+        const files = Array.isArray(data?.files)
+          ? data.files.map((f) => ({
+              key: String(f?.key || "").trim(),
+              name: String(f?.name || "").trim(),
+            }))
+          : [];
+        if (files.length) setSvgCatalogBase(files.filter((f) => f.key && f.name));
+      } catch {
+        // keep existing catalog on refresh errors
+      }
+    };
+    const id = setInterval(refresh, 30000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
   const history = useMemo(
     () =>
       messages.map((m) => ({
@@ -155,9 +268,172 @@ export default function AiTableBuilder() {
     [reports, selectedReportId]
   );
 
+  const svgCatalog = useMemo(() => {
+    return (Array.isArray(svgCatalogBase) ? svgCatalogBase : [])
+      .map(({ key, name }) => {
+        const folder = getFolderFromSvgKey(key);
+        return {
+          key,
+          name,
+          tags: tokenizeSvgCatalogText(`${name} ${folder}`),
+        };
+      })
+      .slice(0, 450);
+  }, [svgCatalogBase]);
+
+  useEffect(() => {
+    const onMessage = (event) => {
+      if (event?.origin !== window.location.origin) return;
+      const data = event?.data && typeof event.data === "object" ? event.data : null;
+      if (!data || data.type !== "vizi.ai.add-tag-svgs:result") return;
+      const requestId = String(data.requestId || "");
+      if (!requestId) return;
+      const pending = aiRequestResolversRef.current.get(requestId);
+      if (!pending) return;
+      aiRequestResolversRef.current.delete(requestId);
+      if (data.ok) pending.resolve(data.result || {});
+      else pending.reject(new Error(String(data.error || "Failed to add SVG tags.")));
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  async function requestSvgSuggestionForTags(tags, userPrompt) {
+    const cleanedTags = (Array.isArray(tags) ? tags : []).map((t) => String(t || "").trim()).filter(Boolean);
+    if (!cleanedTags.length) throw new Error("No tags detected.");
+    setSvgSuggesting(true);
+    try {
+      const res = await fetch("/api/ai/plc-svg-suggest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt:
+            String(userPrompt || "").trim() ||
+            `Pick one SVG for these tags: ${cleanedTags.join(", ")}`,
+          history,
+          svgCatalog,
+          plc: {
+            controllerTags: cleanedTags.map((name) => ({ name })),
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to suggest SVG.");
+      const choices = [];
+      const seen = new Set();
+      const pushChoice = (row) => {
+        const key = String(row?.key || "").trim();
+        const name = String(row?.name || key.split("/").pop() || "").trim();
+        if (!key) return;
+        const lower = key.toLowerCase();
+        if (seen.has(lower)) return;
+        seen.add(lower);
+        choices.push({ key, name });
+      };
+      pushChoice(data?.picked);
+      (Array.isArray(data?.alternatives) ? data.alternatives : []).forEach(pushChoice);
+      if (!choices.length) {
+        throw new Error("No SVG choices were returned.");
+      }
+      setPendingTagBatch({
+        tags: cleanedTags,
+        choices,
+        selectedKey: choices[0].key,
+      });
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `I found ${cleanedTags.length} tag(s). Which SVG should I use?\n${choices
+            .map((c, i) => `${i + 1}. ${c.name}`)
+            .join("\n")}`,
+        },
+      ]);
+    } finally {
+      setSvgSuggesting(false);
+    }
+  }
+
+  async function sendBatchToEditor(payload) {
+    if (window.parent === window) {
+      throw new Error("Open AI inside the main app drawer to place SVGs on canvas.");
+    }
+    const requestId = `ai-batch-${Date.now()}-${aiRequestSeqRef.current++}`;
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        aiRequestResolversRef.current.delete(requestId);
+        reject(new Error("No response from canvas editor."));
+      }, 15000);
+      aiRequestResolversRef.current.set(requestId, {
+        resolve: (value) => {
+          clearTimeout(timeout);
+          resolve(value);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        },
+      });
+      window.parent.postMessage(
+        {
+          type: "vizi.ai.add-tag-svgs",
+          requestId,
+          payload,
+        },
+        window.location.origin
+      );
+    });
+  }
+
+  async function applyPendingTagBatch(overrideKey = "") {
+    const pending = pendingTagBatch;
+    if (!pending || !Array.isArray(pending.tags) || !pending.tags.length) return;
+    const selectedKey = String(overrideKey || pending.selectedKey || "").trim();
+    if (!selectedKey) throw new Error("Pick an SVG first.");
+    const payload = {
+      svgKey: selectedKey,
+      tags: pending.tags,
+      layout: {
+        mode: "grid",
+      },
+    };
+    const result = await sendBatchToEditor(payload);
+    const count = Number(result?.count || pending.tags.length || 0);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content: `Added ${count} SVG item(s) with tagPath set.`,
+      },
+    ]);
+    setPendingTagBatch(null);
+  }
+
   async function generate() {
     const text = prompt.trim();
     if (!text) return;
+
+    const detectedTags = extractTagsFromPrompt(text);
+    const wantsSvgBatch =
+      detectedTags.length >= 2 &&
+      /\b(tag|tags|svg|layout|lay\s*out|canvas|tagpath|tag path)\b/i.test(text);
+    if (wantsSvgBatch) {
+      setMessages((prev) => [...prev, { role: "user", content: text }]);
+      setPrompt("");
+      setError("");
+      setApplyStatus("");
+      try {
+        await requestSvgSuggestionForTags(detectedTags, text);
+      } catch (err) {
+        const message = String(err?.message || "Failed to suggest SVG.");
+        setError(message);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: `Error: ${message}` },
+        ]);
+      }
+      return;
+    }
 
     setLoading(true);
     setError("");
@@ -461,6 +737,7 @@ export default function AiTableBuilder() {
                 setMessages([]);
                 setPrompt("");
                 setSelectedReportId("");
+                setPendingTagBatch(null);
               }}
               style={{
                 border: "1px solid var(--border)",
@@ -950,6 +1227,95 @@ export default function AiTableBuilder() {
                   </button>
                 </div>
               ) : null}
+              {pendingTagBatch ? (
+                <div
+                  style={{
+                    marginBottom: 8,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-soft)",
+                    color: "var(--text)",
+                    borderRadius: 10,
+                    padding: "8px 10px",
+                    display: "grid",
+                    gap: 8,
+                    fontSize: 12,
+                  }}
+                >
+                  <div>
+                    Tags ready: <strong>{pendingTagBatch.tags.length}</strong>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {(Array.isArray(pendingTagBatch.choices) ? pendingTagBatch.choices : []).map((choice) => {
+                      const active =
+                        String(pendingTagBatch.selectedKey || "").toLowerCase() ===
+                        String(choice.key || "").toLowerCase();
+                      return (
+                        <button
+                          key={`ai-svg-choice-${choice.key}`}
+                          onClick={() =>
+                            setPendingTagBatch((prev) =>
+                              !prev
+                                ? prev
+                                : {
+                                    ...prev,
+                                    selectedKey: String(choice.key || ""),
+                                  }
+                            )
+                          }
+                          style={{
+                            border: `1px solid ${active ? "#2b6cff" : "var(--border)"}`,
+                            background: active
+                              ? "color-mix(in srgb, #2b6cff 18%, var(--bg-elev))"
+                              : "var(--bg-elev)",
+                            color: "var(--text)",
+                            borderRadius: 8,
+                            padding: "6px 8px",
+                            fontSize: 12,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {String(choice.name || choice.key)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={() =>
+                        applyPendingTagBatch().catch((err) => {
+                          const message = String(err?.message || "Failed to add SVG tags.");
+                          setError(message);
+                        })
+                      }
+                      style={{
+                        border: "1px solid #2b6cff",
+                        background: "#2b6cff",
+                        color: "#fff",
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Add to Canvas
+                    </button>
+                    <button
+                      onClick={() => setPendingTagBatch(null)}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div style={{ display: "flex", gap: 8 }}>
                 <input
                   value={prompt}
@@ -978,7 +1344,7 @@ export default function AiTableBuilder() {
                 />
                 <button
                   onClick={generate}
-                  disabled={loading}
+                  disabled={loading || svgSuggesting}
                   style={{
                     border: "1px solid #2b6cff",
                     background: "#2b6cff",
@@ -988,7 +1354,7 @@ export default function AiTableBuilder() {
                     cursor: "pointer",
                   }}
                 >
-                  {loading ? "Generating..." : "Send"}
+                  {loading ? "Generating..." : svgSuggesting ? "Suggesting..." : "Send"}
                 </button>
               </div>
               {/^(select|with)\b/i.test(String(lastSql || "").trim()) && (

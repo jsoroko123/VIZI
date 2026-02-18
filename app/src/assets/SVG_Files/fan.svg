@@ -1,106 +1,41 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
 <svg
    width="3.9109991mm"
    height="3.9108841mm"
    viewBox="0 0 3.910999 3.9108841"
    version="1.1"
    id="svg190489"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="fan.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="100" keheight="99.997">
-  <sodipodi:namedview
-     id="namedview190491"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     showgrid="false"
-     inkscape:zoom="35.356608"
-     inkscape:cx="7.3112217"
-     inkscape:cy="6.5475738"
-     inkscape:window-width="1920"
-     inkscape:window-height="1017"
-     inkscape:window-x="1912"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1" />
-  <defs
-     id="defs190486">
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect27839"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect3415-7-1-05-5-5-1-8-8-4-8-7-7-4-3"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect3419-7-2-5-2-0-6-1-5-0-3-3-0-9"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect3787-1-1-1-7-8-3-1-4-1-8-1-5-1-3"
-       is_visible="true"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect3067-7-4-0-4-4-8-2-7-6-5-1-8-6-4-4"
-       is_visible="true"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect7822-1"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect7826-3"
-       is_visible="true"
-       lpeversion="0" />
-  </defs>
+   kewidth="100" keheight="99.997">
   <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
+
      id="layer1"
      transform="translate(-73.941522,-39.665046)">
     <path
        d="m 75.897286,39.766218 a 1.8543482,1.8542317 0 0 0 -1.854592,1.854012 1.8543482,1.8542317 0 0 0 1.854592,1.854529 1.8543482,1.8542317 0 0 0 1.854064,-1.854529 1.8543482,1.8542317 0 0 0 -1.854064,-1.854012 z"
-       style="fill:#c0c0c0;stroke:#000000;stroke-width:0.202343;stroke-dasharray:none"
+       style="fill:#c8c8c8;stroke:#808080;stroke-width:0.202343;stroke-dasharray:none"
        id="body" />
     <g
        id="InsideLines"
        transform="matrix(0.18179549,0,0,0.18630394,45.904889,9.1139584)">
       <path
-         inkscape:connector-curvature="0"
+
          id="path2"
          d="m 155.50498,177.65371 6.63905,-12.59266"
-         style="display:inline;fill:none;stroke:#000000;stroke-width:1.21737;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1;marker-start:none"
-         sodipodi:nodetypes="cc" />
+         style="fill:none;stroke:#808080;stroke-width:1.21737;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;marker-start:none"
+         />
       <path
-         inkscape:connector-curvature="0"
+
          id="path1"
          d="M 174.62395,177.65371 167.9849,165.06105"
-         style="display:inline;fill:none;stroke:#000000;stroke-width:1.21737;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1;marker-start:none"
-         sodipodi:nodetypes="cc" />
+         style="fill:none;stroke:#808080;stroke-width:1.21737;stroke-linecap:round;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;marker-start:none"
+         />
     </g>
     <g
        id="groupBlade"
        transform="matrix(0.69821543,0,0,0.78059781,19.803183,9.5763653)">
       <ellipse
-         style="fill:none;stroke:#000000;stroke-width:0.189636;stroke-dasharray:none"
+         style="fill:none;stroke:#808080;stroke-width:0.189636;stroke-dasharray:none"
          id="path3"
          cx="40.275238"
          cy="80.325317"
@@ -108,7 +43,7 @@
          ry="0.27485251"
          transform="matrix(0,1,1,0,0,0)" />
       <ellipse
-         style="fill:none;stroke:#000000;stroke-width:0.189636;stroke-dasharray:none"
+         style="fill:none;stroke:#808080;stroke-width:0.189636;stroke-dasharray:none"
          id="ellipse3"
          cx="48.058701"
          cy="75.871483"
@@ -116,7 +51,7 @@
          ry="0.23198162"
          transform="rotate(-30)" />
       <ellipse
-         style="opacity:1;fill:none;stroke:#000000;stroke-width:0.189636;stroke-dasharray:none"
+         style="opacity:1;fill:none;stroke:#808080;stroke-width:0.189636;stroke-dasharray:none"
          id="ellipse4"
          cx="-91.110779"
          cy="-4.4780684"
@@ -126,5 +61,3 @@
     </g>
   </g>
 </svg>
-
-
