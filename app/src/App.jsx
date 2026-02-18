@@ -4535,7 +4535,7 @@ function flushScheduledProjectSave() {
     else overlayRefs.current.delete(id);
   }
 
-  function svgPoint(evt) {
+  function svgPoint(evt, options = {}) {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
 
@@ -4597,6 +4597,8 @@ function flushScheduledProjectSave() {
       y = snap(y, GRID);
     }
 
+    const shouldClamp = options?.clampToCanvas !== false;
+    if (!shouldClamp) return { x, y };
     const maxX = Math.max(0, Number(vbW) || 0);
     const maxY = Math.max(0, Number(vbH) || 0);
     return {
@@ -7765,8 +7767,9 @@ function flushScheduledProjectSave() {
     }
 
     if (dragAll) {
-      const dx = p.x - dragAll.startWorld.x;
-      const dy = p.y - dragAll.startWorld.y;
+      const pointer = svgPoint(e, { clampToCanvas: false });
+      const dx = pointer.x - dragAll.startWorld.x;
+      const dy = pointer.y - dragAll.startWorld.y;
       const maxX = Math.max(0, Number(vbW) || 0);
       const maxY = Math.max(0, Number(vbH) || 0);
 
