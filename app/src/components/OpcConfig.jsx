@@ -282,6 +282,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     muted: false,
   });
   const [tagToolsTab, setTagToolsTab] = useState("template");
+  const [udtPreviewExpanded, setUdtPreviewExpanded] = useState({});
   const [tagWriteByKey, setTagWriteByKey] = useState({});
   const [tagWriteBusyByKey, setTagWriteBusyByKey] = useState({});
   const [pendingTagGroupDelete, setPendingTagGroupDelete] = useState(null);
@@ -845,6 +846,40 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     });
     return map;
   }, [topics]);
+
+  const udtPreviewTree = useMemo(() => {
+    const root = { fullPath: "", children: new Map(), leaf: false, field: null };
+    const rows = applyTemplate ? expandTemplateFieldsForTagCreation(applyTemplate) : [];
+    rows.forEach((field) => {
+      const rawPath = String(field?.tagPath || field?.name || "").trim();
+      if (!rawPath) return;
+      const parts = rawPath.split(".").map((p) => p.trim()).filter(Boolean);
+      if (!parts.length) return;
+      let cursor = root;
+      parts.forEach((part, idx) => {
+        const fullPath = cursor.fullPath ? `${cursor.fullPath}.${part}` : part;
+        if (!cursor.children.has(part)) {
+          cursor.children.set(part, {
+            name: part,
+            fullPath,
+            children: new Map(),
+            leaf: false,
+            field: null,
+          });
+        }
+        cursor = cursor.children.get(part);
+        if (idx === parts.length - 1) {
+          cursor.leaf = true;
+          cursor.field = field;
+        }
+      });
+    });
+    const toArray = (node) =>
+      Array.from(node.children.values())
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+        .map((child) => ({ ...child, children: toArray(child) }));
+    return toArray(root);
+  }, [applyTemplate, expandTemplateFieldsForTagCreation]);
 
   const visibleTagColumnCount = useMemo(() => {
     const count = tagColumnKeys.filter((key) => tagVisibleColumns[key] !== false).length;
@@ -2708,55 +2743,80 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
 
               {tagToolsTab === "template" ? (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr 1fr auto",
-                    gap: 8,
-                    alignItems: "end",
-                  }}
-                >
-                  <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                    UDT
-                    <select
-                      value={applyTemplate}
-                      onChange={(e) => setApplyTemplate(e.target.value)}
-                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                <div style={{ display: "grid", gap: 10 }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr 1fr auto",
+                      gap: 8,
+                      alignItems: "end",
+                    }}
+                  >
+                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                      UDT
+                      <select
+                        value={applyTemplate}
+                        onChange={(e) => setApplyTemplate(e.target.value)}
+                        style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                      >
+                        <option value="">Select UDT</option>
+                        {templates.map((t) => (
+                          <option key={`opt-${t.name}`} value={t.name}>
+                            {t.parent_name ? `${t.name} (extends ${t.parent_name})` : t.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                      Topic
+                      <select
+                        value={applyTopic}
+                        onChange={(e) => setApplyTopic(e.target.value)}
+                        style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                      >
+                        <option value="">Select topic</option>
+                        {(topics || []).map((t) => (
+                          <option key={`apply-topic-${t.name}`} value={t.name}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                      Tag Name (e.g., Motor1)
+                      <input
+                        value={applyPrefix}
+                        onChange={(e) => setApplyPrefix(e.target.value)}
+                        style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                      />
+                    </label>
+                    <button onClick={applyTemplateToTags} style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px", height: 32 }}>
+                      Add From UDT
+                    </button>
+                  </div>
+                  {applyTemplate ? (
+                    <div
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 10,
+                        background: "var(--bg-elev)",
+                        padding: 8,
+                        maxHeight: 220,
+                        overflow: "auto",
+                      }}
                     >
-                      <option value="">Select UDT</option>
-                      {templates.map((t) => (
-                        <option key={`opt-${t.name}`} value={t.name}>
-                          {t.parent_name ? `${t.name} (extends ${t.parent_name})` : t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                    Topic
-                    <select
-                      value={applyTopic}
-                      onChange={(e) => setApplyTopic(e.target.value)}
-                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                    >
-                      <option value="">Select topic</option>
-                      {(topics || []).map((t) => (
-                        <option key={`apply-topic-${t.name}`} value={t.name}>
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                    Tag Name (e.g., Motor1)
-                    <input
-                      value={applyPrefix}
-                      onChange={(e) => setApplyPrefix(e.target.value)}
-                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                    />
-                  </label>
-                  <button onClick={applyTemplateToTags} style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px", height: 32 }}>
-                    Add From UDT
-                  </button>
+                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "var(--text)" }}>
+                        UDT Members
+                      </div>
+                      {udtPreviewTree.length ? (
+                        renderUdtPreviewNodes(udtPreviewTree)
+                      ) : (
+                        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                          No members found for selected UDT.
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               ) : tagToolsTab === "bulk" ? (
                 <div
@@ -4626,6 +4686,59 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         el.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }, 0);
+  }
+
+  function renderUdtPreviewNodes(nodes, depth = 0) {
+    return (Array.isArray(nodes) ? nodes : []).map((node) => {
+      const children = Array.isArray(node.children) ? node.children : [];
+      const hasChildren = children.length > 0;
+      const expanded = udtPreviewExpanded[node.fullPath] ?? depth < 1;
+      const fieldUaType = String(node?.field?.uaType || "").trim();
+      return (
+        <div key={`udt-node-${node.fullPath}`} style={{ marginLeft: depth * 14 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              minHeight: 24,
+              fontSize: 12,
+              color: "var(--text)",
+            }}
+          >
+            {hasChildren ? (
+              <button
+                onClick={() =>
+                  setUdtPreviewExpanded((prev) => ({ ...prev, [node.fullPath]: !expanded }))
+                }
+                style={{
+                  ...drawerButtonStyle,
+                  width: 20,
+                  height: 20,
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  fontSize: 11,
+                  lineHeight: 1,
+                  padding: 0,
+                }}
+                title={expanded ? "Collapse" : "Expand"}
+                aria-label={expanded ? "Collapse" : "Expand"}
+              >
+                {expanded ? "-" : "+"}
+              </button>
+            ) : (
+              <span style={{ width: 20, display: "inline-block" }} />
+            )}
+            <span style={{ fontWeight: hasChildren ? 600 : 500 }}>{node.name}</span>
+            {fieldUaType ? (
+              <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{fieldUaType}</span>
+            ) : null}
+          </div>
+          {hasChildren && expanded ? renderUdtPreviewNodes(children, depth + 1) : null}
+        </div>
+      );
+    });
   }
 
   function addTagFromToolbar() {
