@@ -2906,33 +2906,21 @@ export default function CanvasSvg({
   function RightRuler() {
     const W = rulerSize;
     const H = Math.max(0, size.h - rulerSize - edgeReserve);
-
-    const pxPerMajor = 80;
-    const worldPerPx = 1 / z;
-
-    const majorStepWorld = niceStep(pxPerMajor * worldPerPx);
-    const minorStepWorld = majorStepWorld / 5;
-
-    const worldTop = screenToWorldY(0);
-    const worldBottom = screenToWorldY(H);
-
-    const start = Math.floor(worldTop / minorStepWorld) * minorStepWorld;
+    const majorPx = 100;
+    const minorPx = 20;
 
     const ticks = [];
-    for (let wy = start; wy <= worldBottom + minorStepWorld; wy += minorStepWorld) {
-      const sy = worldToScreenY(wy);
-      if (sy < 0 || sy > H) continue;
-
-      const isMajor = Math.abs(wy / majorStepWorld - Math.round(wy / majorStepWorld)) < 1e-6;
+    for (let y = 0; y <= H; y += minorPx) {
+      const isMajor = y % majorPx === 0;
       const len = isMajor ? 12 : 7;
 
       ticks.push(
         <line
-          key={`r-${wy}`}
+          key={`r-${y}`}
           x1={0}
-          y1={sy + 0.5}
+          y1={y + 0.5}
           x2={len}
-          y2={sy + 0.5}
+          y2={y + 0.5}
           stroke="var(--ruler-line)"
           strokeWidth={1}
         />
@@ -2941,14 +2929,14 @@ export default function CanvasSvg({
       if (isMajor) {
         ticks.push(
           <text
-            key={`rl-${wy}`}
+            key={`rl-${y}`}
             x={4}
-            y={sy + 10}
+            y={Math.min(H - 2, y + 10)}
             fontSize={10}
             fill="var(--ruler-text)"
             style={{ userSelect: "none" }}
           >
-            {Math.round(wy)}
+            {y}px
           </text>
         );
       }

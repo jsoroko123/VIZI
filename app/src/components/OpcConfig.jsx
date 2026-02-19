@@ -554,6 +554,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             return {
               name: f,
               tagPath: f,
+              plcType: "",
+              baseType: "",
+              isArray: false,
+              arraySpec: "",
+              usage: "",
               uaType: "",
               pollMs: "",
               samplingInterval: "",
@@ -570,6 +575,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           return {
             name: f?.name || "",
             tagPath: f?.tagPath || "",
+            plcType: String(f?.plcType || ""),
+            baseType: String(f?.baseType || ""),
+            isArray: f?.isArray === true,
+            arraySpec: String(f?.arraySpec || ""),
+            usage: String(f?.usage || ""),
             uaType: f?.uaType || "",
             pollMs: f?.pollMs ?? "",
             samplingInterval: f?.samplingInterval ?? "",
@@ -928,6 +938,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         .map((child) => ({ ...child, children: toArray(child) }));
     return toArray(root);
   }, [editorResolvedRows]);
+
+  const editorResolvedOnlyRows = useMemo(() => {
+    const directKeys = new Set(
+      (Array.isArray(templateFieldRows) ? templateFieldRows : [])
+        .map((row) => String(row?.tagPath || row?.name || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    return (Array.isArray(editorResolvedRows) ? editorResolvedRows : []).filter((row) => {
+      const key = String(row?.tagPath || row?.name || "").trim().toLowerCase();
+      if (!key) return false;
+      return !directKeys.has(key);
+    });
+  }, [editorResolvedRows, templateFieldRows]);
 
   const visibleTagColumnCount = useMemo(() => {
     const count = tagColumnKeys.filter((key) => tagVisibleColumns[key] !== false).length;
@@ -1773,6 +1796,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       .map((row) => ({
         name: String(row?.name || "").trim(),
         tagPath: String(row?.tagPath || row?.name || "").trim(),
+        plcType: String(row?.plcType || "").trim(),
+        baseType: String(row?.baseType || "").trim(),
+        isArray: row?.isArray === true,
+        arraySpec: String(row?.arraySpec || "").trim(),
+        usage: String(row?.usage || "").trim(),
         uaType: String(row?.uaType || "").trim(),
         pollMs: row?.pollMs === "" || row?.pollMs == null ? "" : Number(row.pollMs),
         samplingInterval:
@@ -4316,7 +4344,53 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         </td>
                       </tr>
                     ))}
-                    {templateFieldRows.length === 0 && (
+                    {editorResolvedOnlyRows.map((row, idx) => (
+                      <tr key={`field-resolved-${idx}`} style={{ background: "var(--bg-soft)" }}>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
+                          {String(row?.name || "").trim()}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
+                          {String(row?.tagPath || "").trim()}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {String(row?.uaType || "").trim()}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {row?.pollMs ?? ""}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {row?.samplingInterval ?? ""}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {String(row?.topic || "").trim()}
+                        </td>
+                        <td style={{ padding: "8px 10px 8px 10px", color: "var(--text-muted)" }}>
+                          {row?.enabled === false ? "No" : "Yes"}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {Number.isFinite(Number(row?.scale)) ? Number(row.scale) : 1}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {Number.isFinite(Number(row?.decimals)) ? Number(row.decimals) : 0}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {String(row?.mappingSet || "").trim()}
+                        </td>
+                        <td style={{ padding: "8px 10px 8px 10px", color: "var(--text-muted)" }}>
+                          {row?.alarmEnabled === true ? "Yes" : "No"}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {String(row?.alarmOperator || "").trim()}
+                        </td>
+                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
+                          {String(row?.alarmValue ?? "").trim()}
+                        </td>
+                        <td style={{ padding: "8px 10px 8px 14px", color: "var(--text-muted)", fontSize: 11 }}>
+                          Resolved
+                        </td>
+                      </tr>
+                    ))}
+                    {templateFieldRows.length === 0 && editorResolvedOnlyRows.length === 0 && (
                       <tr>
                         <td colSpan={13} style={{ padding: "8px", color: "var(--text-muted)" }}>
                           No fields yet.
