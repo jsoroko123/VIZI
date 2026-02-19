@@ -849,7 +849,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   const udtPreviewTree = useMemo(() => {
     const root = { fullPath: "", children: new Map(), leaf: false, field: null };
-    const rows = applyTemplate ? expandTemplateFieldsForTagCreation(applyTemplate) : [];
+    const rows = applyTemplate ? expandTemplateFieldsForTagCreation(applyTemplate).fields : [];
     rows.forEach((field) => {
       const rawPath = String(field?.tagPath || field?.name || "").trim();
       if (!rawPath) return;
@@ -1226,20 +1226,33 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   }
 
   function findTemplateNameByType(typeName) {
-    const target = String(typeName || "").trim();
-    if (!target) return "";
-    if (templateMap.has(target)) return target;
-    const lower = target.toLowerCase();
+    const raw = String(typeName || "").trim().replace(/^"|"$/g, "");
+    if (!raw) return "";
+    if (templateMap.has(raw)) return raw;
+
+    const normalize = (v) =>
+      String(v || "")
+        .trim()
+        .replace(/^"|"$/g, "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+    const nameVariants = new Set([raw]);
+    if (raw.includes("::")) nameVariants.add(raw.split("::").pop() || "");
+    if (raw.includes(".")) nameVariants.add(raw.split(".").pop() || "");
+    if (raw.includes(":")) nameVariants.add(raw.split(":").pop() || "");
+
+    const normalizedCandidates = Array.from(nameVariants).map(normalize).filter(Boolean);
     for (const [name] of templateMap) {
-      if (String(name || "").trim().toLowerCase() === lower) {
-        return name;
-      }
+      const n = normalize(name);
+      if (!n) continue;
+      if (normalizedCandidates.includes(n)) return name;
     }
     return "";
   }
 
   function expandTemplateFieldsForTagCreation(templateName) {
     const out = [];
+    const unresolvedTypes = new Set();
     const maxExpandedTags = 20000;
     const addLeaf = (pathPrefix, field) => {
       const leafNameRaw = String(field?.name || field?.tagPath || "").trim();
@@ -1270,6 +1283,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           nestedTemplateName &&
           nestedFields.length > 0 &&
           !templateStack.includes(String(nestedTemplateName || "").toLowerCase());
+        if (
+          descriptor.baseType &&
+          !nestedTemplateName &&
+          !String(field?.uaType || "").trim()
+        ) {
+          unresolvedTypes.add(String(descriptor.baseType || "").trim());
+        }
         const arrayCounts = descriptor.isArray ? parseArrayCounts(descriptor.arraySpec) : [];
         const arraySuffixes = descriptor.isArray
           ? buildArrayIndexSuffixes(arrayCounts, 5000)
@@ -1299,7 +1319,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
     const rootFields = resolveTemplateFields(templateName);
     walkFields(rootFields, "", [String(templateName || "").toLowerCase()], 0);
-    return out;
+    return {
+      fields: out,
+      unresolvedTypes: Array.from(unresolvedTypes).sort((a, b) => a.localeCompare(b)),
+    };
   }
 
   function getParentPathForGrouping(rawPath) {
@@ -1793,7 +1816,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return;
     }
     const prefix = applyPrefix.trim();
-    const fields = expandTemplateFieldsForTagCreation(applyTemplate);
+    const expanded = expandTemplateFieldsForTagCreation(applyTemplate);
+    const fields = expanded.fields;
     if (!fields.length) {
       setError("UDT has no fields.");
       return;
@@ -1841,7 +1865,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const cleanedTags = buildCleanedTags(nextTags);
     const nextConfig = { ...config, tags: cleanedTags };
     setConfig(nextConfig);
-    persistConfig(nextConfig, `Added ${newTags.length} tags from template.`).catch((err) => {
+    const unresolvedMsg =
+      expanded.unresolvedTypes.length > 0
+        ? ` Unresolved nested UDTs: ${expanded.unresolvedTypes.join(", ")}.`
+        : "";
+    persistConfig(nextConfig, `Added ${newTags.length} tags from UDT.${unresolvedMsg}`).catch((err) => {
       setError(err?.message || "Save failed.");
     });
   }
