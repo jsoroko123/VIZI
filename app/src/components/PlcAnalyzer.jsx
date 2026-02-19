@@ -350,6 +350,50 @@ function mapPlcTypeToUaType(value) {
   return "";
 }
 
+function parsePlcDataTypeDescriptor(rawType, rawDimensions = "") {
+  const typeText = String(rawType || "").trim();
+  const dimsText = String(rawDimensions || "").trim();
+  let baseType = typeText;
+  let arraySpec = "";
+  let isArray = false;
+
+  // ARRAY[0..9] OF MyType
+  const arrayOfMatch = typeText.match(/^ARRAY\s*\[(.+?)\]\s*OF\s*(.+)$/i);
+  if (arrayOfMatch) {
+    isArray = true;
+    arraySpec = String(arrayOfMatch[1] || "").trim();
+    baseType = String(arrayOfMatch[2] || "").trim();
+  } else {
+    // MyType[10] or MyType[0..9,0..3]
+    const inlineDimsMatch = typeText.match(/^(.*?)(\[[^\]]+\](?:\s*\[[^\]]+\])*)$/);
+    if (inlineDimsMatch) {
+      isArray = true;
+      baseType = String(inlineDimsMatch[1] || "").trim();
+      arraySpec = String(inlineDimsMatch[2] || "")
+        .replace(/\]\s*\[/g, ",")
+        .replace(/^\[/, "")
+        .replace(/\]$/g, "")
+        .trim();
+    } else if (dimsText) {
+      // L5X commonly stores dimensions separately.
+      isArray = true;
+      arraySpec = dimsText;
+    }
+  }
+
+  baseType = baseType.replace(/^"|"$/g, "").trim();
+  const normalizedType = isArray
+    ? (arraySpec ? `${baseType}[${arraySpec}]` : `${baseType}[]`)
+    : baseType;
+
+  return {
+    baseType,
+    normalizedType,
+    isArray,
+    arraySpec,
+  };
+}
+
 function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
   const text = String(xmlText || "");
   if (!text) return [];
@@ -372,12 +416,16 @@ function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
       const key = trimmed.toLowerCase();
       if (seen.has(key)) return;
       seen.add(key);
-      const dataType = String(plcType || "").trim();
+      const descriptor = parsePlcDataTypeDescriptor(plcType);
+      const dataType = descriptor.normalizedType;
       fields.push({
         name: trimmed,
         tagPath: trimmed,
         plcType: dataType,
-        uaType: mapPlcTypeToUaType(dataType),
+        baseType: descriptor.baseType,
+        isArray: descriptor.isArray,
+        arraySpec: descriptor.arraySpec,
+        uaType: mapPlcTypeToUaType(descriptor.baseType || dataType),
         usage: String(usage || "").trim(),
         enabled: true,
       });
@@ -436,12 +484,16 @@ function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
         const key = trimmed.toLowerCase();
         if (seen.has(key)) return;
         seen.add(key);
-        const dataType = String(plcType || "").trim();
+        const descriptor = parsePlcDataTypeDescriptor(plcType);
+        const dataType = descriptor.normalizedType;
         fields.push({
           name: trimmed,
           tagPath: trimmed,
           plcType: dataType,
-          uaType: mapPlcTypeToUaType(dataType),
+          baseType: descriptor.baseType,
+          isArray: descriptor.isArray,
+          arraySpec: descriptor.arraySpec,
+          uaType: mapPlcTypeToUaType(descriptor.baseType || dataType),
           usage: String(usage || "").trim(),
           enabled: true,
         });
@@ -490,12 +542,21 @@ function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000)
         const key = memberName.toLowerCase();
         if (!seen.has(key)) {
           seen.add(key);
-          const plcType = String(extractAttr(memberAttrs, "DataType") || "").trim();
+          const rawType = String(extractAttr(memberAttrs, "DataType") || "").trim();
+          const rawDims =
+            String(extractAttr(memberAttrs, "Dimension") || "").trim() ||
+            String(extractAttr(memberAttrs, "Dimensions") || "").trim() ||
+            String(extractAttr(memberAttrs, "ArrayDimensions") || "").trim();
+          const descriptor = parsePlcDataTypeDescriptor(rawType, rawDims);
+          const plcType = descriptor.normalizedType;
           fields.push({
             name: memberName,
             tagPath: memberName,
             plcType,
-            uaType: mapPlcTypeToUaType(plcType),
+            baseType: descriptor.baseType,
+            isArray: descriptor.isArray,
+            arraySpec: descriptor.arraySpec,
+            uaType: mapPlcTypeToUaType(descriptor.baseType || plcType),
             usage: "Member",
             enabled: true,
           });
@@ -520,11 +581,13 @@ function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000)
       const body = String(block[2] || "");
       const fields = [];
       const seen = new Set();
-      const memberLineRe = /^\s*("?[\w\.\[\]:]+"?)\s*:\s*([\w]+)[^;\r\n]*;/gmi;
+      const memberLineRe = /^\s*("?[\w\.\[\]:]+"?)\s*:\s*([^;\r\n]+);/gmi;
       let line = memberLineRe.exec(body);
       while (line && fields.length < maxFieldsPerType) {
         const memberName = String(line[1] || "").replace(/^"|"$/g, "").trim();
-        const plcType = String(line[2] || "").trim();
+        const rawType = String(line[2] || "").trim();
+        const descriptor = parsePlcDataTypeDescriptor(rawType);
+        const plcType = descriptor.normalizedType;
         if (memberName) {
           const key = memberName.toLowerCase();
           if (!seen.has(key)) {
@@ -533,7 +596,10 @@ function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000)
               name: memberName,
               tagPath: memberName,
               plcType,
-              uaType: mapPlcTypeToUaType(plcType),
+              baseType: descriptor.baseType,
+              isArray: descriptor.isArray,
+              arraySpec: descriptor.arraySpec,
+              uaType: mapPlcTypeToUaType(descriptor.baseType || plcType),
               usage: "Member",
               enabled: true,
             });
@@ -584,6 +650,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [aoiTemplateSavingName, setAoiTemplateSavingName] = useState("");
   const [aoiSelectionByPlc, setAoiSelectionByPlc] = useState({});
   const [aoiExpandedByPlc, setAoiExpandedByPlc] = useState({});
+  const [aoiExcludedFieldsByPlc, setAoiExcludedFieldsByPlc] = useState({});
   const [dataTypeTemplateStatus, setDataTypeTemplateStatus] = useState("");
   const [dataTypeTemplateError, setDataTypeTemplateError] = useState("");
   const [dataTypeTemplateSavingAll, setDataTypeTemplateSavingAll] = useState(false);
@@ -591,6 +658,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [dataTypeSelectionByPlc, setDataTypeSelectionByPlc] = useState({});
   const [dataTypeExpandedByPlc, setDataTypeExpandedByPlc] = useState({});
   const [dataTypeNodeExpandedByPlc, setDataTypeNodeExpandedByPlc] = useState({});
+  const [dataTypeExcludedFieldsByPlc, setDataTypeExcludedFieldsByPlc] = useState({});
   const chatScrollRef = useRef(null);
 
   const selected = useMemo(() => {
@@ -1850,12 +1918,23 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const createOneAoiTemplate = async (template) => {
     const name = String(template?.name || "").trim();
     const fields = Array.isArray(template?.fields) ? template.fields : [];
-    if (!name || !fields.length) {
+    const templateKey = name.toLowerCase();
+    const excluded = new Set(
+      (Array.isArray(aoiExcludedFieldsByPlc?.[chatKey]?.[templateKey])
+        ? aoiExcludedFieldsByPlc[chatKey][templateKey]
+        : []
+      ).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+    );
+    const includedFields = fields.filter((field) => {
+      const fieldKey = String(field?.name || "").trim().toLowerCase();
+      return fieldKey && !excluded.has(fieldKey);
+    });
+    if (!name || !includedFields.length) {
       return { ok: false, error: `Template ${name || "Unknown"} has no fields.` };
     }
     const payload = {
       name,
-      fields: fields.map((field) => ({
+      fields: includedFields.map((field) => ({
         name: String(field?.name || "").trim(),
         tagPath: String(field?.tagPath || "").trim(),
         uaType: String(field?.uaType || "").trim(),
@@ -1881,12 +1960,23 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const createOneDataTypeTemplate = async (template) => {
     const name = String(template?.name || "").trim();
     const fields = Array.isArray(template?.fields) ? template.fields : [];
-    if (!name || !fields.length) {
+    const templateKey = name.toLowerCase();
+    const excluded = new Set(
+      (Array.isArray(dataTypeExcludedFieldsByPlc?.[chatKey]?.[templateKey])
+        ? dataTypeExcludedFieldsByPlc[chatKey][templateKey]
+        : []
+      ).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+    );
+    const includedFields = fields.filter((field) => {
+      const fieldKey = String(field?.name || "").trim().toLowerCase();
+      return fieldKey && !excluded.has(fieldKey);
+    });
+    if (!name || !includedFields.length) {
       return { ok: false, error: `Template ${name || "Unknown"} has no fields.` };
     }
     const payload = {
       name,
-      fields: fields.map((field) => ({
+      fields: includedFields.map((field) => ({
         name: String(field?.name || "").trim(),
         tagPath: String(field?.tagPath || "").trim(),
         uaType: String(field?.uaType || "").trim(),
@@ -2039,6 +2129,74 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     }
   };
 
+  const isAoiFieldIncluded = (templateName, fieldName) => {
+    const tKey = String(templateName || "").trim().toLowerCase();
+    const fKey = String(fieldName || "").trim().toLowerCase();
+    if (!tKey || !fKey) return false;
+    const excluded = new Set(
+      (Array.isArray(aoiExcludedFieldsByPlc?.[chatKey]?.[tKey])
+        ? aoiExcludedFieldsByPlc[chatKey][tKey]
+        : []
+      ).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+    );
+    return !excluded.has(fKey);
+  };
+
+  const toggleAoiFieldIncluded = (templateName, fieldName) => {
+    const tKey = String(templateName || "").trim().toLowerCase();
+    const fKey = String(fieldName || "").trim().toLowerCase();
+    if (!tKey || !fKey) return;
+    setAoiExcludedFieldsByPlc((prev) => {
+      const currentByPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      const current = Array.isArray(currentByPlc[tKey]) ? currentByPlc[tKey] : [];
+      const has = current.some((x) => String(x || "").trim().toLowerCase() === fKey);
+      const next = has
+        ? current.filter((x) => String(x || "").trim().toLowerCase() !== fKey)
+        : [...current, fKey];
+      return {
+        ...prev,
+        [chatKey]: {
+          ...currentByPlc,
+          [tKey]: next,
+        },
+      };
+    });
+  };
+
+  const includeAllAoiFields = (templateName) => {
+    const tKey = String(templateName || "").trim().toLowerCase();
+    if (!tKey) return;
+    setAoiExcludedFieldsByPlc((prev) => {
+      const currentByPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      return {
+        ...prev,
+        [chatKey]: {
+          ...currentByPlc,
+          [tKey]: [],
+        },
+      };
+    });
+  };
+
+  const excludeAllAoiFields = (templateName) => {
+    const tKey = String(templateName || "").trim().toLowerCase();
+    if (!tKey) return;
+    const template = aoiTemplates.find((t) => String(t?.name || "").trim().toLowerCase() === tKey);
+    const allFields = (Array.isArray(template?.fields) ? template.fields : [])
+      .map((f) => String(f?.name || "").trim().toLowerCase())
+      .filter(Boolean);
+    setAoiExcludedFieldsByPlc((prev) => {
+      const currentByPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      return {
+        ...prev,
+        [chatKey]: {
+          ...currentByPlc,
+          [tKey]: Array.from(new Set(allFields)),
+        },
+      };
+    });
+  };
+
   const onCreateDataTypeTemplate = async (template) => {
     const name = String(template?.name || "").trim();
     if (!name) return;
@@ -2188,6 +2346,74 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     }
   };
 
+  const isDataTypeFieldIncluded = (templateName, fieldName) => {
+    const tKey = String(templateName || "").trim().toLowerCase();
+    const fKey = String(fieldName || "").trim().toLowerCase();
+    if (!tKey || !fKey) return false;
+    const excluded = new Set(
+      (Array.isArray(dataTypeExcludedFieldsByPlc?.[chatKey]?.[tKey])
+        ? dataTypeExcludedFieldsByPlc[chatKey][tKey]
+        : []
+      ).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+    );
+    return !excluded.has(fKey);
+  };
+
+  const toggleDataTypeFieldIncluded = (templateName, fieldName) => {
+    const tKey = String(templateName || "").trim().toLowerCase();
+    const fKey = String(fieldName || "").trim().toLowerCase();
+    if (!tKey || !fKey) return;
+    setDataTypeExcludedFieldsByPlc((prev) => {
+      const currentByPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      const current = Array.isArray(currentByPlc[tKey]) ? currentByPlc[tKey] : [];
+      const has = current.some((x) => String(x || "").trim().toLowerCase() === fKey);
+      const next = has
+        ? current.filter((x) => String(x || "").trim().toLowerCase() !== fKey)
+        : [...current, fKey];
+      return {
+        ...prev,
+        [chatKey]: {
+          ...currentByPlc,
+          [tKey]: next,
+        },
+      };
+    });
+  };
+
+  const includeAllDataTypeFields = (templateName) => {
+    const tKey = String(templateName || "").trim().toLowerCase();
+    if (!tKey) return;
+    setDataTypeExcludedFieldsByPlc((prev) => {
+      const currentByPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      return {
+        ...prev,
+        [chatKey]: {
+          ...currentByPlc,
+          [tKey]: [],
+        },
+      };
+    });
+  };
+
+  const excludeAllDataTypeFields = (templateName) => {
+    const tKey = String(templateName || "").trim().toLowerCase();
+    if (!tKey) return;
+    const template = dataTypeTemplates.find((t) => String(t?.name || "").trim().toLowerCase() === tKey);
+    const allFields = (Array.isArray(template?.fields) ? template.fields : [])
+      .map((f) => String(f?.name || "").trim().toLowerCase())
+      .filter(Boolean);
+    setDataTypeExcludedFieldsByPlc((prev) => {
+      const currentByPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      return {
+        ...prev,
+        [chatKey]: {
+          ...currentByPlc,
+          [tKey]: Array.from(new Set(allFields)),
+        },
+      };
+    });
+  };
+
   const primitiveTypeSet = new Set([
     "bool",
     "bit",
@@ -2221,7 +2447,12 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         {(Array.isArray(fields) ? fields : []).map((field) => {
           const fieldName = String(field?.name || "").trim();
           const plcType = String(field?.plcType || "").trim();
-          const plcTypeKey = plcType.toLowerCase();
+          const parsed = parsePlcDataTypeDescriptor(
+            String(field?.baseType || field?.plcType || ""),
+            String(field?.arraySpec || "")
+          );
+          const lookupType = String(parsed.baseType || field?.baseType || plcType || "").trim();
+          const plcTypeKey = lookupType.toLowerCase();
           const targetTemplate = dataTypeTemplateByName.get(plcTypeKey);
           const hasNested = Boolean(targetTemplate) && !primitiveTypeSet.has(plcTypeKey);
           const recursive = hasNested && visitedTypes.includes(plcTypeKey);
@@ -2234,7 +2465,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: canExpand ? "22px 1fr" : "1fr",
+                  gridTemplateColumns: depth === 0 ? (canExpand ? "22px auto 1fr" : "auto 1fr") : (canExpand ? "22px 1fr" : "1fr"),
                   gap: 6,
                   alignItems: "center",
                 }}
@@ -2261,6 +2492,14 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                     {isExpanded ? "−" : "+"}
                   </button>
                 ) : null}
+                {depth === 0 ? (
+                  <input
+                    type="checkbox"
+                    checked={isDataTypeFieldIncluded(rootTemplateName, fieldName)}
+                    onChange={() => toggleDataTypeFieldIncluded(rootTemplateName, fieldName)}
+                    style={{ width: 14, height: 14 }}
+                  />
+                ) : null}
                 <span
                   style={{
                     border: "1px solid var(--border)",
@@ -2283,6 +2522,9 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                     <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>
                       : {plcType}
                     </span>
+                  ) : null}
+                  {parsed.isArray ? (
+                    <span style={{ color: "#2b6cff", fontWeight: 700 }}>[array]</span>
                   ) : null}
                   {recursive ? (
                     <span style={{ color: "#f59e0b", fontWeight: 700 }}>(recursive)</span>
@@ -3117,30 +3359,58 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                         </button>
                       </div>
                       {expandedAoiSet.has(String(template.name || "").trim().toLowerCase()) ? (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {template.fields.slice(0, 24).map((field) => (
-                          <span
-                            key={`${template.name}-${field.name}`}
-                            style={{
-                              border: "1px solid var(--border)",
-                              background: "var(--bg-soft)",
-                              color: "var(--text)",
-                              borderRadius: 999,
-                              padding: "2px 7px",
-                              fontSize: 10,
-                              fontWeight: 600,
-                            }}
-                            title={`${field.name}${field.plcType ? ` (${field.plcType})` : ""}`}
-                          >
-                            {field.name}
-                          </span>
-                        ))}
-                        {template.fields.length > 24 ? (
-                          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                            +{template.fields.length - 24} more
-                          </span>
-                        ) : null}
-                      </div>
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              data-preserve-style="true"
+                              onClick={() => includeAllAoiFields(template.name)}
+                              style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "3px 8px", fontSize: 10, fontWeight: 700 }}
+                            >
+                              Include All Fields
+                            </button>
+                            <button
+                              type="button"
+                              data-preserve-style="true"
+                              onClick={() => excludeAllAoiFields(template.name)}
+                              style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "3px 8px", fontSize: 10, fontWeight: 700 }}
+                            >
+                              Exclude All Fields
+                            </button>
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {template.fields.map((field) => {
+                              const included = isAoiFieldIncluded(template.name, field.name);
+                              return (
+                                <label
+                                  key={`${template.name}-${field.name}`}
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: included ? "var(--bg-soft)" : "transparent",
+                                    color: included ? "var(--text)" : "var(--text-muted)",
+                                    borderRadius: 999,
+                                    padding: "2px 7px",
+                                    fontSize: 10,
+                                    fontWeight: 600,
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    cursor: "pointer",
+                                  }}
+                                  title={`${field.name}${field.plcType ? ` (${field.plcType})` : ""}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={included}
+                                    onChange={() => toggleAoiFieldIncluded(template.name, field.name)}
+                                    style={{ width: 12, height: 12 }}
+                                  />
+                                  <span>{field.name}{field?.isArray ? " [array]" : ""}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
                       ) : null}
                     </div>
                   ))}
@@ -3323,6 +3593,24 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                       </div>
                       {expandedDataTypeSet.has(String(template.name || "").trim().toLowerCase()) ? (
                         <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              data-preserve-style="true"
+                              onClick={() => includeAllDataTypeFields(template.name)}
+                              style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "3px 8px", fontSize: 10, fontWeight: 700 }}
+                            >
+                              Include All Fields
+                            </button>
+                            <button
+                              type="button"
+                              data-preserve-style="true"
+                              onClick={() => excludeAllDataTypeFields(template.name)}
+                              style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "3px 8px", fontSize: 10, fontWeight: 700 }}
+                            >
+                              Exclude All Fields
+                            </button>
+                          </div>
                           {renderDataTypeFieldTree(
                             template.name,
                             Array.isArray(template.fields) ? template.fields : [],
