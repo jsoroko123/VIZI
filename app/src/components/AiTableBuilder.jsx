@@ -729,7 +729,7 @@ export default function AiTableBuilder() {
           }}
         >
           <div>
-            <div style={{ fontSize: 20, fontWeight: 800 }}>VIZI AI</div>
+            <div style={{ fontSize: 20, fontWeight: 800 }}>MESORA AI</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button
@@ -1323,7 +1323,7 @@ export default function AiTableBuilder() {
                   placeholder={
                     selectedReport
                       ? `Update "${String(selectedReport.name || "")}" (filters, grouping, sorting, columns)...`
-                      : "Ask VIZI AI..."
+                      : "Ask MESORA AI..."
                   }
                   style={{
                     flex: 1,

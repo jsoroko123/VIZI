@@ -27,7 +27,11 @@ function pickFirstExisting(candidates = []) {
   return "";
 }
 
-const ROOT_HINT = process.env.VIZI_ROOT ? path.resolve(process.env.VIZI_ROOT) : "";
+const ROOT_HINT = process.env.MESORA_ROOT
+  ? path.resolve(process.env.MESORA_ROOT)
+  : process.env.VIZI_ROOT
+    ? path.resolve(process.env.VIZI_ROOT)
+    : "";
 const ROOT_CANDIDATES = [ROOT_HINT, DEFAULT_APP_ROOT, path.resolve(DEFAULT_APP_ROOT, "..")].filter(Boolean);
 const REPO_ROOT = pickFirstExisting(
   ROOT_CANDIDATES.map((root) => path.resolve(root, "src", "assets", "SVG_Files"))
@@ -6939,6 +6943,123 @@ async function start() {
     ALTER TABLE routes
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS jobs (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS job_details (
+      id BIGSERIAL PRIMARY KEY,
+      job_id BIGINT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      detail_value TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE job_details
+    ADD COLUMN IF NOT EXISTS job_id BIGINT;
+  `);
+  await pool.query(`
+    ALTER TABLE job_details
+    ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE job_details
+    ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE job_details
+    ADD COLUMN IF NOT EXISTS detail_value TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE job_details
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    ALTER TABLE job_details
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'job_details'
+      ) THEN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'job_details_job_id_fkey'
+        ) THEN
+          ALTER TABLE job_details
+          ADD CONSTRAINT job_details_job_id_fkey
+          FOREIGN KEY (job_id) REFERENCES jobs(id)
+          ON DELETE CASCADE;
+        END IF;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS job_details_job_id_idx
+    ON job_details(job_id);
+  `);
+  await pool.query(
+    `
+    INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
+    VALUES (
+      'jobs',
+      $1::jsonb,
+      $2::jsonb
+    )
+    ON CONFLICT (table_name) DO NOTHING
+    `,
+    [
+      JSON.stringify(["name", "status", "updated_at"]),
+      JSON.stringify(["name", "description", "status", "created_at", "updated_at"]),
+    ]
+  );
+  await pool.query(
+    `
+    INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
+    VALUES (
+      'job_details',
+      $1::jsonb,
+      $2::jsonb
+    )
+    ON CONFLICT (table_name) DO NOTHING
+    `,
+    [
+      JSON.stringify(["job_id", "name", "detail_value", "updated_at"]),
+      JSON.stringify(["job_id", "name", "description", "detail_value", "created_at", "updated_at"]),
+    ]
+  );
   await pool.query(`
     CREATE TABLE IF NOT EXISTS equipment (
       id BIGSERIAL PRIMARY KEY,

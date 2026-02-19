@@ -195,7 +195,7 @@ async function main() {
     port: Number(config?.opcua?.port ?? 4840),
     resourcePath: String(config?.opcua?.resourcePath ?? "/UA/ControlLogix"),
     buildInfo: {
-      productName: "Vizi-CLX-OPCUA-Bridge",
+      productName: "Mesora-CLX-OPCUA-Bridge",
       buildNumber: "1",
       buildDate: new Date(),
     },

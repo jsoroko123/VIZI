@@ -1,6 +1,6 @@
-# VIZI AI (Postgres)
+# MESORA AI (Postgres)
 
-This server exposes endpoints used by the Vizi `/ai` page to generate and apply PostgreSQL DDL.
+This server exposes endpoints used by the Mesora `/ai` page to generate and apply PostgreSQL DDL.
 
 ## Setup
 1. Copy `.env.example` to `.env` and fill values.

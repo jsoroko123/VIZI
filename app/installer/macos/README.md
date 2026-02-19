@@ -1,6 +1,6 @@
-# Vizi macOS Installer
+# Mesora macOS Installer
 
-This installer sets up Vizi and required Node packages for:
+This installer sets up Mesora and required Node packages for:
 
 - `app` (React + Vite UI)
 - `app/opc-server` (OPC bridge)
@@ -15,13 +15,13 @@ This installer sets up Vizi and required Node packages for:
 
 ```bash
 cd app/installer/macos
-chmod +x Install-Vizi.command install-vizi-macos.sh
-./Install-Vizi.command
+chmod +x Install-Mesora.command install-vizi-macos.sh
+./Install-Mesora.command
 ```
 
 Install target defaults to:
 
-- `~/Applications/Vizi`
+- `~/Applications/Mesora`
 
 ## Direct script usage
 
@@ -33,7 +33,7 @@ Useful options:
 
 ```bash
 # Custom install path
-bash ./install-vizi-macos.sh --install-root "$HOME/Vizi"
+bash ./install-vizi-macos.sh --install-root "$HOME/Mesora"
 
 # Skip dependency install (script test only)
 bash ./install-vizi-macos.sh --skip-dependency-install
@@ -57,6 +57,6 @@ bash ./install-vizi-macos.sh --ollama-model "llama3.2"
 - If Node.js 20+ is missing and Homebrew is available, installer will install `node@20`.
 - PostgreSQL is installed via Homebrew (`postgresql@17`) unless skipped.
 - AI server settings are in:
-  - `~/Applications/Vizi/ai-server/.env` (or your custom install root)
+  - `~/Applications/Mesora/ai-server/.env` (or your custom install root)
 - OPC server config is in:
-  - `~/Applications/Vizi/opc-server/config.json` (or your custom install root)
+  - `~/Applications/Mesora/opc-server/config.json` (or your custom install root)

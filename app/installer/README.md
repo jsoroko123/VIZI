@@ -1,17 +1,17 @@
-# Vizi Installers (Windows + macOS)
+# Mesora Installers (Windows + macOS)
 
 ## Easiest options
 
 - From project root (`app`):
-  - Windows: double-click `Install-Vizi.bat`
-  - macOS: double-click `Install-Vizi.command`
+  - Windows: double-click `Install-Mesora.bat`
+  - macOS: double-click `Install-Mesora.command`
 
 ## No-command-line (customer-friendly GUI)
 
 - Windows GUI wizard:
-  - `installer/windows/Install-Vizi-GUI.bat`
+  - `installer/windows/Install-Mesora-GUI.bat`
 - macOS dialog installer:
-  - `installer/macos/Install-Vizi-GUI.command`
+  - `installer/macos/Install-Mesora-GUI.command`
 
 - Or from terminal (auto-detect OS):
 

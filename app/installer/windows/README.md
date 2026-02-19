@@ -1,19 +1,19 @@
-# Vizi Windows Installer
+# Mesora Windows Installer
 
-This installer sets up Vizi and all required Node packages for:
+This installer sets up Mesora and all required Node packages for:
 
 - `app` (React + Vite UI)
 - `app/opc-server` (OPC bridge)
 - `app/ai-server` (AI + API server)
-- PostgreSQL server (default: version 17) with a Vizi database/user
+- PostgreSQL server (default: version 17) with a Mesora database/user
 - Ollama (local LLM runtime)
 
 ## Quick install
 
-1. Double-click `Install-Vizi.bat`
+1. Double-click `Install-Mesora.bat`
 2. Wait for package installation to complete
-3. Start Vizi from the Desktop shortcut (`Vizi`) or:
-   - `%LOCALAPPDATA%\Vizi\Start-Vizi.cmd`
+3. Start Mesora from the Desktop shortcut (`Mesora`) or:
+   - `%LOCALAPPDATA%\Mesora\Start-Mesora.cmd`
 
 ## PowerShell usage
 
@@ -25,7 +25,7 @@ Useful options:
 
 ```powershell
 # Custom install path
-.\install-vizi.ps1 -InstallRoot "D:\Apps\Vizi"
+.\install-vizi.ps1 -InstallRoot "D:\Apps\Mesora"
 
 # Skip dependency install (installer script test only)
 .\install-vizi.ps1 -SkipDependencyInstall
@@ -47,9 +47,9 @@ Useful options:
   -PostgresVersion 17 `
   -PostgresPort 5432 `
   -PostgresSuperPassword "postgres" `
-  -PostgresDatabase "vizi_db" `
-  -PostgresAppUser "vizi_user" `
-  -PostgresAppPassword "vizi_user"
+  -PostgresDatabase "mesora_db" `
+  -PostgresAppUser "mesora_user" `
+  -PostgresAppPassword "mesora_user"
 
 # Optional: pull an Ollama model and set OPENAI_MODEL to it
 .\install-vizi.ps1 -OllamaModel "llama3.2"
@@ -62,6 +62,6 @@ Useful options:
 - Requires `winget` for unattended PostgreSQL installation (unless `-SkipPostgresInstall`).
 - Requires `winget` for unattended Ollama installation (unless `-SkipOllamaInstall`).
 - AI server settings are in:
-  - `%LOCALAPPDATA%\Vizi\ai-server\.env`
+  - `%LOCALAPPDATA%\Mesora\ai-server\.env`
 - OPC server config is in:
-  - `%LOCALAPPDATA%\Vizi\opc-server\config.json`
+  - `%LOCALAPPDATA%\Mesora\opc-server\config.json`
