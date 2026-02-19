@@ -582,10 +582,15 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [aoiTemplateError, setAoiTemplateError] = useState("");
   const [aoiTemplateSavingAll, setAoiTemplateSavingAll] = useState(false);
   const [aoiTemplateSavingName, setAoiTemplateSavingName] = useState("");
+  const [aoiSelectionByPlc, setAoiSelectionByPlc] = useState({});
+  const [aoiExpandedByPlc, setAoiExpandedByPlc] = useState({});
   const [dataTypeTemplateStatus, setDataTypeTemplateStatus] = useState("");
   const [dataTypeTemplateError, setDataTypeTemplateError] = useState("");
   const [dataTypeTemplateSavingAll, setDataTypeTemplateSavingAll] = useState(false);
   const [dataTypeTemplateSavingName, setDataTypeTemplateSavingName] = useState("");
+  const [dataTypeSelectionByPlc, setDataTypeSelectionByPlc] = useState({});
+  const [dataTypeExpandedByPlc, setDataTypeExpandedByPlc] = useState({});
+  const [dataTypeNodeExpandedByPlc, setDataTypeNodeExpandedByPlc] = useState({});
   const chatScrollRef = useRef(null);
 
   const selected = useMemo(() => {
@@ -618,6 +623,15 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     () => scanDataTypeTemplates(String(selected?.rawText || "")),
     [selected?.rawText]
   );
+  const dataTypeTemplateByName = useMemo(() => {
+    const map = new Map();
+    dataTypeTemplates.forEach((t) => {
+      const key = String(t?.name || "").trim().toLowerCase();
+      if (!key) return;
+      if (!map.has(key)) map.set(key, t);
+    });
+    return map;
+  }, [dataTypeTemplates]);
 
   useEffect(() => {
     setExpandedSummaryByKey({});
@@ -1939,6 +1953,92 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     }
   };
 
+  const selectedAoiNames = Array.isArray(aoiSelectionByPlc?.[chatKey]) ? aoiSelectionByPlc[chatKey] : [];
+  const selectedAoiSet = new Set(
+    selectedAoiNames.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+  );
+  const expandedAoiNames = Array.isArray(aoiExpandedByPlc?.[chatKey]) ? aoiExpandedByPlc[chatKey] : [];
+  const expandedAoiSet = new Set(
+    expandedAoiNames.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+  );
+
+  const toggleAoiSelected = (name) => {
+    const key = String(name || "").trim();
+    if (!key) return;
+    const keyLower = key.toLowerCase();
+    setAoiSelectionByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      const exists = current.some((v) => String(v || "").trim().toLowerCase() === keyLower);
+      const next = exists
+        ? current.filter((v) => String(v || "").trim().toLowerCase() !== keyLower)
+        : [...current, key];
+      return { ...prev, [chatKey]: next };
+    });
+  };
+
+  const toggleAoiExpanded = (name) => {
+    const key = String(name || "").trim();
+    if (!key) return;
+    const keyLower = key.toLowerCase();
+    setAoiExpandedByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      const exists = current.some((v) => String(v || "").trim().toLowerCase() === keyLower);
+      const next = exists
+        ? current.filter((v) => String(v || "").trim().toLowerCase() !== keyLower)
+        : [...current, key];
+      return { ...prev, [chatKey]: next };
+    });
+  };
+
+  const selectAllAoiTemplates = () => {
+    setAoiSelectionByPlc((prev) => ({
+      ...prev,
+      [chatKey]: aoiTemplates.map((t) => String(t?.name || "").trim()).filter(Boolean),
+    }));
+  };
+
+  const clearAllAoiTemplates = () => {
+    setAoiSelectionByPlc((prev) => ({ ...prev, [chatKey]: [] }));
+  };
+
+  const expandAllAoiTemplates = () => {
+    setAoiExpandedByPlc((prev) => ({
+      ...prev,
+      [chatKey]: aoiTemplates.map((t) => String(t?.name || "").trim()).filter(Boolean),
+    }));
+  };
+
+  const collapseAllAoiTemplates = () => {
+    setAoiExpandedByPlc((prev) => ({ ...prev, [chatKey]: [] }));
+  };
+
+  const onImportSelectedAoiTemplates = async () => {
+    if (!selectedAoiSet.size || aoiTemplateSavingAll) return;
+    setAoiTemplateStatus("");
+    setAoiTemplateError("");
+    setAoiTemplateSavingAll(true);
+    try {
+      const selectedTemplates = aoiTemplates.filter((template) =>
+        selectedAoiSet.has(String(template?.name || "").trim().toLowerCase())
+      );
+      let successCount = 0;
+      const failures = [];
+      for (const template of selectedTemplates) {
+        const result = await createOneAoiTemplate(template);
+        if (result.ok) successCount += 1;
+        else failures.push(result.error || `Failed to save ${String(template?.name || "").trim()}`);
+      }
+      if (failures.length) {
+        setAoiTemplateError(failures.slice(0, 4).join(" | "));
+      }
+      setAoiTemplateStatus(`Imported ${successCount}/${selectedTemplates.length} selected AOI template(s).`);
+    } catch (err) {
+      setAoiTemplateError(String(err?.message || "Failed to import selected AOI templates."));
+    } finally {
+      setAoiTemplateSavingAll(false);
+    }
+  };
+
   const onCreateDataTypeTemplate = async (template) => {
     const name = String(template?.name || "").trim();
     if (!name) return;
@@ -1983,6 +2083,227 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     } finally {
       setDataTypeTemplateSavingAll(false);
     }
+  };
+
+  const selectedDataTypeNames = Array.isArray(dataTypeSelectionByPlc?.[chatKey])
+    ? dataTypeSelectionByPlc[chatKey]
+    : [];
+  const selectedDataTypeSet = new Set(
+    selectedDataTypeNames.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+  );
+  const expandedDataTypeNames = Array.isArray(dataTypeExpandedByPlc?.[chatKey])
+    ? dataTypeExpandedByPlc[chatKey]
+    : [];
+  const expandedDataTypeSet = new Set(
+    expandedDataTypeNames.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+  );
+
+  const toggleDataTypeSelected = (name) => {
+    const key = String(name || "").trim();
+    if (!key) return;
+    const keyLower = key.toLowerCase();
+    setDataTypeSelectionByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      const exists = current.some((v) => String(v || "").trim().toLowerCase() === keyLower);
+      const next = exists
+        ? current.filter((v) => String(v || "").trim().toLowerCase() !== keyLower)
+        : [...current, key];
+      return { ...prev, [chatKey]: next };
+    });
+  };
+
+  const toggleDataTypeExpanded = (name) => {
+    const key = String(name || "").trim();
+    if (!key) return;
+    const keyLower = key.toLowerCase();
+    setDataTypeExpandedByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      const exists = current.some((v) => String(v || "").trim().toLowerCase() === keyLower);
+      const next = exists
+        ? current.filter((v) => String(v || "").trim().toLowerCase() !== keyLower)
+        : [...current, key];
+      return { ...prev, [chatKey]: next };
+    });
+  };
+
+  const selectAllDataTypes = () => {
+    setDataTypeSelectionByPlc((prev) => ({
+      ...prev,
+      [chatKey]: dataTypeTemplates.map((t) => String(t?.name || "").trim()).filter(Boolean),
+    }));
+  };
+
+  const clearAllDataTypes = () => {
+    setDataTypeSelectionByPlc((prev) => ({ ...prev, [chatKey]: [] }));
+  };
+
+  const expandAllDataTypes = () => {
+    setDataTypeExpandedByPlc((prev) => ({
+      ...prev,
+      [chatKey]: dataTypeTemplates.map((t) => String(t?.name || "").trim()).filter(Boolean),
+    }));
+  };
+
+  const collapseAllDataTypes = () => {
+    setDataTypeExpandedByPlc((prev) => ({ ...prev, [chatKey]: [] }));
+  };
+
+  const toggleDataTypeNodeExpanded = (nodeKey) => {
+    const key = String(nodeKey || "").trim();
+    if (!key) return;
+    setDataTypeNodeExpandedByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      const has = current.includes(key);
+      const next = has ? current.filter((k) => k !== key) : [...current, key];
+      return { ...prev, [chatKey]: next };
+    });
+  };
+
+  const onImportSelectedDataTypes = async () => {
+    if (!selectedDataTypeSet.size || dataTypeTemplateSavingAll) return;
+    setDataTypeTemplateStatus("");
+    setDataTypeTemplateError("");
+    setDataTypeTemplateSavingAll(true);
+    try {
+      const selectedTemplates = dataTypeTemplates.filter((template) =>
+        selectedDataTypeSet.has(String(template?.name || "").trim().toLowerCase())
+      );
+      let successCount = 0;
+      const failures = [];
+      for (const template of selectedTemplates) {
+        const result = await createOneDataTypeTemplate(template);
+        if (result.ok) successCount += 1;
+        else failures.push(result.error || `Failed to save ${String(template?.name || "").trim()}`);
+      }
+      if (failures.length) {
+        setDataTypeTemplateError(failures.slice(0, 4).join(" | "));
+      }
+      setDataTypeTemplateStatus(
+        `Imported ${successCount}/${selectedTemplates.length} selected Data Type template(s).`
+      );
+    } catch (err) {
+      setDataTypeTemplateError(String(err?.message || "Failed to import selected Data Type templates."));
+    } finally {
+      setDataTypeTemplateSavingAll(false);
+    }
+  };
+
+  const primitiveTypeSet = new Set([
+    "bool",
+    "bit",
+    "sint",
+    "int",
+    "dint",
+    "lint",
+    "usint",
+    "uint",
+    "udint",
+    "ulint",
+    "real",
+    "lreal",
+    "string",
+    "wstring",
+    "byte",
+    "word",
+    "dword",
+    "time",
+    "date",
+    "datetime",
+  ]);
+
+  const renderDataTypeFieldTree = (rootTemplateName, fields, visitedTypes = [], depth = 0) => {
+    const nodeExpandedSet = new Set(
+      (Array.isArray(dataTypeNodeExpandedByPlc?.[chatKey]) ? dataTypeNodeExpandedByPlc[chatKey] : [])
+        .map((k) => String(k || ""))
+    );
+    return (
+      <div style={{ display: "grid", gap: 4 }}>
+        {(Array.isArray(fields) ? fields : []).map((field) => {
+          const fieldName = String(field?.name || "").trim();
+          const plcType = String(field?.plcType || "").trim();
+          const plcTypeKey = plcType.toLowerCase();
+          const targetTemplate = dataTypeTemplateByName.get(plcTypeKey);
+          const hasNested = Boolean(targetTemplate) && !primitiveTypeSet.has(plcTypeKey);
+          const recursive = hasNested && visitedTypes.includes(plcTypeKey);
+          const nodeKey = `dt:${String(rootTemplateName || "").trim()}|${visitedTypes.join(">")}|${fieldName}|${plcType}`;
+          const isExpanded = nodeExpandedSet.has(nodeKey);
+          const canExpand = hasNested && !recursive;
+          const indentPx = Math.max(0, depth * 16);
+          return (
+            <div key={`${nodeKey}-row`} style={{ marginLeft: indentPx }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: canExpand ? "22px 1fr" : "1fr",
+                  gap: 6,
+                  alignItems: "center",
+                }}
+              >
+                {canExpand ? (
+                  <button
+                    type="button"
+                    data-preserve-style="true"
+                    onClick={() => toggleDataTypeNodeExpanded(nodeKey)}
+                    style={{
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-elev)",
+                      color: "var(--text)",
+                      borderRadius: 6,
+                      width: 22,
+                      height: 22,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      padding: 0,
+                    }}
+                    title={isExpanded ? "Collapse nested fields" : "Expand nested fields"}
+                  >
+                    {isExpanded ? "−" : "+"}
+                  </button>
+                ) : null}
+                <span
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-soft)",
+                    color: "var(--text)",
+                    borderRadius: 999,
+                    padding: "2px 7px",
+                    fontSize: 10,
+                    fontWeight: 600,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    width: "fit-content",
+                    maxWidth: "100%",
+                  }}
+                  title={`${fieldName}${plcType ? ` (${plcType})` : ""}`}
+                >
+                  <span>{fieldName || "(unnamed)"}</span>
+                  {plcType ? (
+                    <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>
+                      : {plcType}
+                    </span>
+                  ) : null}
+                  {recursive ? (
+                    <span style={{ color: "#f59e0b", fontWeight: 700 }}>(recursive)</span>
+                  ) : null}
+                </span>
+              </div>
+              {canExpand && isExpanded ? (
+                <div style={{ marginTop: 4 }}>
+                  {renderDataTypeFieldTree(
+                    rootTemplateName,
+                    Array.isArray(targetTemplate?.fields) ? targetTemplate.fields : [],
+                    [...visitedTypes, plcTypeKey],
+                    depth + 1
+                  )}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   return (
@@ -2666,6 +2987,57 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                 >
                   {aoiTemplateSavingAll ? "Creating..." : `Create All (${aoiTemplates.length})`}
                 </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={onImportSelectedAoiTemplates}
+                  disabled={aoiTemplateSavingAll || selectedAoiSet.size === 0}
+                  style={{
+                    border: "1px solid #2b6cff",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: aoiTemplateSavingAll || selectedAoiSet.size === 0 ? "default" : "pointer",
+                    opacity: aoiTemplateSavingAll || selectedAoiSet.size === 0 ? 0.65 : 1,
+                  }}
+                >
+                  {`Import Selected (${selectedAoiSet.size})`}
+                </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={selectAllAoiTemplates}
+                  style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700 }}
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={clearAllAoiTemplates}
+                  style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700 }}
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={expandAllAoiTemplates}
+                  style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700 }}
+                >
+                  Expand All
+                </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={collapseAllAoiTemplates}
+                  style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700 }}
+                >
+                  Collapse All
+                </button>
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                   Saves/updates OPC templates from AOI parameter definitions.
                 </div>
@@ -2695,13 +3067,35 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                         gap: 6,
                       }}
                     >
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 8, alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedAoiSet.has(String(template.name || "").trim().toLowerCase())}
+                          onChange={() => toggleAoiSelected(template.name)}
+                          style={{ width: 14, height: 14 }}
+                        />
                         <div>
                           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>{template.name}</div>
                           <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                             {template.fields.length} field(s){template.revision ? ` | Rev ${template.revision}` : ""}
                           </div>
                         </div>
+                        <button
+                          type="button"
+                          data-preserve-style="true"
+                          onClick={() => toggleAoiExpanded(template.name)}
+                          style={{
+                            border: "1px solid var(--border)",
+                            background: "var(--bg-elev)",
+                            color: "var(--text)",
+                            borderRadius: 8,
+                            padding: "4px 8px",
+                            fontSize: 10,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {expandedAoiSet.has(String(template.name || "").trim().toLowerCase()) ? "Collapse" : "Expand"}
+                        </button>
                         <button
                           type="button"
                           data-preserve-style="true"
@@ -2722,6 +3116,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                           {aoiTemplateSavingName === template.name ? "Saving..." : "Create Template"}
                         </button>
                       </div>
+                      {expandedAoiSet.has(String(template.name || "").trim().toLowerCase()) ? (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                         {template.fields.slice(0, 24).map((field) => (
                           <span
@@ -2746,6 +3141,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                           </span>
                         ) : null}
                       </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -2790,6 +3186,57 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                 >
                   {dataTypeTemplateSavingAll ? "Creating..." : `Create All (${dataTypeTemplates.length})`}
                 </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={onImportSelectedDataTypes}
+                  disabled={dataTypeTemplateSavingAll || selectedDataTypeSet.size === 0}
+                  style={{
+                    border: "1px solid #2b6cff",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: dataTypeTemplateSavingAll || selectedDataTypeSet.size === 0 ? "default" : "pointer",
+                    opacity: dataTypeTemplateSavingAll || selectedDataTypeSet.size === 0 ? 0.65 : 1,
+                  }}
+                >
+                  {`Import Selected (${selectedDataTypeSet.size})`}
+                </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={selectAllDataTypes}
+                  style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700 }}
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={clearAllDataTypes}
+                  style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700 }}
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={expandAllDataTypes}
+                  style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700 }}
+                >
+                  Expand All
+                </button>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={collapseAllDataTypes}
+                  style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700 }}
+                >
+                  Collapse All
+                </button>
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                   Saves/updates OPC templates from Data Type member definitions.
                 </div>
@@ -2819,13 +3266,35 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                         gap: 6,
                       }}
                     >
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 8, alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedDataTypeSet.has(String(template.name || "").trim().toLowerCase())}
+                          onChange={() => toggleDataTypeSelected(template.name)}
+                          style={{ width: 14, height: 14 }}
+                        />
                         <div>
                           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>{template.name}</div>
                           <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                             {template.fields.length} field(s)
                           </div>
                         </div>
+                        <button
+                          type="button"
+                          data-preserve-style="true"
+                          onClick={() => toggleDataTypeExpanded(template.name)}
+                          style={{
+                            border: "1px solid var(--border)",
+                            background: "var(--bg-elev)",
+                            color: "var(--text)",
+                            borderRadius: 8,
+                            padding: "4px 8px",
+                            fontSize: 10,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {expandedDataTypeSet.has(String(template.name || "").trim().toLowerCase()) ? "Collapse" : "Expand"}
+                        </button>
                         <button
                           type="button"
                           data-preserve-style="true"
@@ -2852,30 +3321,16 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                           {dataTypeTemplateSavingName === template.name ? "Saving..." : "Create Template"}
                         </button>
                       </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {template.fields.slice(0, 24).map((field) => (
-                          <span
-                            key={`${template.name}-${field.name}`}
-                            style={{
-                              border: "1px solid var(--border)",
-                              background: "var(--bg-soft)",
-                              color: "var(--text)",
-                              borderRadius: 999,
-                              padding: "2px 7px",
-                              fontSize: 10,
-                              fontWeight: 600,
-                            }}
-                            title={`${field.name}${field.plcType ? ` (${field.plcType})` : ""}`}
-                          >
-                            {field.name}
-                          </span>
-                        ))}
-                        {template.fields.length > 24 ? (
-                          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                            +{template.fields.length - 24} more
-                          </span>
-                        ) : null}
-                      </div>
+                      {expandedDataTypeSet.has(String(template.name || "").trim().toLowerCase()) ? (
+                        <div style={{ display: "grid", gap: 4 }}>
+                          {renderDataTypeFieldTree(
+                            template.name,
+                            Array.isArray(template.fields) ? template.fields : [],
+                            [String(template.name || "").trim().toLowerCase()],
+                            0
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
