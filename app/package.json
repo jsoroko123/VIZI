@@ -10,6 +10,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "install:easy": "node scripts/install-vizi.js",
+    "install:mac": "bash installer/macos/install-vizi-macos.sh",
     "svg:streamline": "node scripts/streamline-svg-library.mjs",
     "opc-server": "npm --prefix opc-server start",
     "ai-server": "npm --prefix ai-server start"
