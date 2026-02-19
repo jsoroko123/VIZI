@@ -1267,6 +1267,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return out;
   }
 
+  function getParentPathForGrouping(rawPath) {
+    const text = String(rawPath || "").trim();
+    if (!text) return "";
+    const dot = text.lastIndexOf(".");
+    if (dot <= 0) return "";
+    return text.slice(0, dot).trim();
+  }
+
   function updateTag(idx, key, value) {
     setConfig((prev) => {
       const next = [...(prev.tags || [])];
@@ -1755,11 +1763,15 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       setError("UDT has no fields.");
       return;
     }
+    const rootGroup = prefix || applyTemplate;
     const newTags = fields.map((f) => {
       const fieldName = String(f?.name || f?.tagPath || "").trim();
       const fieldPath = String(f?.tagPath || f?.name || "").trim();
       const name = prefix ? `${prefix}.${fieldName}` : fieldName;
       const tagPath = prefix ? `${prefix}.${fieldPath}` : fieldPath;
+      const parentPath = getParentPathForGrouping(fieldPath);
+      const nestedGroupName =
+        rootGroup && parentPath ? `${rootGroup}.${parentPath}` : rootGroup || parentPath || "";
       const fieldMappingSet = String(f?.mappingSet || "").trim();
       const fieldUaType = String(f?.uaType || "").trim();
       const fieldTopic = String(f?.topic || "").trim();
@@ -1776,7 +1788,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         name,
         tagPath,
         topic: fieldTopic || applyTopic,
-        groupName: prefix,
+        groupName: nestedGroupName,
         plcType: applyTemplate,
         uaType: fieldUaType,
         pollMs: fieldPollMs,
@@ -3311,24 +3323,25 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                         borderRadius: 4,
                                                       }}
                                                     >
-                                                      <span
-                                                        style={{
-                                                          color:
-                                                            t.enabled === false
-                                                              ? "#b42318"
-                                                              : "var(--text)",
-                                                        }}
-                                                      >
-                                                        {t.enabled === false
-                                                          ? "Disabled"
-                                                          : formatLiveNumber(scaledValue, decimals)}
-                                                      </span>
-                                                      {errorCount > 0 ? (
-                                                        <span style={{ color: "#b42318", marginLeft: 8 }}>
-                                                          (err {errorCount})
+                                                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                                        <span
+                                                          style={{
+                                                            minWidth: 70,
+                                                            color:
+                                                              t.enabled === false
+                                                                ? "#b42318"
+                                                                : "var(--text)",
+                                                          }}
+                                                        >
+                                                          {t.enabled === false
+                                                            ? "Disabled"
+                                                            : formatLiveNumber(scaledValue, decimals)}
                                                         </span>
-                                                      ) : null}
-                                                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                                                        {errorCount > 0 ? (
+                                                          <span style={{ color: "#b42318", fontSize: 11 }}>
+                                                            (err {errorCount})
+                                                          </span>
+                                                        ) : null}
                                                         <input
                                                           value={writeDraft}
                                                           onChange={(e) =>
