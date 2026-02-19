@@ -1928,9 +1928,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       const fieldPath = String(f?.tagPath || f?.name || "").trim();
       const name = prefix ? `${prefix}.${fieldName}` : fieldName;
       const tagPath = prefix ? `${prefix}.${fieldPath}` : fieldPath;
-      const parentPath = getParentPathForGrouping(fieldPath);
-      const nestedGroupName =
-        rootGroup && parentPath ? `${rootGroup}.${parentPath}` : rootGroup || parentPath || "";
       const fieldMappingSet = String(f?.mappingSet || "").trim();
       const fieldUaType = String(f?.uaType || "").trim();
       const fieldTopic = String(f?.topic || "").trim();
@@ -1947,7 +1944,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         name,
         tagPath,
         topic: fieldTopic || applyTopic,
-        groupName: nestedGroupName,
+        groupName: rootGroup,
         plcType: applyTemplate,
         uaType: fieldUaType,
         pollMs: fieldPollMs,
@@ -3432,28 +3429,52 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                           const buildHierarchyRows = (items) => {
                                             const list = Array.isArray(items) ? items : [];
                                             const byKey = new Map();
-                                            const nodes = list.map((entry) => {
-                                              const path = normalizeTagName(entry?.tag?.tagPath || entry?.tag?.name || "");
-                                              const key = path.toLowerCase();
-                                              const node = { ...entry, path, key, children: [] };
-                                              if (key && !byKey.has(key)) byKey.set(key, node);
+                                            const linkChild = (parent, child) => {
+                                              if (!parent || !child) return;
+                                              if (!Array.isArray(parent.children)) parent.children = [];
+                                              if (!parent.children.some((x) => x?.key === child?.key)) {
+                                                parent.children.push(child);
+                                              }
+                                            };
+                                            const ensureNode = (path) => {
+                                              const normalizedPath = normalizeTagName(path || "");
+                                              if (!normalizedPath) return null;
+                                              const key = normalizedPath.toLowerCase();
+                                              if (byKey.has(key)) return byKey.get(key);
+                                              const node = {
+                                                tag: null,
+                                                idx: null,
+                                                path: normalizedPath,
+                                                key,
+                                                synthetic: true,
+                                                children: [],
+                                              };
+                                              byKey.set(key, node);
+                                              const dot = normalizedPath.lastIndexOf(".");
+                                              if (dot > 0) {
+                                                const parentPath = normalizedPath.slice(0, dot);
+                                                const parent = ensureNode(parentPath);
+                                                linkChild(parent, node);
+                                              }
                                               return node;
+                                            };
+                                            list.forEach((entry) => {
+                                              // Build hierarchy from display tag name first so the parent row is the UDT instance.
+                                              const path = normalizeTagName(entry?.tag?.name || entry?.tag?.tagPath || "");
+                                              if (!path) return;
+                                              const node = ensureNode(path);
+                                              if (!node) return;
+                                              node.tag = entry?.tag || null;
+                                              node.idx = Number.isInteger(entry?.idx) ? entry.idx : null;
+                                              node.synthetic = false;
                                             });
-                                            const roots = [];
-                                            nodes.forEach((node) => {
-                                              if (!node.path) {
-                                                roots.push(node);
-                                                return;
-                                              }
-                                              const dot = node.path.lastIndexOf(".");
-                                              if (dot <= 0) {
-                                                roots.push(node);
-                                                return;
-                                              }
-                                              const parentKey = node.path.slice(0, dot).toLowerCase();
-                                              const parent = byKey.get(parentKey);
-                                              if (parent && parent !== node) parent.children.push(node);
-                                              else roots.push(node);
+                                            const roots = Array.from(byKey.values()).filter((node) => {
+                                              const p = String(node?.path || "");
+                                              if (!p) return false;
+                                              const dot = p.lastIndexOf(".");
+                                              if (dot <= 0) return true;
+                                              const parentKey = p.slice(0, dot).toLowerCase();
+                                              return !byKey.has(parentKey);
                                             });
                                             const sortNodes = (arr) =>
                                               [...arr].sort((a, b) =>
@@ -3483,66 +3504,73 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             return out;
                                           };
                                           const hierarchyRows = buildHierarchyRows(tagGroup.items);
-                                          return hierarchyRows.map(({ tag: t, idx, depth, hasChildren, expanded, expandedKey }) => {
-                                          const rowEditing = tagTableEditing && editingTagIndex === idx;
+                                          return hierarchyRows.map(({ tag: t, idx, path, synthetic, depth, hasChildren, expanded, expandedKey }) => {
+                                          const isSynthetic = synthetic === true || !t || !Number.isInteger(idx);
+                                          const rowEditing = !isSynthetic && tagTableEditing && editingTagIndex === idx;
                                         return (
-                                          <Fragment key={`tag-row-${idx}`}>
-                                          <tr style={{ borderTop: "1px solid var(--border)" }}>
+                                          <Fragment key={`tag-row-${isSynthetic ? path : idx}`}>
+                                          <tr style={{ borderTop: "1px solid var(--border)", background: isSynthetic ? "var(--bg-soft)" : "transparent" }}>
                                             {showTagColumn("enabled") ? (
                                               <td style={{ padding: "8px 16px 8px 10px" }}>
-                                                <input
-                                                  type="checkbox"
-                                                  checked={t.enabled !== false}
-                                                  onChange={(e) => {
-                                                    if (!rowEditing) return;
-                                                    updateTag(idx, "enabled", e.target.checked);
-                                                  }}
-                                                  onClick={(e) => {
-                                                    if (rowEditing) return;
-                                                    e.preventDefault();
-                                                    e.stopPropagation();
-                                                  }}
-                                                  aria-disabled={!rowEditing}
-                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
-                                                />
+                                                {isSynthetic ? null : (
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={t.enabled !== false}
+                                                    onChange={(e) => {
+                                                      if (!rowEditing) return;
+                                                      updateTag(idx, "enabled", e.target.checked);
+                                                    }}
+                                                    onClick={(e) => {
+                                                      if (rowEditing) return;
+                                                      e.preventDefault();
+                                                      e.stopPropagation();
+                                                    }}
+                                                    aria-disabled={!rowEditing}
+                                                    style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
+                                                  />
+                                                )}
                                               </td>
                                             ) : null}
                                             {showTagColumn("muted") ? (
                                               <td style={{ padding: "8px 16px 8px 10px" }}>
-                                                <input
-                                                  type="checkbox"
-                                                  checked={t.muted === true}
-                                                  onChange={(e) => {
-                                                    if (!rowEditing) return;
-                                                    updateTag(idx, "muted", e.target.checked);
-                                                  }}
-                                                  onClick={(e) => {
-                                                    if (rowEditing) return;
-                                                    e.preventDefault();
-                                                    e.stopPropagation();
-                                                  }}
-                                                  aria-disabled={!rowEditing}
-                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
-                                                />
+                                                {isSynthetic ? null : (
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={t.muted === true}
+                                                    onChange={(e) => {
+                                                      if (!rowEditing) return;
+                                                      updateTag(idx, "muted", e.target.checked);
+                                                    }}
+                                                    onClick={(e) => {
+                                                      if (rowEditing) return;
+                                                      e.preventDefault();
+                                                      e.stopPropagation();
+                                                    }}
+                                                    aria-disabled={!rowEditing}
+                                                    style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
+                                                  />
+                                                )}
                                               </td>
                                             ) : null}
                                             {showTagColumn("trend") ? (
                                               <td style={{ padding: "8px 16px 8px 10px" }}>
-                                                <input
-                                                  type="checkbox"
-                                                  checked={t.trendEnabled === true}
-                                                  onChange={(e) => {
-                                                    if (!rowEditing) return;
-                                                    updateTag(idx, "trendEnabled", e.target.checked);
-                                                  }}
-                                                  onClick={(e) => {
-                                                    if (rowEditing) return;
-                                                    e.preventDefault();
-                                                    e.stopPropagation();
-                                                  }}
-                                                  aria-disabled={!rowEditing}
-                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
-                                                />
+                                                {isSynthetic ? null : (
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={t.trendEnabled === true}
+                                                    onChange={(e) => {
+                                                      if (!rowEditing) return;
+                                                      updateTag(idx, "trendEnabled", e.target.checked);
+                                                    }}
+                                                    onClick={(e) => {
+                                                      if (rowEditing) return;
+                                                      e.preventDefault();
+                                                      e.stopPropagation();
+                                                    }}
+                                                    aria-disabled={!rowEditing}
+                                                    style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
+                                                  />
+                                                )}
                                               </td>
                                             ) : null}
                                             {showTagColumn("name") ? (
@@ -3575,7 +3603,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                   )}
                                                   <span>
                                                     {(() => {
-                                                      const raw = String(t.tagPath || t.name || "").trim();
+                                                      const raw = String(path || t?.tagPath || t?.name || "").trim();
                                                       if (!raw) return "";
                                                       const parts = raw.split(".").filter(Boolean);
                                                       return parts.length ? parts[parts.length - 1] : raw;
@@ -3631,6 +3659,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             ) : null}
                                             {showTagColumn("liveValue")
                                               ? (() => {
+                                                  if (isSynthetic) {
+                                                    return <td style={{ padding: "6px 8px" }} />;
+                                                  }
                                                   const scale = Number.isFinite(Number(t.scale)) ? Number(t.scale) : 1;
                                                   const decimals = Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 0;
                                                   const rawValue = getLiveValueForTag(liveValues, t);
@@ -3722,6 +3753,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                               : null}
                                             {showTagColumn("actions") ? (
                                               <td style={{ padding: "8px 10px" }}>
+                                                {isSynthetic ? null : (
                                                 <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                                                   <button
                                                     onClick={() => {
@@ -3753,6 +3785,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                     <TrashCanIcon />
                                                   </button>
                                                 </div>
+                                                )}
                                               </td>
                                             ) : null}
                                           </tr>
