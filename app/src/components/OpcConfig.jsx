@@ -283,6 +283,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   });
   const [tagToolsTab, setTagToolsTab] = useState("template");
   const [udtPreviewExpanded, setUdtPreviewExpanded] = useState({});
+  const [editorUdtPreviewExpanded, setEditorUdtPreviewExpanded] = useState({});
   const [tagWriteByKey, setTagWriteByKey] = useState({});
   const [tagWriteBusyByKey, setTagWriteBusyByKey] = useState({});
   const [pendingTagGroupDelete, setPendingTagGroupDelete] = useState(null);
@@ -881,6 +882,53 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return toArray(root);
   }, [applyTemplate, expandTemplateFieldsForTagCreation]);
 
+  const editorResolvedRows = useMemo(() => {
+    const currentName = String(templateName || editTemplate || "").trim();
+    const hasDraftRows = Array.isArray(templateFieldRows) && templateFieldRows.some((r) => {
+      const n = String(r?.name || "").trim();
+      const p = String(r?.tagPath || "").trim();
+      return n || p;
+    });
+    if (hasDraftRows) {
+      return expandTemplateFieldsForTagCreation(currentName || "__draft__", templateFieldRows).fields;
+    }
+    if (!currentName) return [];
+    return expandTemplateFieldsForTagCreation(currentName).fields;
+  }, [templateName, editTemplate, templateFieldRows, expandTemplateFieldsForTagCreation]);
+
+  const editorUdtPreviewTree = useMemo(() => {
+    const root = { fullPath: "", children: new Map(), leaf: false, field: null };
+    (editorResolvedRows || []).forEach((field) => {
+      const rawPath = String(field?.tagPath || field?.name || "").trim();
+      if (!rawPath) return;
+      const parts = rawPath.split(".").map((p) => p.trim()).filter(Boolean);
+      if (!parts.length) return;
+      let cursor = root;
+      parts.forEach((part, idx) => {
+        const fullPath = cursor.fullPath ? `${cursor.fullPath}.${part}` : part;
+        if (!cursor.children.has(part)) {
+          cursor.children.set(part, {
+            name: part,
+            fullPath,
+            children: new Map(),
+            leaf: false,
+            field: null,
+          });
+        }
+        cursor = cursor.children.get(part);
+        if (idx === parts.length - 1) {
+          cursor.leaf = true;
+          cursor.field = field;
+        }
+      });
+    });
+    const toArray = (node) =>
+      Array.from(node.children.values())
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+        .map((child) => ({ ...child, children: toArray(child) }));
+    return toArray(root);
+  }, [editorResolvedRows]);
+
   const visibleTagColumnCount = useMemo(() => {
     const count = tagColumnKeys.filter((key) => tagVisibleColumns[key] !== false).length;
     return count || 1;
@@ -1250,7 +1298,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return "";
   }
 
-  function expandTemplateFieldsForTagCreation(templateName) {
+  function expandTemplateFieldsForTagCreation(templateName, rootFieldsOverride = null) {
     const out = [];
     const unresolvedTypes = new Set();
     const maxExpandedTags = 20000;
@@ -1317,7 +1365,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       }
     };
 
-    const rootFields = resolveTemplateFields(templateName);
+    const rootFields = Array.isArray(rootFieldsOverride)
+      ? rootFieldsOverride
+      : resolveTemplateFields(templateName);
     walkFields(rootFields, "", [String(templateName || "").toLowerCase()], 0);
     return {
       fields: out,
@@ -3963,6 +4013,34 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 </label>
               </div>
               <div style={{ fontSize: 12, marginBottom: 8 }}>Fields</div>
+              <div
+                style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                  padding: 8,
+                  marginBottom: 10,
+                  background: "var(--bg-elev)",
+                  maxHeight: 220,
+                  overflow: "auto",
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "var(--text)" }}>
+                  Resolved Nested UDT Fields ({editorResolvedRows.length})
+                </div>
+                {editorUdtPreviewTree.length ? (
+                  renderUdtPreviewNodes(
+                    editorUdtPreviewTree,
+                    0,
+                    "editor",
+                    editorUdtPreviewExpanded,
+                    setEditorUdtPreviewExpanded
+                  )
+                ) : (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    No resolved nested fields yet.
+                  </div>
+                )}
+              </div>
               <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflowX: "auto", overflowY: "auto", maxHeight: 320, padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
                 <table style={{ width: 1460, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
                   <colgroup>
@@ -4716,14 +4794,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     }, 0);
   }
 
-  function renderUdtPreviewNodes(nodes, depth = 0) {
+  function renderUdtPreviewNodes(
+    nodes,
+    depth = 0,
+    keyPrefix = "preview",
+    expandedByKey = udtPreviewExpanded,
+    setExpandedByKey = setUdtPreviewExpanded
+  ) {
     return (Array.isArray(nodes) ? nodes : []).map((node) => {
       const children = Array.isArray(node.children) ? node.children : [];
       const hasChildren = children.length > 0;
-      const expanded = udtPreviewExpanded[node.fullPath] ?? depth < 1;
+      const expandKey = `${keyPrefix}:${node.fullPath}`;
+      const expanded = expandedByKey[expandKey] ?? depth < 1;
       const fieldUaType = String(node?.field?.uaType || "").trim();
       return (
-        <div key={`udt-node-${node.fullPath}`} style={{ marginLeft: depth * 14 }}>
+        <div key={`udt-node-${keyPrefix}-${node.fullPath}`} style={{ marginLeft: depth * 14 }}>
           <div
             style={{
               display: "flex",
@@ -4737,7 +4822,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             {hasChildren ? (
               <button
                 onClick={() =>
-                  setUdtPreviewExpanded((prev) => ({ ...prev, [node.fullPath]: !expanded }))
+                  setExpandedByKey((prev) => ({ ...prev, [expandKey]: !expanded }))
                 }
                 style={{
                   ...drawerButtonStyle,
@@ -4763,7 +4848,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{fieldUaType}</span>
             ) : null}
           </div>
-          {hasChildren && expanded ? renderUdtPreviewNodes(children, depth + 1) : null}
+          {hasChildren && expanded
+            ? renderUdtPreviewNodes(children, depth + 1, keyPrefix, expandedByKey, setExpandedByKey)
+            : null}
         </div>
       );
     });
