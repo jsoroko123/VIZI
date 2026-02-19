@@ -282,7 +282,7 @@ function Ensure-Postgres {
 function Invoke-Psql {
   param(
     [string]$PsqlPath,
-    [string]$Host = "localhost",
+    [string]$DbHost = "localhost",
     [int]$Port = 5432,
     [string]$User = "postgres",
     [string]$Password = "",
@@ -294,7 +294,7 @@ function Invoke-Psql {
   try {
     $env:PGPASSWORD = $Password
     $args = @(
-      "-h", $Host,
+      "-h", $DbHost,
       "-p", "$Port",
       "-U", $User,
       "-d", $Database,
