@@ -464,6 +464,96 @@ function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000) {
+  const text = String(xmlText || "");
+  if (!text) return [];
+  const out = [];
+
+  const dataTypeRe = /<DataType\b([^>]*)>([\s\S]*?)<\/DataType>/gi;
+  let match = dataTypeRe.exec(text);
+  while (match && out.length < maxTypes) {
+    const attrs = match[1] || "";
+    const body = match[2] || "";
+    const typeName = String(extractAttr(attrs, "Name") || "").trim();
+    if (!typeName) {
+      match = dataTypeRe.exec(text);
+      continue;
+    }
+    const fields = [];
+    const seen = new Set();
+    const memberRe = /<Member\b([^>]*)\/?>/gi;
+    let member = memberRe.exec(body);
+    while (member && fields.length < maxFieldsPerType) {
+      const memberAttrs = member[1] || "";
+      const memberName = String(extractAttr(memberAttrs, "Name") || "").trim();
+      if (memberName) {
+        const key = memberName.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          const plcType = String(extractAttr(memberAttrs, "DataType") || "").trim();
+          fields.push({
+            name: memberName,
+            tagPath: memberName,
+            plcType,
+            uaType: mapPlcTypeToUaType(plcType),
+            usage: "Member",
+            enabled: true,
+          });
+        }
+      }
+      member = memberRe.exec(body);
+    }
+    out.push({
+      name: typeName,
+      description: String(extractAttr(attrs, "Description") || "").trim(),
+      revision: "",
+      fields,
+    });
+    match = dataTypeRe.exec(text);
+  }
+
+  if (!out.length && /^\s*DATATYPE\b/m.test(text)) {
+    const blockRe = /^\s*DATATYPE\s+([^\r\n;]+)([\s\S]*?)^\s*END_DATATYPE\b/gmi;
+    let block = blockRe.exec(text);
+    while (block && out.length < maxTypes) {
+      const typeName = String(block[1] || "").replace(/^"|"$/g, "").trim();
+      const body = String(block[2] || "");
+      const fields = [];
+      const seen = new Set();
+      const memberLineRe = /^\s*("?[\w\.\[\]:]+"?)\s*:\s*([\w]+)[^;\r\n]*;/gmi;
+      let line = memberLineRe.exec(body);
+      while (line && fields.length < maxFieldsPerType) {
+        const memberName = String(line[1] || "").replace(/^"|"$/g, "").trim();
+        const plcType = String(line[2] || "").trim();
+        if (memberName) {
+          const key = memberName.toLowerCase();
+          if (!seen.has(key)) {
+            seen.add(key);
+            fields.push({
+              name: memberName,
+              tagPath: memberName,
+              plcType,
+              uaType: mapPlcTypeToUaType(plcType),
+              usage: "Member",
+              enabled: true,
+            });
+          }
+        }
+        line = memberLineRe.exec(body);
+      }
+      out.push({
+        name: typeName || "DataType",
+        description: "",
+        revision: "",
+        fields,
+      });
+      block = blockRe.exec(text);
+    }
+  }
+
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], onInsertSvg = null }) {
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState("");
@@ -492,6 +582,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [aoiTemplateError, setAoiTemplateError] = useState("");
   const [aoiTemplateSavingAll, setAoiTemplateSavingAll] = useState(false);
   const [aoiTemplateSavingName, setAoiTemplateSavingName] = useState("");
+  const [dataTypeTemplateStatus, setDataTypeTemplateStatus] = useState("");
+  const [dataTypeTemplateError, setDataTypeTemplateError] = useState("");
+  const [dataTypeTemplateSavingAll, setDataTypeTemplateSavingAll] = useState(false);
+  const [dataTypeTemplateSavingName, setDataTypeTemplateSavingName] = useState("");
   const chatScrollRef = useRef(null);
 
   const selected = useMemo(() => {
@@ -518,6 +612,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     : [];
   const aoiTemplates = useMemo(
     () => scanAoiTemplates(String(selected?.rawText || "")),
+    [selected?.rawText]
+  );
+  const dataTypeTemplates = useMemo(
+    () => scanDataTypeTemplates(String(selected?.rawText || "")),
     [selected?.rawText]
   );
 
@@ -1766,6 +1864,37 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     return { ok: true };
   };
 
+  const createOneDataTypeTemplate = async (template) => {
+    const name = String(template?.name || "").trim();
+    const fields = Array.isArray(template?.fields) ? template.fields : [];
+    if (!name || !fields.length) {
+      return { ok: false, error: `Template ${name || "Unknown"} has no fields.` };
+    }
+    const payload = {
+      name,
+      fields: fields.map((field) => ({
+        name: String(field?.name || "").trim(),
+        tagPath: String(field?.tagPath || "").trim(),
+        uaType: String(field?.uaType || "").trim(),
+        enabled: field?.enabled !== false,
+      })),
+      parent_name: null,
+      group_name: "DataType",
+      state_mappings: [],
+    };
+    const res = await fetch("/api/opc/templates", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { ok: false, error: String(data?.error || `Failed to save template ${name}.`) };
+    }
+    return { ok: true };
+  };
+
   const onCreateAoiTemplate = async (template) => {
     const name = String(template?.name || "").trim();
     if (!name) return;
@@ -1807,6 +1936,52 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
       setAoiTemplateError(String(err?.message || "Failed to create AOI templates."));
     } finally {
       setAoiTemplateSavingAll(false);
+    }
+  };
+
+  const onCreateDataTypeTemplate = async (template) => {
+    const name = String(template?.name || "").trim();
+    if (!name) return;
+    setDataTypeTemplateStatus("");
+    setDataTypeTemplateError("");
+    setDataTypeTemplateSavingName(name);
+    try {
+      const result = await createOneDataTypeTemplate(template);
+      if (!result.ok) {
+        setDataTypeTemplateError(result.error || `Failed to create template ${name}.`);
+        return;
+      }
+      setDataTypeTemplateStatus(`Created template "${name}".`);
+    } catch (err) {
+      setDataTypeTemplateError(String(err?.message || `Failed to create template ${name}.`));
+    } finally {
+      setDataTypeTemplateSavingName("");
+    }
+  };
+
+  const onCreateAllDataTypeTemplates = async () => {
+    if (!dataTypeTemplates.length || dataTypeTemplateSavingAll) return;
+    setDataTypeTemplateStatus("");
+    setDataTypeTemplateError("");
+    setDataTypeTemplateSavingAll(true);
+    try {
+      let successCount = 0;
+      const failures = [];
+      for (const template of dataTypeTemplates) {
+        const result = await createOneDataTypeTemplate(template);
+        if (result.ok) successCount += 1;
+        else failures.push(result.error || `Failed to save ${String(template?.name || "").trim()}`);
+      }
+      if (failures.length) {
+        setDataTypeTemplateError(failures.slice(0, 4).join(" | "));
+      }
+      setDataTypeTemplateStatus(
+        `Created ${successCount}/${dataTypeTemplates.length} Data Type template(s).`
+      );
+    } catch (err) {
+      setDataTypeTemplateError(String(err?.message || "Failed to create Data Type templates."));
+    } finally {
+      setDataTypeTemplateSavingAll(false);
     }
   };
 
@@ -1882,6 +2057,23 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
           }}
         >
           AOI Templates
+        </button>
+        <button
+          type="button"
+          data-preserve-style="true"
+          onClick={() => setActiveTab("datatype-templates")}
+          style={{
+            border: `1px solid ${activeTab === "datatype-templates" ? "#2b6cff" : "var(--border)"}`,
+            background: activeTab === "datatype-templates" ? "#2b6cff" : "var(--bg-elev)",
+            color: activeTab === "datatype-templates" ? "#ffffff" : "var(--text)",
+            borderRadius: 999,
+            padding: "5px 11px",
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          Data Type Templates
         </button>
       </div>
 
@@ -2528,6 +2720,136 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                           }}
                         >
                           {aoiTemplateSavingName === template.name ? "Saving..." : "Create Template"}
+                        </button>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {template.fields.slice(0, 24).map((field) => (
+                          <span
+                            key={`${template.name}-${field.name}`}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-soft)",
+                              color: "var(--text)",
+                              borderRadius: 999,
+                              padding: "2px 7px",
+                              fontSize: 10,
+                              fontWeight: 600,
+                            }}
+                            title={`${field.name}${field.plcType ? ` (${field.plcType})` : ""}`}
+                          >
+                            {field.name}
+                          </span>
+                        ))}
+                        {template.fields.length > 24 ? (
+                          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                            +{template.fields.length - 24} more
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      ) : null}
+
+      {activeTab === "datatype-templates" ? (
+        <>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Source: <strong style={{ color: "var(--text)" }}>{selected?.name || "No PLC selected"}</strong>
+          </div>
+          {!selected ? (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+              Select or upload an L5X/L5K file in Overview first.
+            </div>
+          ) : !dataTypeTemplates.length ? (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+              No Data Type definitions found in this file.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={onCreateAllDataTypeTemplates}
+                  disabled={dataTypeTemplateSavingAll}
+                  style={{
+                    border: "1px solid #2b6cff",
+                    background: "#2b6cff",
+                    color: "#fff",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: dataTypeTemplateSavingAll ? "default" : "pointer",
+                    opacity: dataTypeTemplateSavingAll ? 0.75 : 1,
+                  }}
+                >
+                  {dataTypeTemplateSavingAll ? "Creating..." : `Create All (${dataTypeTemplates.length})`}
+                </button>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Saves/updates OPC templates from Data Type member definitions.
+                </div>
+              </div>
+              {dataTypeTemplateError ? (
+                <div style={{ border: "1px solid #f04438", background: "rgba(240,68,56,0.08)", color: "#f04438", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+                  {dataTypeTemplateError}
+                </div>
+              ) : null}
+              {dataTypeTemplateStatus ? (
+                <div style={{ border: "1px solid #12b76a", background: "rgba(18,183,106,0.08)", color: "#12b76a", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+                  {dataTypeTemplateStatus}
+                </div>
+              ) : null}
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
+                <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, fontSize: 12 }}>
+                  Parsed Data Type Templates ({dataTypeTemplates.length})
+                </div>
+                <div style={{ display: "grid", gap: 0, maxHeight: 460, overflow: "auto" }}>
+                  {dataTypeTemplates.map((template) => (
+                    <div
+                      key={`datatype-template-${template.name}`}
+                      style={{
+                        borderTop: "1px solid var(--border)",
+                        padding: "8px 10px",
+                        display: "grid",
+                        gap: 6,
+                      }}
+                    >
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" }}>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>{template.name}</div>
+                          <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                            {template.fields.length} field(s)
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          data-preserve-style="true"
+                          onClick={() => void onCreateDataTypeTemplate(template)}
+                          disabled={dataTypeTemplateSavingName === template.name || dataTypeTemplateSavingAll}
+                          style={{
+                            border: "1px solid #2b6cff",
+                            background: "#2b6cff",
+                            color: "#fff",
+                            borderRadius: 8,
+                            padding: "4px 8px",
+                            fontSize: 10,
+                            fontWeight: 700,
+                            cursor:
+                              dataTypeTemplateSavingName === template.name || dataTypeTemplateSavingAll
+                                ? "default"
+                                : "pointer",
+                            opacity:
+                              dataTypeTemplateSavingName === template.name || dataTypeTemplateSavingAll
+                                ? 0.7
+                                : 1,
+                          }}
+                        >
+                          {dataTypeTemplateSavingName === template.name ? "Saving..." : "Create Template"}
                         </button>
                       </div>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>

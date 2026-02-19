@@ -2336,13 +2336,15 @@ export default function CanvasSvg({
         },
       ],
     };
-    const usesHtmlChartLayer = kind === "lineChart" || kind === "areaChart" || kind === "barChart";
+    // Keep charts rendered inside their widget foreignObject to avoid
+    // coordinate drift between SVG and detached HTML overlay layers.
+    const usesHtmlChartLayer = false;
     if (usesHtmlChartLayer) {
       const scaleVal = Number(overlay?.scale) || 1;
       const worldChartX = Number(overlay?.tx || 0) + scaleVal * chartX;
       const worldChartY = Number(overlay?.ty || 0) + scaleVal * chartTop;
-      const viewportW = Math.max(1, Number(size?.w || 0) - RULER);
-      const viewportH = Math.max(1, Number(size?.h || 0) - RULER);
+      const viewportW = Math.max(1, Number(size?.w || 0) - rulerSize);
+      const viewportH = Math.max(1, Number(size?.h || 0) - rulerSize);
       const vbWidth = Math.max(1, Number(vbW) || 1);
       const vbHeight = Math.max(1, Number(vbH) || 1);
       const svgToCssScale = Math.min(viewportW / vbWidth, viewportH / vbHeight);

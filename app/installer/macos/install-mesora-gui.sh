@@ -79,5 +79,13 @@ if [[ ${status} -eq 0 ]]; then
   exit 0
 fi
 
-osascript -e 'display dialog "Installation failed:\n'"${output//$'\n'/$'\\n'}"'" buttons {"OK"} default button "OK"'
+ERROR_TEXT="${output}"
+osascript - "${ERROR_TEXT}" <<'APPLESCRIPT'
+on run argv
+  set errMsg to ""
+  if (count of argv) is greater than or equal to 1 then set errMsg to item 1 of argv
+  if errMsg is "" then set errMsg to "Unknown installer error."
+  display dialog "Installation failed:" & return & errMsg buttons {"OK"} default button "OK"
+end run
+APPLESCRIPT
 exit ${status}
