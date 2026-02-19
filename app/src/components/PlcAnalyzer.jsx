@@ -3165,7 +3165,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
             <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, fontSize: 12 }}>
               PLC Files ({Array.isArray(plcItems) ? plcItems.length : 0})
             </div>
-            <div style={{ display: "grid", gap: 0, maxHeight: 160, overflow: "auto" }}>
+            <div style={{ display: "grid", gap: 0 }}>
               {(Array.isArray(plcItems) ? plcItems : []).length ? (
                 (plcItems || []).map((item) => {
                   const isActive = String(item?.id) === String(selected?.id || "");
@@ -3334,8 +3334,6 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                               border: "1px solid var(--border)",
                               borderRadius: 8,
                               background: "var(--bg-soft)",
-                              maxHeight: 200,
-                              overflow: "auto",
                               padding: "6px 8px",
                               color: "var(--text-muted)",
                               wordBreak: "break-word",
@@ -3805,7 +3803,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                 <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, fontSize: 12 }}>
                   Parsed AOI Templates ({filteredAoiTemplates.length}/{aoiTemplates.length})
                 </div>
-                <div style={{ display: "grid", gap: 0, maxHeight: 460, overflow: "auto" }}>
+                <div style={{ display: "grid", gap: 0 }}>
                   {filteredAoiTemplates.map((template) => (
                     <div
                       key={`aoi-template-${template.name}`}
@@ -4060,7 +4058,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                 <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, fontSize: 12 }}>
                   Parsed Data Type Templates ({filteredDataTypeTemplates.length}/{dataTypeTemplates.length})
                 </div>
-                <div style={{ display: "grid", gap: 0, maxHeight: 460, overflow: "auto" }}>
+                <div style={{ display: "grid", gap: 0 }}>
                   {filteredDataTypeTemplates.map((template) => (
                     <div
                       key={`datatype-template-${template.name}`}
