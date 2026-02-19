@@ -3399,7 +3399,62 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                       </td>
                                     </tr>
                                     {groupExpanded
-                                      ? tagGroup.items.map(({ tag: t, idx }) => {
+                                      ? (() => {
+                                          const buildHierarchyRows = (items) => {
+                                            const list = Array.isArray(items) ? items : [];
+                                            const byKey = new Map();
+                                            const nodes = list.map((entry) => {
+                                              const path = normalizeTagName(entry?.tag?.tagPath || entry?.tag?.name || "");
+                                              const key = path.toLowerCase();
+                                              const node = { ...entry, path, key, children: [] };
+                                              if (key && !byKey.has(key)) byKey.set(key, node);
+                                              return node;
+                                            });
+                                            const roots = [];
+                                            nodes.forEach((node) => {
+                                              if (!node.path) {
+                                                roots.push(node);
+                                                return;
+                                              }
+                                              const dot = node.path.lastIndexOf(".");
+                                              if (dot <= 0) {
+                                                roots.push(node);
+                                                return;
+                                              }
+                                              const parentKey = node.path.slice(0, dot).toLowerCase();
+                                              const parent = byKey.get(parentKey);
+                                              if (parent && parent !== node) parent.children.push(node);
+                                              else roots.push(node);
+                                            });
+                                            const sortNodes = (arr) =>
+                                              [...arr].sort((a, b) =>
+                                                String(a.path || a.tag?.name || "").localeCompare(
+                                                  String(b.path || b.tag?.name || "")
+                                                )
+                                              );
+                                            const walk = (arr, depth, out) => {
+                                              sortNodes(arr).forEach((node) => {
+                                                const hasChildren = node.children.length > 0;
+                                                const expandedKey = `topic:${topicKey}::group:${groupName}::tag:${node.path || node.idx}`;
+                                                const expanded = expandedPrefixes[expandedKey] ?? true;
+                                                out.push({
+                                                  ...node,
+                                                  depth,
+                                                  hasChildren,
+                                                  expanded,
+                                                  expandedKey,
+                                                });
+                                                if (hasChildren && expanded) {
+                                                  walk(node.children, depth + 1, out);
+                                                }
+                                              });
+                                            };
+                                            const out = [];
+                                            walk(roots, 0, out);
+                                            return out;
+                                          };
+                                          const hierarchyRows = buildHierarchyRows(tagGroup.items);
+                                          return hierarchyRows.map(({ tag: t, idx, depth, hasChildren, expanded, expandedKey }) => {
                                           const rowEditing = tagTableEditing && editingTagIndex === idx;
                                         return (
                                           <Fragment key={`tag-row-${idx}`}>
@@ -3463,14 +3518,41 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             ) : null}
                                             {showTagColumn("name") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {(() => {
-                                                  const group = String(t.groupName || "").trim();
-                                                  const name = String(t.name || "").trim();
-                                                  const displayName = group && name.startsWith(`${group}.`)
-                                                    ? name.slice(group.length + 1)
-                                                    : name;
-                                                  return displayName;
-                                                })()}
+                                                <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: Math.max(0, depth) * 14 }}>
+                                                  {hasChildren ? (
+                                                    <button
+                                                      onClick={() =>
+                                                        setExpandedPrefixes((prev) => ({
+                                                          ...prev,
+                                                          [expandedKey]: !expanded,
+                                                        }))
+                                                      }
+                                                      style={{
+                                                        ...drawerButtonStyle,
+                                                        border: "1px solid var(--border)",
+                                                        background: "var(--bg-elev)",
+                                                        borderRadius: 6,
+                                                        width: 20,
+                                                        height: 20,
+                                                        padding: 0,
+                                                        fontSize: 11,
+                                                        lineHeight: 1,
+                                                      }}
+                                                    >
+                                                      {expanded ? "-" : "+"}
+                                                    </button>
+                                                  ) : (
+                                                    <span style={{ display: "inline-block", width: 20 }} />
+                                                  )}
+                                                  <span>
+                                                    {(() => {
+                                                      const raw = String(t.tagPath || t.name || "").trim();
+                                                      if (!raw) return "";
+                                                      const parts = raw.split(".").filter(Boolean);
+                                                      return parts.length ? parts[parts.length - 1] : raw;
+                                                    })()}
+                                                  </span>
+                                                </div>
                                               </td>
                                             ) : null}
                                             {showTagColumn("topic") ? (
@@ -3907,7 +3989,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                           ) : null}
                                           </Fragment>
                                           );
-                                        })
+                                        });
+                                        })()
                                       : null}
                                   </Fragment>
                                 );
