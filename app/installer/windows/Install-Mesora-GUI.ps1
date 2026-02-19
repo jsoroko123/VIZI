@@ -4,7 +4,7 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$installScript = Join-Path $scriptDir "install-vizi.ps1"
+$installScript = Join-Path $scriptDir "install-mesora.ps1"
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Mesora Installer"
