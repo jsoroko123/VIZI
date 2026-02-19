@@ -62,6 +62,7 @@ const SecurityManager = lazy(() => import("./components/SecurityManager"));
 const THEME_KEY = "vizi_theme";
 const SHOW_GRID_KEY = "vizi_show_grid";
 const SHOW_TAG_PATHS_KEY = "vizi_show_tag_paths";
+const SHOW_RULERS_KEY = "vizi_show_rulers";
 const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
 const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
 // (no eager:true)
@@ -468,13 +469,24 @@ export default function App() {
       return false;
     }
   });
+  const [showRulers, setShowRulers] = useState(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      return localStorage.getItem(SHOW_RULERS_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  });
   const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
   const [liveEquipmentOverlayIds, setLiveEquipmentOverlayIds] = useState([]);
+  const [liveEquipmentDockSideById, setLiveEquipmentDockSideById] = useState({});
+  const [liveEquipmentFloatingById, setLiveEquipmentFloatingById] = useState({});
   const [liveEquipmentConnectFxById, setLiveEquipmentConnectFxById] = useState({});
   const MAX_LIVE_EQUIPMENT_POPUPS = 10;
   const prevLiveEquipmentOverlayIdsRef = useRef([]);
   const liveEquipmentConnectFxTimersRef = useRef(new Map());
   const liveEquipmentCardRefs = useRef(new Map());
+  const liveEquipmentDragRef = useRef(null);
   const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
   const [liveEquipmentDrawerOverlayId, setLiveEquipmentDrawerOverlayId] = useState("");
   const liveEquipmentDockScrollRafRef = useRef(0);
@@ -518,6 +530,7 @@ export default function App() {
   const [projectNameDraft, setProjectNameDraft] = useState("Untitled");
   const [projectNameEditing, setProjectNameEditing] = useState(false);
   const [projectModeDraft, setProjectModeDraft] = useState("design");
+  const [screenSizeDrafts, setScreenSizeDrafts] = useState({});
   const [projectCanvasBackground, setProjectCanvasBackground] = useState(() =>
     normalizeProjectCanvasBackground(null)
   );
@@ -615,6 +628,7 @@ export default function App() {
   const projectNameRef = useRef(projectName);
   const showGridRef = useRef(showGrid);
   const showTagPathsRef = useRef(showTagPaths);
+  const showRulersRef = useRef(showRulers);
   const liveMenuCollapsedRef = useRef(liveMenuCollapsed);
   const liveMenuExpandedWidthRef = useRef(liveMenuExpandedWidth);
   const projectCanvasBackgroundRef = useRef(projectCanvasBackground);
@@ -644,6 +658,7 @@ export default function App() {
     projectNameRef.current = projectName;
     showGridRef.current = showGrid;
     showTagPathsRef.current = showTagPaths;
+    showRulersRef.current = showRulers;
     liveMenuCollapsedRef.current = liveMenuCollapsed;
     liveMenuExpandedWidthRef.current = liveMenuExpandedWidth;
     projectCanvasBackgroundRef.current = projectCanvasBackground;
@@ -659,7 +674,7 @@ export default function App() {
     vbHRef.current = vbH;
     panRef.current = pan;
     zoomRef.current = zoom;
-  }, [projectName, showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth, projectCanvasBackground, projectPlcs, screens, liveMenuGroups, activeProjectId, activeProjectUpdatedAt, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+  }, [projectName, showGrid, showTagPaths, showRulers, liveMenuCollapsed, liveMenuExpandedWidth, projectCanvasBackground, projectPlcs, screens, liveMenuGroups, activeProjectId, activeProjectUpdatedAt, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
 
   useEffect(() => {
     setSvgOverlays((prev) => {
@@ -1747,6 +1762,31 @@ export default function App() {
       (entry) => String(entry?.overlay?.id || "") !== drawerId
     );
   }, [liveEquipmentOverlays, liveEquipmentDrawerOverlayId]);
+  const liveEquipmentTopDockEntries = useMemo(
+    () =>
+      liveEquipmentDockEntries.filter(
+        (entry) =>
+          !liveEquipmentFloatingById[String(entry?.overlay?.id || "")] &&
+          liveEquipmentDockSideById[String(entry?.overlay?.id || "")] === "top"
+      ),
+    [liveEquipmentDockEntries, liveEquipmentDockSideById, liveEquipmentFloatingById]
+  );
+  const liveEquipmentBottomDockEntries = useMemo(
+    () =>
+      liveEquipmentDockEntries.filter(
+        (entry) =>
+          !liveEquipmentFloatingById[String(entry?.overlay?.id || "")] &&
+          liveEquipmentDockSideById[String(entry?.overlay?.id || "")] !== "top"
+      ),
+    [liveEquipmentDockEntries, liveEquipmentDockSideById, liveEquipmentFloatingById]
+  );
+  const liveEquipmentFloatingEntries = useMemo(
+    () =>
+      liveEquipmentDockEntries.filter(
+        (entry) => !!liveEquipmentFloatingById[String(entry?.overlay?.id || "")]
+      ),
+    [liveEquipmentDockEntries, liveEquipmentFloatingById]
+  );
   const liveEquipmentConnectorLines = useMemo(() => {
     if (!isLiveMode || !svgRef.current || !liveEquipmentDockEntries.length) return [];
     const svgRect = svgRef.current.getBoundingClientRect();
@@ -1755,6 +1795,9 @@ export default function App() {
     for (const entry of liveEquipmentDockEntries) {
       const overlay = entry?.overlay;
       if (!overlay) continue;
+      const lane = liveEquipmentDockSideById[String(overlay.id || "")] === "top" ? "top" : "bottom";
+      const isFloating = !!liveEquipmentFloatingById[String(overlay.id || "")];
+      const sourceFromTop = lane === "top" && !isFloating;
       let fromX = NaN;
       let fromY = NaN;
       let overlayNode = null;
@@ -1771,19 +1814,19 @@ export default function App() {
       if (overlayNode && typeof overlayNode.getBoundingClientRect === "function") {
         const r = overlayNode.getBoundingClientRect();
         fromX = r.left + r.width / 2;
-        fromY = r.bottom;
+        fromY = sourceFromTop ? r.top : r.bottom;
       } else {
         const bb = overlayLocalBBox(overlay.id);
         if (!bb) continue;
         const wr = overlayWorldRect(overlay, bb);
         fromX = svgRect.left + (pan?.x || 0) + (wr.x + wr.w / 2) * z;
-        fromY = svgRect.top + (pan?.y || 0) + (wr.y + wr.h) * z;
+        fromY = svgRect.top + (pan?.y || 0) + (sourceFromTop ? wr.y : (wr.y + wr.h)) * z;
       }
       const cardEl = liveEquipmentCardRefs.current.get(String(overlay.id || ""));
       if (!cardEl) continue;
       const cardRect = cardEl.getBoundingClientRect();
       const toX = cardRect.left + cardRect.width / 2;
-      const toY = cardRect.top + 2;
+      const toY = isFloating ? cardRect.top + cardRect.height / 2 : lane === "top" ? cardRect.bottom - 2 : cardRect.top + 2;
       if (![fromX, fromY, toX, toY].every((n) => Number.isFinite(n))) continue;
       lines.push({
         id: String(overlay.id || ""),
@@ -1794,7 +1837,7 @@ export default function App() {
       });
     }
     return lines;
-  }, [isLiveMode, liveEquipmentDockEntries, pan, zoom, liveEquipmentDockTick]);
+  }, [isLiveMode, liveEquipmentDockEntries, liveEquipmentDockSideById, liveEquipmentFloatingById, pan, zoom, liveEquipmentDockTick]);
 
   const svgTagGroupMenuOptions = useMemo(() => {
     const options = [{ value: "", label: "Select tag group" }];
@@ -2026,12 +2069,14 @@ export default function App() {
         {
           showGrid,
           showTagPaths,
+          showRulers,
           liveMenuCollapsed,
           liveMenuExpandedWidth,
         },
         {
           showGrid: true,
           showTagPaths: false,
+          showRulers: true,
           liveMenuCollapsed: false,
           liveMenuExpandedWidth: LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
         }
@@ -2065,12 +2110,14 @@ export default function App() {
         {
           showGrid: showGridRef.current,
           showTagPaths: showTagPathsRef.current,
+          showRulers: showRulersRef.current,
           liveMenuCollapsed: liveMenuCollapsedRef.current,
           liveMenuExpandedWidth: liveMenuExpandedWidthRef.current,
         },
         {
           showGrid: true,
           showTagPaths: false,
+          showRulers: true,
           liveMenuCollapsed: false,
           liveMenuExpandedWidth: LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
         }
@@ -2101,6 +2148,7 @@ export default function App() {
       uiPreferences: normalizeProjectUiPreferences(payload.uiPreferences || payload.ui, {
         showGrid: true,
         showTagPaths: false,
+        showRulers: true,
         liveMenuCollapsed: false,
         liveMenuExpandedWidth: LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
       }),
@@ -2128,11 +2176,13 @@ export default function App() {
     const uiPreferences = normalizeProjectUiPreferences(data?.uiPreferences || data?.ui, {
       showGrid: showGridRef.current,
       showTagPaths: showTagPathsRef.current,
+      showRulers: showRulersRef.current,
       liveMenuCollapsed: liveMenuCollapsedRef.current,
       liveMenuExpandedWidth: liveMenuExpandedWidthRef.current,
     });
     setShowGrid(uiPreferences.showGrid);
     setShowTagPaths(uiPreferences.showTagPaths);
+    setShowRulers(uiPreferences.showRulers);
     setLiveMenuCollapsed(uiPreferences.liveMenuCollapsed);
     setLiveMenuExpandedWidth(uiPreferences.liveMenuExpandedWidth);
     const fallbackScreen = normalizeScreenPayload(
@@ -2174,11 +2224,13 @@ export default function App() {
     const uiPreferences = normalizeProjectUiPreferences(data?.uiPreferences || data?.ui, {
       showGrid: showGridRef.current,
       showTagPaths: showTagPathsRef.current,
+      showRulers: showRulersRef.current,
       liveMenuCollapsed: liveMenuCollapsedRef.current,
       liveMenuExpandedWidth: liveMenuExpandedWidthRef.current,
     });
     setShowGrid(uiPreferences.showGrid);
     setShowTagPaths(uiPreferences.showTagPaths);
+    setShowRulers(uiPreferences.showRulers);
     setLiveMenuCollapsed(uiPreferences.liveMenuCollapsed);
     setLiveMenuExpandedWidth(uiPreferences.liveMenuExpandedWidth);
     const fallbackScreen = normalizeScreenPayload(
@@ -2862,7 +2914,7 @@ function flushScheduledProjectSave() {
       return;
     }
     scheduleProjectAutoSave(180);
-  }, [showGrid, showTagPaths, liveMenuCollapsed, liveMenuExpandedWidth]);
+  }, [showGrid, showTagPaths, showRulers, liveMenuCollapsed, liveMenuExpandedWidth]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -3524,6 +3576,15 @@ function flushScheduledProjectSave() {
       // ignore
     }
   }, [showTagPaths]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(SHOW_RULERS_KEY, showRulers ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [showRulers]);
 
   const avatarLabel = useMemo(() => {
     const name = String(user?.display_name || user?.username || "").trim();
@@ -4552,7 +4613,7 @@ function flushScheduledProjectSave() {
     let y = (p.y - (pan?.y || 0)) / (zoom || 1);
 
     if (tool === "polyline" && !evt.altKey) {
-      const snapRadius = 10 / (zoom || 1);
+      const snapRadius = 18 / (zoom || 1);
       let best = null;
       let bestDist = Infinity;
       for (const o of svgOverlays) {
@@ -4578,6 +4639,22 @@ function flushScheduledProjectSave() {
           if (d < bestDist) {
             bestDist = d;
             best = c;
+          }
+        }
+      }
+      // Also snap to existing polyline vertices for clean joins.
+      for (const s of shapesRef.current || []) {
+        if (!Array.isArray(s?.points)) continue;
+        for (const ptNode of s.points) {
+          const px = Number(ptNode?.x);
+          const py = Number(ptNode?.y);
+          if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+          const dx = x - px;
+          const dy = y - py;
+          const d = Math.hypot(dx, dy);
+          if (d < bestDist) {
+            bestDist = d;
+            best = { x: px, y: py };
           }
         }
       }
@@ -7158,7 +7235,7 @@ function flushScheduledProjectSave() {
       return nextMode;
     });
     setProjectModeDraft(nextMode);
-    setProjectStatus(nextMode === "live" ? "Switched to Live mode" : "Switched to Design mode");
+    setProjectStatus(nextMode === "live" ? "Switched to Design mode" : "Switched to Live mode");
     scheduleProjectAutoSave(120);
   }
 
@@ -7203,6 +7280,8 @@ function flushScheduledProjectSave() {
   useEffect(() => {
     if (isLiveMode) return;
     setLiveEquipmentOverlayIds([]);
+    setLiveEquipmentDockSideById({});
+    setLiveEquipmentFloatingById({});
     setLiveEquipmentDrawerOverlayId("");
   }, [isLiveMode]);
 
@@ -7284,6 +7363,15 @@ function flushScheduledProjectSave() {
     e.stopPropagation();
     const nextId = String(id || "").trim();
     if (!nextId) return;
+    const viewportRect =
+      svgRef.current?.closest?.(".vizi-scroll")?.getBoundingClientRect?.() ||
+      svgRef.current?.getBoundingClientRect?.() ||
+      null;
+    const midY = viewportRect
+      ? Number(viewportRect.top || 0) + Number(viewportRect.height || 0) / 2
+      : (typeof window !== "undefined" ? window.innerHeight / 2 : 0);
+    const lane = Number(e?.clientY || 0) > midY ? "top" : "bottom";
+    setLiveEquipmentDockSideById((prev) => ({ ...(prev || {}), [nextId]: lane }));
     setLiveEquipmentOverlayIds((prev) => {
       const list = Array.isArray(prev) ? prev : [];
       if (list.some((x) => String(x || "") === nextId)) return list;
@@ -7303,13 +7391,53 @@ function flushScheduledProjectSave() {
       const capped = keep.slice(-MAX_LIVE_EQUIPMENT_POPUPS);
       return capped.length === list.length ? list : capped;
     });
+    setLiveEquipmentDockSideById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      const valid = new Set(
+        (liveEquipmentOverlayIds || [])
+          .map((id) => String(id || "").trim())
+          .filter(Boolean)
+      );
+      let changed = false;
+      const next = {};
+      for (const [id, side] of Object.entries(map)) {
+        if (!valid.has(id)) {
+          changed = true;
+          continue;
+        }
+        next[id] = side === "top" ? "top" : "bottom";
+      }
+      return changed ? next : map;
+    });
+    setLiveEquipmentFloatingById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      const valid = new Set(
+        (liveEquipmentOverlayIds || [])
+          .map((id) => String(id || "").trim())
+          .filter(Boolean)
+      );
+      let changed = false;
+      const next = {};
+      for (const [id, pos] of Object.entries(map)) {
+        if (!valid.has(id)) {
+          changed = true;
+          continue;
+        }
+        if (!pos || !Number.isFinite(Number(pos.x)) || !Number.isFinite(Number(pos.y))) {
+          changed = true;
+          continue;
+        }
+        next[id] = { x: Number(pos.x), y: Number(pos.y) };
+      }
+      return changed ? next : map;
+    });
     if (String(liveEquipmentDrawerOverlayId || "").trim()) {
       const drawerOverlay = (svgOverlays || []).find(
         (o) => String(o?.id || "") === String(liveEquipmentDrawerOverlayId || "")
       );
       if (drawerOverlay?.widget) setLiveEquipmentDrawerOverlayId("");
     }
-  }, [svgOverlays, liveEquipmentDrawerOverlayId, MAX_LIVE_EQUIPMENT_POPUPS]);
+  }, [svgOverlays, liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId, MAX_LIVE_EQUIPMENT_POPUPS]);
 
   function closeLiveEquipmentCard(id) {
     const nextId = String(id || "").trim();
@@ -7317,8 +7445,116 @@ function flushScheduledProjectSave() {
     if (String(liveEquipmentDrawerOverlayId || "") === nextId) {
       setLiveEquipmentDrawerOverlayId("");
     }
+    setLiveEquipmentDockSideById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      if (!Object.prototype.hasOwnProperty.call(map, nextId)) return map;
+      const next = { ...map };
+      delete next[nextId];
+      return next;
+    });
+    setLiveEquipmentFloatingById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      if (!Object.prototype.hasOwnProperty.call(map, nextId)) return map;
+      const next = { ...map };
+      delete next[nextId];
+      return next;
+    });
     setLiveEquipmentOverlayIds((prev) => (Array.isArray(prev) ? prev.filter((x) => String(x || "") !== nextId) : []));
   }
+
+  function dockLiveEquipmentCard(id) {
+    const nextId = String(id || "").trim();
+    if (!nextId) return;
+    setLiveEquipmentFloatingById((prev) => {
+      const current = prev && typeof prev === "object" ? prev : {};
+      if (!current[nextId]) return current;
+      const next = { ...current };
+      delete next[nextId];
+      return next;
+    });
+  }
+
+  function beginLiveEquipmentCardDrag(e, id) {
+    if (e.button !== 0) return;
+    const nextId = String(id || "").trim();
+    if (!nextId) return;
+    const pos = liveEquipmentFloatingById?.[nextId];
+    if (!pos) return;
+    liveEquipmentDragRef.current = {
+      id: nextId,
+      startX: Number(e.clientX) || 0,
+      startY: Number(e.clientY) || 0,
+      originX: Number(pos.x) || 0,
+      originY: Number(pos.y) || 0,
+    };
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function beginLiveEquipmentCardMove(e, id) {
+    if (e.button !== 0) return;
+    const target = e.target;
+    if (target && typeof target.closest === "function") {
+      if (target.closest("button,input,select,textarea,a,[data-no-card-drag='true']")) return;
+    }
+    const nextId = String(id || "").trim();
+    if (!nextId) return;
+    const existing = liveEquipmentFloatingById?.[nextId];
+    let originX = Number(existing?.x);
+    let originY = Number(existing?.y);
+    if (!Number.isFinite(originX) || !Number.isFinite(originY)) {
+      const cardEl = liveEquipmentCardRefs.current.get(nextId);
+      const cardRect = cardEl?.getBoundingClientRect?.();
+      const liveTopOffset = TOP_BAR_H + (isLiveMode ? LIVE_ALARM_BAR_H : 0);
+      originX = Math.max(0, Number(cardRect?.left) || Math.max(16, window.innerWidth - 340));
+      originY = Math.max(liveTopOffset + 4, Number(cardRect?.top) || Math.max(liveTopOffset + 20, window.innerHeight - 280));
+      setLiveEquipmentFloatingById((prev) => ({
+        ...(prev && typeof prev === "object" ? prev : {}),
+        [nextId]: { x: originX, y: originY },
+      }));
+    }
+    liveEquipmentDragRef.current = {
+      id: nextId,
+      startX: Number(e.clientX) || 0,
+      startY: Number(e.clientY) || 0,
+      originX,
+      originY,
+    };
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const drag = liveEquipmentDragRef.current;
+      if (!drag) return;
+      const dx = (Number(e.clientX) || 0) - drag.startX;
+      const dy = (Number(e.clientY) || 0) - drag.startY;
+      setLiveEquipmentFloatingById((prev) => {
+        const map = prev && typeof prev === "object" ? prev : {};
+        const cur = map[drag.id];
+        if (!cur) return map;
+        const nextX = Math.max(0, drag.originX + dx);
+        const liveTopOffset = TOP_BAR_H + (isLiveMode ? LIVE_ALARM_BAR_H : 0);
+        const nextY = Math.max(liveTopOffset + 4, drag.originY + dy);
+        return {
+          ...map,
+          [drag.id]: { x: nextX, y: nextY },
+        };
+      });
+      setLiveEquipmentDockTick((v) => v + 1);
+    };
+    const onUp = () => {
+      if (!liveEquipmentDragRef.current) return;
+      liveEquipmentDragRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [TOP_BAR_H, isLiveMode]);
 
   function onLiveEquipmentDockScroll() {
     if (liveEquipmentDockScrollRafRef.current) return;
@@ -7406,9 +7642,8 @@ function flushScheduledProjectSave() {
     }
 
     if (tool === "select") {
-      if (e.shiftKey) {
-        setMarquee({ start: p, cur: p, additive: true });
-      } else {
+      const panModifier = !!(e.altKey || e.metaKey || e.ctrlKey);
+      if (panModifier) {
         setMarquee(null);
         setCanvasPanDrag({
           startClient: { x: Number(e.clientX) || 0, y: Number(e.clientY) || 0 },
@@ -7418,6 +7653,9 @@ function flushScheduledProjectSave() {
               : { x: 0, y: 0 },
           moved: false,
         });
+      } else {
+        setCanvasPanDrag(null);
+        setMarquee({ start: p, cur: p, additive: !!e.shiftKey });
       }
       exitEditMode();
       setDrawing(null);
@@ -8749,6 +8987,69 @@ function flushScheduledProjectSave() {
     scheduleProjectAutoSave();
   }
 
+  function beginScreenSizeDraft(screenId, axis, currentValue) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const key = axis === "h" ? "h" : "w";
+    setScreenSizeDrafts((prev) => ({
+      ...(prev || {}),
+      [id]: {
+        ...(prev?.[id] || {}),
+        [key]: String(Math.max(100, Math.round(Number(currentValue) || 0))),
+      },
+    }));
+  }
+
+  function changeScreenSizeDraft(screenId, axis, raw) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const key = axis === "h" ? "h" : "w";
+    setScreenSizeDrafts((prev) => ({
+      ...(prev || {}),
+      [id]: {
+        ...(prev?.[id] || {}),
+        [key]: String(raw ?? ""),
+      },
+    }));
+  }
+
+  function cancelScreenSizeDraft(screenId, axis) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const key = axis === "h" ? "h" : "w";
+    setScreenSizeDrafts((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      const cur = map[id];
+      if (!cur || !Object.prototype.hasOwnProperty.call(cur, key)) return map;
+      const nextEntry = { ...cur };
+      delete nextEntry[key];
+      if (!Object.keys(nextEntry).length) {
+        const next = { ...map };
+        delete next[id];
+        return next;
+      }
+      return { ...map, [id]: nextEntry };
+    });
+  }
+
+  function commitScreenSizeDraft(screenId, axis) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const key = axis === "h" ? "h" : "w";
+    const raw = String(screenSizeDrafts?.[id]?.[key] ?? "").trim();
+    if (!raw) {
+      cancelScreenSizeDraft(id, key);
+      return;
+    }
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+      cancelScreenSizeDraft(id, key);
+      return;
+    }
+    updateScreenSizeById(id, key, parsed);
+    cancelScreenSizeDraft(id, key);
+  }
+
   function addLiveMenuGroup() {
     setLiveMenuGroups((prev) => {
       const normalized = normalizeLiveMenuGroups(prev, screens);
@@ -9219,7 +9520,7 @@ function flushScheduledProjectSave() {
           editingId={editingId}
         showTagPaths={showTagPaths}
         showGrid={!isLiveMode && showGrid}
-        showRulers={!isLiveMode}
+        showRulers={!isLiveMode && showRulers}
         onSvgMouseDown={canvasReadOnly ? () => {} : onSvgMouseDown}
         onMouseMove={canvasReadOnly ? () => {} : onMouseMove}
         onMouseUp={canvasReadOnly ? () => {} : onMouseUp}
@@ -9361,60 +9662,88 @@ function flushScheduledProjectSave() {
       ) : null}
 
       {isLiveMode && liveEquipmentDockEntries.length > 0 ? (
-        <div
-          style={{
-            position: "fixed",
-            left: projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx + 10,
-            right: 10,
-            bottom: 10,
-            zIndex: 205,
-            pointerEvents: "none",
-          }}
-        >
+        <>
           <LiveEquipmentConnectorLayer
             lines={liveEquipmentConnectorLines}
             connectFxById={liveEquipmentConnectFxById}
           />
-          <div
-            onMouseDown={(e) => e.stopPropagation()}
-            className="vizi-live-equipment-dock vizi-scroll"
-            style={{
-              display: "flex",
-              gap: 10,
-              overflowX: "auto",
-              overflowY: "hidden",
-              paddingBottom: 2,
-              pointerEvents: "auto",
-              scrollSnapType: "x mandatory",
-            }}
-            onScroll={onLiveEquipmentDockScroll}
-          >
-            {liveEquipmentDockEntries.map(({ overlay, details }) => (
+          {[
+            {
+              key: "top",
+              entries: liveEquipmentTopDockEntries,
+              style: {
+                top: TOP_BAR_H + liveAlarmBarOffset + 8,
+                bottom: "auto",
+              },
+            },
+            {
+              key: "bottom",
+              entries: liveEquipmentBottomDockEntries,
+              style: {
+                top: "auto",
+                bottom: 10,
+              },
+            },
+          ].map((lane) =>
+            lane.entries.length ? (
               <div
-                key={`live-equipment-card-${overlay.id}`}
-                ref={(node) => {
-                  const id = String(overlay.id || "");
-                  if (!id) return;
-                  if (node) liveEquipmentCardRefs.current.set(id, node);
-                  else liveEquipmentCardRefs.current.delete(id);
-                }}
+                key={`live-eq-dock-${lane.key}`}
                 style={{
-                  scrollSnapAlign: "start",
-                  flex: "0 0 min(300px, 68vw)",
-                  maxHeight: "34vh",
-                  overflow: "auto",
-                  borderRadius: 10,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
-                  boxShadow: "0 12px 26px rgba(0,0,0,0.28)",
-                  padding: 9,
-                  display: "grid",
-                  gap: 6,
+                  position: "fixed",
+                  left: projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx + 10,
+                  right: 10,
+                  zIndex: 205,
+                  pointerEvents: "none",
+                  ...lane.style,
                 }}
-                className="vizi-scroll"
               >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+                <div
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className="vizi-live-equipment-dock vizi-scroll"
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    overflowX: "auto",
+                    overflowY: "hidden",
+                    paddingBottom: 2,
+                    pointerEvents: "none",
+                    scrollSnapType: "x mandatory",
+                  }}
+                  onScroll={onLiveEquipmentDockScroll}
+                >
+                  {lane.entries.map(({ overlay, details }) => (
+                    <div
+                      key={`live-equipment-card-${overlay.id}`}
+                      ref={(node) => {
+                        const id = String(overlay.id || "");
+                        if (!id) return;
+                        if (node) liveEquipmentCardRefs.current.set(id, node);
+                        else liveEquipmentCardRefs.current.delete(id);
+                      }}
+                      style={{
+                        scrollSnapAlign: "start",
+                        flex: "0 0 min(300px, 68vw)",
+                        maxHeight: "34vh",
+                        overflow: "auto",
+                        borderRadius: 10,
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        boxShadow: "0 12px 26px rgba(0,0,0,0.28)",
+                        padding: 9,
+                        display: "grid",
+                        gap: 6,
+                        pointerEvents: "auto",
+                      }}
+                      className="vizi-scroll"
+                    >
+                <div
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, cursor: "move" }}
+                  onMouseDown={(e) => beginLiveEquipmentCardMove(e, overlay.id)}
+                >
+                  <div
+                    style={{ fontSize: 12, fontWeight: 800, color: "var(--text)", cursor: "move" }}
+                    title="Drag to move"
+                  >
                     {String(overlay.name || "Equipment")}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -9479,10 +9808,136 @@ function flushScheduledProjectSave() {
                     <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
                   )}
                 </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
-          </div>
-        </div>
+            ) : null
+          )}
+          {liveEquipmentFloatingEntries.map(({ overlay, details }) => {
+            const id = String(overlay?.id || "");
+            const pos = liveEquipmentFloatingById[id];
+            if (!id || !pos) return null;
+            return (
+              <div
+                key={`live-equipment-floating-${id}`}
+                ref={(node) => {
+                  if (!id) return;
+                  if (node) liveEquipmentCardRefs.current.set(id, node);
+                  else liveEquipmentCardRefs.current.delete(id);
+                }}
+                style={{
+                  position: "fixed",
+                  left: Number(pos.x) || 0,
+                  top: Number(pos.y) || TOP_BAR_H + liveAlarmBarOffset + 10,
+                  width: "min(300px, 68vw)",
+                  maxHeight: "34vh",
+                  overflow: "auto",
+                  borderRadius: 10,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  boxShadow: "0 12px 26px rgba(0,0,0,0.28)",
+                  padding: 9,
+                  display: "grid",
+                  gap: 6,
+                  zIndex: 206,
+                  pointerEvents: "auto",
+                }}
+                className="vizi-scroll"
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, cursor: "move" }}
+                  onMouseDown={(e) => beginLiveEquipmentCardMove(e, id)}
+                >
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+                    {String(overlay.name || "Equipment")}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <button
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => dockLiveEquipmentCard(id)}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        borderRadius: 7,
+                        cursor: "pointer",
+                        color: "var(--text)",
+                        fontSize: 10,
+                        height: 24,
+                        padding: "0 8px",
+                        fontWeight: 700,
+                      }}
+                      title="Dock"
+                      aria-label="Dock"
+                    >
+                      Dock
+                    </button>
+                    <button
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => setLiveEquipmentDrawerOverlayId(id)}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        borderRadius: 7,
+                        cursor: "pointer",
+                        color: "var(--text)",
+                        fontSize: 11,
+                        width: 26,
+                        height: 24,
+                        display: "grid",
+                        placeItems: "center",
+                        padding: 0,
+                      }}
+                      title="Expand to left drawer"
+                      aria-label="Expand to left drawer"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => closeLiveEquipmentCard(id)}
+                      style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, padding: "2px 6px", cursor: "pointer", color: "var(--text)", fontSize: 11 }}
+                      aria-label="Close equipment info"
+                      title="Close"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Tag Path: {String(overlay.tagPath || "-")}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Overlay ID: {String(overlay.id || "-")}
+                </div>
+                <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, color: "var(--text)" }}>Live Data</div>
+                  {details.length ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "4px 8px", fontSize: 10 }}>
+                      {details.map((row, idx) => (
+                        <Fragment key={`live-equipment-floating-row-${overlay.id}-${idx}`}>
+                          <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
+                          <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
+                        </Fragment>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </>
       ) : null}
 
       {!isLiveMode && inlineEdit && inlineEditPos && (
@@ -11032,33 +11487,21 @@ function flushScheduledProjectSave() {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button
-            onClick={() => setShowProjectDrawer((v) => !v)}
-            title={showProjectDrawer ? "Hide Project Drawer" : "Show Project Drawer"}
-            style={{
-              border: "none",
-              background: "transparent",
-              padding: 0,
-              margin: 0,
-              cursor: "pointer",
-              display: "block",
-            }}
-            aria-label={showProjectDrawer ? "Hide Project Drawer" : "Show Project Drawer"}
-          >
-            <img
-              src={appLogo}
-              alt="Mesora"
-              style={{ height: 34, width: "auto", display: "block" }}
-            />
-          </button>
+          <img
+            src={appLogo}
+            alt="Mesora"
+            style={{ height: 34, width: "auto", display: "block" }}
+          />
           <div style={{ width: 1, height: 18, background: "var(--border)" }} />
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {showLiveIdentityChips ? (
               <>
-                <div
+                <button
+                  onClick={() => setShowProjectDrawer((v) => !v)}
+                  aria-label={showProjectDrawer ? "Hide Project Drawer" : "Show Project Drawer"}
                   title={
                     projectIdentityReady
-                      ? activeProject?.name || projectName || "No project selected"
+                      ? `${activeProject?.name || projectName || "No project selected"} (${showProjectDrawer ? "Hide" : "Show"} Project Drawer)`
                       : "Loading project..."
                   }
                   style={{
@@ -11073,10 +11516,12 @@ function flushScheduledProjectSave() {
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
+                    cursor: "pointer",
+                    outline: "none",
                   }}
                 >
                   {projectIdentityReady ? activeProject?.name || projectName || "None" : "Loading..."}
-                </div>
+                </button>
                 <div
                   title={
                     projectIdentityReady
@@ -11248,6 +11693,17 @@ function flushScheduledProjectSave() {
                     stroke="currentColor"
                     strokeWidth="2"
                   />
+                </svg>
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Toggle Rulers"
+                style={topMenuModeButtonStyle(!!showRulers)}
+                onClick={() => setShowRulers((v) => !v)}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M4 4h16v4H4zM4 10h16v10H4z" stroke="currentColor" strokeWidth="2" />
+                  <path d="M8 4v4M12 4v4M16 4v4" stroke="currentColor" strokeWidth="2" />
                 </svg>
               </button>
                 </div>
@@ -12264,14 +12720,32 @@ function flushScheduledProjectSave() {
                             min={100}
                             max={10000}
                             step={10}
-                            value={Math.max(100, Math.round(Number(s?.vbW) || 1600))}
+                            value={
+                              Object.prototype.hasOwnProperty.call(screenSizeDrafts?.[String(s.id)] || {}, "w")
+                                ? String(screenSizeDrafts[String(s.id)]?.w ?? "")
+                                : String(Math.max(100, Math.round(Number(s?.vbW) || 1600)))
+                            }
                             onClick={(e) => {
                               e.stopPropagation();
                               switchToScreen(s.id);
                             }}
-                            onFocus={() => switchToScreen(s.id)}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            onChange={(e) => updateScreenSizeById(s.id, "w", e.target.value)}
+                            onFocus={() => {
+                              switchToScreen(s.id);
+                              beginScreenSizeDraft(s.id, "w", s?.vbW);
+                            }}
+                            onKeyDown={(e) => {
+                              e.stopPropagation();
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                commitScreenSizeDraft(s.id, "w");
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelScreenSizeDraft(s.id, "w");
+                              }
+                            }}
+                            onChange={(e) => changeScreenSizeDraft(s.id, "w", e.target.value)}
+                            onBlur={() => commitScreenSizeDraft(s.id, "w")}
                             style={{
                               border: "1px solid var(--border)",
                               background: "var(--bg-elev)",
@@ -12290,14 +12764,32 @@ function flushScheduledProjectSave() {
                             min={100}
                             max={10000}
                             step={10}
-                            value={Math.max(100, Math.round(Number(s?.vbH) || 900))}
+                            value={
+                              Object.prototype.hasOwnProperty.call(screenSizeDrafts?.[String(s.id)] || {}, "h")
+                                ? String(screenSizeDrafts[String(s.id)]?.h ?? "")
+                                : String(Math.max(100, Math.round(Number(s?.vbH) || 900)))
+                            }
                             onClick={(e) => {
                               e.stopPropagation();
                               switchToScreen(s.id);
                             }}
-                            onFocus={() => switchToScreen(s.id)}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            onChange={(e) => updateScreenSizeById(s.id, "h", e.target.value)}
+                            onFocus={() => {
+                              switchToScreen(s.id);
+                              beginScreenSizeDraft(s.id, "h", s?.vbH);
+                            }}
+                            onKeyDown={(e) => {
+                              e.stopPropagation();
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                commitScreenSizeDraft(s.id, "h");
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelScreenSizeDraft(s.id, "h");
+                              }
+                            }}
+                            onChange={(e) => changeScreenSizeDraft(s.id, "h", e.target.value)}
+                            onBlur={() => commitScreenSizeDraft(s.id, "h")}
                             style={{
                               border: "1px solid var(--border)",
                               background: "var(--bg-elev)",

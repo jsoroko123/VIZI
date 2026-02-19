@@ -80,6 +80,7 @@ export function normalizeProjectUiPreferences(raw, fallback = {}) {
   return {
     showGrid: pickBool("showGrid", true),
     showTagPaths: pickBool("showTagPaths", false),
+    showRulers: pickBool("showRulers", true),
     liveMenuCollapsed: pickBool("liveMenuCollapsed", false),
     liveMenuExpandedWidth: pickLiveMenuExpandedWidth(),
   };

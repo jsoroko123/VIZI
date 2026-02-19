@@ -95,6 +95,7 @@ export default function CanvasSvg({
   const isLineMode = tool === "polyline" || tool === "rect";
   const isCrosshair = isLineMode || marquee;
   const themeStrokeDefault = "#808080";
+  const isDarkTheme = String(theme || "").toLowerCase() === "dark";
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
 
   // wrapper size for rulers
@@ -3394,7 +3395,7 @@ export default function CanvasSvg({
                 const stroke =
                   isSelected
                     ? "#2b6cff"
-                    : dynamicColor || themeStrokeDefault;
+                    : dynamicColor || (isDarkTheme ? "#ffffff" : themeStrokeDefault);
                 const fill = s.fill ?? "transparent";
 
                 return (
@@ -3520,7 +3521,7 @@ export default function CanvasSvg({
                     stroke={
                       isSelected
                         ? "#2b6cff"
-                        : touchColor || dynamicColor || themeStrokeDefault
+                        : touchColor || dynamicColor || (isDarkTheme ? "#ffffff" : themeStrokeDefault)
                     }
                     strokeWidth={s.strokeWidth}
                     // ✅ Apply styleProps FIRST so our explicit defaults don’t overwrite it
