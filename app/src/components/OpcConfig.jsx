@@ -1076,6 +1076,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           fields.push({
             name: nameVal || key,
             tagPath: tagPathVal || nameVal || key,
+            plcType: String(f?.plcType || "").trim(),
+            baseType: String(f?.baseType || "").trim(),
+            isArray: f?.isArray === true,
+            arraySpec: String(f?.arraySpec || "").trim(),
+            usage: String(f?.usage || "").trim(),
             uaType: uaTypeVal,
             pollMs: pollMsVal,
             samplingInterval: samplingVal,
@@ -1093,6 +1098,173 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     }
     walk(name);
     return fields;
+  }
+
+  function parseFieldArrayDescriptor(field) {
+    const rawType = String(field?.plcType || field?.baseType || "").trim();
+    const rawArraySpec = String(field?.arraySpec || "").trim();
+    let baseType = String(field?.baseType || "").trim();
+    let isArray = field?.isArray === true;
+    let arraySpec = rawArraySpec;
+
+    if (!baseType && rawType) {
+      const arrayOfMatch = rawType.match(/^ARRAY\s*\[(.+?)\]\s*OF\s*(.+)$/i);
+      if (arrayOfMatch) {
+        isArray = true;
+        arraySpec = arraySpec || String(arrayOfMatch[1] || "").trim();
+        baseType = String(arrayOfMatch[2] || "").trim();
+      } else {
+        const inlineDimsMatch = rawType.match(/^(.*?)(\[[^\]]+\](?:\s*\[[^\]]+\])*)$/);
+        if (inlineDimsMatch) {
+          isArray = true;
+          baseType = String(inlineDimsMatch[1] || "").trim();
+          if (!arraySpec) {
+            arraySpec = String(inlineDimsMatch[2] || "")
+              .replace(/\]\s*\[/g, ",")
+              .replace(/^\[/, "")
+              .replace(/\]$/g, "")
+              .trim();
+          }
+        } else {
+          baseType = rawType;
+        }
+      }
+    }
+
+    return {
+      baseType: String(baseType || "").replace(/^"|"$/g, "").trim(),
+      isArray,
+      arraySpec: String(arraySpec || "").trim(),
+    };
+  }
+
+  function parseArrayCounts(arraySpec) {
+    const text = String(arraySpec || "").trim();
+    if (!text) return [];
+    const parts = text
+      .split(",")
+      .map((p) => p.replace(/^\[/, "").replace(/\]$/, "").trim())
+      .filter(Boolean);
+    const counts = [];
+    for (const part of parts) {
+      if (part.includes("..")) {
+        const [aRaw, bRaw] = part.split("..");
+        const a = Number(String(aRaw || "").trim());
+        const b = Number(String(bRaw || "").trim());
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return [];
+        const count = Math.abs(b - a) + 1;
+        if (!Number.isFinite(count) || count <= 0) return [];
+        counts.push(count);
+        continue;
+      }
+      if (/^\d+$/.test(part)) {
+        const count = Number.parseInt(part, 10);
+        if (!Number.isFinite(count) || count <= 0) return [];
+        counts.push(count);
+        continue;
+      }
+      return [];
+    }
+    return counts;
+  }
+
+  function buildArrayIndexSuffixes(counts, maxMembers = 5000) {
+    if (!Array.isArray(counts) || !counts.length) return [""];
+    let suffixes = [""];
+    for (const count of counts) {
+      if (!Number.isFinite(count) || count <= 0) return [""];
+      const next = [];
+      for (const prefix of suffixes) {
+        for (let i = 0; i < count; i += 1) {
+          next.push(`${prefix}[${i}]`);
+          if (next.length >= maxMembers) {
+            return next;
+          }
+        }
+      }
+      suffixes = next;
+      if (suffixes.length >= maxMembers) {
+        break;
+      }
+    }
+    return suffixes.length ? suffixes : [""];
+  }
+
+  function findTemplateNameByType(typeName) {
+    const target = String(typeName || "").trim();
+    if (!target) return "";
+    if (templateMap.has(target)) return target;
+    const lower = target.toLowerCase();
+    for (const [name] of templateMap) {
+      if (String(name || "").trim().toLowerCase() === lower) {
+        return name;
+      }
+    }
+    return "";
+  }
+
+  function expandTemplateFieldsForTagCreation(templateName) {
+    const out = [];
+    const maxExpandedTags = 20000;
+    const addLeaf = (pathPrefix, field) => {
+      const leafNameRaw = String(field?.name || field?.tagPath || "").trim();
+      const leafPathRaw = String(field?.tagPath || field?.name || "").trim();
+      const leafName = pathPrefix ? `${pathPrefix}.${leafNameRaw}` : leafNameRaw;
+      const leafPath = pathPrefix ? `${pathPrefix}.${leafPathRaw}` : leafPathRaw;
+      if (!leafName && !leafPath) return;
+      out.push({
+        ...field,
+        name: leafName || leafPath,
+        tagPath: leafPath || leafName,
+      });
+    };
+
+    const walkFields = (fields, pathPrefix = "", templateStack = [], depth = 0) => {
+      if (!Array.isArray(fields) || !fields.length) return;
+      if (depth > 24 || out.length >= maxExpandedTags) return;
+      for (const field of fields) {
+        if (out.length >= maxExpandedTags) break;
+        const rawName = String(field?.name || field?.tagPath || "").trim();
+        const rawPath = String(field?.tagPath || field?.name || "").trim();
+        if (!rawName && !rawPath) continue;
+        const baseSegment = rawPath || rawName;
+        const descriptor = parseFieldArrayDescriptor(field);
+        const nestedTemplateName = findTemplateNameByType(descriptor.baseType);
+        const nestedFields = nestedTemplateName ? resolveTemplateFields(nestedTemplateName) : [];
+        const canExpandNested =
+          nestedTemplateName &&
+          nestedFields.length > 0 &&
+          !templateStack.includes(String(nestedTemplateName || "").toLowerCase());
+        const arrayCounts = descriptor.isArray ? parseArrayCounts(descriptor.arraySpec) : [];
+        const arraySuffixes = descriptor.isArray
+          ? buildArrayIndexSuffixes(arrayCounts, 5000)
+          : [""];
+
+        for (const suffix of arraySuffixes) {
+          if (out.length >= maxExpandedTags) break;
+          const segment = `${baseSegment}${suffix}`;
+          const nextPrefix = pathPrefix ? `${pathPrefix}.${segment}` : segment;
+          if (canExpandNested) {
+            walkFields(
+              nestedFields,
+              nextPrefix,
+              [...templateStack, String(nestedTemplateName || "").toLowerCase()],
+              depth + 1
+            );
+          } else {
+            addLeaf(pathPrefix, {
+              ...field,
+              name: `${rawName || rawPath}${suffix}`,
+              tagPath: `${baseSegment}${suffix}`,
+            });
+          }
+        }
+      }
+    };
+
+    const rootFields = resolveTemplateFields(templateName);
+    walkFields(rootFields, "", [String(templateName || "").toLowerCase()], 0);
+    return out;
   }
 
   function updateTag(idx, key, value) {
@@ -1578,7 +1750,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return;
     }
     const prefix = applyPrefix.trim();
-    const fields = resolveTemplateFields(applyTemplate);
+    const fields = expandTemplateFieldsForTagCreation(applyTemplate);
     if (!fields.length) {
       setError("UDT has no fields.");
       return;

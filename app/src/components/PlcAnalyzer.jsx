@@ -357,6 +357,18 @@ function parsePlcDataTypeDescriptor(rawType, rawDimensions = "") {
   let arraySpec = "";
   let isArray = false;
 
+  const looksLikeArraySpec = (spec) => {
+    const s = String(spec || "").trim();
+    if (!s) return false;
+    if (s.includes("..") || s.includes(",") || s.includes("[") || s.includes("]")) return true;
+    if (/^\d+$/.test(s)) {
+      // In some exports, scalar members may carry Dimension="0".
+      // Treat only positive dimensions as array indicators.
+      return Number.parseInt(s, 10) > 0;
+    }
+    return false;
+  };
+
   // ARRAY[0..9] OF MyType
   const arrayOfMatch = typeText.match(/^ARRAY\s*\[(.+?)\]\s*OF\s*(.+)$/i);
   if (arrayOfMatch) {
@@ -374,7 +386,7 @@ function parsePlcDataTypeDescriptor(rawType, rawDimensions = "") {
         .replace(/^\[/, "")
         .replace(/\]$/g, "")
         .trim();
-    } else if (dimsText) {
+    } else if (looksLikeArraySpec(dimsText)) {
       // L5X commonly stores dimensions separately.
       isArray = true;
       arraySpec = dimsText;
@@ -1937,6 +1949,11 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
       fields: includedFields.map((field) => ({
         name: String(field?.name || "").trim(),
         tagPath: String(field?.tagPath || "").trim(),
+        plcType: String(field?.plcType || "").trim(),
+        baseType: String(field?.baseType || "").trim(),
+        isArray: field?.isArray === true,
+        arraySpec: String(field?.arraySpec || "").trim(),
+        usage: String(field?.usage || "").trim(),
         uaType: String(field?.uaType || "").trim(),
         enabled: field?.enabled !== false,
       })),
@@ -1979,6 +1996,11 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
       fields: includedFields.map((field) => ({
         name: String(field?.name || "").trim(),
         tagPath: String(field?.tagPath || "").trim(),
+        plcType: String(field?.plcType || "").trim(),
+        baseType: String(field?.baseType || "").trim(),
+        isArray: field?.isArray === true,
+        arraySpec: String(field?.arraySpec || "").trim(),
+        usage: String(field?.usage || "").trim(),
         uaType: String(field?.uaType || "").trim(),
         enabled: field?.enabled !== false,
       })),

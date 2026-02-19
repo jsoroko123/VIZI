@@ -852,7 +852,7 @@ export default function PropertiesPanel({
             {isSvg && (
               <>
                 <SelectRow
-                  label="Template"
+                  label="UDT"
                   value={svgTemplateKey || svgTemplateOptions?.[0]?.value || ""}
                   onChange={(v) => {
                     if (!singleOverlayId) return;
@@ -863,7 +863,7 @@ export default function PropertiesPanel({
                 />
                 {isGeneratedTemplate && (
                   <Row
-                    label="Template Name"
+                    label="UDT Name"
                     value={templateNameDraft}
                     onChange={(v) => setTemplateNameDraft(v)}
                     onBlur={() => {
