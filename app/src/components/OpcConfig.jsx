@@ -891,6 +891,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         .map((child) => ({ ...child, children: toArray(child) }));
     return toArray(root);
   }, [applyTemplate, expandTemplateFieldsForTagCreation]);
+  const applyTemplatePreview = useMemo(
+    () => (applyTemplate ? expandTemplateFieldsForTagCreation(applyTemplate) : { fields: [], unresolvedTypes: [] }),
+    [applyTemplate, expandTemplateFieldsForTagCreation]
+  );
 
   const editorResolvedRows = useMemo(() => {
     const currentName = String(templateName || editTemplate || "").trim();
@@ -1348,7 +1352,17 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         if (!rawName && !rawPath) continue;
         const baseSegment = rawPath || rawName;
         const descriptor = parseFieldArrayDescriptor(field);
-        const nestedTemplateName = findTemplateNameByType(descriptor.baseType);
+        const fieldNameCandidate = String(field?.name || "").trim();
+        const fieldPathCandidate = String(field?.tagPath || "").trim();
+        const pathLeafCandidate = fieldPathCandidate
+          ? fieldPathCandidate.split(".").filter(Boolean).slice(-1)[0] || ""
+          : "";
+        const nestedTemplateName =
+          findTemplateNameByType(descriptor.baseType) ||
+          findTemplateNameByType(field?.baseType) ||
+          findTemplateNameByType(field?.plcType) ||
+          findTemplateNameByType(fieldNameCandidate) ||
+          findTemplateNameByType(pathLeafCandidate);
         const nestedFields = nestedTemplateName ? resolveTemplateFields(nestedTemplateName) : [];
         const canExpandNested =
           nestedTemplateName &&
@@ -2922,6 +2936,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "var(--text)" }}>
                         UDT Members
                       </div>
+                      {applyTemplatePreview.unresolvedTypes.length ? (
+                        <div
+                          style={{
+                            border: "1px solid #f59e0b",
+                            background: "rgba(245,158,11,0.1)",
+                            color: "#b45309",
+                            borderRadius: 8,
+                            padding: "6px 8px",
+                            marginBottom: 8,
+                            fontSize: 11,
+                          }}
+                        >
+                          Missing nested UDT definitions: {applyTemplatePreview.unresolvedTypes.join(", ")}
+                        </div>
+                      ) : null}
                       {udtPreviewTree.length ? (
                         renderUdtPreviewNodes(udtPreviewTree)
                       ) : (
