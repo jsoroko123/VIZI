@@ -6,6 +6,13 @@
   - Windows: double-click `Install-Vizi.bat`
   - macOS: double-click `Install-Vizi.command`
 
+## No-command-line (customer-friendly GUI)
+
+- Windows GUI wizard:
+  - `installer/windows/Install-Vizi-GUI.bat`
+- macOS dialog installer:
+  - `installer/macos/Install-Vizi-GUI.command`
+
 - Or from terminal (auto-detect OS):
 
 ```bash

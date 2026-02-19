@@ -221,7 +221,10 @@ function Ensure-Postgres {
   $psqlPath = Find-PsqlPath
   if ($psqlPath) {
     Write-Host "PostgreSQL tools detected: $psqlPath"
-    return $psqlPath
+    return @{
+      PsqlPath = $psqlPath
+      ExistingInstall = $true
+    }
   }
 
   if (-not $AllowInstall) {
@@ -276,13 +279,16 @@ function Ensure-Postgres {
     throw "PostgreSQL installer finished, but psql.exe was not found."
   }
 
-  return $psqlPath
+  return @{
+    PsqlPath = $psqlPath
+    ExistingInstall = $false
+  }
 }
 
 function Invoke-Psql {
   param(
     [string]$PsqlPath,
-    [string]$DbHost = "localhost",
+    [string]$DbHost = "127.0.0.1",
     [int]$Port = 5432,
     [string]$User = "postgres",
     [string]$Password = "",
@@ -311,6 +317,19 @@ function Invoke-Psql {
   }
 }
 
+function Read-SecretPlainText {
+  param([string]$Prompt)
+  $secure = Read-Host -Prompt $Prompt -AsSecureString
+  $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+  try {
+    return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+  } finally {
+    if ($ptr -ne [IntPtr]::Zero) {
+      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+    }
+  }
+}
+
 function Escape-SqlLiteral {
   param([string]$Value)
   return ($Value -replace "'", "''")
@@ -329,10 +348,40 @@ function Configure-PostgresForVizi {
     [string]$SuperPassword,
     [string]$DbName,
     [string]$AppUser,
-    [string]$AppPassword
+    [string]$AppPassword,
+    [switch]$AllowAuthPrompt
   )
 
   Write-Step "Configuring PostgreSQL database/user for Vizi"
+  $effectiveSuperPassword = $SuperPassword
+
+  $authOk = $false
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+      Invoke-Psql -PsqlPath $PsqlPath -Port $Port -User $SuperUser -Password $effectiveSuperPassword -Database "postgres" -Sql "SELECT 1;" | Out-Null
+      $authOk = $true
+      break
+    } catch {
+      $msg = $_.Exception.Message
+      if ($msg -match "password authentication failed" -or $msg -match "28P01") {
+        if (-not $AllowAuthPrompt) {
+          throw "PostgreSQL authentication failed for user '$SuperUser'. On first-time install, rerun installer with -PostgresSuperPassword <your_password>."
+        }
+        if ($attempt -ge 3) {
+          throw "PostgreSQL authentication failed for user '$SuperUser'. Rerun installer with -PostgresSuperPassword <your_password>."
+        }
+        Write-Warning "PostgreSQL login failed for user '$SuperUser'."
+        $effectiveSuperPassword = Read-SecretPlainText -Prompt "Enter PostgreSQL password for user '$SuperUser'"
+        continue
+      }
+      throw
+    }
+  }
+
+  if (-not $authOk) {
+    throw "Unable to authenticate to PostgreSQL."
+  }
+
   $safeDb = Escape-SqlIdent $DbName
   $safeUser = Escape-SqlIdent $AppUser
   $safePass = Escape-SqlLiteral $AppPassword
@@ -349,11 +398,11 @@ BEGIN
 END
 `$`$;
 "@
-  Invoke-Psql -PsqlPath $PsqlPath -Port $Port -User $SuperUser -Password $SuperPassword -Database "postgres" -Sql $roleBlock | Out-Null
+  Invoke-Psql -PsqlPath $PsqlPath -Port $Port -User $SuperUser -Password $effectiveSuperPassword -Database "postgres" -Sql $roleBlock | Out-Null
 
-  $dbExistsOut = Invoke-Psql -PsqlPath $PsqlPath -Port $Port -User $SuperUser -Password $SuperPassword -Database "postgres" -Sql "SELECT 1 FROM pg_database WHERE datname = '$safeDbLit';"
+  $dbExistsOut = Invoke-Psql -PsqlPath $PsqlPath -Port $Port -User $SuperUser -Password $effectiveSuperPassword -Database "postgres" -Sql "SELECT 1 FROM pg_database WHERE datname = '$safeDbLit';"
   if (-not ($dbExistsOut -match "\b1\b")) {
-    Invoke-Psql -PsqlPath $PsqlPath -Port $Port -User $SuperUser -Password $SuperPassword -Database "postgres" -Sql "CREATE DATABASE $safeDb OWNER $safeUser;" | Out-Null
+    Invoke-Psql -PsqlPath $PsqlPath -Port $Port -User $SuperUser -Password $effectiveSuperPassword -Database "postgres" -Sql "CREATE DATABASE $safeDb OWNER $safeUser;" | Out-Null
   }
 }
 
@@ -566,12 +615,13 @@ Copy-AppTree -From $SourceRoot -To $InstallRoot
 Ensure-ConfigFiles -Root $InstallRoot
 
 if (-not $SkipPostgresInstall) {
-  $psqlPath = Ensure-Postgres `
+  $pg = Ensure-Postgres `
     -AllowInstall:$true `
     -Version $PostgresVersion `
     -Port $PostgresPort `
     -SuperUser $PostgresSuperUser `
     -SuperPassword $PostgresSuperPassword
+  $psqlPath = $pg.PsqlPath
   Configure-PostgresForVizi `
     -PsqlPath $psqlPath `
     -Port $PostgresPort `
@@ -579,7 +629,8 @@ if (-not $SkipPostgresInstall) {
     -SuperPassword $PostgresSuperPassword `
     -DbName $PostgresDatabase `
     -AppUser $PostgresAppUser `
-    -AppPassword $PostgresAppPassword
+    -AppPassword $PostgresAppPassword `
+    -AllowAuthPrompt:([bool]$pg.ExistingInstall)
   Set-AiDatabaseUrl `
     -Root $InstallRoot `
     -Port $PostgresPort `
