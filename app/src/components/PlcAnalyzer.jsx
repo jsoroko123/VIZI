@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+function isImportableFieldName(name) {
+  return String(name || "").trim().toLowerCase() !== "class";
+}
+
 function extractAttr(attrText, name) {
   if (!attrText) return "";
-  const re = new RegExp(`\\b${name}="([^"]*)"`, "i");
-  const m = attrText.match(re);
-  return m ? String(m[1] || "").trim() : "";
+  const dq = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i");
+  const dm = attrText.match(dq);
+  if (dm) return String(dm[1] || "").trim();
+  const sq = new RegExp(`\\b${name}\\s*=\\s*'([^']*)'`, "i");
+  const sm = attrText.match(sq);
+  if (sm) return String(sm[1] || "").trim();
+  const bare = new RegExp(`\\b${name}\\s*=\\s*([^\\s>]+)`, "i");
+  const bm = attrText.match(bare);
+  return bm ? String(bm[1] || "").trim() : "";
 }
 
 function scanNamedElements(xmlText, elementName, maxNames = 8) {
@@ -351,6 +361,10 @@ function mapPlcTypeToUaType(value) {
 }
 
 function parsePlcDataTypeDescriptor(rawType, rawDimensions = "") {
+  const stripFamilyQualifier = (value) =>
+    String(value || "")
+      .replace(/\s*\(\s*FamilyType\s*:?=\s*[^)]+\)\s*$/i, "")
+      .trim();
   const typeText = String(rawType || "").trim();
   const dimsText = String(rawDimensions || "").trim();
   let baseType = typeText;
@@ -374,13 +388,13 @@ function parsePlcDataTypeDescriptor(rawType, rawDimensions = "") {
   if (arrayOfMatch) {
     isArray = true;
     arraySpec = String(arrayOfMatch[1] || "").trim();
-    baseType = String(arrayOfMatch[2] || "").trim();
+    baseType = stripFamilyQualifier(String(arrayOfMatch[2] || "").trim());
   } else {
     // MyType[10] or MyType[0..9,0..3]
     const inlineDimsMatch = typeText.match(/^(.*?)(\[[^\]]+\](?:\s*\[[^\]]+\])*)$/);
     if (inlineDimsMatch) {
       isArray = true;
-      baseType = String(inlineDimsMatch[1] || "").trim();
+      baseType = stripFamilyQualifier(String(inlineDimsMatch[1] || "").trim());
       arraySpec = String(inlineDimsMatch[2] || "")
         .replace(/\]\s*\[/g, ",")
         .replace(/^\[/, "")
@@ -393,7 +407,7 @@ function parsePlcDataTypeDescriptor(rawType, rawDimensions = "") {
     }
   }
 
-  baseType = baseType.replace(/^"|"$/g, "").trim();
+  baseType = stripFamilyQualifier(baseType.replace(/^"|"$/g, "").trim());
   const normalizedType = isArray
     ? (arraySpec ? `${baseType}[${arraySpec}]` : `${baseType}[]`)
     : baseType;
@@ -407,6 +421,18 @@ function parsePlcDataTypeDescriptor(rawType, rawDimensions = "") {
 }
 
 function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
+  const normalizeAoiTemplateName = (value) =>
+    String(value || "")
+      .replace(/\s*\(\s*Class\s*:?=\s*.*$/i, "")
+      .trim();
+  const parseL5kObjectName = (raw) => {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    const quoted = text.match(/^"([^"]+)"/);
+    if (quoted) return String(quoted[1] || "").trim();
+    const plain = text.match(/^([^\s(]+)/);
+    return plain ? String(plain[1] || "").trim() : text;
+  };
   const text = String(xmlText || "");
   if (!text) return [];
   const out = [];
@@ -415,7 +441,7 @@ function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
   while (match && out.length < maxAois) {
     const attrs = match[1] || "";
     const body = match[2] || "";
-    const aoiName = String(extractAttr(attrs, "Name") || "").trim();
+    const aoiName = normalizeAoiTemplateName(String(extractAttr(attrs, "Name") || "").trim());
     if (!aoiName) {
       match = defRe.exec(text);
       continue;
@@ -425,6 +451,7 @@ function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
     const pushField = (name, plcType, usage) => {
       const trimmed = String(name || "").trim();
       if (!trimmed) return;
+      if (!isImportableFieldName(trimmed)) return;
       const key = trimmed.toLowerCase();
       if (seen.has(key)) return;
       seen.add(key);
@@ -486,13 +513,14 @@ function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
       /^\s*ADD_ON_INSTRUCTION_DEFINITION\s+([^\r\n;]+)([\s\S]*?)^\s*END_ADD_ON_INSTRUCTION_DEFINITION\b/gmi;
     let l5kMatch = l5kDefRe.exec(text);
     while (l5kMatch && out.length < maxAois) {
-      const aoiName = String(l5kMatch[1] || "").replace(/^"|"$/g, "").trim();
+      const aoiName = normalizeAoiTemplateName(parseL5kObjectName(l5kMatch[1]));
       const body = String(l5kMatch[2] || "");
       const fields = [];
       const seen = new Set();
       const pushField = (name, plcType, usage) => {
         const trimmed = String(name || "").trim().replace(/^"|"$/g, "");
         if (!trimmed) return;
+        if (!isImportableFieldName(trimmed)) return;
         const key = trimmed.toLowerCase();
         if (seen.has(key)) return;
         seen.add(key);
@@ -529,54 +557,199 @@ function scanAoiTemplates(xmlText, maxAois = 500, maxFieldsPerAoi = 1200) {
 }
 
 function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000) {
+  const normalizeDataTypeTemplateName = (value) =>
+    String(value || "")
+      .replace(/\s*\(\s*FamilyType\s*:?=\s*[^)]+\)\s*$/i, "")
+      .trim();
+  const normalizeTypeName = (value) =>
+    String(value || "")
+      .replace(/\s*\(\s*FamilyType\s*:?=\s*[^)]+\)\s*$/i, "")
+      .trim();
+  const primitiveTypes = new Set([
+    "BOOL", "SINT", "INT", "DINT", "LINT", "USINT", "UINT", "UDINT", "ULINT",
+    "REAL", "LREAL", "TIME", "DATE", "DT", "TOD", "STRING", "WSTRING",
+    "BYTE", "WORD", "DWORD", "LWORD", "TIMER", "COUNTER", "CONTROL",
+  ]);
+  const parseL5kDataTypeMemberLine = (rawLine) => {
+    const cleaned = String(rawLine || "")
+      .replace(/\/\/.*$/, "")
+      .replace(/\(\s*[^)]*\)\s*$/, "")
+      .replace(/[;,]\s*$/, "")
+      .trim();
+    if (!cleaned || /^(STRUCT|END_STRUCT|DATATYPE|END_DATATYPE)\b/i.test(cleaned)) return null;
+
+    const colon = cleaned.match(/^("?[\w.\[\]:]+"?)\s*:\s*([^;\r\n]+)$/i);
+    if (colon) {
+      return {
+        memberName: String(colon[1] || "").replace(/^"|"$/g, "").trim(),
+        rawType: String(colon[2] || "").trim(),
+      };
+    }
+
+    // Packed bit member syntax: BIT MemberName PackedHost : 0
+    const packedBit = cleaned.match(
+      /^([A-Za-z_][\w:.\[\]]*)\s+("?[\w.\[\]:]+"?)\s+("?[\w.\[\]:]+"?)\s*:\s*([0-9]+)$/i
+    );
+    if (packedBit) {
+      return {
+        memberName: String(packedBit[2] || "").replace(/^"|"$/g, "").trim(),
+        rawType: String(packedBit[1] || "").trim(),
+      };
+    }
+
+    const space = cleaned.match(/^([A-Za-z_][\w:.\[\]]*)\s+("?[\w.\[\]:]+"?)$/);
+    if (space) {
+      const first = String(space[1] || "").trim();
+      const second = String(space[2] || "").replace(/^"|"$/g, "").trim();
+      const firstUpper = first.toUpperCase();
+      if (primitiveTypes.has(firstUpper)) {
+        return { memberName: second, rawType: first };
+      }
+      if (primitiveTypes.has(second.toUpperCase())) {
+        return { memberName: first, rawType: second };
+      }
+      // Unknown pattern: prefer "name type".
+      return { memberName: first, rawType: second };
+    }
+    return null;
+  };
+  const splitMemberNameAndDims = (rawMemberName) => {
+    const text = String(rawMemberName || "").trim().replace(/^"|"$/g, "");
+    if (!text) return { name: "", dims: "" };
+    const inlineDimsMatch = text.match(/^(.*?)(\[[^\]]+\](?:\s*\[[^\]]+\])*)$/);
+    if (!inlineDimsMatch) return { name: text, dims: "" };
+    const baseName = String(inlineDimsMatch[1] || "").trim();
+    const dims = String(inlineDimsMatch[2] || "")
+      .replace(/\]\s*\[/g, ",")
+      .replace(/^\[/, "")
+      .replace(/\]$/g, "")
+      .trim();
+    return { name: baseName || text, dims };
+  };
+
   const text = String(xmlText || "");
   if (!text) return [];
   const out = [];
+  const templateByName = new Map();
+  const mergeTemplate = (template) => {
+    const name = String(template?.name || "").trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    const incomingFields = Array.isArray(template?.fields) ? template.fields : [];
+    const existing = templateByName.get(key);
+    if (!existing) {
+      templateByName.set(key, {
+        ...template,
+        fields: incomingFields.slice(),
+      });
+      return;
+    }
+    const existingFields = Array.isArray(existing?.fields) ? existing.fields : [];
+    const mergedByName = new Map();
+    existingFields.forEach((f) => {
+      const n = String(f?.name || "").trim().toLowerCase();
+      if (n) mergedByName.set(n, f);
+    });
+    incomingFields.forEach((f) => {
+      const n = String(f?.name || "").trim().toLowerCase();
+      if (!n) return;
+      if (!mergedByName.has(n)) {
+        mergedByName.set(n, f);
+      }
+    });
+    const mergedFields = Array.from(mergedByName.values());
+    const winner =
+      incomingFields.length > existingFields.length
+        ? { ...template, fields: mergedFields }
+        : { ...existing, fields: mergedFields };
+    templateByName.set(key, winner);
+  };
 
   const dataTypeRe = /<DataType\b([^>]*)>([\s\S]*?)<\/DataType>/gi;
   let match = dataTypeRe.exec(text);
   while (match && out.length < maxTypes) {
     const attrs = match[1] || "";
     const body = match[2] || "";
-    const typeName = String(extractAttr(attrs, "Name") || "").trim();
+    const typeName = normalizeDataTypeTemplateName(String(extractAttr(attrs, "Name") || "").trim());
     if (!typeName) {
       match = dataTypeRe.exec(text);
       continue;
     }
     const fields = [];
     const seen = new Set();
+    const pushMemberField = (memberNameRaw, rawTypeRaw, rawDimsRaw = "", usageRaw = "Member") => {
+      const parsedMember = splitMemberNameAndDims(memberNameRaw);
+      const memberName = String(parsedMember.name || "").trim();
+      const dimsFromName = String(parsedMember.dims || "").trim();
+      const effectiveDims = String(rawDimsRaw || dimsFromName || "").trim();
+      if (!memberName) return;
+      if (!isImportableFieldName(memberName)) return;
+      const key = memberName.toLowerCase();
+      if (seen.has(key) || fields.length >= maxFieldsPerType) return;
+      const rawType = normalizeTypeName(String(rawTypeRaw || "").trim());
+      if (!rawType) return;
+      seen.add(key);
+      const descriptor = parsePlcDataTypeDescriptor(rawType, effectiveDims);
+      const plcType = descriptor.normalizedType;
+      fields.push({
+        name: memberName,
+        tagPath: memberName,
+        plcType,
+        baseType: descriptor.baseType,
+        isArray: descriptor.isArray,
+        arraySpec: descriptor.arraySpec,
+        uaType: mapPlcTypeToUaType(descriptor.baseType || plcType),
+        usage: String(usageRaw || "Member"),
+        enabled: true,
+      });
+    };
+
+    // Primary L5X member form.
     const memberRe = /<Member\b([^>]*)\/?>/gi;
     let member = memberRe.exec(body);
     while (member && fields.length < maxFieldsPerType) {
       const memberAttrs = member[1] || "";
-      const memberName = String(extractAttr(memberAttrs, "Name") || "").trim();
-      if (memberName) {
-        const key = memberName.toLowerCase();
-        if (!seen.has(key)) {
-          seen.add(key);
-          const rawType = String(extractAttr(memberAttrs, "DataType") || "").trim();
-          const rawDims =
-            String(extractAttr(memberAttrs, "Dimension") || "").trim() ||
-            String(extractAttr(memberAttrs, "Dimensions") || "").trim() ||
-            String(extractAttr(memberAttrs, "ArrayDimensions") || "").trim();
-          const descriptor = parsePlcDataTypeDescriptor(rawType, rawDims);
-          const plcType = descriptor.normalizedType;
-          fields.push({
-            name: memberName,
-            tagPath: memberName,
-            plcType,
-            baseType: descriptor.baseType,
-            isArray: descriptor.isArray,
-            arraySpec: descriptor.arraySpec,
-            uaType: mapPlcTypeToUaType(descriptor.baseType || plcType),
-            usage: "Member",
-            enabled: true,
-          });
-        }
-      }
+      const rawDims =
+        String(extractAttr(memberAttrs, "Dimension") || "").trim() ||
+        String(extractAttr(memberAttrs, "Dimensions") || "").trim() ||
+        String(extractAttr(memberAttrs, "ArrayDimensions") || "").trim();
+      pushMemberField(
+        extractAttr(memberAttrs, "Name"),
+        extractAttr(memberAttrs, "DataType"),
+        rawDims,
+        extractAttr(memberAttrs, "Usage") || "Member"
+      );
       member = memberRe.exec(body);
     }
-    out.push({
+
+    // Fallback for custom/variant node names that still carry Name + DataType.
+    if (fields.length === 0) {
+      const genericNodeRe = /<([A-Za-z_][\w:.-]*)\b([^>]*)>/gi;
+      let node = genericNodeRe.exec(body);
+      while (node && fields.length < maxFieldsPerType) {
+        const nodeName = String(node[1] || "").trim().toLowerCase();
+        const nodeAttrs = node[2] || "";
+        // Skip closing/context tags and only capture true member-like nodes.
+        if (nodeName && !nodeName.startsWith("/") && nodeName !== "datatype") {
+          const memberName = extractAttr(nodeAttrs, "Name");
+          const memberType = extractAttr(nodeAttrs, "DataType");
+          if (memberName && memberType) {
+            const rawDims =
+              String(extractAttr(nodeAttrs, "Dimension") || "").trim() ||
+              String(extractAttr(nodeAttrs, "Dimensions") || "").trim() ||
+              String(extractAttr(nodeAttrs, "ArrayDimensions") || "").trim();
+            pushMemberField(
+              memberName,
+              memberType,
+              rawDims,
+              extractAttr(nodeAttrs, "Usage") || node[1] || "Member"
+            );
+          }
+        }
+        node = genericNodeRe.exec(body);
+      }
+    }
+    mergeTemplate({
       name: typeName,
       description: String(extractAttr(attrs, "Description") || "").trim(),
       revision: "",
@@ -589,19 +762,21 @@ function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000)
     const blockRe = /^\s*DATATYPE\s+([^\r\n;]+)([\s\S]*?)^\s*END_DATATYPE\b/gmi;
     let block = blockRe.exec(text);
     while (block && out.length < maxTypes) {
-      const typeName = String(block[1] || "").replace(/^"|"$/g, "").trim();
+      const typeName = normalizeDataTypeTemplateName(String(block[1] || "").replace(/^"|"$/g, "").trim());
       const body = String(block[2] || "");
       const fields = [];
       const seen = new Set();
       const memberLineRe = /^\s*("?[\w\.\[\]:]+"?)\s*:\s*([^;\r\n]+);/gmi;
       let line = memberLineRe.exec(body);
       while (line && fields.length < maxFieldsPerType) {
-        const memberName = String(line[1] || "").replace(/^"|"$/g, "").trim();
-        const rawType = String(line[2] || "").trim();
-        const descriptor = parsePlcDataTypeDescriptor(rawType);
-        const plcType = descriptor.normalizedType;
-        if (memberName) {
-          const key = memberName.toLowerCase();
+      const parsedMember = splitMemberNameAndDims(line[1]);
+      const memberName = String(parsedMember.name || "").trim();
+      const dimsFromName = String(parsedMember.dims || "").trim();
+      const rawType = String(line[2] || "").trim();
+      const descriptor = parsePlcDataTypeDescriptor(rawType, dimsFromName);
+      const plcType = descriptor.normalizedType;
+      if (memberName) {
+        const key = memberName.toLowerCase();
           if (!seen.has(key)) {
             seen.add(key);
             fields.push({
@@ -619,7 +794,36 @@ function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000)
         }
         line = memberLineRe.exec(body);
       }
-      out.push({
+      if (!fields.length) {
+        const lines = body.split(/\r?\n/);
+        for (const rawLine of lines) {
+          if (fields.length >= maxFieldsPerType) break;
+          const parsed = parseL5kDataTypeMemberLine(rawLine);
+          if (!parsed) continue;
+          const parsedMember = splitMemberNameAndDims(parsed.memberName);
+          const memberName = String(parsedMember.name || "").trim();
+          const dimsFromName = String(parsedMember.dims || "").trim();
+          const rawType = String(parsed.rawType || "").trim();
+          if (!memberName || !rawType) continue;
+          const key = memberName.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const descriptor = parsePlcDataTypeDescriptor(rawType, dimsFromName);
+          const plcType = descriptor.normalizedType;
+          fields.push({
+            name: memberName,
+            tagPath: memberName,
+            plcType,
+            baseType: descriptor.baseType,
+            isArray: descriptor.isArray,
+            arraySpec: descriptor.arraySpec,
+            uaType: mapPlcTypeToUaType(descriptor.baseType || plcType),
+            usage: "Member",
+            enabled: true,
+          });
+        }
+      }
+      mergeTemplate({
         name: typeName || "DataType",
         description: "",
         revision: "",
@@ -629,7 +833,46 @@ function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000)
     }
   }
 
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+  const ensureBuiltinTemplate = (name, fields) => {
+    const key = String(name || "").trim().toLowerCase();
+    if (!key || templateByName.has(key)) return;
+    templateByName.set(key, {
+      name: String(name || "").trim(),
+      description: "Built-in PLC type",
+      revision: "",
+      fields: (Array.isArray(fields) ? fields : []).map((f) => ({
+        name: String(f?.name || "").trim(),
+        tagPath: String(f?.name || "").trim(),
+        plcType: String(f?.plcType || "").trim(),
+        baseType: String(f?.plcType || "").trim(),
+        isArray: false,
+        arraySpec: "",
+        uaType: mapPlcTypeToUaType(String(f?.plcType || "").trim()),
+        usage: "Member",
+        enabled: true,
+      })),
+    });
+  };
+
+  ensureBuiltinTemplate("TIMER", [
+    { name: "PRE", plcType: "DINT" },
+    { name: "ACC", plcType: "DINT" },
+    { name: "EN", plcType: "BOOL" },
+    { name: "TT", plcType: "BOOL" },
+    { name: "DN", plcType: "BOOL" },
+  ]);
+
+  ensureBuiltinTemplate("COUNTER", [
+    { name: "PRE", plcType: "DINT" },
+    { name: "ACC", plcType: "DINT" },
+    { name: "CU", plcType: "BOOL" },
+    { name: "CD", plcType: "BOOL" },
+    { name: "DN", plcType: "BOOL" },
+    { name: "OV", plcType: "BOOL" },
+    { name: "UN", plcType: "BOOL" },
+  ]);
+
+  return Array.from(templateByName.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], onInsertSvg = null }) {
@@ -660,6 +903,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [aoiTemplateError, setAoiTemplateError] = useState("");
   const [aoiTemplateSavingAll, setAoiTemplateSavingAll] = useState(false);
   const [aoiTemplateSavingName, setAoiTemplateSavingName] = useState("");
+  const [aoiTemplateSearch, setAoiTemplateSearch] = useState("");
   const [aoiSelectionByPlc, setAoiSelectionByPlc] = useState({});
   const [aoiExpandedByPlc, setAoiExpandedByPlc] = useState({});
   const [aoiExcludedFieldsByPlc, setAoiExcludedFieldsByPlc] = useState({});
@@ -667,6 +911,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [dataTypeTemplateError, setDataTypeTemplateError] = useState("");
   const [dataTypeTemplateSavingAll, setDataTypeTemplateSavingAll] = useState(false);
   const [dataTypeTemplateSavingName, setDataTypeTemplateSavingName] = useState("");
+  const [dataTypeTemplateSearch, setDataTypeTemplateSearch] = useState("");
   const [dataTypeSelectionByPlc, setDataTypeSelectionByPlc] = useState({});
   const [dataTypeExpandedByPlc, setDataTypeExpandedByPlc] = useState({});
   const [dataTypeNodeExpandedByPlc, setDataTypeNodeExpandedByPlc] = useState({});
@@ -703,15 +948,130 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     () => scanDataTypeTemplates(String(selected?.rawText || "")),
     [selected?.rawText]
   );
+  const filteredAoiTemplates = useMemo(() => {
+    const q = String(aoiTemplateSearch || "").trim().toLowerCase();
+    if (!q) return aoiTemplates;
+    return aoiTemplates.filter((t) => {
+      const name = String(t?.name || "").toLowerCase();
+      if (name.includes(q)) return true;
+      return (Array.isArray(t?.fields) ? t.fields : []).some((f) =>
+        String(f?.name || "").toLowerCase().includes(q)
+      );
+    });
+  }, [aoiTemplates, aoiTemplateSearch]);
+  const filteredDataTypeTemplates = useMemo(() => {
+    const q = String(dataTypeTemplateSearch || "").trim().toLowerCase();
+    if (!q) return dataTypeTemplates;
+    return dataTypeTemplates.filter((t) => {
+      const name = String(t?.name || "").toLowerCase();
+      if (name.includes(q)) return true;
+      return (Array.isArray(t?.fields) ? t.fields : []).some((f) =>
+        String(f?.name || "").toLowerCase().includes(q)
+      );
+    });
+  }, [dataTypeTemplates, dataTypeTemplateSearch]);
   const dataTypeTemplateByName = useMemo(() => {
+    const stripFamilyQualifier = (value) =>
+      String(value || "")
+        .replace(/\s*\(\s*FamilyType\s*:?=\s*[^)]+\)\s*$/i, "")
+        .trim();
     const map = new Map();
+    const normalize = (value) =>
+      stripFamilyQualifier(String(value || ""))
+        .trim()
+        .replace(/^"|"$/g, "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+    const buildNameVariants = (rawName) => {
+      const variants = new Set([String(rawName || "").trim()]);
+      const value = String(rawName || "").trim();
+      if (value.includes("::")) variants.add(value.split("::").pop() || "");
+      if (value.includes(".")) variants.add(value.split(".").pop() || "");
+      if (value.includes(":")) variants.add(value.split(":").pop() || "");
+      // Support prefixed UDT names such as Parent_HMI_Write.
+      const underscoreParts = value.split("_").filter(Boolean);
+      if (underscoreParts.length >= 2) {
+        for (let i = 1; i < underscoreParts.length; i += 1) {
+          variants.add(underscoreParts.slice(i).join("_"));
+        }
+      }
+      return Array.from(variants);
+    };
     dataTypeTemplates.forEach((t) => {
-      const key = String(t?.name || "").trim().toLowerCase();
+      const score = Array.isArray(t?.fields) ? t.fields.length : 0;
+      const upsert = (key, value) => {
+        if (!key) return;
+        const existing = map.get(key);
+        const existingScore = Array.isArray(existing?.fields) ? existing.fields.length : 0;
+        if (!existing || score > existingScore) {
+          map.set(key, value);
+        }
+      };
+      const rawName = String(t?.name || "").trim();
+      const key = normalize(rawName);
       if (!key) return;
-      if (!map.has(key)) map.set(key, t);
+      upsert(key, t);
+      const variants = buildNameVariants(rawName);
+      variants.forEach((v) => {
+        const vk = normalize(v);
+        upsert(vk, t);
+      });
     });
     return map;
   }, [dataTypeTemplates]);
+
+  const resolveDataTypeTemplateByTypeName = (rawTypeName) => {
+    const stripFamilyQualifier = (value) =>
+      String(value || "")
+        .replace(/\s*\(\s*FamilyType\s*:?=\s*[^)]+\)\s*$/i, "")
+        .trim();
+    const normalize = (value) =>
+      stripFamilyQualifier(String(value || ""))
+        .trim()
+        .replace(/^"|"$/g, "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+    const raw = stripFamilyQualifier(String(rawTypeName || "").trim().replace(/^"|"$/g, ""));
+    if (!raw) return null;
+    const candidates = new Set([raw]);
+    if (raw.includes("::")) candidates.add(raw.split("::").pop() || "");
+    if (raw.includes(".")) candidates.add(raw.split(".").pop() || "");
+    if (raw.includes(":")) candidates.add(raw.split(":").pop() || "");
+    const underscoreParts = raw.split("_").filter(Boolean);
+    if (underscoreParts.length >= 2) {
+      for (let i = 1; i < underscoreParts.length; i += 1) {
+        candidates.add(underscoreParts.slice(i).join("_"));
+      }
+    }
+    for (const candidate of candidates) {
+      const key = normalize(candidate);
+      if (!key) continue;
+      const direct = dataTypeTemplateByName.get(key);
+      if (direct) return direct;
+    }
+    // Fallback: some exports prefix nested UDT names (e.g. Parent_ChildType).
+    // Allow suffix match so ChildType resolves to Parent_ChildType.
+    const normalizedCandidates = Array.from(candidates)
+      .map((c) => normalize(c))
+      .filter((c) => c && c.length >= 3)
+      .sort((a, b) => b.length - a.length);
+    for (const candidateKey of normalizedCandidates) {
+      for (const [mappedKey, template] of dataTypeTemplateByName.entries()) {
+        const mk = String(mappedKey || "");
+        if (!mk) continue;
+        if (
+          mk === candidateKey ||
+          mk.endsWith(`_${candidateKey}`) ||
+          mk.endsWith(`.${candidateKey}`) ||
+          mk.endsWith(`:${candidateKey}`) ||
+          mk.endsWith(candidateKey)
+        ) {
+          return template;
+        }
+      }
+    }
+    return null;
+  };
 
   useEffect(() => {
     setExpandedSummaryByKey({});
@@ -1939,7 +2299,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     );
     const includedFields = fields.filter((field) => {
       const fieldKey = String(field?.name || "").trim().toLowerCase();
-      return fieldKey && !excluded.has(fieldKey);
+      return fieldKey && !excluded.has(fieldKey) && isImportableFieldName(field?.name);
     });
     if (!name || !includedFields.length) {
       return { ok: false, error: `Template ${name || "Unknown"} has no fields.` };
@@ -1974,19 +2334,26 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     return { ok: true };
   };
 
-  const createOneDataTypeTemplate = async (template) => {
+  const createOneDataTypeTemplate = async (template, options = {}) => {
     const name = String(template?.name || "").trim();
     const fields = Array.isArray(template?.fields) ? template.fields : [];
     const templateKey = name.toLowerCase();
-    const excluded = new Set(
+    const customExcluded = Array.isArray(options?.excludedFields)
+      ? options.excludedFields
+      : null;
+    const excludedSource =
+      customExcluded ||
       (Array.isArray(dataTypeExcludedFieldsByPlc?.[chatKey]?.[templateKey])
         ? dataTypeExcludedFieldsByPlc[chatKey][templateKey]
-        : []
-      ).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
+        : []);
+    const excluded = new Set(
+      excludedSource
+        .map((x) => String(x || "").trim().toLowerCase())
+        .filter(Boolean)
     );
     const includedFields = fields.filter((field) => {
       const fieldKey = String(field?.name || "").trim().toLowerCase();
-      return fieldKey && !excluded.has(fieldKey);
+      return fieldKey && !excluded.has(fieldKey) && isImportableFieldName(field?.name);
     });
     if (!name || !includedFields.length) {
       return { ok: false, error: `Template ${name || "Unknown"} has no fields.` };
@@ -2226,12 +2593,19 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     setDataTypeTemplateError("");
     setDataTypeTemplateSavingName(name);
     try {
-      const result = await createOneDataTypeTemplate(template);
-      if (!result.ok) {
-        setDataTypeTemplateError(result.error || `Failed to create template ${name}.`);
+      const importOrder = buildDataTypeImportOrder([template]);
+      let successCount = 0;
+      const failures = [];
+      for (const entry of importOrder) {
+        const result = await createOneDataTypeTemplate(entry);
+        if (result.ok) successCount += 1;
+        else failures.push(result.error || `Failed to create template ${String(entry?.name || "").trim()}.`);
+      }
+      if (failures.length) {
+        setDataTypeTemplateError(failures.slice(0, 4).join(" | "));
         return;
       }
-      setDataTypeTemplateStatus(`Created template "${name}".`);
+      setDataTypeTemplateStatus(`Created ${successCount}/${importOrder.length} Data Type template(s).`);
     } catch (err) {
       setDataTypeTemplateError(String(err?.message || `Failed to create template ${name}.`));
     } finally {
@@ -2245,9 +2619,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     setDataTypeTemplateError("");
     setDataTypeTemplateSavingAll(true);
     try {
+      const importOrder = buildDataTypeImportOrder(dataTypeTemplates);
       let successCount = 0;
       const failures = [];
-      for (const template of dataTypeTemplates) {
+      for (const template of importOrder) {
         const result = await createOneDataTypeTemplate(template);
         if (result.ok) successCount += 1;
         else failures.push(result.error || `Failed to save ${String(template?.name || "").trim()}`);
@@ -2256,7 +2631,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         setDataTypeTemplateError(failures.slice(0, 4).join(" | "));
       }
       setDataTypeTemplateStatus(
-        `Created ${successCount}/${dataTypeTemplates.length} Data Type template(s).`
+        `Created ${successCount}/${importOrder.length} Data Type template(s).`
       );
     } catch (err) {
       setDataTypeTemplateError(String(err?.message || "Failed to create Data Type templates."));
@@ -2339,6 +2714,96 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     });
   };
 
+  const buildDataTypeImportOrder = (rootTemplates) => {
+    const primitiveDataTypeNames = new Set([
+      "bool",
+      "bit",
+      "sint",
+      "int",
+      "dint",
+      "lint",
+      "usint",
+      "uint",
+      "udint",
+      "ulint",
+      "real",
+      "lreal",
+      "string",
+      "wstring",
+      "byte",
+      "word",
+      "dword",
+      "time",
+      "date",
+      "datetime",
+    ]);
+    const ordered = [];
+    const visited = new Set();
+    const visiting = new Set();
+    const rootNameSet = new Set(
+      (Array.isArray(rootTemplates) ? rootTemplates : [])
+        .map((t) => String(t?.name || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+
+    const getIncludedFields = (template) => {
+      const templateName = String(template?.name || "").trim().toLowerCase();
+      if (!templateName) return [];
+      const excluded = rootNameSet.has(templateName)
+        ? new Set(
+            (Array.isArray(dataTypeExcludedFieldsByPlc?.[chatKey]?.[templateName])
+              ? dataTypeExcludedFieldsByPlc[chatKey][templateName]
+              : []
+            )
+              .map((x) => String(x || "").trim().toLowerCase())
+              .filter(Boolean)
+          )
+        : new Set();
+      return (Array.isArray(template?.fields) ? template.fields : []).filter((field) => {
+        const fieldKey = String(field?.name || "").trim().toLowerCase();
+        return fieldKey && !excluded.has(fieldKey) && isImportableFieldName(field?.name);
+      });
+    };
+
+    const visit = (template) => {
+      const templateName = String(template?.name || "").trim();
+      const key = templateName.toLowerCase();
+      if (!key || visited.has(key) || visiting.has(key)) return;
+      visiting.add(key);
+
+      const fields = getIncludedFields(template);
+      fields.forEach((field) => {
+        const parsed = parsePlcDataTypeDescriptor(
+          String(field?.baseType || field?.plcType || ""),
+          String(field?.arraySpec || "")
+        );
+        const rawChildType = String(parsed?.baseType || field?.baseType || field?.plcType || "").trim();
+        const fieldNameCandidate = String(field?.name || "").trim();
+        const fieldPathCandidate = String(field?.tagPath || "").trim();
+        const pathLeafCandidate = fieldPathCandidate
+          ? fieldPathCandidate.split(".").filter(Boolean).slice(-1)[0] || ""
+          : "";
+        const childKey = rawChildType.toLowerCase();
+        if (!rawChildType || primitiveDataTypeNames.has(childKey)) return;
+        const childTemplate =
+          resolveDataTypeTemplateByTypeName(rawChildType) ||
+          resolveDataTypeTemplateByTypeName(field?.baseType) ||
+          resolveDataTypeTemplateByTypeName(field?.plcType) ||
+          resolveDataTypeTemplateByTypeName(fieldNameCandidate) ||
+          resolveDataTypeTemplateByTypeName(pathLeafCandidate);
+        if (!childTemplate) return;
+        visit(childTemplate);
+      });
+
+      visiting.delete(key);
+      visited.add(key);
+      ordered.push(template);
+    };
+
+    (Array.isArray(rootTemplates) ? rootTemplates : []).forEach(visit);
+    return ordered;
+  };
+
   const onImportSelectedDataTypes = async () => {
     if (!selectedDataTypeSet.size || dataTypeTemplateSavingAll) return;
     setDataTypeTemplateStatus("");
@@ -2348,9 +2813,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
       const selectedTemplates = dataTypeTemplates.filter((template) =>
         selectedDataTypeSet.has(String(template?.name || "").trim().toLowerCase())
       );
+      const importOrder = buildDataTypeImportOrder(selectedTemplates);
       let successCount = 0;
       const failures = [];
-      for (const template of selectedTemplates) {
+      for (const template of importOrder) {
         const result = await createOneDataTypeTemplate(template);
         if (result.ok) successCount += 1;
         else failures.push(result.error || `Failed to save ${String(template?.name || "").trim()}`);
@@ -2359,7 +2825,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         setDataTypeTemplateError(failures.slice(0, 4).join(" | "));
       }
       setDataTypeTemplateStatus(
-        `Imported ${successCount}/${selectedTemplates.length} selected Data Type template(s).`
+        `Imported ${successCount}/${importOrder.length} Data Type template(s) from selected PLC types.`
       );
     } catch (err) {
       setDataTypeTemplateError(String(err?.message || "Failed to import selected Data Type templates."));
@@ -2475,21 +2941,25 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
           );
           const lookupType = String(parsed.baseType || field?.baseType || plcType || "").trim();
           const plcTypeKey = lookupType.toLowerCase();
-          const targetTemplate = dataTypeTemplateByName.get(plcTypeKey);
+          const targetTemplate =
+            resolveDataTypeTemplateByTypeName(lookupType) ||
+            resolveDataTypeTemplateByTypeName(field?.baseType) ||
+            resolveDataTypeTemplateByTypeName(field?.plcType);
           const hasNested = Boolean(targetTemplate) && !primitiveTypeSet.has(plcTypeKey);
           const recursive = hasNested && visitedTypes.includes(plcTypeKey);
           const nodeKey = `dt:${String(rootTemplateName || "").trim()}|${visitedTypes.join(">")}|${fieldName}|${plcType}`;
+          const canExpand = !recursive;
           const isExpanded = nodeExpandedSet.has(nodeKey);
-          const canExpand = hasNested && !recursive;
-          const indentPx = Math.max(0, depth * 16);
+          const indentPx = Math.max(0, depth * 12);
           return (
             <div key={`${nodeKey}-row`} style={{ marginLeft: indentPx }}>
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: depth === 0 ? (canExpand ? "22px auto 1fr" : "auto 1fr") : (canExpand ? "22px 1fr" : "1fr"),
-                  gap: 6,
+                  gridTemplateColumns: "20px 18px minmax(0,1fr) auto",
+                  gap: 8,
                   alignItems: "center",
+                  minHeight: 24,
                 }}
               >
                 {canExpand ? (
@@ -2501,10 +2971,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                       border: "1px solid var(--border)",
                       background: "var(--bg-elev)",
                       color: "var(--text)",
-                      borderRadius: 6,
-                      width: 22,
-                      height: 22,
-                      fontSize: 11,
+                      borderRadius: 5,
+                      width: 20,
+                      height: 20,
+                      fontSize: 10,
                       fontWeight: 700,
                       lineHeight: 1,
                       padding: 0,
@@ -2513,29 +2983,27 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                   >
                     {isExpanded ? "−" : "+"}
                   </button>
-                ) : null}
-                {depth === 0 ? (
-                  <input
-                    type="checkbox"
-                    checked={isDataTypeFieldIncluded(rootTemplateName, fieldName)}
-                    onChange={() => toggleDataTypeFieldIncluded(rootTemplateName, fieldName)}
-                    style={{ width: 14, height: 14 }}
-                  />
-                ) : null}
+                ) : (
+                  <span style={{ width: 20, display: "inline-block" }} />
+                )}
+                <input
+                  type="checkbox"
+                  checked={isDataTypeFieldIncluded(rootTemplateName, fieldName)}
+                  onChange={() => toggleDataTypeFieldIncluded(rootTemplateName, fieldName)}
+                  style={{ width: 13, height: 13 }}
+                />
                 <span
                   style={{
-                    border: "1px solid var(--border)",
-                    background: "var(--bg-soft)",
                     color: "var(--text)",
-                    borderRadius: 999,
-                    padding: "2px 7px",
-                    fontSize: 10,
+                    fontSize: 11,
                     fontWeight: 600,
                     display: "inline-flex",
                     alignItems: "center",
                     gap: 6,
-                    width: "fit-content",
-                    maxWidth: "100%",
+                    minWidth: 0,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
                   }}
                   title={`${fieldName}${plcType ? ` (${plcType})` : ""}`}
                 >
@@ -2552,15 +3020,18 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                     <span style={{ color: "#f59e0b", fontWeight: 700 }}>(recursive)</span>
                   ) : null}
                 </span>
+                <span />
               </div>
               {canExpand && isExpanded ? (
                 <div style={{ marginTop: 4 }}>
-                  {renderDataTypeFieldTree(
-                    rootTemplateName,
-                    Array.isArray(targetTemplate?.fields) ? targetTemplate.fields : [],
-                    [...visitedTypes, plcTypeKey],
-                    depth + 1
-                  )}
+                  {hasNested
+                    ? renderDataTypeFieldTree(
+                        rootTemplateName,
+                        Array.isArray(targetTemplate?.fields) ? targetTemplate.fields : [],
+                        [...visitedTypes, plcTypeKey],
+                        depth + 1
+                      )
+                    : null}
                 </div>
               ) : null}
             </div>
@@ -3232,6 +3703,20 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
           ) : (
             <>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  value={aoiTemplateSearch}
+                  onChange={(e) => setAoiTemplateSearch(e.target.value)}
+                  placeholder="Search AOI templates..."
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    minWidth: 220,
+                  }}
+                />
                 <button
                   type="button"
                   data-preserve-style="true"
@@ -3316,12 +3801,12 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                   {aoiTemplateStatus}
                 </div>
               ) : null}
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
+                <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
                 <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, fontSize: 12 }}>
-                  Parsed AOI Templates ({aoiTemplates.length})
+                  Parsed AOI Templates ({filteredAoiTemplates.length}/{aoiTemplates.length})
                 </div>
                 <div style={{ display: "grid", gap: 0, maxHeight: 460, overflow: "auto" }}>
-                  {aoiTemplates.map((template) => (
+                  {filteredAoiTemplates.map((template) => (
                     <div
                       key={`aoi-template-${template.name}`}
                       style={{
@@ -3331,7 +3816,31 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                         gap: 6,
                       }}
                     >
-                      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 8, alignItems: "center" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "20px auto 1fr", gap: 8, alignItems: "center" }}>
+                        <button
+                          type="button"
+                          data-preserve-style="true"
+                          onClick={() => toggleAoiExpanded(template.name)}
+                          style={{
+                            border: "1px solid var(--border)",
+                            background: "var(--bg-elev)",
+                            color: "var(--text)",
+                            borderRadius: 5,
+                            width: 20,
+                            height: 20,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            lineHeight: 1,
+                            padding: 0,
+                          }}
+                          title={
+                            expandedAoiSet.has(String(template.name || "").trim().toLowerCase())
+                              ? "Collapse"
+                              : "Expand"
+                          }
+                        >
+                          {expandedAoiSet.has(String(template.name || "").trim().toLowerCase()) ? "−" : "+"}
+                        </button>
                         <input
                           type="checkbox"
                           checked={selectedAoiSet.has(String(template.name || "").trim().toLowerCase())}
@@ -3344,41 +3853,6 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                             {template.fields.length} field(s){template.revision ? ` | Rev ${template.revision}` : ""}
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          data-preserve-style="true"
-                          onClick={() => toggleAoiExpanded(template.name)}
-                          style={{
-                            border: "1px solid var(--border)",
-                            background: "var(--bg-elev)",
-                            color: "var(--text)",
-                            borderRadius: 8,
-                            padding: "4px 8px",
-                            fontSize: 10,
-                            fontWeight: 700,
-                          }}
-                        >
-                          {expandedAoiSet.has(String(template.name || "").trim().toLowerCase()) ? "Collapse" : "Expand"}
-                        </button>
-                        <button
-                          type="button"
-                          data-preserve-style="true"
-                          onClick={() => void onCreateAoiTemplate(template)}
-                          disabled={aoiTemplateSavingName === template.name || aoiTemplateSavingAll}
-                          style={{
-                            border: "1px solid #2b6cff",
-                            background: "#2b6cff",
-                            color: "#fff",
-                            borderRadius: 8,
-                            padding: "4px 8px",
-                            fontSize: 10,
-                            fontWeight: 700,
-                            cursor: aoiTemplateSavingName === template.name || aoiTemplateSavingAll ? "default" : "pointer",
-                            opacity: aoiTemplateSavingName === template.name || aoiTemplateSavingAll ? 0.7 : 1,
-                          }}
-                        >
-                          {aoiTemplateSavingName === template.name ? "Saving..." : "Create Template"}
-                        </button>
                       </div>
                       {expandedAoiSet.has(String(template.name || "").trim().toLowerCase()) ? (
                         <div style={{ display: "grid", gap: 6 }}>
@@ -3400,34 +3874,54 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                               Exclude All Fields
                             </button>
                           </div>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          <div style={{ display: "grid", gap: 4 }}>
                             {template.fields.map((field) => {
                               const included = isAoiFieldIncluded(template.name, field.name);
+                              const fieldName = String(field?.name || "").trim();
+                              const plcType = String(field?.plcType || "").trim();
                               return (
                                 <label
                                   key={`${template.name}-${field.name}`}
                                   style={{
-                                    border: "1px solid var(--border)",
-                                    background: included ? "var(--bg-soft)" : "transparent",
-                                    color: included ? "var(--text)" : "var(--text-muted)",
-                                    borderRadius: 999,
-                                    padding: "2px 7px",
-                                    fontSize: 10,
-                                    fontWeight: 600,
-                                    display: "inline-flex",
+                                    display: "grid",
+                                    gridTemplateColumns: "18px minmax(0,1fr)",
+                                    gap: 8,
                                     alignItems: "center",
-                                    gap: 6,
+                                    minHeight: 22,
                                     cursor: "pointer",
                                   }}
-                                  title={`${field.name}${field.plcType ? ` (${field.plcType})` : ""}`}
+                                  title={`${fieldName}${plcType ? ` (${plcType})` : ""}`}
                                 >
                                   <input
                                     type="checkbox"
                                     checked={included}
                                     onChange={() => toggleAoiFieldIncluded(template.name, field.name)}
-                                    style={{ width: 12, height: 12 }}
+                                    style={{ width: 13, height: 13 }}
                                   />
-                                  <span>{field.name}{field?.isArray ? " [array]" : ""}</span>
+                                  <span
+                                    style={{
+                                      color: included ? "var(--text)" : "var(--text-muted)",
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 6,
+                                      minWidth: 0,
+                                      whiteSpace: "nowrap",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                    }}
+                                  >
+                                    <span>{fieldName || "(unnamed)"}</span>
+                                    {plcType ? (
+                                      <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>
+                                        : {plcType}
+                                      </span>
+                                    ) : null}
+                                    {field?.isArray ? (
+                                      <span style={{ color: "#2b6cff", fontWeight: 700 }}>[array]</span>
+                                    ) : null}
+                                  </span>
                                 </label>
                               );
                             })}
@@ -3436,6 +3930,11 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                       ) : null}
                     </div>
                   ))}
+                  {filteredAoiTemplates.length === 0 ? (
+                    <div style={{ padding: 12, fontSize: 12, color: "var(--text-muted)" }}>
+                      No AOI templates match your search.
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </>
@@ -3459,6 +3958,20 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
           ) : (
             <>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  value={dataTypeTemplateSearch}
+                  onChange={(e) => setDataTypeTemplateSearch(e.target.value)}
+                  placeholder="Search Data Type templates..."
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    minWidth: 240,
+                  }}
+                />
                 <button
                   type="button"
                   data-preserve-style="true"
@@ -3545,10 +4058,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
               ) : null}
               <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
                 <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", fontWeight: 700, fontSize: 12 }}>
-                  Parsed Data Type Templates ({dataTypeTemplates.length})
+                  Parsed Data Type Templates ({filteredDataTypeTemplates.length}/{dataTypeTemplates.length})
                 </div>
                 <div style={{ display: "grid", gap: 0, maxHeight: 460, overflow: "auto" }}>
-                  {dataTypeTemplates.map((template) => (
+                  {filteredDataTypeTemplates.map((template) => (
                     <div
                       key={`datatype-template-${template.name}`}
                       style={{
@@ -3558,7 +4071,31 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                         gap: 6,
                       }}
                     >
-                      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 8, alignItems: "center" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "20px auto 1fr", gap: 8, alignItems: "center" }}>
+                        <button
+                          type="button"
+                          data-preserve-style="true"
+                          onClick={() => toggleDataTypeExpanded(template.name)}
+                          style={{
+                            border: "1px solid var(--border)",
+                            background: "var(--bg-elev)",
+                            color: "var(--text)",
+                            borderRadius: 5,
+                            width: 20,
+                            height: 20,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            lineHeight: 1,
+                            padding: 0,
+                          }}
+                          title={
+                            expandedDataTypeSet.has(String(template.name || "").trim().toLowerCase())
+                              ? "Collapse"
+                              : "Expand"
+                          }
+                        >
+                          {expandedDataTypeSet.has(String(template.name || "").trim().toLowerCase()) ? "−" : "+"}
+                        </button>
                         <input
                           type="checkbox"
                           checked={selectedDataTypeSet.has(String(template.name || "").trim().toLowerCase())}
@@ -3571,47 +4108,6 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                             {template.fields.length} field(s)
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          data-preserve-style="true"
-                          onClick={() => toggleDataTypeExpanded(template.name)}
-                          style={{
-                            border: "1px solid var(--border)",
-                            background: "var(--bg-elev)",
-                            color: "var(--text)",
-                            borderRadius: 8,
-                            padding: "4px 8px",
-                            fontSize: 10,
-                            fontWeight: 700,
-                          }}
-                        >
-                          {expandedDataTypeSet.has(String(template.name || "").trim().toLowerCase()) ? "Collapse" : "Expand"}
-                        </button>
-                        <button
-                          type="button"
-                          data-preserve-style="true"
-                          onClick={() => void onCreateDataTypeTemplate(template)}
-                          disabled={dataTypeTemplateSavingName === template.name || dataTypeTemplateSavingAll}
-                          style={{
-                            border: "1px solid #2b6cff",
-                            background: "#2b6cff",
-                            color: "#fff",
-                            borderRadius: 8,
-                            padding: "4px 8px",
-                            fontSize: 10,
-                            fontWeight: 700,
-                            cursor:
-                              dataTypeTemplateSavingName === template.name || dataTypeTemplateSavingAll
-                                ? "default"
-                                : "pointer",
-                            opacity:
-                              dataTypeTemplateSavingName === template.name || dataTypeTemplateSavingAll
-                                ? 0.7
-                                : 1,
-                          }}
-                        >
-                          {dataTypeTemplateSavingName === template.name ? "Saving..." : "Create Template"}
-                        </button>
                       </div>
                       {expandedDataTypeSet.has(String(template.name || "").trim().toLowerCase()) ? (
                         <div style={{ display: "grid", gap: 4 }}>
@@ -3643,6 +4139,11 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                       ) : null}
                     </div>
                   ))}
+                  {filteredDataTypeTemplates.length === 0 ? (
+                    <div style={{ padding: 12, fontSize: 12, color: "var(--text-muted)" }}>
+                      No Data Type templates match your search.
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </>

@@ -223,6 +223,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [mappingSetOriginalName, setMappingSetOriginalName] = useState("");
   const [mappingSetRows, setMappingSetRows] = useState([{ field: "", state: "", color: "" }]);
   const [applyTemplate, setApplyTemplate] = useState("");
+  const [applyTemplateSearch, setApplyTemplateSearch] = useState("");
+  const [applyTemplateExpandedByName, setApplyTemplateExpandedByName] = useState({});
+  const [applyTemplateRows, setApplyTemplateRows] = useState([]);
+  const [applyTemplateTreeExpanded, setApplyTemplateTreeExpanded] = useState({});
+  const [templateFieldTreeExpanded, setTemplateFieldTreeExpanded] = useState({});
+  const [templateFieldEditingKey, setTemplateFieldEditingKey] = useState("");
   const [applyTopic, setApplyTopic] = useState("");
   const [applyPrefix, setApplyPrefix] = useState("");
   const [applyMappingSet, setApplyMappingSet] = useState("");
@@ -895,6 +901,99 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     () => (applyTemplate ? expandTemplateFieldsForTagCreation(applyTemplate) : { fields: [], unresolvedTypes: [] }),
     [applyTemplate, expandTemplateFieldsForTagCreation]
   );
+  const filteredApplyTemplates = useMemo(() => {
+    const q = String(applyTemplateSearch || "").trim().toLowerCase();
+    if (!q) return templates;
+    return templates.filter((t) => {
+      const name = String(t?.name || "").toLowerCase();
+      const parent = String(t?.parent_name || "").toLowerCase();
+      return name.includes(q) || parent.includes(q);
+    });
+  }, [templates, applyTemplateSearch]);
+  const applyTemplateRowsByPath = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(applyTemplateRows) ? applyTemplateRows : []).forEach((row, idx) => {
+      const key = String(row?.sourcePath || row?.tagPath || row?.name || "").trim();
+      if (key) map.set(key, { row, idx });
+    });
+    return map;
+  }, [applyTemplateRows]);
+  const applyTemplateTree = useMemo(() => {
+    const root = { fullPath: "", children: new Map(), leaf: false };
+    const addPath = (rawPath, leaf = true) => {
+      const path = String(rawPath || "").trim();
+      if (!path) return;
+      const parts = path.split(".").map((p) => p.trim()).filter(Boolean);
+      if (!parts.length) return;
+      let cursor = root;
+      parts.forEach((part, idx) => {
+        const fullPath = cursor.fullPath ? `${cursor.fullPath}.${part}` : part;
+        if (!cursor.children.has(part)) {
+          cursor.children.set(part, { name: part, fullPath, children: new Map(), leaf: false });
+        }
+        cursor = cursor.children.get(part);
+        if (idx === parts.length - 1 && leaf) cursor.leaf = true;
+      });
+    };
+
+    const walkTemplate = (templateName, pathPrefix = "", stack = [], depth = 0) => {
+      if (!templateName || depth > 24) return;
+      const key = String(templateName || "").toLowerCase();
+      if (stack.includes(key)) return;
+      const fields = resolveTemplateFields(templateName);
+      if (!Array.isArray(fields) || !fields.length) return;
+      fields.forEach((field) => {
+        const rawPath = String(field?.tagPath || field?.name || "").trim();
+        if (!rawPath) return;
+        const descriptor = parseFieldArrayDescriptor(field);
+        const fieldNameCandidate = String(field?.name || "").trim();
+        const pathLeafCandidate = rawPath.split(".").filter(Boolean).slice(-1)[0] || "";
+        const nestedTemplateName =
+          findTemplateNameByType(descriptor.baseType) ||
+          findTemplateNameByType(field?.baseType) ||
+          findTemplateNameByType(field?.plcType) ||
+          findTemplateNameByType(fieldNameCandidate) ||
+          findTemplateNameByType(pathLeafCandidate);
+        const nestedFields = nestedTemplateName ? resolveTemplateFields(nestedTemplateName) : [];
+        const canExpandNested =
+          nestedTemplateName &&
+          nestedFields.length > 0 &&
+          !stack.includes(String(nestedTemplateName || "").toLowerCase());
+        const arrayDimensions = descriptor.isArray ? parseArrayDimensions(descriptor.arraySpec) : [];
+        const arraySuffixes = descriptor.isArray ? buildArrayIndexSuffixes(arrayDimensions, 5000) : [""];
+        arraySuffixes.forEach((suffix) => {
+          const segment = `${rawPath}${suffix}`;
+          const nextPath = pathPrefix ? `${pathPrefix}.${segment}` : segment;
+          addPath(nextPath, !canExpandNested);
+          if (canExpandNested) {
+            walkTemplate(
+              nestedTemplateName,
+              nextPath,
+              [...stack, String(nestedTemplateName || "").toLowerCase()],
+              depth + 1
+            );
+          }
+        });
+      });
+    };
+
+    if (applyTemplate) {
+      walkTemplate(applyTemplate, "", [String(applyTemplate || "").toLowerCase()], 0);
+    }
+
+    // Fallback from rows if template tree couldn't be resolved from nested definitions.
+    if (root.children.size === 0) {
+      (Array.isArray(applyTemplateRows) ? applyTemplateRows : []).forEach((row) => {
+        const rawPath = String(row?.sourcePath || row?.tagPath || row?.name || "").trim();
+        addPath(rawPath, true);
+      });
+    }
+    const toArray = (node) =>
+      Array.from(node.children.values())
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+        .map((child) => ({ ...child, children: toArray(child) }));
+    return toArray(root);
+  }, [applyTemplateRows, applyTemplate, templates]);
 
   const editorResolvedRows = useMemo(() => {
     const currentName = String(templateName || editTemplate || "").trim();
@@ -955,6 +1054,123 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return !directKeys.has(key);
     });
   }, [editorResolvedRows, templateFieldRows]);
+
+  const templateFieldRowsByPath = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(templateFieldRows) ? templateFieldRows : []).forEach((row, idx) => {
+      const key = String(row?.tagPath || row?.name || "").trim();
+      if (key) map.set(key, { row, idx });
+    });
+    return map;
+  }, [templateFieldRows]);
+
+  const editorResolvedRowsByPath = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(editorResolvedRows) ? editorResolvedRows : []).forEach((row) => {
+      const key = String(row?.tagPath || row?.name || "").trim();
+      if (key && !map.has(key)) map.set(key, row);
+    });
+    return map;
+  }, [editorResolvedRows]);
+
+  const templateFieldTree = useMemo(() => {
+    const root = { fullPath: "", children: new Map(), leaf: false };
+    const addPath = (rawPath) => {
+      const path = String(rawPath || "").trim();
+      if (!path) return;
+      const parts = path.split(".").map((p) => p.trim()).filter(Boolean);
+      if (!parts.length) return;
+      let cursor = root;
+      parts.forEach((part, idx) => {
+        const fullPath = cursor.fullPath ? `${cursor.fullPath}.${part}` : part;
+        if (!cursor.children.has(part)) {
+          cursor.children.set(part, { name: part, fullPath, children: new Map(), leaf: false });
+        }
+        cursor = cursor.children.get(part);
+        if (idx === parts.length - 1) cursor.leaf = true;
+      });
+    };
+    const walkChildren = (fields, pathPrefix = "", stack = [], depth = 0) => {
+      if (!Array.isArray(fields) || !fields.length || depth > 24) return;
+      fields.forEach((field) => {
+        const rawPath = String(field?.tagPath || field?.name || "").trim();
+        const rawName = String(field?.name || field?.tagPath || "").trim();
+        if (!rawPath && !rawName) return;
+        const descriptor = parseFieldArrayDescriptor(field);
+        const fieldNameCandidate = String(field?.name || "").trim();
+        const fieldPathCandidate = String(field?.tagPath || "").trim();
+        const pathLeafCandidate = fieldPathCandidate
+          ? fieldPathCandidate.split(".").filter(Boolean).slice(-1)[0] || ""
+          : "";
+        const nestedTemplateName =
+          findTemplateNameByType(descriptor.baseType) ||
+          findTemplateNameByType(field?.baseType) ||
+          findTemplateNameByType(field?.plcType) ||
+          findTemplateNameByType(fieldNameCandidate) ||
+          findTemplateNameByType(pathLeafCandidate);
+        const nestedFields = nestedTemplateName ? resolveTemplateFields(nestedTemplateName) : [];
+        const canExpandNested =
+          nestedTemplateName &&
+          nestedFields.length > 0 &&
+          !stack.includes(String(nestedTemplateName || "").toLowerCase());
+        const arrayDimensions = descriptor.isArray ? parseArrayDimensions(descriptor.arraySpec) : [];
+        const arraySuffixes = descriptor.isArray
+          ? buildArrayIndexSuffixes(arrayDimensions, 5000)
+          : [""];
+
+        arraySuffixes.forEach((suffix) => {
+          const segment = `${rawPath || rawName}${suffix}`;
+          const nextPath = pathPrefix ? `${pathPrefix}.${segment}` : segment;
+          addPath(nextPath);
+          if (canExpandNested) {
+            walkChildren(
+              nestedFields,
+              nextPath,
+              [...stack, String(nestedTemplateName || "").toLowerCase()],
+              depth + 1
+            );
+          }
+        });
+      });
+    };
+
+    const baseRows = Array.isArray(templateFieldRows) ? templateFieldRows : [];
+    baseRows.forEach((row) => addPath(String(row?.tagPath || row?.name || "").trim()));
+    walkChildren(baseRows, "", [String(templateName || editTemplate || "__draft__").toLowerCase()], 0);
+    (Array.isArray(editorResolvedRows) ? editorResolvedRows : []).forEach((row) =>
+      addPath(String(row?.tagPath || row?.name || "").trim())
+    );
+    const toArray = (node) =>
+      Array.from(node.children.values())
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+        .map((child) => ({ ...child, children: toArray(child) }));
+    return toArray(root);
+  }, [editorResolvedRows, templateFieldRows, templateName, editTemplate, templates]);
+
+  useEffect(() => {
+    if (!applyTemplate) {
+      setApplyTemplateRows([]);
+      setApplyTemplateTreeExpanded({});
+      return;
+    }
+    const expanded = expandTemplateFieldsForTagCreation(applyTemplate);
+    const nextRows = (Array.isArray(expanded?.fields) ? expanded.fields : []).map((f) => {
+      const sourcePath = String(f?.tagPath || f?.name || "").trim();
+      return {
+        ...f,
+        sourcePath,
+        include: true,
+        name: String(f?.name || sourcePath).trim(),
+        tagPath: String(f?.tagPath || sourcePath).trim(),
+      };
+    });
+    setApplyTemplateRows(nextRows);
+    setApplyTemplateTreeExpanded({});
+  }, [applyTemplate, expandTemplateFieldsForTagCreation]);
+
+  useEffect(() => {
+    setTemplateFieldEditingKey("");
+  }, [editTemplate, templateName]);
 
   const visibleTagColumnCount = useMemo(() => {
     const count = tagColumnKeys.filter((key) => tagVisibleColumns[key] !== false).length;
@@ -1140,9 +1356,15 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const visited = new Set();
     let fields = [];
     function walk(n) {
-      if (!n || visited.has(n)) return;
-      visited.add(n);
-      const tmpl = templateMap.get(n);
+      const requested = String(n || "").trim();
+      if (!requested) return;
+      const resolvedName = templateMap.has(requested)
+        ? requested
+        : findTemplateNameByType(requested) || requested;
+      const visitKey = String(resolvedName || "").trim().toLowerCase();
+      if (!visitKey || visited.has(visitKey)) return;
+      visited.add(visitKey);
+      const tmpl = templateMap.get(resolvedName) || templateMap.get(requested);
       if (!tmpl) return;
       if (tmpl.parent_name) {
         walk(tmpl.parent_name);
@@ -1248,14 +1470,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     };
   }
 
-  function parseArrayCounts(arraySpec) {
+  function parseArrayDimensions(arraySpec) {
     const text = String(arraySpec || "").trim();
     if (!text) return [];
     const parts = text
       .split(",")
       .map((p) => p.replace(/^\[/, "").replace(/\]$/, "").trim())
       .filter(Boolean);
-    const counts = [];
+    const dims = [];
     for (const part of parts) {
       if (part.includes("..")) {
         const [aRaw, bRaw] = part.split("..");
@@ -1264,29 +1486,31 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         if (!Number.isFinite(a) || !Number.isFinite(b)) return [];
         const count = Math.abs(b - a) + 1;
         if (!Number.isFinite(count) || count <= 0) return [];
-        counts.push(count);
+        dims.push({ start: 0, count });
         continue;
       }
       if (/^\d+$/.test(part)) {
         const count = Number.parseInt(part, 10);
         if (!Number.isFinite(count) || count <= 0) return [];
-        counts.push(count);
+        dims.push({ start: 0, count });
         continue;
       }
       return [];
     }
-    return counts;
+    return dims;
   }
 
-  function buildArrayIndexSuffixes(counts, maxMembers = 5000) {
-    if (!Array.isArray(counts) || !counts.length) return [""];
+  function buildArrayIndexSuffixes(dimensions, maxMembers = 5000) {
+    if (!Array.isArray(dimensions) || !dimensions.length) return [""];
     let suffixes = [""];
-    for (const count of counts) {
+    for (const dim of dimensions) {
+      const start = Number(dim?.start);
+      const count = Number(dim?.count);
       if (!Number.isFinite(count) || count <= 0) return [""];
       const next = [];
       for (const prefix of suffixes) {
         for (let i = 0; i < count; i += 1) {
-          next.push(`${prefix}[${i}]`);
+          next.push(`${prefix}[${start + i}]`);
           if (next.length >= maxMembers) {
             return next;
           }
@@ -1301,26 +1525,148 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   }
 
   function findTemplateNameByType(typeName) {
-    const raw = String(typeName || "").trim().replace(/^"|"$/g, "");
+    const stripArraySuffixes = (v) =>
+      String(v || "")
+        .replace(/(\[[^\]]*\])+/g, "")
+        .trim();
+    const stripTrailingMeta = (v) =>
+      String(v || "")
+        .replace(/\s*\([^)]*\)\s*$/g, "")
+        .trim();
+    const stripFamilyQualifier = (v) =>
+      String(v || "")
+        .replace(/\s*\(\s*FamilyType\s*:?=\s*[^)]+\)\s*$/i, "")
+        .trim();
+    const raw = stripArraySuffixes(
+      stripTrailingMeta(stripFamilyQualifier(String(typeName || "").trim().replace(/^"|"$/g, "")))
+    );
     if (!raw) return "";
     if (templateMap.has(raw)) return raw;
 
     const normalize = (v) =>
-      String(v || "")
+      stripArraySuffixes(stripTrailingMeta(stripFamilyQualifier(String(v || ""))))
         .trim()
         .replace(/^"|"$/g, "")
         .replace(/\s+/g, "")
+        .replace(/[^a-zA-Z0-9_.:]/g, "")
+        .toLowerCase();
+    const normalizeLoose = (v) =>
+      stripArraySuffixes(stripTrailingMeta(stripFamilyQualifier(String(v || ""))))
+        .trim()
+        .replace(/^"|"$/g, "")
+        .replace(/[^a-zA-Z0-9]/g, "")
         .toLowerCase();
     const nameVariants = new Set([raw]);
     if (raw.includes("::")) nameVariants.add(raw.split("::").pop() || "");
     if (raw.includes(".")) nameVariants.add(raw.split(".").pop() || "");
     if (raw.includes(":")) nameVariants.add(raw.split(":").pop() || "");
+    const underscoreParts = raw.split("_").filter(Boolean);
+    if (underscoreParts.length >= 2) {
+      for (let i = 1; i < underscoreParts.length; i += 1) {
+        nameVariants.add(underscoreParts.slice(i).join("_"));
+      }
+    }
 
     const normalizedCandidates = Array.from(nameVariants).map(normalize).filter(Boolean);
+    const looseCandidates = Array.from(nameVariants).map(normalizeLoose).filter(Boolean);
+    const scoreTemplateName = (name) => {
+      const tmpl = templateMap.get(name);
+      return Array.isArray(tmpl?.fields) ? tmpl.fields.length : 0;
+    };
+    let bestName = "";
+    let bestScore = -1;
+
     for (const [name] of templateMap) {
       const n = normalize(name);
       if (!n) continue;
-      if (normalizedCandidates.includes(n)) return name;
+      if (normalizedCandidates.includes(n)) {
+        const score = scoreTemplateName(name);
+        if (score > bestScore) {
+          bestScore = score;
+          bestName = name;
+        }
+      }
+    }
+    if (bestName) return bestName;
+
+    // Fallback for prefixed template names (e.g. BatchControl_HMI_Write => HMI_Write).
+    for (const [name] of templateMap) {
+      const n = normalize(name);
+      if (!n) continue;
+      for (const c of normalizedCandidates) {
+        if (!c) continue;
+        if (
+          n.endsWith(`_${c}`) ||
+          n.endsWith(`.${c}`) ||
+          n.endsWith(`:${c}`) ||
+          n.endsWith(c)
+        ) {
+          const score = scoreTemplateName(name);
+          if (score > bestScore) {
+            bestScore = score;
+            bestName = name;
+          }
+        }
+      }
+    }
+    if (bestName) return bestName;
+
+    // Loose fallback: ignore separators entirely (e.g. "HMI_Write" vs "BatchControlHMIWrite").
+    for (const [name] of templateMap) {
+      const n = normalizeLoose(name);
+      if (!n) continue;
+      for (const c of looseCandidates) {
+        if (!c) continue;
+        if (n === c || n.endsWith(c) || c.endsWith(n) || n.includes(c)) {
+          const score = scoreTemplateName(name);
+          if (score > bestScore) {
+            bestScore = score;
+            bestName = name;
+          }
+        }
+      }
+    }
+    return bestName;
+  }
+
+  function resolveTemplateNameByTypeWithContext(typeName, contextTemplateName = "") {
+    const direct = findTemplateNameByType(typeName);
+    if (direct) return direct;
+
+    const clean = (v) =>
+      String(v || "")
+        .trim()
+        .replace(/^"|"$/g, "")
+        .replace(/\s+/g, "");
+    const typeClean = clean(typeName);
+    const contextClean = clean(contextTemplateName);
+    if (!typeClean || !contextClean) return "";
+
+    const contextVariants = [];
+    let cursor = contextClean;
+    while (cursor) {
+      contextVariants.push(cursor);
+      const idxs = [cursor.lastIndexOf("_"), cursor.lastIndexOf("."), cursor.lastIndexOf(":")];
+      const cut = Math.max(...idxs);
+      if (cut <= 0) break;
+      cursor = cursor.slice(0, cut);
+    }
+
+    const tried = new Set();
+    for (const prefix of contextVariants) {
+      const candidates = [
+        `${prefix}_${typeClean}`,
+        `${prefix}.${typeClean}`,
+        `${prefix}:${typeClean}`,
+        `${prefix}${typeClean}`,
+      ];
+      for (const candidate of candidates) {
+        const c = clean(candidate);
+        if (!c || tried.has(c)) continue;
+        tried.add(c);
+        const hit = findTemplateNameByType(c);
+        if (hit) return hit;
+      }
     }
     return "";
   }
@@ -1375,9 +1721,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         ) {
           unresolvedTypes.add(String(descriptor.baseType || "").trim());
         }
-        const arrayCounts = descriptor.isArray ? parseArrayCounts(descriptor.arraySpec) : [];
+        const arrayDimensions = descriptor.isArray ? parseArrayDimensions(descriptor.arraySpec) : [];
         const arraySuffixes = descriptor.isArray
-          ? buildArrayIndexSuffixes(arrayCounts, 5000)
+          ? buildArrayIndexSuffixes(arrayDimensions, 5000)
           : [""];
 
         for (const suffix of arraySuffixes) {
@@ -1916,8 +2262,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return;
     }
     const prefix = applyPrefix.trim();
-    const expanded = expandTemplateFieldsForTagCreation(applyTemplate);
-    const fields = expanded.fields;
+    const fields = (Array.isArray(applyTemplateRows) ? applyTemplateRows : []).filter((r) => r?.include !== false);
     if (!fields.length) {
       setError("UDT has no fields.");
       return;
@@ -1962,11 +2307,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const cleanedTags = buildCleanedTags(nextTags);
     const nextConfig = { ...config, tags: cleanedTags };
     setConfig(nextConfig);
-    const unresolvedMsg =
-      expanded.unresolvedTypes.length > 0
-        ? ` Unresolved nested UDTs: ${expanded.unresolvedTypes.join(", ")}.`
-        : "";
-    persistConfig(nextConfig, `Added ${newTags.length} tags from UDT.${unresolvedMsg}`).catch((err) => {
+    persistConfig(nextConfig, `Added ${newTags.length} tags from UDT.`).catch((err) => {
       setError(err?.message || "Save failed.");
     });
   }
@@ -2816,52 +3157,25 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             </div>
         ) : null}
             <div style={{ ...sectionCardStyle, marginBottom: 10 }}>
-              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
                 <button
                   data-preserve-style="true"
                   onClick={() => setTagToolsTab("template")}
-                  style={{
-                    ...drawerButtonStyle,
-                    border: tagToolsTab === "template" ? "1px solid #2b6cff" : "1px solid var(--border)",
-                    background: tagToolsTab === "template" ? "#2b6cff" : "var(--bg-elev)",
-                    color: tagToolsTab === "template" ? "white" : "var(--text)",
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    fontWeight: 700,
-                    boxShadow: tagToolsTab === "template" ? "0 0 0 2px rgba(43,108,255,0.25)" : "none",
-                  }}
+                  style={drawerTabButtonStyle(tagToolsTab === "template")}
                 >
                   UDT
                 </button>
                 <button
                   data-preserve-style="true"
                   onClick={() => setTagToolsTab("bulk")}
-                  style={{
-                    ...drawerButtonStyle,
-                    border: tagToolsTab === "bulk" ? "1px solid #2b6cff" : "1px solid var(--border)",
-                    background: tagToolsTab === "bulk" ? "#2b6cff" : "var(--bg-elev)",
-                    color: tagToolsTab === "bulk" ? "white" : "var(--text)",
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    fontWeight: 700,
-                    boxShadow: tagToolsTab === "bulk" ? "0 0 0 2px rgba(43,108,255,0.25)" : "none",
-                  }}
+                  style={drawerTabButtonStyle(tagToolsTab === "bulk")}
                 >
                   Bulk Edit
                 </button>
                 <button
                   data-preserve-style="true"
                   onClick={() => setTagToolsTab("columns")}
-                  style={{
-                    ...drawerButtonStyle,
-                    border: tagToolsTab === "columns" ? "1px solid #2b6cff" : "1px solid var(--border)",
-                    background: tagToolsTab === "columns" ? "#2b6cff" : "var(--bg-elev)",
-                    color: tagToolsTab === "columns" ? "white" : "var(--text)",
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    fontWeight: 700,
-                    boxShadow: tagToolsTab === "columns" ? "0 0 0 2px rgba(43,108,255,0.25)" : "none",
-                  }}
+                  style={drawerTabButtonStyle(tagToolsTab === "columns")}
                 >
                   Columns
                 </button>
@@ -2872,26 +3186,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "1fr 1fr 1fr auto",
+                      gridTemplateColumns: "1fr 1fr auto",
                       gap: 8,
                       alignItems: "end",
                     }}
                   >
-                    <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                      UDT
-                      <select
-                        value={applyTemplate}
-                        onChange={(e) => setApplyTemplate(e.target.value)}
-                        style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                      >
-                        <option value="">Select UDT</option>
-                        {templates.map((t) => (
-                          <option key={`opt-${t.name}`} value={t.name}>
-                            {t.parent_name ? `${t.name} (extends ${t.parent_name})` : t.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
                     <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
                       Topic
                       <select
@@ -2919,6 +3218,26 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       Add From UDT
                     </button>
                   </div>
+                  <label style={{ display: "grid", gap: 6, fontSize: 12, maxWidth: 420 }}>
+                    UDT
+                    <select
+                      value={applyTemplate}
+                      onChange={(e) => setApplyTemplate(e.target.value)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                    >
+                      <option value="">Select UDT</option>
+                      {templates.map((t) => {
+                        const tName = String(t?.name || "").trim();
+                        if (!tName) return null;
+                        const parentText = t?.parent_name ? ` (extends ${t.parent_name})` : "";
+                        return (
+                          <option key={`apply-udt-option-${tName}`} value={tName}>
+                            {`${tName}${parentText}`}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
                   {applyTemplate ? (
                     <div
                       style={{
@@ -2926,30 +3245,15 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         borderRadius: 10,
                         background: "var(--bg-elev)",
                         padding: 8,
-                        maxHeight: 220,
+                        maxHeight: 320,
                         overflow: "auto",
                       }}
                     >
-                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "var(--text)" }}>
-                        UDT Members
+                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "var(--text)" }}>
+                        UDT Import Fields (Editable Tree)
                       </div>
-                      {applyTemplatePreview.unresolvedTypes.length ? (
-                        <div
-                          style={{
-                            border: "1px solid #f59e0b",
-                            background: "rgba(245,158,11,0.1)",
-                            color: "#b45309",
-                            borderRadius: 8,
-                            padding: "6px 8px",
-                            marginBottom: 8,
-                            fontSize: 11,
-                          }}
-                        >
-                          Missing nested UDT definitions: {applyTemplatePreview.unresolvedTypes.join(", ")}
-                        </div>
-                      ) : null}
-                      {udtPreviewTree.length ? (
-                        renderUdtPreviewNodes(udtPreviewTree)
+                      {applyTemplateTree.length ? (
+                        renderApplyTemplateTreeRows(applyTemplateTree)
                       ) : (
                         <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                           No members found for selected UDT.
@@ -3505,6 +3809,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                           };
                                           const hierarchyRows = buildHierarchyRows(tagGroup.items);
                                           return hierarchyRows.map(({ tag: t, idx, path, synthetic, depth, hasChildren, expanded, expandedKey }) => {
+                                          const tagObj = t || {};
                                           const isSynthetic = synthetic === true || !t || !Number.isInteger(idx);
                                           const rowEditing = !isSynthetic && tagTableEditing && editingTagIndex === idx;
                                         return (
@@ -3515,7 +3820,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                 {isSynthetic ? null : (
                                                   <input
                                                     type="checkbox"
-                                                    checked={t.enabled !== false}
+                                                    checked={tagObj.enabled !== false}
                                                     onChange={(e) => {
                                                       if (!rowEditing) return;
                                                       updateTag(idx, "enabled", e.target.checked);
@@ -3536,7 +3841,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                 {isSynthetic ? null : (
                                                   <input
                                                     type="checkbox"
-                                                    checked={t.muted === true}
+                                                    checked={tagObj.muted === true}
                                                     onChange={(e) => {
                                                       if (!rowEditing) return;
                                                       updateTag(idx, "muted", e.target.checked);
@@ -3557,7 +3862,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                 {isSynthetic ? null : (
                                                   <input
                                                     type="checkbox"
-                                                    checked={t.trendEnabled === true}
+                                                    checked={tagObj.trendEnabled === true}
                                                     onChange={(e) => {
                                                       if (!rowEditing) return;
                                                       updateTag(idx, "trendEnabled", e.target.checked);
@@ -3603,7 +3908,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                   )}
                                                   <span>
                                                     {(() => {
-                                                      const raw = String(path || t?.tagPath || t?.name || "").trim();
+                                                      const raw = String(path || tagObj?.tagPath || tagObj?.name || "").trim();
                                                       if (!raw) return "";
                                                       const parts = raw.split(".").filter(Boolean);
                                                       return parts.length ? parts[parts.length - 1] : raw;
@@ -3614,47 +3919,47 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             ) : null}
                                             {showTagColumn("topic") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                                                {t.topic || ""}
+                                                {tagObj.topic || ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("tagPath") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {t.tagPath || ""}
+                                                {tagObj.tagPath || ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("uaType") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {t.uaType || ""}
+                                                {tagObj.uaType || ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("pollMs") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {Number.isFinite(Number(t.pollMs)) ? Number(t.pollMs) : ""}
+                                                {Number.isFinite(Number(tagObj.pollMs)) ? Number(tagObj.pollMs) : ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("samplingInterval") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {Number.isFinite(Number(t.samplingInterval)) ? Number(t.samplingInterval) : ""}
+                                                {Number.isFinite(Number(tagObj.samplingInterval)) ? Number(tagObj.samplingInterval) : ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("mappingSet") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {t.mappingSet || ""}
+                                                {tagObj.mappingSet || ""}
                                               </td>
                                             ) : null}
                                             {showTagColumn("scale") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {Number.isFinite(Number(t.scale)) ? Number(t.scale) : 1}
+                                                {Number.isFinite(Number(tagObj.scale)) ? Number(tagObj.scale) : 1}
                                               </td>
                                             ) : null}
                                             {showTagColumn("decimals") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 0}
+                                                {Number.isFinite(Number(tagObj.decimals)) ? Number(tagObj.decimals) : 0}
                                               </td>
                                             ) : null}
                                             {showTagColumn("quality") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {String(getLiveValueForTag(liveQualities, t) || (t.muted ? "Muted" : "Unknown"))}
+                                                {String(getLiveValueForTag(liveQualities, tagObj) || (tagObj.muted ? "Muted" : "Unknown"))}
                                               </td>
                                             ) : null}
                                             {showTagColumn("liveValue")
@@ -3662,16 +3967,16 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                   if (isSynthetic) {
                                                     return <td style={{ padding: "6px 8px" }} />;
                                                   }
-                                                  const scale = Number.isFinite(Number(t.scale)) ? Number(t.scale) : 1;
-                                                  const decimals = Number.isFinite(Number(t.decimals)) ? Number(t.decimals) : 0;
-                                                  const rawValue = getLiveValueForTag(liveValues, t);
+                                                  const scale = Number.isFinite(Number(tagObj.scale)) ? Number(tagObj.scale) : 1;
+                                                  const decimals = Number.isFinite(Number(tagObj.decimals)) ? Number(tagObj.decimals) : 0;
+                                                  const rawValue = getLiveValueForTag(liveValues, tagObj);
                                                   const scaledValue =
                                                     rawValue != null && rawValue !== "" && !Number.isNaN(Number(rawValue))
                                                       ? Number(rawValue) * scale
                                                       : rawValue;
-                                                  const errorCount = Number(getLiveValueForTag(liveErrors, t) || 0);
-                                                  const pathKey = getTagPathKey(t);
-                                                  const legacyKey = getTagLegacyKey(t);
+                                                  const errorCount = Number(getLiveValueForTag(liveErrors, tagObj) || 0);
+                                                  const pathKey = getTagPathKey(tagObj);
+                                                  const legacyKey = getTagLegacyKey(tagObj);
                                                   const writeKey = pathKey || legacyKey || `tag-${idx}`;
                                                   const writeDraft = Object.prototype.hasOwnProperty.call(tagWriteByKey, writeKey)
                                                     ? tagWriteByKey[writeKey]
@@ -3692,12 +3997,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                           style={{
                                                             minWidth: 70,
                                                             color:
-                                                              t.enabled === false
+                                                          tagObj.enabled === false
                                                                 ? "#b42318"
                                                                 : "var(--text)",
                                                           }}
                                                         >
-                                                          {t.enabled === false
+                                                        {tagObj.enabled === false
                                                             ? "Disabled"
                                                             : formatLiveNumber(scaledValue, decimals)}
                                                         </span>
@@ -3717,7 +4022,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                           onKeyDown={(e) => {
                                                             if (e.key !== "Enter") return;
                                                             e.preventDefault();
-                                                            writeTagLiveValue(t, writeKey);
+                                                            writeTagLiveValue(tagObj, writeKey);
                                                           }}
                                                           placeholder="Write value"
                                                           style={{
@@ -3731,7 +4036,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                           }}
                                                         />
                                                         <button
-                                                          onClick={() => writeTagLiveValue(t, writeKey)}
+                                                          onClick={() => writeTagLiveValue(tagObj, writeKey)}
                                                           disabled={writeBusy}
                                                           style={{
                                                             ...drawerButtonStyle,
@@ -4242,365 +4547,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   </select>
                 </label>
               </div>
-              <div style={{ fontSize: 12, marginBottom: 8 }}>Fields</div>
-              <div
-                style={{
-                  border: "1px solid var(--border)",
-                  borderRadius: 10,
-                  padding: 8,
-                  marginBottom: 10,
-                  background: "var(--bg-elev)",
-                  maxHeight: 220,
-                  overflow: "auto",
-                }}
-              >
-                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "var(--text)" }}>
-                  Resolved Nested UDT Fields ({editorResolvedRows.length})
-                </div>
-                {editorUdtPreviewTree.length ? (
-                  renderUdtPreviewNodes(
-                    editorUdtPreviewTree,
-                    0,
-                    "editor",
-                    editorUdtPreviewExpanded,
-                    setEditorUdtPreviewExpanded
+              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", maxHeight: 360, overflow: "auto", padding: 8 }}>
+                {templateFieldRows.length ? (
+                  renderTemplateFieldTreeRows(
+                    String(templateName || editTemplate || "__draft__").trim(),
+                    templateFieldRows,
+                    [String(templateName || editTemplate || "__draft__").trim().toLowerCase()],
+                    0
                   )
                 ) : (
-                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                    No resolved nested fields yet.
+                  <div style={{ padding: "8px", color: "var(--text-muted)", fontSize: 12 }}>
+                    No fields yet.
                   </div>
                 )}
-              </div>
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflowX: "auto", overflowY: "auto", maxHeight: 320, padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
-                <table style={{ width: 1460, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
-                  <colgroup>
-                    <col style={{ width: "11%" }} />
-                    <col style={{ width: "14%" }} />
-                    <col style={{ width: "12%" }} />
-                    <col style={{ width: "8%" }} />
-                    <col style={{ width: "8%" }} />
-                    <col style={{ width: "10%" }} />
-                    <col style={{ width: "5%" }} />
-                    <col style={{ width: "7%" }} />
-                    <col style={{ width: "7%" }} />
-                    <col style={{ width: "9%" }} />
-                    <col style={{ width: "7%" }} />
-                    <col style={{ width: "8%" }} />
-                    <col style={{ width: "4%" }} />
-                  </colgroup>
-                  <thead>
-                    <tr style={{ background: "var(--bg-soft)" }}>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Name</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Tag Path</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>UA Type</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Poll</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Sampling</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Topic</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Enabled</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Scale</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Decimals</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Mapping Set</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Alarm</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Alarm Op</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Alarm Value</th>
-                      <th />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {templateFieldRows.map((row, idx) => (
-                      <tr key={`field-${idx}`}>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <input
-                            value={row.name || ""}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], name: e.target.value };
-                                return next;
-                              })
-                            }
-                            placeholder="Display name"
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          />
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <input
-                            value={row.tagPath || ""}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], tagPath: e.target.value };
-                                return next;
-                              })
-                            }
-                            placeholder="Controller tag path"
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          />
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <select
-                            value={row.uaType || ""}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], uaType: e.target.value };
-                                return next;
-                              })
-                            }
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          >
-                            <option value="">Select UA type</option>
-                            <option value="Boolean">Boolean</option>
-                            <option value="Int16">Int16</option>
-                            <option value="Int32">Int32</option>
-                            <option value="Int64">Int64</option>
-                            <option value="UInt16">UInt16</option>
-                            <option value="UInt32">UInt32</option>
-                            <option value="UInt64">UInt64</option>
-                            <option value="Float">Float</option>
-                            <option value="Double">Double</option>
-                            <option value="String">String</option>
-                          </select>
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <input
-                            value={row.pollMs ?? ""}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], pollMs: e.target.value };
-                                return next;
-                              })
-                            }
-                            placeholder="ms"
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          />
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <input
-                            value={row.samplingInterval ?? ""}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], samplingInterval: e.target.value };
-                                return next;
-                              })
-                            }
-                            placeholder="ms"
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          />
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <input
-                            value={row.topic || ""}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], topic: e.target.value };
-                                return next;
-                              })
-                            }
-                            placeholder="Optional"
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          />
-                        </td>
-                        <td style={{ padding: "8px 10px 8px 10px" }}>
-                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                            <input
-                              type="checkbox"
-                              checked={row.enabled !== false}
-                              onChange={(e) =>
-                                setTemplateFieldRows((prev) => {
-                                  const next = [...prev];
-                                  next[idx] = { ...next[idx], enabled: e.target.checked };
-                                  return next;
-                                })
-                              }
-                              disabled={!templateEditing}
-                            />
-                          </label>
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <input
-                            type="number"
-                            step="any"
-                            value={row.scale ?? 1}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], scale: e.target.value };
-                                return next;
-                              })
-                            }
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          />
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={row.decimals ?? 4}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], decimals: e.target.value };
-                                return next;
-                              })
-                            }
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          />
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <select
-                            value={row.mappingSet || ""}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], mappingSet: e.target.value };
-                                return next;
-                              })
-                            }
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing}
-                          >
-                            <option value="">None</option>
-                            {mappingSets.map((s) => (
-                              <option key={`tmpl-map-${s.name}`} value={s.name}>
-                                {s.name}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td style={{ padding: "8px 10px 8px 10px" }}>
-                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                            <input
-                              type="checkbox"
-                              checked={row.alarmEnabled === true}
-                              onChange={(e) =>
-                                setTemplateFieldRows((prev) => {
-                                  const next = [...prev];
-                                  next[idx] = { ...next[idx], alarmEnabled: e.target.checked };
-                                  return next;
-                                })
-                              }
-                              disabled={!templateEditing}
-                            />
-                          </label>
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <select
-                            value={normalizeAlarmOperator(row.alarmOperator)}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], alarmOperator: e.target.value };
-                                return next;
-                              })
-                            }
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing || row.alarmEnabled !== true}
-                          >
-                            {ALARM_OPERATORS.map((op) => (
-                              <option key={`tmpl-alarm-op-${op}`} value={op}>
-                                {op}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px" }}>
-                          <input
-                            value={row.alarmValue ?? ""}
-                            onChange={(e) =>
-                              setTemplateFieldRows((prev) => {
-                                const next = [...prev];
-                                next[idx] = { ...next[idx], alarmValue: e.target.value };
-                                return next;
-                              })
-                            }
-                            placeholder="e.g. 1"
-                            style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled={!templateEditing || row.alarmEnabled !== true}
-                          />
-                        </td>
-                        <td style={{ padding: "8px 10px 8px 14px" }}>
-                          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                            <button
-                              onClick={() =>
-                                setTemplateFieldRows((prev) => prev.filter((_, i) => i !== idx))
-                              }
-                              style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
-                              disabled={!templateEditing}
-                            >
-                              <TrashCanIcon />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {editorResolvedOnlyRows.map((row, idx) => (
-                      <tr key={`field-resolved-${idx}`} style={{ background: "var(--bg-soft)" }}>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                          {String(row?.name || "").trim()}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                          {String(row?.tagPath || "").trim()}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {String(row?.uaType || "").trim()}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {row?.pollMs ?? ""}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {row?.samplingInterval ?? ""}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {String(row?.topic || "").trim()}
-                        </td>
-                        <td style={{ padding: "8px 10px 8px 10px", color: "var(--text-muted)" }}>
-                          {row?.enabled === false ? "No" : "Yes"}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {Number.isFinite(Number(row?.scale)) ? Number(row.scale) : 1}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {Number.isFinite(Number(row?.decimals)) ? Number(row.decimals) : 0}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {String(row?.mappingSet || "").trim()}
-                        </td>
-                        <td style={{ padding: "8px 10px 8px 10px", color: "var(--text-muted)" }}>
-                          {row?.alarmEnabled === true ? "Yes" : "No"}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {String(row?.alarmOperator || "").trim()}
-                        </td>
-                        <td style={{ padding: "8px 16px 8px 10px", color: "var(--text-muted)" }}>
-                          {String(row?.alarmValue ?? "").trim()}
-                        </td>
-                        <td style={{ padding: "8px 10px 8px 14px", color: "var(--text-muted)", fontSize: 11 }}>
-                          Resolved
-                        </td>
-                      </tr>
-                    ))}
-                    {templateFieldRows.length === 0 && editorResolvedOnlyRows.length === 0 && (
-                      <tr>
-                        <td colSpan={13} style={{ padding: "8px", color: "var(--text-muted)" }}>
-                          No fields yet.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
               </div>
               <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
                 <button
@@ -5130,6 +5089,636 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         </div>
       );
     });
+  }
+
+  function updateApplyTemplateRow(idx, key, value) {
+    setApplyTemplateRows((prev) => {
+      const next = [...(Array.isArray(prev) ? prev : [])];
+      const row = next[idx] && typeof next[idx] === "object" ? next[idx] : {};
+      next[idx] = { ...row, [key]: value };
+      return next;
+    });
+  }
+
+  function renderApplyTemplateTreeRows(nodes, depth = 0) {
+    return (Array.isArray(nodes) ? nodes : []).map((node) => {
+      const children = Array.isArray(node.children) ? node.children : [];
+      const hasChildren = children.length > 0;
+      const expandKey = `apply-tree:${node.fullPath}`;
+      const rowEntry = applyTemplateRowsByPath.get(String(node.fullPath || "").trim());
+      const row = rowEntry?.row || null;
+      const rowIdx = Number.isFinite(rowEntry?.idx) ? rowEntry.idx : -1;
+      const canToggle = hasChildren || !!row;
+      const expanded =
+        applyTemplateTreeExpanded[expandKey] ?? (hasChildren && depth < 1);
+      const plcType = String(row?.plcType || "").trim();
+      return (
+        <div key={`apply-tree-row-${node.fullPath}`} style={{ marginLeft: depth * 12, padding: "2px 0" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "20px 18px minmax(0,1fr)",
+              gap: 8,
+              alignItems: "center",
+              minHeight: 28,
+            }}
+          >
+            <button
+              type="button"
+              data-preserve-style="true"
+              onClick={() => {
+                if (!canToggle) return;
+                setApplyTemplateTreeExpanded((prev) => ({
+                  ...prev,
+                  [expandKey]: !expanded,
+                }));
+              }}
+              disabled={!canToggle}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 5,
+                width: 20,
+                height: 20,
+                fontSize: 12,
+                fontWeight: 700,
+                lineHeight: 1,
+                padding: 0,
+                opacity: canToggle ? 1 : 0.4,
+                cursor: canToggle ? "pointer" : "default",
+              }}
+              title={expanded ? "Collapse" : "Expand"}
+            >
+              {expanded ? "−" : "+"}
+            </button>
+            {row && !hasChildren ? (
+              <input
+                type="checkbox"
+                checked={row?.include !== false}
+                onChange={(e) => updateApplyTemplateRow(rowIdx, "include", e.target.checked)}
+                style={{ width: 14, height: 14 }}
+              />
+            ) : (
+              <span />
+            )}
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", display: "inline-flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {String(node?.name || "")}
+              </span>
+              {plcType ? <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>: {plcType}</span> : null}
+            </div>
+          </div>
+          {row && expanded && !hasChildren ? (
+            <div
+              style={{
+                margin: "4px 0 8px 46px",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                background: "var(--bg)",
+                padding: 8,
+                display: "grid",
+                gap: 8,
+                gridTemplateColumns: "repeat(6, minmax(120px, 1fr))",
+              }}
+            >
+              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                Name
+                <input
+                  value={String(row?.name || "")}
+                  onChange={(e) => updateApplyTemplateRow(rowIdx, "name", e.target.value)}
+                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11, gridColumn: "span 2" }}>
+                Tag Path
+                <input
+                  value={String(row?.tagPath || "")}
+                  onChange={(e) => updateApplyTemplateRow(rowIdx, "tagPath", e.target.value)}
+                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                UA Type
+                <select
+                  value={String(row?.uaType || "")}
+                  onChange={(e) => updateApplyTemplateRow(rowIdx, "uaType", e.target.value)}
+                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                >
+                  <option value="">Select UA type</option>
+                  <option value="Boolean">Boolean</option>
+                  <option value="Int16">Int16</option>
+                  <option value="Int32">Int32</option>
+                  <option value="Int64">Int64</option>
+                  <option value="UInt16">UInt16</option>
+                  <option value="UInt32">UInt32</option>
+                  <option value="UInt64">UInt64</option>
+                  <option value="Float">Float</option>
+                  <option value="Double">Double</option>
+                  <option value="String">String</option>
+                </select>
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                Poll
+                <input
+                  value={row?.pollMs ?? ""}
+                  onChange={(e) => updateApplyTemplateRow(rowIdx, "pollMs", e.target.value)}
+                  placeholder="ms"
+                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                Sampling
+                <input
+                  value={row?.samplingInterval ?? ""}
+                  onChange={(e) => updateApplyTemplateRow(rowIdx, "samplingInterval", e.target.value)}
+                  placeholder="ms"
+                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                Topic
+                <input
+                  value={String(row?.topic || "")}
+                  onChange={(e) => updateApplyTemplateRow(rowIdx, "topic", e.target.value)}
+                  placeholder="Optional"
+                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                Enabled
+                <span style={{ minHeight: 30, display: "inline-flex", alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={row?.enabled !== false}
+                    onChange={(e) => updateApplyTemplateRow(rowIdx, "enabled", e.target.checked)}
+                    style={{ width: 14, height: 14 }}
+                  />
+                </span>
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                Scale
+                <input
+                  type="number"
+                  step="any"
+                  value={row?.scale ?? 1}
+                  onChange={(e) => updateApplyTemplateRow(rowIdx, "scale", e.target.value)}
+                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                />
+              </label>
+            </div>
+          ) : null}
+          {hasChildren && expanded ? renderApplyTemplateTreeRows(children, depth + 1) : null}
+        </div>
+      );
+    });
+  }
+
+  function updateTemplateFieldRow(idx, key, value, fallbackRow = null, path = "") {
+    setTemplateFieldRows((prev) => {
+      const next = [...(Array.isArray(prev) ? prev : [])];
+      if (Number.isInteger(idx) && idx >= 0 && next[idx] && typeof next[idx] === "object") {
+        const row = next[idx];
+        next[idx] = { ...row, [key]: value };
+        return next;
+      }
+      const resolvedPath = String(path || fallbackRow?.tagPath || fallbackRow?.name || "").trim();
+      if (!resolvedPath) return next;
+      const existingIdx = next.findIndex((row) => {
+        const rowPath = String(row?.tagPath || row?.name || "").trim();
+        return rowPath === resolvedPath;
+      });
+      const seed = {
+        name: String(fallbackRow?.name || resolvedPath).trim(),
+        tagPath: String(fallbackRow?.tagPath || resolvedPath).trim(),
+        plcType: String(fallbackRow?.plcType || "").trim(),
+        baseType: String(fallbackRow?.baseType || "").trim(),
+        isArray: fallbackRow?.isArray === true,
+        arraySpec: String(fallbackRow?.arraySpec || "").trim(),
+        usage: String(fallbackRow?.usage || "").trim(),
+        uaType: String(fallbackRow?.uaType || "").trim(),
+        pollMs: fallbackRow?.pollMs ?? "",
+        samplingInterval: fallbackRow?.samplingInterval ?? "",
+        topic: String(fallbackRow?.topic || "").trim(),
+        enabled: fallbackRow?.enabled !== false,
+        mappingSet: String(fallbackRow?.mappingSet || "").trim(),
+        scale: Number.isFinite(Number(fallbackRow?.scale)) ? Number(fallbackRow.scale) : 1,
+        decimals: Number.isFinite(Number(fallbackRow?.decimals)) ? Number(fallbackRow.decimals) : 0,
+        alarmEnabled: fallbackRow?.alarmEnabled === true,
+        alarmOperator: normalizeAlarmOperator(fallbackRow?.alarmOperator),
+        alarmValue: normalizeAlarmThreshold(fallbackRow?.alarmValue),
+      };
+      if (existingIdx >= 0) {
+        next[existingIdx] = { ...next[existingIdx], ...seed, [key]: value };
+      } else {
+        next.push({ ...seed, [key]: value });
+      }
+      return next;
+    });
+  }
+
+  function removeTemplateFieldRow(idx, fallbackRow = null, path = "", removeChildren = false) {
+    setTemplateFieldRows((prev) => {
+      const rows = Array.isArray(prev) ? prev : [];
+      const next = [...rows];
+      const resolvedPath = String(path || fallbackRow?.tagPath || fallbackRow?.name || "").trim();
+      if (Number.isInteger(idx) && idx >= 0 && next[idx] && typeof next[idx] === "object") {
+        const basePath = String(next[idx]?.tagPath || next[idx]?.name || resolvedPath).trim();
+        next.splice(idx, 1);
+        if (!removeChildren || !basePath) return next;
+        return next.filter((row) => {
+          const rowPath = String(row?.tagPath || row?.name || "").trim();
+          return rowPath !== basePath && !rowPath.startsWith(`${basePath}.`);
+        });
+      }
+      if (!resolvedPath) return next;
+      if (!removeChildren) {
+        return next.filter((row) => {
+          const rowPath = String(row?.tagPath || row?.name || "").trim();
+          return rowPath !== resolvedPath;
+        });
+      }
+      return next.filter((row) => {
+        const rowPath = String(row?.tagPath || row?.name || "").trim();
+        return rowPath !== resolvedPath && !rowPath.startsWith(`${resolvedPath}.`);
+      });
+    });
+  }
+
+  function renderTemplateFieldTreeRows(rootTemplateName, fields, visitedTypes = [], depth = 0) {
+    const primitiveTypeSet = new Set([
+      "bool","bit","sint","int","dint","lint","usint","uint","udint","ulint","real","lreal","string","wstring","byte","word","dword","time","date","datetime",
+    ]);
+    return (
+      <div style={{ display: "grid", gap: 4 }}>
+        {(Array.isArray(fields) ? fields : []).map((field) => {
+          const fieldName = String(field?.name || "").trim();
+          const fieldPath = String(field?.tagPath || field?.name || "").trim();
+          const rowEntry = templateFieldRowsByPath.get(fieldPath);
+          const resolvedRow = editorResolvedRowsByPath.get(fieldPath);
+          const row = rowEntry?.row || resolvedRow || field || null;
+          const rowIdx = Number.isFinite(rowEntry?.idx) ? rowEntry.idx : -1;
+          const plcType = String(field?.plcType || "").trim();
+          const parsed = parseFieldArrayDescriptor(field);
+          const lookupType = String(parsed.baseType || field?.baseType || plcType || "").trim();
+          const fieldNameCandidate = String(field?.name || "").trim();
+          const fieldPathCandidate = String(field?.tagPath || "").trim();
+          const pathLeafCandidate = fieldPathCandidate
+            ? fieldPathCandidate.split(".").filter(Boolean).slice(-1)[0] || ""
+            : "";
+          const plcTypeKey = lookupType.toLowerCase();
+          const targetTemplateName =
+            resolveTemplateNameByTypeWithContext(lookupType, rootTemplateName) ||
+            resolveTemplateNameByTypeWithContext(field?.baseType, rootTemplateName) ||
+            resolveTemplateNameByTypeWithContext(field?.plcType, rootTemplateName) ||
+            resolveTemplateNameByTypeWithContext(fieldNameCandidate, rootTemplateName) ||
+            resolveTemplateNameByTypeWithContext(pathLeafCandidate, rootTemplateName);
+          const targetFields = targetTemplateName ? resolveTemplateFields(targetTemplateName) : [];
+          const hasNested = targetTemplateName && targetFields.length > 0 && !primitiveTypeSet.has(plcTypeKey);
+          const missingChildTemplate =
+            !targetTemplateName &&
+            !primitiveTypeSet.has(plcTypeKey) &&
+            String(lookupType || "").trim().length > 0;
+          const recursive = hasNested && visitedTypes.includes(plcTypeKey);
+          const nodeKey = `template-tree:${String(rootTemplateName || "").trim()}|${visitedTypes.join(">")}|${fieldName}|${plcType}|${fieldPath}`;
+          const canExpand = !recursive;
+          const expanded = templateFieldTreeExpanded[nodeKey] ?? false;
+          const activeRowEditing = templateFieldEditingKey === nodeKey;
+          return (
+            <div key={`tmpl-tree-${nodeKey}`} style={{ marginLeft: Math.max(0, depth * 12), padding: "2px 0" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "20px 18px minmax(0,1fr) auto",
+                  gap: 8,
+                  alignItems: "center",
+                  minHeight: 28,
+                }}
+              >
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={() => setTemplateFieldTreeExpanded((prev) => ({ ...prev, [nodeKey]: !expanded }))}
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 5,
+                    width: 20,
+                    height: 20,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    lineHeight: 1,
+                    padding: 0,
+                    opacity: 1,
+                    cursor: canExpand ? "pointer" : "default",
+                  }}
+                  title={expanded ? "Collapse" : "Expand"}
+                >
+                  {expanded ? "−" : "+"}
+                </button>
+                <input
+                  type="checkbox"
+                  checked={row?.enabled !== false}
+                  onChange={(e) => updateTemplateFieldRow(rowIdx, "enabled", e.target.checked, row, fieldPath)}
+                  style={{ width: 14, height: 14 }}
+                  disabled={!templateEditing || hasNested}
+                />
+                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", display: "inline-flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {fieldName || "(unnamed)"}
+                  </span>
+                  {plcType ? <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>: {plcType}</span> : null}
+                  {parsed.isArray ? <span style={{ color: "#2b6cff", fontWeight: 700 }}>[array]</span> : null}
+                  {hasNested ? <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>(group)</span> : null}
+                  {missingChildTemplate ? (
+                    <span style={{ color: "#f04438", fontWeight: 700 }}>(missing in DB)</span>
+                  ) : null}
+                  {recursive ? <span style={{ color: "#f59e0b", fontWeight: 700 }}>(recursive)</span> : null}
+                </div>
+                <button
+                  type="button"
+                  data-preserve-style="true"
+                  onClick={() =>
+                    setTemplateFieldEditingKey((prev) => (prev === nodeKey ? "" : nodeKey))
+                  }
+                  style={{
+                    border: "1px solid #2b6cff",
+                    background: activeRowEditing ? "#2b6cff" : "var(--bg-elev)",
+                    color: activeRowEditing ? "#fff" : "#2b6cff",
+                    borderRadius: 6,
+                    padding: "4px 8px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    lineHeight: 1.2,
+                    cursor: templateEditing ? "pointer" : "default",
+                  }}
+                  disabled={!templateEditing}
+                >
+                  {activeRowEditing ? "Done" : "Edit"}
+                </button>
+              </div>
+              {expanded && hasNested ? (
+                <div
+                  style={{
+                    margin: "4px 0 8px 46px",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    background: "var(--bg)",
+                    padding: 8,
+                    display: "grid",
+                    gap: 8,
+                    gridTemplateColumns: "repeat(4, minmax(120px, 1fr))",
+                  }}
+                >
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Group Name
+                    <input
+                      value={String(row?.name || "")}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "name", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11, gridColumn: "span 2" }}>
+                    Group Tag Path
+                    <input
+                      value={String(row?.tagPath || "")}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "tagPath", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "end" }}>
+                    <button
+                      type="button"
+                      data-preserve-style="true"
+                      onClick={() => removeTemplateFieldRow(rowIdx, row, fieldPath, true)}
+                      style={{
+                        border: "1px solid #f04438",
+                        background: "#f04438",
+                        color: "#fff",
+                        borderRadius: 6,
+                        padding: "5px 10px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        lineHeight: 1.2,
+                        cursor: templateEditing ? "pointer" : "default",
+                      }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    >
+                      Delete Group
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {expanded && !hasNested ? (
+                <div
+                  style={{
+                    margin: "4px 0 8px 46px",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    background: "var(--bg)",
+                    padding: 8,
+                    display: "grid",
+                    gap: 8,
+                    gridTemplateColumns: "repeat(6, minmax(120px, 1fr))",
+                  }}
+                >
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Name
+                    <input
+                      value={String(row?.name || "")}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "name", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11, gridColumn: "span 2" }}>
+                    Tag Path
+                    <input
+                      value={String(row?.tagPath || "")}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "tagPath", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    UA Type
+                    <select
+                      value={String(row?.uaType || "")}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "uaType", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    >
+                      <option value="">Select UA type</option>
+                      <option value="Boolean">Boolean</option>
+                      <option value="Int16">Int16</option>
+                      <option value="Int32">Int32</option>
+                      <option value="Int64">Int64</option>
+                      <option value="UInt16">UInt16</option>
+                      <option value="UInt32">UInt32</option>
+                      <option value="UInt64">UInt64</option>
+                      <option value="Float">Float</option>
+                      <option value="Double">Double</option>
+                      <option value="String">String</option>
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Poll
+                    <input
+                      value={row?.pollMs ?? ""}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "pollMs", e.target.value, row, fieldPath)}
+                      placeholder="ms"
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Sampling
+                    <input
+                      value={row?.samplingInterval ?? ""}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "samplingInterval", e.target.value, row, fieldPath)}
+                      placeholder="ms"
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Topic
+                    <input
+                      value={String(row?.topic || "")}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "topic", e.target.value, row, fieldPath)}
+                      placeholder="Optional"
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Enabled
+                    <span style={{ minHeight: 30, display: "inline-flex", alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={row?.enabled !== false}
+                        onChange={(e) => updateTemplateFieldRow(rowIdx, "enabled", e.target.checked, row, fieldPath)}
+                        style={{ width: 14, height: 14 }}
+                        disabled={!templateEditing || !activeRowEditing}
+                      />
+                    </span>
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Scale
+                    <input
+                      type="number"
+                      step="any"
+                      value={row?.scale ?? 1}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "scale", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Decimals
+                    <input
+                      type="number"
+                      step="1"
+                      value={row?.decimals ?? 0}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "decimals", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Mapping Set
+                    <select
+                      value={String(row?.mappingSet || "")}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "mappingSet", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    >
+                      <option value="">None</option>
+                      {mappingSets.map((m) => (
+                        <option key={`tmpl-tree-map-${nodeKey}-${m.name}`} value={m.name}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Alarm
+                    <span style={{ minHeight: 30, display: "inline-flex", alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={row?.alarmEnabled === true}
+                        onChange={(e) => updateTemplateFieldRow(rowIdx, "alarmEnabled", e.target.checked, row, fieldPath)}
+                        style={{ width: 14, height: 14 }}
+                        disabled={!templateEditing || !activeRowEditing}
+                      />
+                    </span>
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Alarm Operator
+                    <select
+                      value={normalizeAlarmOperator(row?.alarmOperator)}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "alarmOperator", e.target.value, row, fieldPath)}
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={row?.alarmEnabled !== true || !templateEditing || !activeRowEditing}
+                    >
+                      {ALARM_OPERATORS.map((op) => (
+                        <option key={`tmpl-tree-alarm-op-${nodeKey}-${op}`} value={op}>
+                          {op}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Alarm Value
+                    <input
+                      value={row?.alarmValue ?? ""}
+                      onChange={(e) => updateTemplateFieldRow(rowIdx, "alarmValue", e.target.value, row, fieldPath)}
+                      placeholder="e.g. 1"
+                      style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
+                      disabled={row?.alarmEnabled !== true || !templateEditing || !activeRowEditing}
+                    />
+                  </label>
+                  <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "end", gridColumn: "1 / -1" }}>
+                    <button
+                      type="button"
+                      data-preserve-style="true"
+                      onClick={() => removeTemplateFieldRow(rowIdx, row, fieldPath, false)}
+                      style={{
+                        border: "1px solid #f04438",
+                        background: "#f04438",
+                        color: "#fff",
+                        borderRadius: 6,
+                        padding: "5px 10px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        lineHeight: 1.2,
+                        cursor: templateEditing ? "pointer" : "default",
+                      }}
+                      disabled={!templateEditing || !activeRowEditing}
+                    >
+                      Delete Field
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {canExpand && expanded && hasNested ? (
+                <div style={{ marginTop: 2 }}>
+                  {renderTemplateFieldTreeRows(
+                    targetTemplateName || rootTemplateName,
+                    targetFields,
+                    [...visitedTypes, plcTypeKey],
+                    depth + 1
+                  )}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
   }
 
   function addTagFromToolbar() {
