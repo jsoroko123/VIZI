@@ -19,6 +19,15 @@ OLLAMA_MODEL=""
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEFAULT_SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+LOG_FILE="${SCRIPT_DIR}/install-vizi-$(date +%Y%m%d-%H%M%S).log"
+
+# Persist full installer output to a log file in installer folder.
+exec > >(tee -a "${LOG_FILE}") 2>&1
+trap 'echo; echo "Installer failed. Log saved to: ${LOG_FILE}" >&2' ERR
+
+# Keep installer runs predictable and fast in GUI mode.
+export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
+export HOMEBREW_NO_ENV_HINTS="${HOMEBREW_NO_ENV_HINTS:-1}"
 
 log_step() {
   echo
@@ -32,6 +41,61 @@ fail() {
 
 has_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+ensure_postgres_binaries_on_path() {
+  local pg_prefix=""
+  pg_prefix="$(brew --prefix "postgresql@${POSTGRES_VERSION}" 2>/dev/null || true)"
+  if [[ -n "${pg_prefix}" && -d "${pg_prefix}/bin" ]]; then
+    export PATH="${pg_prefix}/bin:${PATH}"
+  fi
+}
+
+postgres_data_dir() {
+  local pg_prefix=""
+  pg_prefix="$(brew --prefix "postgresql@${POSTGRES_VERSION}" 2>/dev/null || true)"
+  if [[ -n "${pg_prefix}" && -d "${pg_prefix}/var/postgresql@${POSTGRES_VERSION}" ]]; then
+    echo "${pg_prefix}/var/postgresql@${POSTGRES_VERSION}"
+    return
+  fi
+  if [[ -d "/opt/homebrew/var/postgresql@${POSTGRES_VERSION}" ]]; then
+    echo "/opt/homebrew/var/postgresql@${POSTGRES_VERSION}"
+    return
+  fi
+  if [[ -d "/usr/local/var/postgresql@${POSTGRES_VERSION}" ]]; then
+    echo "/usr/local/var/postgresql@${POSTGRES_VERSION}"
+    return
+  fi
+  if [[ -n "${pg_prefix}" ]]; then
+    echo "${pg_prefix}/var/postgresql@${POSTGRES_VERSION}"
+    return
+  fi
+  echo "${HOME}/Library/Application Support/Postgres/${POSTGRES_VERSION}"
+}
+
+ensure_postgres_running() {
+  local data_dir=""
+  data_dir="$(postgres_data_dir)"
+  mkdir -p "${data_dir}"
+
+  if pg_isready -h localhost -p "${POSTGRES_PORT}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Try launch agent first. This can fail on locked-down GUI sessions.
+  brew services start "postgresql@${POSTGRES_VERSION}" >/dev/null 2>&1 || true
+  sleep 1
+  if pg_isready -h localhost -p "${POSTGRES_PORT}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Fallback: directly init/start cluster managed by current user.
+  if [[ ! -f "${data_dir}/PG_VERSION" ]]; then
+    initdb -D "${data_dir}" >/dev/null
+  fi
+  pg_ctl -D "${data_dir}" -l "${data_dir}/mesora-postgres.log" start >/dev/null 2>&1 || true
+  sleep 1
+  pg_isready -h localhost -p "${POSTGRES_PORT}" >/dev/null 2>&1 || fail "PostgreSQL is not running. Start it manually and rerun installer."
 }
 
 usage() {
@@ -90,6 +154,7 @@ INSTALL_ROOT="${INSTALL_ROOT/#\~/$HOME}"
 echo "Mesora macOS installer starting..."
 echo "Source:  ${SOURCE_ROOT}"
 echo "Install: ${INSTALL_ROOT}"
+echo "Log:     ${LOG_FILE}"
 
 ensure_brew() {
   if has_cmd brew; then
@@ -185,9 +250,10 @@ ensure_postgres() {
 
   log_step "Installing PostgreSQL ${POSTGRES_VERSION} via Homebrew"
   brew install "postgresql@${POSTGRES_VERSION}" || true
-  brew services start "postgresql@${POSTGRES_VERSION}" || true
+  ensure_postgres_binaries_on_path
 
-  has_cmd psql || fail "psql not found after PostgreSQL install."
+  has_cmd psql || fail "psql not found after PostgreSQL install. Ensure postgresql@${POSTGRES_VERSION} is installed in Homebrew."
+  ensure_postgres_running
 
   log_step "Configuring PostgreSQL database/user"
   export PGPASSWORD="${POSTGRES_SUPER_PASSWORD}"
@@ -294,3 +360,4 @@ install_dependencies
 write_launchers
 
 log_step "Install complete"
+echo "Installer log saved to: ${LOG_FILE}"

@@ -1510,11 +1510,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       .filter((row) => row.state && row.color);
     const parentName = String(templateParent || "").trim();
     if (!name || !fields.length) {
-      setError("Template name and fields required.");
+      setError("UDT name and fields required.");
       return;
     }
     if (parentName && parentName === name) {
-      setError("Template cannot extend itself.");
+      setError("UDT cannot extend itself.");
       return;
     }
     try {
@@ -1540,7 +1540,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           // ignore delete failure
         }
       }
-      setStatus("Template saved.");
+      setStatus("UDT saved.");
       const reload = await fetch("/api/opc/templates");
       const payload = await reload.json();
       if (reload.ok) setTemplates(payload.templates || []);
@@ -1561,7 +1561,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Delete failed.");
-      setStatus("Template deleted.");
+      setStatus("UDT deleted.");
       setTemplates((prev) => prev.filter((t) => t.name !== name));
     } catch (err) {
       setError(err?.message || "Delete failed.");
@@ -1580,7 +1580,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const prefix = applyPrefix.trim();
     const fields = resolveTemplateFields(applyTemplate);
     if (!fields.length) {
-      setError("Template has no fields.");
+      setError("UDT has no fields.");
       return;
     }
     const newTags = fields.map((f) => {
@@ -1698,7 +1698,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     setTemplateFieldRows(rows);
     setTemplateStateMappings([{ field: "", state: "", color: "" }]);
     setTemplateEditing(true);
-    setTemplateName(groupName || "NewTemplate");
+    setTemplateName(groupName || "NewUDT");
     setStatus(`Loaded ${rows.length} fields from group "${groupName || "Ungrouped"}".`);
   }
 
@@ -2178,7 +2178,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             onClick={() => setTagSectionTab("templates")}
             style={drawerTabButtonStyle(tagSectionTab === "templates")}
           >
-            Templates
+            UDTs
           </button>
           <button
             data-preserve-style="true"
@@ -2487,7 +2487,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     boxShadow: tagToolsTab === "template" ? "0 0 0 2px rgba(43,108,255,0.25)" : "none",
                   }}
                 >
-                  Template
+                  UDT
                 </button>
                 <button
                   data-preserve-style="true"
@@ -2533,13 +2533,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   }}
                 >
                   <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
-                    Template
+                    UDT
                     <select
                       value={applyTemplate}
                       onChange={(e) => setApplyTemplate(e.target.value)}
                       style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                     >
-                      <option value="">Select template</option>
+                      <option value="">Select UDT</option>
                       {templates.map((t) => (
                         <option key={`opt-${t.name}`} value={t.name}>
                           {t.parent_name ? `${t.name} (extends ${t.parent_name})` : t.name}
@@ -2571,7 +2571,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     />
                   </label>
                   <button onClick={applyTemplateToTags} style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px", height: 32 }}>
-                    Add From Template
+                    Add From UDT
                   </button>
                 </div>
               ) : tagToolsTab === "bulk" ? (
@@ -3525,7 +3525,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         ) : activeTagTab === "templates" ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
             <div style={sectionCardStyle}>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>Create / Edit Template</div>
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>Create / Edit UDT</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, marginBottom: 12, alignItems: "end" }}>
                 <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
                   Build From Tag Group
@@ -3554,7 +3554,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 </button>
               </div>
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10 }}>
-                Loads fields from selected tag group into template editor. Save Template to persist.
+                Loads fields from selected tag group into UDT editor. Save UDT to persist.
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 14, marginBottom: 12, alignItems: "end" }}>
                 <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
@@ -3589,7 +3589,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 }}
                     style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                   >
-                    <option value="">New template</option>
+                    <option value="">New UDT</option>
                     {templates.map((t) => (
                       <option key={`edit-${t.name}`} value={t.name}>
                         {t.name}
@@ -3662,7 +3662,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 12 }}>
                 <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
-                  Template Name
+                  UDT Name
                   <input
                     value={templateName}
                     onChange={(e) => setTemplateName(e.target.value)}
@@ -3671,7 +3671,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   />
                 </label>
                 <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
-                  Parent Template
+                  Parent UDT
                   <select
                     value={templateParent}
                     onChange={(e) => setTemplateParent(e.target.value)}
@@ -4020,7 +4020,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px" }}
                   disabled={!templateEditing}
                 >
-                  Save Template
+                  Save UDT
                 </button>
                 <button
                   onClick={async () => {

@@ -16,6 +16,8 @@ const PORT = Number(process.env.PORT || 5055);
 const DEBUG_ROUTES = process.env.DEBUG_ROUTES === "1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "64mb";
+const OPC_WRITE_BRIDGE_URL = String(process.env.OPC_WRITE_BRIDGE_URL || "http://127.0.0.1:4851").replace(/\/+$/, "");
+const OPC_SERVER_KEY = process.env.OPC_SERVER_KEY || "";
 const AI_SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_APP_ROOT = path.resolve(AI_SERVER_DIR, "..");
 
@@ -4276,6 +4278,41 @@ app.post("/api/opc/write", async (req, res) => {
         nextValue = Number.isFinite(n) ? n : raw;
       } else {
         nextValue = raw;
+      }
+    }
+
+    // Forward writes to opc-server so PLC values actually change.
+    {
+      const headers = { "content-type": "application/json" };
+      if (OPC_SERVER_KEY) headers["x-opc-key"] = OPC_SERVER_KEY;
+      let bridgeRes;
+      try {
+        bridgeRes = await fetch(`${OPC_WRITE_BRIDGE_URL}/internal/write`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            tagKey,
+            legacyTagKey,
+            value: nextValue,
+            uaType,
+          }),
+        });
+      } catch (err) {
+        res.status(502).json({
+          error: `OPC write bridge unavailable at ${OPC_WRITE_BRIDGE_URL}: ${err?.message || "request failed"}`,
+        });
+        return;
+      }
+      if (!bridgeRes.ok) {
+        const bridgeData = await bridgeRes.json().catch(() => ({}));
+        res.status(bridgeRes.status).json({
+          error: bridgeData?.error || "PLC write failed.",
+        });
+        return;
+      }
+      const bridgeData = await bridgeRes.json().catch(() => ({}));
+      if (Object.prototype.hasOwnProperty.call(bridgeData || {}, "value")) {
+        nextValue = bridgeData.value;
       }
     }
 

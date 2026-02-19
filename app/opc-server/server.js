@@ -1,4 +1,5 @@
 import fs from "fs";
+import http from "http";
 import path from "path";
 import process from "process";
 import {
@@ -14,6 +15,7 @@ const PLC = require("node-logix").default;
 
 const AI_SERVER_URL = process.env.AI_SERVER_URL || "http://localhost:5055";
 const OPC_SERVER_KEY = process.env.OPC_SERVER_KEY || "";
+const OPC_WRITE_BRIDGE_PORT = Math.max(1, Number.parseInt(String(process.env.OPC_WRITE_BRIDGE_PORT || "4851"), 10) || 4851);
 const RESTART_PATH = path.resolve(process.cwd(), "restart.requested");
 
 async function loadConfig() {
@@ -93,6 +95,12 @@ function isNumericLiveValue(value) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function writeJson(res, statusCode, payload) {
+  res.statusCode = statusCode;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify(payload));
 }
 
 async function main() {
@@ -347,6 +355,119 @@ async function main() {
   }
 
   tagsWithMeta.forEach(createVariable);
+
+  const tagsByAnyKey = new Map();
+  tagsWithMeta.forEach((t) => {
+    const keys = [t.tagKey, t.legacyTagKey, t.tagPath, t.name].map((k) => String(k || "").trim()).filter(Boolean);
+    keys.forEach((k) => {
+      if (!tagsByAnyKey.has(k)) tagsByAnyKey.set(k, t);
+    });
+  });
+
+  const numericPlcTypes = new Set([
+    "SINT",
+    "INT",
+    "DINT",
+    "LINT",
+    "USINT",
+    "UINT",
+    "UDINT",
+    "REAL",
+    "LREAL",
+  ]);
+
+  function normalizeWriteValueForTag(tag, rawValue) {
+    const uaType = String(tag?.uaType || "").toLowerCase();
+    const plcType = String(tag?.plcType || "").toUpperCase();
+    if (uaType === "boolean" || plcType === "BOOL") {
+      if (typeof rawValue === "boolean") return rawValue;
+      if (typeof rawValue === "number") return Number.isFinite(rawValue) ? rawValue !== 0 : false;
+      const txt = String(rawValue ?? "").trim().toLowerCase();
+      if (["1", "true", "on", "yes"].includes(txt)) return true;
+      if (["0", "false", "off", "no", ""].includes(txt)) return false;
+      return false;
+    }
+    if (
+      uaType === "int16" ||
+      uaType === "int32" ||
+      uaType === "int64" ||
+      uaType === "uint16" ||
+      uaType === "uint32" ||
+      uaType === "uint64" ||
+      uaType === "float" ||
+      uaType === "double" ||
+      numericPlcTypes.has(plcType)
+    ) {
+      const n = Number(rawValue);
+      return Number.isFinite(n) ? n : 0;
+    }
+    if (uaType === "string" || plcType === "STRING") return String(rawValue ?? "");
+    return rawValue;
+  }
+
+  async function writeTagToPlc({ tagKey, legacyTagKey, value }) {
+    const key = String(tagKey || legacyTagKey || "").trim();
+    const tag = tagsByAnyKey.get(key);
+    if (!tag) {
+      return { ok: false, status: 404, error: `Unknown tag: ${key}` };
+    }
+    if (!opcConnectionEnabled) {
+      return { ok: false, status: 409, error: "OPC connection is disabled." };
+    }
+    const plc = plcClients.get(tag.plcName);
+    if (!plc || !plcConnected.get(tag.plcName)) {
+      return { ok: false, status: 503, error: `PLC ${tag.plcName} is not connected.` };
+    }
+    const normalized = normalizeWriteValueForTag(tag, value);
+    await plc.write(tag.tagPath || tag.name, normalized);
+    tagValues.set(tag.tagKey, normalized);
+    if (tag.legacyTagKey && tag.legacyTagKey !== tag.tagKey) tagValues.set(tag.legacyTagKey, normalized);
+    return { ok: true, tagKey: tag.tagKey, value: normalized };
+  }
+
+  const writeBridgeServer = http.createServer(async (req, res) => {
+    if (req.method !== "POST" || req.url !== "/internal/write") {
+      writeJson(res, 404, { error: "Not found." });
+      return;
+    }
+    if (OPC_SERVER_KEY) {
+      const headerKey = String(req.headers["x-opc-key"] || "");
+      if (headerKey !== OPC_SERVER_KEY) {
+        writeJson(res, 401, { error: "Unauthorized." });
+        return;
+      }
+    }
+    try {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += String(chunk || "");
+        if (body.length > 256000) req.destroy();
+      });
+      await new Promise((resolve, reject) => {
+        req.on("end", resolve);
+        req.on("error", reject);
+      });
+      const payload = body ? JSON.parse(body) : {};
+      const tagKey = String(payload?.tagKey || "").trim();
+      const legacyTagKey = String(payload?.legacyTagKey || "").trim();
+      if (!tagKey && !legacyTagKey) {
+        writeJson(res, 400, { error: "tagKey required." });
+        return;
+      }
+      const result = await writeTagToPlc({
+        tagKey,
+        legacyTagKey,
+        value: payload?.value,
+      });
+      if (!result.ok) {
+        writeJson(res, result.status || 500, { error: result.error || "Write failed." });
+        return;
+      }
+      writeJson(res, 200, result);
+    } catch (err) {
+      writeJson(res, 500, { error: err?.message || "Write failed." });
+    }
+  });
 
   async function connectPlcWithRetry(name, plc) {
     if (!opcConnectionEnabled) {
@@ -716,6 +837,11 @@ async function main() {
   writeStatus();
 
   await server.start();
+
+  writeBridgeServer.listen(OPC_WRITE_BRIDGE_PORT, "127.0.0.1", () => {
+    // eslint-disable-next-line no-console
+    console.log(`OPC write bridge listening on http://127.0.0.1:${OPC_WRITE_BRIDGE_PORT}`);
+  });
   const endpoint = server.endpoints[0].endpointDescriptions()[0].endpointUrl;
   // eslint-disable-next-line no-console
   console.log(`OPC UA Server listening at ${endpoint}`);
