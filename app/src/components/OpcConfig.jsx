@@ -1406,6 +1406,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return text.slice(0, dot).trim();
   }
 
+  function getParentGroupName(groupName) {
+    const name = String(groupName || "").trim();
+    if (!name || name === "Ungrouped") return "";
+    const idx = name.lastIndexOf(".");
+    if (idx <= 0) return "";
+    return name.slice(0, idx);
+  }
+
   function updateTag(idx, key, value) {
     setConfig((prev) => {
       const next = [...(prev.tags || [])];
@@ -3244,10 +3252,52 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                             </td>
                           </tr>
                           {topicExpanded
-                            ? group.groups.map((tagGroup) => {
+                            ? (() => {
+                                const sortedGroups = [...(group.groups || [])].sort((a, b) =>
+                                  String(a?.groupName || "").localeCompare(String(b?.groupName || ""))
+                                );
+                                const knownGroupNames = new Set(
+                                  sortedGroups
+                                    .map((g) => String(g?.groupName || "").trim())
+                                    .filter(Boolean)
+                                );
+                                const isGroupVisible = (groupNameRaw) => {
+                                  let parent = getParentGroupName(groupNameRaw);
+                                  while (parent) {
+                                    if (knownGroupNames.has(parent)) {
+                                      const parentExpanded =
+                                        expandedPrefixes[`topic:${topicKey}::group:${parent}`] ?? true;
+                                      if (!parentExpanded) return false;
+                                    }
+                                    parent = getParentGroupName(parent);
+                                  }
+                                  return true;
+                                };
+                                return sortedGroups
+                                  .filter((g) => isGroupVisible(g?.groupName))
+                                  .map((tagGroup) => {
                                 const groupName = tagGroup.groupName ?? "Ungrouped";
                                 const groupExpanded =
                                   expandedPrefixes[`topic:${topicKey}::group:${groupName}`] ?? true;
+                                const groupDepth =
+                                  groupName === "Ungrouped"
+                                    ? 0
+                                    : Math.max(
+                                        0,
+                                        String(groupName)
+                                          .split(".")
+                                          .map((x) => x.trim())
+                                          .filter(Boolean).length - 1
+                                      );
+                                const hasChildren = sortedGroups.some((candidate) => {
+                                  const candidateName = String(candidate?.groupName || "").trim();
+                                  if (!candidateName || candidateName === groupName) return false;
+                                  return candidateName.startsWith(`${groupName}.`);
+                                });
+                                const groupLabel =
+                                  groupDepth > 0
+                                    ? String(groupName).split(".").filter(Boolean).slice(-1)[0]
+                                    : groupName;
                                 const groupTemplateNames = Array.from(
                                   new Set(
                                     (tagGroup.items || [])
@@ -3264,26 +3314,31 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                       }}
                                     >
                                       <td colSpan={visibleTagColumnCount} style={{ padding: "6px 28px" }}>
-                                        <button
-                                          onClick={() =>
-                                            setExpandedPrefixes((prev) => ({
-                                              ...prev,
-                                              [`topic:${topicKey}::group:${groupName}`]: !groupExpanded,
-                                            }))
-                                          }
-                                          onMouseDown={() => setActiveTagGroup({ topic: topicKey, groupName })}
-                                          style={{
-                                            ...drawerButtonStyle,
-                                            border: "1px solid var(--border)",
-                                            background: "var(--bg-elev)",
-                                            borderRadius: 6,
-                                            padding: "4px 8px",
-                                            marginRight: 8,
-                                          }}
-                                        >
-                                          {groupExpanded ? "-" : "+"}
-                                        </button>
-                                        <span style={{ fontWeight: 600 }}>{groupName}</span>
+                                        <div style={{ display: "flex", alignItems: "center", paddingLeft: groupDepth * 14 }}>
+                                        {hasChildren ? (
+                                          <button
+                                            onClick={() =>
+                                              setExpandedPrefixes((prev) => ({
+                                                ...prev,
+                                                [`topic:${topicKey}::group:${groupName}`]: !groupExpanded,
+                                              }))
+                                            }
+                                            onMouseDown={() => setActiveTagGroup({ topic: topicKey, groupName })}
+                                            style={{
+                                              ...drawerButtonStyle,
+                                              border: "1px solid var(--border)",
+                                              background: "var(--bg-elev)",
+                                              borderRadius: 6,
+                                              padding: "4px 8px",
+                                              marginRight: 8,
+                                            }}
+                                          >
+                                            {groupExpanded ? "-" : "+"}
+                                          </button>
+                                        ) : (
+                                          <span style={{ display: "inline-block", width: 30, marginRight: 8 }} />
+                                        )}
+                                        <span style={{ fontWeight: 600 }}>{groupLabel}</span>
                                         {groupTemplateNames.length ? (
                                           <span style={{ color: "var(--text-muted)", marginLeft: 8, fontSize: 12 }}>
                                             {groupTemplateNames.join(", ")}
@@ -3340,6 +3395,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                         >
                                           <TrashCanIcon />
                                         </button>
+                                        </div>
                                       </td>
                                     </tr>
                                     {groupExpanded
@@ -3855,7 +3911,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                       : null}
                                   </Fragment>
                                 );
-                              })
+                              });
+                              })()
                             : null}
                         </Fragment>
                       );
