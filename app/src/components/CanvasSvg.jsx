@@ -1204,12 +1204,16 @@ export default function CanvasSvg({
       const gaugeW = Math.max(60, Math.round(w - pad * 2));
       const gaugeX = Math.round(x + pad);
       const viewScale = Math.max(1, Number(zoom) || 1);
-      const overlayScale = Math.max(1, Number(overlay?.scale) || 1);
+      const overlayScale = Math.max(overlayScaleX(overlay), overlayScaleY(overlay), 1);
+      const viewportDprBoost = Math.max(1, Number(viewportScale) || 1);
       const dpr =
         typeof window !== "undefined"
-          ? Math.max(1, Math.min(8, (window.devicePixelRatio || 1) * viewScale * overlayScale))
+          ? Math.max(
+              1,
+              Math.min(8, (window.devicePixelRatio || 1) * viewScale * overlayScale * viewportDprBoost)
+            )
           : 1;
-      const gaugeKey = `g-${overlay.id}-${kind}-${gaugeW}x${gaugeH}-z${viewScale.toFixed(3)}-s${overlayScale.toFixed(3)}`;
+      const gaugeKey = `g-${overlay.id}-${kind}-${gaugeW}x${gaugeH}-z${viewScale.toFixed(3)}-s${overlayScale.toFixed(3)}-vp${viewportDprBoost.toFixed(3)}`;
       const rootStyle =
         typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
       const borderColor = rootStyle?.getPropertyValue("--border")?.trim() || "#334155";
@@ -2075,12 +2079,16 @@ export default function CanvasSvg({
     const activeDurationPreset = inferDurationPreset();
     const activeDurationLabel = activeDurationPreset ? activeDurationPreset.toUpperCase() : `${windowMinutes}m`;
     const viewScale = Math.max(1, Number(zoom) || 1);
-    const overlayScale = Math.max(1, Number(overlay?.scale) || 1);
+    const overlayScale = Math.max(overlayScaleX(overlay), overlayScaleY(overlay), 1);
+    const viewportDprBoost = Math.max(1, Number(viewportScale) || 1);
     const dpr =
       typeof window !== "undefined"
-        ? Math.max(1, Math.min(8, (window.devicePixelRatio || 1) * viewScale * overlayScale))
+        ? Math.max(
+            1,
+            Math.min(8, (window.devicePixelRatio || 1) * viewScale * overlayScale * viewportDprBoost)
+          )
         : 1;
-    const chartKey = `c-${overlay.id}-${kind}-${chartW}x${chartH}-z${viewScale.toFixed(3)}-s${overlayScale.toFixed(3)}`;
+    const chartKey = `c-${overlay.id}-${kind}-${chartW}x${chartH}-z${viewScale.toFixed(3)}-s${overlayScale.toFixed(3)}-vp${viewportDprBoost.toFixed(3)}`;
     const rootStyle =
       typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
     const isDark = String(theme || "").toLowerCase() === "dark";
