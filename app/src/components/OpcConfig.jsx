@@ -92,6 +92,17 @@ function TrashCanIcon({ size = 12 }) {
 function defaultRuntimeConfig() {
   return {
     opcConnectionEnabled: true,
+    multiReadEnabled: true,
+    multiReadBatchSize: 8,
+    mqttEnabled: false,
+    mqttBrokerUrl: "mqtt://localhost:1883",
+    mqttClientId: "",
+    mqttUsername: "",
+    mqttPassword: "",
+    mqttStatusTopic: "mesora/opc/status",
+    mqttWriteTopic: "mesora/opc/write",
+    mqttQos: 0,
+    mqttRetain: false,
     readTimeoutMs: 2000,
     errorBackoffEnabled: true,
     errorBackoffBaseMs: 1000,
@@ -108,8 +119,25 @@ function defaultRuntimeConfig() {
 function normalizeRuntimeConfig(value) {
   const incoming = value && typeof value === "object" ? value : {};
   const defaults = defaultRuntimeConfig();
+  const mqttQosRaw = Number.parseInt(String(incoming.mqttQos ?? defaults.mqttQos), 10);
+  const mqttQos = Number.isFinite(mqttQosRaw) ? Math.max(0, Math.min(2, mqttQosRaw)) : defaults.mqttQos;
+  const multiReadBatchSizeRaw = Number.parseInt(String(incoming.multiReadBatchSize ?? defaults.multiReadBatchSize), 10);
+  const multiReadBatchSize = Number.isFinite(multiReadBatchSizeRaw)
+    ? Math.max(1, Math.min(25, multiReadBatchSizeRaw))
+    : defaults.multiReadBatchSize;
   return {
     opcConnectionEnabled: incoming.opcConnectionEnabled !== false,
+    multiReadEnabled: incoming.multiReadEnabled !== false,
+    multiReadBatchSize,
+    mqttEnabled: incoming.mqttEnabled === true,
+    mqttBrokerUrl: String(incoming.mqttBrokerUrl || defaults.mqttBrokerUrl || ""),
+    mqttClientId: String(incoming.mqttClientId || ""),
+    mqttUsername: String(incoming.mqttUsername || ""),
+    mqttPassword: String(incoming.mqttPassword || ""),
+    mqttStatusTopic: String(incoming.mqttStatusTopic || defaults.mqttStatusTopic || ""),
+    mqttWriteTopic: String(incoming.mqttWriteTopic || defaults.mqttWriteTopic || ""),
+    mqttQos,
+    mqttRetain: incoming.mqttRetain === true,
     readTimeoutMs: parseOptionalMs(incoming.readTimeoutMs) || defaults.readTimeoutMs,
     errorBackoffEnabled: incoming.errorBackoffEnabled !== false,
     errorBackoffBaseMs: parseOptionalMs(incoming.errorBackoffBaseMs) || defaults.errorBackoffBaseMs,
@@ -187,6 +215,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [liveQualities, setLiveQualities] = useState({});
   const [liveDiagnostics, setLiveDiagnostics] = useState({});
   const [liveRuntime, setLiveRuntime] = useState({});
+  const [serverDiagnostics, setServerDiagnostics] = useState({});
   const [opcConnected, setOpcConnected] = useState(null);
   const [opcLastPollAt, setOpcLastPollAt] = useState(null);
   const [restartPending, setRestartPending] = useState(false);
@@ -225,8 +254,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [applyTemplate, setApplyTemplate] = useState("");
   const [applyTemplateSearch, setApplyTemplateSearch] = useState("");
   const [applyTemplateExpandedByName, setApplyTemplateExpandedByName] = useState({});
-  const [applyTemplateRows, setApplyTemplateRows] = useState([]);
-  const [applyTemplateTreeExpanded, setApplyTemplateTreeExpanded] = useState({});
   const [templateFieldTreeExpanded, setTemplateFieldTreeExpanded] = useState({});
   const [templateFieldEditingKey, setTemplateFieldEditingKey] = useState("");
   const [applyTopic, setApplyTopic] = useState("");
@@ -288,8 +315,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     muted: false,
   });
   const [tagToolsTab, setTagToolsTab] = useState("template");
-  const [udtPreviewExpanded, setUdtPreviewExpanded] = useState({});
-  const [editorUdtPreviewExpanded, setEditorUdtPreviewExpanded] = useState({});
   const [tagWriteByKey, setTagWriteByKey] = useState({});
   const [tagWriteBusyByKey, setTagWriteBusyByKey] = useState({});
   const [pendingTagGroupDelete, setPendingTagGroupDelete] = useState(null);
@@ -712,6 +737,26 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   }, []);
 
   useEffect(() => {
+    let alive = true;
+    async function pollServerDiagnostics() {
+      try {
+        const res = await fetch("/api/diagnostics/app");
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || "Failed to load server diagnostics.");
+        if (alive) setServerDiagnostics(data && typeof data === "object" ? data : {});
+      } catch {
+        if (alive) setServerDiagnostics({});
+      }
+    }
+    pollServerDiagnostics();
+    const id = setInterval(pollServerDiagnostics, 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!showDrawerMenu) return;
     function onDocClick(e) {
       const t = e.target;
@@ -727,6 +772,58 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const topics = useMemo(() => (Array.isArray(config?.topics) ? config.topics : []), [config?.topics]);
   const opcConnectionEnabled = config?.runtime?.opcConnectionEnabled !== false;
   const tags = useMemo(() => (Array.isArray(config?.tags) ? config.tags : []), [config?.tags]);
+  const tagChildrenByParentPath = useMemo(() => {
+    const parentMap = new Map();
+    const ensureParent = (parentPath) => {
+      const key = String(parentPath || "").trim();
+      if (!key) return null;
+      if (!parentMap.has(key)) parentMap.set(key, new Map());
+      return parentMap.get(key);
+    };
+    (Array.isArray(tags) ? tags : []).forEach((tag) => {
+      const fullPath = normalizeTagName(tag?.tagPath || tag?.name || "");
+      if (!fullPath || !fullPath.includes(".")) return;
+      const parts = fullPath.split(".").filter(Boolean);
+      if (parts.length < 2) return;
+      for (let i = 1; i < parts.length; i += 1) {
+        const parentPath = parts.slice(0, i).join(".");
+        const childPath = parts.slice(0, i + 1).join(".");
+        const childName = parts[i];
+        const bucket = ensureParent(parentPath);
+        if (!bucket) continue;
+        const existing = bucket.get(childPath);
+        const nextRow = {
+          name: childName,
+          tagPath: childPath,
+          plcType: String(tag?.plcType || existing?.plcType || "").trim(),
+          baseType: String(tag?.baseType || existing?.baseType || "").trim(),
+          isArray: tag?.isArray === true || existing?.isArray === true,
+          arraySpec: String(tag?.arraySpec || existing?.arraySpec || "").trim(),
+          usage: String(tag?.usage || existing?.usage || "").trim(),
+          uaType: String(tag?.uaType || existing?.uaType || "").trim(),
+          pollMs: tag?.pollMs ?? existing?.pollMs ?? "",
+          samplingInterval: tag?.samplingInterval ?? existing?.samplingInterval ?? "",
+          topic: String(tag?.topic || existing?.topic || "").trim(),
+          enabled: tag?.enabled !== false,
+          mappingSet: String(tag?.mappingSet || existing?.mappingSet || "").trim(),
+          scale: Number.isFinite(Number(tag?.scale)) ? Number(tag.scale) : (existing?.scale ?? 1),
+          decimals: Number.isFinite(Number(tag?.decimals)) ? Number(tag.decimals) : (existing?.decimals ?? 0),
+          alarmEnabled: tag?.alarmEnabled === true || existing?.alarmEnabled === true,
+          alarmOperator: normalizeAlarmOperator(tag?.alarmOperator || existing?.alarmOperator),
+          alarmValue: normalizeAlarmThreshold(tag?.alarmValue || existing?.alarmValue),
+        };
+        bucket.set(childPath, nextRow);
+      }
+    });
+    const out = new Map();
+    parentMap.forEach((rowsByPath, parentPath) => {
+      const rows = Array.from(rowsByPath.values()).sort((a, b) =>
+        String(a?.name || "").localeCompare(String(b?.name || ""))
+      );
+      out.set(parentPath, rows);
+    });
+    return out;
+  }, [tags]);
   const trendTagOptions = useMemo(() => {
     const out = [];
     const seen = new Set();
@@ -864,43 +961,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return map;
   }, [topics]);
 
-  const udtPreviewTree = useMemo(() => {
-    const root = { fullPath: "", children: new Map(), leaf: false, field: null };
-    const rows = applyTemplate ? expandTemplateFieldsForTagCreation(applyTemplate).fields : [];
-    rows.forEach((field) => {
-      const rawPath = String(field?.tagPath || field?.name || "").trim();
-      if (!rawPath) return;
-      const parts = rawPath.split(".").map((p) => p.trim()).filter(Boolean);
-      if (!parts.length) return;
-      let cursor = root;
-      parts.forEach((part, idx) => {
-        const fullPath = cursor.fullPath ? `${cursor.fullPath}.${part}` : part;
-        if (!cursor.children.has(part)) {
-          cursor.children.set(part, {
-            name: part,
-            fullPath,
-            children: new Map(),
-            leaf: false,
-            field: null,
-          });
-        }
-        cursor = cursor.children.get(part);
-        if (idx === parts.length - 1) {
-          cursor.leaf = true;
-          cursor.field = field;
-        }
-      });
-    });
-    const toArray = (node) =>
-      Array.from(node.children.values())
-        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
-        .map((child) => ({ ...child, children: toArray(child) }));
-    return toArray(root);
-  }, [applyTemplate, expandTemplateFieldsForTagCreation]);
-  const applyTemplatePreview = useMemo(
-    () => (applyTemplate ? expandTemplateFieldsForTagCreation(applyTemplate) : { fields: [], unresolvedTypes: [] }),
-    [applyTemplate, expandTemplateFieldsForTagCreation]
-  );
   const filteredApplyTemplates = useMemo(() => {
     const q = String(applyTemplateSearch || "").trim().toLowerCase();
     if (!q) return templates;
@@ -910,137 +970,52 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return name.includes(q) || parent.includes(q);
     });
   }, [templates, applyTemplateSearch]);
-  const applyTemplateRowsByPath = useMemo(() => {
-    const map = new Map();
-    (Array.isArray(applyTemplateRows) ? applyTemplateRows : []).forEach((row, idx) => {
-      const key = String(row?.sourcePath || row?.tagPath || row?.name || "").trim();
-      if (key) map.set(key, { row, idx });
-    });
-    return map;
-  }, [applyTemplateRows]);
-  const applyTemplateTree = useMemo(() => {
-    const root = { fullPath: "", children: new Map(), leaf: false };
-    const addPath = (rawPath, leaf = true) => {
-      const path = String(rawPath || "").trim();
-      if (!path) return;
-      const parts = path.split(".").map((p) => p.trim()).filter(Boolean);
-      if (!parts.length) return;
-      let cursor = root;
-      parts.forEach((part, idx) => {
-        const fullPath = cursor.fullPath ? `${cursor.fullPath}.${part}` : part;
-        if (!cursor.children.has(part)) {
-          cursor.children.set(part, { name: part, fullPath, children: new Map(), leaf: false });
-        }
-        cursor = cursor.children.get(part);
-        if (idx === parts.length - 1 && leaf) cursor.leaf = true;
-      });
-    };
-
-    const walkTemplate = (templateName, pathPrefix = "", stack = [], depth = 0) => {
-      if (!templateName || depth > 24) return;
-      const key = String(templateName || "").toLowerCase();
-      if (stack.includes(key)) return;
-      const fields = resolveTemplateFields(templateName);
-      if (!Array.isArray(fields) || !fields.length) return;
-      fields.forEach((field) => {
-        const rawPath = String(field?.tagPath || field?.name || "").trim();
-        if (!rawPath) return;
-        const descriptor = parseFieldArrayDescriptor(field);
-        const fieldNameCandidate = String(field?.name || "").trim();
-        const pathLeafCandidate = rawPath.split(".").filter(Boolean).slice(-1)[0] || "";
-        const nestedTemplateName =
-          findTemplateNameByType(descriptor.baseType) ||
-          findTemplateNameByType(field?.baseType) ||
-          findTemplateNameByType(field?.plcType) ||
-          findTemplateNameByType(fieldNameCandidate) ||
-          findTemplateNameByType(pathLeafCandidate);
-        const nestedFields = nestedTemplateName ? resolveTemplateFields(nestedTemplateName) : [];
-        const canExpandNested =
-          nestedTemplateName &&
-          nestedFields.length > 0 &&
-          !stack.includes(String(nestedTemplateName || "").toLowerCase());
-        const arrayDimensions = descriptor.isArray ? parseArrayDimensions(descriptor.arraySpec) : [];
-        const arraySuffixes = descriptor.isArray ? buildArrayIndexSuffixes(arrayDimensions, 5000) : [""];
-        arraySuffixes.forEach((suffix) => {
-          const segment = `${rawPath}${suffix}`;
-          const nextPath = pathPrefix ? `${pathPrefix}.${segment}` : segment;
-          addPath(nextPath, !canExpandNested);
-          if (canExpandNested) {
-            walkTemplate(
-              nestedTemplateName,
-              nextPath,
-              [...stack, String(nestedTemplateName || "").toLowerCase()],
-              depth + 1
-            );
-          }
-        });
-      });
-    };
-
-    if (applyTemplate) {
-      walkTemplate(applyTemplate, "", [String(applyTemplate || "").toLowerCase()], 0);
-    }
-
-    // Fallback from rows if template tree couldn't be resolved from nested definitions.
-    if (root.children.size === 0) {
-      (Array.isArray(applyTemplateRows) ? applyTemplateRows : []).forEach((row) => {
-        const rawPath = String(row?.sourcePath || row?.tagPath || row?.name || "").trim();
-        addPath(rawPath, true);
-      });
-    }
-    const toArray = (node) =>
-      Array.from(node.children.values())
-        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
-        .map((child) => ({ ...child, children: toArray(child) }));
-    return toArray(root);
-  }, [applyTemplateRows, applyTemplate, templates]);
+  const templateFieldExpansionSignature = useMemo(
+    () =>
+      (Array.isArray(templateFieldRows) ? templateFieldRows : [])
+        .map((row) =>
+          [
+            String(row?.name || "").trim(),
+            String(row?.tagPath || "").trim(),
+            String(row?.plcType || "").trim(),
+            String(row?.baseType || "").trim(),
+            row?.isArray === true ? "1" : "0",
+            String(row?.arraySpec || "").trim(),
+            String(row?.uaType || "").trim(),
+          ].join("|")
+        )
+        .join("||"),
+    [templateFieldRows]
+  );
 
   const editorResolvedRows = useMemo(() => {
     const currentName = String(templateName || editTemplate || "").trim();
-    const hasDraftRows = Array.isArray(templateFieldRows) && templateFieldRows.some((r) => {
-      const n = String(r?.name || "").trim();
-      const p = String(r?.tagPath || "").trim();
-      return n || p;
-    });
+    const rowsForExpansion = (Array.isArray(templateFieldRows) ? templateFieldRows : []).map((row) => ({
+      name: String(row?.name || "").trim(),
+      tagPath: String(row?.tagPath || "").trim(),
+      plcType: String(row?.plcType || "").trim(),
+      baseType: String(row?.baseType || "").trim(),
+      isArray: row?.isArray === true,
+      arraySpec: String(row?.arraySpec || "").trim(),
+      uaType: String(row?.uaType || "").trim(),
+    }));
+    const hasDraftRows =
+      Array.isArray(rowsForExpansion) &&
+      rowsForExpansion.some((r) => {
+        const n = String(r?.name || "").trim();
+        const p = String(r?.tagPath || "").trim();
+        return n || p;
+      });
     if (hasDraftRows) {
-      return expandTemplateFieldsForTagCreation(currentName || "__draft__", templateFieldRows).fields;
+      return expandTemplateFieldsForTagCreation(
+        currentName || "__draft__",
+        rowsForExpansion
+      ).fields;
     }
     if (!currentName) return [];
     return expandTemplateFieldsForTagCreation(currentName).fields;
-  }, [templateName, editTemplate, templateFieldRows, expandTemplateFieldsForTagCreation]);
+  }, [templateName, editTemplate, templateFieldExpansionSignature, expandTemplateFieldsForTagCreation]);
 
-  const editorUdtPreviewTree = useMemo(() => {
-    const root = { fullPath: "", children: new Map(), leaf: false, field: null };
-    (editorResolvedRows || []).forEach((field) => {
-      const rawPath = String(field?.tagPath || field?.name || "").trim();
-      if (!rawPath) return;
-      const parts = rawPath.split(".").map((p) => p.trim()).filter(Boolean);
-      if (!parts.length) return;
-      let cursor = root;
-      parts.forEach((part, idx) => {
-        const fullPath = cursor.fullPath ? `${cursor.fullPath}.${part}` : part;
-        if (!cursor.children.has(part)) {
-          cursor.children.set(part, {
-            name: part,
-            fullPath,
-            children: new Map(),
-            leaf: false,
-            field: null,
-          });
-        }
-        cursor = cursor.children.get(part);
-        if (idx === parts.length - 1) {
-          cursor.leaf = true;
-          cursor.field = field;
-        }
-      });
-    });
-    const toArray = (node) =>
-      Array.from(node.children.values())
-        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
-        .map((child) => ({ ...child, children: toArray(child) }));
-    return toArray(root);
-  }, [editorResolvedRows]);
 
   const editorResolvedOnlyRows = useMemo(() => {
     const directKeys = new Set(
@@ -1073,16 +1048,52 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return map;
   }, [editorResolvedRows]);
 
+  const templateFieldTreePaths = useMemo(() => {
+    const paths = [];
+    const seen = new Set();
+    const addPath = (value) => {
+      const path = String(value || "").trim();
+      if (!path || seen.has(path)) return;
+      seen.add(path);
+      paths.push(path);
+    };
+    (Array.isArray(templateFieldRows) ? templateFieldRows : []).forEach((row) =>
+      addPath(row?.tagPath || row?.name)
+    );
+    (Array.isArray(editorResolvedRows) ? editorResolvedRows : []).forEach((row) =>
+      addPath(row?.tagPath || row?.name)
+    );
+    return paths;
+  }, [templateFieldRows, editorResolvedRows]);
+
   const templateFieldTree = useMemo(() => {
     const root = { fullPath: "", children: new Map(), leaf: false };
+    const splitPathSegments = (rawPath) => {
+      const path = String(rawPath || "").trim();
+      if (!path) return [];
+      const dotParts = path.split(".").map((p) => p.trim()).filter(Boolean);
+      const segments = [];
+      dotParts.forEach((part) => {
+        const tokens = String(part).match(/([^\[\]]+)|(\[[^\]]+\])/g) || [];
+        tokens.forEach((token) => {
+          const clean = String(token || "").trim();
+          if (clean) segments.push(clean);
+        });
+      });
+      return segments;
+    };
+    const appendPath = (parent, segment) => {
+      if (!parent) return segment;
+      return String(segment || "").startsWith("[") ? `${parent}${segment}` : `${parent}.${segment}`;
+    };
     const addPath = (rawPath) => {
       const path = String(rawPath || "").trim();
       if (!path) return;
-      const parts = path.split(".").map((p) => p.trim()).filter(Boolean);
+      const parts = splitPathSegments(path);
       if (!parts.length) return;
       let cursor = root;
       parts.forEach((part, idx) => {
-        const fullPath = cursor.fullPath ? `${cursor.fullPath}.${part}` : part;
+        const fullPath = appendPath(cursor.fullPath, part);
         if (!cursor.children.has(part)) {
           cursor.children.set(part, { name: part, fullPath, children: new Map(), leaf: false });
         }
@@ -1090,83 +1101,28 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         if (idx === parts.length - 1) cursor.leaf = true;
       });
     };
-    const walkChildren = (fields, pathPrefix = "", stack = [], depth = 0) => {
-      if (!Array.isArray(fields) || !fields.length || depth > 24) return;
-      fields.forEach((field) => {
-        const rawPath = String(field?.tagPath || field?.name || "").trim();
-        const rawName = String(field?.name || field?.tagPath || "").trim();
-        if (!rawPath && !rawName) return;
-        const descriptor = parseFieldArrayDescriptor(field);
-        const fieldNameCandidate = String(field?.name || "").trim();
-        const fieldPathCandidate = String(field?.tagPath || "").trim();
-        const pathLeafCandidate = fieldPathCandidate
-          ? fieldPathCandidate.split(".").filter(Boolean).slice(-1)[0] || ""
-          : "";
-        const nestedTemplateName =
-          findTemplateNameByType(descriptor.baseType) ||
-          findTemplateNameByType(field?.baseType) ||
-          findTemplateNameByType(field?.plcType) ||
-          findTemplateNameByType(fieldNameCandidate) ||
-          findTemplateNameByType(pathLeafCandidate);
-        const nestedFields = nestedTemplateName ? resolveTemplateFields(nestedTemplateName) : [];
-        const canExpandNested =
-          nestedTemplateName &&
-          nestedFields.length > 0 &&
-          !stack.includes(String(nestedTemplateName || "").toLowerCase());
-        const arrayDimensions = descriptor.isArray ? parseArrayDimensions(descriptor.arraySpec) : [];
-        const arraySuffixes = descriptor.isArray
-          ? buildArrayIndexSuffixes(arrayDimensions, 5000)
-          : [""];
 
-        arraySuffixes.forEach((suffix) => {
-          const segment = `${rawPath || rawName}${suffix}`;
-          const nextPath = pathPrefix ? `${pathPrefix}.${segment}` : segment;
-          addPath(nextPath);
-          if (canExpandNested) {
-            walkChildren(
-              nestedFields,
-              nextPath,
-              [...stack, String(nestedTemplateName || "").toLowerCase()],
-              depth + 1
-            );
-          }
-        });
-      });
+    (Array.isArray(templateFieldTreePaths) ? templateFieldTreePaths : []).forEach((path) => addPath(path));
+
+    const compareTreeNodeNames = (a, b) => {
+      const aName = String(a?.name || "");
+      const bName = String(b?.name || "");
+      const aBracket = aName.match(/^\[(\d+)\]$/);
+      const bBracket = bName.match(/^\[(\d+)\]$/);
+      if (aBracket && bBracket) {
+        return Number.parseInt(aBracket[1], 10) - Number.parseInt(bBracket[1], 10);
+      }
+      if (aBracket && !bBracket) return 1;
+      if (!aBracket && bBracket) return -1;
+      return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: "base" });
     };
-
-    const baseRows = Array.isArray(templateFieldRows) ? templateFieldRows : [];
-    baseRows.forEach((row) => addPath(String(row?.tagPath || row?.name || "").trim()));
-    walkChildren(baseRows, "", [String(templateName || editTemplate || "__draft__").toLowerCase()], 0);
-    (Array.isArray(editorResolvedRows) ? editorResolvedRows : []).forEach((row) =>
-      addPath(String(row?.tagPath || row?.name || "").trim())
-    );
     const toArray = (node) =>
       Array.from(node.children.values())
-        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+        .sort(compareTreeNodeNames)
         .map((child) => ({ ...child, children: toArray(child) }));
     return toArray(root);
-  }, [editorResolvedRows, templateFieldRows, templateName, editTemplate, templates]);
+  }, [templateFieldTreePaths]);
 
-  useEffect(() => {
-    if (!applyTemplate) {
-      setApplyTemplateRows([]);
-      setApplyTemplateTreeExpanded({});
-      return;
-    }
-    const expanded = expandTemplateFieldsForTagCreation(applyTemplate);
-    const nextRows = (Array.isArray(expanded?.fields) ? expanded.fields : []).map((f) => {
-      const sourcePath = String(f?.tagPath || f?.name || "").trim();
-      return {
-        ...f,
-        sourcePath,
-        include: true,
-        name: String(f?.name || sourcePath).trim(),
-        tagPath: String(f?.tagPath || sourcePath).trim(),
-      };
-    });
-    setApplyTemplateRows(nextRows);
-    setApplyTemplateTreeExpanded({});
-  }, [applyTemplate, expandTemplateFieldsForTagCreation]);
 
   useEffect(() => {
     setTemplateFieldEditingKey("");
@@ -1688,7 +1644,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       });
     };
 
-    const walkFields = (fields, pathPrefix = "", templateStack = [], depth = 0) => {
+    const walkFields = (
+      fields,
+      pathPrefix = "",
+      templateStack = [],
+      depth = 0,
+      contextTemplateName = String(templateName || "")
+    ) => {
       if (!Array.isArray(fields) || !fields.length) return;
       if (depth > 24 || out.length >= maxExpandedTags) return;
       for (const field of fields) {
@@ -1704,11 +1666,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           ? fieldPathCandidate.split(".").filter(Boolean).slice(-1)[0] || ""
           : "";
         const nestedTemplateName =
-          findTemplateNameByType(descriptor.baseType) ||
-          findTemplateNameByType(field?.baseType) ||
-          findTemplateNameByType(field?.plcType) ||
-          findTemplateNameByType(fieldNameCandidate) ||
-          findTemplateNameByType(pathLeafCandidate);
+          resolveTemplateNameByTypeWithContext(descriptor.baseType, contextTemplateName) ||
+          resolveTemplateNameByTypeWithContext(field?.baseType, contextTemplateName) ||
+          resolveTemplateNameByTypeWithContext(field?.plcType, contextTemplateName) ||
+          resolveTemplateNameByTypeWithContext(fieldNameCandidate, contextTemplateName) ||
+          resolveTemplateNameByTypeWithContext(pathLeafCandidate, contextTemplateName);
         const nestedFields = nestedTemplateName ? resolveTemplateFields(nestedTemplateName) : [];
         const canExpandNested =
           nestedTemplateName &&
@@ -1735,7 +1697,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               nestedFields,
               nextPrefix,
               [...templateStack, String(nestedTemplateName || "").toLowerCase()],
-              depth + 1
+              depth + 1,
+              String(nestedTemplateName || contextTemplateName || "")
             );
           } else {
             addLeaf(pathPrefix, {
@@ -1751,7 +1714,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const rootFields = Array.isArray(rootFieldsOverride)
       ? rootFieldsOverride
       : resolveTemplateFields(templateName);
-    walkFields(rootFields, "", [String(templateName || "").toLowerCase()], 0);
+    walkFields(rootFields, "", [String(templateName || "").toLowerCase()], 0, String(templateName || ""));
     return {
       fields: out,
       unresolvedTypes: Array.from(unresolvedTypes).sort((a, b) => a.localeCompare(b)),
@@ -2262,7 +2225,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return;
     }
     const prefix = applyPrefix.trim();
-    const fields = (Array.isArray(applyTemplateRows) ? applyTemplateRows : []).filter((r) => r?.include !== false);
+    const fields = expandTemplateFieldsForTagCreation(applyTemplate).fields;
     if (!fields.length) {
       setError("UDT has no fields.");
       return;
@@ -2458,6 +2421,63 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             ))}
           </div>
         )}
+      </div>
+    );
+  }
+
+  function renderServerDiagnosticsCard() {
+    const app = serverDiagnostics?.app && typeof serverDiagnostics.app === "object" ? serverDiagnostics.app : {};
+    const db = serverDiagnostics?.db && typeof serverDiagnostics.db === "object" ? serverDiagnostics.db : {};
+    const opc = serverDiagnostics?.opc && typeof serverDiagnostics.opc === "object" ? serverDiagnostics.opc : {};
+    const runtime = opc?.runtime && typeof opc.runtime === "object" ? opc.runtime : {};
+    const formatNum = (value) => (Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : "--");
+    const formatBytes = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < 0) return "--";
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+      return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    };
+    const qualityCounts = opc?.qualityCounts && typeof opc.qualityCounts === "object" ? opc.qualityCounts : {};
+    const qualitySummary = Object.keys(qualityCounts).length
+      ? Object.entries(qualityCounts).map(([k, v]) => `${k}:${v}`).join(" | ")
+      : "--";
+
+    return (
+      <div style={{ border: "1px solid var(--border)", borderRadius: 12, background: "var(--bg-elev)", padding: 12, marginTop: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontWeight: 700 }}>Server Performance</div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            {Number.isFinite(Number(serverDiagnostics?.checkedAt))
+              ? new Date(Number(serverDiagnostics.checkedAt)).toLocaleTimeString()
+              : "--"}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(150px, 1fr))", gap: 8, fontSize: 12 }}>
+          <div><strong>PID:</strong> {formatNum(app?.pid)}</div>
+          <div><strong>Uptime:</strong> {formatNum(app?.uptimeSec)} s</div>
+          <div><strong>Node:</strong> {String(app?.nodeVersion || "--")}</div>
+          <div><strong>Load 1m:</strong> {formatNum(app?.loadAvg1m)}</div>
+          <div><strong>RSS:</strong> {formatBytes(app?.rssBytes)}</div>
+          <div><strong>Heap Used:</strong> {formatBytes(app?.heapUsedBytes)}</div>
+          <div><strong>DB Ping:</strong> {Number.isFinite(Number(db?.pingMs)) ? `${Math.round(Number(db.pingMs))} ms` : "--"}</div>
+          <div><strong>OPC Connected:</strong> {opc?.connected ? "Yes" : "No"}</div>
+          <div><strong>Last Poll Age:</strong> {Number.isFinite(Number(opc?.lastPollAgeMs)) ? `${Math.round(Number(opc.lastPollAgeMs))} ms` : "--"}</div>
+          <div><strong>Value Count:</strong> {formatNum(opc?.valueCount)}</div>
+          <div><strong>Multi-Read:</strong> {runtime?.multiReadEnabled === false ? "Off" : "On"}</div>
+          <div><strong>Batch Size:</strong> {formatNum(runtime?.multiReadBatchSize)}</div>
+          <div><strong>MQTT:</strong> {runtime?.mqttEnabled ? (runtime?.mqttConnected ? "Connected" : "Enabled") : "Off"}</div>
+          <div><strong>Read Timeout:</strong> {Number.isFinite(Number(runtime?.readTimeoutMs)) ? `${Math.round(Number(runtime.readTimeoutMs))} ms` : "--"}</div>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+          <strong>Quality Counts:</strong> {qualitySummary}
+        </div>
+        {String(db?.error || "").trim() ? (
+          <div style={{ marginTop: 6, fontSize: 12, color: "#b42318" }}>
+            <strong>DB Error:</strong> {String(db.error)}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -3238,29 +3258,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       })}
                     </select>
                   </label>
-                  {applyTemplate ? (
-                    <div
-                      style={{
-                        border: "1px solid var(--border)",
-                        borderRadius: 10,
-                        background: "var(--bg-elev)",
-                        padding: 8,
-                        maxHeight: 320,
-                        overflow: "auto",
-                      }}
-                    >
-                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "var(--text)" }}>
-                        UDT Import Fields (Editable Tree)
-                      </div>
-                      {applyTemplateTree.length ? (
-                        renderApplyTemplateTreeRows(applyTemplateTree)
-                      ) : (
-                        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                          No members found for selected UDT.
-                        </div>
-                      )}
-                    </div>
-                  ) : null}
                 </div>
               ) : tagToolsTab === "bulk" ? (
                 <div
@@ -3423,7 +3420,17 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 </div>
               </div>
             ) : null}
-            <div style={{ ...sectionCardStyle, marginTop: 10, overflowX: "auto", overflowY: "visible" }}>
+            <div
+              style={{
+                ...sectionCardStyle,
+                marginTop: 10,
+                overflowX: "auto",
+                overflowY: "visible",
+                contain: "layout style paint",
+                contentVisibility: "auto",
+                containIntrinsicSize: "900px",
+              }}
+            >
               <div style={{ marginBottom: 8 }}>
                 <input
                   value={tagSearch}
@@ -4547,12 +4554,23 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   </select>
                 </label>
               </div>
-              <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", maxHeight: 360, overflow: "auto", padding: 8 }}>
+              <div
+                style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                  background: "var(--bg-elev)",
+                  minHeight: 260,
+                  maxHeight: "62vh",
+                  overflow: "auto",
+                  padding: 8,
+                  contain: "layout style paint",
+                  contentVisibility: "auto",
+                  containIntrinsicSize: "900px",
+                }}
+              >
                 {templateFieldRows.length ? (
                   renderTemplateFieldTreeRows(
-                    String(templateName || editTemplate || "__draft__").trim(),
-                    templateFieldRows,
-                    [String(templateName || editTemplate || "__draft__").trim().toLowerCase()],
+                    templateFieldTree,
                     0
                   )
                 ) : (
@@ -5029,251 +5047,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     }, 0);
   }
 
-  function renderUdtPreviewNodes(
-    nodes,
-    depth = 0,
-    keyPrefix = "preview",
-    expandedByKey = udtPreviewExpanded,
-    setExpandedByKey = setUdtPreviewExpanded
-  ) {
-    return (Array.isArray(nodes) ? nodes : []).map((node) => {
-      const children = Array.isArray(node.children) ? node.children : [];
-      const hasChildren = children.length > 0;
-      const expandKey = `${keyPrefix}:${node.fullPath}`;
-      const expanded = expandedByKey[expandKey] ?? depth < 1;
-      const fieldUaType = String(node?.field?.uaType || "").trim();
-      return (
-        <div key={`udt-node-${keyPrefix}-${node.fullPath}`} style={{ marginLeft: depth * 14 }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              minHeight: 24,
-              fontSize: 12,
-              color: "var(--text)",
-            }}
-          >
-            {hasChildren ? (
-              <button
-                onClick={() =>
-                  setExpandedByKey((prev) => ({ ...prev, [expandKey]: !expanded }))
-                }
-                style={{
-                  ...drawerButtonStyle,
-                  width: 20,
-                  height: 20,
-                  borderRadius: 6,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
-                  fontSize: 11,
-                  lineHeight: 1,
-                  padding: 0,
-                }}
-                title={expanded ? "Collapse" : "Expand"}
-                aria-label={expanded ? "Collapse" : "Expand"}
-              >
-                {expanded ? "-" : "+"}
-              </button>
-            ) : (
-              <span style={{ width: 20, display: "inline-block" }} />
-            )}
-            <span style={{ fontWeight: hasChildren ? 600 : 500 }}>{node.name}</span>
-            {fieldUaType ? (
-              <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{fieldUaType}</span>
-            ) : null}
-          </div>
-          {hasChildren && expanded
-            ? renderUdtPreviewNodes(children, depth + 1, keyPrefix, expandedByKey, setExpandedByKey)
-            : null}
-        </div>
-      );
-    });
-  }
-
-  function updateApplyTemplateRow(idx, key, value) {
-    setApplyTemplateRows((prev) => {
-      const next = [...(Array.isArray(prev) ? prev : [])];
-      const row = next[idx] && typeof next[idx] === "object" ? next[idx] : {};
-      next[idx] = { ...row, [key]: value };
-      return next;
-    });
-  }
-
-  function renderApplyTemplateTreeRows(nodes, depth = 0) {
-    return (Array.isArray(nodes) ? nodes : []).map((node) => {
-      const children = Array.isArray(node.children) ? node.children : [];
-      const hasChildren = children.length > 0;
-      const expandKey = `apply-tree:${node.fullPath}`;
-      const rowEntry = applyTemplateRowsByPath.get(String(node.fullPath || "").trim());
-      const row = rowEntry?.row || null;
-      const rowIdx = Number.isFinite(rowEntry?.idx) ? rowEntry.idx : -1;
-      const canToggle = hasChildren || !!row;
-      const expanded =
-        applyTemplateTreeExpanded[expandKey] ?? (hasChildren && depth < 1);
-      const plcType = String(row?.plcType || "").trim();
-      return (
-        <div key={`apply-tree-row-${node.fullPath}`} style={{ marginLeft: depth * 12, padding: "2px 0" }}>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "20px 18px minmax(0,1fr)",
-              gap: 8,
-              alignItems: "center",
-              minHeight: 28,
-            }}
-          >
-            <button
-              type="button"
-              data-preserve-style="true"
-              onClick={() => {
-                if (!canToggle) return;
-                setApplyTemplateTreeExpanded((prev) => ({
-                  ...prev,
-                  [expandKey]: !expanded,
-                }));
-              }}
-              disabled={!canToggle}
-              style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg-elev)",
-                color: "var(--text)",
-                borderRadius: 5,
-                width: 20,
-                height: 20,
-                fontSize: 12,
-                fontWeight: 700,
-                lineHeight: 1,
-                padding: 0,
-                opacity: canToggle ? 1 : 0.4,
-                cursor: canToggle ? "pointer" : "default",
-              }}
-              title={expanded ? "Collapse" : "Expand"}
-            >
-              {expanded ? "−" : "+"}
-            </button>
-            {row && !hasChildren ? (
-              <input
-                type="checkbox"
-                checked={row?.include !== false}
-                onChange={(e) => updateApplyTemplateRow(rowIdx, "include", e.target.checked)}
-                style={{ width: 14, height: 14 }}
-              />
-            ) : (
-              <span />
-            )}
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", display: "inline-flex", gap: 8, alignItems: "center", minWidth: 0 }}>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {String(node?.name || "")}
-              </span>
-              {plcType ? <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>: {plcType}</span> : null}
-            </div>
-          </div>
-          {row && expanded && !hasChildren ? (
-            <div
-              style={{
-                margin: "4px 0 8px 46px",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                background: "var(--bg)",
-                padding: 8,
-                display: "grid",
-                gap: 8,
-                gridTemplateColumns: "repeat(6, minmax(120px, 1fr))",
-              }}
-            >
-              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
-                Name
-                <input
-                  value={String(row?.name || "")}
-                  onChange={(e) => updateApplyTemplateRow(rowIdx, "name", e.target.value)}
-                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11, gridColumn: "span 2" }}>
-                Tag Path
-                <input
-                  value={String(row?.tagPath || "")}
-                  onChange={(e) => updateApplyTemplateRow(rowIdx, "tagPath", e.target.value)}
-                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
-                UA Type
-                <select
-                  value={String(row?.uaType || "")}
-                  onChange={(e) => updateApplyTemplateRow(rowIdx, "uaType", e.target.value)}
-                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
-                >
-                  <option value="">Select UA type</option>
-                  <option value="Boolean">Boolean</option>
-                  <option value="Int16">Int16</option>
-                  <option value="Int32">Int32</option>
-                  <option value="Int64">Int64</option>
-                  <option value="UInt16">UInt16</option>
-                  <option value="UInt32">UInt32</option>
-                  <option value="UInt64">UInt64</option>
-                  <option value="Float">Float</option>
-                  <option value="Double">Double</option>
-                  <option value="String">String</option>
-                </select>
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
-                Poll
-                <input
-                  value={row?.pollMs ?? ""}
-                  onChange={(e) => updateApplyTemplateRow(rowIdx, "pollMs", e.target.value)}
-                  placeholder="ms"
-                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
-                Sampling
-                <input
-                  value={row?.samplingInterval ?? ""}
-                  onChange={(e) => updateApplyTemplateRow(rowIdx, "samplingInterval", e.target.value)}
-                  placeholder="ms"
-                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
-                Topic
-                <input
-                  value={String(row?.topic || "")}
-                  onChange={(e) => updateApplyTemplateRow(rowIdx, "topic", e.target.value)}
-                  placeholder="Optional"
-                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
-                Enabled
-                <span style={{ minHeight: 30, display: "inline-flex", alignItems: "center" }}>
-                  <input
-                    type="checkbox"
-                    checked={row?.enabled !== false}
-                    onChange={(e) => updateApplyTemplateRow(rowIdx, "enabled", e.target.checked)}
-                    style={{ width: 14, height: 14 }}
-                  />
-                </span>
-              </label>
-              <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
-                Scale
-                <input
-                  type="number"
-                  step="any"
-                  value={row?.scale ?? 1}
-                  onChange={(e) => updateApplyTemplateRow(rowIdx, "scale", e.target.value)}
-                  style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
-                />
-              </label>
-            </div>
-          ) : null}
-          {hasChildren && expanded ? renderApplyTemplateTreeRows(children, depth + 1) : null}
-        </div>
-      );
-    });
-  }
-
   function updateTemplateFieldRow(idx, key, value, fallbackRow = null, path = "") {
     setTemplateFieldRows((prev) => {
       const next = [...(Array.isArray(prev) ? prev : [])];
@@ -5345,45 +5118,30 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     });
   }
 
-  function renderTemplateFieldTreeRows(rootTemplateName, fields, visitedTypes = [], depth = 0) {
-    const primitiveTypeSet = new Set([
-      "bool","bit","sint","int","dint","lint","usint","uint","udint","ulint","real","lreal","string","wstring","byte","word","dword","time","date","datetime",
-    ]);
+  function renderTemplateFieldTreeRows(nodes, depth = 0) {
     return (
       <div style={{ display: "grid", gap: 4 }}>
-        {(Array.isArray(fields) ? fields : []).map((field) => {
-          const fieldName = String(field?.name || "").trim();
-          const fieldPath = String(field?.tagPath || field?.name || "").trim();
+        {(Array.isArray(nodes) ? nodes : []).map((node) => {
+          const fieldPath = String(node?.fullPath || "").trim();
+          const fieldName = String(node?.name || "").trim();
           const rowEntry = templateFieldRowsByPath.get(fieldPath);
           const resolvedRow = editorResolvedRowsByPath.get(fieldPath);
-          const row = rowEntry?.row || resolvedRow || field || null;
+          const fallbackRow = {
+            name: fieldName || fieldPath || "(unnamed)",
+            tagPath: fieldPath || fieldName,
+            enabled: true,
+            scale: 1,
+            decimals: 0,
+            alarmOperator: "==",
+          };
+          const row = rowEntry?.row || resolvedRow || fallbackRow;
           const rowIdx = Number.isFinite(rowEntry?.idx) ? rowEntry.idx : -1;
-          const plcType = String(field?.plcType || "").trim();
-          const parsed = parseFieldArrayDescriptor(field);
-          const lookupType = String(parsed.baseType || field?.baseType || plcType || "").trim();
-          const fieldNameCandidate = String(field?.name || "").trim();
-          const fieldPathCandidate = String(field?.tagPath || "").trim();
-          const pathLeafCandidate = fieldPathCandidate
-            ? fieldPathCandidate.split(".").filter(Boolean).slice(-1)[0] || ""
-            : "";
-          const plcTypeKey = lookupType.toLowerCase();
-          const targetTemplateName =
-            resolveTemplateNameByTypeWithContext(lookupType, rootTemplateName) ||
-            resolveTemplateNameByTypeWithContext(field?.baseType, rootTemplateName) ||
-            resolveTemplateNameByTypeWithContext(field?.plcType, rootTemplateName) ||
-            resolveTemplateNameByTypeWithContext(fieldNameCandidate, rootTemplateName) ||
-            resolveTemplateNameByTypeWithContext(pathLeafCandidate, rootTemplateName);
-          const targetFields = targetTemplateName ? resolveTemplateFields(targetTemplateName) : [];
-          const hasNested = targetTemplateName && targetFields.length > 0 && !primitiveTypeSet.has(plcTypeKey);
-          const missingChildTemplate =
-            !targetTemplateName &&
-            !primitiveTypeSet.has(plcTypeKey) &&
-            String(lookupType || "").trim().length > 0;
-          const recursive = hasNested && visitedTypes.includes(plcTypeKey);
-          const nodeKey = `template-tree:${String(rootTemplateName || "").trim()}|${visitedTypes.join(">")}|${fieldName}|${plcType}|${fieldPath}`;
-          const canExpand = !recursive;
+          const hasNested = Array.isArray(node?.children) && node.children.length > 0;
+          const nodeKey = `template-tree:${fieldPath || fieldName}`;
           const expanded = templateFieldTreeExpanded[nodeKey] ?? false;
           const activeRowEditing = templateFieldEditingKey === nodeKey;
+          const plcType = String(row?.plcType || row?.baseType || "").trim();
+          const isArray = String(row?.arraySpec || "").trim().length > 0 || /\[[^\]]+\]/.test(fieldName);
           return (
             <div key={`tmpl-tree-${nodeKey}`} style={{ marginLeft: Math.max(0, depth * 12), padding: "2px 0" }}>
               <div
@@ -5410,8 +5168,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     fontWeight: 700,
                     lineHeight: 1,
                     padding: 0,
-                    opacity: 1,
-                    cursor: canExpand ? "pointer" : "default",
                   }}
                   title={expanded ? "Collapse" : "Expand"}
                 >
@@ -5429,12 +5185,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     {fieldName || "(unnamed)"}
                   </span>
                   {plcType ? <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>: {plcType}</span> : null}
-                  {parsed.isArray ? <span style={{ color: "#2b6cff", fontWeight: 700 }}>[array]</span> : null}
+                  {isArray ? <span style={{ color: "#2b6cff", fontWeight: 700 }}>[array]</span> : null}
                   {hasNested ? <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>(group)</span> : null}
-                  {missingChildTemplate ? (
-                    <span style={{ color: "#f04438", fontWeight: 700 }}>(missing in DB)</span>
-                  ) : null}
-                  {recursive ? <span style={{ color: "#f59e0b", fontWeight: 700 }}>(recursive)</span> : null}
                 </div>
                 <button
                   type="button"
@@ -5704,14 +5456,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   </div>
                 </div>
               ) : null}
-              {canExpand && expanded && hasNested ? (
+              {expanded && hasNested ? (
                 <div style={{ marginTop: 2 }}>
-                  {renderTemplateFieldTreeRows(
-                    targetTemplateName || rootTemplateName,
-                    targetFields,
-                    [...visitedTypes, plcTypeKey],
-                    depth + 1
-                  )}
+                  {renderTemplateFieldTreeRows(node.children, depth + 1)}
                 </div>
               ) : null}
             </div>
@@ -6298,6 +6045,112 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 />
                 Enable OPC PLC Connection
               </label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }} title="Batch reads multiple tags in one PLC request for higher throughput.">
+                <input
+                  type="checkbox"
+                  checked={config.runtime?.multiReadEnabled !== false}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), multiReadEnabled: e.target.checked } }))}
+                />
+                Enable Multi-Read
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Maximum tags per PLC multi-read request. Lower if PLC rejects larger packets.">
+                Multi-Read Batch Size
+                <input
+                  type="number"
+                  min="1"
+                  max="25"
+                  value={config.runtime?.multiReadBatchSize ?? 8}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), multiReadBatchSize: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, gridColumn: "1 / span 2" }} title="Enable MQTT publish/subscribe bridge. Save config and restart OPC server to apply.">
+                <input
+                  type="checkbox"
+                  checked={config.runtime?.mqttEnabled === true}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttEnabled: e.target.checked } }))}
+                />
+                Enable MQTT Bridge
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="MQTT broker URL, e.g. mqtt://localhost:1883">
+                MQTT Broker URL
+                <input
+                  value={config.runtime?.mqttBrokerUrl ?? "mqtt://localhost:1883"}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttBrokerUrl: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT client id. Leave blank to auto-generate.">
+                MQTT Client ID
+                <input
+                  value={config.runtime?.mqttClientId ?? ""}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttClientId: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT username.">
+                MQTT Username
+                <input
+                  value={config.runtime?.mqttUsername ?? ""}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttUsername: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT password.">
+                MQTT Password
+                <input
+                  type="password"
+                  value={config.runtime?.mqttPassword ?? ""}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttPassword: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Topic for publishing full OPC status payloads.">
+                MQTT Status Topic
+                <input
+                  value={config.runtime?.mqttStatusTopic ?? "mesora/opc/status"}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttStatusTopic: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Topic subscribed for write commands. Payload format: {'tagKey':'Topic.Tag','value':123}.">
+                MQTT Write Topic
+                <input
+                  value={config.runtime?.mqttWriteTopic ?? "mesora/opc/write"}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttWriteTopic: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="MQTT QoS level for status publish and write subscribe.">
+                MQTT QoS
+                <input
+                  type="number"
+                  min="0"
+                  max="2"
+                  value={config.runtime?.mqttQos ?? 0}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttQos: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }} title="Set retained flag when publishing status payloads.">
+                <input
+                  type="checkbox"
+                  checked={config.runtime?.mqttRetain === true}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttRetain: e.target.checked } }))}
+                />
+                MQTT Retain Status
+              </label>
               <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Maximum wait for a PLC read before marking it as timeout/error.">
                 Read Timeout (ms)
                 <input
@@ -6719,6 +6572,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
           {opcConfigSectionTab === "diagnostics" ? (
           <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column" }}>
+            {renderServerDiagnosticsCard()}
             {renderTagDiagnosticsCard()}
           </div>
           ) : null}

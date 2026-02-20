@@ -8,6 +8,7 @@
     "start:watchdog": "node watchdog.js"
   },
   "dependencies": {
+    "mqtt": "^5.10.3",
     "node-logix": "^1.0.8",
     "node-opcua": "^2.127.0"
   }

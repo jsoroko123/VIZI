@@ -2,11 +2,14 @@ import fs from "fs";
 import http from "http";
 import path from "path";
 import process from "process";
+import { connect as mqttConnect } from "mqtt";
 import {
   OPCUAServer,
   Variant,
   DataType,
   StatusCodes,
+  MessageSecurityMode,
+  SecurityPolicy,
 } from "node-opcua";
 import { createRequire } from "module";
 
@@ -17,6 +20,30 @@ const AI_SERVER_URL = process.env.AI_SERVER_URL || "http://localhost:5055";
 const OPC_SERVER_KEY = process.env.OPC_SERVER_KEY || "";
 const OPC_WRITE_BRIDGE_PORT = Math.max(1, Number.parseInt(String(process.env.OPC_WRITE_BRIDGE_PORT || "4851"), 10) || 4851);
 const RESTART_PATH = path.resolve(process.cwd(), "restart.requested");
+const OPCUA_ALLOW_ANONYMOUS = String(process.env.OPCUA_ALLOW_ANONYMOUS || "").trim().toLowerCase() === "true";
+const OPCUA_USERNAME = String(process.env.OPCUA_USERNAME || "").trim();
+const OPCUA_PASSWORD = String(process.env.OPCUA_PASSWORD || "");
+const OPCUA_SECURITY_MODES_RAW = String(process.env.OPCUA_SECURITY_MODES || "SignAndEncrypt,Sign").trim();
+const OPCUA_SECURITY_POLICIES_RAW = String(
+  process.env.OPCUA_SECURITY_POLICIES || "Basic256Sha256,Basic256,Basic128Rsa15"
+).trim();
+
+function parseEnumList(raw, enumObj, fallback = []) {
+  const src = String(raw || "").trim();
+  const items = src
+    ? src
+        .split(",")
+        .map((x) => String(x || "").trim())
+        .filter(Boolean)
+    : [];
+  const out = [];
+  items.forEach((name) => {
+    const value = enumObj?.[name];
+    if (value != null) out.push(value);
+  });
+  if (out.length) return out;
+  return Array.isArray(fallback) ? fallback : [];
+}
 
 async function loadConfig() {
   try {
@@ -81,6 +108,11 @@ function parseNonNegativeNumber(value, fallback = null) {
   return n;
 }
 
+function normalizeTopicString(value, fallback = "") {
+  const raw = String(value || fallback || "").trim();
+  return raw.replace(/^\/+|\/+$/g, "");
+}
+
 function isNumericLiveValue(value) {
   if (value == null) return false;
   if (typeof value === "number") return Number.isFinite(value);
@@ -107,6 +139,11 @@ async function main() {
   const config = await loadConfig();
   const runtime = config?.runtime || {};
   let opcConnectionEnabled = runtime?.opcConnectionEnabled !== false;
+  const multiReadEnabled = runtime?.multiReadEnabled !== false;
+  const multiReadBatchSizeRaw = Number.parseInt(String(runtime?.multiReadBatchSize ?? "8"), 10);
+  const multiReadBatchSize = Number.isFinite(multiReadBatchSizeRaw)
+    ? Math.max(1, Math.min(25, multiReadBatchSizeRaw))
+    : 8;
   const readTimeoutMs = parsePositiveMs(runtime?.readTimeoutMs, 2000);
   const errorBackoffEnabled = runtime?.errorBackoffEnabled !== false;
   const errorBackoffBaseMs = parsePositiveMs(runtime?.errorBackoffBaseMs, 1000);
@@ -117,6 +154,16 @@ async function main() {
   const reconnectDelayMs = parsePositiveMs(runtime?.reconnectDelayMs, 2000);
   const reconnectMaxAttempts = parsePositiveNumber(runtime?.reconnectMaxAttempts, null);
   const heartbeatMs = parsePositiveMs(runtime?.heartbeatMs, 5000);
+  const mqttEnabled = runtime?.mqttEnabled === true;
+  const mqttBrokerUrl = String(runtime?.mqttBrokerUrl || "mqtt://localhost:1883").trim();
+  const mqttClientId = String(runtime?.mqttClientId || "").trim();
+  const mqttUsername = String(runtime?.mqttUsername || "").trim();
+  const mqttPassword = String(runtime?.mqttPassword || "");
+  const mqttStatusTopic = normalizeTopicString(runtime?.mqttStatusTopic, "mesora/opc/status");
+  const mqttWriteTopic = normalizeTopicString(runtime?.mqttWriteTopic, "mesora/opc/write");
+  const mqttQosRaw = Number.parseInt(String(runtime?.mqttQos ?? "0"), 10);
+  const mqttQos = Number.isFinite(mqttQosRaw) ? Math.max(0, Math.min(2, mqttQosRaw)) : 0;
+  const mqttRetain = runtime?.mqttRetain === true;
   const globalPollMs = parsePositiveMs(config?.pollMs, 500);
   const plcs = Array.isArray(config?.plcs) && config.plcs.length
     ? config.plcs
@@ -199,9 +246,35 @@ async function main() {
     }
   });
 
+  const securityModes = parseEnumList(
+    OPCUA_SECURITY_MODES_RAW,
+    MessageSecurityMode,
+    [MessageSecurityMode.SignAndEncrypt, MessageSecurityMode.Sign]
+  );
+  const securityPolicies = parseEnumList(
+    OPCUA_SECURITY_POLICIES_RAW,
+    SecurityPolicy,
+    [SecurityPolicy.Basic256Sha256, SecurityPolicy.Basic256, SecurityPolicy.Basic128Rsa15]
+  );
+  const hasUserCredentials = !!(OPCUA_USERNAME && OPCUA_PASSWORD);
+  const allowAnonymous = hasUserCredentials ? OPCUA_ALLOW_ANONYMOUS : true;
+  if (!hasUserCredentials && !OPCUA_ALLOW_ANONYMOUS) {
+    // eslint-disable-next-line no-console
+    console.warn("OPCUA_USERNAME/OPCUA_PASSWORD not set; allowing anonymous OPC UA sessions.");
+  }
+
   const server = new OPCUAServer({
     port: Number(config?.opcua?.port ?? 4840),
     resourcePath: String(config?.opcua?.resourcePath ?? "/UA/ControlLogix"),
+    allowAnonymous,
+    securityModes,
+    securityPolicies,
+    userManager: {
+      isValidUser: (username, password) => {
+        if (!hasUserCredentials) return false;
+        return String(username || "") === OPCUA_USERNAME && String(password || "") === OPCUA_PASSWORD;
+      },
+    },
     buildInfo: {
       productName: "Mesora-CLX-OPCUA-Bridge",
       buildNumber: "1",
@@ -237,6 +310,12 @@ async function main() {
   const tagReadDurationTotalMs = new Map();
   const tagReadDurationMaxMs = new Map();
   const tagLastReadDurationMs = new Map();
+  const mqttState = {
+    enabled: mqttEnabled,
+    connected: false,
+    lastError: "",
+    client: null,
+  };
   let statusPublishInFlight = false;
   let pendingStatusPayload = null;
 
@@ -423,6 +502,110 @@ async function main() {
     tagValues.set(tag.tagKey, normalized);
     if (tag.legacyTagKey && tag.legacyTagKey !== tag.tagKey) tagValues.set(tag.legacyTagKey, normalized);
     return { ok: true, tagKey: tag.tagKey, value: normalized };
+  }
+
+  function parseMqttWriteMessage(topic, payloadBuffer) {
+    const topicText = String(topic || "").trim();
+    const payloadText = String(payloadBuffer || "").trim();
+    if (!payloadText) return null;
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(payloadText);
+    } catch {
+      parsed = null;
+    }
+
+    if (parsed && typeof parsed === "object") {
+      const tagKey = String(parsed.tagKey || parsed.tag || "").trim();
+      const legacyTagKey = String(parsed.legacyTagKey || "").trim();
+      if (tagKey || legacyTagKey) {
+        return {
+          tagKey,
+          legacyTagKey,
+          value: parsed.value,
+        };
+      }
+    }
+
+    const prefix = mqttWriteTopic ? `${mqttWriteTopic}/` : "";
+    let tagKeyFromTopic = "";
+    if (prefix && topicText.startsWith(prefix)) {
+      try {
+        tagKeyFromTopic = decodeURIComponent(topicText.slice(prefix.length));
+      } catch {
+        tagKeyFromTopic = topicText.slice(prefix.length);
+      }
+    }
+    if (!tagKeyFromTopic) return null;
+
+    if (parsed && typeof parsed === "object" && Object.prototype.hasOwnProperty.call(parsed, "value")) {
+      return { tagKey: tagKeyFromTopic, value: parsed.value };
+    }
+
+    return { tagKey: tagKeyFromTopic, value: payloadText };
+  }
+
+  function startMqttBridge() {
+    if (!mqttState.enabled) return;
+    if (!mqttBrokerUrl) {
+      mqttState.lastError = "MQTT broker URL is missing.";
+      return;
+    }
+    const options = {
+      reconnectPeriod: reconnectDelayMs,
+      connectTimeout: readTimeoutMs,
+      keepalive: Math.max(5, Math.round(heartbeatMs / 1000)),
+      clean: true,
+    };
+    if (mqttClientId) options.clientId = mqttClientId;
+    if (mqttUsername) options.username = mqttUsername;
+    if (mqttPassword) options.password = mqttPassword;
+
+    const client = mqttConnect(mqttBrokerUrl, options);
+    mqttState.client = client;
+
+    client.on("connect", () => {
+      mqttState.connected = true;
+      mqttState.lastError = "";
+      if (mqttWriteTopic) {
+        client.subscribe(mqttWriteTopic, { qos: mqttQos }, (err) => {
+          if (err) mqttState.lastError = err?.message || "MQTT subscribe failed.";
+          writeStatus();
+        });
+        client.subscribe(`${mqttWriteTopic}/#`, { qos: mqttQos }, () => {
+          writeStatus();
+        });
+      }
+      writeStatus();
+    });
+
+    client.on("reconnect", () => {
+      mqttState.connected = false;
+      writeStatus();
+    });
+
+    client.on("close", () => {
+      mqttState.connected = false;
+      writeStatus();
+    });
+
+    client.on("error", (err) => {
+      mqttState.lastError = err?.message || "MQTT error";
+      writeStatus();
+    });
+
+    client.on("message", async (topic, payload) => {
+      try {
+        const writePayload = parseMqttWriteMessage(topic, payload);
+        if (!writePayload) return;
+        await writeTagToPlc(writePayload);
+      } catch (err) {
+        mqttState.lastError = err?.message || "MQTT write handling failed.";
+      } finally {
+        writeStatus();
+      }
+    });
   }
 
   const writeBridgeServer = http.createServer(async (req, res) => {
@@ -668,6 +851,16 @@ async function main() {
         diagnostics,
         runtime: {
           opcConnectionEnabled,
+          multiReadEnabled,
+          multiReadBatchSize,
+          mqttEnabled: mqttState.enabled,
+          mqttConnected: mqttState.connected,
+          mqttBrokerUrl,
+          mqttStatusTopic,
+          mqttWriteTopic,
+          mqttQos,
+          mqttRetain,
+          mqttLastError: mqttState.lastError || "",
           readTimeoutMs,
           errorBackoffEnabled,
           errorBackoffBaseMs,
@@ -680,6 +873,17 @@ async function main() {
           heartbeatMs,
         },
       };
+      if (mqttState.enabled && mqttState.connected && mqttState.client && mqttStatusTopic) {
+        try {
+          mqttState.client.publish(
+            mqttStatusTopic,
+            JSON.stringify(pendingStatusPayload),
+            { qos: mqttQos, retain: mqttRetain }
+          );
+        } catch {
+          // ignore mqtt publish errors
+        }
+      }
       void flushStatusPublishQueue();
     } catch {
       // ignore status write errors
@@ -695,8 +899,78 @@ async function main() {
       return Promise.race([plc.read(tagPath), timeoutPromise]);
     }
 
+    async function multiReadWithTimeout(tagPaths) {
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Multi-read timeout after ${readTimeoutMs}ms`)), readTimeoutMs);
+      });
+      return Promise.race([plc.multiRead(tagPaths), timeoutPromise]);
+    }
+
     function nextJitter() {
       return pollJitterMs > 0 ? Math.floor(Math.random() * (pollJitterMs + 1)) : 0;
+    }
+
+    function baseIntervalFor(tag) {
+      return parsePositiveMs(
+        tag.samplingInterval,
+        parsePositiveMs(tag.pollMs, globalPollMs)
+      );
+    }
+
+    function markTagSuccess(tag, value, now, durationMs, baseInterval) {
+      const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
+      const successCount = (tagReadSuccessCount.get(tag.tagKey) || 0) + 1;
+      const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
+      const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
+      tagReadCount.set(tag.tagKey, readCount);
+      tagReadSuccessCount.set(tag.tagKey, successCount);
+      tagReadDurationTotalMs.set(tag.tagKey, totalMs);
+      tagReadDurationMaxMs.set(tag.tagKey, maxMs);
+      tagLastReadDurationMs.set(tag.tagKey, durationMs);
+      const prev = tagValues.get(tag.tagKey);
+      const deadband = parseNonNegativeNumber(tag.deadband, deadbandDefault);
+      let shouldUpdateValue = true;
+      if (deadband != null && isNumericLiveValue(prev) && isNumericLiveValue(value)) {
+        const prevNum = Number(prev);
+        const nextNum = Number(value);
+        shouldUpdateValue = Math.abs(nextNum - prevNum) >= deadband;
+      }
+      if (shouldUpdateValue) tagValues.set(tag.tagKey, value);
+      tagErrors.delete(tag.tagKey);
+      tagErrorStreak.set(tag.tagKey, 0);
+      tagQuality.set(tag.tagKey, "Good");
+      tagLastErrorMessage.set(tag.tagKey, "");
+      tagLastRead.set(tag.tagKey, now);
+      tagLastSuccessAt.set(tag.tagKey, now);
+      tagEffectiveInterval.set(tag.tagKey, baseInterval);
+      tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
+    }
+
+    function markTagError(tag, now, durationMs, baseInterval, err) {
+      const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
+      const errorReadCount = (tagReadErrorCount.get(tag.tagKey) || 0) + 1;
+      const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
+      const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
+      tagReadCount.set(tag.tagKey, readCount);
+      tagReadErrorCount.set(tag.tagKey, errorReadCount);
+      tagReadDurationTotalMs.set(tag.tagKey, totalMs);
+      tagReadDurationMaxMs.set(tag.tagKey, maxMs);
+      tagLastReadDurationMs.set(tag.tagKey, durationMs);
+      const prev = tagErrors.get(tag.tagKey) || 0;
+      tagErrors.set(tag.tagKey, prev + 1);
+      const streak = (tagErrorStreak.get(tag.tagKey) || 0) + 1;
+      tagErrorStreak.set(tag.tagKey, streak);
+      tagQuality.set(tag.tagKey, "Bad");
+      tagLastErrorAt.set(tag.tagKey, now);
+      tagLastErrorMessage.set(tag.tagKey, err?.message || "Read failed.");
+      let backoffMs = 0;
+      if (errorBackoffEnabled && streak >= errorBackoffThreshold) {
+        const exp = Math.max(0, streak - errorBackoffThreshold);
+        backoffMs = Math.min(errorBackoffMaxMs, errorBackoffBaseMs * 2 ** exp);
+      }
+      tagEffectiveInterval.set(tag.tagKey, baseInterval + backoffMs);
+      tagNextDueAt.set(tag.tagKey, now + baseInterval + backoffMs + nextJitter());
+      tagLastRead.set(tag.tagKey, now);
     }
 
     const tickMs = Math.max(
@@ -716,11 +990,9 @@ async function main() {
       const now = Date.now();
       let didRead = false;
       try {
+        const dueForRead = [];
         for (const tag of plcTags) {
-          const baseInterval = parsePositiveMs(
-            tag.samplingInterval,
-            parsePositiveMs(tag.pollMs, globalPollMs)
-          );
+          const baseInterval = baseIntervalFor(tag);
           const dueAt = tagNextDueAt.get(tag.tagKey) || 0;
           if (now < dueAt) continue;
 
@@ -731,69 +1003,63 @@ async function main() {
             tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
             continue;
           }
+          dueForRead.push({ tag, baseInterval });
+        }
 
-          const readStartedAt = Date.now();
-          try {
-            const value = await readWithTimeout(tag.tagPath || tag.name);
-            if (value == null) {
-              throw new Error("Read returned no data (null/undefined).");
-            }
-            const durationMs = Math.max(0, Date.now() - readStartedAt);
-            const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
-            const successCount = (tagReadSuccessCount.get(tag.tagKey) || 0) + 1;
-            const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
-            const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
-            tagReadCount.set(tag.tagKey, readCount);
-            tagReadSuccessCount.set(tag.tagKey, successCount);
-            tagReadDurationTotalMs.set(tag.tagKey, totalMs);
-            tagReadDurationMaxMs.set(tag.tagKey, maxMs);
-            tagLastReadDurationMs.set(tag.tagKey, durationMs);
-            const prev = tagValues.get(tag.tagKey);
-            const deadband = parseNonNegativeNumber(tag.deadband, deadbandDefault);
-            let shouldUpdateValue = true;
-            if (deadband != null) {
-              if (isNumericLiveValue(prev) && isNumericLiveValue(value)) {
-                const prevNum = Number(prev);
-                const nextNum = Number(value);
-                shouldUpdateValue = Math.abs(nextNum - prevNum) >= deadband;
+        if (multiReadEnabled && dueForRead.length > 1) {
+          for (let idx = 0; idx < dueForRead.length; idx += multiReadBatchSize) {
+            const batch = dueForRead.slice(idx, idx + multiReadBatchSize);
+            const tagPaths = batch.map(({ tag }) => tag.tagPath || tag.name);
+            const readStartedAt = Date.now();
+            try {
+              const responses = await multiReadWithTimeout(tagPaths);
+              const durationMs = Math.max(0, Date.now() - readStartedAt);
+              const eachDurationMs = Math.max(1, Math.round(durationMs / Math.max(1, batch.length)));
+              const responseByName = new Map();
+              (Array.isArray(responses) ? responses : []).forEach((resp) => {
+                const key = String(resp?.tag_name || "").trim();
+                if (key) responseByName.set(key, resp);
+              });
+              for (const item of batch) {
+                const path = String(item.tag.tagPath || item.tag.name).trim();
+                const resp = responseByName.get(path);
+                if (resp && Number(resp.status || 0) === 0 && resp.value != null) {
+                  markTagSuccess(item.tag, resp.value, now, eachDurationMs, item.baseInterval);
+                  didRead = true;
+                } else {
+                  const err = new Error(resp?.message || "Multi-read returned no data.");
+                  markTagError(item.tag, now, eachDurationMs, item.baseInterval, err);
+                }
+              }
+            } catch (batchErr) {
+              for (const item of batch) {
+                const singleStartedAt = Date.now();
+                try {
+                  const value = await readWithTimeout(item.tag.tagPath || item.tag.name);
+                  if (value == null) throw new Error("Read returned no data (null/undefined).");
+                  const singleDuration = Math.max(0, Date.now() - singleStartedAt);
+                  markTagSuccess(item.tag, value, now, singleDuration, item.baseInterval);
+                  didRead = true;
+                } catch (err) {
+                  const singleDuration = Math.max(0, Date.now() - singleStartedAt);
+                  markTagError(item.tag, now, singleDuration, item.baseInterval, err || batchErr);
+                }
               }
             }
-            if (shouldUpdateValue) tagValues.set(tag.tagKey, value);
-            tagErrors.delete(tag.tagKey);
-            tagErrorStreak.set(tag.tagKey, 0);
-            tagQuality.set(tag.tagKey, "Good");
-            tagLastErrorMessage.set(tag.tagKey, "");
-            tagLastRead.set(tag.tagKey, now);
-            tagLastSuccessAt.set(tag.tagKey, now);
-            tagEffectiveInterval.set(tag.tagKey, baseInterval);
-            tagNextDueAt.set(tag.tagKey, now + baseInterval + nextJitter());
-            didRead = true;
-          } catch (err) {
-            const durationMs = Math.max(0, Date.now() - readStartedAt);
-            const readCount = (tagReadCount.get(tag.tagKey) || 0) + 1;
-            const errorReadCount = (tagReadErrorCount.get(tag.tagKey) || 0) + 1;
-            const totalMs = (tagReadDurationTotalMs.get(tag.tagKey) || 0) + durationMs;
-            const maxMs = Math.max(tagReadDurationMaxMs.get(tag.tagKey) || 0, durationMs);
-            tagReadCount.set(tag.tagKey, readCount);
-            tagReadErrorCount.set(tag.tagKey, errorReadCount);
-            tagReadDurationTotalMs.set(tag.tagKey, totalMs);
-            tagReadDurationMaxMs.set(tag.tagKey, maxMs);
-            tagLastReadDurationMs.set(tag.tagKey, durationMs);
-            const prev = tagErrors.get(tag.tagKey) || 0;
-            tagErrors.set(tag.tagKey, prev + 1);
-            const streak = (tagErrorStreak.get(tag.tagKey) || 0) + 1;
-            tagErrorStreak.set(tag.tagKey, streak);
-            tagQuality.set(tag.tagKey, "Bad");
-            tagLastErrorAt.set(tag.tagKey, now);
-            tagLastErrorMessage.set(tag.tagKey, err?.message || "Read failed.");
-            let backoffMs = 0;
-            if (errorBackoffEnabled && streak >= errorBackoffThreshold) {
-              const exp = Math.max(0, streak - errorBackoffThreshold);
-              backoffMs = Math.min(errorBackoffMaxMs, errorBackoffBaseMs * 2 ** exp);
+          }
+        } else {
+          for (const item of dueForRead) {
+            const readStartedAt = Date.now();
+            try {
+              const value = await readWithTimeout(item.tag.tagPath || item.tag.name);
+              if (value == null) throw new Error("Read returned no data (null/undefined).");
+              const durationMs = Math.max(0, Date.now() - readStartedAt);
+              markTagSuccess(item.tag, value, now, durationMs, item.baseInterval);
+              didRead = true;
+            } catch (err) {
+              const durationMs = Math.max(0, Date.now() - readStartedAt);
+              markTagError(item.tag, now, durationMs, item.baseInterval, err);
             }
-            tagEffectiveInterval.set(tag.tagKey, baseInterval + backoffMs);
-            tagNextDueAt.set(tag.tagKey, now + baseInterval + backoffMs + nextJitter());
-            tagLastRead.set(tag.tagKey, now);
           }
         }
       } finally {
@@ -835,6 +1101,7 @@ async function main() {
   });
 
   writeStatus();
+  startMqttBridge();
 
   await server.start();
 
@@ -845,8 +1112,27 @@ async function main() {
   const endpoint = server.endpoints[0].endpointDescriptions()[0].endpointUrl;
   // eslint-disable-next-line no-console
   console.log(`OPC UA Server listening at ${endpoint}`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `OPC UA security: allowAnonymous=${allowAnonymous} modes=${securityModes
+      .map((m) => MessageSecurityMode[m] || String(m))
+      .join(",")} policies=${securityPolicies
+      .map((p) => SecurityPolicy[p] || String(p))
+      .join(",")}`
+  );
+  if (hasUserCredentials) {
+    // eslint-disable-next-line no-console
+    console.log(`OPC UA username authentication enabled for user "${OPCUA_USERNAME}".`);
+  }
 
   process.on("SIGINT", async () => {
+    try {
+      if (mqttState.client) {
+        mqttState.client.end(true);
+      }
+    } catch {
+      // ignore
+    }
     try {
       await server.shutdown(1000);
     } catch {

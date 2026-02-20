@@ -273,6 +273,11 @@ export default function PropertiesPanel({
   duplicateOffset,
   setDuplicateOffset,
   bounds,
+  docked = false,
+  dockLeft = 0,
+  dockTop = 0,
+  dockBottom = 0,
+  dockWidth = 360,
 }) {
   const [bboxDraft, setBboxDraft] = useState({ x: "", y: "", w: "", h: "" });
   const [bboxAspectLocked, setBboxAspectLocked] = useState(true);
@@ -387,6 +392,20 @@ export default function PropertiesPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [showHUD, setShowHUD]);
 
+  // Click-away closes panel
+  useEffect(() => {
+    if (!showHUD) return;
+    const onPointerDown = (e) => {
+      const panelEl = panelRef.current;
+      const target = e.target;
+      if (!panelEl || !target) return;
+      if (panelEl.contains(target)) return;
+      setShowHUD(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, [showHUD, setShowHUD]);
+
   useEffect(() => {
     if (!showHUD) {
       setUserMoved(false);
@@ -398,6 +417,7 @@ export default function PropertiesPanel({
   }, [panelAnchorKey]);
 
   useEffect(() => {
+    if (docked) return;
     if (!showHUD) return;
     if (freezePanel) return;
     if (userMoved) return;
@@ -438,9 +458,10 @@ export default function PropertiesPanel({
     y = Math.min(Math.max(minY, y), maxY);
 
     setPanelPos({ x, y });
-  }, [panelAnchorKey, panelAnchor, panelCursor, showHUD, freezePanel]);
+  }, [panelAnchorKey, panelAnchor, panelCursor, showHUD, freezePanel, docked]);
 
   useEffect(() => {
+    if (docked) return;
     function onMove(e) {
       if (!dragRef.current.dragging) return;
       const rect = panelRef.current?.getBoundingClientRect();
@@ -465,7 +486,7 @@ export default function PropertiesPanel({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, []);
+  }, [docked, safeBounds.bottom, safeBounds.left, safeBounds.right, safeBounds.top]);
 
   const isSvg = isSingle && singleKind === "SVG";
   const isWidget = isSingle && singleKind === "Widget";
@@ -705,29 +726,39 @@ export default function PropertiesPanel({
       ref={panelRef}
       style={{
         position: "fixed",
-        left: panelPos.x,
-        top: panelPos.y,
+        left: docked ? Math.max(0, Number(dockLeft) || 0) : panelPos.x,
+        top: docked ? Math.max(0, Number(dockTop) || 0) : panelPos.y,
+        bottom: docked ? Math.max(0, Number(dockBottom) || 0) : undefined,
+        width: docked ? Math.max(280, Number(dockWidth) || 360) : undefined,
         display: "flex",
         flexDirection: "column",
         background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
         border: "1px solid var(--border)",
-        borderRadius: 12,
+        borderRadius: docked ? 0 : 12,
         padding: "10px 12px",
         fontSize: 13,
         lineHeight: 1.35,
-        boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
+        boxShadow: docked ? "24px 0 40px rgba(0,0,0,0.22)" : "0 6px 18px rgba(0,0,0,0.10)",
         color: "var(--text)",
         zIndex: 35,
         minWidth: 320,
-        minHeight: MIN_PANEL_HEIGHT,
-        maxHeight: `min(${MAX_PANEL_HEIGHT}px, calc(100vh - ${safeBounds.top + safeBounds.bottom + 16}px))`,
+        minHeight: docked ? 0 : MIN_PANEL_HEIGHT,
+        maxHeight: docked
+          ? "100%"
+          : `min(${MAX_PANEL_HEIGHT}px, calc(100vh - ${safeBounds.top + safeBounds.bottom + 16}px))`,
         overflow: "hidden",
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "move" }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          cursor: docked ? "default" : "move",
+        }}
         onMouseDown={(e) => {
+          if (docked) return;
           e.preventDefault();
           e.stopPropagation();
           dragRef.current.dragging = true;

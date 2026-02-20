@@ -12,10 +12,35 @@ export default function TopBarRightControls({
   openDrawer,
   user,
   avatarLabel,
+  compact = false,
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginLeft: "auto",
+        minWidth: 0,
+        flex: "0 1 auto",
+        maxWidth: "56vw",
+      }}
+    >
+      <div
+        className="vizi-scroll"
+        style={{
+          display: "flex",
+          gap: 6,
+          flexWrap: "nowrap",
+          overflowX: "auto",
+          overflowY: "hidden",
+          minWidth: 0,
+          maxWidth: "48vw",
+          whiteSpace: "nowrap",
+          paddingBottom: 1,
+          scrollbarWidth: "thin",
+        }}
+      >
         {[
           { key: "theme", label: "Theme", alwaysVisible: true },
           { key: "plc", label: "PLC", areaKey: "plc" },
@@ -73,6 +98,7 @@ export default function TopBarRightControls({
                   fontWeight: 700,
                   cursor: "pointer",
                   minWidth: item.key === "theme" ? 34 : undefined,
+                  flex: "0 0 auto",
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -110,8 +136,10 @@ export default function TopBarRightControls({
           border: "1px solid var(--border)",
           background: "color-mix(in srgb, var(--bg-elev) 90%, transparent)",
           borderRadius: 999,
-          padding: "4px 10px",
+          padding: compact ? "4px 8px" : "4px 10px",
           cursor: "pointer",
+          flex: "0 0 auto",
+          maxWidth: compact ? 40 : 200,
         }}
       >
         {user?.avatar_url ? (
@@ -137,9 +165,21 @@ export default function TopBarRightControls({
             {avatarLabel}
           </div>
         )}
-        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>
-          {user?.display_name || user?.username || "User"}
-        </div>
+        {!compact ? (
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: "var(--text)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              maxWidth: 120,
+            }}
+          >
+            {user?.display_name || user?.username || "User"}
+          </div>
+        ) : null}
       </button>
     </div>
   );

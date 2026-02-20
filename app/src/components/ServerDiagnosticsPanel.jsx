@@ -25,6 +25,25 @@ function cardStyle(accent = "var(--border)") {
   };
 }
 
+function asBytes(value, fallback = "--") {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+function asPct(value, fallback = "--") {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return `${n.toFixed(1)}%`;
+}
+
 export default function ServerDiagnosticsPanel({ embedded = false }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -34,6 +53,7 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     opcStatus: null,
     opcConfig: null,
     dbConfig: null,
+    pgDiag: null,
   });
 
   const load = async () => {
@@ -47,11 +67,12 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     };
 
     try {
-      const [healthRes, opcStatusRes, opcConfigRes, dbConfigRes] = await Promise.allSettled([
+      const [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes] = await Promise.allSettled([
         fetchJson("/api/health"),
         fetchJson("/api/opc/status"),
         fetchJson("/api/opc/config"),
         fetchJson("/api/db/config"),
+        fetchJson("/api/db/diagnostics/postgres"),
       ]);
 
       const next = {
@@ -59,12 +80,13 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
         opcStatus: opcStatusRes.status === "fulfilled" ? opcStatusRes.value : null,
         opcConfig: opcConfigRes.status === "fulfilled" ? opcConfigRes.value : null,
         dbConfig: dbConfigRes.status === "fulfilled" ? dbConfigRes.value : null,
+        pgDiag: pgDiagRes.status === "fulfilled" ? pgDiagRes.value : null,
       };
 
       setPayload(next);
       setUpdatedAt(Date.now());
 
-      const errors = [healthRes, opcStatusRes, opcConfigRes, dbConfigRes]
+      const errors = [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes]
         .filter((r) => r.status === "rejected")
         .map((r) => String(r.reason?.message || "Request failed"));
       if (errors.length) setError(errors[0]);
@@ -86,6 +108,7 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     const opcStatus = payload.opcStatus && typeof payload.opcStatus === "object" ? payload.opcStatus : {};
     const opcConfig = payload.opcConfig && typeof payload.opcConfig === "object" ? payload.opcConfig : {};
     const dbConfig = payload.dbConfig && typeof payload.dbConfig === "object" ? payload.dbConfig : {};
+    const pgDiag = payload.pgDiag && typeof payload.pgDiag === "object" ? payload.pgDiag : {};
 
     const tags = Array.isArray(opcConfig.tags) ? opcConfig.tags : [];
     const topics = Array.isArray(opcConfig.topics) ? opcConfig.topics : [];
@@ -125,6 +148,27 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     const readCycleMs =
       firstReadAt != null && lastReadAt != null && lastReadAt >= firstReadAt ? lastReadAt - firstReadAt : null;
 
+    const settings = pgDiag?.settings && typeof pgDiag.settings === "object" ? pgDiag.settings : {};
+    const settingValue = (key) => Number(settings?.[key]?.setting);
+    const unitValue = (key) => String(settings?.[key]?.unit || "");
+    const toBytes = (raw, unit) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return null;
+      const u = String(unit || "").toLowerCase();
+      if (u === "8kb") return n * 8 * 1024;
+      if (u === "kb") return n * 1024;
+      if (u === "mb") return n * 1024 * 1024;
+      if (u === "gb") return n * 1024 * 1024 * 1024;
+      return n;
+    };
+
+    const blksHit = Number(pgDiag?.database?.blks_hit);
+    const blksRead = Number(pgDiag?.database?.blks_read);
+    const cacheHitPct =
+      Number.isFinite(blksHit) && Number.isFinite(blksRead) && blksHit + blksRead > 0
+        ? (blksHit / (blksHit + blksRead)) * 100
+        : null;
+
     return {
       aiHealthy: health.ok === true,
       opcConnected: opcStatus.connected === true,
@@ -143,6 +187,36 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
       writes: opcStatus?.runtime?.writeMetrics || {},
       dbLatencyMs: Number(dbConfig?.health?.latencyMs),
       dbCheckedAt: Number(dbConfig?.health?.checkedAt),
+      pgCheckedAt: Number(pgDiag?.checkedAt),
+      sharedBuffersBytes: toBytes(settingValue("shared_buffers"), unitValue("shared_buffers")),
+      workMemBytes: toBytes(settingValue("work_mem"), unitValue("work_mem")),
+      maintenanceWorkMemBytes: toBytes(settingValue("maintenance_work_mem"), unitValue("maintenance_work_mem")),
+      effectiveCacheBytes: toBytes(settingValue("effective_cache_size"), unitValue("effective_cache_size")),
+      maxConnections: settingValue("max_connections"),
+      maxWorkerProcesses: settingValue("max_worker_processes"),
+      maxParallelWorkers: settingValue("max_parallel_workers"),
+      maxParallelPerGather: settingValue("max_parallel_workers_per_gather"),
+      maxParallelMaintenanceWorkers: settingValue("max_parallel_maintenance_workers"),
+      dbConnectionsTotal: Number(pgDiag?.connections?.total),
+      dbConnectionsActive: Number(pgDiag?.connections?.active),
+      dbConnectionsIdle: Number(pgDiag?.connections?.idle),
+      dbConnectionsWaiting: Number(pgDiag?.connections?.waiting),
+      cacheHitPct,
+      tempFiles: Number(pgDiag?.database?.temp_files),
+      tempBytes: Number(pgDiag?.database?.temp_bytes),
+      deadlocks: Number(pgDiag?.database?.deadlocks),
+      dbBytes: Number(pgDiag?.size?.db_bytes),
+      tablesBytes: Number(pgDiag?.size?.tables_bytes),
+      indexesBytes: Number(pgDiag?.size?.indexes_bytes),
+      walBytes: Number(pgDiag?.wal?.wal_bytes),
+      walRecords: Number(pgDiag?.wal?.wal_records),
+      checkpointsTimed: Number(pgDiag?.bgwriter?.checkpoints_timed),
+      checkpointsReq: Number(pgDiag?.bgwriter?.checkpoints_req),
+      checkpointWriteMs: Number(pgDiag?.bgwriter?.checkpoint_write_time),
+      checkpointSyncMs: Number(pgDiag?.bgwriter?.checkpoint_sync_time),
+      lockCount: Number(pgDiag?.locks?.total),
+      lockWaiting: Number(pgDiag?.locks?.waiting),
+      uptimeSeconds: Number(pgDiag?.uptime?.uptime_seconds),
     };
   }, [payload]);
 
@@ -154,7 +228,7 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
       color: ok ? "#12b76a" : "#f04438",
       borderRadius: 999,
       padding: "4px 10px",
-      fontSize: 12,
+      fontSize: 11,
       fontWeight: 700,
       width: "fit-content",
       whiteSpace: "nowrap",
@@ -176,7 +250,7 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     boxShadow: "0 8px 20px rgba(0,0,0,0.08)",
   };
   const sectionTitleStyle = {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 800,
     letterSpacing: "0.06em",
     textTransform: "uppercase",
@@ -195,9 +269,9 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     display: "grid",
     gap: 2,
   };
-  const metricLabelStyle = { fontSize: 11, fontWeight: 700, color: "var(--text-muted)" };
-  const metricValueStyle = { fontSize: 20, fontWeight: 800, lineHeight: 1.15 };
-  const metricSubStyle = { fontSize: 11, color: "var(--text-muted)" };
+  const metricLabelStyle = { fontSize: 10, fontWeight: 700, color: "var(--text-muted)" };
+  const metricValueStyle = { fontSize: 18, fontWeight: 800, lineHeight: 1.15 };
+  const metricSubStyle = { fontSize: 10, color: "var(--text-muted)" };
 
   return (
     <div
@@ -213,8 +287,8 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
         <div style={{ display: "grid", gap: 2 }}>
-          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "0.01em" }}>Server Diagnostics</div>
-          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          <div style={{ fontSize: 16, fontWeight: 900, letterSpacing: "0.01em" }}>Server Diagnostics</div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
             Updated: {asDate(updatedAt)}
           </div>
         </div>
@@ -229,7 +303,7 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
             color: loading ? "var(--text-muted)" : "#fff",
             borderRadius: 8,
             padding: "6px 10px",
-            fontSize: 12,
+            fontSize: 11,
             fontWeight: 700,
             cursor: loading ? "not-allowed" : "pointer",
           }}
@@ -299,11 +373,11 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
           </div>
           <div style={metricCardStyle}>
             <div style={metricLabelStyle}>Last OPC Publish</div>
-            <div style={{ ...metricValueStyle, fontSize: 14 }}>{asDate(summary.opcLastAt)}</div>
+            <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.opcLastAt)}</div>
           </div>
           <div style={metricCardStyle}>
             <div style={metricLabelStyle}>Last Poll</div>
-            <div style={{ ...metricValueStyle, fontSize: 14 }}>{asDate(summary.opcLastPollAt)}</div>
+            <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.opcLastPollAt)}</div>
           </div>
         </div>
       </div>
@@ -329,8 +403,52 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
           </div>
           <div style={metricCardStyle}>
             <div style={metricLabelStyle}>DB Health Checked</div>
-            <div style={{ ...metricValueStyle, fontSize: 14 }}>{asDate(summary.dbCheckedAt)}</div>
+            <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.dbCheckedAt)}</div>
           </div>
+        </div>
+      </div>
+
+      <div style={panelStyle}>
+        <div style={sectionTitleStyle}>PostgreSQL Memory And Workers</div>
+        <div style={statGridStyle}>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Shared Buffers</div><div style={metricValueStyle}>{asBytes(summary.sharedBuffersBytes)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Work Mem</div><div style={metricValueStyle}>{asBytes(summary.workMemBytes)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Maintenance Work Mem</div><div style={metricValueStyle}>{asBytes(summary.maintenanceWorkMemBytes)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Effective Cache Size</div><div style={metricValueStyle}>{asBytes(summary.effectiveCacheBytes)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Max Worker Processes</div><div style={metricValueStyle}>{asCount(summary.maxWorkerProcesses)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Max Parallel Workers</div><div style={metricValueStyle}>{asCount(summary.maxParallelWorkers)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Per Gather</div><div style={metricValueStyle}>{asCount(summary.maxParallelPerGather)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Parallel Maintenance</div><div style={metricValueStyle}>{asCount(summary.maxParallelMaintenanceWorkers)}</div></div>
+        </div>
+      </div>
+
+      <div style={panelStyle}>
+        <div style={sectionTitleStyle}>PostgreSQL Runtime</div>
+        <div style={statGridStyle}>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Connections</div><div style={metricValueStyle}>{asCount(summary.dbConnectionsTotal)}</div><div style={metricSubStyle}>Max {asCount(summary.maxConnections)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Active</div><div style={metricValueStyle}>{asCount(summary.dbConnectionsActive)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Idle</div><div style={metricValueStyle}>{asCount(summary.dbConnectionsIdle)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Waiting Sessions</div><div style={metricValueStyle}>{asCount(summary.dbConnectionsWaiting)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Cache Hit Ratio</div><div style={metricValueStyle}>{asPct(summary.cacheHitPct)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Temp Files</div><div style={metricValueStyle}>{asCount(summary.tempFiles)}</div><div style={metricSubStyle}>{asBytes(summary.tempBytes)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Deadlocks</div><div style={metricValueStyle}>{asCount(summary.deadlocks)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Uptime</div><div style={metricValueStyle}>{asCount(summary.uptimeSeconds, "--")}s</div><div style={metricSubStyle}>Checked {asDate(summary.pgCheckedAt)}</div></div>
+        </div>
+      </div>
+
+      <div style={panelStyle}>
+        <div style={sectionTitleStyle}>Storage, WAL, Checkpoints, Locks</div>
+        <div style={statGridStyle}>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Database Size</div><div style={metricValueStyle}>{asBytes(summary.dbBytes)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Tables Size</div><div style={metricValueStyle}>{asBytes(summary.tablesBytes)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Indexes Size</div><div style={metricValueStyle}>{asBytes(summary.indexesBytes)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>WAL Bytes</div><div style={metricValueStyle}>{asBytes(summary.walBytes)}</div><div style={metricSubStyle}>{asCount(summary.walRecords)} records</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Timed Checkpoints</div><div style={metricValueStyle}>{asCount(summary.checkpointsTimed)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Requested Checkpoints</div><div style={metricValueStyle}>{asCount(summary.checkpointsReq)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Checkpoint Write Time</div><div style={metricValueStyle}>{asMs(summary.checkpointWriteMs)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Checkpoint Sync Time</div><div style={metricValueStyle}>{asMs(summary.checkpointSyncMs)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Total Locks</div><div style={metricValueStyle}>{asCount(summary.lockCount)}</div></div>
+          <div style={metricCardStyle}><div style={metricLabelStyle}>Waiting Locks</div><div style={metricValueStyle}>{asCount(summary.lockWaiting)}</div></div>
         </div>
       </div>
     </div>

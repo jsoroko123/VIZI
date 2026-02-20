@@ -163,9 +163,9 @@ export default function DataBrowser({
   };
   const cardStyle = {
     background: useWhiteBackground ? "rgba(255,255,255,0.92)" : "transparent",
-    border: useWhiteBackground ? "1px solid #dbe7ff" : "none",
+    border: useWhiteBackground ? "1px solid #d2def6" : "none",
     borderRadius: 16,
-    padding: 16,
+    padding: 14,
     boxShadow: useWhiteBackground
       ? "0 8px 24px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.85)"
       : "0 20px 40px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.7)",
@@ -178,7 +178,7 @@ export default function DataBrowser({
     marginBottom: 0,
   };
   const sectionTitleStyle = {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 800,
     letterSpacing: "0.06em",
     textTransform: "uppercase",
@@ -191,7 +191,7 @@ export default function DataBrowser({
     background: "var(--bg-elev)",
     color: "var(--text)",
     borderRadius: 10,
-    padding: "8px 12px",
+    padding: "7px 11px",
     cursor: "pointer",
     fontSize: 12,
     fontWeight: 600,
@@ -214,6 +214,20 @@ export default function DataBrowser({
   const ghostButton = {
     ...buttonBase,
     background: "transparent",
+  };
+  const iconActionButton = {
+    border: "1px solid var(--border)",
+    background: "transparent",
+    color: "var(--text)",
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    display: "inline-grid",
+    placeItems: "center",
+    padding: 0,
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: "pointer",
   };
   const formFieldBackground = useWhiteBackground ? "#ffffff" : "var(--bg-elev)";
   const formFieldDisabledBackground = useWhiteBackground ? "#f3f6fc" : "var(--bg-soft)";
@@ -760,9 +774,90 @@ export default function DataBrowser({
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                 <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Details</div>
-                <button onClick={() => navigateData(`/data/${currentTable}`)} style={ghostButton}>
-                  Back to List
-                </button>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  {!isAlarmTable ? (
+                    <>
+                      <button
+                        onClick={() => {
+                          if (!detail && !isNewDetail) return;
+                          setFormDraft(detail || {});
+                          setFormEnabled(true);
+                        }}
+                        disabled={formEnabled || (!detail && !isNewDetail)}
+                        title="Edit"
+                        aria-label="Edit"
+                        style={{
+                          ...iconActionButton,
+                          opacity: formEnabled || (!detail && !isNewDetail) ? 0.45 : 1,
+                          cursor: formEnabled || (!detail && !isNewDetail) ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        onClick={() => void saveRow()}
+                        disabled={!formEnabled}
+                        title={selectedId ? "Save" : "Insert"}
+                        aria-label={selectedId ? "Save" : "Insert"}
+                        style={{
+                          ...iconActionButton,
+                          border: `1px solid ${formEnabled ? "var(--accent)" : "var(--border)"}`,
+                          background: "transparent",
+                          color: formEnabled ? "var(--accent)" : iconActionButton.color,
+                          boxShadow: "none",
+                          opacity: formEnabled ? 1 : 0.45,
+                          cursor: formEnabled ? "pointer" : "not-allowed",
+                        }}
+                      >
+                        ✓
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (isNewDetail && currentTable) {
+                            navigateData(`/data/${currentTable}`);
+                            return;
+                          }
+                          if (detail) {
+                            setFormDraft(detail || {});
+                          } else {
+                            setFormDraft({});
+                          }
+                          setFormEnabled(false);
+                        }}
+                        disabled={!formEnabled}
+                        title="Cancel"
+                        aria-label="Cancel"
+                        style={{
+                          ...iconActionButton,
+                          opacity: formEnabled ? 1 : 0.45,
+                          cursor: formEnabled ? "pointer" : "not-allowed",
+                        }}
+                      >
+                        ✕
+                      </button>
+                      <button
+                        onClick={deleteRow}
+                        disabled={!selectedId || formEnabled}
+                        title="Delete"
+                        aria-label="Delete"
+                        style={{
+                          ...iconActionButton,
+                          border: `1px solid ${!selectedId || formEnabled ? "var(--border)" : "var(--danger)"}`,
+                          background: "transparent",
+                          color: !selectedId || formEnabled ? iconActionButton.color : "var(--danger)",
+                          boxShadow: "none",
+                          opacity: !selectedId || formEnabled ? 0.45 : 1,
+                          cursor: !selectedId || formEnabled ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        🗑
+                      </button>
+                    </>
+                  ) : null}
+                  <button onClick={() => navigateData(`/data/${currentTable}`)} style={ghostButton}>
+                    Back to List
+                  </button>
+                </div>
               </div>
               {!currentTable ? (
                 <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Select a table to begin.</div>
@@ -771,13 +866,13 @@ export default function DataBrowser({
                   <div
                     style={{
                       display: "grid",
-                      rowGap: 12,
+                      rowGap: 8,
                       columnGap: 10,
                       overflowY: "auto",
-                      padding: 12,
+                      padding: 10,
                       borderRadius: 12,
-                      border: useWhiteBackground ? "1px solid #e4ecfb" : "none",
-                      background: useWhiteBackground ? "#f8fbff" : "var(--bg-soft)",
+                      border: useWhiteBackground ? "1px solid #d7e5fb" : "none",
+                      background: useWhiteBackground ? "#f6f9ff" : "var(--bg-soft)",
                       flex: 1,
                       minHeight: 0,
                       alignContent: "start",
@@ -842,13 +937,13 @@ export default function DataBrowser({
                         }}
                         style={{
                           display: "grid",
-                          gridTemplateColumns: "180px 1fr",
+                          gridTemplateColumns: "160px 1fr",
                           alignItems: "center",
-                          gap: 10,
-                          fontSize: 12,
+                          gap: 8,
+                          fontSize: 11,
                           color: "var(--text)",
                           fontWeight: 600,
-                          paddingBottom: 2,
+                          paddingBottom: 0,
                           cursor: formEnabled ? "grab" : "default",
                         }}
                       >
@@ -857,7 +952,7 @@ export default function DataBrowser({
                           style={{
                             display: "flex",
                             alignItems: "center",
-                            height: 30,
+                            height: 28,
                           }}
                         >
                           {isForeignKeyField ? (
@@ -955,10 +1050,10 @@ export default function DataBrowser({
                                 border: `1px solid ${formFieldBorder}`,
                                 borderRadius: 8,
                                 padding: inputTypeFor(c.column_name) === "checkbox" ? 0 : "4px 8px",
-                                fontSize: 12,
+                                fontSize: 11,
                                 outline: "none",
                                 background: formEnabled ? formFieldBackground : formFieldDisabledBackground,
-                                height: inputTypeFor(c.column_name) === "checkbox" ? 16 : 28,
+                                height: inputTypeFor(c.column_name) === "checkbox" ? 16 : 26,
                                 width: inputTypeFor(c.column_name) === "checkbox" ? 16 : "100%",
                                 boxShadow:
                                   formEnabled && useWhiteBackground && inputTypeFor(c.column_name) !== "checkbox"
@@ -983,8 +1078,8 @@ export default function DataBrowser({
                         marginTop: "auto",
                         justifyContent: "flex-end",
                         background: useWhiteBackground ? "rgba(248, 251, 255, 0.96)" : "var(--bg-elev)",
-                        paddingTop: 12,
-                        paddingBottom: 16,
+                        paddingTop: 10,
+                        paddingBottom: 12,
                         borderTop: useWhiteBackground ? "1px solid #e4ecfb" : "1px solid var(--border)",
                         flexShrink: 0,
                       }}
@@ -1023,92 +1118,6 @@ export default function DataBrowser({
                       >
                         Unshelve
                       </button>
-                    </div>
-                  ) : null}
-                  {!isAlarmTable ? (
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 8,
-                        marginTop: "auto",
-                        justifyContent: "flex-end",
-                        background: useWhiteBackground ? "rgba(248, 251, 255, 0.96)" : "var(--bg-elev)",
-                        paddingTop: 12,
-                        paddingBottom: 16,
-                        borderTop: useWhiteBackground ? "1px solid #e4ecfb" : "1px solid var(--border)",
-                        flexShrink: 0,
-                      }}
-                    >
-                    <button
-                      onClick={() => {
-                        if (isNewDetail && currentTable) {
-                          navigateData(`/data/${currentTable}`);
-                          return;
-                        }
-                        if (detail) {
-                          setFormDraft(detail || {});
-                        } else {
-                          setFormDraft({});
-                        }
-                        setFormEnabled(false);
-                      }}
-                      disabled={!formEnabled}
-                      style={{
-                        ...ghostButton,
-                        background: formEnabled ? "var(--bg-elev)" : "var(--bg-soft)",
-                        color: formEnabled ? "var(--text)" : "var(--text-muted)",
-                        cursor: formEnabled ? "pointer" : "not-allowed",
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={saveRow}
-                      disabled={!formEnabled}
-                      style={{
-                        ...primaryButton,
-                        background: formEnabled
-                          ? "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)"
-                          : "#e2e8f0",
-                        color: formEnabled ? "white" : "var(--text-muted)",
-                        cursor: formEnabled ? "pointer" : "not-allowed",
-                        boxShadow: formEnabled ? primaryButton.boxShadow : "none",
-                      }}
-                    >
-                      {selectedId ? "Save" : "Insert"}
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (!detail) return;
-                        setFormDraft(detail || {});
-                        setFormEnabled(true);
-                      }}
-                      disabled={!detail}
-                      style={{
-                        ...ghostButton,
-                        color: detail ? "var(--accent)" : "var(--text-muted)",
-                        border: "1px solid color-mix(in srgb, var(--accent) 35%, transparent)",
-                        background: detail ? "var(--bg-elev)" : "var(--bg-soft)",
-                        cursor: detail ? "pointer" : "not-allowed",
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={deleteRow}
-                      disabled={!selectedId || formEnabled}
-                      style={{
-                        ...dangerButton,
-                        background: selectedId && !formEnabled
-                          ? "linear-gradient(180deg, #f04438 0%, #d92d20 100%)"
-                          : "#f2f4f7",
-                        color: selectedId && !formEnabled ? "white" : "var(--text-muted)",
-                        cursor: selectedId && !formEnabled ? "pointer" : "not-allowed",
-                        boxShadow: selectedId && !formEnabled ? dangerButton.boxShadow : "none",
-                      }}
-                    >
-                      Delete
-                    </button>
                     </div>
                   ) : null}
                 </>

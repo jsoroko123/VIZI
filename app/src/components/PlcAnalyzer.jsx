@@ -349,6 +349,253 @@ function analyzeL5x(xmlText, fileName = "") {
   };
 }
 
+function extractAoiLogicBlocks(rawText, fileFormat = "") {
+  const raw = String(rawText || "");
+  const fmt = String(fileFormat || "").trim().toLowerCase();
+  if (!raw) return [];
+
+  if (fmt === "l5k") {
+    const out = [];
+    const aoiBlockRe =
+      /^\s*ADD_ON_INSTRUCTION_DEFINITION\s+([^\r\n]+)\s*[\r\n]+([\s\S]*?)^\s*END_ADD_ON_INSTRUCTION_DEFINITION\b/gmi;
+    let aoiBlock = aoiBlockRe.exec(raw);
+    while (aoiBlock) {
+      const aoiName = String(aoiBlock[1] || "").replace(/^"|"$/g, "").trim();
+      const aoiBody = String(aoiBlock[2] || "");
+      const routineRe = /^\s*ROUTINE\s+([^\r\n]+)\s*[\r\n]+([\s\S]*?)^\s*END_ROUTINE\b/gmi;
+      let match = routineRe.exec(aoiBody);
+      while (match) {
+        const routineName = String(match[1] || "").replace(/^"|"$/g, "").trim() || "Routine";
+        const body = String(match[2] || "").trim();
+        out.push({
+          name: `${aoiName || "AOI"} :: ${routineName}`,
+          snippet: body ? `ROUTINE ${routineName}\n${body}\nEND_ROUTINE` : `ROUTINE ${routineName}`,
+        });
+        match = routineRe.exec(aoiBody);
+      }
+      aoiBlock = aoiBlockRe.exec(raw);
+    }
+
+    if (out.length) return out;
+
+    const routineRe = /^\s*ROUTINE\s+([^\r\n]+)\s*[\r\n]+([\s\S]*?)^\s*END_ROUTINE\b/gmi;
+    let match = routineRe.exec(raw);
+    while (match) {
+      const name = String(match[1] || "").replace(/^"|"$/g, "").trim();
+      const body = String(match[2] || "").trim();
+      out.push({ name: name || "Routine", snippet: body ? `ROUTINE ${name}\n${body}\nEND_ROUTINE` : `ROUTINE ${name}` });
+      match = routineRe.exec(raw);
+    }
+    return out;
+  }
+
+  const out = [];
+  const aoiBlockRe = /<AddOnInstructionDefinition\b([^>]*)>([\s\S]*?)<\/AddOnInstructionDefinition>/gi;
+  let aoiBlock = aoiBlockRe.exec(raw);
+  while (aoiBlock) {
+    const aoiAttrs = String(aoiBlock[1] || "");
+    const aoiBody = String(aoiBlock[2] || "");
+    const aoiName = extractAttr(aoiAttrs, "Name") || "AOI";
+    const routineRe = /<Routine\b([^>]*)>([\s\S]*?)<\/Routine>/gi;
+    let match = routineRe.exec(aoiBody);
+    while (match) {
+      const attrs = String(match[1] || "");
+      const body = String(match[2] || "").trim();
+      const routineName = extractAttr(attrs, "Name") || "Routine";
+      const routineType = extractAttr(attrs, "Type");
+      const openTag = `<Routine${attrs ? ` ${attrs.trim()}` : ""}>`;
+      const snippet = `${openTag}\n${body}\n</Routine>`;
+      out.push({
+        name: routineType
+          ? `${aoiName} :: ${routineName} (${routineType})`
+          : `${aoiName} :: ${routineName}`,
+        snippet,
+      });
+      match = routineRe.exec(aoiBody);
+    }
+    aoiBlock = aoiBlockRe.exec(raw);
+  }
+
+  if (out.length) return out;
+
+  const routineRe = /<Routine\b([^>]*)>([\s\S]*?)<\/Routine>/gi;
+  let match = routineRe.exec(raw);
+  while (match) {
+    const attrs = String(match[1] || "");
+    const body = String(match[2] || "").trim();
+    const routineName = extractAttr(attrs, "Name") || "Routine";
+    const routineType = extractAttr(attrs, "Type");
+    const openTag = `<Routine${attrs ? ` ${attrs.trim()}` : ""}>`;
+    const snippet = `${openTag}\n${body}\n</Routine>`;
+    out.push({
+      name: routineType ? `${routineName} (${routineType})` : routineName,
+      snippet,
+    });
+    match = routineRe.exec(raw);
+  }
+  return out;
+}
+
+function normalizeInterlockTagName(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  return value.replace(/\[[^\]]*\]/g, "").replace(/^"|"$/g, "").trim();
+}
+
+function extractInterlockReferences(snippet) {
+  const text = String(snippet || "");
+  if (!text) return [];
+  const ladderKeywords = new Set([
+    "XIC",
+    "XIO",
+    "OTE",
+    "OTL",
+    "OTU",
+    "ONS",
+    "BST",
+    "BND",
+    "NXB",
+    "MOV",
+    "COP",
+    "CPT",
+    "ADD",
+    "SUB",
+    "MUL",
+    "DIV",
+    "GEQ",
+    "GRT",
+    "EQU",
+    "LEQ",
+    "LES",
+    "NEQ",
+    "JSR",
+    "RET",
+    "JMP",
+    "LBL",
+    "TON",
+    "TOF",
+    "RTO",
+    "RES",
+    "CTU",
+    "CTD",
+    "FAL",
+    "FLL",
+    "CLR",
+    "NOP",
+  ]);
+  const decoded = text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  const extractedSegments = [];
+  const cdataRe = /<!\[CDATA\[([\s\S]*?)\]\]>/gi;
+  let cdata = cdataRe.exec(decoded);
+  while (cdata) {
+    extractedSegments.push(String(cdata[1] || ""));
+    cdata = cdataRe.exec(decoded);
+  }
+  const textTagRe = /<Text\b[^>]*>([\s\S]*?)<\/Text>/gi;
+  let textTag = textTagRe.exec(decoded);
+  while (textTag) {
+    extractedSegments.push(String(textTag[1] || ""));
+    textTag = textTagRe.exec(decoded);
+  }
+  const source = extractedSegments.length ? extractedSegments.join("\n") : decoded;
+
+  const re = /\b(?:[A-Za-z_][A-Za-z0-9_]*:)*[A-Za-z_][A-Za-z0-9_]*(?:\[[0-9]+\])?(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[0-9]+\])?)*/g;
+  const out = [];
+  const seen = new Set();
+  let match = re.exec(source);
+  while (match) {
+    const token = String(match[0] || "").trim();
+    const key = token.toUpperCase();
+    if (!ladderKeywords.has(key)) {
+      const normalized = normalizeInterlockTagName(token);
+      const nodeKey = normalized.toLowerCase();
+      if (normalized && !seen.has(nodeKey)) {
+        seen.add(nodeKey);
+        out.push(normalized);
+      }
+    }
+    match = re.exec(source);
+  }
+  return out;
+}
+
+function extractLogicStatements(snippet) {
+  const text = String(snippet || "");
+  if (!text) return [];
+  const decoded = text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  const extracted = [];
+  const cdataRe = /<!\[CDATA\[([\s\S]*?)\]\]>/gi;
+  let cMatch = cdataRe.exec(decoded);
+  while (cMatch) {
+    extracted.push(String(cMatch[1] || ""));
+    cMatch = cdataRe.exec(decoded);
+  }
+  const textTagRe = /<Text\b[^>]*>([\s\S]*?)<\/Text>/gi;
+  let tMatch = textTagRe.exec(decoded);
+  while (tMatch) {
+    extracted.push(String(tMatch[1] || ""));
+    tMatch = textTagRe.exec(decoded);
+  }
+  const source = extracted.length ? extracted.join("\n") : decoded;
+  return source
+    .split(/[\r\n;]+/)
+    .map((line) => String(line || "").trim())
+    .filter(Boolean);
+}
+
+function extractInstructionCalls(statement) {
+  const out = [];
+  const re = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)/g;
+  let m = re.exec(String(statement || ""));
+  while (m) {
+    const op = String(m[1] || "").trim().toUpperCase();
+    const args = String(m[2] || "")
+      .split(",")
+      .map((v) => String(v || "").trim())
+      .filter(Boolean);
+    out.push({ op, args });
+    m = re.exec(String(statement || ""));
+  }
+  return out;
+}
+
+function scanValueMembersByTagFromRaw(rawText) {
+  const out = new Map();
+  const raw = String(rawText || "");
+  if (!raw || !/<Tag\b/i.test(raw)) return out;
+  const blockRe = /<Tag\b([^>]*)>([\s\S]*?)<\/Tag>/gi;
+  let block = blockRe.exec(raw);
+  while (block) {
+    const attrs = String(block[1] || "");
+    const body = String(block[2] || "");
+    const tagName = normalizeInterlockTagName(extractAttr(attrs, "Name"));
+    const tagKey = String(tagName || "").toLowerCase();
+    if (tagKey) {
+      if (!out.has(tagKey)) out.set(tagKey, new Set());
+      const memberRe = /<DataValueMember\b([^>]*)\/?>/gi;
+      let member = memberRe.exec(body);
+      while (member) {
+        const memberAttrs = String(member[1] || "");
+        const memberName = normalizeInterlockTagName(extractAttr(memberAttrs, "Name"));
+        if (memberName) out.get(tagKey).add(`${tagName}.${memberName}`);
+        member = memberRe.exec(body);
+      }
+    }
+    block = blockRe.exec(raw);
+  }
+  return out;
+}
+
 function mapPlcTypeToUaType(value) {
   const t = String(value || "").trim().toUpperCase();
   if (!t) return "";
@@ -916,6 +1163,13 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [dataTypeExpandedByPlc, setDataTypeExpandedByPlc] = useState({});
   const [dataTypeNodeExpandedByPlc, setDataTypeNodeExpandedByPlc] = useState({});
   const [dataTypeExcludedFieldsByPlc, setDataTypeExcludedFieldsByPlc] = useState({});
+  const [aoiLogicExpandedByName, setAoiLogicExpandedByName] = useState({});
+  const [aoiLogicSearch, setAoiLogicSearch] = useState("");
+  const [interlockSearch, setInterlockSearch] = useState("");
+  const [interlockRoot, setInterlockRoot] = useState("");
+  const [interlockChildTag, setInterlockChildTag] = useState("");
+  const [interlockExpandedByNode, setInterlockExpandedByNode] = useState({});
+  const [interlockDirection, setInterlockDirection] = useState("forward");
   const chatScrollRef = useRef(null);
 
   const selected = useMemo(() => {
@@ -955,7 +1209,10 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
       const name = String(t?.name || "").toLowerCase();
       if (name.includes(q)) return true;
       return (Array.isArray(t?.fields) ? t.fields : []).some((f) =>
-        String(f?.name || "").toLowerCase().includes(q)
+        String(f?.name || "").toLowerCase().includes(q) ||
+        String(f?.tagPath || "").toLowerCase().includes(q) ||
+        String(f?.plcType || "").toLowerCase().includes(q) ||
+        String(f?.baseType || "").toLowerCase().includes(q)
       );
     });
   }, [aoiTemplates, aoiTemplateSearch]);
@@ -966,10 +1223,436 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
       const name = String(t?.name || "").toLowerCase();
       if (name.includes(q)) return true;
       return (Array.isArray(t?.fields) ? t.fields : []).some((f) =>
-        String(f?.name || "").toLowerCase().includes(q)
+        String(f?.name || "").toLowerCase().includes(q) ||
+        String(f?.tagPath || "").toLowerCase().includes(q) ||
+        String(f?.plcType || "").toLowerCase().includes(q) ||
+        String(f?.baseType || "").toLowerCase().includes(q)
       );
     });
   }, [dataTypeTemplates, dataTypeTemplateSearch]);
+  const aoiLogicBlocks = useMemo(
+    () => extractAoiLogicBlocks(String(selected?.rawText || ""), String(analysis?.fileFormat || "")),
+    [selected?.rawText, analysis?.fileFormat]
+  );
+  const filteredAoiLogicBlocks = useMemo(() => {
+    const q = String(aoiLogicSearch || "").trim().toLowerCase();
+    if (!q) return aoiLogicBlocks;
+    return aoiLogicBlocks.filter((b) => String(b?.name || "").toLowerCase().includes(q));
+  }, [aoiLogicBlocks, aoiLogicSearch]);
+  const interlockData = useMemo(() => {
+    const valueMembersByTag = scanValueMembersByTagFromRaw(String(selected?.rawText || ""));
+    const controllerTagMap = new Map();
+    const controllerTagTypeMap = new Map();
+    (Array.isArray(analysis?.controllerTags?.tags) ? analysis.controllerTags.tags : []).forEach((tag) => {
+      const normalized = normalizeInterlockTagName(tag?.name || tag?.tagPath || "");
+      const key = normalized.toLowerCase();
+      if (key && !controllerTagMap.has(key)) controllerTagMap.set(key, normalized);
+      if (key && !controllerTagTypeMap.has(key)) {
+        controllerTagTypeMap.set(
+          key,
+          String(tag?.plcType || tag?.type || "").trim()
+        );
+      }
+    });
+
+    const stripFamilyQualifier = (value) =>
+      String(value || "")
+        .replace(/\s*\(\s*FamilyType\s*:?=\s*[^)]+\)\s*$/i, "")
+        .trim();
+    const normalizeTypeKey = (value) =>
+      stripFamilyQualifier(String(value || ""))
+        .trim()
+        .replace(/^"|"$/g, "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+    const stripArraySuffix = (value) => String(value || "").replace(/\[[^\]]*\]/g, "").trim();
+    const buildTypeNameVariants = (rawName) => {
+      const value = stripFamilyQualifier(String(rawName || "").trim());
+      const variants = new Set([value]);
+      if (value.includes("::")) variants.add(value.split("::").pop() || "");
+      if (value.includes(".")) variants.add(value.split(".").pop() || "");
+      if (value.includes(":")) variants.add(value.split(":").pop() || "");
+      const underscoreParts = value.split("_").filter(Boolean);
+      if (underscoreParts.length >= 2) {
+        for (let i = 1; i < underscoreParts.length; i += 1) {
+          variants.add(underscoreParts.slice(i).join("_"));
+        }
+      }
+      return Array.from(variants).map((v) => String(v || "").trim()).filter(Boolean);
+    };
+    const dataTypeTemplateByName = new Map();
+    dataTypeTemplates.forEach((t) => {
+      const rawName = String(t?.name || "").trim();
+      if (!rawName) return;
+      const score = Array.isArray(t?.fields) ? t.fields.length : 0;
+      const upsert = (k) => {
+        if (!k) return;
+        const existing = dataTypeTemplateByName.get(k);
+        const existingScore = Array.isArray(existing?.fields) ? existing.fields.length : 0;
+        if (!existing || score > existingScore) dataTypeTemplateByName.set(k, t);
+      };
+      buildTypeNameVariants(rawName).forEach((variant) => upsert(normalizeTypeKey(variant)));
+    });
+    const resolveTemplateByType = (typeName) => {
+      const variants = buildTypeNameVariants(stripArraySuffix(typeName));
+      for (const variant of variants) {
+        const direct = dataTypeTemplateByName.get(normalizeTypeKey(variant));
+        if (direct) return direct;
+      }
+      const normalizedVariants = variants
+        .map((v) => normalizeTypeKey(v))
+        .filter((v) => v && v.length >= 2)
+        .sort((a, b) => b.length - a.length);
+      for (const variantKey of normalizedVariants) {
+        for (const [mappedKey, template] of dataTypeTemplateByName.entries()) {
+          if (!mappedKey) continue;
+          if (
+            mappedKey === variantKey ||
+            mappedKey.endsWith(`_${variantKey}`) ||
+            mappedKey.endsWith(`.${variantKey}`) ||
+            mappedKey.endsWith(`:${variantKey}`) ||
+            mappedKey.endsWith(variantKey)
+          ) {
+            return template;
+          }
+        }
+      }
+      return null;
+    };
+
+    const controllerTagKeys = Array.from(controllerTagMap.keys()).sort();
+    const discoveredRefMap = new Map();
+    const resolveRefToControllerTag = (rawRef) => {
+      const base = normalizeInterlockTagName(rawRef).toLowerCase();
+      if (!base) return "";
+      const candidates = new Set([base, base.replace(/:+/g, "."), base.replace(/:/g, ".")]);
+      for (const candidate of candidates) {
+        if (controllerTagMap.has(candidate)) return candidate;
+      }
+      for (const candidate of candidates) {
+        const parts = candidate.split(".").filter(Boolean);
+        if (!parts.length) continue;
+        // If this is a child/member of a known controller tag, keep the member path
+        // so dependencies don't collapse to the same parent tag.
+        for (let i = parts.length - 1; i >= 1; i -= 1) {
+          const prefix = parts.slice(0, i).join(".");
+          if (controllerTagMap.has(prefix)) return candidate;
+        }
+        for (let i = 0; i < parts.length; i += 1) {
+          const suffix = parts.slice(i).join(".");
+          if (controllerTagMap.has(suffix)) return suffix;
+        }
+        for (let i = parts.length - 1; i >= 1; i -= 1) {
+          const prefix = parts.slice(0, i).join(".");
+          if (controllerTagMap.has(prefix)) return prefix;
+        }
+      }
+      return "";
+    };
+    const resolveTopControllerKey = (nodeKey) => {
+      const key = String(nodeKey || "").toLowerCase().trim();
+      if (!key) return "";
+      if (controllerTagMap.has(key)) return key;
+      const parts = key.split(".").filter(Boolean);
+      for (let i = parts.length - 1; i >= 1; i -= 1) {
+        const prefix = parts.slice(0, i).join(".");
+        if (controllerTagMap.has(prefix)) return prefix;
+      }
+      // Fallback: treat the root segment as equipment instance even if it is not
+      // explicitly declared as a controller tag.
+      if (parts.length >= 2) return parts[0];
+      return "";
+    };
+    const addEdge = (sourceKey, targetKey) => {
+      if (!sourceKey || !targetKey || sourceKey === targetKey) return;
+      ensureNode(sourceKey);
+      ensureNode(targetKey);
+      const set = adjacency.get(sourceKey);
+      if (!set.has(targetKey)) {
+        set.add(targetKey);
+        incoming.set(targetKey, (incoming.get(targetKey) || 0) + 1);
+        reverseAdjacency.get(targetKey).add(sourceKey);
+      }
+
+      // Roll member dependencies up to controller tag roots so selecting the parent tag
+      // still shows member-driven relationships (e.g. Motor.RunFwd).
+      const sourceTop = resolveTopControllerKey(sourceKey);
+      const targetTop = resolveTopControllerKey(targetKey);
+      if (sourceTop && sourceTop !== sourceKey) {
+        const topSet = adjacency.get(sourceTop);
+        if (!topSet.has(targetKey)) {
+          topSet.add(targetKey);
+          incoming.set(targetKey, (incoming.get(targetKey) || 0) + 1);
+          reverseAdjacency.get(targetKey).add(sourceTop);
+        }
+      }
+      if (targetTop && targetTop !== targetKey) {
+        const set2 = adjacency.get(sourceKey);
+        if (!set2.has(targetTop)) {
+          set2.add(targetTop);
+          incoming.set(targetTop, (incoming.get(targetTop) || 0) + 1);
+          reverseAdjacency.get(targetTop).add(sourceKey);
+        }
+      }
+      if (sourceTop && targetTop && sourceTop !== targetTop) {
+        const topSet2 = adjacency.get(sourceTop);
+        if (!topSet2.has(targetTop)) {
+          topSet2.add(targetTop);
+          incoming.set(targetTop, (incoming.get(targetTop) || 0) + 1);
+          reverseAdjacency.get(targetTop).add(sourceTop);
+        }
+      }
+    };
+    const adjacency = new Map();
+    const incoming = new Map();
+    const reverseAdjacency = new Map();
+    const displayNames = new Map(controllerTagMap);
+    const ensureNode = (nameRaw) => {
+      const name = normalizeInterlockTagName(nameRaw);
+      if (!name) return "";
+      const key = name.toLowerCase();
+      if (!adjacency.has(key)) adjacency.set(key, new Set());
+      if (!reverseAdjacency.has(key)) reverseAdjacency.set(key, new Set());
+      if (!incoming.has(key)) incoming.set(key, 0);
+      if (!displayNames.has(key)) displayNames.set(key, name);
+      return key;
+    };
+
+    // Seed graph with all controller tags so every tag is selectable.
+    controllerTagKeys.forEach((k) => ensureNode(displayNames.get(k) || k));
+
+    const contactOps = new Set([
+      "XIC", "XIO", "ONS", "OSR", "OSF", "EQU", "NEQ", "LES", "LEQ", "GRT", "GEQ",
+      "MEQ", "LIM", "CMP", "BST", "NXB", "BND",
+    ]);
+    const outputOps = new Set(["OTE", "OTL", "OTU", "MOV", "COP", "CPS", "FLL", "ADD", "SUB", "MUL", "DIV", "MOD", "CPT", "AND", "OR", "XOR"]);
+
+    const getOutputArgIndexes = (op, argCount) => {
+      if (!argCount) return [];
+      if (op === "OTE" || op === "OTL" || op === "OTU") return [0];
+      if (op === "MOV" || op === "COP" || op === "CPS" || op === "FLL") return argCount >= 2 ? [1] : [];
+      if (op === "ADD" || op === "SUB" || op === "MUL" || op === "DIV" || op === "MOD" || op === "AND" || op === "OR" || op === "XOR") {
+        return argCount >= 3 ? [2] : [];
+      }
+      if (op === "CPT") return argCount >= 1 ? [0] : [];
+      return [];
+    };
+
+    aoiLogicBlocks.forEach((block) => {
+      extractInterlockReferences(block?.snippet || "").forEach((ref) => {
+        const normalized = normalizeInterlockTagName(ref);
+        const key = normalized.toLowerCase();
+        if (key && !discoveredRefMap.has(key)) discoveredRefMap.set(key, normalized);
+      });
+      const statements = extractLogicStatements(block?.snippet || "");
+      statements.forEach((stmt) => {
+        const calls = extractInstructionCalls(stmt);
+        if (!calls.length) return;
+
+        const rungInputs = new Set();
+        const rungOutputs = new Set();
+
+        calls.forEach(({ op, args }) => {
+          if (!Array.isArray(args) || !args.length) return;
+          const outputIdxs = getOutputArgIndexes(op, args.length);
+          const outputIdxSet = new Set(outputIdxs);
+
+          args.forEach((arg, idx) => {
+            const resolved = resolveRefToControllerTag(arg);
+            if (!resolved) return;
+            if (outputIdxSet.has(idx)) {
+              rungOutputs.add(resolved);
+            } else if (contactOps.has(op) || outputOps.has(op) || !op) {
+              rungInputs.add(resolved);
+            }
+          });
+        });
+
+        // Preferred model: output tag depends on input tags.
+        if (rungOutputs.size && rungInputs.size) {
+          rungOutputs.forEach((outKey) => {
+            rungInputs.forEach((inKey) => {
+              addEdge(outKey, inKey);
+            });
+          });
+          return;
+        }
+
+        // Fallback for unusual syntax: co-occurrence links.
+        const refs = extractInterlockReferences(stmt)
+          .map((ref) => resolveRefToControllerTag(ref))
+          .filter(Boolean);
+        const uniqueRefs = Array.from(new Set(refs));
+        uniqueRefs.forEach((sourceKey) => {
+          uniqueRefs.forEach((targetKey) => {
+            addEdge(sourceKey, targetKey);
+          });
+        });
+      });
+    });
+
+    const nodes = Array.from(adjacency.keys()).sort();
+    const linkedNodes = nodes.filter(
+      (k) => (adjacency.get(k)?.size || 0) > 0 || (reverseAdjacency.get(k)?.size || 0) > 0
+    );
+    const roots = linkedNodes.filter((k) => (adjacency.get(k)?.size || 0) > 0 && (incoming.get(k) || 0) === 0);
+    const active = roots.length ? roots : linkedNodes;
+    const discoveredKeys = Array.from(discoveredRefMap.keys());
+    const controllerChildrenMap = new Map();
+    const addChild = (parentKey, childKeyRaw) => {
+      const parent = String(parentKey || "").toLowerCase().trim();
+      const normalizedChild = normalizeInterlockTagName(childKeyRaw);
+      const childKey = String(normalizedChild || "").toLowerCase().trim();
+      if (!parent || !childKey || parent === childKey) return;
+      if (!controllerChildrenMap.has(parent)) controllerChildrenMap.set(parent, new Set());
+      controllerChildrenMap.get(parent).add(childKey);
+      if (!displayNames.has(childKey)) displayNames.set(childKey, normalizedChild);
+    };
+    const expandTemplateChildren = (parentKey, parentDisplayName, typeName, seenPairs = new Set(), depth = 0) => {
+      if (depth > 8) return;
+      const template = resolveTemplateByType(typeName);
+      const fields = Array.isArray(template?.fields) ? template.fields : [];
+      if (!fields.length) return;
+      const baseDisplay = String(parentDisplayName || displayNames.get(parentKey) || parentKey || "").trim();
+      fields.forEach((field) => {
+        const fieldName = String(field?.name || field?.tagPath || "").trim();
+        if (!fieldName || !isImportableFieldName(fieldName)) return;
+        const childDisplay = normalizeInterlockTagName(`${baseDisplay}.${fieldName}`);
+        const childKey = String(childDisplay || "").toLowerCase();
+        if (!childKey) return;
+        addChild(parentKey, childDisplay);
+        const childType = String(field?.plcType || field?.baseType || "").trim();
+        const pairKey = `${childKey}::${normalizeTypeKey(stripArraySuffix(childType))}`;
+        if (!childType || seenPairs.has(pairKey)) return;
+        seenPairs.add(pairKey);
+        expandTemplateChildren(childKey, childDisplay, childType, seenPairs, depth + 1);
+      });
+    };
+    discoveredRefMap.forEach((name, key) => {
+      if (!displayNames.has(key)) displayNames.set(key, name);
+    });
+    controllerTagTypeMap.forEach((typeName, parentKey) => {
+      const parentDisplay = String(displayNames.get(parentKey) || controllerTagMap.get(parentKey) || parentKey);
+      if (!displayNames.has(parentKey)) displayNames.set(parentKey, parentDisplay);
+      expandTemplateChildren(parentKey, parentDisplay, typeName);
+    });
+    const valueMemberKeys = [];
+    valueMembersByTag.forEach((memberSet, parentKey) => {
+      const parent = String(parentKey || "").toLowerCase();
+      if (!parent) return;
+      memberSet.forEach((fullName) => {
+        const normalized = normalizeInterlockTagName(fullName);
+        const key = String(normalized || "").toLowerCase();
+        if (!key) return;
+        valueMemberKeys.push(key);
+        addChild(parent, normalized);
+      });
+    });
+
+    const selectableRoots = Array.from(new Set([...controllerTagKeys, ...nodes, ...discoveredKeys, ...valueMemberKeys])).sort((a, b) =>
+      String(displayNames.get(a) || a).localeCompare(String(displayNames.get(b) || b))
+    );
+    const allKeysForGrouping = Array.from(new Set([...selectableRoots, ...nodes, ...discoveredKeys, ...valueMemberKeys]));
+    allKeysForGrouping.forEach((k) => {
+      const parts = String(k || "").split(".").filter(Boolean);
+      if (parts.length < 2) return;
+      const parent = parts[0].toLowerCase();
+      if (!controllerChildrenMap.has(parent)) controllerChildrenMap.set(parent, new Set());
+      controllerChildrenMap.get(parent).add(k);
+      if (!displayNames.has(parent)) displayNames.set(parent, parts[0]);
+    });
+
+    const controllerParents = Array.from(
+      new Set([
+        ...controllerTagKeys
+          .filter((k) => !String(k).includes(".")),
+        ...Array.from(controllerChildrenMap.keys()),
+      ])
+    ).sort((a, b) =>
+      String(displayNames.get(a) || a).localeCompare(String(displayNames.get(b) || b))
+    );
+
+    return {
+      adjacency,
+      reverseAdjacency,
+      incoming,
+      nodes,
+      roots: active,
+      controllerRoots: selectableRoots,
+      controllerParents,
+      controllerChildrenMap,
+      allSelectableKeys: allKeysForGrouping,
+      displayNames,
+    };
+  }, [analysis?.controllerTags?.tags, aoiLogicBlocks, dataTypeTemplates, selected?.rawText]);
+
+  const filteredInterlockControllers = useMemo(() => {
+    const q = String(interlockSearch || "").trim().toLowerCase();
+    const base = Array.isArray(interlockData?.controllerParents) ? interlockData.controllerParents : [];
+    if (!q) return base;
+    return base.filter((k) =>
+      String(interlockData?.displayNames?.get(k) || k || "").toLowerCase().includes(q)
+    );
+  }, [interlockData?.controllerParents, interlockData?.displayNames, interlockSearch]);
+
+  useEffect(() => {
+    if (!filteredInterlockControllers.length) {
+      if (interlockRoot) setInterlockRoot("");
+      return;
+    }
+    if (!interlockRoot || !filteredInterlockControllers.includes(interlockRoot)) {
+      setInterlockRoot(filteredInterlockControllers[0]);
+    }
+  }, [filteredInterlockControllers, interlockRoot]);
+
+  const interlockChildOptions = useMemo(() => {
+    if (!interlockRoot) return [];
+    const set = interlockData?.controllerChildrenMap?.get(interlockRoot);
+    let base = set && set.size ? Array.from(set) : [];
+    if (!base.length) {
+      const root = String(interlockRoot || "").toLowerCase().trim();
+      const pool = Array.isArray(interlockData?.allSelectableKeys) ? interlockData.allSelectableKeys : [];
+      // Fallback for scoped/export-specific names:
+      // - direct child: root.xxx
+      // - scoped path contains: .root.xxx
+      // - display name contains the same patterns
+      base = pool.filter((k) => {
+        const key = String(k || "").toLowerCase();
+        if (!key || key === root) return false;
+        if (key.startsWith(`${root}.`)) return true;
+        if (key.includes(`.${root}.`)) return true;
+        const label = String(interlockData?.displayNames?.get(k) || k || "").toLowerCase();
+        if (label.startsWith(`${root}.`)) return true;
+        if (label.includes(`.${root}.`)) return true;
+        return false;
+      });
+    }
+    if (!base.length) return [];
+    return Array.from(new Set(base)).sort((a, b) =>
+      String(interlockData?.displayNames?.get(a) || a).localeCompare(String(interlockData?.displayNames?.get(b) || b))
+    );
+  }, [interlockData?.allSelectableKeys, interlockData?.controllerChildrenMap, interlockData?.displayNames, interlockRoot]);
+
+  useEffect(() => {
+    if (!interlockChildOptions.length) {
+      if (interlockChildTag) setInterlockChildTag("");
+      return;
+    }
+    if (!interlockChildTag || !interlockChildOptions.includes(interlockChildTag)) {
+      setInterlockChildTag(interlockChildOptions[0]);
+    }
+  }, [interlockChildOptions, interlockChildTag]);
+
+  const selectedInterlockNode = interlockChildTag || interlockRoot;
+
+  const selectedInterlockHasChildren = useMemo(() => {
+    if (!selectedInterlockNode) return false;
+    const mapToUse =
+      interlockDirection === "backward"
+        ? interlockData?.reverseAdjacency
+        : interlockData?.adjacency;
+    return (mapToUse?.get(selectedInterlockNode)?.size || 0) > 0;
+  }, [interlockDirection, interlockData?.adjacency, interlockData?.reverseAdjacency, selectedInterlockNode]);
   const dataTypeTemplateByName = useMemo(() => {
     const stripFamilyQualifier = (value) =>
       String(value || "")
@@ -3062,75 +3745,56 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <button
-          type="button"
-          data-preserve-style="true"
-          onClick={() => setActiveTab("overview")}
-          style={{
-            border: `1px solid ${activeTab === "overview" ? "#2b6cff" : "var(--border)"}`,
-            background: activeTab === "overview" ? "#2b6cff" : "var(--bg-elev)",
-            color: activeTab === "overview" ? "#ffffff" : "var(--text)",
-            borderRadius: 999,
-            padding: "5px 11px",
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
-          Overview
-        </button>
-        <button
-          type="button"
-          data-preserve-style="true"
-          onClick={() => setActiveTab("ai")}
-          style={{
-            border: `1px solid ${activeTab === "ai" ? "#2b6cff" : "var(--border)"}`,
-            background: activeTab === "ai" ? "#2b6cff" : "var(--bg-elev)",
-            color: activeTab === "ai" ? "#ffffff" : "var(--text)",
-            borderRadius: 999,
-            padding: "5px 11px",
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
-          AI
-        </button>
-        <button
-          type="button"
-          data-preserve-style="true"
-          onClick={() => setActiveTab("aoi-templates")}
-          style={{
-            border: `1px solid ${activeTab === "aoi-templates" ? "#2b6cff" : "var(--border)"}`,
-            background: activeTab === "aoi-templates" ? "#2b6cff" : "var(--bg-elev)",
-            color: activeTab === "aoi-templates" ? "#ffffff" : "var(--text)",
-            borderRadius: 999,
-            padding: "5px 11px",
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
-          AOI Templates
-        </button>
-        <button
-          type="button"
-          data-preserve-style="true"
-          onClick={() => setActiveTab("datatype-templates")}
-          style={{
-            border: `1px solid ${activeTab === "datatype-templates" ? "#2b6cff" : "var(--border)"}`,
-            background: activeTab === "datatype-templates" ? "#2b6cff" : "var(--bg-elev)",
-            color: activeTab === "datatype-templates" ? "#ffffff" : "var(--text)",
-            borderRadius: 999,
-            padding: "5px 11px",
-            fontSize: 12,
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
-          Data Type Templates
-        </button>
+      <div
+        className="vizi-scroll"
+        style={{
+          display: "flex",
+          gap: 6,
+          alignItems: "center",
+          overflowX: "auto",
+          borderBottom: "1px solid var(--border)",
+          paddingBottom: 2,
+        }}
+      >
+        {[
+          { key: "overview", label: "Overview" },
+          { key: "ai", label: "AI" },
+          { key: "aoi-templates", label: "AOI Templates" },
+          { key: "aoi-logic", label: "AOI Logic" },
+          { key: "datatype-templates", label: "Data Type Templates" },
+          { key: "interlocks", label: "Interlocks" },
+        ].map((tab) => {
+          const active = activeTab === tab.key;
+          return (
+            <button
+              key={`plc-tab-${tab.key}`}
+              type="button"
+              data-preserve-style="true"
+              onClick={() => setActiveTab(tab.key)}
+              style={{
+                border: "none",
+                borderBottom: `2px solid ${active ? "var(--accent)" : "transparent"}`,
+                background: "transparent",
+                color: active ? "var(--accent)" : "var(--text-muted)",
+                borderRadius: 0,
+                minWidth: 0,
+                height: 30,
+                padding: "0 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                whiteSpace: "nowrap",
+                boxShadow: "none",
+                transition: "color 140ms ease, border-color 140ms ease, background-color 140ms ease",
+              }}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {activeTab === "overview" ? (
@@ -3700,7 +4364,20 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
             </div>
           ) : (
             <>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 4,
+                  background: "var(--bg)",
+                  padding: "6px 0",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
                 <input
                   value={aoiTemplateSearch}
                   onChange={(e) => setAoiTemplateSearch(e.target.value)}
@@ -3940,6 +4617,105 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         </>
       ) : null}
 
+      {activeTab === "aoi-logic" ? (
+        <>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Source: <strong style={{ color: "var(--text)" }}>{selected?.name || "No PLC selected"}</strong>
+          </div>
+          {!selected ? (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+              Select or upload an L5X/L5K file in Overview first.
+            </div>
+          ) : !aoiLogicBlocks.length ? (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+              No routine ladder logic blocks found in this file.
+            </div>
+          ) : (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 12 }}>AOI Ladder Logic (L5X Format)</div>
+                <input
+                  value={aoiLogicSearch}
+                  onChange={(e) => setAoiLogicSearch(e.target.value)}
+                  placeholder="Search routine..."
+                  style={{
+                    marginLeft: "auto",
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    minWidth: 220,
+                  }}
+                />
+              </div>
+              <div style={{ display: "grid" }}>
+                {filteredAoiLogicBlocks.map((block, idx) => {
+                  const key = `${String(block?.name || "Routine")}-${idx}`;
+                  const expanded = aoiLogicExpandedByName[key] === true;
+                  return (
+                    <div key={`aoi-logic-${key}`} style={{ borderTop: "1px solid var(--border)", padding: "8px 10px", display: "grid", gap: 8 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "20px 1fr", gap: 8, alignItems: "center" }}>
+                        <button
+                          type="button"
+                          data-preserve-style="true"
+                          onClick={() => setAoiLogicExpandedByName((prev) => ({ ...prev, [key]: !expanded }))}
+                          style={{
+                            border: "1px solid var(--border)",
+                            background: "var(--bg-elev)",
+                            color: "var(--text)",
+                            borderRadius: 5,
+                            width: 20,
+                            height: 20,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            lineHeight: 1,
+                            padding: 0,
+                          }}
+                        >
+                          {expanded ? "−" : "+"}
+                        </button>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>{block.name}</div>
+                      </div>
+                      {expanded ? (
+                        <pre
+                          style={{
+                            margin: 0,
+                            border: "1px solid var(--border)",
+                            borderRadius: 8,
+                            background: "var(--bg-soft)",
+                            color: "var(--text)",
+                            padding: 10,
+                            fontSize: 11,
+                            lineHeight: 1.45,
+                            overflow: "auto",
+                            whiteSpace: "pre",
+                          }}
+                        >
+                          {String(block?.snippet || "")}
+                        </pre>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {filteredAoiLogicBlocks.length === 0 ? (
+                  <div style={{ padding: 12, fontSize: 12, color: "var(--text-muted)" }}>No routines match your search.</div>
+                ) : null}
+              </div>
+            </div>
+          )}
+        </>
+      ) : null}
+
       {activeTab === "datatype-templates" ? (
         <>
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
@@ -3955,7 +4731,20 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
             </div>
           ) : (
             <>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 4,
+                  background: "var(--bg)",
+                  padding: "6px 0",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
                 <input
                   value={dataTypeTemplateSearch}
                   onChange={(e) => setDataTypeTemplateSearch(e.target.value)}
@@ -4145,6 +4934,220 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                 </div>
               </div>
             </>
+          )}
+        </>
+      ) : null}
+
+      {activeTab === "interlocks" ? (
+        <>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Source: <strong style={{ color: "var(--text)" }}>{selected?.name || "No PLC selected"}</strong>
+          </div>
+          {!selected ? (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+              Select or upload an L5X/L5K file in Overview first.
+            </div>
+          ) : !filteredInterlockControllers.length ? (
+            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+              No interlock graph could be derived from current logic.
+            </div>
+          ) : (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(220px, 1fr) minmax(160px, auto) minmax(260px, 1fr)",
+                  gap: 8,
+                  alignItems: "center",
+                  padding: "8px 10px",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                <input
+                  value={interlockSearch}
+                  onChange={(e) => setInterlockSearch(e.target.value)}
+                  placeholder="Search controller tag..."
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                  }}
+                />
+                <div style={{ display: "inline-flex", gap: 6, justifySelf: "center" }}>
+                  <button
+                    type="button"
+                    data-preserve-style="true"
+                    onClick={() => setInterlockDirection("forward")}
+                    style={{
+                      border: `1px solid ${interlockDirection === "forward" ? "#2b6cff" : "var(--border)"}`,
+                      background: interlockDirection === "forward" ? "#2b6cff" : "var(--bg-elev)",
+                      color: interlockDirection === "forward" ? "#fff" : "var(--text)",
+                      borderRadius: 999,
+                      padding: "6px 10px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Forward
+                  </button>
+                  <button
+                    type="button"
+                    data-preserve-style="true"
+                    onClick={() => setInterlockDirection("backward")}
+                    style={{
+                      border: `1px solid ${interlockDirection === "backward" ? "#2b6cff" : "var(--border)"}`,
+                      background: interlockDirection === "backward" ? "#2b6cff" : "var(--bg-elev)",
+                      color: interlockDirection === "backward" ? "#fff" : "var(--text)",
+                      borderRadius: 999,
+                      padding: "6px 10px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Backward
+                  </button>
+                </div>
+                <select
+                  value={interlockRoot}
+                  onChange={(e) => setInterlockRoot(e.target.value)}
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                  }}
+                >
+                  {filteredInterlockControllers.map((root) => (
+                    <option key={`interlock-root-${root}`} value={root}>
+                      {interlockData.displayNames?.get(root) || root}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ padding: 10, display: "grid", gap: 6 }}>
+                {interlockRoot ? (
+                  <div
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                      background: "var(--bg)",
+                      padding: 8,
+                      display: "grid",
+                      gap: 6,
+                      maxHeight: 180,
+                      overflow: "auto",
+                    }}
+                  >
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                      Child Tags ({interlockChildOptions.length})
+                    </div>
+                    {interlockChildOptions.length ? (
+                      interlockChildOptions.map((child) => {
+                        const active = interlockChildTag === child;
+                        return (
+                          <button
+                            key={`interlock-child-${child}`}
+                            type="button"
+                            data-preserve-style="true"
+                            onClick={() => setInterlockChildTag(child)}
+                            style={{
+                              border: `1px solid ${active ? "#2b6cff" : "var(--border)"}`,
+                              background: active ? "color-mix(in srgb, #2b6cff 14%, var(--bg-elev))" : "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 8,
+                              padding: "6px 8px",
+                              textAlign: "left",
+                              fontSize: 11,
+                              fontWeight: active ? 700 : 600,
+                              cursor: "pointer",
+                            }}
+                            title={interlockData.displayNames?.get(child) || child}
+                          >
+                            {interlockData.displayNames?.get(child) || child}
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        No child tags found for selected controller tag.
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+                {selectedInterlockNode && !selectedInterlockHasChildren ? (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 0 8px 0" }}>
+                    {interlockDirection === "backward"
+                      ? "No upstream dependencies found for selected controller tag."
+                      : "No downstream dependencies found for selected controller tag."}
+                  </div>
+                ) : null}
+                {(() => {
+                  const renderNode = (nodeKey, depth = 0, path = new Set()) => {
+                    const mapToUse =
+                      interlockDirection === "backward"
+                        ? interlockData.reverseAdjacency
+                        : interlockData.adjacency;
+                    const children = Array.from(mapToUse.get(nodeKey) || []).sort();
+                    const hasChildren = children.length > 0;
+                    const expanded = interlockExpandedByNode[nodeKey] ?? depth < 1;
+                    const isCycle = path.has(nodeKey);
+                    return (
+                      <div key={`${nodeKey}-${depth}`} style={{ marginLeft: depth * 16 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "20px 1fr auto", gap: 8, alignItems: "center", minHeight: 24 }}>
+                          <button
+                            type="button"
+                            data-preserve-style="true"
+                            onClick={() =>
+                              setInterlockExpandedByNode((prev) => ({ ...prev, [nodeKey]: !expanded }))
+                            }
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 5,
+                              width: 20,
+                              height: 20,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              lineHeight: 1,
+                              padding: 0,
+                              opacity: hasChildren ? 1 : 0.5,
+                              cursor: hasChildren ? "pointer" : "default",
+                            }}
+                          >
+                            {hasChildren ? (expanded ? "−" : "+") : "·"}
+                          </button>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {interlockData.displayNames?.get(nodeKey) || nodeKey}
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                            {hasChildren ? `${children.length} linked` : ""}
+                            {isCycle ? " • cycle" : ""}
+                          </div>
+                        </div>
+                        {hasChildren && expanded && !isCycle ? (
+                          <div style={{ display: "grid", gap: 4 }}>
+                            {children.map((child) => {
+                              const nextPath = new Set(path);
+                              nextPath.add(nodeKey);
+                              return renderNode(child, depth + 1, nextPath);
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  };
+                  return selectedInterlockNode ? renderNode(selectedInterlockNode) : null;
+                })()}
+              </div>
+            </div>
           )}
         </>
       ) : null}

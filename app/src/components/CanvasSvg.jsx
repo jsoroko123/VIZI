@@ -2851,6 +2851,7 @@ export default function CanvasSvg({
       );
 
       if (isMajor) {
+        const labelPx = Math.max(0, Math.round(x));
         ticks.push(
           <text
             key={`tl-${x}`}
@@ -2860,7 +2861,7 @@ export default function CanvasSvg({
             fill="var(--ruler-text)"
             style={{ userSelect: "none" }}
           >
-            {x}px
+            {labelPx}px
           </text>
         );
       }
@@ -2927,6 +2928,7 @@ export default function CanvasSvg({
       );
 
       if (isMajor) {
+        const labelPx = Math.max(0, Math.round(y));
         ticks.push(
           <text
             key={`rl-${y}`}
@@ -2936,7 +2938,7 @@ export default function CanvasSvg({
             fill="var(--ruler-text)"
             style={{ userSelect: "none" }}
           >
-            {y}px
+            {labelPx}px
           </text>
         );
       }
@@ -3102,24 +3104,28 @@ export default function CanvasSvg({
       style={{
         position: "absolute",
         top: viewportTopOffset,
-        left: 0,
+        left: viewportShiftX,
         right: 0,
         bottom: 0,
         userSelect: "none",
-        transform: viewportShiftX ? `translateX(${viewportShiftX}px)` : "translateX(0px)",
-        transition: "transform 180ms ease",
+        transition: "left 180ms ease",
       }}
     >
       <div
         ref={wrapRef}
         className="vizi-scroll"
         onScroll={(e) => {
-          if (typeof onViewportScroll !== "function") return;
           const target = e.currentTarget;
-          onViewportScroll({
+          const next = {
             x: Number(target?.scrollLeft || 0),
             y: Number(target?.scrollTop || 0),
-          });
+          };
+          if (typeof onViewportScroll === "function") {
+            onViewportScroll({
+              x: next.x,
+              y: next.y,
+            });
+          }
         }}
         onDoubleClickCapture={(e) => {
           onCanvasDoubleClick?.(e);

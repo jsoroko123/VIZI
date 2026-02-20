@@ -27,7 +27,7 @@ export default function LiveAlarmBar({
         left,
         right: 0,
         height,
-        zIndex: 205,
+        zIndex: 230,
         borderTop: hasLiveAlarms
           ? "1px solid color-mix(in srgb, #ef4444 22%, rgba(255,255,255,0.3) 78%)"
           : "1px solid color-mix(in srgb, #2563eb 14%, rgba(255,255,255,0.42) 86%)",
@@ -101,7 +101,7 @@ export default function LiveAlarmBar({
             className="vizi-live-alarm-marquee-track"
             style={{ ["--alarm-marquee-duration"]: `${liveAlarmMarqueeDurationSec}s` }}
           >
-            {[0, 1, 2].map((segment) => (
+            {[0, 1].map((segment) => (
               <Fragment key={`alarm-marquee-segment-${segment}`}>
                 <div
                   className="vizi-live-alarm-marquee-group"

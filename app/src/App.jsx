@@ -453,6 +453,7 @@ export default function App() {
   const [exportVB, setExportVB] = useState({ x: 0, y: 0, w: 1600, h: 900 });
   const [exportBasis, setExportBasis] = useState({ w: 1600, h: 900 }); // affects Perspective "basis"
   const [showZoom, setShowZoom] = useState(true);
+  const [designDockExpanded, setDesignDockExpanded] = useState(false);
   const [showGrid, setShowGrid] = useState(() => {
     if (typeof window === "undefined") return true;
     try {
@@ -575,6 +576,7 @@ export default function App() {
       return false;
     }
   });
+  const [liveMenuHoverItemId, setLiveMenuHoverItemId] = useState("");
   const [liveMenuExpandedWidth, setLiveMenuExpandedWidth] = useState(() => {
     if (typeof window === "undefined") return LIVE_MENU_EXPANDED_WIDTH_DEFAULT;
     try {
@@ -2909,6 +2911,12 @@ function flushScheduledProjectSave() {
   }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, liveMenuGroups, projectMode, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible]);
 
   useEffect(() => {
+    if (!activeProjectId) return;
+    if (!projectHydrationReadyRef.current) return;
+    scheduleProjectAutoSave(160);
+  }, [activeProjectId, zoom]);
+
+  useEffect(() => {
     if (!uiPreferenceAutosaveReadyRef.current) {
       uiPreferenceAutosaveReadyRef.current = true;
       return;
@@ -3625,11 +3633,29 @@ function flushScheduledProjectSave() {
       ),
     [user]
   );
+  const isViewOnlyRole = useMemo(() => {
+    const names = (Array.isArray(user?.roles) ? user.roles : [])
+      .map((r) => String(r?.name || "").trim().toLowerCase())
+      .filter(Boolean);
+    return names.some((name) =>
+      name === "viewonly" ||
+      name === "view only" ||
+      name === "read only" ||
+      name === "readonly" ||
+      name === "viewer"
+    );
+  }, [user]);
   const { canAccessLiveMenuItem, isLiveMenuItemRoleRestricted } = useLiveMenuAccess({
     canViewDataPages,
     canViewScreenPages,
     currentUserRoleIds,
   });
+  const canOpenLiveMenuItem = (item) => {
+    const isData = String(item?.type || "").trim().toLowerCase() === "data";
+    if (isViewOnlyRole && !isData) return true;
+    return canAccessLiveMenuItem(item);
+  };
+  const canInteractLiveScreens = !(isLiveMode && isViewOnlyRole);
 
   useEffect(() => {
     if (!canManageSecurity) {
@@ -3665,7 +3691,8 @@ function flushScheduledProjectSave() {
   // ✅ ZOOM (main svg)
   const ZOOM_MIN = 0.25;
   const ZOOM_MAX = 8;
-  const ZOOM_STEP = 1.15;
+  const ZOOM_STEP = 1.01;
+  const ZOOM_STEP_PERCENT = 1;
 
 
   const applySingleTextValue = (v) => {
@@ -3895,6 +3922,14 @@ function flushScheduledProjectSave() {
   };
 
   const clampZoom = (z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+  const nudgeZoomPercent = (currentZoom, deltaPercent) => {
+    const currentPct = Math.round((Number(currentZoom) || 1) * 100);
+    const nextPct = Math.max(
+      Math.round(ZOOM_MIN * 100),
+      Math.min(Math.round(ZOOM_MAX * 100), currentPct + deltaPercent)
+    );
+    return clampZoom(nextPct / 100);
+  };
   const clampPanToViewport = (nextPanRaw, zoomValue = zoomRef.current) => {
     const el = svgRef.current;
     const z = Math.max(0.0001, Number(zoomValue) || 1);
@@ -3945,30 +3980,49 @@ function flushScheduledProjectSave() {
 
   function zoomIn() {
     setZoom((z) => {
-      const next = clampZoom(+(z * ZOOM_STEP).toFixed(4));
+      const next = nudgeZoomPercent(z, ZOOM_STEP_PERCENT);
       setPan((p) => clampPanToViewport(p, next));
       return next;
     });
   }
   function zoomOut() {
     setZoom((z) => {
-      const next = clampZoom(+(z / ZOOM_STEP).toFixed(4));
+      const next = nudgeZoomPercent(z, -ZOOM_STEP_PERCENT);
       setPan((p) => clampPanToViewport(p, next));
       return next;
     });
   }
   function resetZoomToActual100() {
-    const el = svgRef.current;
-    if (!el) {
-      setZoom(1);
-      setPan({ x: 0, y: 0 });
-      return;
+    const nextZoom = 1;
+    const nextPan = { x: 0, y: 0 };
+    const nextScroll = { x: 0, y: 0 };
+    setZoom(nextZoom);
+    setPan(nextPan);
+    canvasViewportScrollRef.current = nextScroll;
+    setCanvasViewportScrollTarget(nextScroll);
+
+    // Persist reset view into the active screen snapshot so refresh restores 100%.
+    const activeId = String(activeScreenIdRef.current || "");
+    if (activeId) {
+      setScreens((prev) =>
+        (Array.isArray(prev) ? prev : []).map((screen) => {
+          if (String(screen?.id || "") !== activeId) return screen;
+          return {
+            ...screen,
+            zoom: nextZoom,
+            pan: nextPan,
+            scroll: nextScroll,
+            designZoom: nextZoom,
+            designPan: nextPan,
+            designScroll: nextScroll,
+          };
+        })
+      );
     }
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
   }
   function zoomReset() {
     resetZoomToActual100();
+    scheduleProjectAutoSave(80);
   }
 
   async function toggleAppFullscreen() {
@@ -4353,9 +4407,8 @@ function flushScheduledProjectSave() {
       e.preventDefault();
       if (!isCanvasTarget(e.target)) return;
       const direction = e.deltaY < 0 ? 1 : -1;
-      const factor = direction > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
       setZoom((z) => {
-        const next = clampZoom(+(z * factor).toFixed(4));
+        const next = nudgeZoomPercent(z, direction > 0 ? ZOOM_STEP_PERCENT : -ZOOM_STEP_PERCENT);
         setPan((p) => clampPanToViewport(p, next));
         return next;
       });
@@ -5900,6 +5953,7 @@ function flushScheduledProjectSave() {
   // ---------- Overlay selection / move / resize ----------
   function onOverlayMouseDown(e, id) {
     if (tool !== "select") return;
+    if (Number(e?.detail || 0) > 1) return; // let double-click open properties in Move mode
     const target = e.target;
     const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
     if (isLiveMode && target && typeof target.closest === "function") {
@@ -5944,19 +5998,11 @@ function flushScheduledProjectSave() {
   }
 
   function onOverlayDoubleClick(e, id) {
-    if (tool !== "select") return;
     e.stopPropagation();
     e.preventDefault();
-    const overlay = svgOverlays.find((x) => x.id === id);
-    const firstText = overlay && !overlay.widget ? readFirstInnerSvgText(overlay.inner) : null;
     setSelectedOverlayIds([id]);
     setSelectedIds([]);
     setEditingId(null);
-    if (firstText != null) {
-      setInlineEdit({ id, value: firstText, kind: "overlay" });
-      setShowHUD(false);
-      return;
-    }
     setInlineEdit(null);
     setPanelCursor({ x: e.clientX, y: e.clientY });
     setShowHUD(true);
@@ -7300,6 +7346,11 @@ function flushScheduledProjectSave() {
   }, [isLiveMode, projectDrawerTab]);
 
   useEffect(() => {
+    if (isLiveMode) return;
+    if (importOpen && widgetOpen) setImportOpen(false);
+  }, [isLiveMode, importOpen, widgetOpen]);
+
+  useEffect(() => {
     const prev = Array.isArray(prevLiveEquipmentOverlayIdsRef.current)
       ? prevLiveEquipmentOverlayIdsRef.current
       : [];
@@ -8613,6 +8664,31 @@ function flushScheduledProjectSave() {
     background: active ? "var(--selected-bg)" : topMenuIconButtonStyle.background,
     boxShadow: active ? "var(--selected-shadow)" : "none",
   });
+  const dockToolButtonStyle = (active = false) => {
+    if (!designDockExpanded) return active ? topMenuModeButtonStyle(true) : topMenuIconButtonStyle;
+    return {
+      ...(active
+        ? {
+            ...topMenuTextButtonStyle,
+            border: "1px solid var(--selected-border)",
+            color: "var(--selected-text)",
+            background: "var(--selected-bg)",
+            boxShadow: "var(--selected-shadow)",
+          }
+        : topMenuTextButtonStyle),
+      width: "100%",
+      minHeight: 30,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "flex-start",
+      gap: 8,
+      padding: "4px 10px",
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      transition: "background-color 140ms ease, border-color 140ms ease, color 140ms ease",
+    };
+  };
   const drawerHeaderButtonStyle = {
     border: "1px solid var(--border)",
     background: "var(--bg-elev)",
@@ -8627,6 +8703,10 @@ function flushScheduledProjectSave() {
     display: "grid",
     placeItems: "center",
   };
+  const drawerTextSize = 13;
+  const drawerLineHeight = 1.35;
+  const drawerTitleSize = 15;
+  const drawerSubtitleSize = 11;
   const rightDrawerHeaderPadding = "12px 14px";
   const rightDrawerBodyPadding = 14;
   const drawerContentPadding = rightDrawerBodyPadding;
@@ -8645,7 +8725,7 @@ function flushScheduledProjectSave() {
     minWidth: 0,
     height: 30,
     padding: "0 10px",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: 700,
     cursor: "pointer",
     display: "inline-flex",
@@ -9199,7 +9279,7 @@ function flushScheduledProjectSave() {
 
   function activateLiveMenuItem(item) {
     if (!item || typeof item !== "object") return;
-    if (!canAccessLiveMenuItem(item)) {
+    if (!canOpenLiveMenuItem(item)) {
       const roleRestricted = isLiveMenuItemRoleRestricted(item);
       toastError(
         roleRestricted
@@ -9262,11 +9342,22 @@ function flushScheduledProjectSave() {
       ? Math.min(220, Math.max(176, Math.floor(winW * 0.62)))
       : liveMenuExpandedWidthClamped
     : 0;
-  const liveMenuCollapsedWidthPx = isLiveMode ? (isLiveMobile ? 54 : 72) : 0;
+  const liveMenuCollapsedWidthPx = isLiveMode ? (isLiveMobile ? 54 : 50) : 0;
   const liveMenuRailWidthPx = isLiveMode
     ? (isLiveMobile ? 0 : liveMenuIsExpanded ? liveMenuExpandedWidthPx : liveMenuCollapsedWidthPx)
     : 0;
   const liveMenuLayoutInsetPx = isLiveMode ? (isLiveMobile ? 0 : liveMenuRailWidthPx) : 0;
+  const designDockWidthPx = !isLiveMode && showZoom ? (designDockExpanded ? 228 : 44) : 0;
+  const svgImportDockWidthPx = !isLiveMode && importOpen ? 320 : 0;
+  const widgetDockWidthPx = !isLiveMode && widgetOpen ? 320 : 0;
+  const propertiesDockWidthPx = !isLiveMode && showHUD ? 360 : 0;
+  const leftToolPanelWidthPx = Math.max(svgImportDockWidthPx, widgetDockWidthPx);
+  const leftToolDockOffsetPx = designDockWidthPx + propertiesDockWidthPx;
+  const projectDrawerLeftOffsetPx = projectDrawerFullscreen
+    ? 0
+    : isLiveMode
+      ? liveMenuLayoutInsetPx
+      : designDockWidthPx;
   const liveCanvasMenuGapPx = 0;
   const liveBottomCarouselHeightPx = isLiveMode && isLiveMobile ? 84 : 0;
   const canvasReadOnly = isLiveMode || !canEditProject;
@@ -9282,9 +9373,16 @@ function flushScheduledProjectSave() {
         : Math.max(0, Math.round(drawerSizes.main.w)))
     : 0;
   const canvasLeftInsetBasePx =
-    projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx + mainDrawerAppendWidthPx;
+    designDockWidthPx +
+    propertiesDockWidthPx +
+    leftToolPanelWidthPx +
+    projectDrawerInsetPx +
+    liveMenuLayoutInsetPx +
+    liveEquipmentDrawerWidthPx +
+    mainDrawerAppendWidthPx;
   const canvasLeftInsetPx = canvasLeftInsetBasePx + liveCanvasMenuGapPx;
   const liveAlarmBarOffset = isLiveMode ? LIVE_ALARM_BAR_H : 0;
+  const leftDrawerTopPx = TOP_BAR_H + (isLiveMode ? liveAlarmBarOffset : 0);
   const [liveAlarmOccurredAtById, setLiveAlarmOccurredAtById] = useState({});
   const liveActiveAlarmsWithOccurred = useMemo(
     () =>
@@ -9331,6 +9429,10 @@ function flushScheduledProjectSave() {
         { key: "menu", label: "Menu", title: "Menu Config" },
         { key: "screens", label: "Screens", title: "Manage Screens" },
       ];
+
+  useEffect(() => {
+    if (liveMenuIsExpanded) setLiveMenuHoverItemId("");
+  }, [liveMenuIsExpanded]);
 
   useEffect(() => {
     const activeIds = new Set((liveActiveAlarms || []).map((a) => String(a?.id || "")).filter(Boolean));
@@ -9476,6 +9578,11 @@ function flushScheduledProjectSave() {
           right: RULER_SIZE + 8,
           bottom: 8,
         }}
+        docked={!isLiveMode}
+        dockLeft={designDockWidthPx}
+        dockTop={TOP_BAR_H}
+        dockBottom={0}
+        dockWidth={360}
       />
 
       <ImportModal
@@ -9485,11 +9592,21 @@ function flushScheduledProjectSave() {
         svgLibrary={svgLibraryMap}
         loadSvgRaw={readSvgRawByKey}
         onPickSvg={onPickSvg}
+        docked={!isLiveMode}
+        dockLeft={leftToolDockOffsetPx}
+        dockTop={TOP_BAR_H}
+        dockBottom={0}
+        dockWidth={svgImportDockWidthPx || 320}
       />
       <WidgetSelectorModal
         open={widgetOpen}
         onClose={() => setWidgetOpen(false)}
         onPickWidget={(key) => onPickWidget(key)}
+        docked={!isLiveMode}
+        dockLeft={leftToolDockOffsetPx}
+        dockTop={TOP_BAR_H}
+        dockBottom={0}
+        dockWidth={widgetDockWidthPx || 320}
       />
 
       <CanvasSvg
@@ -9505,7 +9622,7 @@ function flushScheduledProjectSave() {
           if (!Number.isFinite(x) || !Number.isFinite(y)) return;
           canvasViewportScrollRef.current = { x, y };
         }}
-        liveClickable={isLiveMode}
+        liveClickable={isLiveMode && canInteractLiveScreens}
           zoom={zoom}          // ✅ NEW
           onWheel={onWheelZoom} // ✅ NEW
           vbW={vbW}
@@ -9539,10 +9656,14 @@ function flushScheduledProjectSave() {
         singleSelectedOverlayId={singleSelectedOverlayId}
         setOverlayRef={setOverlayRef}
         onOverlayMouseDown={
-          isLiveMode ? onLiveOverlayMouseDown : (canEditProject ? onOverlayMouseDown : () => {})
+          isLiveMode
+            ? (canInteractLiveScreens ? onLiveOverlayMouseDown : () => {})
+            : (canEditProject ? onOverlayMouseDown : () => {})
         }
         onOverlayDoubleClick={
-          isLiveMode ? onLiveOverlayMouseDown : (canEditProject ? onOverlayDoubleClick : () => {})
+          isLiveMode
+            ? (canInteractLiveScreens ? onLiveOverlayMouseDown : () => {})
+            : (canEditProject ? onOverlayDoubleClick : () => {})
         }
         overlaySelectionUI={overlaySelectionUI}
         overlayGroupSelectionUI={overlayGroupSelectionUI}
@@ -10062,103 +10183,286 @@ function flushScheduledProjectSave() {
 
 
       {showZoom && (
+        <>
         <div
           ref={zoomPanelRef}
           style={{
             position: "fixed",
-            left: isLiveMode ? undefined : Math.max(zoomPos.x, 8),
-            right: isLiveMode ? 72 : undefined,
-            bottom: 16,
+            left: isLiveMode ? undefined : 0,
+            right: isLiveMode ? (isLiveMobile ? 12 : 16) : undefined,
+            top: isLiveMode ? (isLiveMobile ? undefined : undefined) : TOP_BAR_H,
+            bottom: isLiveMode ? (isLiveMobile ? liveBottomCarouselHeightPx + 10 : 12) : 0,
             zIndex: 80,
             boxShadow: "0 12px 30px rgba(0,0,0,0.4)",
             display: "flex",
             flexDirection: isLiveMode ? "row" : "column",
-            gap: isLiveMode ? 4 : 6,
-            padding: isLiveMode ? "6px 8px" : 8,
+            gap: isLiveMode ? 3 : 4,
+            padding: isLiveMode ? "4px 6px" : "3px 5px",
             background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
             border: "1px solid var(--border)",
-            borderRadius: 12,
-            alignItems: "center",
+            borderRadius: isLiveMode ? 12 : 0,
+            alignItems: isLiveMode ? "center" : "stretch",
+            overflowY: isLiveMode ? "visible" : "auto",
+            overflowX: "hidden",
+            width: isLiveMode ? undefined : designDockExpanded ? 228 : 44,
+            boxSizing: "border-box",
+            transition: isLiveMode ? "none" : "width 220ms ease, padding 220ms ease",
           }}
-          onMouseDown={isLiveMode ? undefined : startZoomDrag}
+          onMouseDown={undefined}
           onPointerDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
-          {/* Zoom buttons */}
-          {[
-            { label: "+", onClick: zoomIn, title: "Zoom In" },
-            { label: "−", onClick: zoomOut, title: "Zoom Out" },
-            { label: "⟲", onClick: resetView, title: "Reset View" },
-            {
-              label: isAppFullscreen ? "⤢" : "⛶",
-              onClick: toggleAppFullscreen,
-              title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
-            },
-          ].map((btn) => (
-            <button
-              key={btn.title}
-              title={btn.title}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={btn.onClick}
+          {!isLiveMode ? (
+            <div
               style={{
-                width: isLiveMode ? 30 : 34,
-                height: isLiveMode ? 30 : 34,
-                borderRadius: 10,
-                border: "1px solid var(--border)",
-                background: "var(--bg-elev)",
-                cursor: "pointer",
-                boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
-                color: "var(--text)",
                 display: "grid",
-                placeItems: "center",
-                padding: 0,
-                fontSize: isLiveMode ? 14 : 16,
+                gap: 6,
+                width: "100%",
+                paddingBottom: 3,
+                marginBottom: 0,
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              <button
+                title={designDockExpanded ? "Collapse Dock" : "Expand Dock"}
+                onClick={() => setDesignDockExpanded((v) => !v)}
+                style={{
+                  ...topMenuIconButtonStyle,
+                  width: designDockExpanded ? "100%" : undefined,
+                  height: 28,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: designDockExpanded ? "flex-end" : "center",
+                  padding: designDockExpanded ? "0 6px 0 0" : 0,
+                  border: "none",
+                  boxShadow: "none",
+                  background: "transparent",
+                  color: "var(--text)",
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d={designDockExpanded ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6"}
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{
+                      animation: designDockExpanded ? "none" : "live-menu-arrow-pulse 1s ease-in-out infinite",
+                      transition: "transform 180ms ease",
+                    }}
+                  />
+                </svg>
+              </button>
+              <button title="Export SVG" style={dockToolButtonStyle(false)} onClick={exportSVG}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M12 3v10m0 0l-4-4m4 4l4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M5 21h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Export SVG</span> : null}
+              </button>
+              <button title="Add SVG" onClick={() => setImportOpen(true)} style={dockToolButtonStyle(false)}>
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <path d="M14 3v5h5" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <path d="M12 11v6M9 14h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Add SVG</span> : null}
+              </button>
+              <button title="Add Widget" style={dockToolButtonStyle(false)} onClick={() => setWidgetOpen(true)}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <rect x="3" y="12" width="4" height="8" rx="1" stroke="currentColor" strokeWidth="2" />
+                  <rect x="10" y="8" width="4" height="12" rx="1" stroke="currentColor" strokeWidth="2" />
+                  <rect x="17" y="5" width="4" height="15" rx="1" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Add Widget</span> : null}
+              </button>
+              <button className="top-menu-btn" title="Move" style={dockToolButtonStyle(tool === "select")} onClick={() => { setTool("select"); setDrawing(null); }}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M4 3l7 18 2-7 7-2L4 3z" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Move</span> : null}
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Polyline"
+                style={dockToolButtonStyle(tool === "polyline")}
+                onClick={() => {
+                  setTool("polyline");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M5 6h5l4 6h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <circle cx="5" cy="6" r="1.5" fill="currentColor" />
+                  <circle cx="10" cy="6" r="1.5" fill="currentColor" />
+                  <circle cx="14" cy="12" r="1.5" fill="currentColor" />
+                  <circle cx="19" cy="12" r="1.5" fill="currentColor" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Polyline</span> : null}
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Rectangle"
+                style={dockToolButtonStyle(tool === "rect")}
+                onClick={() => {
+                  setTool("rect");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <rect x="5" y="6" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Rectangle</span> : null}
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Text"
+                style={dockToolButtonStyle(tool === "text")}
+                onClick={() => {
+                  setTool("text");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M4 6V4h16v2M9 20h6M12 4v16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Text</span> : null}
+              </button>
+              <button className="top-menu-btn" title="Toggle Tag Paths" style={dockToolButtonStyle(!!showTagPaths)} onClick={() => setShowTagPaths((v) => !v)}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M4 12l8-8h6l2 2v6l-8 8-8-8z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <circle cx="16" cy="8" r="1.5" fill="currentColor" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Tag Paths</span> : null}
+              </button>
+              <button className="top-menu-btn" title="Toggle Grid" style={dockToolButtonStyle(!!showGrid)} onClick={() => setShowGrid((v) => !v)}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Grid</span> : null}
+              </button>
+              <button className="top-menu-btn" title="Toggle Rulers" style={dockToolButtonStyle(!!showRulers)} onClick={() => setShowRulers((v) => !v)}>
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M4 4h16v4H4zM4 10h16v10H4z" stroke="currentColor" strokeWidth="2" />
+                  <path d="M8 4v4M12 4v4M16 4v4" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Rulers</span> : null}
+              </button>
+            </div>
+          ) : null}
+
+          <div
+            style={{
+              marginTop: isLiveMode ? 0 : "auto",
+              display: "grid",
+              gap: isLiveMode ? 3 : 4,
+              width: isLiveMode ? "auto" : "100%",
+              gridAutoFlow: isLiveMode ? "column" : "row",
+              alignItems: "center",
+            }}
+          >
+            {/* Zoom buttons */}
+            {[
+              { label: "+", onClick: zoomIn, title: "Zoom In" },
+              { label: "−", onClick: zoomOut, title: "Zoom Out" },
+              { label: "⟲", onClick: zoomReset, title: "Reset Zoom (100%)" },
+              {
+                label: isAppFullscreen ? "⤢" : "⛶",
+                onClick: toggleAppFullscreen,
+                title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
+              },
+            ].map((btn) => (
+              <button
+                key={btn.title}
+                title={btn.title}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={btn.onClick}
+                style={{
+                  ...(isLiveMode ? {} : dockToolButtonStyle(false)),
+                  width: isLiveMode ? 26 : designDockExpanded ? "100%" : topMenuIconButtonStyle.width,
+                  height: isLiveMode ? 26 : topMenuIconButtonStyle.height,
+                  minHeight: isLiveMode ? 26 : undefined,
+                  borderRadius: isLiveMode ? 8 : undefined,
+                  border: isLiveMode ? "1px solid var(--border)" : undefined,
+                  background: isLiveMode ? "var(--bg-elev)" : undefined,
+                  boxShadow: isLiveMode ? "0 6px 18px rgba(0,0,0,0.10)" : undefined,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: designDockExpanded ? "flex-start" : "center",
+                  gap: designDockExpanded ? 8 : 0,
+                  padding: designDockExpanded ? "0 8px" : 0,
+                  fontSize: 13,
+                  lineHeight: 1,
+                }}
+              >
+                {btn.label}
+                {!isLiveMode && designDockExpanded ? (
+                  <span style={{ fontSize: 11, fontWeight: 700 }}>{btn.title}</span>
+                ) : null}
+              </button>
+            ))}
+
+            {/* ❌ Hide button (toolbar style, bottom) */}
+            <button
+              title="Hide Zoom"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setShowZoom(false)}
+              style={{
+                ...(isLiveMode ? {} : dockToolButtonStyle(false)),
+                width: isLiveMode ? 26 : designDockExpanded ? "100%" : topMenuIconButtonStyle.width,
+                height: isLiveMode ? 26 : topMenuIconButtonStyle.height,
+                minHeight: isLiveMode ? 26 : undefined,
+                marginTop: isLiveMode ? 0 : 6,
+                borderRadius: isLiveMode ? 8 : undefined,
+                border: isLiveMode ? "1px solid var(--border)" : undefined,
+                background: isLiveMode ? "var(--bg-elev)" : undefined,
+                boxShadow: isLiveMode ? "0 6px 18px rgba(0,0,0,0.10)" : undefined,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: designDockExpanded ? "flex-start" : "center",
+                gap: designDockExpanded ? 8 : 0,
+                padding: designDockExpanded ? "0 8px" : 0,
+                fontSize: isLiveMode ? 11 : 13,
                 lineHeight: 1,
               }}
             >
-              {btn.label}
+              ✕
+              {!isLiveMode && designDockExpanded ? (
+                <span style={{ fontSize: 11, fontWeight: 700 }}>Hide Dock</span>
+              ) : null}
             </button>
-          ))}
 
-          {/* zoom % */}
-          <div
-            style={{
-              fontSize: isLiveMode ? 11 : 12,
-              opacity: 0.7,
-              marginTop: isLiveMode ? 0 : 2,
-              marginLeft: isLiveMode ? 4 : 0,
-              marginRight: isLiveMode ? 2 : 0,
-              userSelect: "none",
-            }}
-          >
-            {Math.round((zoom || 1) * 100)}%
+            {/* zoom % */}
+            <div
+              style={{
+                fontSize: isLiveMode ? 10 : 11,
+                opacity: 0.7,
+                marginTop: isLiveMode ? 0 : 2,
+                marginLeft: 0,
+                marginRight: 0,
+                width: 24,
+                minWidth: 24,
+                alignSelf: "center",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                lineHeight: 1,
+                fontVariantNumeric: "tabular-nums",
+                userSelect: "none",
+              }}
+            >
+              {Math.round((zoom || 1) * 100)}
+            </div>
           </div>
-
-          {/* ❌ Hide button (toolbar style, bottom) */}
-          <button
-            title="Hide Zoom"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => setShowZoom(false)}
-            style={{
-              width: isLiveMode ? 30 : 34,
-              height: isLiveMode ? 30 : 34,
-              marginTop: isLiveMode ? 0 : 6,
-              borderRadius: 10,
-              border: "1px solid var(--border)",
-              background: "var(--bg-elev)",
-              cursor: "pointer",
-              boxShadow: "0 6px 18px rgba(0,0,0,0.10)",
-              color: "var(--text)",
-              display: "grid",
-              placeItems: "center",
-              padding: 0,
-              fontSize: isLiveMode ? 12 : 14,
-              lineHeight: 1,
-            }}
-          >
-            ✕
-          </button>
         </div>
+        </>
       )}
 
       {!isLiveMode && contextMenu && (
@@ -10632,7 +10936,7 @@ function flushScheduledProjectSave() {
         <div
           style={{
             position: "fixed",
-            top: TOP_BAR_H + (isLiveMode ? liveAlarmBarOffset : 0),
+            top: leftDrawerTopPx,
             left: 0,
             right: 0,
             bottom: 0,
@@ -10667,6 +10971,8 @@ function flushScheduledProjectSave() {
               borderLeft: mainDrawerFullscreen || mainDrawerAppendFromLeft ? "none" : "1px solid var(--border)",
               borderRight: mainDrawerAppendFromLeft ? "1px solid var(--border)" : "none",
               color: "var(--text)",
+              fontSize: drawerTextSize,
+              lineHeight: drawerLineHeight,
               transform: "translate(0px, 0px)",
               animation: mainDrawerAppendFromLeft
                 ? "drawer-slide-in-left 220ms ease-out"
@@ -10689,7 +10995,7 @@ function flushScheduledProjectSave() {
               }}
             >
               <div style={{ display: "grid", gap: 10 }}>
-                <div style={{ fontWeight: 800, fontSize: 14, letterSpacing: "0.02em" }}>
+                <div style={{ fontWeight: 800, fontSize: drawerTitleSize, letterSpacing: "0.02em" }}>
                   {drawerView === "ai"
                     ? "AI"
                     : drawerView === "reports"
@@ -10987,6 +11293,8 @@ function flushScheduledProjectSave() {
               flexDirection: "column",
               borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
               color: "var(--text)",
+              fontSize: drawerTextSize,
+              lineHeight: drawerLineHeight,
               transform: "translate(0px, 0px)",
               animation: "drawer-slide-in-right 220ms ease-out",
             }}
@@ -11005,14 +11313,28 @@ function flushScheduledProjectSave() {
               }}
             >
               <div style={{ display: "grid", gap: 2 }}>
-                <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "0.02em" }}>
+                <div style={{ fontWeight: 800, fontSize: drawerTitleSize, letterSpacing: "0.02em" }}>
                   User Settings
                 </div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                <div style={{ fontSize: drawerSubtitleSize, color: "var(--text-muted)" }}>
                   Profile and session preferences
                 </div>
               </div>
               <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={() => {
+                    if (!userSettingsEditing) {
+                      beginUserSettingsEdit();
+                      return;
+                    }
+                    void saveUserSettingsEdit();
+                  }}
+                  style={drawerHeaderButtonStyle}
+                  title={userSettingsEditing ? "Save" : "Edit"}
+                  aria-label={userSettingsEditing ? "Save" : "Edit"}
+                >
+                  {userSettingsEditing ? "✓" : "✎"}
+                </button>
                 <button
                   onClick={() => setUserDrawerFullscreen((v) => !v)}
                   style={drawerHeaderButtonStyle}
@@ -11058,10 +11380,10 @@ function flushScheduledProjectSave() {
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={{ fontWeight: 800, fontSize: 16 }}>Profile</div>
+                  <div style={{ fontWeight: 800, fontSize: 14 }}>Profile</div>
                   <div
                     style={{
-                      fontSize: 10,
+                      fontSize: 9,
                       color: "var(--text-muted)",
                       border: "1px solid var(--border)",
                       borderRadius: 999,
@@ -11072,8 +11394,8 @@ function flushScheduledProjectSave() {
                     Public info
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                  <label style={{ display: "grid", gap: 4, minWidth: 0, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8 }}>
+                  <label style={{ display: "grid", gap: 3, minWidth: 0, fontSize: 10, fontWeight: 700, color: "var(--text-muted)" }}>
                     Display Name
                     <input
                       value={profileDraft.display_name}
@@ -11084,9 +11406,9 @@ function flushScheduledProjectSave() {
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 8,
-                        padding: "6px 8px",
-                        minHeight: 32,
-                        fontSize: 12,
+                        padding: "5px 8px",
+                        minHeight: 30,
+                        fontSize: 11,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
@@ -11095,7 +11417,7 @@ function flushScheduledProjectSave() {
                       }}
                     />
                   </label>
-                  <label style={{ display: "grid", gap: 4, minWidth: 0, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                  <label style={{ display: "grid", gap: 3, minWidth: 0, fontSize: 10, fontWeight: 700, color: "var(--text-muted)" }}>
                     Username
                     <input
                       value={profileDraft.username}
@@ -11104,9 +11426,9 @@ function flushScheduledProjectSave() {
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 8,
-                        padding: "6px 8px",
-                        minHeight: 32,
-                        fontSize: 12,
+                        padding: "5px 8px",
+                        minHeight: 30,
+                        fontSize: 11,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
@@ -11116,7 +11438,7 @@ function flushScheduledProjectSave() {
                     />
                   </label>
                 </div>
-                <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                <label style={{ display: "grid", gap: 3, fontSize: 10, fontWeight: 700, color: "var(--text-muted)" }}>
                   Avatar URL
                   <input
                     value={profileDraft.avatar_url}
@@ -11128,9 +11450,9 @@ function flushScheduledProjectSave() {
                     style={{
                       border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                       borderRadius: 8,
-                      padding: "6px 8px",
-                      minHeight: 32,
-                      fontSize: 12,
+                      padding: "5px 8px",
+                      minHeight: 30,
+                      fontSize: 11,
                       background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                       color: "var(--text)",
                       boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
@@ -11157,10 +11479,10 @@ function flushScheduledProjectSave() {
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={{ fontWeight: 800, fontSize: 16 }}>Security</div>
+                  <div style={{ fontWeight: 800, fontSize: 14 }}>Security</div>
                   <div
                     style={{
-                      fontSize: 10,
+                      fontSize: 9,
                       color: "var(--text-muted)",
                       border: "1px solid var(--border)",
                       borderRadius: 999,
@@ -11171,8 +11493,8 @@ function flushScheduledProjectSave() {
                     Update password
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                  <label style={{ display: "grid", gap: 4, minWidth: 0, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 8 }}>
+                  <label style={{ display: "grid", gap: 3, minWidth: 0, fontSize: 10, fontWeight: 700, color: "var(--text-muted)" }}>
                     Current Password
                     <input
                       type="password"
@@ -11181,16 +11503,16 @@ function flushScheduledProjectSave() {
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 8,
-                        padding: "6px 8px",
-                        minHeight: 32,
-                        fontSize: 12,
+                        padding: "5px 8px",
+                        minHeight: 30,
+                        fontSize: 11,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
                       }}
                     />
                   </label>
-                  <label style={{ display: "grid", gap: 4, minWidth: 0, fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+                  <label style={{ display: "grid", gap: 3, minWidth: 0, fontSize: 10, fontWeight: 700, color: "var(--text-muted)" }}>
                     New Password
                     <input
                       type="password"
@@ -11199,9 +11521,9 @@ function flushScheduledProjectSave() {
                       style={{
                         border: "1px solid color-mix(in srgb, var(--border) 80%, white 20%)",
                         borderRadius: 8,
-                        padding: "6px 8px",
-                        minHeight: 32,
-                        fontSize: 12,
+                        padding: "5px 8px",
+                        minHeight: 30,
+                        fontSize: 11,
                         background: "color-mix(in srgb, var(--bg) 90%, var(--bg-elev) 10%)",
                         color: "var(--text)",
                         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
@@ -11218,9 +11540,9 @@ function flushScheduledProjectSave() {
                       color: "white",
                       borderRadius: 8,
                       padding: "6px 12px",
-                      minHeight: 32,
+                      minHeight: 30,
                       minWidth: 102,
-                      fontSize: 12,
+                      fontSize: 11,
                       cursor: "pointer",
                       fontWeight: 700,
                       boxShadow: "0 8px 16px rgba(43,108,255,0.32)",
@@ -11231,6 +11553,16 @@ function flushScheduledProjectSave() {
                 </div>
               </div>
 
+            </div>
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                padding: "12px 14px",
+                display: "grid",
+                gap: 10,
+              }}
+            >
               <div
                 style={{
                   width: "min(100%, 920px)",
@@ -11248,8 +11580,8 @@ function flushScheduledProjectSave() {
                 }}
               >
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 14, color: "#b42318" }}>Sign out</div>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>End your current session.</div>
+                  <div style={{ fontWeight: 700, fontSize: 12, color: "#b42318" }}>Sign out</div>
+                  <div style={{ fontSize: 10, color: "var(--text-muted)" }}>End your current session.</div>
                 </div>
                 <button
                   onClick={async () => {
@@ -11264,9 +11596,9 @@ function flushScheduledProjectSave() {
                     color: "white",
                     borderRadius: 8,
                     padding: "6px 10px",
-                    minHeight: 32,
+                    minHeight: 30,
                     minWidth: 86,
-                    fontSize: 11,
+                    fontSize: 10,
                     cursor: "pointer",
                     fontWeight: 700,
                     boxShadow: "0 8px 16px rgba(240,68,56,0.35)",
@@ -11275,60 +11607,27 @@ function flushScheduledProjectSave() {
                   Logout
                 </button>
               </div>
-            </div>
-            <div
-              style={{
-                borderTop: "1px solid var(--border)",
-                background: "var(--bg-elev)",
-                padding: "12px 14px",
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 8,
-              }}
-            >
-              {userSettingsEditing ? (
-                <button
-                  onClick={cancelUserSettingsEdit}
-                  style={{
-                    border: "1px solid var(--border)",
-                    background: "var(--bg)",
-                    color: "var(--text)",
-                    borderRadius: 8,
-                    padding: "8px 12px",
-                    minHeight: 34,
-                    minWidth: 92,
-                    fontSize: 12,
-                    cursor: "pointer",
-                    fontWeight: 700,
-                  }}
-                >
-                  Cancel
-                </button>
-              ) : null}
-              <button
-                onClick={() => {
-                  if (!userSettingsEditing) {
-                    beginUserSettingsEdit();
-                    return;
-                  }
-                  void saveUserSettingsEdit();
-                }}
-                style={{
-                  border: "1px solid #2f6dff",
-                  background: "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
-                  color: "white",
-                  borderRadius: 8,
-                  padding: "8px 12px",
-                  minHeight: 34,
-                  minWidth: 110,
-                  fontSize: 12,
-                  cursor: "pointer",
-                  fontWeight: 700,
-                  boxShadow: "0 8px 18px rgba(43,108,255,0.32)",
-                }}
-              >
-                {userSettingsEditing ? "Save" : "Edit"}
-              </button>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                {userSettingsEditing ? (
+                  <button
+                    onClick={cancelUserSettingsEdit}
+                    style={{
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text)",
+                      borderRadius: 8,
+                      padding: "8px 12px",
+                      minHeight: 32,
+                      minWidth: 92,
+                      fontSize: 11,
+                      cursor: "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
             </div>
             {!userDrawerFullscreen ? (
               <div
@@ -11376,6 +11675,8 @@ function flushScheduledProjectSave() {
               flexDirection: "column",
               borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
               color: "var(--text)",
+              fontSize: drawerTextSize,
+              lineHeight: drawerLineHeight,
               transform: "translate(0px, 0px)",
               animation: "drawer-slide-in-right 220ms ease-out",
             }}
@@ -11394,10 +11695,10 @@ function flushScheduledProjectSave() {
               }}
             >
               <div style={{ display: "grid", gap: 2 }}>
-                <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "0.02em" }}>
+                <div style={{ fontWeight: 800, fontSize: drawerTitleSize, letterSpacing: "0.02em" }}>
                   Security
                 </div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                <div style={{ fontSize: drawerSubtitleSize, color: "var(--text-muted)" }}>
                   Users, roles and access areas
                 </div>
               </div>
@@ -11481,19 +11782,20 @@ function flushScheduledProjectSave() {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          gap: 10,
           padding: "0 16px",
           backdropFilter: "blur(8px)",
         }}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: "1 1 auto" }}>
           <img
             src={appLogo}
             alt="Mesora"
-            style={{ height: 34, width: "auto", display: "block" }}
+            style={{ height: 34, width: "auto", display: "block", flex: "0 0 auto" }}
           />
-          <div style={{ width: 1, height: 18, background: "var(--border)" }} />
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 1, height: 18, background: "var(--border)", flex: "0 0 auto" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: "1 1 auto" }}>
             {showLiveIdentityChips ? (
               <>
                 <button
@@ -11505,7 +11807,7 @@ function flushScheduledProjectSave() {
                       : "Loading project..."
                   }
                   style={{
-                    maxWidth: 220,
+                    maxWidth: 200,
                     border: "1px solid var(--border)",
                     background: "var(--bg-elev)",
                     color: "var(--text)",
@@ -11518,6 +11820,7 @@ function flushScheduledProjectSave() {
                     textOverflow: "ellipsis",
                     cursor: "pointer",
                     outline: "none",
+                    flex: "0 0 auto",
                   }}
                 >
                   {projectIdentityReady ? activeProject?.name || projectName || "None" : "Loading..."}
@@ -11531,7 +11834,7 @@ function flushScheduledProjectSave() {
                       : "Loading screen..."
                   }
                   style={{
-                    maxWidth: 180,
+                    maxWidth: 160,
                     border: "1px solid var(--border)",
                     background: "var(--bg-elev)",
                     color: "var(--text)",
@@ -11542,6 +11845,7 @@ function flushScheduledProjectSave() {
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
+                    flex: "0 0 auto",
                   }}
                 >
                   {projectIdentityReady
@@ -11550,16 +11854,22 @@ function flushScheduledProjectSave() {
                 </div>
               </>
             ) : null}
-            {!isLiveMode ? (
+            {!isLiveMode && !showZoom ? (
               <>
                 <div style={{ width: 1, height: 20, background: "var(--border)", margin: "0 4px" }} />
                 <div
+                  className="vizi-scroll"
                   style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
-                    maxWidth: "44vw",
+                    minWidth: 0,
+                    flex: "1 1 auto",
                     overflowX: "auto",
+                    overflowY: "hidden",
+                    whiteSpace: "nowrap",
+                    scrollbarWidth: "thin",
+                    paddingBottom: 1,
                   }}
                 >
               <button title="Export SVG" style={topMenuIconButtonStyle} onClick={exportSVG}>
@@ -11712,6 +12022,7 @@ function flushScheduledProjectSave() {
           </div>
         </div>
         <TopBarRightControls
+          compact={winW > 0 && winW <= 1320}
           isLiveMode={isLiveMode}
           canViewArea={canViewArea}
           drawerView={drawerView}
@@ -11733,7 +12044,7 @@ function flushScheduledProjectSave() {
         hasLiveAlarms={hasLiveAlarms}
         theme={theme}
         top={TOP_BAR_H}
-        left={projectDrawerInsetPx}
+        left={0}
         height={LIVE_ALARM_BAR_H}
         alarmCount={liveActiveAlarmsWithOccurred.length}
         liveAlarmMarqueeViewportRef={liveAlarmMarqueeViewportRef}
@@ -11793,7 +12104,7 @@ function flushScheduledProjectSave() {
                       ? String(item?.dataTable || "").trim() === activeDatabaseTable
                       : true)
                   : String(item?.screenId || "") === String(activeScreenId);
-                const locked = !canAccessLiveMenuItem(item);
+                const locked = !canOpenLiveMenuItem(item);
                 const initials = label
                   .split(/\s+/)
                   .filter(Boolean)
@@ -11966,17 +12277,16 @@ function flushScheduledProjectSave() {
         <div
           style={{
             position: "fixed",
-            left: projectDrawerInsetPx,
-            top: TOP_BAR_H + liveAlarmBarOffset,
+            left: isLiveMode ? 0 : projectDrawerInsetPx,
+            top: leftDrawerTopPx,
             bottom: 0,
             width: liveMenuRailWidthPx,
             zIndex: 210,
-            border: "1px solid color-mix(in srgb, var(--border) 88%, #2b6cff 12%)",
-            borderRight: "1px solid color-mix(in srgb, var(--border) 92%, #2b6cff 8%)",
+            border: "1px solid var(--border)",
+            borderRight: "none",
             borderRadius: 0,
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 92%, #0b2448 8%) 0%, color-mix(in srgb, var(--bg) 90%, #040d1f 10%) 100%)",
-            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+            background: "var(--bg-elev)",
+            boxShadow: "0 12px 30px rgba(0,0,0,0.28)",
             backdropFilter: "blur(8px)",
             display: "flex",
             flexDirection: "column",
@@ -11985,42 +12295,41 @@ function flushScheduledProjectSave() {
             animation: "drawer-slide-in-left 220ms ease-out",
           }}
         >
-          {!isLiveMobile && liveMenuIsExpanded ? (
-            <div
-              onMouseDown={(e) => beginDrawerResize("liveMenu", e, false)}
-              title="Resize menu"
-              style={{
-                position: "absolute",
-                top: 0,
-                right: 0,
-                bottom: 0,
-                width: 8,
-                cursor: "ew-resize",
-                zIndex: 4,
-                display: "flex",
-                justifyContent: "center",
-              }}
-            >
-              <span
-                style={{
-                  width: 2,
-                  height: "100%",
-                  background: "color-mix(in srgb, var(--border) 76%, #2b6cff 24%)",
-                  opacity: 0.8,
-                }}
-              />
-            </div>
-          ) : null}
+          {null}
           <div
             style={{
-              padding: liveMenuIsExpanded ? (isLiveMobile ? "6px 8px" : "4px 8px") : "6px 8px",
-              minHeight: liveMenuIsExpanded ? (isLiveMobile ? 38 : 32) : (isLiveMobile ? 42 : 38),
+              padding: liveMenuIsExpanded ? (isLiveMobile ? "6px 8px" : "4px 8px") : "2px 8px",
+              minHeight: liveMenuIsExpanded ? (isLiveMobile ? 38 : 32) : (isLiveMobile ? 32 : 28),
               display: "flex",
               alignItems: "center",
-              justifyContent: liveMenuIsExpanded ? "flex-end" : "center",
+              justifyContent: liveMenuIsExpanded ? "space-between" : "center",
               gap: 4,
             }}
           >
+            {liveMenuIsExpanded ? (
+              <button
+                title={showZoom ? "Hide zoom controls" : "Show zoom controls"}
+                onClick={() => setShowZoom((v) => !v)}
+                style={{
+                  width: isLiveMobile ? 28 : 24,
+                  height: isLiveMobile ? 28 : 24,
+                  borderRadius: 7,
+                  border: "1px solid var(--border)",
+                  background: showZoom ? "var(--selected-bg)" : "transparent",
+                  color: showZoom ? "var(--selected-text)" : "var(--text)",
+                  display: "grid",
+                  placeItems: "center",
+                  cursor: "pointer",
+                  flex: "0 0 auto",
+                  padding: 0,
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                  <path d="M20 20l-4.2-4.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </button>
+            ) : null}
 	            <button
 	              onClick={() => setLiveMenuCollapsed((v) => !v)}
 	              title={liveMenuCollapsed ? "Expand menu" : "Collapse menu"}
@@ -12029,8 +12338,8 @@ function flushScheduledProjectSave() {
 	                width: isLiveMobile ? 32 : 28,
 	                height: isLiveMobile ? 32 : 28,
 	                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: "color-mix(in srgb, var(--bg-elev) 86%, #0f274d 14%)",
+                border: "none",
+                background: "transparent",
                 color: "var(--text)",
                 display: "grid",
                 placeItems: "center",
@@ -12059,7 +12368,7 @@ function flushScheduledProjectSave() {
 	              flex: "1 1 auto",
 	              minHeight: 0,
 	              overflow: "auto",
-	              padding: liveMenuIsExpanded ? (isLiveMobile ? 10 : 8) : 6,
+	              padding: liveMenuIsExpanded ? (isLiveMobile ? "8px 10px 10px" : "6px 8px 8px") : "0 6px 6px",
 	              display: "grid",
 	              alignContent: "start",
 	              gap: 6,
@@ -12067,11 +12376,22 @@ function flushScheduledProjectSave() {
             className="vizi-scroll"
           >
             {liveMenuGroupsVisible.some((group) => Array.isArray(group.items) && group.items.length) ? (
-              liveMenuGroupsVisible.map((group) => {
+              liveMenuGroupsVisible.map((group, groupIndex) => {
                 const groupCollapsed = collapsedLiveGroupIds.includes(String(group.id || ""));
                 const groupItemCount = Array.isArray(group.items) ? group.items.length : 0;
                 return (
-                <div key={`live-menu-group-${group.id}`} style={{ display: "grid", gap: 6 }}>
+                <div
+                  key={`live-menu-group-${group.id}`}
+                  style={{
+                    display: "grid",
+                    gap: 6,
+                    paddingTop: groupIndex === 0 ? 0 : 6,
+                    borderTop:
+                      groupIndex === 0
+                        ? "none"
+                        : "1px solid color-mix(in srgb, var(--border) 80%, transparent)",
+                  }}
+                >
                   {liveMenuIsExpanded ? (
 	                    <button
 	                      onClick={() => toggleLiveMenuGroupCollapse(group.id)}
@@ -12144,39 +12464,55 @@ function flushScheduledProjectSave() {
                       </span>
                     </button>
                   ) : (
-                    <div
-                      title={group.name || "Group"}
+                    <button
+                      onClick={() => toggleLiveMenuGroupCollapse(group.id)}
+                      title={`${groupCollapsed ? "Expand" : "Collapse"} group ${group.name || "Group"}`}
                       style={{
                         display: "grid",
                         justifyItems: "center",
-                        gap: 2,
-                        padding: "4px 0",
+                        gap: 3,
+                        padding: "4px 0 3px",
+                        width: "100%",
+                        border: "none",
+                        background: "transparent",
+                        cursor: "pointer",
                       }}
                     >
                       <span
                         style={{
-                          fontSize: 8,
-                          fontWeight: 900,
-                          letterSpacing: "0.1em",
-                          color: "color-mix(in srgb, var(--text-muted) 84%, #b7cbff 16%)",
-                          textTransform: "uppercase",
-                          lineHeight: 1,
-                          border: "1px solid color-mix(in srgb, var(--border) 82%, #2b6cff 18%)",
-                          borderRadius: 999,
-                          padding: "2px 6px",
-                          background: "color-mix(in srgb, var(--bg-elev) 86%, #0f274d 14%)",
+                          width: 16,
+                          height: 16,
+                          display: "grid",
+                          placeItems: "center",
+                          color: "color-mix(in srgb, var(--text-muted) 82%, #b7cbff 18%)",
+                          transform: groupCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                          transition: "transform 150ms ease",
                         }}
+                        aria-hidden="true"
                       >
-                        {(String(group.name || "GRP").trim().replace(/[^a-z0-9]/gi, "").slice(0, 3) || "GRP").toUpperCase()}
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+                          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
                       </span>
                       <span
                         style={{
-                          width: 30,
-                          height: 1,
-                          background: "color-mix(in srgb, var(--border) 84%, transparent)",
+                          fontSize: 9,
+                          fontWeight: 900,
+                          letterSpacing: "0.08em",
+                          color: "color-mix(in srgb, var(--text-muted) 62%, #c6d7ff 38%)",
+                          textTransform: "uppercase",
+                          lineHeight: 1,
                         }}
-                      />
-                    </div>
+                      >
+                        {String(group.name || "Group")
+                          .split(/\s+/)
+                          .filter(Boolean)
+                          .join(" ")
+                          .replace(/[^a-zA-Z0-9]/g, "")
+                          .slice(0, 3)
+                          .toUpperCase() || "GRP"}
+                      </span>
+                    </button>
                   )}
                   {!groupCollapsed && group.items.map((item) => {
                     const isData = item.type === "data";
@@ -12193,7 +12529,7 @@ function flushScheduledProjectSave() {
                           ? String(item.dataTable || "").trim() === activeDatabaseTable
                           : true)
                       : String(item.screenId || "") === String(activeScreenId);
-                    const locked = !canAccessLiveMenuItem(item);
+                    const locked = !canOpenLiveMenuItem(item);
                     const initials = label
                       .split(/\s+/)
                       .filter(Boolean)
@@ -12201,18 +12537,26 @@ function flushScheduledProjectSave() {
                       .replace(/[^a-zA-Z0-9]/g, "")
                       .slice(0, 3)
                       .toUpperCase() || (isData ? "DAT" : "SCR");
+                    const collapsedHover = !liveMenuIsExpanded && liveMenuHoverItemId === String(item.id || "");
                     return (
                       <button
                         key={`live-menu-item-${item.id}`}
                         onClick={locked ? undefined : () => activateLiveMenuItem(item)}
+                        onMouseEnter={() => {
+                          if (!liveMenuIsExpanded) setLiveMenuHoverItemId(String(item.id || ""));
+                        }}
+                        onMouseLeave={() => {
+                          if (!liveMenuIsExpanded) setLiveMenuHoverItemId("");
+                        }}
                         disabled={locked}
                         data-preserve-style="true"
 	                        style={{
-	                          width: "100%",
+	                          width: liveMenuIsExpanded ? "100%" : 36,
+                            justifySelf: liveMenuIsExpanded ? "stretch" : "center",
 	                          minHeight: liveMenuIsExpanded
-                              ? (isLiveMobile ? 38 : 30)
-                              : (isLiveMobile ? 42 : 38),
-	                          borderRadius: 10,
+                              ? (isLiveMobile ? 34 : 26)
+                              : 30,
+	                          borderRadius: liveMenuIsExpanded ? 10 : 10,
                           border: `1px solid ${
                             locked
                               ? "color-mix(in srgb, #f59e0b 55%, var(--border) 45%)"
@@ -12220,11 +12564,24 @@ function flushScheduledProjectSave() {
                               ? "var(--selected-border)"
                               : "var(--border)"
                           }`,
+                          ...(liveMenuIsExpanded
+                            ? null
+                            : {
+                                borderColor: active
+                                  ? "var(--selected-border)"
+                                  : collapsedHover
+                                  ? "color-mix(in srgb, var(--border) 72%, #2b6cff 28%)"
+                                  : "transparent",
+                              }),
                           background: active
                             ? isData
                               ? "var(--bg-elev)"
                               : "var(--selected-bg)"
-                            : "color-mix(in srgb, var(--bg) 88%, #0b1729 12%)",
+                            : liveMenuIsExpanded
+                            ? "color-mix(in srgb, var(--bg) 88%, #0b1729 12%)"
+                            : collapsedHover
+                            ? "color-mix(in srgb, var(--bg-elev) 90%, #0f274d 10%)"
+                            : "transparent",
                           color: active
                             ? isData
                               ? "var(--selected-border)"
@@ -12234,10 +12591,12 @@ function flushScheduledProjectSave() {
                             ? isData
                               ? "none"
                               : "var(--selected-shadow)"
+                            : collapsedHover
+                            ? "0 6px 14px rgba(2,8,23,0.18)"
                             : "none",
 	                          padding: liveMenuIsExpanded
-                              ? (isLiveMobile ? "8px 10px" : "5px 8px")
-                              : "6px 6px",
+                              ? (isLiveMobile ? "6px 9px" : "3px 7px")
+                              : 0,
 	                          fontSize: 11,
                           fontWeight: active ? 800 : 700,
                           textAlign: "left",
@@ -12247,32 +12606,61 @@ function flushScheduledProjectSave() {
                           gridTemplateColumns: liveMenuIsExpanded ? "22px 1fr auto" : "1fr",
                           alignItems: "center",
                           gap: liveMenuIsExpanded ? 8 : 0,
-                          transition: "background 120ms ease, border-color 120ms ease, color 120ms ease",
+                          position: "relative",
+                          transition: "background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease",
                         }}
                         title={locked ? `${label} (Locked)` : label}
                       >
                         <span
                           style={{
-                            width: liveMenuIsExpanded ? 22 : 36,
-                            height: liveMenuIsExpanded ? 18 : 24,
+                            width: liveMenuIsExpanded ? 22 : 30,
+                            height: liveMenuIsExpanded ? 18 : 22,
                             borderRadius: liveMenuIsExpanded ? 7 : 8,
-                            border: active
-                              ? "1px solid color-mix(in srgb, #ffffff 56%, var(--selected-border) 44%)"
-                              : "1px solid var(--border)",
+                            border: liveMenuIsExpanded
+                              ? active
+                                ? "1px solid color-mix(in srgb, #ffffff 56%, var(--selected-border) 44%)"
+                                : "1px solid var(--border)"
+                              : "none",
                             background: active
                               ? "rgba(255,255,255,0.2)"
-                              : "color-mix(in srgb, var(--bg-elev) 85%, transparent)",
+                              : liveMenuIsExpanded
+                              ? "color-mix(in srgb, var(--bg-elev) 85%, transparent)"
+                              : "transparent",
                             color: "inherit",
                             display: "grid",
                             placeItems: "center",
-                            fontSize: liveMenuIsExpanded ? 9 : 10,
+                            fontSize: liveMenuIsExpanded ? 9 : 11,
                             fontWeight: 900,
                             margin: liveMenuIsExpanded ? 0 : "0 auto",
-                            letterSpacing: liveMenuIsExpanded ? "0.02em" : "0.06em",
+                            letterSpacing: liveMenuIsExpanded ? "0.02em" : "0.08em",
                           }}
                         >
                           {initials}
                         </span>
+                        {!liveMenuIsExpanded && liveMenuHoverItemId === String(item.id || "") ? (
+                          <span
+                            aria-hidden="true"
+                            style={{
+                              position: "absolute",
+                              left: "calc(100% + 8px)",
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                              zIndex: 20,
+                              border: "1px solid color-mix(in srgb, var(--border) 80%, #2b6cff 20%)",
+                              background: "color-mix(in srgb, var(--bg-elev) 92%, #0b1c36 8%)",
+                              color: "var(--text)",
+                              borderRadius: 8,
+                              padding: "4px 8px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              whiteSpace: "nowrap",
+                              boxShadow: "0 8px 18px rgba(2,8,23,0.24)",
+                              pointerEvents: "none",
+                            }}
+                          >
+                            {locked ? `${label} (Locked)` : label}
+                          </span>
+                        ) : null}
                         {liveMenuIsExpanded ? (
                           <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {label}
@@ -12306,8 +12694,8 @@ function flushScheduledProjectSave() {
           ref={projectDrawerRef}
           style={{
             position: "fixed",
-            top: TOP_BAR_H,
-            left: 0,
+            top: leftDrawerTopPx,
+            left: projectDrawerLeftOffsetPx,
             right: projectDrawerFullscreen ? 0 : undefined,
             bottom: 0,
             width: projectDrawerFullscreen ? "auto" : `${Math.round(drawerSizes.project.w)}px`,
@@ -12318,6 +12706,8 @@ function flushScheduledProjectSave() {
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
+            fontSize: drawerTextSize,
+            lineHeight: drawerLineHeight,
             transform: "translate(0px, 0px)",
             animation: "drawer-slide-in-left 220ms ease-out",
           }}
@@ -12336,11 +12726,27 @@ function flushScheduledProjectSave() {
             }}
           >
             <div style={{ display: "grid" }}>
-              <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: "0.02em", color: "var(--text)" }}>
+              <div style={{ fontSize: drawerTitleSize, fontWeight: 800, letterSpacing: "0.02em", color: "var(--text)" }}>
                 Project
               </div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
+              {canEditProject && projectDrawerTab === "project" ? (
+                <button
+                  onClick={() => {
+                    if (!projectNameEditing) {
+                      beginProjectDrawerEdit();
+                      return;
+                    }
+                    void saveProjectNameFromSettings();
+                  }}
+                  style={drawerHeaderButtonStyle}
+                  title={projectNameEditing ? "Save Project Changes" : "Edit Project"}
+                  aria-label={projectNameEditing ? "Save Project Changes" : "Edit Project"}
+                >
+                  {projectNameEditing ? "✓" : "✎"}
+                </button>
+              ) : null}
               <button
                 onClick={() => setProjectDrawerFullscreen((v) => !v)}
                 style={drawerHeaderButtonStyle}
@@ -13167,7 +13573,7 @@ function flushScheduledProjectSave() {
                 background: "var(--bg-soft)",
               }}
             >
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                 <button
                   onClick={cancelProjectNameEditFromSettings}
                   disabled={!projectNameEditing}
@@ -13182,26 +13588,6 @@ function flushScheduledProjectSave() {
                 >
                   Cancel
                 </button>
-                <button
-                  onClick={() => {
-                    if (!projectNameEditing) {
-                      beginProjectDrawerEdit();
-                      return;
-                    }
-                    void saveProjectNameFromSettings();
-                  }}
-                  style={{
-                    ...topMenuTextButtonStyle,
-                    fontSize: 12,
-                    padding: "8px 10px",
-                    border: projectNameEditing ? "1px solid #2b6cff" : topMenuTextButtonStyle.border,
-                    background: projectNameEditing ? "#2b6cff" : topMenuTextButtonStyle.background,
-                    color: projectNameEditing ? "#ffffff" : topMenuTextButtonStyle.color,
-                  }}
-                  title={projectNameEditing ? "Save Project Changes" : "Edit Project"}
-                >
-                  {projectNameEditing ? "Save" : "Edit"}
-                </button>
               </div>
             </div>
           ) : null}
@@ -13214,7 +13600,7 @@ function flushScheduledProjectSave() {
             position: "fixed",
             top: isLiveMode && isLiveMobile ? TOP_BAR_H + liveAlarmBarOffset : undefined,
             left: isLiveMode && isLiveMobile ? projectDrawerInsetPx : undefined,
-            right: isLiveMode && isLiveMobile ? 0 : (isLiveMode ? 16 : 52),
+            right: isLiveMode && isLiveMobile ? 0 : (isLiveMode ? 8 : 20),
             bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 8 : 72,
             width: isLiveMode && isLiveMobile ? "auto" : 360,
             maxWidth: isLiveMode && isLiveMobile ? "none" : "calc(100vw - 24px)",
@@ -13367,7 +13753,7 @@ function flushScheduledProjectSave() {
           onClick={() => setShowTeamChat((v) => !v)}
           style={{
             position: "fixed",
-            right: isLiveMode ? 16 : 52,
+            right: isLiveMode ? 8 : 20,
             bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 10 : 16,
             width: 44,
             height: 44,

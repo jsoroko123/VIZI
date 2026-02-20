@@ -17,6 +17,11 @@ export default function WidgetSelectorModal({
   open,
   onClose,
   onPickWidget,
+  docked = false,
+  dockLeft = 0,
+  dockTop = 0,
+  dockBottom = 0,
+  dockWidth = 320,
 }) {
   const [query, setQuery] = useState("");
 
@@ -44,26 +49,41 @@ export default function WidgetSelectorModal({
     <div
       style={{
         position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.25)",
-        zIndex: 45,
-        display: "grid",
-        placeItems: "center",
-        padding: 16,
+        ...(docked
+          ? {
+              left: Math.max(0, Number(dockLeft) || 0),
+              top: Math.max(0, Number(dockTop) || 0),
+              bottom: Math.max(0, Number(dockBottom) || 0),
+              width: Math.max(240, Number(dockWidth) || 320),
+              zIndex: 118,
+              padding: 0,
+              pointerEvents: "auto",
+            }
+          : {
+              inset: 0,
+              background: "rgba(0,0,0,0.25)",
+              zIndex: 45,
+              display: "grid",
+              placeItems: "center",
+              padding: 16,
+            }),
       }}
-      onMouseDown={onClose}
+      onMouseDown={docked ? undefined : onClose}
     >
       <div
         style={{
-          width: "min(680px, 94vw)",
-          maxHeight: "min(620px, 86vh)",
+          width: docked ? "100%" : "min(680px, 94vw)",
+          height: docked ? "100%" : undefined,
+          maxHeight: docked ? "100%" : "min(620px, 86vh)",
           overflow: "auto",
           background: "var(--bg-elev)",
           border: "1px solid var(--border)",
-          borderRadius: 16,
-          boxShadow: "0 14px 50px rgba(0,0,0,0.22)",
+          borderRadius: docked ? 0 : 16,
+          boxShadow: docked ? "24px 0 40px rgba(0,0,0,0.28)" : "0 14px 50px rgba(0,0,0,0.22)",
+          overscrollBehavior: "contain",
         }}
         onMouseDown={(e) => e.stopPropagation()}
+        onWheel={(e) => e.stopPropagation()}
       >
         <div
           style={{
@@ -76,7 +96,7 @@ export default function WidgetSelectorModal({
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-            <div style={{ fontWeight: 800, color: "var(--text)" }}>Widget Selector</div>
+            <div style={{ fontWeight: 800, fontSize: 13, color: "var(--text)" }}>Widget Selector</div>
             <button
               onClick={onClose}
               style={{
@@ -85,6 +105,7 @@ export default function WidgetSelectorModal({
                 color: "var(--text)",
                 borderRadius: 10,
                 padding: "4px 8px",
+                fontSize: 11,
                 cursor: "pointer",
               }}
             >
@@ -102,8 +123,8 @@ export default function WidgetSelectorModal({
               background: "var(--bg-elev)",
               color: "var(--text)",
               borderRadius: 10,
-              padding: "8px 10px",
-              fontSize: 13,
+              padding: "7px 9px",
+              fontSize: 12,
               boxSizing: "border-box",
             }}
           />
@@ -111,11 +132,11 @@ export default function WidgetSelectorModal({
 
         <div style={{ padding: 16, display: "grid", gap: 12 }}>
           {grouped.length === 0 ? (
-            <div style={{ color: "var(--text-muted)", fontSize: 13 }}>No matching widgets.</div>
+            <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No matching widgets.</div>
           ) : (
             grouped.map((g) => (
               <div key={g.group} style={{ display: "grid", gap: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)" }}>{g.group}</div>
+                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)" }}>{g.group}</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 8 }}>
                   {g.items.map((w) => (
                     <button
@@ -127,14 +148,14 @@ export default function WidgetSelectorModal({
                         background: "var(--bg-elev)",
                         color: "var(--text)",
                         borderRadius: 12,
-                        padding: "10px 12px",
+                        padding: "8px 10px",
                         cursor: "pointer",
                         display: "grid",
                         gap: 4,
                       }}
                     >
-                      <div style={{ fontWeight: 700 }}>{w.name}</div>
-                      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{w.desc}</div>
+                      <div style={{ fontWeight: 700, fontSize: 12 }}>{w.name}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{w.desc}</div>
                     </button>
                   ))}
                 </div>

@@ -22,8 +22,24 @@ const TYPE_OPTIONS = [
 const FK_ACTIONS = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];
 const NEW_COLUMN_KEY = "__new_column__";
 
-function blankColumn() {
-  return { name: "", type: "text", nullable: true, defaultValue: "", primaryKey: false };
+function blankColumn(overrides = {}) {
+  return {
+    name: "",
+    type: "text",
+    nullable: true,
+    defaultValue: "",
+    primaryKey: false,
+    locked: false,
+    ...overrides,
+  };
+}
+
+function defaultNewTableColumns() {
+  return [
+    blankColumn({ name: "id", type: "bigint", nullable: false, primaryKey: true, locked: true }),
+    blankColumn({ name: "name", type: "text", nullable: false, primaryKey: false, locked: true }),
+    blankColumn({ name: "description", type: "text", nullable: false, primaryKey: false, locked: true }),
+  ];
 }
 
 function typeOptionsFor(currentType) {
@@ -43,7 +59,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
   const [foreignKeys, setForeignKeys] = useState({});
 
   const [newTableName, setNewTableName] = useState("");
-  const [newTableColumns, setNewTableColumns] = useState([blankColumn()]);
+  const [newTableColumns, setNewTableColumns] = useState(defaultNewTableColumns);
 
   const [renameTableTo, setRenameTableTo] = useState("");
   const [editingTableName, setEditingTableName] = useState(false);
@@ -102,6 +118,14 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
     color: "var(--text)",
     padding: "6px 8px",
     fontSize: 12,
+  };
+  const sectionHeaderStyle = {
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "var(--text-muted)",
+    marginBottom: 8,
   };
 
   const tableColumns = useMemo(
@@ -294,7 +318,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
     const data = await res.json();
     if (!res.ok) throw new Error(String(data?.error || "Failed to create table."));
     setNewTableName("");
-    setNewTableColumns([blankColumn()]);
+    setNewTableColumns(defaultNewTableColumns());
     if (payload.tableName) setSelectedTable(payload.tableName);
   }
 
@@ -475,7 +499,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
         <div style={{ fontSize: 16, fontWeight: 800 }}>SQL Designer</div>
         <button style={buttonStyle} onClick={loadTables}>Refresh</button>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: embedded ? "minmax(0, 1fr)" : "220px minmax(0, 1fr)", gap: 10, minHeight: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: embedded ? "minmax(0, 1fr)" : "200px minmax(0, 1fr)", gap: 10, minHeight: 0 }}>
         {!embedded ? (
           <div style={{ ...cardStyle, display: "grid", gap: 6, alignContent: "start", minHeight: 0 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
@@ -550,8 +574,18 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
               </div>
             </div>
           ) : null}
-          <div style={cardStyle}>
-            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Create Table</div>
+          <div
+            style={{
+              ...cardStyle,
+              borderLeft: "3px solid #2b6cff",
+              paddingLeft: 14,
+            }}
+          >
+            <div style={sectionHeaderStyle}>Create</div>
+            <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>Create Table</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10 }}>
+              Build a new table and define its initial columns.
+            </div>
             <div style={{ display: "grid", gap: 8 }}>
               <input
                 style={inputStyle}
@@ -560,18 +594,28 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                 onChange={(e) => setNewTableName(e.target.value)}
               />
               {newTableColumns.map((col, idx) => (
-                <div key={`new-col-${idx}`} style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr auto auto auto auto", gap: 6 }}>
+                <div
+                  key={`new-col-${idx}`}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                    gap: 6,
+                    alignItems: "center",
+                  }}
+                >
                   <input
-                    style={inputStyle}
+                    style={{ ...inputStyle, width: "100%" }}
                     value={col.name}
                     placeholder="column_name"
+                    disabled={col.locked}
                     onChange={(e) =>
                       setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, name: e.target.value } : r)))
                     }
                   />
                   <select
-                    style={inputStyle}
+                    style={{ ...inputStyle, width: "100%" }}
                     value={col.type}
+                    disabled={col.locked}
                     onChange={(e) =>
                       setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, type: e.target.value } : r)))
                     }
@@ -579,9 +623,10 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                     {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
                   </select>
                   <input
-                    style={inputStyle}
+                    style={{ ...inputStyle, width: "100%" }}
                     value={col.defaultValue}
                     placeholder="default"
+                    disabled={col.locked}
                     onChange={(e) =>
                       setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, defaultValue: e.target.value } : r)))
                     }
@@ -590,6 +635,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                     <input
                       type="checkbox"
                       checked={col.nullable}
+                      disabled={col.locked}
                       onChange={(e) =>
                         setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, nullable: e.target.checked } : r)))
                       }
@@ -600,6 +646,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                     <input
                       type="checkbox"
                       checked={col.primaryKey}
+                      disabled={col.locked}
                       onChange={(e) =>
                         setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, primaryKey: e.target.checked } : r)))
                       }
@@ -607,23 +654,34 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                     PK
                   </label>
                   <button
-                    style={buttonStyle}
+                    style={{ ...buttonStyle, width: "100%" }}
                     onClick={() => setNewTableColumns((prev) => prev.filter((_, i) => i !== idx))}
-                    disabled={newTableColumns.length <= 1}
+                    disabled={Boolean(col.locked) || newTableColumns.length <= 3}
                   >
                     Remove
                   </button>
                 </div>
               ))}
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button style={buttonStyle} onClick={() => setNewTableColumns((prev) => [...prev, blankColumn()])}>Add Column</button>
                 <button style={primaryButtonStyle} onClick={() => runAction(createTable, "Table created.")}>Create Table</button>
               </div>
             </div>
           </div>
 
-          <div style={cardStyle}>
-            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Update Table</div>
+          <div
+            style={{
+              ...cardStyle,
+              borderLeft: "3px solid var(--border)",
+              paddingLeft: 14,
+              marginTop: 4,
+            }}
+          >
+            <div style={sectionHeaderStyle}>Edit</div>
+            <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>Update Table</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10 }}>
+              Rename or modify the selected table schema.
+            </div>
             <div style={{ display: "grid", gap: 8 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6 }}>
                 <input
@@ -644,7 +702,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
 
           <div style={cardStyle}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>Connect Tables (Foreign Key)</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 1fr auto", gap: 6 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 6 }}>
               <select
                 style={inputStyle}
                 value={fkDraft.fromTable}
@@ -691,13 +749,13 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
               >
                 {FK_ACTIONS.map((a) => <option key={`upd-${a}`} value={a}>{`ON UPDATE ${a}`}</option>)}
               </select>
-              <button style={primaryButtonStyle} onClick={() => runAction(connectTables, "Relationship created.")}>
+              <button style={{ ...primaryButtonStyle, width: "100%" }} onClick={() => runAction(connectTables, "Relationship created.")}>
                 Connect
               </button>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, marginTop: 6 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 6, marginTop: 6 }}>
               <input
-                style={inputStyle}
+                style={{ ...inputStyle, width: "100%" }}
                 value={fkDraft.constraintName}
                 placeholder="constraint_name (optional)"
                 onChange={(e) => setFkDraft((prev) => ({ ...prev, constraintName: e.target.value }))}
@@ -723,9 +781,9 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
           </div>
 
           <div style={cardStyle}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
               <div style={{ fontSize: 13, fontWeight: 800 }}>Selected Table Schema (Inline Editable)</div>
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button
                   style={!selectedTable || editingAllColumns ? { ...buttonStyle, ...disabledButtonStyle } : buttonStyle}
                   onClick={() => setEditingAllColumns(true)}

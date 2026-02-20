@@ -4,6 +4,7 @@ import path from "path";
 import express from "express";
 import cors from "cors";
 import process from "process";
+import os from "os";
 import OpenAI from "openai";
 import pkg from "pg";
 import crypto from "node:crypto";
@@ -192,6 +193,15 @@ let pool = null;
 
 const SESSION_COOKIE = "vizi_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MS_OAUTH_STATE_COOKIE = "vizi_ms_oauth_state";
+const MS_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const MS_OAUTH_TENANT = String(process.env.MS_OAUTH_TENANT || "common").trim() || "common";
+const MS_OAUTH_CLIENT_ID = String(process.env.MS_OAUTH_CLIENT_ID || "").trim();
+const MS_OAUTH_CLIENT_SECRET = String(process.env.MS_OAUTH_CLIENT_SECRET || "");
+const MS_OAUTH_REDIRECT_URI = String(process.env.MS_OAUTH_REDIRECT_URI || "").trim();
+const MS_OAUTH_SCOPES = String(process.env.MS_OAUTH_SCOPES || "openid profile email User.Read")
+  .trim()
+  .replace(/\s+/g, " ");
 const SECURITY_AREA_KEYS = [
   "project",
   "plc",
@@ -222,10 +232,28 @@ const OPC_TREND_RETENTION_MS = Math.max(
   Number.parseInt(process.env.OPC_TREND_RETENTION_MS || `${7 * 24 * 60 * 60 * 1000}`, 10) ||
     7 * 24 * 60 * 60 * 1000
 );
+const PROJECT_VERSION_KEEP_PER_PROJECT = Math.max(
+  25,
+  Number.parseInt(process.env.PROJECT_VERSION_KEEP_PER_PROJECT || "250", 10) || 250
+);
+const PROJECT_VERSION_MIN_INTERVAL_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.PROJECT_VERSION_MIN_INTERVAL_MS || "12000", 10) || 12000
+);
+const PROJECT_VERSION_MAINTENANCE_MS = Math.max(
+  30000,
+  Number.parseInt(process.env.PROJECT_VERSION_MAINTENANCE_MS || "300000", 10) || 300000
+);
+const PROJECT_VERSION_COMPACT_BATCH = Math.max(
+  1,
+  Number.parseInt(process.env.PROJECT_VERSION_COMPACT_BATCH || "12", 10) || 12
+);
+const PROJECT_VERSION_CODEC = "json-gzip-v1";
 const TREND_CODEC = "json-gzip-v1";
 const trendBuffers = new Map();
 let trendLastCleanupAt = 0;
 let trendTagConfigCache = { loadedAt: 0, map: null };
+let projectVersionMaintenanceInFlight = false;
 const DEFAULT_OPC_CONFIG = {
   plcs: [],
   opcua: { port: 4840, resourcePath: "/UA/ControlLogix", name: "ControlLogix" },
@@ -1420,6 +1448,125 @@ async function verifyPassword(password, salt, hash) {
   return crypto.timingSafeEqual(Buffer.from(next, "hex"), Buffer.from(hash, "hex"));
 }
 
+function getPublicBaseUrl(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http")
+    .split(",")[0]
+    .trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  if (!host) return "";
+  return `${proto}://${host}`;
+}
+
+function getMicrosoftRedirectUri(req) {
+  if (MS_OAUTH_REDIRECT_URI) return MS_OAUTH_REDIRECT_URI;
+  const base = getPublicBaseUrl(req);
+  return base ? `${base}/api/auth/microsoft/callback` : "";
+}
+
+function isMicrosoftAuthConfigured() {
+  return !!(MS_OAUTH_CLIENT_ID && MS_OAUTH_CLIENT_SECRET);
+}
+
+function setSessionCookie(res, token, ttlMs = SESSION_TTL_MS) {
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(
+      ttlMs / 1000
+    )}`
+  );
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+}
+
+function appendSetCookie(res, cookieValue) {
+  const current = res.getHeader("Set-Cookie");
+  if (!current) {
+    res.setHeader("Set-Cookie", [cookieValue]);
+    return;
+  }
+  const list = Array.isArray(current) ? current.slice() : [String(current)];
+  list.push(cookieValue);
+  res.setHeader("Set-Cookie", list);
+}
+
+async function issueUserSession(res, userId) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const tokenHash = hashToken(token);
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  await pool.query(
+    "INSERT INTO user_sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
+    [userId, tokenHash, expiresAt]
+  );
+  setSessionCookie(res, token, SESSION_TTL_MS);
+}
+
+async function assignDefaultRoleForNewUser(userId) {
+  try {
+    const { rows: existingRoles } = await pool.query("SELECT COUNT(*)::int AS count FROM user_roles");
+    if (Number(existingRoles?.[0]?.count || 0) === 0) {
+      const { rows: adminRoleRows } = await pool.query(
+        "SELECT id FROM roles WHERE lower(name) = 'administrator' LIMIT 1"
+      );
+      if (adminRoleRows.length) {
+        await pool.query(
+          `
+          INSERT INTO user_roles (user_id, role_id)
+          VALUES ($1, $2)
+          ON CONFLICT (user_id, role_id) DO NOTHING
+          `,
+          [userId, adminRoleRows[0].id]
+        );
+      }
+    } else {
+      const { rows: userRoleRows } = await pool.query(
+        "SELECT id FROM roles WHERE lower(name) = 'user' LIMIT 1"
+      );
+      if (userRoleRows.length) {
+        await pool.query(
+          `
+          INSERT INTO user_roles (user_id, role_id)
+          VALUES ($1, $2)
+          ON CONFLICT (user_id, role_id) DO NOTHING
+          `,
+          [userId, userRoleRows[0].id]
+        );
+      }
+    }
+  } catch {
+    // keep auth successful even if role assignment fails
+  }
+}
+
+function normalizeMicrosoftUsernameBase(profile = {}) {
+  const email = String(profile?.email || "").trim();
+  const preferred = String(profile?.preferred_username || "").trim();
+  const displayName = String(profile?.name || "").trim();
+  const source = email || preferred || displayName || "ms_user";
+  const local = source.includes("@") ? source.split("@")[0] : source;
+  const normalized = local
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const base = normalized || "ms_user";
+  return base.slice(0, 24);
+}
+
+async function findAvailableUsername(base) {
+  const root = String(base || "ms_user").trim() || "ms_user";
+  for (let i = 0; i < 1000; i += 1) {
+    const candidate = i === 0 ? root : `${root}_${i}`;
+    const value = candidate.slice(0, 32);
+    const { rows } = await pool.query(
+      "SELECT 1 FROM users WHERE lower(username) = lower($1) LIMIT 1",
+      [value]
+    );
+    if (!rows.length) return value;
+  }
+  return `ms_${crypto.randomBytes(6).toString("hex")}`.slice(0, 32);
+}
+
 function normalizePermissionRows(input) {
   const rows = Array.isArray(input) ? input : [];
   const byArea = new Map();
@@ -2420,6 +2567,185 @@ app.get("/api/auth/me", async (req, res) => {
   }
 });
 
+app.get("/api/auth/providers", async (_req, res) => {
+  res.json({
+    providers: {
+      microsoft: {
+        enabled: isMicrosoftAuthConfigured(),
+      },
+    },
+  });
+});
+
+app.get("/api/auth/microsoft/start", async (req, res) => {
+  try {
+    if (!isMicrosoftAuthConfigured()) {
+      res.redirect("/login?error=" + encodeURIComponent("Microsoft login is not configured."));
+      return;
+    }
+    const redirectUri = getMicrosoftRedirectUri(req);
+    if (!redirectUri) {
+      res.redirect("/login?error=" + encodeURIComponent("Unable to resolve OAuth redirect URL."));
+      return;
+    }
+    const state = crypto.randomBytes(24).toString("hex");
+    appendSetCookie(
+      res,
+      `${MS_OAUTH_STATE_COOKIE}=${state}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(
+        MS_OAUTH_STATE_TTL_MS / 1000
+      )}`
+    );
+    const authUrl = new URL(
+      `https://login.microsoftonline.com/${encodeURIComponent(MS_OAUTH_TENANT)}/oauth2/v2.0/authorize`
+    );
+    authUrl.searchParams.set("client_id", MS_OAUTH_CLIENT_ID);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_mode", "query");
+    authUrl.searchParams.set("scope", MS_OAUTH_SCOPES);
+    authUrl.searchParams.set("state", state);
+    res.redirect(authUrl.toString());
+  } catch (err) {
+    res.redirect("/login?error=" + encodeURIComponent(err?.message || "Microsoft login failed to start."));
+  }
+});
+
+app.get("/api/auth/microsoft/callback", async (req, res) => {
+  try {
+    if (!isMicrosoftAuthConfigured()) {
+      res.redirect("/login?error=" + encodeURIComponent("Microsoft login is not configured."));
+      return;
+    }
+    const oauthError = String(req.query?.error || "").trim();
+    if (oauthError) {
+      const desc = String(req.query?.error_description || oauthError).trim();
+      res.redirect("/login?error=" + encodeURIComponent(desc));
+      return;
+    }
+    const code = String(req.query?.code || "").trim();
+    const state = String(req.query?.state || "").trim();
+    const cookies = parseCookies(req.headers.cookie || "");
+    const expectedState = String(cookies[MS_OAUTH_STATE_COOKIE] || "").trim();
+    appendSetCookie(res, `${MS_OAUTH_STATE_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+    if (!code || !state || !expectedState || state !== expectedState) {
+      res.redirect("/login?error=" + encodeURIComponent("OAuth state validation failed."));
+      return;
+    }
+    const redirectUri = getMicrosoftRedirectUri(req);
+    const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(
+      MS_OAUTH_TENANT
+    )}/oauth2/v2.0/token`;
+    const tokenBody = new URLSearchParams();
+    tokenBody.set("client_id", MS_OAUTH_CLIENT_ID);
+    tokenBody.set("client_secret", MS_OAUTH_CLIENT_SECRET);
+    tokenBody.set("grant_type", "authorization_code");
+    tokenBody.set("code", code);
+    tokenBody.set("redirect_uri", redirectUri);
+    tokenBody.set("scope", MS_OAUTH_SCOPES);
+    const tokenRes = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: tokenBody.toString(),
+    });
+    const tokenJson = await tokenRes.json().catch(() => ({}));
+    if (!tokenRes.ok) {
+      throw new Error(String(tokenJson?.error_description || tokenJson?.error || "Token exchange failed."));
+    }
+    let profile = {};
+    const accessToken = String(tokenJson?.access_token || "").trim();
+    if (accessToken) {
+      const userInfoRes = await fetch("https://graph.microsoft.com/oidc/userinfo", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (userInfoRes.ok) {
+        profile = (await userInfoRes.json().catch(() => ({}))) || {};
+      }
+    }
+    if ((!profile || !Object.keys(profile).length) && tokenJson?.id_token) {
+      const parts = String(tokenJson.id_token).split(".");
+      if (parts.length >= 2) {
+        const payload = Buffer.from(parts[1], "base64url").toString("utf8");
+        profile = JSON.parse(payload || "{}");
+      }
+    }
+    const externalSubject = String(profile?.sub || profile?.oid || "").trim();
+    if (!externalSubject) throw new Error("Microsoft profile missing subject identifier.");
+    const email = String(
+      profile?.email || profile?.preferred_username || profile?.upn || profile?.unique_name || ""
+    ).trim();
+    const displayName = String(profile?.name || email || "Microsoft User").trim();
+    const avatarUrl = "";
+
+    let userRow = null;
+    {
+      const byExternal = await pool.query(
+        `
+        SELECT id, username, display_name, avatar_url
+        FROM users
+        WHERE external_provider = 'microsoft' AND external_subject = $1
+        LIMIT 1
+        `,
+        [externalSubject]
+      );
+      userRow = byExternal.rows[0] || null;
+    }
+    if (!userRow && email) {
+      const byEmail = await pool.query(
+        `
+        SELECT id, username, display_name, avatar_url
+        FROM users
+        WHERE lower(email) = lower($1)
+        LIMIT 1
+        `,
+        [email]
+      );
+      userRow = byEmail.rows[0] || null;
+      if (userRow) {
+        await pool.query(
+          `
+          UPDATE users
+          SET
+            external_provider = 'microsoft',
+            external_subject = $2,
+            display_name = COALESCE(NULLIF($3, ''), display_name),
+            avatar_url = COALESCE(NULLIF($4, ''), avatar_url),
+            email = COALESCE(NULLIF($1, ''), email)
+          WHERE id = $5
+          `,
+          [email, externalSubject, displayName, avatarUrl, userRow.id]
+        );
+      }
+    }
+    if (!userRow) {
+      const usernameBase = normalizeMicrosoftUsernameBase({
+        email,
+        preferred_username: profile?.preferred_username,
+        name: displayName,
+      });
+      const username = await findAvailableUsername(usernameBase);
+      const randomSecret = crypto.randomBytes(24).toString("hex");
+      const { salt, hash } = await createPasswordHash(randomSecret);
+      const insert = await pool.query(
+        `
+        INSERT INTO users (
+          username, password_hash, password_salt, display_name, avatar_url, email, external_provider, external_subject, disabled
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, 'microsoft', $7, false)
+        RETURNING id, username, display_name, avatar_url
+        `,
+        [username, hash, salt, displayName || username, avatarUrl || null, email || null, externalSubject]
+      );
+      userRow = insert.rows[0] || null;
+      if (userRow?.id) await assignDefaultRoleForNewUser(userRow.id);
+    }
+    if (!userRow?.id) throw new Error("Failed to create or locate Microsoft user.");
+    await issueUserSession(res, userRow.id);
+    res.redirect("/");
+  } catch (err) {
+    res.redirect("/login?error=" + encodeURIComponent(err?.message || "Microsoft login failed."));
+  }
+});
+
 app.post("/api/auth/login", async (req, res) => {
   try {
     const username = String(req.body?.username || "").trim();
@@ -2450,19 +2776,7 @@ app.post("/api/auth/login", async (req, res) => {
       res.status(401).json({ error: "Invalid credentials." });
       return;
     }
-    const token = crypto.randomBytes(32).toString("hex");
-    const tokenHash = hashToken(token);
-    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    await pool.query(
-      "INSERT INTO user_sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)",
-      [user.id, tokenHash, expiresAt]
-    );
-    res.setHeader(
-      "Set-Cookie",
-      `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(
-        SESSION_TTL_MS / 1000
-      )}`
-    );
+    await issueUserSession(res, user.id);
     const access = await getUserAccess(user.id);
     res.json({
       user: {
@@ -2486,10 +2800,7 @@ app.post("/api/auth/logout", async (req, res) => {
     if (token) {
       await pool.query("DELETE FROM user_sessions WHERE token_hash = $1", [hashToken(token)]);
     }
-    res.setHeader(
-      "Set-Cookie",
-      `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`
-    );
+    clearSessionCookie(res);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Logout failed." });
@@ -2534,40 +2845,7 @@ app.post("/api/auth/register", async (req, res) => {
       res.status(409).json({ error: "Username already exists." });
       return;
     }
-    try {
-      const { rows: existingRoles } = await pool.query("SELECT COUNT(*)::int AS count FROM user_roles");
-      if (Number(existingRoles?.[0]?.count || 0) === 0) {
-        const { rows: adminRoleRows } = await pool.query(
-          "SELECT id FROM roles WHERE lower(name) = 'administrator' LIMIT 1"
-        );
-        if (adminRoleRows.length) {
-          await pool.query(
-            `
-            INSERT INTO user_roles (user_id, role_id)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id, role_id) DO NOTHING
-            `,
-            [user.id, adminRoleRows[0].id]
-          );
-        }
-      } else {
-        const { rows: userRoleRows } = await pool.query(
-          "SELECT id FROM roles WHERE lower(name) = 'user' LIMIT 1"
-        );
-        if (userRoleRows.length) {
-          await pool.query(
-            `
-            INSERT INTO user_roles (user_id, role_id)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id, role_id) DO NOTHING
-            `,
-            [user.id, userRoleRows[0].id]
-          );
-        }
-      }
-    } catch {
-      // keep registration successful even if role assignment fails
-    }
+    await assignDefaultRoleForNewUser(user.id);
     const access = await getUserAccess(user.id);
     res.json({ user: { ...user, roles: access.roles, permissions: access.permissions } });
   } catch (err) {
@@ -3192,6 +3470,243 @@ function parseTimestampMs(value) {
   return Number.isFinite(ms) ? ms : null;
 }
 
+function jsonString(value) {
+  try {
+    return JSON.stringify(value == null ? {} : value);
+  } catch {
+    return "{}";
+  }
+}
+
+function hashJsonText(text) {
+  return crypto.createHash("sha256").update(String(text || "{}")).digest("hex");
+}
+
+function summarizeProjectChange(previousData, nextData, previousJson = "", nextJson = "") {
+  const prev = previousData && typeof previousData === "object" ? previousData : {};
+  const next = nextData && typeof nextData === "object" ? nextData : {};
+  const prevKeys = new Set(Object.keys(prev));
+  const nextKeys = new Set(Object.keys(next));
+  let added = 0;
+  let removed = 0;
+  let changed = 0;
+  const sample = [];
+
+  for (const key of nextKeys) {
+    if (!prevKeys.has(key)) {
+      added += 1;
+      if (sample.length < 24) sample.push({ key, change: "added" });
+      continue;
+    }
+    const before = jsonString(prev[key]);
+    const after = jsonString(next[key]);
+    if (before !== after) {
+      changed += 1;
+      if (sample.length < 24) sample.push({ key, change: "changed" });
+    }
+  }
+
+  for (const key of prevKeys) {
+    if (!nextKeys.has(key)) {
+      removed += 1;
+      if (sample.length < 24) sample.push({ key, change: "removed" });
+    }
+  }
+
+  return {
+    added,
+    removed,
+    changed,
+    topLevelBefore: prevKeys.size,
+    topLevelAfter: nextKeys.size,
+    previousBytes: Buffer.byteLength(previousJson || "", "utf8"),
+    nextBytes: Buffer.byteLength(nextJson || "", "utf8"),
+    sample,
+  };
+}
+
+async function pruneProjectVersions(projectId) {
+  const pid = String(projectId || "").trim();
+  if (!pid || !pool) return 0;
+  const { rowCount } = await pool.query(
+    `
+    WITH keep AS (
+      SELECT id
+      FROM project_versions
+      WHERE project_id = $1
+      ORDER BY saved_at DESC, id DESC
+      LIMIT $2
+    )
+    DELETE FROM project_versions pv
+    WHERE pv.project_id = $1
+      AND NOT EXISTS (SELECT 1 FROM keep k WHERE k.id = pv.id)
+    `,
+    [pid, PROJECT_VERSION_KEEP_PER_PROJECT]
+  );
+  return Number(rowCount || 0);
+}
+
+async function saveProjectVersion({
+  projectId,
+  userId = null,
+  baseUpdatedAtIso = null,
+  previousData = {},
+  nextData = {},
+}) {
+  const pid = String(projectId || "").trim();
+  if (!pid || !pool) return { mode: "skip", reason: "invalid_project" };
+
+  const previousJson = jsonString(previousData);
+  const nextJson = jsonString(nextData);
+  if (previousJson === nextJson) {
+    return { mode: "skip", reason: "no_change" };
+  }
+
+  const previousGzip = gzipSync(Buffer.from(previousJson, "utf8"));
+  const nextGzip = gzipSync(Buffer.from(nextJson, "utf8"));
+  const nextHash = hashJsonText(nextJson);
+  const summary = summarizeProjectChange(previousData, nextData, previousJson, nextJson);
+  const nowMs = Date.now();
+
+  const { rows: latestRows } = await pool.query(
+    `
+    SELECT id, saved_at, next_hash
+    FROM project_versions
+    WHERE project_id = $1
+    ORDER BY saved_at DESC, id DESC
+    LIMIT 1
+    `,
+    [pid]
+  );
+  const latest = latestRows[0] || null;
+  const latestSavedMs = latest?.saved_at ? Date.parse(String(latest.saved_at)) : NaN;
+
+  if (latest && String(latest.next_hash || "") === nextHash) {
+    return { mode: "skip", reason: "duplicate_hash" };
+  }
+
+  if (
+    latest &&
+    Number.isFinite(latestSavedMs) &&
+    nowMs - latestSavedMs < PROJECT_VERSION_MIN_INTERVAL_MS
+  ) {
+    await pool.query(
+      `
+      UPDATE project_versions
+      SET saved_at = now(),
+          saved_by = $2,
+          base_updated_at = $3,
+          previous_data = '{}'::jsonb,
+          next_data = '{}'::jsonb,
+          previous_data_gz = $4,
+          next_data_gz = $5,
+          payload_codec = $6,
+          next_hash = $7,
+          change_summary = $8::jsonb
+      WHERE id = $1
+      `,
+      [
+        latest.id,
+        userId,
+        baseUpdatedAtIso || null,
+        previousGzip,
+        nextGzip,
+        PROJECT_VERSION_CODEC,
+        nextHash,
+        JSON.stringify(summary),
+      ]
+    );
+    await pruneProjectVersions(pid);
+    return { mode: "updated_latest", reason: "debounced" };
+  }
+
+  await pool.query(
+    `
+    INSERT INTO project_versions (
+      project_id, saved_by, base_updated_at,
+      previous_data, next_data,
+      previous_data_gz, next_data_gz,
+      payload_codec, next_hash, change_summary
+    )
+    VALUES ($1, $2, $3, '{}'::jsonb, '{}'::jsonb, $4, $5, $6, $7, $8::jsonb)
+    `,
+    [
+      pid,
+      userId,
+      baseUpdatedAtIso || null,
+      previousGzip,
+      nextGzip,
+      PROJECT_VERSION_CODEC,
+      nextHash,
+      JSON.stringify(summary),
+    ]
+  );
+  await pruneProjectVersions(pid);
+  return { mode: "inserted", reason: "ok" };
+}
+
+async function runProjectVersionMaintenance() {
+  if (!pool || projectVersionMaintenanceInFlight) return;
+  projectVersionMaintenanceInFlight = true;
+  try {
+    const { rows: staleRows } = await pool.query(
+      `
+      SELECT id, previous_data, next_data
+      FROM project_versions
+      WHERE (payload_codec IS NULL OR payload_codec <> $1)
+        AND (previous_data_gz IS NULL OR next_data_gz IS NULL)
+      ORDER BY saved_at ASC, id ASC
+      LIMIT $2
+      `,
+      [PROJECT_VERSION_CODEC, PROJECT_VERSION_COMPACT_BATCH]
+    );
+
+    for (const row of staleRows) {
+      const previousJson = jsonString(row?.previous_data || {});
+      const nextJson = jsonString(row?.next_data || {});
+      const previousGzip = gzipSync(Buffer.from(previousJson, "utf8"));
+      const nextGzip = gzipSync(Buffer.from(nextJson, "utf8"));
+      const nextHash = hashJsonText(nextJson);
+      const summary = summarizeProjectChange(row?.previous_data || {}, row?.next_data || {}, previousJson, nextJson);
+      await pool.query(
+        `
+        UPDATE project_versions
+        SET previous_data_gz = $2,
+            next_data_gz = $3,
+            payload_codec = $4,
+            next_hash = COALESCE(next_hash, $5),
+            change_summary = CASE
+              WHEN change_summary IS NULL THEN $6::jsonb
+              ELSE change_summary
+            END,
+            previous_data = '{}'::jsonb,
+            next_data = '{}'::jsonb
+        WHERE id = $1
+        `,
+        [row.id, previousGzip, nextGzip, PROJECT_VERSION_CODEC, nextHash, JSON.stringify(summary)]
+      );
+    }
+
+    const { rows: projectRows } = await pool.query(
+      `
+      SELECT DISTINCT project_id
+      FROM project_versions
+      ORDER BY project_id
+      LIMIT 200
+      `
+    );
+    for (const row of projectRows) {
+      const pid = String(row?.project_id || "").trim();
+      if (!pid) continue;
+      await pruneProjectVersions(pid);
+    }
+  } catch {
+    // ignore maintenance errors
+  } finally {
+    projectVersionMaintenanceInFlight = false;
+  }
+}
+
 const PROJECT_CURSOR_TTL_MS = 10_000;
 const projectCursorPresence = new Map();
 
@@ -3638,21 +4153,13 @@ app.post("/api/projects", async (req, res) => {
       );
       const saved = rows[0] || null;
       if (saved) {
-        await pool.query(
-          `
-          INSERT INTO project_versions (
-            project_id, saved_by, base_updated_at, previous_data, next_data
-          )
-          VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
-          `,
-          [
-            saved.id,
-            userId,
-            hasBaseUpdatedAt ? new Date(baseUpdatedAtMs).toISOString() : null,
-            JSON.stringify(existing?.data || {}),
-            JSON.stringify(saved?.data || {}),
-          ]
-        );
+        await saveProjectVersion({
+          projectId: saved.id,
+          userId,
+          baseUpdatedAtIso: hasBaseUpdatedAt ? new Date(baseUpdatedAtMs).toISOString() : null,
+          previousData: existing?.data || {},
+          nextData: saved?.data || {},
+        });
       }
       res.json({ project: rows[0] });
       return;
@@ -3709,21 +4216,13 @@ app.post("/api/projects", async (req, res) => {
     );
     const saved = rows[0] || null;
     if (saved) {
-      await pool.query(
-        `
-        INSERT INTO project_versions (
-          project_id, saved_by, base_updated_at, previous_data, next_data
-        )
-        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
-        `,
-        [
-          saved.id,
-          userId,
-          hasBaseUpdatedAt ? new Date(baseUpdatedAtMs).toISOString() : null,
-          JSON.stringify(existing?.data || {}),
-          JSON.stringify(saved?.data || {}),
-        ]
-      );
+      await saveProjectVersion({
+        projectId: saved.id,
+        userId,
+        baseUpdatedAtIso: hasBaseUpdatedAt ? new Date(baseUpdatedAtMs).toISOString() : null,
+        previousData: existing?.data || {},
+        nextData: saved?.data || {},
+      });
     }
     res.json({ project: saved });
   } catch (err) {
@@ -4691,6 +5190,240 @@ app.get("/api/db/config", async (_req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load database config." });
+  }
+});
+
+app.get("/api/db/diagnostics/postgres", async (_req, res) => {
+  try {
+    if (!pool) {
+      res.status(500).json({ error: "Database pool is not initialized." });
+      return;
+    }
+
+    const safeQuery = async (sql, params = []) => {
+      try {
+        return await pool.query(sql, params);
+      } catch (_err) {
+        return { rows: [] };
+      }
+    };
+
+    const [settingsRes, activityRes, dbStatRes, sizeRes, bgwriterRes, walRes, locksRes, uptimeRes] = await Promise.all([
+      safeQuery(
+        `
+        SELECT name, setting, unit
+        FROM pg_settings
+        WHERE name = ANY($1::text[])
+      `,
+        [[
+          "shared_buffers",
+          "work_mem",
+          "maintenance_work_mem",
+          "effective_cache_size",
+          "temp_buffers",
+          "max_connections",
+          "max_worker_processes",
+          "max_parallel_workers",
+          "max_parallel_workers_per_gather",
+          "max_parallel_maintenance_workers",
+        ]]
+      ),
+      safeQuery(`
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE state = 'active')::int AS active,
+          COUNT(*) FILTER (WHERE state = 'idle')::int AS idle,
+          COUNT(*) FILTER (WHERE wait_event IS NOT NULL)::int AS waiting
+        FROM pg_stat_activity
+        WHERE datname = current_database()
+      `),
+      safeQuery(`
+        SELECT
+          blks_hit::bigint,
+          blks_read::bigint,
+          temp_files::bigint,
+          temp_bytes::bigint,
+          xact_commit::bigint,
+          xact_rollback::bigint,
+          deadlocks::bigint
+        FROM pg_stat_database
+        WHERE datname = current_database()
+      `),
+      safeQuery(`
+        SELECT
+          pg_database_size(current_database())::bigint AS db_bytes,
+          COALESCE((
+            SELECT SUM(pg_total_relation_size(c.oid))::bigint
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relkind = 'r'
+          ), 0)::bigint AS tables_bytes,
+          COALESCE((
+            SELECT SUM(pg_total_relation_size(c.oid))::bigint
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relkind = 'i'
+          ), 0)::bigint AS indexes_bytes
+      `),
+      safeQuery(`
+        SELECT
+          checkpoints_timed::bigint,
+          checkpoints_req::bigint,
+          checkpoint_write_time::double precision,
+          checkpoint_sync_time::double precision,
+          buffers_checkpoint::bigint,
+          buffers_clean::bigint,
+          buffers_backend::bigint,
+          maxwritten_clean::bigint
+        FROM pg_stat_bgwriter
+      `),
+      safeQuery(`
+        SELECT
+          wal_records::bigint,
+          wal_fpi::bigint,
+          wal_bytes::numeric::text AS wal_bytes
+        FROM pg_stat_wal
+      `),
+      safeQuery(`
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE NOT granted)::int AS waiting
+        FROM pg_locks
+      `),
+      safeQuery(`
+        SELECT
+          EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time()))::bigint AS uptime_seconds,
+          pg_postmaster_start_time()::text AS started_at
+      `),
+    ]);
+
+    const settingsRows = Array.isArray(settingsRes.rows) ? settingsRes.rows : [];
+    const settings = settingsRows.reduce((acc, row) => {
+      const key = String(row?.name || "").trim();
+      if (!key) return acc;
+      acc[key] = {
+        setting: String(row?.setting || ""),
+        unit: String(row?.unit || ""),
+      };
+      return acc;
+    }, {});
+
+    const activity = activityRes.rows?.[0] || {};
+    const dbStat = dbStatRes.rows?.[0] || {};
+    const size = sizeRes.rows?.[0] || {};
+    const bgwriter = bgwriterRes.rows?.[0] || {};
+    const wal = walRes.rows?.[0] || {};
+    const locks = locksRes.rows?.[0] || {};
+    const uptime = uptimeRes.rows?.[0] || {};
+
+    res.json({
+      checkedAt: Date.now(),
+      settings,
+      connections: activity,
+      database: dbStat,
+      size,
+      bgwriter,
+      wal,
+      locks,
+      uptime,
+      pool: {
+        max: Number.isFinite(Number(pool?.options?.max)) ? Number(pool.options.max) : null,
+        total: Number.isFinite(Number(pool?.totalCount)) ? Number(pool.totalCount) : 0,
+        idle: Number.isFinite(Number(pool?.idleCount)) ? Number(pool.idleCount) : 0,
+        waiting: Number.isFinite(Number(pool?.waitingCount)) ? Number(pool.waitingCount) : 0,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load PostgreSQL diagnostics." });
+  }
+});
+
+app.get("/api/diagnostics/app", async (_req, res) => {
+  try {
+    const checkedAt = Date.now();
+    const mem = process.memoryUsage();
+    const cpu = process.cpuUsage();
+    const load = os.loadavg();
+    let dbPingMs = null;
+    let dbError = "";
+    if (pool) {
+      const dbStart = Date.now();
+      try {
+        await pool.query("SELECT 1");
+        dbPingMs = Date.now() - dbStart;
+      } catch (err) {
+        dbError = String(err?.message || "DB ping failed.");
+      }
+    } else {
+      dbError = "Database pool is not initialized.";
+    }
+
+    let opcStatus = {};
+    try {
+      const opcRes = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+      opcStatus = (opcRes.rows?.[0]?.status && typeof opcRes.rows[0].status === "object")
+        ? opcRes.rows[0].status
+        : {};
+    } catch {
+      opcStatus = {};
+    }
+
+    const values = opcStatus?.values && typeof opcStatus.values === "object" ? opcStatus.values : {};
+    const qualities = opcStatus?.qualities && typeof opcStatus.qualities === "object" ? opcStatus.qualities : {};
+    const diagnostics = opcStatus?.diagnostics && typeof opcStatus.diagnostics === "object" ? opcStatus.diagnostics : {};
+    const lastPollAt = Number(opcStatus?.lastPollAt || 0);
+    const qualityCounts = Object.values(qualities).reduce((acc, q) => {
+      const key = String(q || "Unknown");
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const runtime = opcStatus?.runtime && typeof opcStatus.runtime === "object" ? opcStatus.runtime : {};
+
+    res.json({
+      checkedAt,
+      app: {
+        pid: process.pid,
+        uptimeSec: Math.round(process.uptime()),
+        nodeVersion: process.version,
+        platform: process.platform,
+        arch: process.arch,
+        loadAvg1m: Number.isFinite(load[0]) ? Number(load[0]) : null,
+        loadAvg5m: Number.isFinite(load[1]) ? Number(load[1]) : null,
+        loadAvg15m: Number.isFinite(load[2]) ? Number(load[2]) : null,
+        rssBytes: Number(mem?.rss || 0),
+        heapTotalBytes: Number(mem?.heapTotal || 0),
+        heapUsedBytes: Number(mem?.heapUsed || 0),
+        externalBytes: Number(mem?.external || 0),
+        arrayBuffersBytes: Number(mem?.arrayBuffers || 0),
+        cpuUserMs: Number.isFinite(cpu?.user) ? Math.round(cpu.user / 1000) : null,
+        cpuSystemMs: Number.isFinite(cpu?.system) ? Math.round(cpu.system / 1000) : null,
+      },
+      db: {
+        pingMs: dbPingMs,
+        error: dbError,
+      },
+      opc: {
+        connected: opcStatus?.connected === true,
+        connections: opcStatus?.connections && typeof opcStatus.connections === "object" ? opcStatus.connections : {},
+        lastPollAt: lastPollAt || null,
+        lastPollAgeMs: lastPollAt > 0 ? Math.max(0, checkedAt - lastPollAt) : null,
+        valueCount: Object.keys(values).length,
+        diagnosticCount: Object.keys(diagnostics).length,
+        qualityCounts,
+        runtime: {
+          opcConnectionEnabled: runtime?.opcConnectionEnabled !== false,
+          multiReadEnabled: runtime?.multiReadEnabled !== false,
+          multiReadBatchSize: Number.isFinite(Number(runtime?.multiReadBatchSize))
+            ? Number(runtime.multiReadBatchSize)
+            : null,
+          mqttEnabled: runtime?.mqttEnabled === true,
+          mqttConnected: runtime?.mqttConnected === true,
+          readTimeoutMs: Number.isFinite(Number(runtime?.readTimeoutMs)) ? Number(runtime.readTimeoutMs) : null,
+        },
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load app diagnostics." });
   }
 });
 
@@ -6579,6 +7312,18 @@ async function start() {
   `);
   await pool.query(`
     ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS email TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS external_provider TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS external_subject TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE users
     ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT false;
   `);
   await pool.query(`
@@ -6634,6 +7379,16 @@ async function start() {
   }
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users(username);
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS users_external_identity_idx
+    ON users(external_provider, external_subject)
+    WHERE external_provider IS NOT NULL AND external_subject IS NOT NULL;
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS users_email_lower_idx
+    ON users((lower(email)))
+    WHERE email IS NOT NULL;
   `);
   const defaultRoles = [
     {
@@ -6933,12 +7688,41 @@ async function start() {
       saved_by INT REFERENCES users(id) ON DELETE SET NULL,
       base_updated_at TIMESTAMPTZ,
       previous_data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      next_data JSONB NOT NULL DEFAULT '{}'::jsonb
+      next_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      previous_data_gz BYTEA,
+      next_data_gz BYTEA,
+      payload_codec TEXT NOT NULL DEFAULT 'jsonb-legacy',
+      next_hash TEXT,
+      change_summary JSONB
     );
+  `);
+  await pool.query(`
+    ALTER TABLE project_versions
+    ADD COLUMN IF NOT EXISTS previous_data_gz BYTEA;
+  `);
+  await pool.query(`
+    ALTER TABLE project_versions
+    ADD COLUMN IF NOT EXISTS next_data_gz BYTEA;
+  `);
+  await pool.query(`
+    ALTER TABLE project_versions
+    ADD COLUMN IF NOT EXISTS payload_codec TEXT NOT NULL DEFAULT 'jsonb-legacy';
+  `);
+  await pool.query(`
+    ALTER TABLE project_versions
+    ADD COLUMN IF NOT EXISTS next_hash TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE project_versions
+    ADD COLUMN IF NOT EXISTS change_summary JSONB;
   `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS project_versions_project_saved_idx
     ON project_versions(project_id, saved_at DESC);
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS project_versions_project_hash_idx
+    ON project_versions(project_id, next_hash);
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS routes (
@@ -7222,6 +8006,12 @@ async function start() {
     ADD COLUMN IF NOT EXISTS group_name TEXT;
   `);
   await verifySchemaCoverage();
+  setTimeout(() => {
+    void runProjectVersionMaintenance();
+  }, 5000);
+  setInterval(() => {
+    void runProjectVersionMaintenance();
+  }, PROJECT_VERSION_MAINTENANCE_MS);
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`AI server listening on http://localhost:${PORT}`);
