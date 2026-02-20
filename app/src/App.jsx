@@ -70,6 +70,14 @@ const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
 const SVG_RAW_CACHE_MAX = 96;
 const LIVE_ALARM_BAR_H = 34;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
+const SCREEN_SIZE_PRESETS = [
+  { value: "1280x720", label: "HD 1280x720", w: 1280, h: 720 },
+  { value: "1600x900", label: "HD+ 1600x900", w: 1600, h: 900 },
+  { value: "1920x1080", label: "Full HD 1920x1080", w: 1920, h: 1080 },
+  { value: "2560x1440", label: "QHD 2560x1440", w: 2560, h: 1440 },
+  { value: "3440x1440", label: "UWQHD 3440x1440", w: 3440, h: 1440 },
+  { value: "3840x2160", label: "4K 3840x2160", w: 3840, h: 2160 },
+];
 
 function readStoredDrawerFullscreen(name) {
   if (typeof window === "undefined") return false;
@@ -9049,22 +9057,58 @@ function flushScheduledProjectSave() {
     scheduleProjectAutoSave();
   }
 
-  function updateScreenSizeById(screenId, axis, rawValue) {
+  function clampScreenCanvasSize(value) {
+    const n = Math.round(Number(value) || 0);
+    if (!Number.isFinite(n)) return 100;
+    return Math.max(100, Math.min(10000, n));
+  }
+
+  function updateScreenCanvasSizeById(screenId, widthRaw, heightRaw) {
     const id = String(screenId || "");
     if (!id) return;
-    const key = axis === "h" ? "vbH" : "vbW";
-    const n = Math.max(100, Math.min(10000, Math.round(Number(rawValue) || 0)));
-    if (!Number.isFinite(n)) return;
+    const nextW = clampScreenCanvasSize(widthRaw);
+    const nextH = clampScreenCanvasSize(heightRaw);
     setScreens((prev) =>
       (Array.isArray(prev) ? prev : []).map((s) =>
-        String(s?.id || "") === id ? { ...s, [key]: n } : s
+        String(s?.id || "") === id ? { ...s, vbW: nextW, vbH: nextH } : s
       )
     );
     if (String(activeScreenId || "") === id) {
-      if (key === "vbW") setVbW(n);
-      if (key === "vbH") setVbH(n);
+      setVbW(nextW);
+      setVbH(nextH);
     }
     scheduleProjectAutoSave();
+  }
+
+  function updateScreenSizeById(screenId, axis, rawValue) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const target = (Array.isArray(screens) ? screens : []).find((s) => String(s?.id || "") === id);
+    const baseW = Math.max(100, Math.round(Number(target?.vbW) || 1600));
+    const baseH = Math.max(100, Math.round(Number(target?.vbH) || 900));
+    if (String(axis || "").toLowerCase() === "h") {
+      updateScreenCanvasSizeById(id, baseW, rawValue);
+      return;
+    }
+    updateScreenCanvasSizeById(id, rawValue, baseH);
+  }
+
+  function applyScreenSizePresetById(screenId, presetValue) {
+    const id = String(screenId || "");
+    const preset = SCREEN_SIZE_PRESETS.find((p) => p.value === String(presetValue || ""));
+    if (!id || !preset) return;
+    updateScreenCanvasSizeById(id, preset.w, preset.h);
+  }
+
+  function matchScreenToViewportById(screenId) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const rect = svgRef.current?.getBoundingClientRect?.();
+    const fallbackW = typeof window !== "undefined" ? window.innerWidth : 1600;
+    const fallbackH = typeof window !== "undefined" ? window.innerHeight : 900;
+    const nextW = clampScreenCanvasSize(Number(rect?.width) || fallbackW);
+    const nextH = clampScreenCanvasSize(Number(rect?.height) || fallbackH);
+    updateScreenCanvasSizeById(id, nextW, nextH);
   }
 
   function beginScreenSizeDraft(screenId, axis, currentValue) {
@@ -13208,6 +13252,60 @@ function flushScheduledProjectSave() {
                             }}
                             title="Screen height"
                           />
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 6, alignItems: "center" }}>
+                          <select
+                            defaultValue=""
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                            }}
+                            onChange={(e) => {
+                              const next = String(e.target.value || "");
+                              if (!next) return;
+                              applyScreenSizePresetById(s.id, next);
+                              e.target.value = "";
+                            }}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 6,
+                              padding: "4px 6px",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              minWidth: 0,
+                            }}
+                            title="Apply a common screen resolution"
+                          >
+                            <option value="">Apply preset...</option>
+                            {SCREEN_SIZE_PRESETS.map((preset) => (
+                              <option key={`preset-${preset.value}`} value={preset.value}>
+                                {preset.label}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                              matchScreenToViewportById(s.id);
+                            }}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 6,
+                              padding: "4px 8px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                            }}
+                            title="Match this screen to current viewport size"
+                          >
+                            Match Viewport
+                          </button>
                         </div>
                       </div>
                     );
