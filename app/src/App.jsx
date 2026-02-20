@@ -1,5 +1,5 @@
 // src/App.jsx
-import { Fragment, Suspense, lazy, useMemo, useRef, useState, useEffect } from "react";
+import { Fragment, Suspense, lazy, useMemo, useRef, useState, useEffect, useLayoutEffect } from "react";
 import PropertiesPanel from "./components/PropertiesPanel";
 import ImportModal from "./components/ImportModal";
 import WidgetSelectorModal from "./components/WidgetSelectorModal";
@@ -65,6 +65,7 @@ const SHOW_TAG_PATHS_KEY = "vizi_show_tag_paths";
 const SHOW_RULERS_KEY = "vizi_show_rulers";
 const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
 const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
+const VIEWPORT_ZOOM_CACHE_KEY = "vizi_zoom_by_viewport";
 // (no eager:true)
 
 const SVG_RAW_CACHE_MAX = 96;
@@ -181,6 +182,198 @@ function normalizeAlarmOperatorValue(value) {
   return ["==", "!=", ">", ">=", "<", "<="].includes(op) ? op : "==";
 }
 
+function normalizeViewportKey(width, height) {
+  const w = Math.max(1, Math.round(Number(width) || 0));
+  const h = Math.max(1, Math.round(Number(height) || 0));
+  return `${w}x${h}`;
+}
+
+function buildViewportZoomKey(screenW, screenH, canvasW, canvasH) {
+  const sw = Math.max(1, Math.round(Number(screenW) || 0));
+  const sh = Math.max(1, Math.round(Number(screenH) || 0));
+  const cw = Math.max(1, Math.round(Number(canvasW) || 0));
+  const ch = Math.max(1, Math.round(Number(canvasH) || 0));
+  return `scr:${sw}x${sh}|svg:${cw}x${ch}`;
+}
+
+function parseViewportZoomKey(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const modern = raw.match(/^scr:(\d+)x(\d+)\|svg:(\d+)x(\d+)$/i);
+  if (modern) {
+    return {
+      screenW: Number(modern[1]),
+      screenH: Number(modern[2]),
+      canvasW: Number(modern[3]),
+      canvasH: Number(modern[4]),
+      kind: "modern",
+    };
+  }
+  const legacy = raw.match(/^(\d+)x(\d+)$/);
+  if (legacy) {
+    return {
+      screenW: NaN,
+      screenH: NaN,
+      canvasW: Number(legacy[1]),
+      canvasH: Number(legacy[2]),
+      kind: "legacy",
+    };
+  }
+  return null;
+}
+
+function getViewportZoomKey(fallbackRect = null) {
+  if (typeof window !== "undefined") {
+    const screenW =
+      Number(window.screen?.width) > 0
+        ? Number(window.screen.width)
+        : Number(window.innerWidth) || 0;
+    const screenH =
+      Number(window.screen?.height) > 0
+        ? Number(window.screen.height)
+        : Number(window.innerHeight) || 0;
+    const canvasW =
+      Number(fallbackRect?.width) > 0
+        ? Number(fallbackRect.width)
+        : Number(window.innerWidth) || 0;
+    const canvasH =
+      Number(fallbackRect?.height) > 0
+        ? Number(fallbackRect.height)
+        : Number(window.innerHeight) || 0;
+    if (screenW > 0 && screenH > 0 && canvasW > 0 && canvasH > 0) {
+      return buildViewportZoomKey(screenW, screenH, canvasW, canvasH);
+    }
+  }
+  const w = Number(fallbackRect?.width) || 0;
+  const h = Number(fallbackRect?.height) || 0;
+  if (w > 0 && h > 0) return normalizeViewportKey(w, h);
+  return "";
+}
+
+function resolveZoomForViewportMap(mapValue, viewportKey) {
+  const map = normalizeZoomByViewportMap(mapValue);
+  const key = String(viewportKey || "").trim();
+  if (!key) return NaN;
+  const exact = Number(map[key]);
+  if (Number.isFinite(exact)) return exact;
+  const target = parseViewportZoomKey(key);
+  if (!target) return NaN;
+  let bestZoom = NaN;
+  let bestScore = Infinity;
+  for (const [k, zRaw] of Object.entries(map)) {
+    const parsed = parseViewportZoomKey(k);
+    const z = Number(zRaw);
+    if (!parsed || !Number.isFinite(z)) continue;
+    const canvasScore =
+      Math.abs(parsed.canvasW - target.canvasW) + Math.abs(parsed.canvasH - target.canvasH);
+    const screenScore =
+      Number.isFinite(parsed.screenW) &&
+      Number.isFinite(parsed.screenH) &&
+      Number.isFinite(target.screenW) &&
+      Number.isFinite(target.screenH)
+        ? Math.abs(parsed.screenW - target.screenW) + Math.abs(parsed.screenH - target.screenH)
+        : 0;
+    const legacyPenalty =
+      parsed.kind === "legacy" && Number.isFinite(target.screenW) && Number.isFinite(target.screenH)
+        ? 250
+        : 0;
+    const score = canvasScore + screenScore + legacyPenalty;
+    if (score < bestScore) {
+      bestScore = score;
+      bestZoom = z;
+    }
+  }
+  return Number.isFinite(bestZoom) ? bestZoom : NaN;
+}
+
+function normalizeZoomByViewportMap(value) {
+  const src = value && typeof value === "object" ? value : {};
+  const out = {};
+  for (const [rawKey, rawZoom] of Object.entries(src)) {
+    const key = String(rawKey || "").trim();
+    if (!parseViewportZoomKey(key)) continue;
+    const z = Number(rawZoom);
+    if (!Number.isFinite(z) || z <= 0) continue;
+    out[key] = z;
+  }
+  return out;
+}
+
+function readViewportZoomCache() {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(VIEWPORT_ZOOM_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeViewportZoomCache(nextCache) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(VIEWPORT_ZOOM_CACHE_KEY, JSON.stringify(nextCache || {}));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function getViewportZoomCacheLastKey(projectId, screenId) {
+  const pid = String(projectId || "").trim();
+  const sid = String(screenId || "").trim();
+  if (!pid || !sid) return "";
+  return `${pid}|${sid}|@last`;
+}
+
+function resolveZoomFromViewportCache(cacheValue, projectId, screenId, viewportKey) {
+  const cache = cacheValue && typeof cacheValue === "object" ? cacheValue : {};
+  const pid = String(projectId || "").trim();
+  const sid = String(screenId || "").trim();
+  const vkey = String(viewportKey || "").trim();
+  if (!sid || !vkey) return NaN;
+  const directKey = pid ? `${pid}|${sid}|${vkey}` : "";
+  const directZoom = directKey ? Number(cache[directKey]) : NaN;
+  if (Number.isFinite(directZoom)) return directZoom;
+  const target = parseViewportZoomKey(vkey);
+  if (!target) return NaN;
+  let bestZoom = NaN;
+  let bestScore = Infinity;
+  for (const [cacheKeyRaw, rawZoom] of Object.entries(cache)) {
+    const cacheKey = String(cacheKeyRaw || "");
+    const parts = cacheKey.split("|");
+    if (parts.length < 3) continue;
+    const keyProjectId = String(parts[0] || "").trim();
+    const keyScreenId = String(parts[1] || "").trim();
+    const keyViewport = parts.slice(2).join("|");
+    if (keyScreenId !== sid) continue;
+    if (pid && keyProjectId && keyProjectId !== pid) continue;
+    const parsed = parseViewportZoomKey(keyViewport);
+    const z = Number(rawZoom);
+    if (!parsed || !Number.isFinite(z)) continue;
+    const canvasScore =
+      Math.abs(parsed.canvasW - target.canvasW) + Math.abs(parsed.canvasH - target.canvasH);
+    const screenScore =
+      Number.isFinite(parsed.screenW) &&
+      Number.isFinite(parsed.screenH) &&
+      Number.isFinite(target.screenW) &&
+      Number.isFinite(target.screenH)
+        ? Math.abs(parsed.screenW - target.screenW) + Math.abs(parsed.screenH - target.screenH)
+        : 0;
+    const legacyPenalty =
+      parsed.kind === "legacy" && Number.isFinite(target.screenW) && Number.isFinite(target.screenH)
+        ? 250
+        : 0;
+    const score = canvasScore + screenScore + legacyPenalty;
+    if (score < bestScore) {
+      bestScore = score;
+      bestZoom = z;
+    }
+  }
+  return Number.isFinite(bestZoom) ? bestZoom : NaN;
+}
+
 function isTruthyFlag(value) {
   if (value === true) return true;
   if (value === false || value == null) return false;
@@ -226,6 +419,19 @@ function evaluateAlarmCondition(liveValue, operator, threshold) {
 
 function normalizeRouteTagKey(value) {
   return normalizeTagValue(value).replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function inferETypeFromFileKey(fileKey) {
+  const raw = String(fileKey || "").trim();
+  if (!raw) return "";
+  const leaf = raw.split("/").pop() || raw;
+  return leaf.replace(/\.svg$/i, "").trim();
+}
+
+function resolveOverlayEType(overlay) {
+  const explicit = String(overlay?.eType || "").trim();
+  if (explicit) return explicit;
+  return inferETypeFromFileKey(overlay?.sourceKey || overlay?.name || "");
 }
 
 function isRouteIdTagKey(value) {
@@ -498,6 +704,8 @@ export default function App() {
   const liveEquipmentDragRef = useRef(null);
   const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
   const [liveEquipmentDrawerOverlayId, setLiveEquipmentDrawerOverlayId] = useState("");
+  const [liveEquipmentWriteBusyByOverlay, setLiveEquipmentWriteBusyByOverlay] = useState({});
+  const [liveEquipmentWriteErrorByOverlay, setLiveEquipmentWriteErrorByOverlay] = useState({});
   const liveEquipmentDockScrollRafRef = useRef(0);
   const liveAlarmMarqueeViewportRef = useRef(null);
   const liveAlarmMarqueeTrackRef = useRef(null);
@@ -540,6 +748,7 @@ export default function App() {
   const [projectNameEditing, setProjectNameEditing] = useState(false);
   const [projectModeDraft, setProjectModeDraft] = useState("design");
   const [screenSizeDrafts, setScreenSizeDrafts] = useState({});
+  const [autoFitCanvasOnResize, setAutoFitCanvasOnResize] = useState(true);
   const [projectCanvasBackground, setProjectCanvasBackground] = useState(() =>
     normalizeProjectCanvasBackground(null)
   );
@@ -605,6 +814,8 @@ export default function App() {
   const [projectDrawerFullscreen, setProjectDrawerFullscreen] = useState(() => readStoredDrawerFullscreen("project"));
   const [projectDrawerTab, setProjectDrawerTab] = useState("project");
   const [databaseEmbeddedPath, setDatabaseEmbeddedPath] = useState("");
+  const [databaseEmbeddedRouteId, setDatabaseEmbeddedRouteId] = useState("");
+  const [databaseEmbeddedRouteName, setDatabaseEmbeddedRouteName] = useState("");
   const [databaseDataOnlyMode, setDatabaseDataOnlyMode] = useState(false);
   const [databaseTablesForMenu, setDatabaseTablesForMenu] = useState([]);
   const [securityRolesForMenu, setSecurityRolesForMenu] = useState([]);
@@ -633,6 +844,9 @@ export default function App() {
   const queuedSaveAfterFlightRef = useRef(null); // null | save options
   const uiPreferenceAutosaveReadyRef = useRef(false);
   const projectHydrationReadyRef = useRef(false);
+  const autoFitInitRef = useRef(false);
+  const zoomHoldTimeoutRef = useRef(null);
+  const zoomHoldIntervalRef = useRef(null);
   const isInteractingRef = useRef(false);
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
   const projectNameRef = useRef(projectName);
@@ -685,6 +899,11 @@ export default function App() {
     panRef.current = pan;
     zoomRef.current = zoom;
   }, [projectName, showGrid, showTagPaths, showRulers, liveMenuCollapsed, liveMenuExpandedWidth, projectCanvasBackground, projectPlcs, screens, liveMenuGroups, activeProjectId, activeProjectUpdatedAt, projectMode, activeScreenId, screenName, vbW, vbH, pan, zoom]);
+
+  useLayoutEffect(() => {
+    panRef.current = pan;
+    zoomRef.current = zoom;
+  }, [pan, zoom]);
 
   useEffect(() => {
     setSvgOverlays((prev) => {
@@ -1009,6 +1228,21 @@ export default function App() {
     const onBeforeUnload = () => {
       const id = String(activeProjectIdRef.current || "").trim();
       if (!id) return;
+      try {
+        const rect = svgRef.current?.getBoundingClientRect?.();
+        const viewportKey = getViewportZoomKey(rect);
+        const screenId = String(activeScreenIdRef.current || "");
+        const z = Number(zoomRef.current);
+        if (viewportKey && screenId && Number.isFinite(z) && z > 0) {
+          const cache = readViewportZoomCache();
+          cache[`${id}|${screenId}|${viewportKey}`] = z;
+          const lastKey = getViewportZoomCacheLastKey(id, screenId);
+          if (lastKey) cache[lastKey] = z;
+          writeViewportZoomCache(cache);
+        }
+      } catch {
+        // ignore viewport zoom cache persistence failures
+      }
       try {
         localStorage.setItem(
           getProjectDraftStorageKey(id),
@@ -1726,10 +1960,339 @@ export default function App() {
     if (Array.isArray(source) && source.length) return source;
     return liveTestAlarms;
   }, [liveActiveAlarmsDbLoaded, liveActiveAlarmsDb, liveActiveAlarmsComputed, liveTestAlarms]);
+  const findLiveTagPathMatch = (candidates) => {
+    const live = opcLiveValues || {};
+    const keys = Object.keys(live);
+    for (const raw of candidates || []) {
+      const cand = String(raw || "").trim();
+      if (!cand) continue;
+      if (Object.prototype.hasOwnProperty.call(live, cand)) return cand;
+      const lower = cand.toLowerCase();
+      const direct = keys.find((k) => String(k || "").toLowerCase() === lower);
+      if (direct) return direct;
+      const suffix = `.${lower}`;
+      const suffixMatch = keys.find((k) => String(k || "").toLowerCase().endsWith(suffix));
+      if (suffixMatch) return suffixMatch;
+    }
+    return "";
+  };
+  const findOpcConfiguredTagPathMatch = (overlay, candidates) => {
+    const tagPath = normalizeTagValue(overlay?.tagPath || "");
+    const rawParts = tagPath.split(".").map((x) => String(x || "").trim()).filter(Boolean);
+    const groupHints = [];
+    if (rawParts.length > 1) groupHints.push(rawParts.slice(0, -1).join("."));
+    if (rawParts.length > 2) groupHints.push(rawParts.slice(1, -1).join("."));
+    if (rawParts.length > 0) groupHints.push(rawParts[0]);
+    const groupHintKeys = Array.from(new Set(groupHints.map((g) => String(g || "").toLowerCase()).filter(Boolean)));
+    const desired = (candidates || [])
+      .map((c) => normalizeTagValue(c))
+      .filter(Boolean);
+    const desiredLoose = desired.map((d) => String(d || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
+    if (!desired.length) return "";
+    const tags = Array.isArray(opcTags) ? opcTags : [];
+    for (const tag of tags) {
+      const topic = normalizeTagValue(tag?.topic || "");
+      const group = normalizeTagValue(tag?.groupName || "");
+      if (groupHintKeys.length) {
+        const gl = group.toLowerCase();
+        const groupMatch = groupHintKeys.some(
+          (g) => gl === g || gl.endsWith(`.${g}`) || g.endsWith(`.${gl}`)
+        );
+        if (!groupMatch) continue;
+      }
+      const members = [
+        normalizeTagValue(tag?.tagPath || ""),
+        normalizeTagValue(tag?.name || ""),
+      ].filter(Boolean);
+      for (const member of members) {
+        const fulls = [
+          topic && group ? `${topic}.${group}.${member}` : "",
+          topic ? `${topic}.${member}` : "",
+          group ? `${group}.${member}` : "",
+          member,
+        ]
+          .map((x) => normalizeTagValue(x))
+          .filter(Boolean);
+        for (const f of fulls) {
+          const fl = f.toLowerCase();
+          if (desired.some((d) => fl === d.toLowerCase() || fl.endsWith(`.${d.toLowerCase()}`))) {
+            return f;
+          }
+          const loose = fl.replace(/[^a-z0-9]/g, "");
+          if (desiredLoose.some((d) => d && loose.endsWith(d))) {
+            return f;
+          }
+        }
+      }
+    }
+    return "";
+  };
+  const resolveMotorCommandTagPath = (overlay, aliases = []) => {
+    const tagPath = String(overlay?.tagPath || "").trim();
+    const parts = tagPath.split(".").filter(Boolean);
+    const parents = [];
+    if (parts.length > 1) parents.push(parts.slice(0, -1).join("."));
+    if (parts.length > 2) parents.push(parts.slice(1, -1).join("."));
+    if (parts.length > 0) parents.push(parts.join("."));
+    const seen = new Set();
+    const candidates = [];
+    for (const p of parents) {
+      for (const a of aliases) {
+        const base = String(p || "").trim();
+        const member = String(a || "").trim();
+        const dotPath = `${base}.${member}`;
+        const dotKey = dotPath.toLowerCase();
+        if (!seen.has(dotKey)) {
+          seen.add(dotKey);
+          candidates.push(dotPath);
+        }
+        const slashPath = `${base}/${member}`;
+        const slashKey = slashPath.toLowerCase();
+        if (!seen.has(slashKey)) {
+          seen.add(slashKey);
+          candidates.push(slashPath);
+        }
+      }
+    }
+    if (tagPath && aliases.length) {
+      const direct = `${tagPath}.${String(aliases[0] || "").trim()}`;
+      const key = direct.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        candidates.push(direct);
+      }
+    }
+    return (
+      findLiveTagPathMatch(candidates) ||
+      findOpcConfiguredTagPathMatch(overlay, candidates) ||
+      ""
+    );
+  };
+  const writeLiveEquipmentTag = async (overlay, commandTagPath, value, options = {}) => {
+    const overlayId = String(overlay?.id || "").trim();
+    const tagPath = String(commandTagPath || "").trim();
+    if (!overlayId) return;
+    if (!tagPath) {
+      const actionLabel = String(options?.actionLabel || "Command").trim();
+      const fallbackPath = String(overlay?.tagPath || "").trim() || "selected equipment";
+      const message = `${actionLabel} tag not found for ${fallbackPath}.`;
+      setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: message }));
+      toastError(message);
+      return;
+    }
+    const normalizedPath = normalizeTagValue(tagPath);
+    const normalizeUaTypeForWrite = (tag) => {
+      const uaTypeRaw = String(tag?.uaType || "").trim().toLowerCase();
+      if (uaTypeRaw) return uaTypeRaw;
+      const plcType = String(tag?.plcType || "").trim().toUpperCase();
+      if (plcType === "BOOL") return "boolean";
+      if (["SINT", "INT", "DINT", "LINT", "USINT", "UINT", "UDINT"].includes(plcType)) return "int32";
+      if (["REAL", "LREAL"].includes(plcType)) return "double";
+      if (plcType === "STRING") return "string";
+      return "";
+    };
+    const matchOpcTagForPath = (path) => {
+      const target = normalizeTagValue(path).toLowerCase();
+      if (!target) return null;
+      const tags = Array.isArray(opcTags) ? opcTags : [];
+      for (const t of tags) {
+        const topic = normalizeTagValue(t?.topic || "");
+        const group = normalizeTagValue(t?.groupName || "");
+        const name = normalizeTagValue(t?.name || "");
+        const memberPath = normalizeTagValue(t?.tagPath || name);
+        const candidates = [
+          topic && group && memberPath ? `${topic}.${group}.${memberPath}` : "",
+          topic && memberPath ? `${topic}.${memberPath}` : "",
+          group && memberPath ? `${group}.${memberPath}` : "",
+          memberPath,
+          name,
+        ]
+          .map((x) => normalizeTagValue(x))
+          .filter(Boolean);
+        const matched = candidates.some((c) => {
+          const cl = c.toLowerCase();
+          return cl === target || cl.endsWith(`.${target}`) || target.endsWith(`.${cl}`);
+        });
+        if (matched) return t;
+      }
+      return null;
+    };
+    const matchedTag = matchOpcTagForPath(normalizedPath);
+    const tagKey = normalizedPath;
+    const legacyTagKey = normalizeTagValue(matchedTag?.name || "");
+    const uaType = normalizeUaTypeForWrite(matchedTag);
+    const isPulse = options?.pulse === true;
+    const pulseResetValue = Object.prototype.hasOwnProperty.call(options || {}, "pulseResetValue")
+      ? options.pulseResetValue
+      : 0;
+    try {
+      setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: true }));
+      setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+      const res = await fetch("/api/opc/write", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tagKey, legacyTagKey, value, uaType }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Write failed.");
+      if (isPulse) {
+        window.setTimeout(async () => {
+          try {
+            await fetch("/api/opc/write", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tagKey, legacyTagKey, value: pulseResetValue, uaType }),
+            });
+          } catch {
+            // ignore pulse reset errors
+          }
+        }, 180);
+      }
+      toastSuccess(`Wrote ${String(value)} to ${tagKey}`);
+    } catch (err) {
+      setLiveEquipmentWriteErrorByOverlay((prev) => ({
+        ...(prev || {}),
+        [overlayId]: err?.message || "Write failed.",
+      }));
+      toastError(err?.message || "Write failed.");
+    } finally {
+      setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: false }));
+    }
+  };
+  const renderLiveMotorControls = (overlay, compact = false) => {
+    const overlayId = String(overlay?.id || "").trim();
+    if (!overlayId) return null;
+    const eType = String(resolveOverlayEType(overlay) || "").trim().toLowerCase();
+    if (eType !== "motor") return null;
+    const busy = liveEquipmentWriteBusyByOverlay?.[overlayId] === true;
+    const writeError = String(liveEquipmentWriteErrorByOverlay?.[overlayId] || "").trim();
+    const startPath = resolveMotorCommandTagPath(overlay, ["HMI_Control.14", "HMI_Control", "i_StartReq", "CmdStart", "o_StartReq", "i_Start"]);
+    const stopPath = resolveMotorCommandTagPath(overlay, ["HMI_Control.5", "HMI_Control", "i_StopReq", "CmdStop", "o_StopReq", "i_SeqStop"]);
+    const resetPath = resolveMotorCommandTagPath(overlay, ["i_CmdFaultReset", "CmdFaultReset", "o_CmdFaultReset", "i_FaultReset", "outp_FaultReset"]);
+    const manualPath = resolveMotorCommandTagPath(overlay, ["HMI_Control.2", "HMI_Control", "i_CmdManual", "CmdManual", "i_ManualModeReq", "i_ManualMode"]);
+    const autoPath = resolveMotorCommandTagPath(overlay, ["HMI_Control.1", "HMI_Control", "i_CmdAuto", "CmdAuto", "i_AutoModeReq", "i_AutoMode"]);
+    const isDintModePath = (path) =>
+      /(?:\.|\/)hmi_control$/i.test(String(path || "").trim());
+    const startWriteValue = isDintModePath(startPath) ? 16384 : 1;
+    const stopWriteValue = isDintModePath(stopPath) ? 32 : 1;
+    const manualWriteValue = isDintModePath(manualPath) ? 4 : 1;
+    const autoWriteValue = isDintModePath(autoPath) ? 2 : 1;
+    const triggerMotorCommand = (actionLabel, path, value, options = {}) =>
+      writeLiveEquipmentTag(overlay, path, value, { ...(options || {}), actionLabel });
+    const iconCommon = {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      lineHeight: 1,
+    };
+    const manualIcon = (
+      <span style={iconCommon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={compact ? 13 : 15} height={compact ? 13 : 15} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
+          <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
+          <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
+          <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
+        </svg>
+      </span>
+    );
+    const autoIcon = (
+      <span style={iconCommon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={compact ? 13 : 15} height={compact ? 13 : 15} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 12a8 8 0 0 1-14 5.3" />
+          <path d="M4 12a8 8 0 0 1 14-5.3" />
+          <path d="M6 18H3.5v-2.5" />
+          <path d="M18 6h2.5v2.5" />
+        </svg>
+      </span>
+    );
+    const buttonStyle = {
+      border: "1px solid color-mix(in srgb, var(--border) 82%, #2b6cff 18%)",
+      background: "color-mix(in srgb, var(--bg) 88%, #1d4ed8 12%)",
+      color: "var(--text)",
+      borderRadius: 8,
+      fontSize: compact ? 12 : 13,
+      fontWeight: 700,
+      minHeight: compact ? 30 : 34,
+      padding: compact ? "6px 8px" : "7px 10px",
+      cursor: "pointer",
+      opacity: 1,
+      transition: "transform 90ms ease, filter 120ms ease, border-color 120ms ease",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+    };
+    return (
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
+        <div style={{ fontSize: compact ? 10 : 11, fontWeight: 700, color: "var(--text)" }}>Motor Controls</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          <button
+            type="button"
+            style={buttonStyle}
+            onClick={() =>
+              isDintModePath(startPath)
+                ? void triggerMotorCommand("Start", startPath, startWriteValue)
+                : void triggerMotorCommand("Start", startPath, startWriteValue, { pulse: true, pulseResetValue: 0 })
+            }
+            aria-label="Start"
+            title={startPath || "Start tag not found"}
+          >
+            {"|>"}
+          </button>
+          <button
+            type="button"
+            style={buttonStyle}
+            onClick={() =>
+              isDintModePath(stopPath)
+                ? void triggerMotorCommand("Stop", stopPath, stopWriteValue)
+                : void triggerMotorCommand("Stop", stopPath, stopWriteValue, { pulse: true, pulseResetValue: 0 })
+            }
+            aria-label="Stop"
+            title={stopPath || "Stop tag not found"}
+          >
+            {"[]"}
+          </button>
+          <button
+            type="button"
+            style={buttonStyle}
+            onClick={() =>
+              void triggerMotorCommand("Fault Reset", resetPath, 1, { pulse: true, pulseResetValue: 0 })
+            }
+            aria-label="Fault Reset"
+            title={resetPath || "Fault reset tag not found"}
+          >
+            {"R"}
+          </button>
+          <button
+            type="button"
+            style={buttonStyle}
+            onClick={() => void triggerMotorCommand("Manual", manualPath, manualWriteValue)}
+            aria-label="Manual"
+            title={manualPath || "Manual mode tag not found"}
+          >
+            {manualIcon}
+          </button>
+          <button
+            type="button"
+            style={{ ...buttonStyle, gridColumn: "1 / -1" }}
+            onClick={() => void triggerMotorCommand("Automatic", autoPath, autoWriteValue)}
+            aria-label="Automatic"
+            title={autoPath || "Auto mode tag not found"}
+          >
+            {autoIcon}
+          </button>
+        </div>
+        {writeError ? (
+          <div style={{ fontSize: compact ? 9 : 10, color: "var(--danger)" }}>{writeError}</div>
+        ) : null}
+      </div>
+    );
+  };
   const buildLiveEquipmentDetails = (overlay) => {
     if (!overlay) return [];
     const path = String(overlay.tagPath || "").trim();
+    const eType = resolveOverlayEType(overlay);
     const rows = [];
+    if (eType) rows.push({ key: "UDT", value: eType });
     const groupLive = path
       ? svgLiveValuesByGroupPath.get(path) || svgLiveValuesByGroupPath.get(path.toLowerCase()) || null
       : null;
@@ -1924,6 +2487,15 @@ export default function App() {
   // ---- Project file handle (for Save / Save As) ----
   const projectHandleRef = useRef(null);
 
+  function normalizeScreenAutoFitMode(value, fallback = "content") {
+    const v = String(value || "").trim().toLowerCase();
+    if (v === "off" || v === "none") return "off";
+    if (v === "height") return "height";
+    if (v === "canvas" || v === "contain") return "contain";
+    if (v === "content") return "content";
+    return String(fallback || "content");
+  }
+
   function normalizeScreenPayload(screen, fallback = {}) {
     const name = String(screen?.name || fallback?.name || "Screen 1").trim() || "Screen 1";
     const pan =
@@ -1956,6 +2528,7 @@ export default function App() {
         : fallback?.designScroll && Number.isFinite(fallback.designScroll.x) && Number.isFinite(fallback.designScroll.y)
         ? { x: fallback.designScroll.x, y: fallback.designScroll.y }
         : scroll;
+    const routeId = String(screen?.routeId ?? fallback?.routeId ?? "").trim();
     return {
       id: String(screen?.id || fallback?.id || uid()),
       name,
@@ -1979,6 +2552,12 @@ export default function App() {
           : typeof fallback?.showInLiveMenu === "boolean"
           ? fallback.showInLiveMenu
           : true,
+      routeId,
+      autoFitMode: normalizeScreenAutoFitMode(
+        screen?.autoFitMode,
+        normalizeScreenAutoFitMode(fallback?.autoFitMode, "content")
+      ),
+      zoomByViewport: normalizeZoomByViewportMap(screen?.zoomByViewport || fallback?.zoomByViewport),
     };
   }
 
@@ -2018,6 +2597,16 @@ export default function App() {
             : (currentScreen?.scroll && Number.isFinite(currentScreen.scroll.x) && Number.isFinite(currentScreen.scroll.y)
                 ? { x: currentScreen.scroll.x, y: currentScreen.scroll.y }
                 : { x: 0, y: 0 }));
+    const rect = svgRef.current?.getBoundingClientRect?.();
+    const viewportKey = getViewportZoomKey(rect);
+    const zoomByViewport = normalizeZoomByViewportMap(currentScreen?.zoomByViewport);
+    if (viewportKey) {
+      zoomByViewport[viewportKey] = Number.isFinite(Number(zoomRef.current))
+        ? Number(zoomRef.current)
+        : Number.isFinite(Number(currentScreen?.zoom))
+        ? Number(currentScreen.zoom)
+        : 1;
+    }
     const snapshot = normalizeScreenPayload(
       {
         id: currentId,
@@ -2032,6 +2621,7 @@ export default function App() {
         designZoom,
         scroll: currentScroll,
         designScroll,
+        zoomByViewport,
       },
       {
         ...currentScreen,
@@ -2047,6 +2637,41 @@ export default function App() {
 
   function hydrateScreenState(screen) {
     const next = normalizeScreenPayload(screen);
+    const rect = svgRef.current?.getBoundingClientRect?.();
+    const projectId =
+      normalizeTagValue(activeProjectIdRef.current || activeProjectId || readStoredActiveProjectId()) || "";
+    const viewportKey = getViewportZoomKey(rect);
+    const mappedZoom = viewportKey ? resolveZoomForViewportMap(next?.zoomByViewport, viewportKey) : NaN;
+    const cache = readViewportZoomCache();
+    const cacheLastKey = getViewportZoomCacheLastKey(projectId, String(next.id || ""));
+    const cachedLastZoom = cacheLastKey ? Number(cache[cacheLastKey]) : NaN;
+    const cachedZoom = resolveZoomFromViewportCache(
+      cache,
+      projectId,
+      String(next.id || ""),
+      viewportKey
+    );
+    const resolvedZoom = Number.isFinite(cachedLastZoom)
+      ? cachedLastZoom
+      : Number.isFinite(mappedZoom)
+      ? mappedZoom
+      : Number.isFinite(cachedZoom)
+      ? cachedZoom
+      : Number.isFinite(Number(next?.zoom))
+      ? Number(next.zoom)
+      : 1;
+    if (viewportKey) {
+      next.zoomByViewport = normalizeZoomByViewportMap(next.zoomByViewport);
+      next.zoomByViewport[viewportKey] = resolvedZoom;
+    }
+    activeScreenIdRef.current = next.id;
+    screenNameRef.current = next.name;
+    shapesRef.current = next.shapes;
+    overlaysRef.current = next.svgOverlays;
+    vbWRef.current = next.vbW;
+    vbHRef.current = next.vbH;
+    panRef.current = next.pan;
+    zoomRef.current = resolvedZoom;
     setActiveScreenId(next.id);
     setScreenName(next.name);
     setShapes(next.shapes);
@@ -2054,7 +2679,14 @@ export default function App() {
     setVbW(next.vbW);
     setVbH(next.vbH);
     setPan(next.pan);
-    setZoom(next.zoom);
+    setZoom(resolvedZoom);
+    if (projectId && viewportKey) {
+      const nextCache = readViewportZoomCache();
+      nextCache[`${projectId}|${String(next.id || "")}|${viewportKey}`] = resolvedZoom;
+      const lastKey = getViewportZoomCacheLastKey(projectId, String(next.id || ""));
+      if (lastKey) nextCache[lastKey] = resolvedZoom;
+      writeViewportZoomCache(nextCache);
+    }
     const nextScroll =
       next.scroll && Number.isFinite(next.scroll.x) && Number.isFinite(next.scroll.y)
         ? { x: next.scroll.x, y: next.scroll.y }
@@ -2925,6 +3557,24 @@ function flushScheduledProjectSave() {
   }, [activeProjectId, zoom]);
 
   useEffect(() => {
+    const projectId = normalizeTagValue(activeProjectId);
+    const screenId = normalizeTagValue(activeScreenId);
+    if (!projectId || !screenId) return;
+    const rect = svgRef.current?.getBoundingClientRect?.();
+    const viewportKey = getViewportZoomKey(rect);
+    if (!viewportKey) return;
+    const z = Number(zoom);
+    if (!Number.isFinite(z) || z <= 0) return;
+    const cache = readViewportZoomCache();
+    const key = `${projectId}|${screenId}|${viewportKey}`;
+    if (Number(cache[key]) === z) return;
+    cache[key] = z;
+    const lastKey = getViewportZoomCacheLastKey(projectId, screenId);
+    if (lastKey) cache[lastKey] = z;
+    writeViewportZoomCache(cache);
+  }, [activeProjectId, activeScreenId, zoom, vbW, vbH]);
+
+  useEffect(() => {
     if (!uiPreferenceAutosaveReadyRef.current) {
       uiPreferenceAutosaveReadyRef.current = true;
       return;
@@ -3324,16 +3974,40 @@ function flushScheduledProjectSave() {
       const prevW = Math.max(1, Number(canvasViewportSizeRef.current?.w) || nextW);
       const prevH = Math.max(1, Number(canvasViewportSizeRef.current?.h) || nextH);
       const z = Math.max(0.0001, Number(zoomRef.current) || 1);
+      const activeId = String(activeScreenIdRef.current || "");
+      const prevViewportKey = getViewportZoomKey({ width: prevW, height: prevH });
+      const nextViewportKey = getViewportZoomKey({ width: nextW, height: nextH });
+      const activeScreen =
+        (Array.isArray(screensRef.current) ? screensRef.current : []).find(
+          (s) => String(s?.id || "") === activeId
+        ) || null;
+      const zoomByViewport = normalizeZoomByViewportMap(activeScreen?.zoomByViewport);
+      zoomByViewport[prevViewportKey] = z;
+      const exactNextZoom = Number(zoomByViewport[nextViewportKey]);
+      const targetZoom = Math.max(0.0001, Number.isFinite(exactNextZoom) ? exactNextZoom : z);
+      zoomByViewport[nextViewportKey] = targetZoom;
       const p = panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
         ? panRef.current
         : { x: 0, y: 0 };
       const worldCx = (prevW / 2 - p.x) / z;
       const worldCy = (prevH / 2 - p.y) / z;
       const nextPan = {
-        x: nextW / 2 - worldCx * z,
-        y: nextH / 2 - worldCy * z,
+        x: nextW / 2 - worldCx * targetZoom,
+        y: nextH / 2 - worldCy * targetZoom,
       };
       canvasViewportSizeRef.current = { w: nextW, h: nextH };
+      if (activeId) {
+        setScreens((prev) =>
+          (Array.isArray(prev) ? prev : []).map((screen) =>
+            String(screen?.id || "") === activeId
+              ? { ...screen, zoomByViewport, zoom: targetZoom, pan: nextPan }
+              : screen
+          )
+        );
+      }
+      zoomRef.current = targetZoom;
+      panRef.current = nextPan;
+      setZoom(targetZoom);
       setPan(nextPan);
     };
 
@@ -3491,8 +4165,12 @@ function flushScheduledProjectSave() {
           : `/data/${requested.replace(/^\/+/, "")}`;
         setDatabaseEmbeddedPath(normalized);
       }
+      setDatabaseEmbeddedRouteId(String(options?.databaseRouteId || "").trim());
+      setDatabaseEmbeddedRouteName(String(options?.databaseRouteName || "").trim());
     } else {
       setDatabaseDataOnlyMode(false);
+      setDatabaseEmbeddedRouteId("");
+      setDatabaseEmbeddedRouteName("");
     }
     setShowMainDrawer(true);
   }
@@ -3700,7 +4378,8 @@ function flushScheduledProjectSave() {
   const ZOOM_MIN = 0.25;
   const ZOOM_MAX = 8;
   const ZOOM_STEP = 1.01;
-  const ZOOM_STEP_PERCENT = 1;
+const ZOOM_STEP_PERCENT = 1;
+const CONTENT_FIT_HEADROOM = 0.94;
 
 
   const applySingleTextValue = (v) => {
@@ -3926,6 +4605,11 @@ function flushScheduledProjectSave() {
   const applyViewBox = ({ w, h }) => {
     setVbW(w);
     setVbH(h);
+    const current = (Array.isArray(screensRef.current) ? screensRef.current : []).find(
+      (s) => String(s?.id || "") === String(activeScreenIdRef.current || activeScreenId || "")
+    );
+    const mode = normalizeScreenAutoFitMode(current?.autoFitMode, autoFitCanvasOnResize ? "content" : "off");
+    if (mode !== "off") fitViewToCanvas(w, h, mode, { preservePan: true });
     // resetView?.(); // if you want
   };
 
@@ -3973,18 +4657,181 @@ function flushScheduledProjectSave() {
     return nextPan;
   };
 
-  function fitViewToCanvas() {
+  function getCanvasContentBounds() {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let count = 0;
+
+    const items = Array.isArray(shapesRef.current) ? shapesRef.current : [];
+    for (const s of items) {
+      if (s?.type === "polyline" || Array.isArray(s?.points)) {
+        const bb = bboxOfPoints(s.points || []);
+        if (!bb) continue;
+        minX = Math.min(minX, bb.minX);
+        minY = Math.min(minY, bb.minY);
+        maxX = Math.max(maxX, bb.maxX);
+        maxY = Math.max(maxY, bb.maxY);
+        count += 1;
+        continue;
+      }
+      if (s?.type === "rect") {
+        const x = Number(s.x) || 0;
+        const y = Number(s.y) || 0;
+        const w = Math.max(0, Number(s.width) || 0);
+        const h = Math.max(0, Number(s.height) || 0);
+        if (w <= 0 || h <= 0) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + w);
+        maxY = Math.max(maxY, y + h);
+        count += 1;
+        continue;
+      }
+      if (s?.type === "text") {
+        const x = Number(s.x) || 0;
+        const y = Number(s.y) || 0;
+        const fontSize = Math.max(8, Number(s.fontSize) || 24);
+        const txt = String(s.text || "");
+        const estW = Math.max(10, txt.length * fontSize * 0.6);
+        const estH = Math.max(10, fontSize * 1.2);
+        const anchor = s.anchor === "middle" || s.anchor === "end" ? s.anchor : "start";
+        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+        minX = Math.min(minX, x + ax);
+        minY = Math.min(minY, y - estH);
+        maxX = Math.max(maxX, x + ax + estW);
+        maxY = Math.max(maxY, y);
+        count += 1;
+      }
+    }
+
+    const overlays = Array.isArray(overlaysRef.current) ? overlaysRef.current : [];
+    for (const o of overlays) {
+      const sx = overlayScaleX(o);
+      const sy = overlayScaleY(o);
+      const bb = o?.bbox || overlayLocalBBox(o?.id);
+      if (!bb) continue;
+      const left = (Number(o.tx) || 0) + sx * (Number(bb.x) || 0);
+      const top = (Number(o.ty) || 0) + sy * (Number(bb.y) || 0);
+      const right = left + sx * (Number(bb.width) || 0);
+      const bottom = top + sy * (Number(bb.height) || 0);
+      minX = Math.min(minX, left);
+      minY = Math.min(minY, top);
+      maxX = Math.max(maxX, right);
+      maxY = Math.max(maxY, bottom);
+      count += 1;
+    }
+
+    if (!count || !Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return null;
+    }
+    return {
+      x: minX,
+      y: minY,
+      w: Math.max(1, maxX - minX),
+      h: Math.max(1, maxY - minY),
+    };
+  }
+
+  function fitViewToCanvas(worldWOverride = null, worldHOverride = null, mode = "contain", options = {}) {
+    const preservePan = options?.preservePan === true;
     const el = svgRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const viewW = Math.max(1, Number(rect.width) || 0);
     const viewH = Math.max(1, Number(rect.height) || 0);
-    const worldW = Math.max(1, Number(vbW) || 0);
-    const worldH = Math.max(1, Number(vbH) || 0);
-    const nextZoom = clampZoom(Math.min(viewW / worldW, viewH / worldH));
+    const worldW = Math.max(
+      1,
+      Number.isFinite(Number(worldWOverride)) ? Number(worldWOverride) : Number(vbW) || 0
+    );
+    const worldH = Math.max(
+      1,
+      Number.isFinite(Number(worldHOverride)) ? Number(worldHOverride) : Number(vbH) || 0
+    );
+    const fitMode = String(mode || "contain").toLowerCase();
+    let nextZoom = clampZoom(Math.min(viewW / worldW, viewH / worldH));
+    let nextPan = preservePan
+      ? clampPanToViewport(
+          panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
+            ? panRef.current
+            : { x: 0, y: 0 },
+          nextZoom
+        )
+      : { x: 0, y: 0 };
+
+    if (fitMode === "content") {
+      const bounds = getCanvasContentBounds();
+      if (bounds) {
+        const padPx = 24;
+        const availW = Math.max(1, viewW - padPx * 2);
+        const availH = Math.max(1, viewH - padPx * 2);
+        nextZoom = clampZoom(
+          Math.min(availW / bounds.w, availH / bounds.h) * CONTENT_FIT_HEADROOM
+        );
+        if (!preservePan) {
+          nextPan = {
+            x: (viewW - bounds.w * nextZoom) / 2 - bounds.x * nextZoom,
+            y: (viewH - bounds.h * nextZoom) / 2 - bounds.y * nextZoom,
+          };
+        } else {
+          const currentPan =
+            panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
+              ? panRef.current
+              : { x: 0, y: 0 };
+          const left = bounds.x * nextZoom;
+          const top = bounds.y * nextZoom;
+          const right = (bounds.x + bounds.w) * nextZoom;
+          const bottom = (bounds.y + bounds.h) * nextZoom;
+          const minPanX = padPx - left;
+          const maxPanX = viewW - padPx - right;
+          const minPanY = padPx - top;
+          const maxPanY = viewH - padPx - bottom;
+          const centerPanX = (minPanX + maxPanX) / 2;
+          const centerPanY = (minPanY + maxPanY) / 2;
+          nextPan = {
+            x:
+              minPanX <= maxPanX
+                ? Math.max(minPanX, Math.min(maxPanX, Number(currentPan.x) || 0))
+                : centerPanX,
+            y:
+              minPanY <= maxPanY
+                ? Math.max(minPanY, Math.min(maxPanY, Number(currentPan.y) || 0))
+                : centerPanY,
+          };
+        }
+      }
+    } else if (fitMode === "height") {
+      const heightZoom = (viewH / worldH) * 0.995;
+      nextZoom = clampZoom(heightZoom);
+      nextPan = preservePan
+        ? clampPanToViewport(
+            panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
+              ? panRef.current
+              : { x: 0, y: 0 },
+            nextZoom
+          )
+        : { x: 0, y: 0 };
+    }
+
     setZoom(nextZoom);
-    setPan({ x: 0, y: 0 });
+    setPan(nextPan);
+    const nextScroll = {
+      x: Number(canvasViewportScrollRef.current?.x) || 0,
+      y: 0,
+    };
+    canvasViewportScrollRef.current = nextScroll;
+    setCanvasViewportScrollTarget(nextScroll);
   }
+
+  useEffect(() => {
+    if (!autoFitInitRef.current) {
+      autoFitInitRef.current = true;
+      return;
+    }
+    if (!autoFitCanvasOnResize) return;
+    fitViewToCanvas(null, null, "content");
+  }, [autoFitCanvasOnResize]);
 
   function zoomIn() {
     setZoom((z) => {
@@ -4032,6 +4879,46 @@ function flushScheduledProjectSave() {
     resetZoomToActual100();
     scheduleProjectAutoSave(80);
   }
+
+  function stopZoomHold() {
+    if (zoomHoldTimeoutRef.current) {
+      clearTimeout(zoomHoldTimeoutRef.current);
+      zoomHoldTimeoutRef.current = null;
+    }
+    if (zoomHoldIntervalRef.current) {
+      clearInterval(zoomHoldIntervalRef.current);
+      zoomHoldIntervalRef.current = null;
+    }
+  }
+
+  function startZoomHold(action, event) {
+    if (typeof action !== "function") return;
+    if (event?.button != null && event.button !== 0) return;
+    event?.stopPropagation?.();
+    event?.preventDefault?.();
+    stopZoomHold();
+    action();
+    zoomHoldTimeoutRef.current = setTimeout(() => {
+      zoomHoldIntervalRef.current = setInterval(() => {
+        action();
+      }, 70);
+    }, 240);
+  }
+
+  useEffect(() => {
+    const onRelease = () => stopZoomHold();
+    window.addEventListener("pointerup", onRelease);
+    window.addEventListener("pointercancel", onRelease);
+    window.addEventListener("blur", onRelease);
+    document.addEventListener("visibilitychange", onRelease);
+    return () => {
+      window.removeEventListener("pointerup", onRelease);
+      window.removeEventListener("pointercancel", onRelease);
+      window.removeEventListener("blur", onRelease);
+      document.removeEventListener("visibilitychange", onRelease);
+      stopZoomHold();
+    };
+  }, []);
 
   async function toggleAppFullscreen() {
     if (typeof document === "undefined") return;
@@ -4282,6 +5169,27 @@ function flushScheduledProjectSave() {
     return Number.isFinite(n) ? n : null;
   }
 
+  function extractSvgEType(rawSvg, fileKey = "") {
+    try {
+      const doc = new DOMParser().parseFromString(rawSvg, "image/svg+xml");
+      const svg = doc.querySelector("svg");
+      if (svg) {
+        const direct =
+          String(svg.getAttribute("eType") || "").trim() ||
+          String(svg.getAttribute("etype") || "").trim() ||
+          String(svg.getAttribute("data-etype") || "").trim();
+        if (direct) return direct;
+        const nested = svg.querySelector("[eType],[etype],[data-etype]");
+        const nestedValue =
+          String(nested?.getAttribute?.("eType") || "").trim() ||
+          String(nested?.getAttribute?.("etype") || "").trim() ||
+          String(nested?.getAttribute?.("data-etype") || "").trim();
+        if (nestedValue) return nestedValue;
+      }
+    } catch { }
+    return inferETypeFromFileKey(fileKey);
+  }
+
   function extractKeySize(rawSvg) {
     try {
       const doc = new DOMParser().parseFromString(rawSvg, "image/svg+xml");
@@ -4349,7 +5257,33 @@ function flushScheduledProjectSave() {
     const sourceScreens = Array.isArray(screensRef.current) ? screensRef.current : [];
     const active = sourceScreens.find((s) => String(s?.id || "") === activeId) || sourceScreens[0] || null;
     const next = normalizeScreenPayload(active || {}, { id: activeId || "screen-1", name: screenNameRef.current || "Screen 1" });
-    setZoom(Number.isFinite(next.designZoom) ? next.designZoom : 1);
+    const rect = svgRef.current?.getBoundingClientRect?.();
+    const projectId =
+      normalizeTagValue(activeProjectIdRef.current || activeProjectId || readStoredActiveProjectId()) || "";
+    const viewportKey = getViewportZoomKey(rect);
+    const mappedZoom = viewportKey ? resolveZoomForViewportMap(next?.zoomByViewport, viewportKey) : NaN;
+    const cache = readViewportZoomCache();
+    const cacheLastKey = getViewportZoomCacheLastKey(projectId, String(next.id || ""));
+    const cachedLastZoom = cacheLastKey ? Number(cache[cacheLastKey]) : NaN;
+    const cachedZoom = resolveZoomFromViewportCache(
+      cache,
+      projectId,
+      String(next.id || ""),
+      viewportKey
+    );
+    const resolvedZoom = Number.isFinite(cachedLastZoom)
+      ? cachedLastZoom
+      : Number.isFinite(mappedZoom)
+      ? mappedZoom
+      : Number.isFinite(cachedZoom)
+      ? cachedZoom
+      : Number.isFinite(Number(next.designZoom))
+      ? Number(next.designZoom)
+      : Number.isFinite(Number(next.zoom))
+      ? Number(next.zoom)
+      : 1;
+    setZoom(resolvedZoom);
+    zoomRef.current = resolvedZoom;
     setPan(
       next.designPan && Number.isFinite(next.designPan.x) && Number.isFinite(next.designPan.y)
         ? { x: next.designPan.x, y: next.designPan.y }
@@ -4361,6 +5295,13 @@ function flushScheduledProjectSave() {
         : { x: 0, y: 0 };
     canvasViewportScrollRef.current = nextScroll;
     setCanvasViewportScrollTarget(nextScroll);
+    if (projectId && viewportKey) {
+      const nextCache = readViewportZoomCache();
+      nextCache[`${projectId}|${String(next.id || "")}|${viewportKey}`] = resolvedZoom;
+      const lastKey = getViewportZoomCacheLastKey(projectId, String(next.id || ""));
+      if (lastKey) nextCache[lastKey] = resolvedZoom;
+      writeViewportZoomCache(nextCache);
+    }
   }
 
   function rectsIntersect(a, b) {
@@ -5134,6 +6075,7 @@ function flushScheduledProjectSave() {
 
   async function buildOverlayFromKey(fileKey, center, targetW) {
     const entry = getSvgEntry(fileKey);
+    const fallbackEType = inferETypeFromFileKey(fileKey);
     if (!entry) {
       const w = Math.max(40, Number(targetW) || 120);
       const h = Math.max(30, w * 0.6);
@@ -5150,6 +6092,7 @@ function flushScheduledProjectSave() {
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         tagPath: "",
+        eType: fallbackEType,
         bbox,
       };
     }
@@ -5171,6 +6114,7 @@ function flushScheduledProjectSave() {
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         tagPath: "",
+        eType: fallbackEType,
         bbox,
       };
     }
@@ -5192,11 +6136,13 @@ function flushScheduledProjectSave() {
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         tagPath: "",
+        eType: fallbackEType,
         bbox,
       };
     }
 
     const key = extractKeySize(raw);
+    const eType = extractSvgEType(raw, fileKey);
     const hasKey = !!(key && key.w > 0 && key.h > 0);
     const baseVb = parsed.vb;
     let localVb = key ? { x: 0, y: 0, w: key.w, h: key.h } : baseVb;
@@ -5235,6 +6181,7 @@ function flushScheduledProjectSave() {
       fill: DEFAULT_FILL,
       stroke: DEFAULT_STROKE,
       tagPath: "",
+      eType,
       bbox,
     };
   }
@@ -6136,7 +7083,7 @@ function flushScheduledProjectSave() {
     const availH = vbH - pad * 2;
 
     const key = extractKeySize(raw);
-    console.log("🔑 extractKeySize:", key);
+    const parsedEType = extractSvgEType(raw, fileKey);
     const baseVb = parsed.vb; // {x,y,w,h}
 
     // ✅ If key exists, overlay local coords become 0..key.w / 0..key.h
@@ -6192,6 +7139,7 @@ function flushScheduledProjectSave() {
         scale,
         fill: DEFAULT_FILL,
         tagPath: "",
+        eType: String(overlayExtras?.eType || parsedEType || "").trim(),
         bbox,
         ...overlayExtras,
         stroke: DEFAULT_STROKE,
@@ -7298,6 +8246,7 @@ function flushScheduledProjectSave() {
     disabled: isLiveMode,
     allowModeToggleWhenDisabled: true,
     toggleProjectMode: toggleProjectModeShortcut,
+    saveProject: () => saveProjectToDb({ silent: false, teamMerge: true }),
     drawing,
     editingId,
     importOpen,
@@ -8048,8 +8997,8 @@ function flushScheduledProjectSave() {
         const ratio = d / startDist;
         const base = Array.isArray(overlayResize.overlays) ? overlayResize.overlays : [];
         const byId = new Map(base.map((o) => [String(o.id), o]));
-        setSvgOverlays((prev) =>
-          prev.map((o) => {
+        setSvgOverlays((prev) => {
+          const next = prev.map((o) => {
             const rec = byId.get(String(o.id));
             if (!rec) return o;
             const sx = Math.max(0.05, Number(rec.sx || 1) * ratio);
@@ -8060,8 +9009,10 @@ function flushScheduledProjectSave() {
             if (!bb) return { ...o, tx: txRaw, ty: tyRaw, scale: sx, scaleX: sx, scaleY: sy };
             const clamped = clampOverlayTransformToCanvas(txRaw, tyRaw, sx, sy, bb);
             return { ...o, tx: clamped.tx, ty: clamped.ty, scale: sx, scaleX: sx, scaleY: sy };
-          })
-        );
+          });
+          overlaysRef.current = next;
+          return next;
+        });
         return;
       }
       const { id, isWidget, anchorLocal, anchorWorld, startDist, origScaleX, origScaleY } = overlayResize;
@@ -8083,8 +9034,8 @@ function flushScheduledProjectSave() {
           width,
           height,
         });
-        setSvgOverlays((prev) =>
-          prev.map((x) =>
+        setSvgOverlays((prev) => {
+          const next = prev.map((x) =>
             x.id === id
               ? {
                   ...x,
@@ -8096,8 +9047,10 @@ function flushScheduledProjectSave() {
                   bbox: { x: 0, y: 0, width, height },
                 }
               : x
-          )
-        );
+          );
+          overlaysRef.current = next;
+          return next;
+        });
         return;
       }
 
@@ -8113,13 +9066,15 @@ function flushScheduledProjectSave() {
         ? clampOverlayTransformToCanvas(newTxRaw, newTyRaw, newScaleX, newScaleY, bb)
         : { tx: newTxRaw, ty: newTyRaw };
 
-      setSvgOverlays((prev) =>
-        prev.map((x) =>
+      setSvgOverlays((prev) => {
+        const next = prev.map((x) =>
           x.id === id
             ? { ...x, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY, tx: clamped.tx, ty: clamped.ty }
             : x
-        )
-      );
+        );
+        overlaysRef.current = next;
+        return next;
+      });
       return;
     }
 
@@ -8127,14 +9082,16 @@ function flushScheduledProjectSave() {
       if (maybeAutoPanDuringDrag(e)) {
         p = drawing?.mode === "draw-poly" ? svgPoint(e, { snapToGrid: true }) : svgPoint(e, { snapToGrid: false });
       }
-      setShapes((prev) =>
-        prev.map((s) => {
+      setShapes((prev) => {
+        const next = prev.map((s) => {
           if (s.id !== dragHandle.id) return s;
           const pts = s.points.slice();
           pts[dragHandle.index] = { x: p.x, y: p.y };
           return { ...s, points: pts };
-        })
-      );
+        });
+        shapesRef.current = next;
+        return next;
+      });
       return;
     }
 
@@ -8147,8 +9104,8 @@ function flushScheduledProjectSave() {
       const maxY = Math.max(0, Number(vbH) || 0);
 
       if (dragAll.shapes?.length) {
-        setShapes((prev) =>
-          prev.map((s) => {
+        setShapes((prev) => {
+          const next = prev.map((s) => {
             const rec = dragAll.shapes.find((x) => x.id === s.id);
             if (!rec) return s;
 
@@ -8198,8 +9155,10 @@ function flushScheduledProjectSave() {
             }
 
             return s;
-          })
-        );
+          });
+          shapesRef.current = next;
+          return next;
+        });
       }
 
     if (dragAll.overlays?.length) {
@@ -8220,6 +9179,7 @@ function flushScheduledProjectSave() {
       if (dynamicCanvasW > maxX + 0.5) {
         const nextW = Math.ceil(dynamicCanvasW);
         setVbW(nextW);
+        vbWRef.current = nextW;
         setScreens((prev) =>
           (Array.isArray(prev) ? prev : []).map((s) =>
             String(s?.id || "") === String(activeScreenId || "")
@@ -8229,8 +9189,8 @@ function flushScheduledProjectSave() {
         );
       }
 
-      setSvgOverlays((prev) =>
-        prev.map((o) => {
+      setSvgOverlays((prev) => {
+        const next = prev.map((o) => {
           const rec = dragAll.overlays.find((x) => x.id === o.id);
           if (!rec) return o;
           const bb = o?.bbox || overlayLocalBBox(o.id);
@@ -8246,8 +9206,10 @@ function flushScheduledProjectSave() {
             { canvasW: dynamicCanvasW, canvasH: maxY }
           );
           return { ...o, tx: clamped.tx, ty: clamped.ty };
-        })
-      );
+        });
+        overlaysRef.current = next;
+        return next;
+      });
     }
       return;
     }
@@ -8259,9 +9221,11 @@ function flushScheduledProjectSave() {
       const y = Math.min(sy, p.y);
       const width = Math.abs(p.x - sx);
       const height = Math.abs(p.y - sy);
-      setShapes((prev) =>
-        prev.map((s) => (s.id === drawing.id ? { ...s, x, y, width, height } : s))
-      );
+      setShapes((prev) => {
+        const next = prev.map((s) => (s.id === drawing.id ? { ...s, x, y, width, height } : s));
+        shapesRef.current = next;
+        return next;
+      });
       return;
     }
 
@@ -8364,9 +9328,30 @@ function flushScheduledProjectSave() {
       setSelectedSegment(null);
       exitEditMode();
     }
-    if (movedSomething) scheduleProjectAutoSave();
+    if (movedSomething) scheduleProjectAutoSave(80);
     if (drawing?.mode === "draw-rect" && drawing.id) finishRectDrawing(drawing.id);
   }
+
+  useEffect(() => {
+    const isDragging =
+      Boolean(dragAll) ||
+      Boolean(dragHandle) ||
+      Boolean(overlayResize) ||
+      Boolean(marquee) ||
+      Boolean(canvasPanDrag) ||
+      String(drawing?.mode || "") === "draw-rect";
+    if (!isDragging) return;
+    const handleMove = (e) => onMouseMove(e);
+    const handleUp = () => onMouseUp();
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    window.addEventListener("blur", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+      window.removeEventListener("blur", handleUp);
+    };
+  }, [dragAll, dragHandle, overlayResize, marquee, canvasPanDrag, drawing, onMouseMove, onMouseUp]);
 
 
 
@@ -8796,6 +9781,33 @@ function flushScheduledProjectSave() {
     if (!m) return "";
     return decodeURIComponent(String(m[1] || "")).trim();
   }, [databaseEmbeddedPath]);
+  const routeInfoById = useMemo(() => {
+    const rows = Array.isArray(projectRouteRows) ? projectRouteRows : [];
+    const map = new Map();
+    rows.forEach((row) => {
+      const id = String(
+        row?.route_id ??
+          row?.routeid ??
+          row?.routeId ??
+          row?.id ??
+          row?.route ??
+          ""
+      ).trim();
+      if (!id) return;
+      const name = String(
+        row?.name ??
+          row?.route_name ??
+          row?.routename ??
+          row?.routeName ??
+          row?.label ??
+          row?.description ??
+          id
+      ).trim() || id;
+      if (!map.has(id)) map.set(id, { id, name });
+      if (!map.has(id.toLowerCase())) map.set(id.toLowerCase(), { id, name });
+    });
+    return map;
+  }, [projectRouteRows]);
   const activeMenuLabel = useMemo(() => {
     const fallback = activeScreen?.name || screenName || "None";
     if (!isLiveMode) return fallback;
@@ -8810,12 +9822,12 @@ function flushScheduledProjectSave() {
             drawerView === "database" &&
             (configuredTable ? configuredTable === activeDatabaseTable : true);
           if (!isActiveData) continue;
-          return String(item?.label || "").trim() || normalizeTableDisplayName(configuredTable) || "Data";
+          return resolveLiveMenuItemLabel(item, null);
         }
         const screenId = String(item?.screenId || "");
         if (!screenId || screenId !== String(activeScreenId || "")) continue;
         const screen = screens.find((s) => String(s?.id || "") === screenId) || null;
-        return String(item?.label || "").trim() || String(screen?.name || "Screen");
+        return resolveLiveMenuItemLabel(item, screen);
       }
     }
     return fallback;
@@ -8826,10 +9838,25 @@ function flushScheduledProjectSave() {
     drawerView,
     isLiveMode,
     liveMenuGroupsVisible,
+    resolveLiveMenuItemLabel,
     screenName,
     screens,
     showMainDrawer,
   ]);
+  const screenRouteOptions = useMemo(() => {
+    const out = [];
+    const seen = new Set();
+    for (const route of routeInfoById.values()) {
+      const value = String(route?.id || "").trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ value, label: String(route?.name || value).trim() || value });
+    }
+    out.sort((a, b) => a.label.localeCompare(b.label));
+    return out;
+  }, [routeInfoById]);
   const opcLiveValueCount = useMemo(
     () => Object.keys(opcLiveValues || {}).length,
     [opcLiveValues]
@@ -8927,7 +9954,10 @@ function flushScheduledProjectSave() {
         vbH: 900,
         pan: { x: 0, y: 0 },
         zoom: 1,
+        zoomByViewport: {},
         showInLiveMenu: true,
+        routeId: "",
+        autoFitMode: "content",
       }),
     ];
     screensRef.current = next;
@@ -9063,6 +10093,12 @@ function flushScheduledProjectSave() {
     return Math.max(100, Math.min(10000, n));
   }
 
+  function getScreenAutoFitModeById(screenId) {
+    const id = String(screenId || "");
+    const target = (Array.isArray(screens) ? screens : []).find((s) => String(s?.id || "") === id);
+    return normalizeScreenAutoFitMode(target?.autoFitMode, autoFitCanvasOnResize ? "content" : "off");
+  }
+
   function updateScreenCanvasSizeById(screenId, widthRaw, heightRaw) {
     const id = String(screenId || "");
     if (!id) return;
@@ -9073,10 +10109,49 @@ function flushScheduledProjectSave() {
         String(s?.id || "") === id ? { ...s, vbW: nextW, vbH: nextH } : s
       )
     );
-    if (String(activeScreenId || "") === id) {
+    const activeId = String(activeScreenIdRef.current || activeScreenId || "");
+    if (activeId === id) {
       setVbW(nextW);
       setVbH(nextH);
+      vbWRef.current = nextW;
+      vbHRef.current = nextH;
+      const mode = getScreenAutoFitModeById(id);
+      if (mode !== "off") fitViewToCanvas(nextW, nextH, mode, { preservePan: true });
     }
+    scheduleProjectAutoSave();
+  }
+
+  function updateScreenAutoFitModeById(screenId, modeRaw) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const mode = normalizeScreenAutoFitMode(modeRaw, "content");
+    setScreens((prev) =>
+      (Array.isArray(prev) ? prev : []).map((s) =>
+        String(s?.id || "") === id ? { ...s, autoFitMode: mode } : s
+      )
+    );
+    if (mode !== "off") {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const activeId = String(activeScreenIdRef.current || activeScreenId || "");
+          if (activeId === id) {
+            fitViewToCanvas(null, null, mode);
+          }
+        });
+      });
+    }
+    scheduleProjectAutoSave();
+  }
+
+  function updateScreenRouteIdById(screenId, routeIdRaw) {
+    const id = String(screenId || "");
+    if (!id) return;
+    const nextRouteId = String(routeIdRaw || "").trim();
+    setScreens((prev) =>
+      (Array.isArray(prev) ? prev : []).map((s) =>
+        String(s?.id || "") === id ? { ...s, routeId: nextRouteId } : s
+      )
+    );
     scheduleProjectAutoSave();
   }
 
@@ -9321,6 +10396,40 @@ function flushScheduledProjectSave() {
     scheduleProjectAutoSave();
   }
 
+  function getRouteContextForScreenId(screenId) {
+    const id = String(screenId || "").trim();
+    if (!id) return { routeId: "", routeName: "" };
+    const screen = (Array.isArray(screens) ? screens : []).find((s) => String(s?.id || "") === id) || null;
+    const routeId = String(screen?.routeId || "").trim();
+    if (!routeId) return { routeId: "", routeName: "" };
+    const route =
+      routeInfoById.get(routeId) ||
+      routeInfoById.get(routeId.toLowerCase()) ||
+      null;
+    const routeName = String(route?.name || routeId).trim() || routeId;
+    return { routeId, routeName };
+  }
+
+  function resolveLiveMenuItemLabel(item, screen = null) {
+    const isData = item?.type === "data";
+    if (isData) {
+      const configuredTable = String(item?.dataTable || "").trim();
+      return (
+        String(item?.label || "").trim() ||
+        normalizeTableDisplayName(configuredTable) ||
+        "Data"
+      );
+    }
+    const targetScreen =
+      screen ||
+      (Array.isArray(screens)
+        ? screens.find((s) => String(s?.id || "") === String(item?.screenId || "")) || null
+        : null);
+    const { routeName } = getRouteContextForScreenId(targetScreen?.id || item?.screenId);
+    if (routeName) return routeName;
+    return String(item?.label || "").trim() || String(targetScreen?.name || "Screen");
+  }
+
   function activateLiveMenuItem(item) {
     if (!item || typeof item !== "object") return;
     if (!canOpenLiveMenuItem(item)) {
@@ -9347,6 +10456,42 @@ function flushScheduledProjectSave() {
     const screenId = String(item.screenId || "");
     if (!screenId) return;
     switchToScreen(screenId);
+  }
+
+  function openImportDock() {
+    setWidgetOpen(false);
+    setImportOpen(true);
+  }
+
+  function openWidgetDock() {
+    setImportOpen(false);
+    setWidgetOpen(true);
+  }
+
+  function openDockedJobForm(item = null) {
+    if (item && !canOpenLiveMenuItem(item)) {
+      const roleRestricted = isLiveMenuItemRoleRestricted(item);
+      toastError(
+        roleRestricted
+          ? "This menu item is locked for your role."
+          : "You do not have permission to open this page."
+      );
+      return;
+    }
+    if (!canViewDataPages) {
+      toastError("You do not have permission to open Database pages.");
+      return;
+    }
+    const routeCtx =
+      item && String(item?.type || "").trim().toLowerCase() !== "data"
+        ? getRouteContextForScreenId(item?.screenId)
+        : { routeId: "", routeName: "" };
+    openDrawer("database", {
+      forceDatabaseDataTab: true,
+      databasePath: "/data/jobs",
+      databaseRouteId: routeCtx.routeId,
+      databaseRouteName: routeCtx.routeName,
+    });
   }
 
   function toggleLiveMenuGroupCollapse(groupId) {
@@ -9427,6 +10572,9 @@ function flushScheduledProjectSave() {
   const canvasLeftInsetPx = canvasLeftInsetBasePx + liveCanvasMenuGapPx;
   const liveAlarmBarOffset = isLiveMode ? LIVE_ALARM_BAR_H : 0;
   const leftDrawerTopPx = TOP_BAR_H + (isLiveMode ? liveAlarmBarOffset : 0);
+  const designRulerInsetPx = !isLiveMode && showRulers ? RULER_SIZE + 8 : 8;
+  const teamChatDesktopTopPx = !isLiveMode ? TOP_BAR_H + designRulerInsetPx : undefined;
+  const teamChatDesktopRightPx = !isLiveMode ? designRulerInsetPx : 20;
   const [liveAlarmOccurredAtById, setLiveAlarmOccurredAtById] = useState({});
   const liveActiveAlarmsWithOccurred = useMemo(
     () =>
@@ -9680,8 +10828,8 @@ function flushScheduledProjectSave() {
           selectedSegment={selectedSegment}
           editingId={editingId}
         showTagPaths={showTagPaths}
-        showGrid={!isLiveMode && showGrid}
-        showRulers={!isLiveMode && showRulers}
+        showGrid={projectIdentityReady && !isLiveMode && showGrid}
+        showRulers={projectIdentityReady && !isLiveMode && showRulers}
         onSvgMouseDown={canvasReadOnly ? () => {} : onSvgMouseDown}
         onMouseMove={canvasReadOnly ? () => {} : onMouseMove}
         onMouseUp={canvasReadOnly ? () => {} : onMouseUp}
@@ -9802,6 +10950,9 @@ function flushScheduledProjectSave() {
               Tag Path: {String(liveEquipmentDrawerEntry.overlay?.tagPath || "-")}
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              eType: {String(resolveOverlayEType(liveEquipmentDrawerEntry.overlay) || "-")}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
               Overlay ID: {String(liveEquipmentDrawerEntry.overlay?.id || "-")}
             </div>
           </div>
@@ -9822,6 +10973,7 @@ function flushScheduledProjectSave() {
                 No live values found for this equipment.
               </div>
             )}
+            {renderLiveMotorControls(liveEquipmentDrawerEntry.overlay, false)}
           </div>
         </div>
       ) : null}
@@ -9956,6 +11108,9 @@ function flushScheduledProjectSave() {
                   Tag Path: {String(overlay.tagPath || "-")}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  eType: {String(resolveOverlayEType(overlay) || "-")}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Overlay ID: {String(overlay.id || "-")}
                 </div>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
@@ -9973,6 +11128,7 @@ function flushScheduledProjectSave() {
                     <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
                   )}
                 </div>
+                {renderLiveMotorControls(overlay, true)}
                     </div>
                   ))}
                 </div>
@@ -10082,6 +11238,9 @@ function flushScheduledProjectSave() {
                   Tag Path: {String(overlay.tagPath || "-")}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  eType: {String(resolveOverlayEType(overlay) || "-")}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Overlay ID: {String(overlay.id || "-")}
                 </div>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
@@ -10099,6 +11258,7 @@ function flushScheduledProjectSave() {
                     <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
                   )}
                 </div>
+                {renderLiveMotorControls(overlay, true)}
               </div>
             );
           })}
@@ -10305,15 +11465,15 @@ function flushScheduledProjectSave() {
                 </svg>
                 {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Export SVG</span> : null}
               </button>
-              <button title="Add SVG" onClick={() => setImportOpen(true)} style={dockToolButtonStyle(false)}>
+              <button title="Import SVG" onClick={openImportDock} style={dockToolButtonStyle(false)}>
                 <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
                   <path d="M14 3v5h5" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
                   <path d="M12 11v6M9 14h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                 </svg>
-                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Add SVG</span> : null}
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Import SVG</span> : null}
               </button>
-              <button title="Add Widget" style={dockToolButtonStyle(false)} onClick={() => setWidgetOpen(true)}>
+              <button title="Add Widget" style={dockToolButtonStyle(false)} onClick={openWidgetDock}>
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <rect x="3" y="12" width="4" height="8" rx="1" stroke="currentColor" strokeWidth="2" />
                   <rect x="10" y="8" width="4" height="12" rx="1" stroke="currentColor" strokeWidth="2" />
@@ -10321,6 +11481,12 @@ function flushScheduledProjectSave() {
                 </svg>
                 {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Add Widget</span> : null}
               </button>
+              <div style={{ height: 1, width: "100%", background: "var(--border)", opacity: 0.7, margin: "4px 0 2px" }} />
+              {designDockExpanded ? (
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)", padding: "0 6px" }}>
+                  Draw
+                </div>
+              ) : null}
               <button className="top-menu-btn" title="Move" style={dockToolButtonStyle(tool === "select")} onClick={() => { setTool("select"); setDrawing(null); }}>
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <path d="M4 3l7 18 2-7 7-2L4 3z" stroke="currentColor" strokeWidth="2" />
@@ -10379,25 +11545,31 @@ function flushScheduledProjectSave() {
                 </svg>
                 {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Text</span> : null}
               </button>
-              <button className="top-menu-btn" title="Toggle Tag Paths" style={dockToolButtonStyle(!!showTagPaths)} onClick={() => setShowTagPaths((v) => !v)}>
+              <div style={{ height: 1, width: "100%", background: "var(--border)", opacity: 0.7, margin: "4px 0 2px" }} />
+              {designDockExpanded ? (
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-muted)", padding: "0 6px" }}>
+                  Display
+                </div>
+              ) : null}
+              <button className="top-menu-btn" title="Show TagPaths" style={dockToolButtonStyle(!!showTagPaths)} onClick={() => setShowTagPaths((v) => !v)}>
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <path d="M4 12l8-8h6l2 2v6l-8 8-8-8z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
                   <circle cx="16" cy="8" r="1.5" fill="currentColor" />
                 </svg>
-                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Tag Paths</span> : null}
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Show TagPaths</span> : null}
               </button>
-              <button className="top-menu-btn" title="Toggle Grid" style={dockToolButtonStyle(!!showGrid)} onClick={() => setShowGrid((v) => !v)}>
+              <button className="top-menu-btn" title="Show Grid" style={dockToolButtonStyle(!!showGrid)} onClick={() => setShowGrid((v) => !v)}>
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" stroke="currentColor" strokeWidth="2" />
                 </svg>
-                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Grid</span> : null}
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Show Grid</span> : null}
               </button>
-              <button className="top-menu-btn" title="Toggle Rulers" style={dockToolButtonStyle(!!showRulers)} onClick={() => setShowRulers((v) => !v)}>
+              <button className="top-menu-btn" title="Show Ruler" style={dockToolButtonStyle(!!showRulers)} onClick={() => setShowRulers((v) => !v)}>
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <path d="M4 4h16v4H4zM4 10h16v10H4z" stroke="currentColor" strokeWidth="2" />
                   <path d="M8 4v4M12 4v4M16 4v4" stroke="currentColor" strokeWidth="2" />
                 </svg>
-                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Rulers</span> : null}
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Show Ruler</span> : null}
               </button>
             </div>
           ) : null}
@@ -10414,20 +11586,52 @@ function flushScheduledProjectSave() {
           >
             {/* Zoom buttons */}
             {[
-              { label: "+", onClick: zoomIn, title: "Zoom In" },
-              { label: "−", onClick: zoomOut, title: "Zoom Out" },
-              { label: "⟲", onClick: zoomReset, title: "Reset Zoom (100%)" },
+              { label: "+", onClick: zoomIn, holdAction: zoomIn, title: "Zoom In" },
+              { label: "-", onClick: zoomOut, holdAction: zoomOut, title: "Zoom Out" },
+              { label: "R", onClick: zoomReset, title: "Reset Zoom (100%)" },
               {
-                label: isAppFullscreen ? "⤢" : "⛶",
+                label: isAppFullscreen ? "[]-" : "[]",
                 onClick: toggleAppFullscreen,
                 title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
+              },
+              {
+                label: "S",
+                onClick: () => saveProjectToDb({ silent: false, teamMerge: true }),
+                title: "Save Project",
+                disabled: String(projectStatus || "").trim().toLowerCase() === "saving...",
               },
             ].map((btn) => (
               <button
                 key={btn.title}
                 title={btn.title}
+                disabled={!!btn.disabled}
                 onMouseDown={(e) => e.stopPropagation()}
-                onClick={btn.onClick}
+                onPointerDown={(e) => {
+                  if (btn.disabled) return;
+                  if (btn.holdAction) {
+                    startZoomHold(btn.holdAction, e);
+                    return;
+                  }
+                  e.stopPropagation();
+                }}
+                onPointerUp={() => {
+                  if (btn.holdAction) stopZoomHold();
+                }}
+                onPointerCancel={() => {
+                  if (btn.holdAction) stopZoomHold();
+                }}
+                onPointerLeave={() => {
+                  if (btn.holdAction) stopZoomHold();
+                }}
+                onKeyDown={(e) => {
+                  if (btn.disabled) return;
+                  if (!btn.holdAction) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    btn.holdAction();
+                  }
+                }}
+                onClick={btn.holdAction ? undefined : btn.onClick}
                 style={{
                   ...(isLiveMode ? {} : dockToolButtonStyle(false)),
                   width: isLiveMode ? 26 : designDockExpanded ? "100%" : topMenuIconButtonStyle.width,
@@ -10439,11 +11643,14 @@ function flushScheduledProjectSave() {
                   boxShadow: isLiveMode ? "0 6px 18px rgba(0,0,0,0.10)" : undefined,
                   display: "inline-flex",
                   alignItems: "center",
-                  justifyContent: designDockExpanded ? "flex-start" : "center",
+                  justifyContent: "center",
                   gap: designDockExpanded ? 8 : 0,
                   padding: designDockExpanded ? "0 8px" : 0,
                   fontSize: 13,
+                  fontWeight: 700,
                   lineHeight: 1,
+                  opacity: btn.disabled ? 0.6 : 1,
+                  cursor: btn.disabled ? "not-allowed" : "pointer",
                 }}
               >
                 {btn.label}
@@ -10453,7 +11660,7 @@ function flushScheduledProjectSave() {
               </button>
             ))}
 
-            {/* ❌ Hide button (toolbar style, bottom) */}
+            {/* Hide button (toolbar style, bottom) */}
             <button
               title="Hide Zoom"
               onMouseDown={(e) => e.stopPropagation()}
@@ -10470,19 +11677,19 @@ function flushScheduledProjectSave() {
                 boxShadow: isLiveMode ? "0 6px 18px rgba(0,0,0,0.10)" : undefined,
                 display: "inline-flex",
                 alignItems: "center",
-                justifyContent: designDockExpanded ? "flex-start" : "center",
+                justifyContent: "center",
                 gap: designDockExpanded ? 8 : 0,
                 padding: designDockExpanded ? "0 8px" : 0,
                 fontSize: isLiveMode ? 11 : 13,
+                fontWeight: 700,
                 lineHeight: 1,
               }}
             >
-              ✕
+              X
               {!isLiveMode && designDockExpanded ? (
                 <span style={{ fontSize: 11, fontWeight: 700 }}>Hide Dock</span>
               ) : null}
             </button>
-
             {/* zoom % */}
             <div
               style={{
@@ -10714,7 +11921,7 @@ function flushScheduledProjectSave() {
               <div
                 style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
                 onClick={() => {
-                  setWidgetOpen(true);
+                  openWidgetDock();
                   setContextMenu(null);
                 }}
               >
@@ -11226,6 +12433,8 @@ function flushScheduledProjectSave() {
                       <DataBrowser
                         embedded
                         embeddedPath={databaseEmbeddedPath}
+                        embeddedRouteId={databaseEmbeddedRouteId}
+                        embeddedRouteName={databaseEmbeddedRouteName}
                         hideTableSelector={isLiveMode && databaseDataOnlyMode}
                         hideListFieldControls={isLiveMode && databaseDataOnlyMode}
                         useWhiteBackground={useLightLiveDataSurface}
@@ -11240,6 +12449,8 @@ function flushScheduledProjectSave() {
                       <DataBrowser
                         embedded
                         embeddedPath={databaseEmbeddedPath}
+                        embeddedRouteId={databaseEmbeddedRouteId}
+                        embeddedRouteName={databaseEmbeddedRouteName}
                         hideTableSelector={isLiveMode && databaseDataOnlyMode}
                         hideListFieldControls={isLiveMode && databaseDataOnlyMode}
                         useWhiteBackground={useLightLiveDataSurface}
@@ -11916,6 +13127,18 @@ function flushScheduledProjectSave() {
                     paddingBottom: 1,
                   }}
                 >
+              <button
+                title="Save Project"
+                style={topMenuIconButtonStyle}
+                onClick={() => saveProjectToDb({ silent: false, teamMerge: true })}
+                disabled={String(projectStatus || "").trim().toLowerCase() === "saving..."}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M5 4h11l3 3v13H5V4z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <path d="M8 4v6h8V4" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  <path d="M9 20v-6h6v6" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                </svg>
+              </button>
               <button title="Export SVG" style={topMenuIconButtonStyle} onClick={exportSVG}>
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <path
@@ -11929,8 +13152,8 @@ function flushScheduledProjectSave() {
                 </svg>
               </button>
               <button
-                title="Add SVG"
-                onClick={() => setImportOpen(true)}
+                title="Import SVG"
+                onClick={openImportDock}
                 style={topMenuIconButtonStyle}
               >
                 <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -11939,7 +13162,7 @@ function flushScheduledProjectSave() {
                   <path d="M12 11v6M9 14h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                 </svg>
               </button>
-              <button title="Add Widget" style={topMenuIconButtonStyle} onClick={() => setWidgetOpen(true)}>
+              <button title="Add Widget" style={topMenuIconButtonStyle} onClick={openWidgetDock}>
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <rect x="3" y="12" width="4" height="8" rx="1" stroke="currentColor" strokeWidth="2" />
                   <rect x="10" y="8" width="4" height="12" rx="1" stroke="currentColor" strokeWidth="2" />
@@ -12019,9 +13242,10 @@ function flushScheduledProjectSave() {
                   />
                 </svg>
               </button>
+              <div style={{ width: 1, height: 18, background: "var(--border)", opacity: 0.7, margin: "0 2px" }} />
               <button
                 className="top-menu-btn"
-                title="Toggle Tag Paths"
+                title="Show TagPaths"
                 style={topMenuModeButtonStyle(!!showTagPaths)}
                 onClick={() => setShowTagPaths((v) => !v)}
               >
@@ -12037,7 +13261,7 @@ function flushScheduledProjectSave() {
               </button>
               <button
                 className="top-menu-btn"
-                title="Toggle Grid"
+                title="Show Grid"
                 style={topMenuModeButtonStyle(!!showGrid)}
                 onClick={() => setShowGrid((v) => !v)}
               >
@@ -12051,7 +13275,7 @@ function flushScheduledProjectSave() {
               </button>
               <button
                 className="top-menu-btn"
-                title="Toggle Rulers"
+                title="Show Ruler"
                 style={topMenuModeButtonStyle(!!showRulers)}
                 onClick={() => setShowRulers((v) => !v)}
               >
@@ -12136,11 +13360,7 @@ function flushScheduledProjectSave() {
               liveMenuMobileItems.map(({ groupName, item }, idx) => {
                 const isData = item?.type === "data";
                 const screen = !isData ? screens.find((s) => s.id === item.screenId) || null : null;
-                const label =
-                  String(item?.label || "").trim() ||
-                  (isData
-                    ? normalizeTableDisplayName(String(item?.dataTable || "").trim()) || "Data"
-                    : String(screen?.name || "Screen"));
+                const label = resolveLiveMenuItemLabel(item, screen);
                 const active = isData
                   ? showMainDrawer &&
                     drawerView === "database" &&
@@ -12561,11 +13781,7 @@ function flushScheduledProjectSave() {
                   {!groupCollapsed && group.items.map((item) => {
                     const isData = item.type === "data";
                     const screen = !isData ? screens.find((s) => s.id === item.screenId) || null : null;
-                    const label =
-                      String(item.label || "").trim() ||
-                      (isData
-                        ? String(item.dataTable || "").trim() || "Data"
-                        : String(screen?.name || "Screen"));
+                    const label = resolveLiveMenuItemLabel(item, screen);
                     const active = isData
                       ? showMainDrawer &&
                         drawerView === "database" &&
@@ -12582,79 +13798,102 @@ function flushScheduledProjectSave() {
                       .slice(0, 3)
                       .toUpperCase() || (isData ? "DAT" : "SCR");
                     const collapsedHover = !liveMenuIsExpanded && liveMenuHoverItemId === String(item.id || "");
+                    const showJobFormBtn = liveMenuIsExpanded && !isData;
                     return (
-                      <button
+                      <div
                         key={`live-menu-item-${item.id}`}
-                        onClick={locked ? undefined : () => activateLiveMenuItem(item)}
-                        onMouseEnter={() => {
-                          if (!liveMenuIsExpanded) setLiveMenuHoverItemId(String(item.id || ""));
+                        style={{
+                          width: liveMenuIsExpanded ? "100%" : 36,
+                          justifySelf: liveMenuIsExpanded ? "stretch" : "center",
+                          display: "grid",
+                          gridTemplateColumns: showJobFormBtn ? "1fr auto" : "1fr",
+                          alignItems: "center",
+                          gap: showJobFormBtn ? 6 : 0,
                         }}
-                        onMouseLeave={() => {
-                          if (!liveMenuIsExpanded) setLiveMenuHoverItemId("");
-                        }}
-                        disabled={locked}
-                        data-preserve-style="true"
-	                        style={{
-	                          width: liveMenuIsExpanded ? "100%" : 36,
-                            justifySelf: liveMenuIsExpanded ? "stretch" : "center",
-	                          minHeight: liveMenuIsExpanded
+                      >
+                        <button
+                          onClick={locked ? undefined : () => activateLiveMenuItem(item)}
+                          onDoubleClick={(e) => {
+                            if (liveMenuIsExpanded || isData) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (locked) return;
+                            openDockedJobForm(item);
+                          }}
+                          onMouseEnter={() => {
+                            if (!liveMenuIsExpanded) setLiveMenuHoverItemId(String(item.id || ""));
+                          }}
+                          onMouseLeave={() => {
+                            if (!liveMenuIsExpanded) setLiveMenuHoverItemId("");
+                          }}
+                          disabled={locked}
+                          data-preserve-style="true"
+                          style={{
+                            width: "100%",
+                            minHeight: liveMenuIsExpanded
                               ? (isLiveMobile ? 34 : 26)
                               : 30,
-	                          borderRadius: liveMenuIsExpanded ? 10 : 10,
-                          border: `1px solid ${
-                            locked
-                              ? "color-mix(in srgb, #f59e0b 55%, var(--border) 45%)"
-                              : active
-                              ? "var(--selected-border)"
-                              : "var(--border)"
-                          }`,
-                          ...(liveMenuIsExpanded
-                            ? null
-                            : {
-                                borderColor: active
-                                  ? "var(--selected-border)"
-                                  : collapsedHover
-                                  ? "color-mix(in srgb, var(--border) 72%, #2b6cff 28%)"
-                                  : "transparent",
-                              }),
-                          background: active
-                            ? isData
-                              ? "var(--bg-elev)"
-                              : "var(--selected-bg)"
-                            : liveMenuIsExpanded
-                            ? "color-mix(in srgb, var(--bg) 88%, #0b1729 12%)"
-                            : collapsedHover
-                            ? "color-mix(in srgb, var(--bg-elev) 90%, #0f274d 10%)"
-                            : "transparent",
-                          color: active
-                            ? isData
-                              ? "var(--selected-border)"
-                              : "var(--selected-text)"
-                            : "var(--text)",
-                          boxShadow: active
-                            ? isData
-                              ? "none"
-                              : "var(--selected-shadow)"
-                            : collapsedHover
-                            ? "0 6px 14px rgba(2,8,23,0.18)"
-                            : "none",
-	                          padding: liveMenuIsExpanded
+                            borderRadius: liveMenuIsExpanded ? 10 : 10,
+                            border: `1px solid ${
+                              locked
+                                ? "color-mix(in srgb, #f59e0b 55%, var(--border) 45%)"
+                                : active
+                                ? "var(--selected-border)"
+                                : "var(--border)"
+                            }`,
+                            ...(liveMenuIsExpanded
+                              ? null
+                              : {
+                                  borderColor: active
+                                    ? "var(--selected-border)"
+                                    : collapsedHover
+                                    ? "color-mix(in srgb, var(--border) 72%, #2b6cff 28%)"
+                                    : "transparent",
+                                }),
+                            background: active
+                              ? isData
+                                ? "var(--bg-elev)"
+                                : "var(--selected-bg)"
+                              : liveMenuIsExpanded
+                              ? "color-mix(in srgb, var(--bg) 88%, #0b1729 12%)"
+                              : collapsedHover
+                              ? "color-mix(in srgb, var(--bg-elev) 90%, #0f274d 10%)"
+                              : "transparent",
+                            color: active
+                              ? isData
+                                ? "var(--selected-border)"
+                                : "var(--selected-text)"
+                              : "var(--text)",
+                            boxShadow: active
+                              ? isData
+                                ? "none"
+                                : "var(--selected-shadow)"
+                              : collapsedHover
+                              ? "0 6px 14px rgba(2,8,23,0.18)"
+                              : "none",
+                            padding: liveMenuIsExpanded
                               ? (isLiveMobile ? "6px 9px" : "3px 7px")
                               : 0,
-	                          fontSize: 11,
-                          fontWeight: active ? 800 : 700,
-                          textAlign: "left",
-                          cursor: locked ? "not-allowed" : "pointer",
-                          opacity: locked ? 0.78 : 1,
-                          display: "grid",
-                          gridTemplateColumns: liveMenuIsExpanded ? "22px 1fr auto" : "1fr",
-                          alignItems: "center",
-                          gap: liveMenuIsExpanded ? 8 : 0,
-                          position: "relative",
-                          transition: "background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease",
-                        }}
-                        title={locked ? `${label} (Locked)` : label}
-                      >
+                            fontSize: 11,
+                            fontWeight: active ? 800 : 700,
+                            textAlign: "left",
+                            cursor: locked ? "not-allowed" : "pointer",
+                            opacity: locked ? 0.78 : 1,
+                            display: "grid",
+                            gridTemplateColumns: liveMenuIsExpanded ? "22px 1fr auto" : "1fr",
+                            alignItems: "center",
+                            gap: liveMenuIsExpanded ? 8 : 0,
+                            position: "relative",
+                            transition: "background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease",
+                          }}
+                          title={
+                            locked
+                              ? `${label} (Locked)`
+                              : !liveMenuIsExpanded && !isData
+                              ? `${label} (Double-click for Job Form)`
+                              : label
+                          }
+                        >
                         <span
                           style={{
                             width: liveMenuIsExpanded ? 22 : 30,
@@ -12718,7 +13957,40 @@ function flushScheduledProjectSave() {
                             </svg>
                           </span>
                         ) : null}
-                      </button>
+                        </button>
+                        {showJobFormBtn ? (
+                          <button
+                            type="button"
+                            data-preserve-style="true"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openDockedJobForm(item);
+                            }}
+                            disabled={locked || !canViewDataPages}
+                            title="Open Jobs"
+                            aria-label="Open Jobs"
+                            style={{
+                              width: 22,
+                              height: 22,
+                              borderRadius: 8,
+                              border: "1px solid color-mix(in srgb, var(--border) 78%, #2b6cff 22%)",
+                              background: "color-mix(in srgb, var(--bg-elev) 88%, #0f274d 12%)",
+                              color: "var(--text)",
+                              display: "grid",
+                              placeItems: "center",
+                              cursor: locked || !canViewDataPages ? "not-allowed" : "pointer",
+                              opacity: locked || !canViewDataPages ? 0.6 : 0.95,
+                              padding: 0,
+                            }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                              <path d="M7 4h7l3 3v13H7z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                              <path d="M14 4v4h4" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                              <path d="M10 13h6M10 16h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                            </svg>
+                          </button>
+                        ) : null}
+                      </div>
                     );
                   })}
                 </div>
@@ -13066,6 +14338,9 @@ function flushScheduledProjectSave() {
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Choose the active design screen.
                 </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Auto-zoom mode is configured per screen.
+                </div>
                 <div
                   style={{
                     display: "flex",
@@ -13252,6 +14527,70 @@ function flushScheduledProjectSave() {
                             }}
                             title="Screen height"
                           />
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "62px minmax(0,1fr)", gap: 6, alignItems: "center" }}>
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>Auto Zoom</span>
+                          <select
+                            value={normalizeScreenAutoFitMode(s?.autoFitMode, "content")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                            }}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                              updateScreenAutoFitModeById(s.id, e.target.value);
+                            }}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 6,
+                              padding: "4px 6px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              minWidth: 0,
+                            }}
+                            title="Auto zoom behavior when this screen size or viewbox changes"
+                          >
+                            <option value="off">Off</option>
+                            <option value="content">Fit Content</option>
+                            <option value="contain">Fit Canvas</option>
+                            <option value="height">Fit Height</option>
+                          </select>
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "62px minmax(0,1fr)", gap: 6, alignItems: "center" }}>
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>Route</span>
+                          <select
+                            value={String(s?.routeId || "")}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                            }}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              switchToScreen(s.id);
+                              updateScreenRouteIdById(s.id, e.target.value);
+                            }}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 6,
+                              padding: "4px 6px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              minWidth: 0,
+                            }}
+                            title="Assign this screen to a route id"
+                          >
+                            <option value="">No Route</option>
+                            {screenRouteOptions.map((route) => (
+                              <option key={`screen-route-option-${route.value}`} value={route.value}>
+                                {route.label}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 6, alignItems: "center" }}>
                           <select
@@ -13696,9 +15035,9 @@ function flushScheduledProjectSave() {
         <div
           style={{
             position: "fixed",
-            top: isLiveMode && isLiveMobile ? TOP_BAR_H + liveAlarmBarOffset : undefined,
+            top: isLiveMode && isLiveMobile ? TOP_BAR_H + liveAlarmBarOffset : teamChatDesktopTopPx,
             left: isLiveMode && isLiveMobile ? projectDrawerInsetPx : undefined,
-            right: isLiveMode && isLiveMobile ? 0 : (isLiveMode ? 8 : 20),
+            right: isLiveMode && isLiveMobile ? 0 : (isLiveMode ? 8 : teamChatDesktopRightPx),
             bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 8 : 72,
             width: isLiveMode && isLiveMobile ? "auto" : 360,
             maxWidth: isLiveMode && isLiveMobile ? "none" : "calc(100vw - 24px)",
@@ -13940,3 +15279,4 @@ function flushScheduledProjectSave() {
     </div>
   );
 }
+

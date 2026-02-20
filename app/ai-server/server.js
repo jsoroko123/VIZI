@@ -70,6 +70,10 @@ app.use((err, _req, res, next) => {
 });
 
 const DATABASE_URL = process.env.DATABASE_URL || "";
+const DB_POOL_MAX_LISTENERS = Math.max(
+  20,
+  Number.parseInt(String(process.env.DB_POOL_MAX_LISTENERS || "100"), 10) || 100
+);
 
 function quoteIdent(name) {
   const safe = /^[a-zA-Z0-9_]+$/.test(name);
@@ -176,6 +180,9 @@ async function ensureDatabaseExists() {
   adminUrl.pathname = "/postgres";
 
   const adminPool = new Pool({ connectionString: adminUrl.toString() });
+  if (typeof adminPool.setMaxListeners === "function") {
+    adminPool.setMaxListeners(DB_POOL_MAX_LISTENERS);
+  }
   try {
     const { rows } = await adminPool.query(
       "SELECT 1 FROM pg_database WHERE datname = $1",
@@ -190,6 +197,7 @@ async function ensureDatabaseExists() {
 }
 
 let pool = null;
+let opcTagScaleCache = { loadedAt: 0, map: new Map() };
 
 const SESSION_COOKIE = "vizi_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1141,6 +1149,40 @@ async function loadOpcConfigFromStore() {
   return { ...DEFAULT_OPC_CONFIG };
 }
 
+async function getOpcTagScaleByKeys(...keys) {
+  const now = Date.now();
+  if (!(opcTagScaleCache.map instanceof Map) || now - Number(opcTagScaleCache.loadedAt || 0) > 5000) {
+    const cfg = await loadOpcConfigFromStore();
+    const tags = Array.isArray(cfg?.tags) ? cfg.tags : [];
+    const map = new Map();
+    tags.forEach((t) => {
+      const topic = String(t?.topic || "").trim();
+      const name = String(t?.name || "").trim();
+      const path = String(t?.tagPath || name).trim();
+      const scaleRaw = Number(t?.scale);
+      if (!Number.isFinite(scaleRaw) || scaleRaw === 0) return;
+      const candidates = [
+        topic && path ? `${topic}.${path}` : "",
+        topic && name ? `${topic}.${name}` : "",
+        path,
+        name,
+      ]
+        .map((x) => String(x || "").trim())
+        .filter(Boolean);
+      candidates.forEach((c) => {
+        map.set(c.toLowerCase(), scaleRaw);
+      });
+    });
+    opcTagScaleCache = { loadedAt: now, map };
+  }
+  for (const key of keys) {
+    const k = String(key || "").trim().toLowerCase();
+    if (!k) continue;
+    if (opcTagScaleCache.map.has(k)) return Number(opcTagScaleCache.map.get(k));
+  }
+  return null;
+}
+
 async function saveOpcConfigToStore(config) {
   const next = config && typeof config === "object" ? config : { ...DEFAULT_OPC_CONFIG };
   await pool.query(
@@ -1148,6 +1190,7 @@ async function saveOpcConfigToStore(config) {
     [JSON.stringify(next)]
   );
   trendTagConfigCache = { loadedAt: 0, map: null };
+  opcTagScaleCache = { loadedAt: 0, map: new Map() };
 }
 
 function mergeOpcConfigWithPlan(existingConfig, plan, options = {}) {
@@ -4751,6 +4794,7 @@ app.post("/api/opc/write", async (req, res) => {
     const tagKey = String(req.body?.tagKey || "").trim();
     const legacyTagKey = String(req.body?.legacyTagKey || "").trim();
     const uaType = String(req.body?.uaType || "").trim().toLowerCase();
+    const applyInverseScale = req.body?.applyInverseScale !== false;
     if (!tagKey) {
       res.status(400).json({ error: "tagKey required." });
       return;
@@ -4777,6 +4821,24 @@ app.post("/api/opc/write", async (req, res) => {
         nextValue = Number.isFinite(n) ? n : raw;
       } else {
         nextValue = raw;
+      }
+    }
+
+    if (applyInverseScale) {
+      const scale = await getOpcTagScaleByKeys(tagKey, legacyTagKey);
+      if (Number.isFinite(Number(scale)) && Number(scale) !== 0 && Number(scale) !== 1) {
+        const n = Number(nextValue);
+        if (Number.isFinite(n)) {
+          const unscaled = n / Number(scale);
+          const isIntType =
+            uaType === "int16" ||
+            uaType === "int32" ||
+            uaType === "int64" ||
+            uaType === "uint16" ||
+            uaType === "uint32" ||
+            uaType === "uint64";
+          nextValue = isIntType ? Math.round(unscaled) : unscaled;
+        }
       }
     }
 
@@ -7243,6 +7305,9 @@ app.post("/api/ai/apply", async (req, res) => {
 async function start() {
   await ensureDatabaseExists();
   pool = new Pool({ connectionString: DATABASE_URL });
+  if (typeof pool.setMaxListeners === "function") {
+    pool.setMaxListeners(DB_POOL_MAX_LISTENERS);
+  }
   await ensureDesignerTablesFromSchema(pool);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ui_table_config (

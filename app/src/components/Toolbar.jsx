@@ -383,7 +383,7 @@ export default function Toolbar({
       <div style={{ display: "flex", flexDirection: "column" }}>
         <GroupLabel>Tools</GroupLabel>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <IconButton title="Add SVG" active={importOpen} onClick={() => setImportOpen?.(true)}>
+          <IconButton title="Import SVG" active={importOpen} onClick={() => setImportOpen?.(true)}>
             {Icons.import}
           </IconButton>
           <IconButton title="Add Widget" active={widgetOpen} onClick={() => setWidgetOpen?.(true)}>

@@ -77,7 +77,14 @@ function setSvgMetaPlugin() {
 }
 
 export default defineConfig({
-  plugins: [react(), setSvgMetaPlugin()],
+  plugins: [
+    react({
+      babel: {
+        compact: true,
+      },
+    }),
+    setSvgMetaPlugin(),
+  ],
   build: {
     rollupOptions: {
       output: {

@@ -4,6 +4,7 @@ export function useKeyboardShortcuts({
   disabled = false,
   allowModeToggleWhenDisabled = false,
   toggleProjectMode,
+  saveProject,
   drawing,
   editingId,
   importOpen,
@@ -42,6 +43,14 @@ export function useKeyboardShortcuts({
         e.preventDefault();
         e.stopPropagation();
         toggleProjectMode();
+        return;
+      }
+
+      // Save project: Ctrl/Cmd + S
+      if (mod && key === "s") {
+        e.preventDefault();
+        e.stopPropagation();
+        saveProject?.();
         return;
       }
 
@@ -144,6 +153,7 @@ export function useKeyboardShortcuts({
     disabled,
     allowModeToggleWhenDisabled,
     toggleProjectMode,
+    saveProject,
     drawing,
     editingId,
     importOpen,

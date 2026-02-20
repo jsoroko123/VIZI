@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { dismissToast, showToast, toastError, toastSuccess } from "../utils/toast";
 
 const DIAGNOSTICS_UI_MAX_ROWS = 500;
@@ -93,7 +93,8 @@ function defaultRuntimeConfig() {
   return {
     opcConnectionEnabled: true,
     multiReadEnabled: true,
-    multiReadBatchSize: 8,
+    multiReadBatchSize: 16,
+    maxReadsPerTick: 300,
     mqttEnabled: false,
     mqttBrokerUrl: "mqtt://localhost:1883",
     mqttClientId: "",
@@ -103,7 +104,11 @@ function defaultRuntimeConfig() {
     mqttWriteTopic: "mesora/opc/write",
     mqttQos: 0,
     mqttRetain: false,
-    readTimeoutMs: 2000,
+    readTimeoutMs: 3000,
+    readRetryCount: 2,
+    readRetryDelayMs: 100,
+    plcConnectTimeoutMs: 9000,
+    plcReceiveTimeoutMs: 18000,
     errorBackoffEnabled: true,
     errorBackoffBaseMs: 1000,
     errorBackoffMaxMs: 15000,
@@ -112,6 +117,8 @@ function defaultRuntimeConfig() {
     deadbandDefault: "",
     reconnectDelayMs: 2000,
     reconnectMaxAttempts: "",
+    heartbeatEnabled: true,
+    heartbeatFailureThreshold: 3,
     heartbeatMs: 5000,
   };
 }
@@ -125,10 +132,20 @@ function normalizeRuntimeConfig(value) {
   const multiReadBatchSize = Number.isFinite(multiReadBatchSizeRaw)
     ? Math.max(1, Math.min(25, multiReadBatchSizeRaw))
     : defaults.multiReadBatchSize;
+  const maxReadsPerTickRaw = Number.parseInt(String(incoming.maxReadsPerTick ?? defaults.maxReadsPerTick), 10);
+  const maxReadsPerTick = Number.isFinite(maxReadsPerTickRaw)
+    ? Math.max(10, Math.min(5000, maxReadsPerTickRaw))
+    : defaults.maxReadsPerTick;
+  const readRetryCountRaw = Number.parseInt(String(incoming.readRetryCount ?? defaults.readRetryCount), 10);
+  const readRetryCount = Number.isFinite(readRetryCountRaw)
+    ? Math.max(0, Math.min(5, readRetryCountRaw))
+    : defaults.readRetryCount;
+  const readRetryDelayMs = parseOptionalMs(incoming.readRetryDelayMs) || defaults.readRetryDelayMs;
   return {
     opcConnectionEnabled: incoming.opcConnectionEnabled !== false,
     multiReadEnabled: incoming.multiReadEnabled !== false,
     multiReadBatchSize,
+    maxReadsPerTick,
     mqttEnabled: incoming.mqttEnabled === true,
     mqttBrokerUrl: String(incoming.mqttBrokerUrl || defaults.mqttBrokerUrl || ""),
     mqttClientId: String(incoming.mqttClientId || ""),
@@ -139,6 +156,10 @@ function normalizeRuntimeConfig(value) {
     mqttQos,
     mqttRetain: incoming.mqttRetain === true,
     readTimeoutMs: parseOptionalMs(incoming.readTimeoutMs) || defaults.readTimeoutMs,
+    readRetryCount,
+    readRetryDelayMs,
+    plcConnectTimeoutMs: parseOptionalMs(incoming.plcConnectTimeoutMs) || defaults.plcConnectTimeoutMs,
+    plcReceiveTimeoutMs: parseOptionalMs(incoming.plcReceiveTimeoutMs) || defaults.plcReceiveTimeoutMs,
     errorBackoffEnabled: incoming.errorBackoffEnabled !== false,
     errorBackoffBaseMs: parseOptionalMs(incoming.errorBackoffBaseMs) || defaults.errorBackoffBaseMs,
     errorBackoffMaxMs: parseOptionalMs(incoming.errorBackoffMaxMs) || defaults.errorBackoffMaxMs,
@@ -147,6 +168,8 @@ function normalizeRuntimeConfig(value) {
     deadbandDefault: parseOptionalNonNegative(incoming.deadbandDefault),
     reconnectDelayMs: parseOptionalMs(incoming.reconnectDelayMs) || defaults.reconnectDelayMs,
     reconnectMaxAttempts: parseOptionalMs(incoming.reconnectMaxAttempts),
+    heartbeatEnabled: incoming.heartbeatEnabled !== false,
+    heartbeatFailureThreshold: parseOptionalMs(incoming.heartbeatFailureThreshold) || defaults.heartbeatFailureThreshold,
     heartbeatMs: parseOptionalMs(incoming.heartbeatMs) || defaults.heartbeatMs,
   };
 }
@@ -255,6 +278,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [applyTemplateSearch, setApplyTemplateSearch] = useState("");
   const [applyTemplateExpandedByName, setApplyTemplateExpandedByName] = useState({});
   const [templateFieldTreeExpanded, setTemplateFieldTreeExpanded] = useState({});
+  const [, startTemplateFieldTransition] = useTransition();
   const [templateFieldEditingKey, setTemplateFieldEditingKey] = useState("");
   const [applyTopic, setApplyTopic] = useState("");
   const [applyPrefix, setApplyPrefix] = useState("");
@@ -263,6 +287,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [errorLogEntries, setErrorLogEntries] = useState([]);
   const [expandedPrefixes, setExpandedPrefixes] = useState({});
   const [tagSectionTab, setTagSectionTab] = useState("tags");
+  const pauseTemplateEditorPolling =
+    mode === "tags" && String(tagSectionTab || "").trim().toLowerCase() === "templates";
   const [tagSearch, setTagSearch] = useState("");
   const [showTagsDrawer, setShowTagsDrawer] = useState(false);
   const [showDrawerMenu, setShowDrawerMenu] = useState(false);
@@ -668,6 +694,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   }, [manualTag.name]);
 
   useEffect(() => {
+    if (pauseTemplateEditorPolling) return undefined;
     let alive = true;
     async function poll() {
       try {
@@ -734,9 +761,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [pauseTemplateEditorPolling]);
 
   useEffect(() => {
+    if (pauseTemplateEditorPolling) return undefined;
     let alive = true;
     async function pollServerDiagnostics() {
       try {
@@ -754,7 +782,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [pauseTemplateEditorPolling]);
 
   useEffect(() => {
     if (!showDrawerMenu) return;
@@ -970,27 +998,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return name.includes(q) || parent.includes(q);
     });
   }, [templates, applyTemplateSearch]);
-  const templateFieldExpansionSignature = useMemo(
-    () =>
-      (Array.isArray(templateFieldRows) ? templateFieldRows : [])
-        .map((row) =>
-          [
-            String(row?.name || "").trim(),
-            String(row?.tagPath || "").trim(),
-            String(row?.plcType || "").trim(),
-            String(row?.baseType || "").trim(),
-            row?.isArray === true ? "1" : "0",
-            String(row?.arraySpec || "").trim(),
-            String(row?.uaType || "").trim(),
-          ].join("|")
-        )
-        .join("||"),
-    [templateFieldRows]
-  );
+  const deferredTemplateFieldRows = useDeferredValue(templateFieldRows);
 
   const editorResolvedRows = useMemo(() => {
     const currentName = String(templateName || editTemplate || "").trim();
-    const rowsForExpansion = (Array.isArray(templateFieldRows) ? templateFieldRows : []).map((row) => ({
+    const rowsForExpansion = (Array.isArray(deferredTemplateFieldRows) ? deferredTemplateFieldRows : []).map((row) => ({
       name: String(row?.name || "").trim(),
       tagPath: String(row?.tagPath || "").trim(),
       plcType: String(row?.plcType || "").trim(),
@@ -1007,14 +1019,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         return n || p;
       });
     if (hasDraftRows) {
-      return expandTemplateFieldsForTagCreation(
-        currentName || "__draft__",
-        rowsForExpansion
-      ).fields;
+      // Fast-path: when DB/template rows are already present, use them directly.
+      // Avoid expensive recursive expansion on every editor render.
+      return rowsForExpansion;
     }
     if (!currentName) return [];
-    return expandTemplateFieldsForTagCreation(currentName).fields;
-  }, [templateName, editTemplate, templateFieldExpansionSignature, expandTemplateFieldsForTagCreation]);
+    return resolveTemplateFields(currentName);
+  }, [templateName, editTemplate, deferredTemplateFieldRows, templateMap]);
 
 
   const editorResolvedOnlyRows = useMemo(() => {
@@ -1030,23 +1041,25 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     });
   }, [editorResolvedRows, templateFieldRows]);
 
+  const deferredEditorResolvedRows = useDeferredValue(editorResolvedRows);
+
   const templateFieldRowsByPath = useMemo(() => {
     const map = new Map();
-    (Array.isArray(templateFieldRows) ? templateFieldRows : []).forEach((row, idx) => {
+    (Array.isArray(deferredTemplateFieldRows) ? deferredTemplateFieldRows : []).forEach((row, idx) => {
       const key = String(row?.tagPath || row?.name || "").trim();
       if (key) map.set(key, { row, idx });
     });
     return map;
-  }, [templateFieldRows]);
+  }, [deferredTemplateFieldRows]);
 
   const editorResolvedRowsByPath = useMemo(() => {
     const map = new Map();
-    (Array.isArray(editorResolvedRows) ? editorResolvedRows : []).forEach((row) => {
+    (Array.isArray(deferredEditorResolvedRows) ? deferredEditorResolvedRows : []).forEach((row) => {
       const key = String(row?.tagPath || row?.name || "").trim();
       if (key && !map.has(key)) map.set(key, row);
     });
     return map;
-  }, [editorResolvedRows]);
+  }, [deferredEditorResolvedRows]);
 
   const templateFieldTreePaths = useMemo(() => {
     const paths = [];
@@ -1057,14 +1070,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       seen.add(path);
       paths.push(path);
     };
-    (Array.isArray(templateFieldRows) ? templateFieldRows : []).forEach((row) =>
+    (Array.isArray(deferredTemplateFieldRows) ? deferredTemplateFieldRows : []).forEach((row) =>
       addPath(row?.tagPath || row?.name)
     );
-    (Array.isArray(editorResolvedRows) ? editorResolvedRows : []).forEach((row) =>
+    (Array.isArray(deferredEditorResolvedRows) ? deferredEditorResolvedRows : []).forEach((row) =>
       addPath(row?.tagPath || row?.name)
     );
     return paths;
-  }, [templateFieldRows, editorResolvedRows]);
+  }, [deferredTemplateFieldRows, deferredEditorResolvedRows]);
 
   const templateFieldTree = useMemo(() => {
     const root = { fullPath: "", children: new Map(), leaf: false };
@@ -1631,6 +1644,28 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const out = [];
     const unresolvedTypes = new Set();
     const maxExpandedTags = 20000;
+    const primitiveTypeSet = new Set([
+      "BOOL",
+      "BIT",
+      "SINT",
+      "INT",
+      "DINT",
+      "LINT",
+      "USINT",
+      "UINT",
+      "UDINT",
+      "ULINT",
+      "REAL",
+      "LREAL",
+      "STRING",
+      "WSTRING",
+      "BYTE",
+      "WORD",
+      "DWORD",
+      "TIME",
+      "DATE",
+      "DATETIME",
+    ]);
     const addLeaf = (pathPrefix, field) => {
       const leafNameRaw = String(field?.name || field?.tagPath || "").trim();
       const leafPathRaw = String(field?.tagPath || field?.name || "").trim();
@@ -1655,24 +1690,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       if (depth > 24 || out.length >= maxExpandedTags) return;
       for (const field of fields) {
         if (out.length >= maxExpandedTags) break;
+        if (field?.enabled === false) continue;
         const rawName = String(field?.name || field?.tagPath || "").trim();
         const rawPath = String(field?.tagPath || field?.name || "").trim();
         if (!rawName && !rawPath) continue;
         const baseSegment = rawPath || rawName;
         const descriptor = parseFieldArrayDescriptor(field);
-        const fieldNameCandidate = String(field?.name || "").trim();
-        const fieldPathCandidate = String(field?.tagPath || "").trim();
-        const pathLeafCandidate = fieldPathCandidate
-          ? fieldPathCandidate.split(".").filter(Boolean).slice(-1)[0] || ""
-          : "";
+        const descriptorBaseType = String(descriptor.baseType || "").trim().toUpperCase();
+        const isPrimitiveBaseType = descriptorBaseType && primitiveTypeSet.has(descriptorBaseType);
         const nestedTemplateName =
           resolveTemplateNameByTypeWithContext(descriptor.baseType, contextTemplateName) ||
           resolveTemplateNameByTypeWithContext(field?.baseType, contextTemplateName) ||
-          resolveTemplateNameByTypeWithContext(field?.plcType, contextTemplateName) ||
-          resolveTemplateNameByTypeWithContext(fieldNameCandidate, contextTemplateName) ||
-          resolveTemplateNameByTypeWithContext(pathLeafCandidate, contextTemplateName);
+          resolveTemplateNameByTypeWithContext(field?.plcType, contextTemplateName);
         const nestedFields = nestedTemplateName ? resolveTemplateFields(nestedTemplateName) : [];
         const canExpandNested =
+          !isPrimitiveBaseType &&
           nestedTemplateName &&
           nestedFields.length > 0 &&
           !templateStack.includes(String(nestedTemplateName || "").toLowerCase());
@@ -2231,7 +2263,53 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return;
     }
     const rootGroup = prefix || applyTemplate;
-    const newTags = fields.map((f) => {
+    const primitiveTypeSet = new Set([
+      "BOOL",
+      "BIT",
+      "SINT",
+      "INT",
+      "DINT",
+      "LINT",
+      "USINT",
+      "UINT",
+      "UDINT",
+      "ULINT",
+      "REAL",
+      "LREAL",
+      "STRING",
+      "WSTRING",
+      "BYTE",
+      "WORD",
+      "DWORD",
+      "TIME",
+      "DATE",
+      "DATETIME",
+    ]);
+    const enabledFields = fields.filter((f) => f?.enabled !== false);
+    const primitiveRoots = new Set(
+      enabledFields
+        .map((f) => {
+          const path = String(f?.tagPath || f?.name || "").trim();
+          const plcType = String(f?.plcType || f?.baseType || "")
+            .replace(/\[[^\]]*\]/g, "")
+            .replace(/\s*\([^)]*\)\s*$/g, "")
+            .replace(/^"|"$/g, "")
+            .trim()
+            .toUpperCase();
+          return path && primitiveTypeSet.has(plcType) ? path : "";
+        })
+        .filter(Boolean)
+    );
+    const filteredFields = enabledFields.filter((f) => {
+      const path = String(f?.tagPath || f?.name || "").trim();
+      if (!path) return false;
+      for (const root of primitiveRoots) {
+        if (!root || root === path) continue;
+        if (path.startsWith(`${root}.`) || path.startsWith(`${root}[`)) return false;
+      }
+      return true;
+    });
+    const newTags = filteredFields.map((f) => {
       const fieldName = String(f?.name || f?.tagPath || "").trim();
       const fieldPath = String(f?.tagPath || f?.name || "").trim();
       const name = prefix ? `${prefix}.${fieldName}` : fieldName;
@@ -2467,8 +2545,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <div><strong>Value Count:</strong> {formatNum(opc?.valueCount)}</div>
           <div><strong>Multi-Read:</strong> {runtime?.multiReadEnabled === false ? "Off" : "On"}</div>
           <div><strong>Batch Size:</strong> {formatNum(runtime?.multiReadBatchSize)}</div>
+          <div><strong>Reads/Tick:</strong> {formatNum(runtime?.maxReadsPerTick)}</div>
           <div><strong>MQTT:</strong> {runtime?.mqttEnabled ? (runtime?.mqttConnected ? "Connected" : "Enabled") : "Off"}</div>
           <div><strong>Read Timeout:</strong> {Number.isFinite(Number(runtime?.readTimeoutMs)) ? `${Math.round(Number(runtime.readTimeoutMs))} ms` : "--"}</div>
+          <div><strong>Retry:</strong> {formatNum(runtime?.readRetryCount)} @ {Number.isFinite(Number(runtime?.readRetryDelayMs)) ? `${Math.round(Number(runtime.readRetryDelayMs))}ms` : "--"}</div>
         </div>
         <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
           <strong>Quality Counts:</strong> {qualitySummary}
@@ -3985,9 +4065,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                   const pathKey = getTagPathKey(tagObj);
                                                   const legacyKey = getTagLegacyKey(tagObj);
                                                   const writeKey = pathKey || legacyKey || `tag-${idx}`;
+                                                  const writeDefaultValue =
+                                                    rawValue != null && rawValue !== "" && !Number.isNaN(Number(rawValue))
+                                                      ? String(Number(rawValue) * (Number.isFinite(Number(tagObj.scale)) ? Number(tagObj.scale) : 1))
+                                                      : (rawValue == null ? "" : String(rawValue));
                                                   const writeDraft = Object.prototype.hasOwnProperty.call(tagWriteByKey, writeKey)
                                                     ? tagWriteByKey[writeKey]
-                                                    : (rawValue == null ? "" : String(rawValue));
+                                                    : writeDefaultValue;
                                                   const writeBusy = tagWriteBusyByKey?.[writeKey] === true;
                                                   return (
                                                     <td
@@ -3999,25 +4083,22 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                         borderRadius: 4,
                                                       }}
                                                     >
-                                                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                                        <span
-                                                          style={{
-                                                            minWidth: 70,
-                                                            color:
-                                                          tagObj.enabled === false
-                                                                ? "#b42318"
-                                                                : "var(--text)",
-                                                          }}
-                                                        >
-                                                        {tagObj.enabled === false
-                                                            ? "Disabled"
-                                                            : formatLiveNumber(scaledValue, decimals)}
-                                                        </span>
-                                                        {errorCount > 0 ? (
-                                                          <span style={{ color: "#b42318", fontSize: 11 }}>
-                                                            (err {errorCount})
-                                                          </span>
-                                                        ) : null}
+                                                      <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+                                                        <div style={{ width: 84, minWidth: 84, textAlign: "right", lineHeight: 1.2 }}>
+                                                          <div
+                                                            style={{
+                                                              color: tagObj.enabled === false ? "#b42318" : "var(--text)",
+                                                              fontWeight: 600,
+                                                            }}
+                                                          >
+                                                            {tagObj.enabled === false
+                                                              ? "Disabled"
+                                                              : formatLiveNumber(scaledValue, decimals)}
+                                                          </div>
+                                                          <div style={{ minHeight: 14, color: "#b42318", fontSize: 11 }}>
+                                                            {errorCount > 0 ? `(err ${errorCount})` : ""}
+                                                          </div>
+                                                        </div>
                                                         <input
                                                           value={writeDraft}
                                                           onChange={(e) =>
@@ -4033,7 +4114,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                           }}
                                                           placeholder="Write value"
                                                           style={{
-                                                            width: 120,
+                                                            width: 132,
                                                             border: "1px solid var(--border)",
                                                             borderRadius: 6,
                                                             padding: "4px 6px",
@@ -4568,16 +4649,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   containIntrinsicSize: "900px",
                 }}
               >
-                {templateFieldRows.length ? (
-                  renderTemplateFieldTreeRows(
-                    templateFieldTree,
-                    0
-                  )
-                ) : (
-                  <div style={{ padding: "8px", color: "var(--text-muted)", fontSize: 12 }}>
-                    No fields yet.
-                  </div>
-                )}
+                {templateFieldTreeContent}
               </div>
               <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
                 <button
@@ -5047,8 +5119,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     }, 0);
   }
 
-  function updateTemplateFieldRow(idx, key, value, fallbackRow = null, path = "") {
-    setTemplateFieldRows((prev) => {
+  const updateTemplateFieldRow = useCallback((idx, key, value, fallbackRow = null, path = "") => {
+    const applyUpdate = () => setTemplateFieldRows((prev) => {
       const next = [...(Array.isArray(prev) ? prev : [])];
       if (Number.isInteger(idx) && idx >= 0 && next[idx] && typeof next[idx] === "object") {
         const row = next[idx];
@@ -5088,9 +5160,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       }
       return next;
     });
-  }
+    const shouldDefer =
+      typeof value === "string" &&
+      ["name", "tagPath", "uaType", "topic", "mappingSet", "alarmValue"].includes(String(key || ""));
+    if (shouldDefer) {
+      startTemplateFieldTransition(() => {
+        applyUpdate();
+      });
+      return;
+    }
+    applyUpdate();
+  }, [startTemplateFieldTransition]);
 
-  function removeTemplateFieldRow(idx, fallbackRow = null, path = "", removeChildren = false) {
+  const removeTemplateFieldRow = useCallback((idx, fallbackRow = null, path = "", removeChildren = false) => {
     setTemplateFieldRows((prev) => {
       const rows = Array.isArray(prev) ? prev : [];
       const next = [...rows];
@@ -5116,9 +5198,32 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         return rowPath !== resolvedPath && !rowPath.startsWith(`${resolvedPath}.`);
       });
     });
-  }
+  }, []);
 
-  function renderTemplateFieldTreeRows(nodes, depth = 0) {
+  const templateFieldPrimitiveTypeSet = useMemo(() => new Set([
+    "BOOL",
+    "BIT",
+    "SINT",
+    "INT",
+    "DINT",
+    "LINT",
+    "USINT",
+    "UINT",
+    "UDINT",
+    "ULINT",
+    "REAL",
+    "LREAL",
+    "STRING",
+    "WSTRING",
+    "BYTE",
+    "WORD",
+    "DWORD",
+    "TIME",
+    "DATE",
+    "DATETIME",
+  ]), []);
+
+  const renderTemplateFieldTreeRows = useCallback((nodes, depth = 0) => {
     return (
       <div style={{ display: "grid", gap: 4 }}>
         {(Array.isArray(nodes) ? nodes : []).map((node) => {
@@ -5136,11 +5241,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           };
           const row = rowEntry?.row || resolvedRow || fallbackRow;
           const rowIdx = Number.isFinite(rowEntry?.idx) ? rowEntry.idx : -1;
-          const hasNested = Array.isArray(node?.children) && node.children.length > 0;
+          const hasNestedChildren = Array.isArray(node?.children) && node.children.length > 0;
           const nodeKey = `template-tree:${fieldPath || fieldName}`;
           const expanded = templateFieldTreeExpanded[nodeKey] ?? false;
           const activeRowEditing = templateFieldEditingKey === nodeKey;
           const plcType = String(row?.plcType || row?.baseType || "").trim();
+          const plcTypeBase = String(plcType || "")
+            .replace(/\[[^\]]*\]/g, "")
+            .replace(/\s*\([^)]*\)\s*$/g, "")
+            .replace(/^"|"$/g, "")
+            .trim()
+            .toUpperCase();
+          const isPrimitiveType = templateFieldPrimitiveTypeSet.has(plcTypeBase);
+          const hasNested = hasNestedChildren && !isPrimitiveType;
           const isArray = String(row?.arraySpec || "").trim().length > 0 || /\[[^\]]+\]/.test(fieldName);
           return (
             <div key={`tmpl-tree-${nodeKey}`} style={{ marginLeft: Math.max(0, depth * 12), padding: "2px 0" }}>
@@ -5191,9 +5304,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 <button
                   type="button"
                   data-preserve-style="true"
-                  onClick={() =>
-                    setTemplateFieldEditingKey((prev) => (prev === nodeKey ? "" : nodeKey))
-                  }
+                  onClick={() => {
+                    setTemplateEditing(true);
+                    setTemplateFieldTreeExpanded((prev) => ({ ...prev, [nodeKey]: true }));
+                    setTemplateFieldEditingKey((prev) => (prev === nodeKey ? "" : nodeKey));
+                  }}
                   style={{
                     border: "1px solid #2b6cff",
                     background: activeRowEditing ? "#2b6cff" : "var(--bg-elev)",
@@ -5203,11 +5318,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     fontSize: 11,
                     fontWeight: 700,
                     lineHeight: 1.2,
-                    cursor: templateEditing ? "pointer" : "default",
+                    cursor: "pointer",
                   }}
-                  disabled={!templateEditing}
                 >
-                  {activeRowEditing ? "Done" : "Edit"}
+                  {activeRowEditing ? "Save" : "Edit"}
                 </button>
               </div>
               {expanded && hasNested ? (
@@ -5466,7 +5580,24 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         })}
       </div>
     );
-  }
+  }, [
+    editorResolvedRowsByPath,
+    mappingSets,
+    templateEditing,
+    templateFieldEditingKey,
+    templateFieldRowsByPath,
+    templateFieldTreeExpanded,
+    templateFieldPrimitiveTypeSet,
+    updateTemplateFieldRow,
+    removeTemplateFieldRow,
+  ]);
+
+  const templateFieldTreeContent = useMemo(() => {
+    if (!templateFieldRows.length) {
+      return <div style={{ padding: "8px", color: "var(--text-muted)", fontSize: 12 }}>No fields yet.</div>;
+    }
+    return renderTemplateFieldTreeRows(templateFieldTree, 0);
+  }, [templateFieldRows.length, templateFieldTree, renderTemplateFieldTreeRows]);
 
   function addTagFromToolbar() {
     const topicKey =
@@ -5974,6 +6105,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           </button>
           <button
             data-preserve-style="true"
+            onClick={() => setOpcConfigSectionTab("mqtt")}
+            style={drawerTabButtonStyle(opcConfigSectionTab === "mqtt")}
+          >
+            MQTT
+          </button>
+          <button
+            data-preserve-style="true"
             onClick={() => setOpcConfigSectionTab("plcs")}
             style={drawerTabButtonStyle(opcConfigSectionTab === "plcs")}
           >
@@ -6035,6 +6173,79 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             <div style={{ fontWeight: 700, marginBottom: 8, marginTop: 4 }} title="Live OPC poller behavior and resiliency settings.">
               Runtime
             </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              <button
+                type="button"
+                disabled={!opcUaEditing}
+                onClick={() =>
+                  setConfig((p) => ({
+                    ...p,
+                    runtime: {
+                      ...normalizeRuntimeConfig(p.runtime),
+                      multiReadEnabled: true,
+                      multiReadBatchSize: 12,
+                      maxReadsPerTick: 250,
+                      readTimeoutMs: 3000,
+                      readRetryCount: 2,
+                      readRetryDelayMs: 100,
+                      heartbeatEnabled: true,
+                      heartbeatMs: 5000,
+                    },
+                  }))
+                }
+                style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px", fontWeight: 600, fontSize: 12 }}
+                title="Balanced throughput and stability."
+              >
+                Balanced
+              </button>
+              <button
+                type="button"
+                disabled={!opcUaEditing}
+                onClick={() =>
+                  setConfig((p) => ({
+                    ...p,
+                    runtime: {
+                      ...normalizeRuntimeConfig(p.runtime),
+                      multiReadEnabled: true,
+                      multiReadBatchSize: 20,
+                      maxReadsPerTick: 600,
+                      readTimeoutMs: 3500,
+                      readRetryCount: 1,
+                      readRetryDelayMs: 60,
+                      heartbeatEnabled: false,
+                    },
+                  }))
+                }
+                style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px", fontWeight: 600, fontSize: 12 }}
+                title="Higher throughput, lower overhead."
+              >
+                High Throughput
+              </button>
+              <button
+                type="button"
+                disabled={!opcUaEditing}
+                onClick={() =>
+                  setConfig((p) => ({
+                    ...p,
+                    runtime: {
+                      ...normalizeRuntimeConfig(p.runtime),
+                      multiReadEnabled: true,
+                      multiReadBatchSize: 8,
+                      maxReadsPerTick: 120,
+                      readTimeoutMs: 3500,
+                      readRetryCount: 2,
+                      readRetryDelayMs: 120,
+                      heartbeatEnabled: true,
+                      heartbeatMs: 6000,
+                    },
+                  }))
+                }
+                style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px", fontWeight: 600, fontSize: 12 }}
+                title="Lower PLC/network load."
+              >
+                Low Load
+              </button>
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, gridColumn: "1 / span 2" }} title="Disable PLC connect/reconnect and polling attempts. Save config and restart OPC server to apply.">
                 <input
@@ -6060,105 +6271,77 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   type="number"
                   min="1"
                   max="25"
-                  value={config.runtime?.multiReadBatchSize ?? 8}
+                  value={config.runtime?.multiReadBatchSize ?? 16}
                   disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), multiReadBatchSize: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
               </label>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, gridColumn: "1 / span 2" }} title="Enable MQTT publish/subscribe bridge. Save config and restart OPC server to apply.">
-                <input
-                  type="checkbox"
-                  checked={config.runtime?.mqttEnabled === true}
-                  disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttEnabled: e.target.checked } }))}
-                />
-                Enable MQTT Bridge
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="MQTT broker URL, e.g. mqtt://localhost:1883">
-                MQTT Broker URL
-                <input
-                  value={config.runtime?.mqttBrokerUrl ?? "mqtt://localhost:1883"}
-                  disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttBrokerUrl: e.target.value } }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT client id. Leave blank to auto-generate.">
-                MQTT Client ID
-                <input
-                  value={config.runtime?.mqttClientId ?? ""}
-                  disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttClientId: e.target.value } }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT username.">
-                MQTT Username
-                <input
-                  value={config.runtime?.mqttUsername ?? ""}
-                  disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttUsername: e.target.value } }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT password.">
-                MQTT Password
-                <input
-                  type="password"
-                  value={config.runtime?.mqttPassword ?? ""}
-                  disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttPassword: e.target.value } }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Topic for publishing full OPC status payloads.">
-                MQTT Status Topic
-                <input
-                  value={config.runtime?.mqttStatusTopic ?? "mesora/opc/status"}
-                  disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttStatusTopic: e.target.value } }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Topic subscribed for write commands. Payload format: {'tagKey':'Topic.Tag','value':123}.">
-                MQTT Write Topic
-                <input
-                  value={config.runtime?.mqttWriteTopic ?? "mesora/opc/write"}
-                  disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttWriteTopic: e.target.value } }))}
-                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="MQTT QoS level for status publish and write subscribe.">
-                MQTT QoS
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Maximum due tags processed per PLC tick. Prevents burst overload at high tag counts.">
+                Max Reads Per Tick
                 <input
                   type="number"
-                  min="0"
-                  max="2"
-                  value={config.runtime?.mqttQos ?? 0}
+                  min="10"
+                  max="5000"
+                  value={config.runtime?.maxReadsPerTick ?? 300}
                   disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttQos: e.target.value } }))}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), maxReadsPerTick: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
-              </label>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }} title="Set retained flag when publishing status payloads.">
-                <input
-                  type="checkbox"
-                  checked={config.runtime?.mqttRetain === true}
-                  disabled={!opcUaEditing}
-                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttRetain: e.target.checked } }))}
-                />
-                MQTT Retain Status
               </label>
               <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Maximum wait for a PLC read before marking it as timeout/error.">
                 Read Timeout (ms)
                 <input
                   type="number"
                   min="100"
-                  value={config.runtime?.readTimeoutMs ?? 2000}
+                  value={config.runtime?.readTimeoutMs ?? 3000}
                   disabled={!opcUaEditing}
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), readTimeoutMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="How many extra retry attempts are made for transient read failures.">
+                Read Retry Count
+                <input
+                  type="number"
+                  min="0"
+                  max="5"
+                  value={config.runtime?.readRetryCount ?? 2}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), readRetryCount: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Delay before each retry attempt after a transient read failure.">
+                Read Retry Delay (ms)
+                <input
+                  type="number"
+                  min="0"
+                  value={config.runtime?.readRetryDelayMs ?? 100}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), readRetryDelayMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="PLC connection timeout used during initial connect and reconnect attempts.">
+                PLC Connect Timeout (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={config.runtime?.plcConnectTimeoutMs ?? 9000}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), plcConnectTimeoutMs: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="PLC receive timeout for socket reads before connection health is considered degraded.">
+                PLC Receive Timeout (ms)
+                <input
+                  type="number"
+                  min="100"
+                  value={config.runtime?.plcReceiveTimeoutMs ?? 18000}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), plcReceiveTimeoutMs: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
               </label>
@@ -6172,6 +6355,27 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), heartbeatMs: e.target.value } }))}
                   style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
                 />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Consecutive heartbeat failures required before disconnect/reconnect is forced.">
+                Heartbeat Fail Threshold
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={config.runtime?.heartbeatFailureThreshold ?? 3}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), heartbeatFailureThreshold: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }} title="Disable extra heartbeat reads. Poll loop reads still maintain live values.">
+                <input
+                  type="checkbox"
+                  checked={config.runtime?.heartbeatEnabled !== false}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), heartbeatEnabled: e.target.checked } }))}
+                />
+                Enable Heartbeat Reads
               </label>
               <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Delay between PLC reconnect attempts after disconnect or failed heartbeat.">
                 Reconnect Delay (ms)
@@ -6260,6 +6464,118 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), errorBackoffEnabled: e.target.checked } }))}
                 />
                 Enable Error Backoff
+              </label>
+            </div>
+            <div style={{ marginTop: "auto", display: "flex", gap: 8, paddingTop: 10, position: "sticky", bottom: 0, background: "var(--bg-elev)" }}>
+              {opcUaEditing ? (
+                <button onClick={cancelOpcUaEdit} style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 10, padding: "8px 12px" }}>
+                  Cancel
+                </button>
+              ) : null}
+              <button
+                onClick={() => {
+                  if (!opcUaEditing) {
+                    beginOpcUaEdit();
+                    return;
+                  }
+                  void saveOpcUaEdit();
+                }}
+                style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 10, padding: "8px 12px" }}
+              >
+                {opcUaEditing ? "Save" : "Edit"}
+              </button>
+            </div>
+          </div>
+          ) : null}
+
+          {opcConfigSectionTab === "mqtt" ? (
+          <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", minHeight: 0, height: "100%", overflow: "auto" }}>
+            <div style={{ fontWeight: 700, marginBottom: 10 }}>MQTT</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, gridColumn: "1 / span 2" }} title="Enable MQTT publish/subscribe bridge. Save config and restart OPC server to apply.">
+                <input
+                  type="checkbox"
+                  checked={config.runtime?.mqttEnabled === true}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttEnabled: e.target.checked } }))}
+                />
+                Enable MQTT Bridge
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="MQTT broker URL, e.g. mqtt://localhost:1883">
+                MQTT Broker URL
+                <input
+                  value={config.runtime?.mqttBrokerUrl ?? "mqtt://localhost:1883"}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttBrokerUrl: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT client id. Leave blank to auto-generate.">
+                MQTT Client ID
+                <input
+                  value={config.runtime?.mqttClientId ?? ""}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttClientId: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT username.">
+                MQTT Username
+                <input
+                  value={config.runtime?.mqttUsername ?? ""}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttUsername: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Optional MQTT password.">
+                MQTT Password
+                <input
+                  type="password"
+                  value={config.runtime?.mqttPassword ?? ""}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttPassword: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Topic for publishing full OPC status payloads.">
+                MQTT Status Topic
+                <input
+                  value={config.runtime?.mqttStatusTopic ?? "mesora/opc/status"}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttStatusTopic: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Topic subscribed for write commands. Payload format: {'tagKey':'Topic.Tag','value':123}.">
+                MQTT Write Topic
+                <input
+                  value={config.runtime?.mqttWriteTopic ?? "mesora/opc/write"}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttWriteTopic: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="MQTT QoS level for status publish and write subscribe.">
+                MQTT QoS
+                <input
+                  type="number"
+                  min="0"
+                  max="2"
+                  value={config.runtime?.mqttQos ?? 0}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttQos: e.target.value } }))}
+                  style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px" }}
+                />
+              </label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }} title="Set retained flag when publishing status payloads.">
+                <input
+                  type="checkbox"
+                  checked={config.runtime?.mqttRetain === true}
+                  disabled={!opcUaEditing}
+                  onChange={(e) => setConfig((p) => ({ ...p, runtime: { ...normalizeRuntimeConfig(p.runtime), mqttRetain: e.target.checked } }))}
+                />
+                MQTT Retain Status
               </label>
             </div>
             <div style={{ marginTop: "auto", display: "flex", gap: 8, paddingTop: 10, position: "sticky", bottom: 0, background: "var(--bg-elev)" }}>

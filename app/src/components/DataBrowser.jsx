@@ -6,6 +6,8 @@ import { showConfirmDialog } from "../utils/confirmDialog";
 export default function DataBrowser({
   embedded = false,
   embeddedPath = "",
+  embeddedRouteId = "",
+  embeddedRouteName = "",
   hideTableSelector = false,
   hideListFieldControls = false,
   useWhiteBackground = false,
@@ -99,6 +101,18 @@ export default function DataBrowser({
     () => String(currentTable || "").trim().toLowerCase() === "opc_alarm_state",
     [currentTable]
   );
+  const normalizedEmbeddedRouteId = String(embeddedRouteId || "").trim();
+  const normalizedEmbeddedRouteName =
+    String(embeddedRouteName || "").trim() || normalizedEmbeddedRouteId;
+  const isJobsTable = String(currentTable || "").trim().toLowerCase() === "jobs";
+  const showJobsRouteContext = isJobsTable && !!normalizedEmbeddedRouteId;
+  const rowRouteId = (row) =>
+    String(row?.route_id ?? row?.routeid ?? row?.routeId ?? row?.route ?? "").trim();
+  const applyEmbeddedRouteFilter = (items) => {
+    const list = Array.isArray(items) ? items : [];
+    if (!showJobsRouteContext) return list;
+    return list.filter((row) => rowRouteId(row) === normalizedEmbeddedRouteId);
+  };
   const hasAlarmActiveColumn = useMemo(() => {
     if (!isAlarmTable) return false;
     return (columns || []).some((c) => String(c?.column_name || "").toLowerCase() === "is_active");
@@ -381,7 +395,7 @@ export default function DataBrowser({
         const res = await fetch(`/api/db/${currentTable}?limit=100${projectParam}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
-        setRows(data.rows || []);
+        setRows(applyEmbeddedRouteFilter(data.rows || []));
         if (data.primaryKey) setPrimaryKey(data.primaryKey);
         if (Array.isArray(data.listFields)) {
           setListFields(data.listFields);
@@ -395,7 +409,7 @@ export default function DataBrowser({
       }
     }
     loadRows();
-  }, [currentTable, activeProjectId]);
+  }, [currentTable, activeProjectId, showJobsRouteContext, normalizedEmbeddedRouteId]);
 
   useEffect(() => {
     if (detailId) {
@@ -411,6 +425,21 @@ export default function DataBrowser({
     }
     setSelectedId(null);
   }, [detailId]);
+
+  useEffect(() => {
+    if (!isNewDetail) return;
+    if (!showJobsRouteContext) return;
+    setFormDraft((prev) => {
+      const current =
+        prev?.route_id ??
+        prev?.routeid ??
+        prev?.routeId ??
+        prev?.route ??
+        "";
+      if (String(current || "").trim()) return prev || {};
+      return { ...(prev || {}), route_id: normalizedEmbeddedRouteId };
+    });
+  }, [isNewDetail, showJobsRouteContext, normalizedEmbeddedRouteId]);
 
   useEffect(() => {
     async function loadDetail() {
@@ -430,7 +459,7 @@ export default function DataBrowser({
       const res = await fetch(`/api/db/${currentTable}?limit=100${projectParam}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
-      setRows(data.rows || []);
+      setRows(applyEmbeddedRouteFilter(data.rows || []));
       if (data.primaryKey) setPrimaryKey(data.primaryKey);
       if (Array.isArray(data.listFields)) {
         setListFields(data.listFields);
@@ -525,6 +554,16 @@ export default function DataBrowser({
     const pendingDetailOrder = Array.isArray(detailFieldOrder) ? [...detailFieldOrder] : [];
     if (currentTable === "routes" && activeProjectId && !payload.project_id) {
       payload.project_id = activeProjectId;
+    }
+    if (
+      String(currentTable || "").trim().toLowerCase() === "jobs" &&
+      normalizedEmbeddedRouteId &&
+      !payload.route_id &&
+      !payload.routeid &&
+      !payload.routeId &&
+      !payload.route
+    ) {
+      payload.route_id = normalizedEmbeddedRouteId;
     }
     try {
       if (selectedId) {
@@ -859,6 +898,22 @@ export default function DataBrowser({
                   </button>
                 </div>
               </div>
+              {showJobsRouteContext ? (
+                <div
+                  style={{
+                    marginBottom: 10,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "var(--text)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: "6px 8px",
+                    background: useWhiteBackground ? "#f6f9ff" : "var(--bg-soft)",
+                  }}
+                >
+                  Route: {normalizedEmbeddedRouteName}
+                </div>
+              ) : null}
               {!currentTable ? (
                 <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Select a table to begin.</div>
               ) : (
@@ -1186,6 +1241,22 @@ export default function DataBrowser({
                   ) : null}
                 </div>
               </div>
+              {showJobsRouteContext ? (
+                <div
+                  style={{
+                    marginBottom: 8,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "var(--text)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: "6px 8px",
+                    background: useWhiteBackground ? "#f6f9ff" : "var(--bg-soft)",
+                  }}
+                >
+                  Route: {normalizedEmbeddedRouteName}
+                </div>
+              ) : null}
               {!currentTable ? (
                 <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
                   Select a table to view rows.
@@ -1312,6 +1383,23 @@ export default function DataBrowser({
                                 {labelize(f)}
                               </th>
                             ))}
+                            <th
+                              style={{
+                                textAlign: "right",
+                                padding: "6px 8px",
+                                borderBottom: useWhiteBackground ? "1px solid #e6eefc" : "1px solid var(--border)",
+                                color: "var(--text-muted)",
+                                position: "sticky",
+                                top: 0,
+                                background: useWhiteBackground ? "#f3f7ff" : "var(--bg-elev)",
+                                zIndex: 1,
+                                fontWeight: 700,
+                                letterSpacing: "0.02em",
+                                width: 94,
+                              }}
+                            >
+                              Details
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1348,6 +1436,34 @@ export default function DataBrowser({
                                     {formatValue(f, r?.[f])}
                                   </td>
                                 ))}
+                                <td
+                                  style={{
+                                    padding: "6px 8px",
+                                    borderBottom: useWhiteBackground ? "1px solid #eef3fd" : "1px solid var(--border)",
+                                    textAlign: "right",
+                                    width: 94,
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      navigateData(`/data/${currentTable}/${rowId}`);
+                                    }}
+                                    style={{
+                                      border: "1px solid var(--border)",
+                                      background: "var(--bg-soft)",
+                                      color: "var(--text)",
+                                      borderRadius: 8,
+                                      padding: "4px 8px",
+                                      fontSize: 11,
+                                      fontWeight: 700,
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    View
+                                  </button>
+                                </td>
                               </tr>
                             );
                           })}

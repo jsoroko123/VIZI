@@ -3517,17 +3517,33 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     }
   };
 
+  const dataTypeExcludedSetByTemplate = useMemo(() => {
+    const out = new Map();
+    const byTemplate =
+      dataTypeExcludedFieldsByPlc?.[chatKey] && typeof dataTypeExcludedFieldsByPlc[chatKey] === "object"
+        ? dataTypeExcludedFieldsByPlc[chatKey]
+        : {};
+    Object.entries(byTemplate).forEach(([templateKey, excludedList]) => {
+      const tKey = String(templateKey || "").trim().toLowerCase();
+      if (!tKey) return;
+      out.set(
+        tKey,
+        new Set(
+          (Array.isArray(excludedList) ? excludedList : [])
+            .map((x) => String(x || "").trim().toLowerCase())
+            .filter(Boolean)
+        )
+      );
+    });
+    return out;
+  }, [chatKey, dataTypeExcludedFieldsByPlc]);
+
   const isDataTypeFieldIncluded = (templateName, fieldName) => {
     const tKey = String(templateName || "").trim().toLowerCase();
     const fKey = String(fieldName || "").trim().toLowerCase();
     if (!tKey || !fKey) return false;
-    const excluded = new Set(
-      (Array.isArray(dataTypeExcludedFieldsByPlc?.[chatKey]?.[tKey])
-        ? dataTypeExcludedFieldsByPlc[chatKey][tKey]
-        : []
-      ).map((x) => String(x || "").trim().toLowerCase()).filter(Boolean)
-    );
-    return !excluded.has(fKey);
+    const excluded = dataTypeExcludedSetByTemplate.get(tKey);
+    return !excluded?.has(fKey);
   };
 
   const toggleDataTypeFieldIncluded = (templateName, fieldName) => {
@@ -3585,7 +3601,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     });
   };
 
-  const primitiveTypeSet = new Set([
+  const primitiveTypeSet = useMemo(() => new Set([
     "bool",
     "bit",
     "sint",
@@ -3606,33 +3622,57 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     "time",
     "date",
     "datetime",
-  ]);
+  ]), []);
+  const dataTypeNodeExpandedSet = useMemo(
+    () =>
+      new Set(
+        (Array.isArray(dataTypeNodeExpandedByPlc?.[chatKey]) ? dataTypeNodeExpandedByPlc[chatKey] : []).map((k) =>
+          String(k || "")
+        )
+      ),
+    [chatKey, dataTypeNodeExpandedByPlc]
+  );
 
-  const renderDataTypeFieldTree = (rootTemplateName, fields, visitedTypes = [], depth = 0) => {
-    const nodeExpandedSet = new Set(
-      (Array.isArray(dataTypeNodeExpandedByPlc?.[chatKey]) ? dataTypeNodeExpandedByPlc[chatKey] : [])
-        .map((k) => String(k || ""))
-    );
+  const renderDataTypeFieldTree = (
+    rootTemplateName,
+    fields,
+    visitedTypes = [],
+    depth = 0,
+    templateResolveCache = new Map(),
+    descriptorCache = new Map()
+  ) => {
     return (
       <div style={{ display: "grid", gap: 4 }}>
         {(Array.isArray(fields) ? fields : []).map((field) => {
           const fieldName = String(field?.name || "").trim();
           const plcType = String(field?.plcType || "").trim();
-          const parsed = parsePlcDataTypeDescriptor(
-            String(field?.baseType || field?.plcType || ""),
-            String(field?.arraySpec || "")
-          );
+          const descBase = String(field?.baseType || field?.plcType || "");
+          const descArray = String(field?.arraySpec || "");
+          const descriptorKey = `${descBase}|${descArray}`;
+          let parsed = descriptorCache.get(descriptorKey);
+          if (!parsed) {
+            parsed = parsePlcDataTypeDescriptor(descBase, descArray);
+            descriptorCache.set(descriptorKey, parsed);
+          }
           const lookupType = String(parsed.baseType || field?.baseType || plcType || "").trim();
           const plcTypeKey = lookupType.toLowerCase();
+          const resolveTemplateCached = (rawTypeName) => {
+            const cacheKey = String(rawTypeName || "").trim();
+            if (!cacheKey) return null;
+            if (templateResolveCache.has(cacheKey)) return templateResolveCache.get(cacheKey);
+            const found = resolveDataTypeTemplateByTypeName(cacheKey) || null;
+            templateResolveCache.set(cacheKey, found);
+            return found;
+          };
           const targetTemplate =
-            resolveDataTypeTemplateByTypeName(lookupType) ||
-            resolveDataTypeTemplateByTypeName(field?.baseType) ||
-            resolveDataTypeTemplateByTypeName(field?.plcType);
+            resolveTemplateCached(lookupType) ||
+            resolveTemplateCached(field?.baseType) ||
+            resolveTemplateCached(field?.plcType);
           const hasNested = Boolean(targetTemplate) && !primitiveTypeSet.has(plcTypeKey);
           const recursive = hasNested && visitedTypes.includes(plcTypeKey);
           const nodeKey = `dt:${String(rootTemplateName || "").trim()}|${visitedTypes.join(">")}|${fieldName}|${plcType}`;
           const canExpand = !recursive;
-          const isExpanded = nodeExpandedSet.has(nodeKey);
+          const isExpanded = dataTypeNodeExpandedSet.has(nodeKey);
           const indentPx = Math.max(0, depth * 12);
           return (
             <div key={`${nodeKey}-row`} style={{ marginLeft: indentPx }}>
@@ -3712,7 +3752,9 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
                         rootTemplateName,
                         Array.isArray(targetTemplate?.fields) ? targetTemplate.fields : [],
                         [...visitedTypes, plcTypeKey],
-                        depth + 1
+                        depth + 1,
+                        templateResolveCache,
+                        descriptorCache
                       )
                     : null}
                 </div>
