@@ -1088,14 +1088,14 @@ export default function CanvasSvg({
     const displayN = latestPoint ? latestPoint.v : n;
     const compact = w < 220 || h < 130;
     const dense = w < 160 || h < 100;
-    const widgetScale = Math.max(0.72, Math.min(1.9, Math.min(w, h) / 170));
+    const widgetScale = Math.max(0.68, Math.min(1.15, Math.min(w, h) / 220));
     const scaledFont = (base, min = 7, max = 40) =>
       Math.max(min, Math.min(max, Math.round(Number(base || 0) * widgetScale)));
     const headH = dense ? 20 : compact ? 24 : 28;
     const pad = dense ? 6 : compact ? 8 : 10;
     const cardTitle = title || "";
     const titleSize = dense ? 8 : compact ? 9 : 10;
-    const valueSize = scaledFont(dense ? 14 : compact ? 18 : 22, 10, 56);
+    const valueSize = scaledFont(dense ? 12 : compact ? 16 : 19, 9, 36);
     const valueColor = "var(--text)";
     const accent = "#2b8cff";
     const accentSoft = "#2b8cff33";
@@ -1375,7 +1375,7 @@ export default function CanvasSvg({
       const valueText = validTimer ? formatDuration(remainingMs, decimals, unit) : "Unbound";
       const valueFont = Math.max(
         8,
-        Math.min(20, Math.round(Math.min(barH * 0.52, barW * 0.11)))
+        Math.min(16, Math.round(Math.min(barH * 0.42, barW * 0.09)))
       );
       return (
         <g pointerEvents="none">
@@ -1659,7 +1659,7 @@ export default function CanvasSvg({
                     ? "linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%)"
                     : "linear-gradient(180deg, #4f8dff 0%, #2b6cff 100%)",
                   color: "white",
-                  fontSize: Math.max(9, Math.min(20, Math.round(buttonH * 0.42))),
+                  fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                   fontWeight: 800,
                   cursor: !liveClickable || writeBusy ? "default" : "pointer",
                   opacity: !canWrite ? 0.65 : 1,
@@ -1798,7 +1798,7 @@ export default function CanvasSvg({
                     ? "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)"
                     : "linear-gradient(180deg, #64748b 0%, #334155 100%)",
                   color: "white",
-                  fontSize: Math.max(9, Math.min(20, Math.round(buttonH * 0.42))),
+                  fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                   fontWeight: 800,
                   cursor: !liveClickable || writeBusy ? "default" : "pointer",
                   opacity: !canWrite ? 0.65 : 1,
@@ -1838,7 +1838,7 @@ export default function CanvasSvg({
                   />
                   <span
                     style={{
-                      fontSize: Math.max(9, Math.min(18, Math.round(buttonH * 0.38))),
+                      fontSize: Math.max(8, Math.min(14, Math.round(buttonH * 0.3))),
                       fontWeight: 800,
                       letterSpacing: "0.02em",
                       color: "rgba(255,255,255,0.96)",
