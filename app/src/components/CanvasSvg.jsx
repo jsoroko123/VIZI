@@ -2657,8 +2657,9 @@ export default function CanvasSvg({
   const innerH = Math.max(0, (size.h || 0) - rulerSize);
   const vbWidth = Math.max(1, Number(vbW) || 1);
   const vbHeight = Math.max(1, Number(vbH) || 1);
-  const viewportScale =
-    innerW > 0 && innerH > 0 ? Math.min(innerW / vbWidth, innerH / vbHeight) : 1;
+  // Keep canvas coordinates in a true 1:1 world-to-pixel mapping.
+  // Avoid auto stretch-to-fit scaling that makes content oversized on ultrawide displays.
+  const viewportScale = 1;
   const viewportOffsetX = 0;
   const viewportOffsetY = 0;
 
@@ -3166,8 +3167,8 @@ export default function CanvasSvg({
         }}
       >
         <svg
-          width="100%"
-          height="100%"
+          width={vbWidth}
+          height={vbHeight}
           viewBox={vb}
           preserveAspectRatio="xMinYMin meet"
           data-canvas-zoom-root="true"
