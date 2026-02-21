@@ -68,6 +68,7 @@ export default function CanvasSvg({
   onOverlayDoubleClick,
   overlaySelectionUI,
   overlayGroupSelectionUI,
+  shapeSelectionUI,
   overlayLocalBBox,
   importAnchor,
   onCanvasDoubleClick,
@@ -76,6 +77,7 @@ export default function CanvasSvg({
   routeStrokeColorByGroupPath,
   svgLiveValuesByGroupPath,
   opcLiveValues,
+  opcTags,
   widgetDbValues,
   onWidgetDurationPresetChange,
   hiddenTagBubbleIds,
@@ -85,6 +87,7 @@ export default function CanvasSvg({
   theme,
   canvasBackgroundColor,
   liveClickable = false,
+  isLiveMode = false,
   viewportTopOffset = 0,
   viewportLeftOffset = 0,
   viewportScrollTarget = null,
@@ -92,7 +95,7 @@ export default function CanvasSvg({
 }) {
   const vb = useMemo(() => `0 0 ${vbW} ${vbH}`, [vbW, vbH]);
   const rulerSize = showRulers ? RULER : 0;
-  const isLineMode = tool === "polyline" || tool === "rect";
+  const isLineMode = tool === "polyline" || tool === "rect" || tool === "circle";
   const isCrosshair = isLineMode || marquee;
   const themeStrokeDefault = "#808080";
   const isDarkTheme = String(theme || "").toLowerCase() === "dark";
@@ -160,12 +163,27 @@ export default function CanvasSvg({
   const getRouteStrokeColorForOverlay = (overlay) => {
     if (!routeStrokeColorByGroupPath) return "";
     const key = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
-    if (!key) return "";
-    return (
+    const direct = (
       routeStrokeColorByGroupPath.get(key) ||
       routeStrokeColorByGroupPath.get(key.toLowerCase()) ||
       ""
     );
+    if (direct) return direct;
+
+    const groupLive = getLiveValuesForOverlay(overlay);
+    const fallbackGroupState = getGroupRouteStateForTagPath(overlay?.tagPath);
+    const routeId = String(groupLive?.routeId || fallbackGroupState?.routeId || "").trim();
+    if (!routeId) return "";
+    const routeIdLower = routeId.toLowerCase();
+    const routeColor = routeColorsBySvgKey
+      ? routeColorsBySvgKey.get(routeId) ||
+        routeColorsBySvgKey.get(routeIdLower) ||
+        ""
+      : "";
+    const normalizedColor = String(routeColor || "").trim();
+    if (normalizedColor) return normalizedColor;
+    if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(routeId)) return routeId;
+    return "";
   };
 
   const getLiveValuesForOverlay = (overlay) => {
@@ -2514,6 +2532,161 @@ export default function CanvasSvg({
     };
   };
 
+  const knownOverlayTagPaths = useMemo(() => {
+    const out = new Set();
+    (Array.isArray(opcTags) ? opcTags : []).forEach((tag) => {
+      const topic = String(tag?.topic || "").trim();
+      const group = String(tag?.groupName || "").trim();
+      if (!group) return;
+      const full = topic ? `${topic}.${group}` : group;
+      if (full) out.add(full.toLowerCase());
+      out.add(group.toLowerCase());
+    });
+    return out;
+  }, [opcTags]);
+
+  const hasKnownOverlayTagPath = (rawPath) => {
+    const path = String(rawPath || "").trim().toLowerCase();
+    if (!path) return false;
+    if (!knownOverlayTagPaths.size) return true;
+    if (knownOverlayTagPaths.has(path)) return true;
+    for (const known of knownOverlayTagPaths) {
+      if (known === path || known.endsWith(`.${path}`) || path.endsWith(`.${known}`)) return true;
+    }
+    return false;
+  };
+
+  const parseLiveBool = (value) => {
+    if (typeof value === "boolean") return value;
+    if (Number.isFinite(Number(value))) return Number(value) !== 0;
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) return null;
+    if (["true", "on", "yes", "manual"].includes(text)) return true;
+    if (["false", "off", "no", "auto"].includes(text)) return false;
+    return null;
+  };
+
+  const getLiveValueForExactOrSuffixKey = (rawKey) => {
+    const key = String(rawKey || "").replace(/\r?\n/g, "").trim();
+    if (!key) return null;
+    if (liveLookup.has(key)) return liveLookup.get(key);
+    const lowerKey = key.toLowerCase();
+    if (liveLookup.has(lowerKey)) return liveLookup.get(lowerKey);
+    const suffix = `.${lowerKey}`;
+    for (const [mapKey, mapValue] of liveLookup.entries()) {
+      const k = String(mapKey || "").trim().toLowerCase();
+      if (!k) continue;
+      if (k === lowerKey || k.endsWith(suffix)) return mapValue;
+    }
+    return null;
+  };
+
+  const buildOverlayMemberCandidates = (overlay, aliases = []) => {
+    const tagPath = String(overlay?.tagPath || "").trim();
+    if (!tagPath || !Array.isArray(aliases) || aliases.length === 0) return [];
+    const parts = tagPath.split(".").map((x) => String(x || "").trim()).filter(Boolean);
+    const parents = [];
+    if (parts.length > 1) parents.push(parts.slice(0, -1).join("."));
+    if (parts.length > 2) parents.push(parts.slice(1, -1).join("."));
+    if (parts.length > 0) parents.push(parts.join("."));
+    const seen = new Set();
+    const out = [];
+    for (const parent of parents) {
+      for (const alias of aliases) {
+        const base = String(parent || "").trim();
+        const member = String(alias || "").trim();
+        if (!base || !member) continue;
+        const dotPath = `${base}.${member}`;
+        const slashPath = `${base}/${member}`;
+        const dotKey = dotPath.toLowerCase();
+        const slashKey = slashPath.toLowerCase();
+        if (!seen.has(dotKey)) {
+          seen.add(dotKey);
+          out.push(dotPath);
+        }
+        if (!seen.has(slashKey)) {
+          seen.add(slashKey);
+          out.push(slashPath);
+        }
+      }
+    }
+    return out;
+  };
+
+  const getOverlayModeState = (overlay) => {
+    if (!isLiveMode || overlay?.widget) return "";
+    const modeStatusCandidates = buildOverlayMemberCandidates(overlay, [
+      "Mode_Status",
+      "ModeStatus",
+      "Control_Status",
+      "ControlStatus",
+      "i_ModeStatus",
+      "o_ModeStatus",
+      "StsMode",
+      "HMI_ModeStatus",
+    ]);
+    const manualCandidates = buildOverlayMemberCandidates(overlay, [
+      "i_ManualMode",
+      "o_ManualMode",
+      "ManualMode",
+      "StsManual",
+      "ManualActive",
+    ]);
+    const autoCandidates = buildOverlayMemberCandidates(overlay, [
+      "i_AutoMode",
+      "o_AutoMode",
+      "AutoMode",
+      "StsAuto",
+      "AutoActive",
+    ]);
+    const maintenanceCandidates = buildOverlayMemberCandidates(overlay, [
+      "i_MaintenanceMode",
+      "o_MaintenanceMode",
+      "MaintenanceMode",
+      "MaintMode",
+      "StsMaint",
+      "MaintActive",
+    ]);
+    const manualValue = parseLiveBool(
+      manualCandidates
+        .map((key) => getLiveValueForExactOrSuffixKey(key))
+        .find((v) => v != null && String(v) !== "")
+    );
+    const autoValue = parseLiveBool(
+      autoCandidates
+        .map((key) => getLiveValueForExactOrSuffixKey(key))
+        .find((v) => v != null && String(v) !== "")
+    );
+    const maintenanceValue = parseLiveBool(
+      maintenanceCandidates
+        .map((key) => getLiveValueForExactOrSuffixKey(key))
+        .find((v) => v != null && String(v) !== "")
+    );
+    const parsedModeFromStatus = (() => {
+      const raw = modeStatusCandidates
+        .map((key) => getLiveValueForExactOrSuffixKey(key))
+        .find((v) => v != null && String(v) !== "");
+      if (raw == null || raw === "") return "";
+      const text = String(raw || "").trim();
+      const lower = text.toLowerCase();
+      if (lower.includes("manual")) return "manual";
+      if (lower.includes("auto")) return "auto";
+      if (lower.includes("maint")) return "maintenance";
+      const num = Number(text);
+      if (Number.isFinite(num)) {
+        if (num === 4) return "manual";
+        if (num === 2) return "auto";
+        if (num === 8) return "maintenance";
+      }
+      return "";
+    })();
+    if (maintenanceValue === true) return "maintenance";
+    if (manualValue === true) return "manual";
+    if (autoValue === true) return "auto";
+    if (parsedModeFromStatus) return parsedModeFromStatus;
+    return "";
+  };
+
   const userColor = (value) => {
     const raw = String(value || "");
     let hash = 0;
@@ -3455,11 +3628,85 @@ export default function CanvasSvg({
                 );
               }
 
+              if (s.type === "circle") {
+                const rx = Number(s.x ?? 0);
+                const ry = Number(s.y ?? 0);
+                const rw = Math.max(0, Number(s.width ?? 0));
+                const rh = Math.max(0, Number(s.height ?? 0));
+                const cx = rx + rw / 2;
+                const cy = ry + rh / 2;
+                const erx = rw / 2;
+                const ery = rh / 2;
+                const lineStyle = s.lineStyle ?? "solid";
+                const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
+                const stroke =
+                  isSelected
+                    ? "#2b6cff"
+                    : dynamicColor || (isDarkTheme ? "#ffffff" : themeStrokeDefault);
+                const fill = s.fill ?? "transparent";
+
+                return (
+                  <g key={s.id}>
+                    <rect
+                      x={rx - 6}
+                      y={ry - 6}
+                      width={rw + 12}
+                      height={rh + 12}
+                      fill="rgba(0,0,0,0.001)"
+                      pointerEvents="all"
+                      onMouseDown={(e) => onShapeMouseDown(e, s.id)}
+                      onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (tool === "select") {
+                          setSelectedIds?.([s.id]);
+                          setSelectedOverlayIds?.([]);
+                        }
+                        onContextMenu?.(e);
+                      }}
+                      style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+                    />
+                    <ellipse
+                      cx={cx}
+                      cy={cy}
+                      rx={erx}
+                      ry={ery}
+                      fill={fill}
+                      stroke={stroke}
+                      strokeWidth={s.strokeWidth}
+                      {...styleProps}
+                      strokeLinejoin={styleProps.strokeLinejoin ?? "round"}
+                      strokeLinecap={styleProps.strokeLinecap ?? "round"}
+                      vectorEffect="non-scaling-stroke"
+                      pointerEvents="auto"
+                      onMouseDown={(e) => onShapeMouseDown(e, s.id)}
+                      onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (tool === "select") {
+                          setSelectedIds?.([s.id]);
+                          setSelectedOverlayIds?.([]);
+                        }
+                        onContextMenu?.(e);
+                      }}
+                      style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+                    />
+                  </g>
+                );
+              }
+
               const lineStyle = s.lineStyle ?? "solid";
               const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
               const arrowStart = s.arrowStart ?? "none";
               const arrowEnd = s.arrowEnd ?? "none";
               const ptsForDisplay = pointsForMarker(s.points);
+              const polyFillRaw = String(s.fill ?? "").trim().toLowerCase();
+              const polyFill =
+                !polyFillRaw || polyFillRaw === "none" || polyFillRaw === "transparent"
+                  ? "none"
+                  : String(s.fill);
               const startPoint =
                 Array.isArray(s.points) && s.points.length ? s.points[0] : null;
               const touchColor = startPoint ? getOverlayColorAtPoint(startPoint) : "";
@@ -3522,7 +3769,7 @@ export default function CanvasSvg({
 
                   <polyline
                     points={pointsToAttr(ptsForDisplay)}
-                    fill="none"
+                    fill={polyFill}
                     stroke={
                       isSelected
                         ? "#2b6cff"
@@ -3587,6 +3834,13 @@ export default function CanvasSvg({
             {svgOverlays.map((o) => {
               const isSel = selectedOverlayIds.includes(o.id);
               const showHandles = singleSelectedOverlayId === o.id;
+              const overlayModeState = getOverlayModeState(o);
+              const overlayTagPath = String(o?.tagPath || "").trim();
+              const overlayTagWarning = !overlayTagPath
+                ? "SVG not tagged"
+                : !hasKnownOverlayTagPath(overlayTagPath)
+                ? "Bad tag mapping"
+                : "";
 
               return (
                 <g
@@ -3682,8 +3936,108 @@ export default function CanvasSvg({
                         />
                       );
                     })()}
-                    {o.widget ? renderWidgetOverlay(o) : null}
-                  </g>
+                  {o.widget ? renderWidgetOverlay(o) : null}
+                </g>
+
+                  {overlayTagWarning ? (() => {
+                    const bb = o?.bbox || overlayLocalBBox(o.id);
+                    if (!bb) return null;
+                    const wr = overlayWorldRect(o, bb);
+                    const r = 8 * inv;
+                    const cx = wr.x + wr.w + 12 * inv;
+                    const cy = wr.y + Math.max(10 * inv, r + 1 * inv);
+                    return (
+                      <g pointerEvents="none" aria-hidden="true">
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={r}
+                          fill="rgba(255,245,245,0.98)"
+                          stroke="#ef4444"
+                          strokeWidth={1.2 * inv}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <text
+                          x={cx}
+                          y={cy + 0.5 * inv}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fill="#b91c1c"
+                          fontSize={10 * inv}
+                          fontWeight={900}
+                          pointerEvents="none"
+                        >
+                          !
+                        </text>
+                        <title>{`${overlayTagWarning}: ${overlayTagPath || "-"}`}</title>
+                      </g>
+                    );
+                  })() : null}
+
+                  {(overlayModeState === "manual" || overlayModeState === "maintenance") && (() => {
+                    const bb = o?.bbox || overlayLocalBBox(o.id);
+                    if (!bb) return null;
+                    const wr = overlayWorldRect(o, bb);
+                    const isMaintenance = overlayModeState === "maintenance";
+                    const bubbleR = 9 * inv;
+                    const bubbleCx = wr.x + wr.w + 12 * inv;
+                    const bubbleCy = wr.y + 10 * inv;
+                    const anchorX = wr.x + wr.w;
+                    const anchorY = wr.y + Math.max(6 * inv, Math.min(wr.h - 6 * inv, 10 * inv));
+                    const dx = bubbleCx - anchorX;
+                    const dy = bubbleCy - anchorY;
+                    const dist = Math.max(1e-6, Math.hypot(dx, dy));
+                    const ux = dx / dist;
+                    const uy = dy / dist;
+                    const lineEndX = bubbleCx - ux * bubbleR;
+                    const lineEndY = bubbleCy - uy * bubbleR;
+                    return (
+                      <g pointerEvents="none" aria-hidden="true">
+                        <line
+                          x1={anchorX}
+                          y1={anchorY}
+                          x2={lineEndX}
+                          y2={lineEndY}
+                          stroke={isMaintenance ? "#b45309" : "#7e22ce"}
+                          strokeWidth={1.35 * inv}
+                          strokeLinecap="round"
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <circle
+                          cx={bubbleCx}
+                          cy={bubbleCy}
+                          r={bubbleR}
+                          fill={isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)"}
+                          stroke={isMaintenance ? "#f59e0b" : "#a855f7"}
+                          strokeWidth={1.25 * inv}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <g
+                          transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.6 * inv}) translate(-12 -12)`}
+                          fill="none"
+                          stroke={isMaintenance ? "#b45309" : "#7e22ce"}
+                          strokeWidth={1.9}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          {isMaintenance ? (
+                            <>
+                              <path d="M20 4.5 14.2 10.3" />
+                              <path d="M10.2 14.3 4.2 20.3 2.7 18.8l6-6" />
+                              <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
+                            </>
+                          ) : (
+                            <>
+                              <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
+                              <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
+                              <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
+                              <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
+                            </>
+                          )}
+                        </g>
+                      </g>
+                    );
+                  })()}
 
                   {isLineMode && (() => {
                     const bb = overlayLocalBBox(o.id);
@@ -3743,6 +4097,9 @@ export default function CanvasSvg({
             {selectedOverlayIds?.length > 1 && selectedIds?.length === 0 && overlayGroupSelectionUI
               ? overlayGroupSelectionUI(z)
               : null}
+            {selectedIds?.length > 0 && selectedOverlayIds?.length === 0 && shapeSelectionUI
+              ? shapeSelectionUI(z)
+              : null}
 
             {collabCursors.length > 0 && (
               <g pointerEvents="none">
@@ -3800,7 +4157,7 @@ export default function CanvasSvg({
                       anchor: "start",
                     });
                   }
-                  if (s.type === "rect") {
+                  if (s.type === "rect" || s.type === "circle") {
                     const x = Number(s.x ?? 0) + Math.max(0, Number(s.width ?? 0)) / 2;
                     const anchorY = Number(s.y ?? 0) + yOffset;
                     return renderTagBubble({

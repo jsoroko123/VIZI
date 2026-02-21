@@ -461,6 +461,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   });
   const autoSaveTimerRef = useRef(null);
   const autoSaveReadyRef = useRef(false);
+  const initialLoadSucceededRef = useRef(false);
   const lastSavedRef = useRef("");
   const opcUaSnapshotRef = useRef(null);
   const lastLiveErrorsRef = useRef({});
@@ -480,6 +481,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   useEffect(() => {
     async function load() {
+      autoSaveReadyRef.current = false;
+      initialLoadSucceededRef.current = false;
       try {
         const res = await fetch("/api/opc/config");
         const data = await res.json();
@@ -508,14 +511,15 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         };
         setConfig(loadedConfig);
         lastSavedRef.current = JSON.stringify(loadedConfig);
+        initialLoadSucceededRef.current = true;
         setTimeout(() => {
           autoSaveReadyRef.current = true;
         }, 0);
       } catch (err) {
         setError(err?.message || "Failed to load.");
-        setTimeout(() => {
-          autoSaveReadyRef.current = true;
-        }, 0);
+        // Do not enable autosave after a failed bootstrap fetch.
+        // This prevents posting default/empty config that can wipe tags.
+        autoSaveReadyRef.current = false;
       }
     }
     load();
@@ -523,6 +527,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   useEffect(() => {
     if (!autoSaveReadyRef.current) return;
+    if (!initialLoadSucceededRef.current) return;
     if (opcUaEditing) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(() => {
@@ -1003,6 +1008,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const editorResolvedRows = useMemo(() => {
     const currentName = String(templateName || editTemplate || "").trim();
     const rowsForExpansion = (Array.isArray(deferredTemplateFieldRows) ? deferredTemplateFieldRows : []).map((row) => ({
+      ...(row && typeof row === "object" ? row : {}),
       name: String(row?.name || "").trim(),
       tagPath: String(row?.tagPath || "").trim(),
       plcType: String(row?.plcType || "").trim(),
@@ -1010,6 +1016,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       isArray: row?.isArray === true,
       arraySpec: String(row?.arraySpec || "").trim(),
       uaType: String(row?.uaType || "").trim(),
+      topic: String(row?.topic || "").trim(),
+      mappingSet: String(row?.mappingSet || "").trim(),
     }));
     const hasDraftRows =
       Array.isArray(rowsForExpansion) &&
@@ -1045,12 +1053,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   const templateFieldRowsByPath = useMemo(() => {
     const map = new Map();
-    (Array.isArray(deferredTemplateFieldRows) ? deferredTemplateFieldRows : []).forEach((row, idx) => {
+    (Array.isArray(templateFieldRows) ? templateFieldRows : []).forEach((row, idx) => {
       const key = String(row?.tagPath || row?.name || "").trim();
       if (key) map.set(key, { row, idx });
     });
     return map;
-  }, [deferredTemplateFieldRows]);
+  }, [templateFieldRows]);
 
   const editorResolvedRowsByPath = useMemo(() => {
     const map = new Map();
@@ -1070,14 +1078,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       seen.add(path);
       paths.push(path);
     };
-    (Array.isArray(deferredTemplateFieldRows) ? deferredTemplateFieldRows : []).forEach((row) =>
+    (Array.isArray(templateFieldRows) ? templateFieldRows : []).forEach((row) =>
       addPath(row?.tagPath || row?.name)
     );
     (Array.isArray(deferredEditorResolvedRows) ? deferredEditorResolvedRows : []).forEach((row) =>
       addPath(row?.tagPath || row?.name)
     );
     return paths;
-  }, [deferredTemplateFieldRows, deferredEditorResolvedRows]);
+  }, [templateFieldRows, deferredEditorResolvedRows]);
 
   const templateFieldTree = useMemo(() => {
     const root = { fullPath: "", children: new Map(), leaf: false };
@@ -1876,7 +1884,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           alarmEnabled: row?.alarmEnabled === true,
           alarmOperator: normalizeAlarmOperator(row?.alarmOperator),
           alarmValue: normalizeAlarmThreshold(row?.alarmValue),
-          mappingSet: row?.mappingSet || "",
+          mappingSet: String(row?.mappingSet || "").trim(),
         };
       })
       .filter((t) => t.name);
@@ -4785,6 +4793,24 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     New Set
                   </button>
                   <button
+                    onClick={() => {
+                      setMappingSetName("HMI_State");
+                      setMappingSetOriginalName("");
+                      setMappingSetRows([
+                        { field: "HMI_State", state: "1", color: "#6b7280" }, // Stopped
+                        { field: "HMI_State", state: "2", color: "#f59e0b" }, // Starting
+                        { field: "HMI_State", state: "4", color: "#16a34a" }, // Started
+                        { field: "HMI_State", state: "6", color: "#f97316" }, // Stopping
+                      ]);
+                      setStatus("HMI_State mapping preset loaded. Click 'Save Mapping Set' to persist.");
+                      setError("");
+                    }}
+                    style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
+                    title="Load default HMI_State mappings"
+                  >
+                    HMI_State Preset
+                  </button>
+                  <button
                     onClick={async () => {
                       if (!mappingSetName) return;
                       setError("");
@@ -4832,7 +4858,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   </colgroup>
                   <thead>
                     <tr style={{ background: "var(--bg-soft)" }}>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>State Text</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Field</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>PLC Value</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>Color</th>
                       <th />
@@ -4843,10 +4869,16 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       <tr key={`map-set-row-${idx}`}>
                         <td style={{ padding: "8px 16px 8px 10px" }}>
                           <input
-                            value={row.field || "State Text"}
-                            placeholder="State Text"
+                            value={row.field ?? ""}
+                            onChange={(e) =>
+                              setMappingSetRows((prev) => {
+                                const next = [...prev];
+                                next[idx] = { ...next[idx], field: e.target.value };
+                                return next;
+                              })
+                            }
+                            placeholder="e.g. State Text"
                             style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
-                            disabled
                           />
                         </td>
                         <td style={{ padding: "8px 16px 8px 10px" }}>
@@ -4918,7 +4950,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   onClick={() =>
                     setMappingSetRows((prev) => [
                       ...prev,
-                      { field: "State Text", state: "", color: "" },
+                      { field: "", state: "", color: "" },
                     ])
                   }
                   style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
@@ -5160,17 +5192,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       }
       return next;
     });
-    const shouldDefer =
-      typeof value === "string" &&
-      ["name", "tagPath", "uaType", "topic", "mappingSet", "alarmValue"].includes(String(key || ""));
-    if (shouldDefer) {
-      startTemplateFieldTransition(() => {
-        applyUpdate();
-      });
-      return;
-    }
     applyUpdate();
-  }, [startTemplateFieldTransition]);
+  }, []);
 
   const removeTemplateFieldRow = useCallback((idx, fallbackRow = null, path = "", removeChildren = false) => {
     setTemplateFieldRows((prev) => {

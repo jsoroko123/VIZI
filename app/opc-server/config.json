@@ -39,9 +39,19 @@
     "port": 4840,
     "resourcePath": "/UA/ControlLogix"
   },
-  "pollMs": 500,
+  "pollMs": 1000,
   "runtime": {
-    "opcConnectionEnabled": true
+    "opcConnectionEnabled": true,
+    "readTimeoutMs": 7000,
+    "readRetryCount": 3,
+    "readRetryDelayMs": 250,
+    "plcConnectTimeoutMs": 15000,
+    "plcReceiveTimeoutMs": 45000,
+    "reconnectDelayMs": 3000,
+    "heartbeatEnabled": true,
+    "heartbeatMs": 10000,
+    "heartbeatFailureThreshold": 5,
+    "readReconnectErrorThreshold": 4
   },
   "topics": [
     {

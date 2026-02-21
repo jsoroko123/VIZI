@@ -125,7 +125,13 @@ export function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
       const name = String(group?.name ?? "");
       const items = (Array.isArray(group?.items) ? group.items : [])
         .map((item) => {
-          const type = String(item?.type || "").toLowerCase() === "data" ? "data" : "screen";
+          const rawType = String(item?.type || "").toLowerCase();
+          const type =
+            rawType === "data"
+              ? "data"
+              : rawType === "reports"
+              ? "reports"
+              : "screen";
           if (type === "screen") {
             const screenId = String(item?.screenId || "").trim();
             if (!screenId || !screenIds.has(screenId)) return null;
@@ -133,6 +139,15 @@ export function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
               id: String(item?.id || `live-item-${uid()}`),
               type,
               screenId,
+              label: String(item?.label || "").trim(),
+              restricted: Boolean(item?.restricted),
+              allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
+            };
+          }
+          if (type === "reports") {
+            return {
+              id: String(item?.id || `live-item-${uid()}`),
+              type: "reports",
               label: String(item?.label || "").trim(),
               restricted: Boolean(item?.restricted),
               allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),

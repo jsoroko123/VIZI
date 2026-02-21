@@ -42,6 +42,9 @@ export default function DataBrowser({
   const [foreignKeyMeta, setForeignKeyMeta] = useState({});
   const [formEnabled, setFormEnabled] = useState(false);
   const [alarmViewTab, setAlarmViewTab] = useState("active");
+  const [rowsTruncated, setRowsTruncated] = useState(false);
+  const TABLE_FETCH_BATCH = 200;
+  const TABLE_FETCH_MAX = 10000;
 
   const tableList = useMemo(() => tables || [], [tables]);
   const isNewDetail = detailId === "new";
@@ -153,7 +156,7 @@ export default function DataBrowser({
         height: "100%",
         background: useWhiteBackground
           ? "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)"
-          : "var(--bg-soft)",
+          : "var(--bg-elev)",
         color: "var(--text)",
         overflow: "hidden",
       }
@@ -162,7 +165,7 @@ export default function DataBrowser({
         inset: 0,
         background: useWhiteBackground
           ? "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)"
-          : "var(--bg-soft)",
+          : "var(--bg-elev)",
         color: "var(--text)",
         overflow: "hidden",
       };
@@ -170,20 +173,26 @@ export default function DataBrowser({
     width: "100%",
     height: "100%",
     margin: 0,
-    padding: embedded ? "0 0 30px" : "0 0 30px",
+    padding: embedded ? "10px" : "0 0 30px",
     boxSizing: "border-box",
     display: "flex",
     flexDirection: "column",
   };
   const cardStyle = {
-    background: useWhiteBackground ? "rgba(255,255,255,0.92)" : "transparent",
-    border: useWhiteBackground ? "1px solid #d2def6" : "none",
-    borderRadius: 16,
-    padding: 14,
-    boxShadow: useWhiteBackground
+    background: embedded
+      ? "var(--bg-elev)"
+      : useWhiteBackground
+      ? "rgba(255,255,255,0.92)"
+      : "transparent",
+    border: embedded ? "1px solid var(--border)" : useWhiteBackground ? "1px solid #d2def6" : "none",
+    borderRadius: embedded ? 12 : 16,
+    padding: embedded ? 12 : 14,
+    boxShadow: embedded
+      ? "none"
+      : useWhiteBackground
       ? "0 8px 24px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.85)"
       : "0 20px 40px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.7)",
-    backdropFilter: "blur(6px)",
+    backdropFilter: embedded ? "none" : "blur(6px)",
   };
   const headerStyle = {
     display: "flex",
@@ -384,17 +393,37 @@ export default function DataBrowser({
     loadMeta();
   }, [currentTable]);
 
+  async function fetchRowsSnapshot() {
+    if (!currentTable) return { rows: [] };
+    const projectParam =
+      currentTable === "routes" && activeProjectId
+        ? `&project_id=${encodeURIComponent(activeProjectId)}`
+        : "";
+    let offset = 0;
+    let allRows = [];
+    let lastPayload = {};
+    while (offset < TABLE_FETCH_MAX) {
+      const res = await fetch(
+        `/api/db/${currentTable}?limit=${TABLE_FETCH_BATCH}&offset=${offset}${projectParam}`
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
+      const chunk = Array.isArray(data.rows) ? data.rows : [];
+      allRows = allRows.concat(chunk);
+      lastPayload = data;
+      if (chunk.length < TABLE_FETCH_BATCH) break;
+      offset += TABLE_FETCH_BATCH;
+    }
+    const truncated = allRows.length >= TABLE_FETCH_MAX;
+    setRowsTruncated(truncated);
+    return { ...lastPayload, rows: allRows };
+  }
+
   useEffect(() => {
     async function loadRows() {
       if (!currentTable) return;
       try {
-        const projectParam =
-          currentTable === "routes" && activeProjectId
-            ? `&project_id=${encodeURIComponent(activeProjectId)}`
-            : "";
-        const res = await fetch(`/api/db/${currentTable}?limit=100${projectParam}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
+        const data = await fetchRowsSnapshot();
         setRows(applyEmbeddedRouteFilter(data.rows || []));
         if (data.primaryKey) setPrimaryKey(data.primaryKey);
         if (Array.isArray(data.listFields)) {
@@ -452,13 +481,7 @@ export default function DataBrowser({
   async function reloadRows() {
     if (!currentTable) return;
     try {
-      const projectParam =
-        currentTable === "routes" && activeProjectId
-          ? `&project_id=${encodeURIComponent(activeProjectId)}`
-          : "";
-      const res = await fetch(`/api/db/${currentTable}?limit=100${projectParam}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
+      const data = await fetchRowsSnapshot();
       setRows(applyEmbeddedRouteFilter(data.rows || []));
       if (data.primaryKey) setPrimaryKey(data.primaryKey);
       if (Array.isArray(data.listFields)) {
@@ -763,7 +786,7 @@ export default function DataBrowser({
             display: "grid",
             gridTemplateColumns: "1fr",
             gridTemplateRows: hideTopSelector ? "minmax(0, 1fr)" : "auto minmax(0, 1fr)",
-            rowGap: 12,
+            rowGap: embedded ? 10 : 12,
             flex: 1,
             height: "100%",
             minHeight: 0,
@@ -921,13 +944,13 @@ export default function DataBrowser({
                   <div
                     style={{
                       display: "grid",
-                      rowGap: 8,
+                      rowGap: 12,
                       columnGap: 10,
                       overflowY: "auto",
                       padding: 10,
                       borderRadius: 12,
-                      border: useWhiteBackground ? "1px solid #d7e5fb" : "none",
-                      background: useWhiteBackground ? "#f6f9ff" : "var(--bg-soft)",
+                      border: embedded ? "1px solid var(--border)" : useWhiteBackground ? "1px solid #d7e5fb" : "none",
+                      background: embedded ? "var(--bg-soft)" : useWhiteBackground ? "#f6f9ff" : "var(--bg-soft)",
                       flex: 1,
                       minHeight: 0,
                       alignContent: "start",
@@ -992,7 +1015,7 @@ export default function DataBrowser({
                         }}
                         style={{
                           display: "grid",
-                          gridTemplateColumns: "160px 1fr",
+                          gridTemplateColumns: "140px minmax(0, 1fr)",
                           alignItems: "center",
                           gap: 8,
                           fontSize: 11,
@@ -1189,16 +1212,35 @@ export default function DataBrowser({
                 marginBottom: 0,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginBottom: 6 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: 10 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginBottom: 6, width: "100%" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: currentTable && !isAlarmTable ? "minmax(0, 1fr) auto" : "minmax(0, 1fr)",
+                    alignItems: "center",
+                    width: "100%",
+                    gap: 10,
+                  }}
+                >
                   {hasAlarmActiveColumn ? (
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: hasAlarmShelvedColumn ? "repeat(3, minmax(0, 1fr))" : "repeat(2, minmax(0, 1fr))",
+                        alignItems: "center",
+                        gap: 6,
+                        width: "100%",
+                        minWidth: 0,
+                      }}
+                    >
                       <button
                         onClick={() => setAlarmViewTab("active")}
                         style={{
                           ...(alarmViewTab === "active" ? primaryButton : ghostButton),
                           padding: "6px 10px",
                           fontSize: 11,
+                          width: "100%",
+                          justifyContent: "center",
                         }}
                       >
                         Active Alarms
@@ -1210,6 +1252,8 @@ export default function DataBrowser({
                             ...(alarmViewTab === "shelved" ? primaryButton : ghostButton),
                             padding: "6px 10px",
                             fontSize: 11,
+                            width: "100%",
+                            justifyContent: "center",
                           }}
                         >
                           Shelved
@@ -1221,13 +1265,15 @@ export default function DataBrowser({
                           ...(alarmViewTab === "all" ? primaryButton : ghostButton),
                           padding: "6px 10px",
                           fontSize: 11,
+                          width: "100%",
+                          justifyContent: "center",
                         }}
                       >
                         All Alarms
                       </button>
                     </div>
                   ) : (
-                    <div />
+                    <div style={{ width: "100%" }} />
                   )}
                   {currentTable && !isAlarmTable ? (
                     <button
@@ -1319,6 +1365,18 @@ export default function DataBrowser({
                       </div>
                     </div>
                   )}
+                  {rowsTruncated ? (
+                    <div
+                      style={{
+                        marginBottom: 8,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: "var(--text-muted)",
+                      }}
+                    >
+                      Showing first {TABLE_FETCH_MAX} rows.
+                    </div>
+                  ) : null}
                   <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
                     {displayedRows.length === 0 ? (
                       <div style={{ color: "var(--text-muted)", fontSize: 12 }}>

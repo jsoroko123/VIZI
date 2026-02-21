@@ -434,6 +434,14 @@ function resolveOverlayEType(overlay) {
   return inferETypeFromFileKey(overlay?.sourceKey || overlay?.name || "");
 }
 
+function isOverlayETypeAutoManaged(overlay) {
+  if (!overlay || typeof overlay !== "object") return false;
+  if (overlay.eTypeAuto === false) return false;
+  const sourceKey = String(overlay.sourceKey || "").trim();
+  if (!sourceKey || sourceKey.startsWith("__generated__/")) return false;
+  return true;
+}
+
 function isRouteIdTagKey(value) {
   const key = normalizeRouteTagKey(value);
   return (
@@ -618,16 +626,16 @@ function toDatetimeLocalInput(value) {
 export default function App() {
   const { user, logout, updateProfile, changePassword, refresh } = useAuth();
   const initialStoredProjectId = readStoredActiveProjectId();
-  const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect"
+  const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle"
   const DEFAULT_STROKE = "#808080";
   const DEFAULT_FILL = "#cccccc";
-  const [shapes, setShapes] = useState([]); // polyline | rect | text
+  const [shapes, setShapes] = useState([]); // polyline | rect | circle | text
 
   // Multi-selection
   const [selectedIds, setSelectedIds] = useState([]); // polyline ids
   const [selectedOverlayIds, setSelectedOverlayIds] = useState([]); // overlay ids
 
-  // drawing = { mode:"draw-poly"|"draw-rect", id, start?:{x,y} }
+  // drawing = { mode:"draw-poly"|"draw-rect"|"draw-circle", id, start?:{x,y} }
   const [drawing, setDrawing] = useState(null);
   const [inlineEdit, setInlineEdit] = useState(null); // { id, value, kind: "shape" | "overlay" }
 
@@ -662,6 +670,7 @@ export default function App() {
 
   // overlay resize
   const [overlayResize, setOverlayResize] = useState(null); // single: { id, anchorLocal, anchorWorld, startDist, origScaleX, origScaleY } | group: { kind:"group", anchorWorld, startDist, overlays:[{id, tx, ty, sx, sy}] }
+  const [shapeResize, setShapeResize] = useState(null); // { corner, anchor:{x,y} }
 
   // ✅ Export settings (dynamic)
   const [exportVB, setExportVB] = useState({ x: 0, y: 0, w: 1600, h: 900 });
@@ -702,6 +711,7 @@ export default function App() {
   const liveEquipmentConnectFxTimersRef = useRef(new Map());
   const liveEquipmentCardRefs = useRef(new Map());
   const liveEquipmentDragRef = useRef(null);
+  const liveEquipmentModeToggleHintRef = useRef({});
   const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
   const [liveEquipmentDrawerOverlayId, setLiveEquipmentDrawerOverlayId] = useState("");
   const [liveEquipmentWriteBusyByOverlay, setLiveEquipmentWriteBusyByOverlay] = useState({});
@@ -818,6 +828,7 @@ export default function App() {
   const [databaseEmbeddedRouteName, setDatabaseEmbeddedRouteName] = useState("");
   const [databaseDataOnlyMode, setDatabaseDataOnlyMode] = useState(false);
   const [databaseTablesForMenu, setDatabaseTablesForMenu] = useState([]);
+  const [svgETypeOptions, setSvgETypeOptions] = useState([]);
   const [securityRolesForMenu, setSecurityRolesForMenu] = useState([]);
   const [showTeamChat, setShowTeamChat] = useState(false);
   const [teamChatMessages, setTeamChatMessages] = useState([]);
@@ -844,6 +855,8 @@ export default function App() {
   const queuedSaveAfterFlightRef = useRef(null); // null | save options
   const uiPreferenceAutosaveReadyRef = useRef(false);
   const projectHydrationReadyRef = useRef(false);
+  const opcStatusFailureCountRef = useRef(0);
+  const opcStatusNextAttemptAtRef = useRef(0);
   const autoFitInitRef = useRef(false);
   const zoomHoldTimeoutRef = useRef(null);
   const zoomHoldIntervalRef = useRef(null);
@@ -976,20 +989,61 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     async function loadDbTablesForMenu() {
-      try {
-        const res = await fetch("/api/db/tables");
-        const data = await res.json();
-        if (!res.ok || !alive) return;
-        const tables = Array.isArray(data?.tables)
-          ? data.tables.map((t) => String(t || "").trim()).filter(Boolean)
-          : [];
-        setDatabaseTablesForMenu(tables);
-      } catch {
-        if (alive) setDatabaseTablesForMenu([]);
+      const retries = [0, 250, 700];
+      for (let i = 0; i < retries.length; i += 1) {
+        if (retries[i] > 0) {
+          await sleep(retries[i]);
+        }
+        try {
+          const res = await fetch("/api/db/tables");
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(String(data?.error || "Failed to load DB tables."));
+          if (!alive) return;
+          const tables = Array.isArray(data?.tables)
+            ? data.tables.map((t) => String(t || "").trim()).filter(Boolean)
+            : [];
+          setDatabaseTablesForMenu(tables);
+          return;
+        } catch {
+          if (!alive) return;
+        }
       }
+      if (alive) setDatabaseTablesForMenu([]);
     }
     loadDbTablesForMenu();
+    return () => {
+      alive = false;
+    };
+  }, [isPageVisible]);
+
+  useEffect(() => {
+    let alive = true;
+    async function loadSvgETypeOptions() {
+      try {
+        const res = await fetch("/api/db/etype?limit=200");
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !alive) return;
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        const seen = new Set();
+        const out = [];
+        for (const row of rows) {
+          const value = String(
+            row?.name ?? row?.etype ?? row?.type ?? row?.value ?? row?.label ?? ""
+          ).trim();
+          if (!value) continue;
+          const key = value.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(value);
+        }
+        if (alive) setSvgETypeOptions(out);
+      } catch {
+        if (alive) setSvgETypeOptions([]);
+      }
+    }
+    loadSvgETypeOptions();
     return () => {
       alive = false;
     };
@@ -1257,8 +1311,8 @@ export default function App() {
   }, [projectMode, liveMenuGroups]);
 
   useEffect(() => {
-    isInteractingRef.current = Boolean(dragAll || dragHandle || overlayResize || marquee || drawing);
-  }, [dragAll, dragHandle, overlayResize, marquee, drawing]);
+    isInteractingRef.current = Boolean(dragAll || dragHandle || overlayResize || shapeResize || marquee || drawing);
+  }, [dragAll, dragHandle, overlayResize, shapeResize, marquee, drawing]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -1269,16 +1323,35 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let configNextAttemptAt = 0;
+    const wait = (ms) =>
+      new Promise((resolve) => {
+        window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+      });
     async function loadConfig() {
-      try {
-        const res = await fetch("/api/opc/config");
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load OPC config.");
+      if (Date.now() < configNextAttemptAt) return;
+      const retryDelaysMs = [0, 300, 900];
+      for (let i = 0; i < retryDelaysMs.length; i += 1) {
         if (!alive) return;
-        const tags = Array.isArray(data?.tags) ? data.tags : [];
-        setOpcTags(tags);
-      } catch {
-        // ignore
+        if (retryDelaysMs[i] > 0) {
+          await wait(retryDelaysMs[i]);
+          if (!alive) return;
+        }
+        try {
+          const res = await fetch("/api/opc/config");
+          const data = await res.json();
+          if (!res.ok) throw new Error(data?.error || "Failed to load OPC config.");
+          if (!alive) return;
+          const tags = Array.isArray(data?.tags) ? data.tags : [];
+          setOpcTags(tags);
+          configNextAttemptAt = 0;
+          return;
+        } catch {
+          if (i === retryDelaysMs.length - 1) {
+            // back off failed config calls so proxy logs are not spammed during restarts
+            configNextAttemptAt = Date.now() + 15000;
+          }
+        }
       }
     }
     async function loadTemplates() {
@@ -1335,6 +1408,7 @@ export default function App() {
     let alive = true;
     async function pollStatus() {
       if (!isPageVisible) return;
+      if (Date.now() < Number(opcStatusNextAttemptAtRef.current || 0)) return;
       try {
         const res = await fetch("/api/opc/status");
         const data = await res.json();
@@ -1344,10 +1418,17 @@ export default function App() {
         const atMs =
           Number(new Date(data?.at || 0).getTime() || 0) || Date.now();
         setOpcLiveUpdatedAt(atMs);
+        opcStatusFailureCountRef.current = 0;
+        opcStatusNextAttemptAtRef.current = 0;
         setOpcLiveLastError("");
       } catch {
         if (!alive) return;
-        setOpcLiveLastError("OPC status unavailable");
+        const fails = Number(opcStatusFailureCountRef.current || 0) + 1;
+        opcStatusFailureCountRef.current = fails;
+        // Grace period for transient restarts; only surface after repeated failures.
+        if (fails >= 3) setOpcLiveLastError("OPC status unavailable");
+        const backoffMs = Math.min(30000, 2000 * fails);
+        opcStatusNextAttemptAtRef.current = Date.now() + backoffMs;
       }
     }
     pollStatus();
@@ -2027,7 +2108,8 @@ export default function App() {
     }
     return "";
   };
-  const resolveMotorCommandTagPath = (overlay, aliases = []) => {
+  const resolveMotorCommandTagPath = (overlay, aliases = [], options = {}) => {
+    const strictOnly = options?.strict === true;
     const tagPath = String(overlay?.tagPath || "").trim();
     const parts = tagPath.split(".").filter(Boolean);
     const parents = [];
@@ -2062,21 +2144,195 @@ export default function App() {
         candidates.push(direct);
       }
     }
-    return (
+    const inferOverlayTopic = () => {
+      const overlayPath = normalizeTagValue(tagPath).toLowerCase();
+      if (!overlayPath) return "";
+      const counts = new Map();
+      const tags = Array.isArray(opcTags) ? opcTags : [];
+      for (const t of tags) {
+        const topic = normalizeTagValue(t?.topic || "").trim();
+        if (!topic) continue;
+        const group = normalizeTagValue(t?.groupName || "").toLowerCase();
+        const member = normalizeTagValue(t?.tagPath || t?.name || "").toLowerCase();
+        const groupMatch =
+          !!group &&
+          (group === overlayPath ||
+            group.endsWith(`.${overlayPath}`) ||
+            overlayPath.endsWith(`.${group}`));
+        const memberMatch =
+          !!member &&
+          (member === overlayPath ||
+            member.startsWith(`${overlayPath}.`) ||
+            member.endsWith(`.${overlayPath}`));
+        if (!groupMatch && !memberMatch) continue;
+        counts.set(topic, Number(counts.get(topic) || 0) + 1);
+      }
+      let bestTopic = "";
+      let bestCount = 0;
+      for (const [topic, count] of counts.entries()) {
+        if (count > bestCount) {
+          bestTopic = topic;
+          bestCount = count;
+        }
+      }
+      return bestTopic;
+    };
+    const inferredTopic = inferOverlayTopic();
+    const scopedCandidates = inferredTopic
+      ? candidates.map((c) => `${inferredTopic}.${String(c || "").trim()}`).filter(Boolean)
+      : [];
+    const strictMatch =
+      findLiveTagPathMatch(scopedCandidates) ||
+      findOpcConfiguredTagPathMatch(overlay, scopedCandidates) ||
       findLiveTagPathMatch(candidates) ||
       findOpcConfiguredTagPathMatch(overlay, candidates) ||
-      ""
+      "";
+    if (strictMatch) return strictMatch;
+    const anchorPaths = Array.isArray(options?.anchorPaths) ? options.anchorPaths : [];
+    if (anchorPaths.length) {
+      const siblingCandidates = [];
+      const siblingSeen = new Set();
+      for (const anchor of anchorPaths) {
+        const raw = String(anchor || "").trim();
+        if (!raw) continue;
+        const dotIdx = raw.lastIndexOf(".");
+        const slashIdx = raw.lastIndexOf("/");
+        const cut = Math.max(dotIdx, slashIdx);
+        if (cut <= 0) continue;
+        const parent = raw.slice(0, cut).trim();
+        if (!parent) continue;
+        for (const a of aliases) {
+          const alias = String(a || "").trim();
+          if (!alias) continue;
+          const dotPath = `${parent}.${alias}`;
+          const slashPath = `${parent}/${alias}`;
+          const dk = dotPath.toLowerCase();
+          const sk = slashPath.toLowerCase();
+          if (!siblingSeen.has(dk)) {
+            siblingSeen.add(dk);
+            siblingCandidates.push(dotPath);
+          }
+          if (!siblingSeen.has(sk)) {
+            siblingSeen.add(sk);
+            siblingCandidates.push(slashPath);
+          }
+        }
+      }
+      const anchoredMatch =
+        findLiveTagPathMatch(siblingCandidates) ||
+        findOpcConfiguredTagPathMatch(overlay, siblingCandidates) ||
+        "";
+      if (anchoredMatch) return anchoredMatch;
+    }
+    if (strictOnly) return "";
+
+    // Scoped fallback: tolerate naming differences like HMI_Control vs HMIControl and
+    // dot/slash separators, but keep matches inside this overlay's parent path.
+    const normalizeLoose = (value) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    const looseParents = Array.from(
+      new Set(
+        [tagPath, ...parents]
+          .map((p) => normalizeLoose(p))
+          .filter(Boolean)
+      )
     );
+    const looseAliases = Array.from(
+      new Set((aliases || []).map((a) => normalizeLoose(a)).filter(Boolean))
+    );
+    if (!looseParents.length || !looseAliases.length) return "";
+    const matchesAliasBoundary = (looseKey, looseAlias) =>
+      !!(
+        looseAlias &&
+        (looseKey.endsWith(looseAlias) || looseKey.includes(`${looseAlias}`))
+      );
+    const parentScore = (looseKey) => {
+      let best = -1;
+      for (const p of looseParents) {
+        if (!p) continue;
+        if (looseKey.includes(p)) best = Math.max(best, p.length);
+      }
+      return best;
+    };
+    const aliasScore = (looseKey) => {
+      let best = -1;
+      for (const a of looseAliases) {
+        if (!a) continue;
+        if (matchesAliasBoundary(looseKey, a)) best = Math.max(best, a.length);
+      }
+      return best;
+    };
+    const chooseBest = (items, keyGetter) => {
+      let bestItem = "";
+      let bestParent = -1;
+      let bestAlias = -1;
+      for (const item of items) {
+        const rawKey = String(keyGetter(item) || "").trim();
+        if (!rawKey) continue;
+        if (
+          inferredTopic &&
+          typeof rawKey === "string" &&
+          !rawKey.toLowerCase().startsWith(`${inferredTopic.toLowerCase()}.`)
+        ) {
+          continue;
+        }
+        const key = normalizeLoose(rawKey);
+        if (!key) continue;
+        const pScore = parentScore(key);
+        if (pScore < 0) continue;
+        const aScore = aliasScore(key);
+        if (aScore < 0) continue;
+        if (
+          pScore > bestParent ||
+          (pScore === bestParent && aScore > bestAlias)
+        ) {
+          bestParent = pScore;
+          bestAlias = aScore;
+          bestItem = String(item || "").trim();
+        }
+      }
+      return bestItem;
+    };
+
+    const liveKeys = Object.keys(opcLiveValues || {});
+    const bestLive = chooseBest(liveKeys, (k) => k);
+    if (bestLive) return bestLive;
+
+    const tags = Array.isArray(opcTags) ? opcTags : [];
+    const configuredFulls = [];
+    for (const t of tags) {
+      const topic = normalizeTagValue(t?.topic || "");
+      if (inferredTopic && topic && topic.toLowerCase() !== inferredTopic.toLowerCase()) continue;
+      const group = normalizeTagValue(t?.groupName || "");
+      const member = normalizeTagValue(t?.tagPath || t?.name || "");
+      const fullCandidates = [
+        topic && group && member ? `${topic}.${group}.${member}` : "",
+        topic && member ? `${topic}.${member}` : "",
+        group && member ? `${group}.${member}` : "",
+        member,
+      ]
+        .map((x) => normalizeTagValue(x))
+        .filter(Boolean);
+      configuredFulls.push(...fullCandidates);
+    }
+    const bestConfigured = chooseBest(configuredFulls, (k) => k);
+    if (bestConfigured) return bestConfigured;
+    return "";
   };
   const writeLiveEquipmentTag = async (overlay, commandTagPath, value, options = {}) => {
     const overlayId = String(overlay?.id || "").trim();
+    const actionLabel = String(options?.actionLabel || "Command").trim();
+    const writeStateKey = String(
+      options?.writeStateKey || `${overlayId}::${normalizeRouteTagKey(actionLabel || "command")}`
+    ).trim();
     const tagPath = String(commandTagPath || "").trim();
     if (!overlayId) return;
     if (!tagPath) {
-      const actionLabel = String(options?.actionLabel || "Command").trim();
       const fallbackPath = String(overlay?.tagPath || "").trim() || "selected equipment";
       const message = `${actionLabel} tag not found for ${fallbackPath}.`;
-      setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: message }));
+      setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: message }));
       toastError(message);
       return;
     }
@@ -2118,16 +2374,25 @@ export default function App() {
       return null;
     };
     const matchedTag = matchOpcTagForPath(normalizedPath);
-    const tagKey = normalizedPath;
-    const legacyTagKey = normalizeTagValue(matchedTag?.name || "");
+    const configuredTopic = normalizeTagValue(matchedTag?.topic || "");
+    const configuredMemberPath = normalizeTagValue(matchedTag?.tagPath || matchedTag?.name || "");
+    const configuredName = normalizeTagValue(matchedTag?.name || "");
+    const canonicalTagKey = configuredTopic && configuredMemberPath
+      ? `${configuredTopic}.${configuredMemberPath}`
+      : configuredMemberPath || "";
+    const canonicalLegacyTagKey = configuredTopic && configuredName
+      ? `${configuredTopic}.${configuredName}`
+      : configuredName || "";
+    const tagKey = normalizeTagValue(canonicalTagKey || normalizedPath);
+    const legacyTagKey = normalizeTagValue(canonicalLegacyTagKey || configuredName);
     const uaType = normalizeUaTypeForWrite(matchedTag);
     const isPulse = options?.pulse === true;
     const pulseResetValue = Object.prototype.hasOwnProperty.call(options || {}, "pulseResetValue")
       ? options.pulseResetValue
       : 0;
     try {
-      setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: true }));
-      setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+      setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: true }));
+      setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: "" }));
       const res = await fetch("/api/opc/write", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2152,11 +2417,14 @@ export default function App() {
     } catch (err) {
       setLiveEquipmentWriteErrorByOverlay((prev) => ({
         ...(prev || {}),
-        [overlayId]: err?.message || "Write failed.",
+        [writeStateKey || overlayId]: err?.message || "Write failed.",
       }));
       toastError(err?.message || "Write failed.");
     } finally {
-      setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: false }));
+      setLiveEquipmentWriteBusyByOverlay((prev) => ({
+        ...(prev || {}),
+        [writeStateKey || overlayId]: false,
+      }));
     }
   };
   const renderLiveMotorControls = (overlay, compact = false) => {
@@ -2164,21 +2432,179 @@ export default function App() {
     if (!overlayId) return null;
     const eType = String(resolveOverlayEType(overlay) || "").trim().toLowerCase();
     if (eType !== "motor") return null;
-    const busy = liveEquipmentWriteBusyByOverlay?.[overlayId] === true;
-    const writeError = String(liveEquipmentWriteErrorByOverlay?.[overlayId] || "").trim();
-    const startPath = resolveMotorCommandTagPath(overlay, ["HMI_Control.14", "HMI_Control", "i_StartReq", "CmdStart", "o_StartReq", "i_Start"]);
-    const stopPath = resolveMotorCommandTagPath(overlay, ["HMI_Control.5", "HMI_Control", "i_StopReq", "CmdStop", "o_StopReq", "i_SeqStop"]);
-    const resetPath = resolveMotorCommandTagPath(overlay, ["i_CmdFaultReset", "CmdFaultReset", "o_CmdFaultReset", "i_FaultReset", "outp_FaultReset"]);
-    const manualPath = resolveMotorCommandTagPath(overlay, ["HMI_Control.2", "HMI_Control", "i_CmdManual", "CmdManual", "i_ManualModeReq", "i_ManualMode"]);
-    const autoPath = resolveMotorCommandTagPath(overlay, ["HMI_Control.1", "HMI_Control", "i_CmdAuto", "CmdAuto", "i_AutoModeReq", "i_AutoMode"]);
-    const isDintModePath = (path) =>
-      /(?:\.|\/)hmi_control$/i.test(String(path || "").trim());
-    const startWriteValue = isDintModePath(startPath) ? 16384 : 1;
-    const stopWriteValue = isDintModePath(stopPath) ? 32 : 1;
-    const manualWriteValue = isDintModePath(manualPath) ? 4 : 1;
-    const autoWriteValue = isDintModePath(autoPath) ? 2 : 1;
+    const writeStateKeyFor = (action) =>
+      `${overlayId}::${normalizeRouteTagKey(String(action || "command"))}`;
+    const isActionBusy = (action) => liveEquipmentWriteBusyByOverlay?.[writeStateKeyFor(action)] === true;
+    const startBusy = isActionBusy("Start");
+    const stopBusy = isActionBusy("Stop");
+    const resetBusy = isActionBusy("Fault Reset");
+    const autoBusy = isActionBusy("Automatic");
+    const manualBusy = isActionBusy("Manual");
+    const maintenanceBusy = isActionBusy("Maintenance");
+    const writeError = [
+      "Start",
+      "Stop",
+      "Fault Reset",
+      "Automatic",
+      "Manual",
+      "Maintenance",
+    ]
+      .map((action) => String(liveEquipmentWriteErrorByOverlay?.[writeStateKeyFor(action)] || "").trim())
+      .find(Boolean) || "";
+    const normalizeCommandPathKey = (path) =>
+      String(path || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    const isHmiControlPath = (path) => normalizeCommandPathKey(path).endsWith("hmicontrol");
+    const modeStatusPath = resolveMotorCommandTagPath(overlay, ["Mode_Status", "ModeStatus", "Control_Status", "ControlStatus", "i_ModeStatus", "o_ModeStatus", "StsMode", "HMI_ModeStatus"], { strict: true });
+    const hmiStatePath = resolveMotorCommandTagPath(overlay, ["HMI_State", "HMIState", "i_HMIState", "o_HMIState", "State"], { strict: true });
+    const manualStatePath = resolveMotorCommandTagPath(overlay, ["i_ManualMode", "o_ManualMode", "ManualMode", "StsManual", "ManualActive"], { strict: true });
+    const autoStatePath = resolveMotorCommandTagPath(overlay, ["i_AutoMode", "o_AutoMode", "AutoMode", "StsAuto", "AutoActive"], { strict: true });
+    const maintenanceStatePath = resolveMotorCommandTagPath(overlay, ["i_MaintenanceMode", "o_MaintenanceMode", "MaintenanceMode", "MaintMode", "StsMaint", "MaintActive"], { strict: true });
+    const commandAnchorPaths = [modeStatusPath, hmiStatePath, manualStatePath, autoStatePath, maintenanceStatePath].filter(Boolean);
+    const rawHmiControlPath = resolveMotorCommandTagPath(
+      overlay,
+      ["HMI_Control", "hmi_control", "HMIControl", "hmiControl", "hmicontrol"],
+      { strict: true, anchorPaths: commandAnchorPaths }
+    );
+    const hmiControlPath = String(rawHmiControlPath || "").trim();
+    const usesHmiControl = isHmiControlPath(hmiControlPath);
+    const startPath = hmiControlPath;
+    const stopPath = hmiControlPath;
+    const resetPath = hmiControlPath;
+    const manualPath = hmiControlPath;
+    const autoPath = hmiControlPath;
+    const maintenancePath = hmiControlPath;
+    const startWriteValue = usesHmiControl ? 16 : 1;
+    const stopWriteValue = usesHmiControl ? 32 : 1;
+    const manualWriteValue = usesHmiControl ? 4 : 1;
+    const autoWriteValue = usesHmiControl ? 2 : 1;
+    const maintenanceWriteValue = usesHmiControl ? 8 : 1;
+    const resetWriteValue = 1;
+    const commandWriteOptions = usesHmiControl ? { pulse: true, pulseResetValue: 0 } : {};
     const triggerMotorCommand = (actionLabel, path, value, options = {}) =>
-      writeLiveEquipmentTag(overlay, path, value, { ...(options || {}), actionLabel });
+      writeLiveEquipmentTag(overlay, path, value, {
+        ...(options || {}),
+        actionLabel,
+        writeStateKey: writeStateKeyFor(actionLabel),
+      });
+    const readLiveRaw = (path) => {
+      const resolved = findLiveTagPathMatch([path]);
+      if (!resolved) return null;
+      return opcLiveValues?.[resolved];
+    };
+    const readLiveBool = (path) => {
+      const raw = readLiveRaw(path);
+      if (raw == null || raw === "") return null;
+      if (typeof raw === "boolean") return raw;
+      if (Number.isFinite(Number(raw))) return Number(raw) !== 0;
+      const text = String(raw || "").trim().toLowerCase();
+      if (!text) return null;
+      if (["true", "on", "yes"].includes(text)) return true;
+      if (["false", "off", "no"].includes(text)) return false;
+      return null;
+    };
+    const modeStatusRaw = readLiveRaw(modeStatusPath);
+    const hmiStateRaw = readLiveRaw(hmiStatePath);
+    const hmiStateLabel = (() => {
+      if (hmiStateRaw == null || hmiStateRaw === "") return "";
+      const text = String(hmiStateRaw || "").trim();
+      const lower = text.toLowerCase();
+      if (lower.includes("starting")) return "Starting";
+      if (lower.includes("started")) return "Started";
+      if (lower.includes("stopping")) return "Stopping";
+      if (lower.includes("stop")) return "Stopped";
+      const num = Number(text);
+      if (Number.isFinite(num)) {
+        if (num === 1) return "Stopped";
+        if (num === 2) return "Starting";
+        if (num === 4) return "Started";
+        if (num === 6) return "Stopping";
+      }
+      return text;
+    })();
+    const parsedModeFromStatus = (() => {
+      if (modeStatusRaw == null || modeStatusRaw === "") return "";
+      const text = String(modeStatusRaw || "").trim();
+      const lower = text.toLowerCase();
+      if (lower.includes("manual")) return "manual";
+      if (lower.includes("auto")) return "auto";
+      if (lower.includes("maint")) return "maintenance";
+      const num = Number(text);
+      if (Number.isFinite(num)) {
+        if (num === 2) return "auto";
+        if (num === 4) return "manual";
+        if (num === 8) return "maintenance";
+      }
+      return "";
+    })();
+    const modeStatusLabel = (() => {
+      if (modeStatusRaw == null || modeStatusRaw === "") return "";
+      if (parsedModeFromStatus === "manual") return "Manual";
+      if (parsedModeFromStatus === "auto") return "Auto";
+      if (parsedModeFromStatus === "maintenance") return "Maintenance";
+      const text = String(modeStatusRaw || "").trim();
+      const lower = text.toLowerCase();
+      if (lower.includes("local")) return "Local";
+      if (lower.includes("remote")) return "Remote";
+      return text;
+    })();
+    const manualActive = readLiveBool(manualStatePath);
+    const autoActive = readLiveBool(autoStatePath);
+    const maintenanceActive = readLiveBool(maintenanceStatePath);
+    const modeHint = String(liveEquipmentModeToggleHintRef.current?.[overlayId] || "").trim().toLowerCase();
+    const activeMode =
+      maintenanceActive === true
+        ? "maintenance"
+        : manualActive === true
+        ? "manual"
+        : autoActive === true
+          ? "auto"
+          : parsedModeFromStatus === "manual" || parsedModeFromStatus === "auto" || parsedModeFromStatus === "maintenance"
+            ? parsedModeFromStatus
+          : modeHint === "manual" || modeHint === "auto" || modeHint === "maintenance"
+            ? modeHint
+            : "";
+    const reverseDisableOnHmiControl = usesHmiControl;
+    const modeBlocksStartStop = reverseDisableOnHmiControl
+      ? activeMode === "auto" || activeMode === "maintenance"
+      : activeMode === "manual" || activeMode === "maintenance";
+    const hmiStateCode = (() => {
+      const text = String(hmiStateRaw ?? "").trim();
+      if (!text) return NaN;
+      const num = Number(text);
+      if (Number.isFinite(num)) return num;
+      const lower = text.toLowerCase();
+      if (lower.includes("starting")) return 2;
+      if (lower.includes("started")) return 4;
+      if (lower.includes("stopping")) return 6;
+      if (lower.includes("stop")) return 1;
+      return NaN;
+    })();
+    const startBlockedByState = hmiStateCode === 2 || hmiStateCode === 4;
+    const stopBlockedByState = hmiStateCode === 1 || hmiStateCode === 6;
+    const startDisabled = startBusy || modeBlocksStartStop || startBlockedByState || !startPath;
+    const stopDisabled = stopBusy || modeBlocksStartStop || stopBlockedByState || !stopPath;
+    const modeDisabledTitle = modeBlocksStartStop
+      ? reverseDisableOnHmiControl
+        ? "disabled while in Auto mode"
+        : "disabled while in Manual mode"
+      : "";
+    const startDisabledTitle = modeDisabledTitle
+      ? modeDisabledTitle
+      : startBlockedByState
+      ? "disabled when motor is Started/Starting"
+      : !startPath
+      ? "requires HMI_Control tag"
+      : "";
+    const stopDisabledTitle = modeDisabledTitle
+      ? modeDisabledTitle
+      : stopBlockedByState
+      ? "disabled when motor is Stopped/Stopping"
+      : !stopPath
+      ? "requires HMI_Control tag"
+      : "";
     const iconCommon = {
       display: "inline-flex",
       alignItems: "center",
@@ -2205,80 +2631,199 @@ export default function App() {
         </svg>
       </span>
     );
+    const onSetManualMode = () => {
+      liveEquipmentModeToggleHintRef.current = {
+        ...(liveEquipmentModeToggleHintRef.current || {}),
+        [overlayId]: "manual",
+      };
+      return void triggerMotorCommand("Manual", manualPath, manualWriteValue, commandWriteOptions);
+    };
+    const onSetAutoMode = () => {
+      liveEquipmentModeToggleHintRef.current = {
+        ...(liveEquipmentModeToggleHintRef.current || {}),
+        [overlayId]: "auto",
+      };
+      return void triggerMotorCommand("Automatic", autoPath, autoWriteValue, commandWriteOptions);
+    };
+    const maintenanceIcon = (
+      <span style={iconCommon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={compact ? 13 : 15} height={compact ? 13 : 15} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 3.5 14.2 10.3" />
+          <path d="M10.2 14.3 3.5 21l-1.5-1.5 6.8-6.8" />
+          <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
+        </svg>
+      </span>
+    );
+    const onSetMaintenanceMode = () => {
+      liveEquipmentModeToggleHintRef.current = {
+        ...(liveEquipmentModeToggleHintRef.current || {}),
+        [overlayId]: "maintenance",
+      };
+      return void triggerMotorCommand("Maintenance", maintenancePath, maintenanceWriteValue, commandWriteOptions);
+    };
     const buttonStyle = {
-      border: "1px solid color-mix(in srgb, var(--border) 82%, #2b6cff 18%)",
-      background: "color-mix(in srgb, var(--bg) 88%, #1d4ed8 12%)",
+      border: "1px solid color-mix(in srgb, var(--border) 86%, #2b6cff 14%)",
+      background: "color-mix(in srgb, var(--bg) 92%, #1d4ed8 8%)",
       color: "var(--text)",
-      borderRadius: 8,
-      fontSize: compact ? 12 : 13,
+      borderRadius: 6,
+      fontSize: compact ? 9 : 10,
       fontWeight: 700,
-      minHeight: compact ? 30 : 34,
-      padding: compact ? "6px 8px" : "7px 10px",
+      minHeight: compact ? 22 : 26,
+      padding: compact ? "3px 6px" : "4px 8px",
       cursor: "pointer",
       opacity: 1,
       transition: "transform 90ms ease, filter 120ms ease, border-color 120ms ease",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
+      gap: 4,
+      width: "100%",
+      minWidth: 0,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      lineHeight: 1.1,
     };
+    const disabledButtonStyle = {
+      border: "1px solid color-mix(in srgb, var(--border) 94%, #94a3b8 6%)",
+      background: "color-mix(in srgb, var(--bg) 98%, #64748b 2%)",
+      color: "color-mix(in srgb, var(--text-muted) 88%, var(--text) 12%)",
+      cursor: "not-allowed",
+      opacity: 0.62,
+      filter: "saturate(0.45)",
+      boxShadow: "none",
+      transform: "none",
+    };
+    const withDisabledStyle = (isDisabled) => (isDisabled ? { ...buttonStyle, ...disabledButtonStyle } : buttonStyle);
+    const autoDisabled = autoBusy || activeMode === "auto" || !autoPath;
+    const manualDisabled = manualBusy || activeMode === "manual" || !manualPath;
+    const maintenanceDisabled = maintenanceBusy || activeMode === "maintenance" || !maintenancePath;
+    const resetDisabled = resetBusy || !resetPath;
     return (
-      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 5 }}>
         <div style={{ fontSize: compact ? 10 : 11, fontWeight: 700, color: "var(--text)" }}>Motor Controls</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+        <div style={{ fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
+          Status: {modeStatusLabel || (activeMode === "manual" ? "Manual" : activeMode === "auto" ? "Auto" : activeMode === "maintenance" ? "Maintenance" : "Unknown")}
+        </div>
+        <div style={{ fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
+          HMI State: {hmiStateLabel || "-"}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 4 }}>
           <button
             type="button"
-            style={buttonStyle}
+            style={withDisabledStyle(startDisabled)}
+            disabled={startDisabled}
             onClick={() =>
-              isDintModePath(startPath)
-                ? void triggerMotorCommand("Start", startPath, startWriteValue)
-                : void triggerMotorCommand("Start", startPath, startWriteValue, { pulse: true, pulseResetValue: 0 })
+              void triggerMotorCommand("Start", startPath, startWriteValue, commandWriteOptions)
             }
             aria-label="Start"
-            title={startPath || "Start tag not found"}
+            title={startDisabledTitle ? `Start ${startDisabledTitle}` : startPath || "Start tag not found"}
           >
-            {"|>"}
+            <span style={iconCommon} aria-hidden="true">
+              <svg viewBox="0 0 24 24" width={compact ? 9 : 11} height={compact ? 9 : 11} fill="currentColor">
+                <path d="M8 6v12l10-6-10-6Z" />
+              </svg>
+            </span>
+            <span>Start</span>
           </button>
           <button
             type="button"
-            style={buttonStyle}
+            style={withDisabledStyle(stopDisabled)}
+            disabled={stopDisabled}
             onClick={() =>
-              isDintModePath(stopPath)
-                ? void triggerMotorCommand("Stop", stopPath, stopWriteValue)
-                : void triggerMotorCommand("Stop", stopPath, stopWriteValue, { pulse: true, pulseResetValue: 0 })
+              void triggerMotorCommand("Stop", stopPath, stopWriteValue, commandWriteOptions)
             }
             aria-label="Stop"
-            title={stopPath || "Stop tag not found"}
+            title={stopDisabledTitle ? `Stop ${stopDisabledTitle}` : stopPath || "Stop tag not found"}
           >
-            {"[]"}
+            <span style={iconCommon} aria-hidden="true">
+              <svg viewBox="0 0 24 24" width={compact ? 9 : 11} height={compact ? 9 : 11} fill="currentColor">
+                <path d="M7 7h10v10H7z" />
+              </svg>
+            </span>
+            <span>Stop</span>
           </button>
           <button
             type="button"
-            style={buttonStyle}
+            style={
+              resetDisabled
+                ? withDisabledStyle(true)
+                : {
+                    ...buttonStyle,
+                    border: "1px solid color-mix(in srgb, #f59e0b 78%, var(--border) 22%)",
+                    background: "linear-gradient(180deg, #f59e0b 0%, #ea580c 100%)",
+                    color: "#fff7ed",
+                    textShadow: "0 1px 1px rgba(0,0,0,0.22)",
+                  }
+            }
+            disabled={resetDisabled}
             onClick={() =>
-              void triggerMotorCommand("Fault Reset", resetPath, 1, { pulse: true, pulseResetValue: 0 })
+              void triggerMotorCommand("Fault Reset", resetPath, resetWriteValue, commandWriteOptions)
             }
             aria-label="Fault Reset"
-            title={resetPath || "Fault reset tag not found"}
+            title={resetPath || "HMI_Control tag not found"}
           >
-            {"R"}
+            <span style={iconCommon} aria-hidden="true">
+              <svg viewBox="0 0 24 24" width={compact ? 10 : 12} height={compact ? 10 : 12} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3.5 21 19H3L12 3.5Z" />
+                <path d="M12 9v5.2" />
+                <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none" />
+              </svg>
+            </span>
+            <span>Fault Reset</span>
           </button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 4 }}>
           <button
             type="button"
-            style={buttonStyle}
-            onClick={() => void triggerMotorCommand("Manual", manualPath, manualWriteValue)}
-            aria-label="Manual"
-            title={manualPath || "Manual mode tag not found"}
-          >
-            {manualIcon}
-          </button>
-          <button
-            type="button"
-            style={{ ...buttonStyle, gridColumn: "1 / -1" }}
-            onClick={() => void triggerMotorCommand("Automatic", autoPath, autoWriteValue)}
-            aria-label="Automatic"
-            title={autoPath || "Auto mode tag not found"}
+            style={withDisabledStyle(autoDisabled)}
+            disabled={autoDisabled}
+            onClick={onSetAutoMode}
+            aria-label="Set Auto"
+            title={
+              !autoPath
+                ? "HMI_Control tag not found"
+                : activeMode === "auto"
+                  ? "Already in Auto mode"
+                  : autoPath
+            }
           >
             {autoIcon}
+            <span>Auto</span>
+          </button>
+          <button
+            type="button"
+            style={withDisabledStyle(manualDisabled)}
+            disabled={manualDisabled}
+            onClick={onSetManualMode}
+            aria-label="Set Manual"
+            title={
+              !manualPath
+                ? "HMI_Control tag not found"
+                : activeMode === "manual"
+                  ? "Already in Manual mode"
+                  : manualPath
+            }
+          >
+            {manualIcon}
+            <span>Manual</span>
+          </button>
+          <button
+            type="button"
+            style={withDisabledStyle(maintenanceDisabled)}
+            disabled={maintenanceDisabled}
+            onClick={onSetMaintenanceMode}
+            aria-label="Set Maintenance"
+            title={
+              !maintenancePath
+                ? "HMI_Control tag not found"
+                : activeMode === "maintenance"
+                  ? "Already in Maintenance mode"
+                  : maintenancePath
+            }
+          >
+            {maintenanceIcon}
+            <span>Maint</span>
           </button>
         </div>
         {writeError ? (
@@ -2292,12 +2837,85 @@ export default function App() {
     const path = String(overlay.tagPath || "").trim();
     const eType = resolveOverlayEType(overlay);
     const rows = [];
+    const seenKeys = new Set();
+    const pushRow = (key, value) => {
+      const label = String(key || "").trim();
+      if (!label) return;
+      const lk = label.toLowerCase();
+      if (seenKeys.has(lk)) return;
+      seenKeys.add(lk);
+      rows.push({ key: label, value: value == null || value === "" ? "-" : String(value) });
+    };
     if (eType) rows.push({ key: "UDT", value: eType });
     const groupLive = path
       ? svgLiveValuesByGroupPath.get(path) || svgLiveValuesByGroupPath.get(path.toLowerCase()) || null
       : null;
-    if (groupLive?.routeId) rows.push({ key: "Route", value: String(groupLive.routeId) });
-    if (groupLive?.state) rows.push({ key: "State", value: String(groupLive.state) });
+    if (groupLive?.routeId) pushRow("Route", groupLive.routeId);
+    if (groupLive?.state) pushRow("State", groupLive.state);
+    const inferGroupName = (tag) => {
+      const explicit = normalizeTagValue(tag?.groupName || "");
+      if (explicit) return explicit;
+      const rawPath = normalizeTagValue(tag?.tagPath || tag?.name || "");
+      if (!rawPath.includes(".")) return "";
+      return normalizeTagValue(rawPath.slice(0, rawPath.indexOf(".")));
+    };
+    const readLiveTagValue = (tag, topic, group) => {
+      const candidates = [
+        topic && group && tag?.tagPath ? `${topic}.${group}.${tag.tagPath}` : "",
+        topic && group && tag?.name ? `${topic}.${group}.${tag.name}` : "",
+        topic && tag?.tagPath ? `${topic}.${tag.tagPath}` : "",
+        topic && tag?.name ? `${topic}.${tag.name}` : "",
+        group && tag?.tagPath ? `${group}.${tag.tagPath}` : "",
+        group && tag?.name ? `${group}.${tag.name}` : "",
+        tag?.tagPath || "",
+        tag?.name || "",
+      ]
+        .map((x) => normalizeTagValue(x))
+        .filter(Boolean);
+      const live = opcLiveValues || {};
+      for (const k of candidates) {
+        if (Object.prototype.hasOwnProperty.call(live, k)) return live[k];
+        const lower = k.toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(live, lower)) return live[lower];
+      }
+      return "";
+    };
+    const normalizeLoose = (value) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    if (path) {
+      const normalizedPath = normalizeTagValue(path);
+      const pathLower = normalizedPath.toLowerCase();
+      const pathLoose = normalizeLoose(normalizedPath);
+      (Array.isArray(opcTags) ? opcTags : []).forEach((tag) => {
+        const topic = normalizeTagValue(tag?.topic || "");
+        const group = inferGroupName(tag);
+        const member = normalizeTagValue(tag?.tagPath || tag?.name || "");
+        const scopeCandidates = [
+          topic && group ? `${topic}.${group}` : "",
+          group,
+          topic && member ? `${topic}.${member}` : "",
+          member,
+        ]
+          .map((x) => normalizeTagValue(x))
+          .filter(Boolean);
+        const match = scopeCandidates.some((c) => {
+          const cl = c.toLowerCase();
+          if (cl === pathLower || cl.endsWith(`.${pathLower}`) || pathLower.endsWith(`.${cl}`)) return true;
+          const loose = normalizeLoose(c);
+          return !!(loose && pathLoose && (loose.includes(pathLoose) || pathLoose.includes(loose)));
+        });
+        if (!match) return;
+        const rawMember = String(tag?.tagPath || tag?.name || "").trim();
+        const groupPrefix = String(group || "").trim();
+        let label = rawMember || `Tag ${rows.length + 1}`;
+        if (groupPrefix && label.toLowerCase().startsWith(`${groupPrefix.toLowerCase()}.`)) {
+          label = label.slice(groupPrefix.length + 1);
+        }
+        pushRow(label, readLiveTagValue(tag, topic, group));
+      });
+    }
     if (path) {
       const lowerPath = path.toLowerCase();
       const direct = Object.entries(opcLiveValues || {}).filter(([k]) => {
@@ -2306,10 +2924,22 @@ export default function App() {
       });
       direct.slice(0, 12).forEach(([k, v]) => {
         const label = String(k || "").split(".").pop() || String(k || "");
-        rows.push({ key: label, value: v == null || v === "" ? "-" : String(v) });
+        pushRow(label, v);
       });
     }
     return rows;
+  };
+  const getOverlayPopupTagName = (overlay) => {
+    const rawPath = String(overlay?.tagPath || "").trim();
+    if (rawPath) {
+      const normalized = rawPath.replace(/\//g, ".");
+      const parts = normalized.split(".").map((x) => String(x || "").trim()).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1];
+      return rawPath;
+    }
+    const rawName = String(overlay?.name || "").trim();
+    if (!rawName) return "Equipment";
+    return rawName.replace(/\.svg$/i, "").trim() || "Equipment";
   };
   const liveEquipmentOverlays = useMemo(() => {
     const byId = new Map((svgOverlays || []).map((o) => [String(o.id || ""), o]));
@@ -2320,7 +2950,7 @@ export default function App() {
         overlay,
         details: buildLiveEquipmentDetails(overlay),
       }));
-  }, [svgOverlays, liveEquipmentOverlayIds, svgLiveValuesByGroupPath, opcLiveValues]);
+  }, [svgOverlays, liveEquipmentOverlayIds, svgLiveValuesByGroupPath, opcLiveValues, opcTags]);
   const liveEquipmentDrawerEntry = useMemo(() => {
     const id = String(liveEquipmentDrawerOverlayId || "").trim();
     if (!id) return null;
@@ -4156,7 +4786,11 @@ function flushScheduledProjectSave() {
       if (options?.forceDatabaseDataTab === true) {
         setDatabaseTab("data");
       } else {
-        setDatabaseTab((prev) => (prev === "dataset" || prev === "config" || prev === "designer" ? prev : "data"));
+        setDatabaseTab((prev) =>
+          prev === "dataset" || prev === "config" || prev === "diagnostics" || prev === "designer"
+            ? prev
+            : "data"
+        );
       }
       const requested = String(options?.databasePath || "").trim();
       if (requested) {
@@ -4307,6 +4941,7 @@ function flushScheduledProjectSave() {
   };
   const canViewScreenPages = canViewArea("project");
   const canViewDataPages = canViewArea("database");
+  const canViewReportsPages = canViewArea("reports");
   const canEditProject = canEditArea("project");
   const isOpcDrawerView =
     drawerView === "opc" || drawerView === "logs" || drawerView === "diagnostics";
@@ -4334,11 +4969,12 @@ function flushScheduledProjectSave() {
   const { canAccessLiveMenuItem, isLiveMenuItemRoleRestricted } = useLiveMenuAccess({
     canViewDataPages,
     canViewScreenPages,
+    canViewReportsPages,
     currentUserRoleIds,
   });
   const canOpenLiveMenuItem = (item) => {
-    const isData = String(item?.type || "").trim().toLowerCase() === "data";
-    if (isViewOnlyRole && !isData) return true;
+    const itemType = String(item?.type || "").trim().toLowerCase();
+    if (isViewOnlyRole && itemType === "screen") return true;
     return canAccessLiveMenuItem(item);
   };
   const canInteractLiveScreens = !(isLiveMode && isViewOnlyRole);
@@ -4449,6 +5085,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       maxY = -Infinity;
     const polyParts = [];
     const rectParts = [];
+    const circleParts = [];
     const textParts = [];
 
     for (const s of selectedShapes) {
@@ -4481,6 +5118,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
         continue;
       }
 
+      if (s.type === "circle") {
+        const x = Number(s.x ?? 0);
+        const y = Number(s.y ?? 0);
+        const w = Math.max(0, Number(s.width ?? 0));
+        const h = Math.max(0, Number(s.height ?? 0));
+        if (w <= 0 || h <= 0) continue;
+
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + w);
+        maxY = Math.max(maxY, y + h);
+        circleParts.push(s);
+        continue;
+      }
+
       if (s.type === "text") {
         const fontSize = Number(s.fontSize ?? 24);
         const text = String(s.text ?? "");
@@ -4503,7 +5155,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
     }
 
-    if ((!polyParts.length && !rectParts.length && !textParts.length) || !Number.isFinite(minX)) {
+    if ((!polyParts.length && !rectParts.length && !circleParts.length && !textParts.length) || !Number.isFinite(minX)) {
       return;
     }
 
@@ -4519,7 +5171,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
         const pointsAttr = localPoints.map((p) => `${p.x},${p.y}`).join(" ");
         const stroke = s.stroke || DEFAULT_STROKE;
-        const fill = s.fill || DEFAULT_FILL;
+        const fill = s.fill ?? "transparent";
         const strokeWidth = Number(s.strokeWidth) || 3;
         const style = lineStyleToStrokeProps(s.lineStyle ?? "solid", strokeWidth);
 
@@ -4564,16 +5216,37 @@ const CONTENT_FIT_HEADROOM = 0.94;
       })
       .join("");
 
+    const circleInner = circleParts
+      .map((s) => {
+        const x = Number(s.x ?? 0) - minX;
+        const y = Number(s.y ?? 0) - minY;
+        const width = Math.max(0, Number(s.width ?? 0));
+        const height = Math.max(0, Number(s.height ?? 0));
+        const cx = x + width / 2;
+        const cy = y + height / 2;
+        const rx = width / 2;
+        const ry = height / 2;
+        const stroke = s.stroke || DEFAULT_STROKE;
+        const fill = s.fill || "transparent";
+        const strokeWidth = Number(s.strokeWidth) || 3;
+        const style = lineStyleToStrokeProps(s.lineStyle ?? "solid", strokeWidth);
+        const dashAttr = style.dasharray ? ` stroke-dasharray="${style.dasharray}"` : "";
+        const linecap = style.linecap ?? "round";
+        const linejoin = style.linejoin ?? "round";
+        return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linecap="${linecap}" stroke-linejoin="${linejoin}"${dashAttr} />`;
+      })
+      .join("");
+
     // Ensure text is always on top
-    const inner = `${polyInner}${rectInner}${textInner}`;
+    const inner = `${polyInner}${rectInner}${circleInner}${textInner}`;
 
     const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">${inner}</svg>`;
     const genKey = addGeneratedSvg(
-      `Selection-Group-${polyParts.length + rectParts.length + textParts.length}`,
+      `Selection-Group-${polyParts.length + rectParts.length + circleParts.length + textParts.length}`,
       raw
     );
-    const stroke = polyParts[0]?.stroke || rectParts[0]?.stroke || DEFAULT_STROKE;
-    const fill = polyParts[0]?.fill || rectParts[0]?.fill || textParts[0]?.fill || DEFAULT_FILL;
+    const stroke = polyParts[0]?.stroke || rectParts[0]?.stroke || circleParts[0]?.stroke || DEFAULT_STROKE;
+    const fill = polyParts[0]?.fill || rectParts[0]?.fill || circleParts[0]?.fill || textParts[0]?.fill || DEFAULT_FILL;
     const tagPath =
       selectedShapes.length === 1 ? (selectedShapes[0]?.tagPath || "") : "";
 
@@ -5135,6 +5808,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setDragAll(null);
     setDragHandle(null);
     setOverlayResize(null);
+    setShapeResize(null);
     setMarquee(null);
   }
 
@@ -5540,7 +6214,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (!s) return null;
 
       if (s.type === "text") return "Text";
-      if (s.type === "rect") return "Polyline";
+      if (s.type === "rect" || s.type === "circle") return "Polyline";
       if (s.type === "polyline" || Array.isArray(s.points)) return "Polyline";
 
       return "Shape";
@@ -5741,6 +6415,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function exitEditMode() {
     setEditingId(null);
     setDragHandle(null);
+    setShapeResize(null);
   }
 
   function toggleEditMode() {
@@ -5812,10 +6487,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         if (s?.type === "text") {
           return { id: s.id, kind: "text", origX: Number(s.x ?? 0), origY: Number(s.y ?? 0) };
         }
-        if (s?.type === "rect") {
+        if (s?.type === "rect" || s?.type === "circle") {
           return {
             id: s.id,
-            kind: "rect",
+            kind: s.type === "circle" ? "circle" : "rect",
             origX: Number(s.x ?? 0),
             origY: Number(s.y ?? 0),
             origW: Number(s.width ?? 0),
@@ -6012,8 +6687,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
   }
 
-  async function readSvgRaw(entry) {
+  async function readSvgRaw(entry, options = {}) {
     if (entry == null) return null;
+    const forceFresh = options?.forceFresh === true;
     let value = typeof entry === "function" ? await entry() : entry;
     if (value && typeof value === "object" && typeof value.default === "string") {
       value = value.default;
@@ -6023,22 +6699,77 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const url = String(value || "").trim();
     if (!url) return null;
     const cache = svgRawCacheRef.current;
-    if (cache?.has(url)) {
+    if (!forceFresh && cache?.has(url)) {
       const hit = cache.get(url);
       cache.delete(url);
       cache.set(url, hit);
       return hit;
     }
-    const res = await fetch(url);
+    const reqUrl = forceFresh ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}` : url;
+    const res = await fetch(reqUrl, forceFresh ? { cache: "no-store" } : undefined);
     if (!res.ok) return null;
     const raw = await res.text();
     cacheSvgRawByUrl(url, raw);
     return raw;
   }
 
-  async function readSvgRawByKey(fileKey) {
-    return readSvgRaw(getSvgEntry(fileKey));
+  async function readSvgRawByKey(fileKey, options = {}) {
+    return readSvgRaw(getSvgEntry(fileKey), options);
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    const syncETypeFromSource = async () => {
+      const overlays = Array.isArray(overlaysRef.current) ? overlaysRef.current : [];
+      const keys = Array.from(
+        new Set(
+          overlays
+            .filter((o) => isOverlayETypeAutoManaged(o))
+            .map((o) => String(o.sourceKey || "").trim())
+            .filter(Boolean)
+        )
+      );
+      if (!keys.length) return;
+      const pairs = await Promise.all(
+        keys.map(async (key) => {
+          try {
+            const raw = await readSvgRawByKey(key, { forceFresh: import.meta.env.DEV === true });
+            const eType = typeof raw === "string" ? extractSvgEType(raw, key) : "";
+            return [key, String(eType || "").trim()];
+          } catch {
+            return [key, ""];
+          }
+        })
+      );
+      if (cancelled) return;
+      const sourceETypeByKey = new Map(
+        pairs.filter(([key, val]) => String(key || "").trim() && String(val || "").trim())
+      );
+      if (!sourceETypeByKey.size) return;
+      setSvgOverlays((prev) => {
+        let changed = false;
+        const next = (Array.isArray(prev) ? prev : []).map((o) => {
+          if (!isOverlayETypeAutoManaged(o)) return o;
+          const key = String(o?.sourceKey || "").trim();
+          const sourceEType = String(sourceETypeByKey.get(key) || "").trim();
+          if (!sourceEType) return o;
+          if (String(o?.eType || "").trim() === sourceEType) return o;
+          changed = true;
+          return { ...o, eType: sourceEType, eTypeAuto: true };
+        });
+        return changed ? next : prev;
+      });
+    };
+    syncETypeFromSource();
+    if (import.meta.env.DEV === true) {
+      timer = window.setInterval(syncETypeFromSource, 2500);
+    }
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [svgFiles, generatedSvgs]);
 
   function ensureGeneratedKey(name) {
     const clean = String(name || "Generated.svg").replace(/[\\/:*?"<>|]/g, "_");
@@ -6093,11 +6824,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
         stroke: DEFAULT_STROKE,
         tagPath: "",
         eType: fallbackEType,
+        eTypeAuto: true,
         bbox,
       };
     }
 
-    const raw = await readSvgRaw(entry);
+    const raw = await readSvgRaw(entry, { forceFresh: import.meta.env.DEV === true });
     if (typeof raw !== "string") {
       const w = Math.max(40, Number(targetW) || 120);
       const h = Math.max(30, w * 0.6);
@@ -6115,6 +6847,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         stroke: DEFAULT_STROKE,
         tagPath: "",
         eType: fallbackEType,
+        eTypeAuto: true,
         bbox,
       };
     }
@@ -6137,6 +6870,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         stroke: DEFAULT_STROKE,
         tagPath: "",
         eType: fallbackEType,
+        eTypeAuto: true,
         bbox,
       };
     }
@@ -6182,6 +6916,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       stroke: DEFAULT_STROKE,
       tagPath: "",
       eType,
+      eTypeAuto: true,
       bbox,
     };
   }
@@ -6322,7 +7057,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         continue;
       }
 
-      if (s.type === "rect") {
+      if (s.type === "rect" || s.type === "circle") {
         items.push({
           x: Number(s.x ?? 0),
           y: Number(s.y ?? 0),
@@ -6381,7 +7116,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
         }
 
-        if (s.type === "rect") {
+        if (s.type === "rect" || s.type === "circle") {
           return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
         }
 
@@ -6469,7 +7204,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
         }
 
-        if (s.type === "rect") {
+        if (s.type === "rect" || s.type === "circle") {
           return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
         }
 
@@ -6563,7 +7298,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             w: estW,
             h: estH,
           });
-        } else if (s.type === "rect") {
+        } else if (s.type === "rect" || s.type === "circle") {
           boxes.push({
             x: Number(s.x ?? 0),
             y: Number(s.y ?? 0),
@@ -6603,7 +7338,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         if (s.type === "text") {
           return { ...s, id, x: Number(s.x ?? 0) + offsetX, y: Number(s.y ?? 0) + offsetY };
         }
-        if (s.type === "rect") {
+        if (s.type === "rect" || s.type === "circle") {
           return { ...s, id, x: Number(s.x ?? 0) + offsetX, y: Number(s.y ?? 0) + offsetY };
         }
         if (Array.isArray(s.points)) {
@@ -6646,6 +7381,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       tagPath: "", // ✅ NEW
       points: [p, { x: p.x, y: p.y }], // last is preview
       stroke: "#808080",
+      fill: "transparent",
       strokeWidth: 3,
       lineStyle: "solid",
     };
@@ -7070,7 +7806,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const entry = rawOverride ?? getSvgEntry(fileKey);
     if (!entry) return;
 
-    const raw = await readSvgRaw(entry);
+    const raw = await readSvgRaw(entry, { forceFresh: import.meta.env.DEV === true });
     if (typeof raw !== "string") return;
 
     const parsed = stripOuterSvg(raw);
@@ -7140,6 +7876,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         fill: DEFAULT_FILL,
         tagPath: "",
         eType: String(overlayExtras?.eType || parsedEType || "").trim(),
+        eTypeAuto: overlayExtras?.eType != null ? false : true,
         bbox,
         ...overlayExtras,
         stroke: DEFAULT_STROKE,
@@ -7424,7 +8161,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
 
       // ✅ Rectangle
-      if (s.type === "rect") {
+      if (s.type === "rect" || s.type === "circle") {
         boxes.push({
           x: Number(s.x ?? 0),
           y: Number(s.y ?? 0),
@@ -7478,6 +8215,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const [hudFields, setHudFields] = useState({
     id: "",
     tagPath: "",
+    eType: "",
     fill: DEFAULT_FILL,
     stroke: DEFAULT_STROKE,
     strokeWidth: "",
@@ -7521,6 +8259,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setHudFields({
         id: "",
         tagPath: "",
+        eType: "",
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         strokeWidth: "",
@@ -7574,6 +8313,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (s) {
         idText = s.id;
         tagPath = s.tagPath || "";
+        fill = s.fill || "transparent";
         stroke = s.stroke || DEFAULT_STROKE;
         arrowStart = s.arrowStart ?? "none";
         arrowEnd = s.arrowEnd ?? "none";
@@ -7606,6 +8346,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         setHudFields({
           id: idText,
           tagPath,
+          eType: String(o.eType || resolveOverlayEType(o) || ""),
           fill,
           stroke,
           strokeWidth,
@@ -7662,6 +8403,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         setHudFields({
           id: idText,
           tagPath,
+          eType: "",
           fill,
           stroke,
           strokeWidth: "",
@@ -7713,6 +8455,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setHudFields({
       id: idText,
       tagPath,
+      eType: "",
       fill,
       stroke,
       strokeWidth,
@@ -8051,18 +8794,24 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   function applySingleFill(nextFill) {
-    if (!isSingle || !singleId) return;
     const c = String(nextFill || "").trim();
     if (!c) return;
 
-    if (singleKind === "SVG") {
+    if (isSingle && singleKind === "SVG" && singleId) {
       setSvgOverlays((prev) =>
         prev.map((o) =>
           o.id === singleId ? { ...o, fill: c, inner: updateSvgInnerFill(o.inner, c) } : o
         )
       );
-    } else if (singleKind === "Text") {
+    } else if (isSingle && singleKind === "Text" && singleId) {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, fill: c } : s)));
+    } else if (isSingle && singleKind === "Polyline" && singleId) {
+      setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, fill: c } : s)));
+    } else if (!isSingle && Array.isArray(selectedIds) && selectedIds.length) {
+      const sel = new Set(selectedIds.map((id) => String(id || "")));
+      setShapes((prev) =>
+        prev.map((s) => (sel.has(String(s?.id || "")) ? { ...s, fill: c } : s))
+      );
     }
   }
 
@@ -8184,7 +8933,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             return { ...s, x: newX, y: newY, fontSize: newFontSize };
           }
 
-          if (s.type === "rect") {
+          if (s.type === "rect" || s.type === "circle") {
             const x0 = Number(s.x ?? 0);
             const y0 = Number(s.y ?? 0);
             const w0 = Math.max(0, Number(s.width ?? 0));
@@ -8482,6 +9231,35 @@ const CONTENT_FIT_HEADROOM = 0.94;
     });
   }
 
+  function clampLiveEquipmentFloatingPosition(id, xRaw, yRaw) {
+    const viewportRect =
+      svgRef.current?.closest?.(".vizi-scroll")?.getBoundingClientRect?.() || null;
+    const cardEl = liveEquipmentCardRefs.current.get(String(id || "").trim());
+    const cardRect = cardEl?.getBoundingClientRect?.() || null;
+    const cardW = Math.max(
+      1,
+      Number(cardRect?.width) ||
+        Math.min(300, Math.max(180, Math.round((Number(window.innerWidth) || 0) * 0.68)))
+    );
+    const cardH = Math.max(
+      1,
+      Number(cardRect?.height) ||
+        Math.min(Math.round((Number(window.innerHeight) || 0) * 0.34), 420)
+    );
+    const pad = 6;
+    const fallbackLeft = 0;
+    const fallbackTop = Math.max(0, Number(TOP_BAR_H) || 0) + (isLiveMode ? LIVE_ALARM_BAR_H : 0);
+    const minX = (Number(viewportRect?.left) || fallbackLeft) + pad;
+    const minY = (Number(viewportRect?.top) || fallbackTop) + pad;
+    const maxRight = (Number(viewportRect?.right) || Number(window.innerWidth) || 0) - pad;
+    const maxBottom = (Number(viewportRect?.bottom) || Number(window.innerHeight) || 0) - pad;
+    const maxX = Math.max(minX, maxRight - cardW);
+    const maxY = Math.max(minY, maxBottom - cardH);
+    const nextX = Math.min(maxX, Math.max(minX, Number(xRaw) || 0));
+    const nextY = Math.min(maxY, Math.max(minY, Number(yRaw) || 0));
+    return { x: nextX, y: nextY };
+  }
+
   function beginLiveEquipmentCardDrag(e, id) {
     if (e.button !== 0) return;
     const nextId = String(id || "").trim();
@@ -8515,7 +9293,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const cardRect = cardEl?.getBoundingClientRect?.();
       const liveTopOffset = TOP_BAR_H + (isLiveMode ? LIVE_ALARM_BAR_H : 0);
       originX = Math.max(0, Number(cardRect?.left) || Math.max(16, window.innerWidth - 340));
-      originY = Math.max(liveTopOffset + 4, Number(cardRect?.top) || Math.max(liveTopOffset + 20, window.innerHeight - 280));
+      originY = Math.max(
+        liveTopOffset + 4,
+        Number(cardRect?.top) || Math.max(liveTopOffset + 20, window.innerHeight - 280)
+      );
+      const clampedOrigin = clampLiveEquipmentFloatingPosition(nextId, originX, originY);
+      originX = clampedOrigin.x;
+      originY = clampedOrigin.y;
       setLiveEquipmentFloatingById((prev) => ({
         ...(prev && typeof prev === "object" ? prev : {}),
         [nextId]: { x: originX, y: originY },
@@ -8542,12 +9326,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const map = prev && typeof prev === "object" ? prev : {};
         const cur = map[drag.id];
         if (!cur) return map;
-        const nextX = Math.max(0, drag.originX + dx);
-        const liveTopOffset = TOP_BAR_H + (isLiveMode ? LIVE_ALARM_BAR_H : 0);
-        const nextY = Math.max(liveTopOffset + 4, drag.originY + dy);
+        const clamped = clampLiveEquipmentFloatingPosition(
+          drag.id,
+          drag.originX + dx,
+          drag.originY + dy
+        );
         return {
           ...map,
-          [drag.id]: { x: nextX, y: nextY },
+          [drag.id]: { x: clamped.x, y: clamped.y },
         };
       });
       setLiveEquipmentDockTick((v) => v + 1);
@@ -8649,6 +9435,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
+    if (tool === "circle") {
+      startCircleAt(p);
+      return;
+    }
+
     if (tool === "select") {
       const panModifier = !!(e.altKey || e.metaKey || e.ctrlKey);
       if (panModifier) {
@@ -8707,6 +9498,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
       if (drawing.mode === "draw-rect") {
         finishRectDrawing(drawing.id);
+        return;
+      }
+      if (drawing.mode === "draw-circle") {
+        finishCircleDrawing(drawing.id);
       }
     }
 
@@ -8782,7 +9577,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           h: Math.max(estH + pad * 2, 28),
         };
         if (pointInRect(p, r)) { hit = true; hitShapeId = s.id; break; }
-      } else if (s.type === "rect") {
+      } else if (s.type === "rect" || s.type === "circle") {
         const r = {
           x: Number(s.x ?? 0),
           y: Number(s.y ?? 0),
@@ -9078,6 +9873,85 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
+    if (shapeResize) {
+      if (maybeAutoPanDuringDrag(e)) {
+        // Recompute pointer after viewport moved.
+      }
+      const pointer = svgPoint(e, { clampToCanvas: false });
+      const anchor = shapeResize.anchor || { x: 0, y: 0 };
+      let nextX = Math.min(anchor.x, pointer.x);
+      let nextY = Math.min(anchor.y, pointer.y);
+      let nextW = Math.max(1, Math.abs(pointer.x - anchor.x));
+      let nextH = Math.max(1, Math.abs(pointer.y - anchor.y));
+      const keepCircle = shapeResize.keepCircle === true;
+      if (keepCircle) {
+        const size = Math.max(nextW, nextH);
+        nextW = size;
+        nextH = size;
+        if (pointer.x < anchor.x) nextX = anchor.x - size;
+        else nextX = anchor.x;
+        if (pointer.y < anchor.y) nextY = anchor.y - size;
+        else nextY = anchor.y;
+      }
+      const startBBox = shapeResize.startBBox || { x: 0, y: 0, w: 1, h: 1 };
+      const baseW = Math.max(1e-6, Number(startBBox.w || 0));
+      const baseH = Math.max(1e-6, Number(startBBox.h || 0));
+      const sx = nextW / baseW;
+      const sy = nextH / baseH;
+      const dx = nextX - Number(startBBox.x || 0);
+      const dy = nextY - Number(startBBox.y || 0);
+      const srcById = new Map((Array.isArray(shapeResize.originals) ? shapeResize.originals : []).map((s) => [s.id, s]));
+      setShapes((prev) => {
+        const next = prev.map((s) => {
+          const src = srcById.get(s.id);
+          if (!src) return s;
+          if ((src.type === "polyline" || Array.isArray(src.points)) && Array.isArray(src.points)) {
+            return {
+              ...s,
+              points: src.points.map((pt) => ({
+                x: Number(startBBox.x || 0) + (pt.x - Number(startBBox.x || 0)) * sx + dx,
+                y: Number(startBBox.y || 0) + (pt.y - Number(startBBox.y || 0)) * sy + dy,
+              })),
+            };
+          }
+          if (src.type === "text") {
+            const newX = Number(startBBox.x || 0) + (Number(src.x || 0) - Number(startBBox.x || 0)) * sx + dx;
+            const newY = Number(startBBox.y || 0) + (Number(src.y || 0) - Number(startBBox.y || 0)) * sy + dy;
+            const uniform = Math.max(0.05, Math.min(sx, sy));
+            return { ...s, x: newX, y: newY, fontSize: Math.max(1, Number(src.fontSize || 24) * uniform) };
+          }
+          if (src.type === "rect" || src.type === "circle") {
+            const x0 = Number(src.x || 0);
+            const y0 = Number(src.y || 0);
+            const w0 = Math.max(0, Number(src.width || 0));
+            const h0 = Math.max(0, Number(src.height || 0));
+            const x1 = x0 + w0;
+            const y1 = y0 + h0;
+            let nx0 = Number(startBBox.x || 0) + (x0 - Number(startBBox.x || 0)) * sx + dx;
+            let ny0 = Number(startBBox.y || 0) + (y0 - Number(startBBox.y || 0)) * sy + dy;
+            let nx1 = Number(startBBox.x || 0) + (x1 - Number(startBBox.x || 0)) * sx + dx;
+            let ny1 = Number(startBBox.y || 0) + (y1 - Number(startBBox.y || 0)) * sy + dy;
+            if (src.type === "circle") {
+              const size = Math.max(Math.abs(nx1 - nx0), Math.abs(ny1 - ny0));
+              nx1 = nx0 + (nx1 >= nx0 ? size : -size);
+              ny1 = ny0 + (ny1 >= ny0 ? size : -size);
+            }
+            return {
+              ...s,
+              x: Math.min(nx0, nx1),
+              y: Math.min(ny0, ny1),
+              width: Math.abs(nx1 - nx0),
+              height: Math.abs(ny1 - ny0),
+            };
+          }
+          return s;
+        });
+        shapesRef.current = next;
+        return next;
+      });
+      return;
+    }
+
     if (dragHandle) {
       if (maybeAutoPanDuringDrag(e)) {
         p = drawing?.mode === "draw-poly" ? svgPoint(e, { snapToGrid: true }) : svgPoint(e, { snapToGrid: false });
@@ -9124,7 +9998,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
               };
             }
 
-            if (rec.kind === "rect" && s.type === "rect") {
+            if ((rec.kind === "rect" || rec.kind === "circle") && (s.type === "rect" || s.type === "circle")) {
               const w = Math.max(0, Number(rec.origW ?? s.width ?? 0));
               const h = Math.max(0, Number(rec.origH ?? s.height ?? 0));
               const x = Math.max(0, Math.min(Math.max(0, maxX - w), rec.origX + dx));
@@ -9229,6 +10103,24 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
+    if (drawing?.mode === "draw-circle" && drawing.id) {
+      const sx = Number(drawing.start?.x ?? p.x);
+      const sy = Number(drawing.start?.y ?? p.y);
+      const dx = p.x - sx;
+      const dy = p.y - sy;
+      const r = Math.max(Math.abs(dx), Math.abs(dy));
+      const x = sx + (dx < 0 ? -r : 0);
+      const y = sy + (dy < 0 ? -r : 0);
+      const width = r * 2;
+      const height = r * 2;
+      setShapes((prev) => {
+        const next = prev.map((s) => (s.id === drawing.id ? { ...s, x, y, width, height } : s));
+        shapesRef.current = next;
+        return next;
+      });
+      return;
+    }
+
   }
 
   function onMouseUp() {
@@ -9277,7 +10169,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             return rectsIntersect(r, br);
           }
 
-          if (s.type === "rect") {
+          if (s.type === "rect" || s.type === "circle") {
             const br = {
               x: Number(s.x ?? 0),
               y: Number(s.y ?? 0),
@@ -9317,19 +10209,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setDragAll(null);
       setDragHandle(null);
       setOverlayResize(null);
+      setShapeResize(null);
       return;
     }
 
-    const movedSomething = !!(dragAll || dragHandle || overlayResize);
+    const movedSomething = !!(dragAll || dragHandle || overlayResize || shapeResize);
     setDragAll(null);
     setDragHandle(null);
     setOverlayResize(null);
+    setShapeResize(null);
     if (hadDragHandle) {
       setSelectedSegment(null);
       exitEditMode();
     }
     if (movedSomething) scheduleProjectAutoSave(80);
     if (drawing?.mode === "draw-rect" && drawing.id) finishRectDrawing(drawing.id);
+    if (drawing?.mode === "draw-circle" && drawing.id) finishCircleDrawing(drawing.id);
   }
 
   useEffect(() => {
@@ -9337,9 +10232,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       Boolean(dragAll) ||
       Boolean(dragHandle) ||
       Boolean(overlayResize) ||
+      Boolean(shapeResize) ||
       Boolean(marquee) ||
       Boolean(canvasPanDrag) ||
-      String(drawing?.mode || "") === "draw-rect";
+      String(drawing?.mode || "") === "draw-rect" ||
+      String(drawing?.mode || "") === "draw-circle";
     if (!isDragging) return;
     const handleMove = (e) => onMouseMove(e);
     const handleUp = () => onMouseUp();
@@ -9351,7 +10248,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       window.removeEventListener("mouseup", handleUp);
       window.removeEventListener("blur", handleUp);
     };
-  }, [dragAll, dragHandle, overlayResize, marquee, canvasPanDrag, drawing, onMouseMove, onMouseUp]);
+  }, [dragAll, dragHandle, overlayResize, shapeResize, marquee, canvasPanDrag, drawing, onMouseMove, onMouseUp]);
 
 
 
@@ -9533,6 +10430,92 @@ const CONTENT_FIT_HEADROOM = 0.94;
               fill="transparent"
               style={{ cursor: "nwse-resize" }}
               onMouseDown={(e) => onOverlayGroupHandleDown(e, c.key)}
+            />
+          </g>
+        ))}
+      </g>
+    );
+  }
+
+  function onShapeResizeHandleDown(e, corner) {
+    if (tool !== "select") return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (!selectedBBox || !selectedIds.length || selectedOverlayIds.length) return;
+    const x = Number(selectedBBox.x || 0);
+    const y = Number(selectedBBox.y || 0);
+    const w = Math.max(1, Number(selectedBBox.w || 0));
+    const h = Math.max(1, Number(selectedBBox.h || 0));
+    const TL = { x, y };
+    const TR = { x: x + w, y };
+    const BR = { x: x + w, y: y + h };
+    const BL = { x, y: y + h };
+    const opposite = { TL: BR, TR: BL, BR: TL, BL: TR };
+    const anchor = opposite[String(corner || "").toUpperCase()];
+    if (!anchor) return;
+    const ids = Array.isArray(selectedIds) ? selectedIds.slice() : [];
+    const originals = (Array.isArray(shapesRef.current) ? shapesRef.current : [])
+      .filter((s) => ids.includes(s.id))
+      .map((s) => ({
+        id: s.id,
+        type: s.type,
+        x: Number(s.x ?? 0),
+        y: Number(s.y ?? 0),
+        width: Number(s.width ?? 0),
+        height: Number(s.height ?? 0),
+        fontSize: Number(s.fontSize ?? 24),
+        points: Array.isArray(s.points) ? clonePoints(s.points) : null,
+      }));
+    const keepCircle =
+      ids.length === 1 &&
+      originals.length === 1 &&
+      String(originals[0]?.type || "") === "circle";
+    pushHistory();
+    setShapeResize({
+      corner: String(corner || "").toUpperCase(),
+      anchor,
+      startBBox: { x, y, w, h },
+      selectedIds: ids,
+      originals,
+      keepCircle,
+    });
+  }
+
+  function shapeSelectionUI() {
+    if (!selectedBBox || !selectedIds.length || selectedOverlayIds.length) return null;
+    const x = Number(selectedBBox.x || 0);
+    const y = Number(selectedBBox.y || 0);
+    const w = Math.max(1, Number(selectedBBox.w || 0));
+    const h = Math.max(1, Number(selectedBBox.h || 0));
+    const corners = [
+      { key: "TL", cx: x, cy: y },
+      { key: "TR", cx: x + w, cy: y },
+      { key: "BR", cx: x + w, cy: y + h },
+      { key: "BL", cx: x, cy: y + h },
+    ];
+    return (
+      <g>
+        <rect
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          fill="none"
+          stroke="#2b6cff"
+          strokeWidth={2}
+          strokeDasharray="6 4"
+          pointerEvents="none"
+        />
+        {corners.map((c) => (
+          <g key={`shape-resize-${c.key}`}>
+            <circle cx={c.cx} cy={c.cy} r={6} fill="white" stroke="#2b6cff" strokeWidth={2} />
+            <circle
+              cx={c.cx}
+              cy={c.cy}
+              r={14}
+              fill="transparent"
+              style={{ cursor: "nwse-resize" }}
+              onMouseDown={(e) => onShapeResizeHandleDown(e, c.key)}
             />
           </g>
         ))}
@@ -10121,6 +11104,56 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
+  function finishCircleDrawing(circleId) {
+    if (!circleId) return;
+    setShapes((prev) =>
+      prev.filter((s) => {
+        if (s.id !== circleId) return true;
+        const w = Math.max(0, Number(s.width ?? 0));
+        const h = Math.max(0, Number(s.height ?? 0));
+        return w >= 2 && h >= 2;
+      })
+    );
+    setDrawing(null);
+    setTool("select");
+    scheduleProjectAutoSave();
+  }
+
+  function startCircleAt(p) {
+    pushHistory();
+    const id = uid();
+    const circle = {
+      id,
+      type: "circle",
+      x: p.x,
+      y: p.y,
+      width: 0,
+      height: 0,
+      stroke: "#808080",
+      strokeWidth: 3,
+      fill: "transparent",
+      lineStyle: "solid",
+      tagPath: "",
+    };
+
+    setShapes((prev) => [...prev, circle]);
+    setSelectedIds([id]);
+    setSelectedOverlayIds([]);
+    setEditingId(null);
+    setDrawing({ mode: "draw-circle", id, start: { x: p.x, y: p.y } });
+    setShowHUD(false);
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleEType(nextRaw) {
+    if (!isSingle || !singleId || singleKind !== "SVG") return;
+    const v = String(nextRaw ?? "").trim();
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.id === singleId ? { ...o, eType: v, eTypeAuto: false } : o))
+    );
+    scheduleProjectAutoSave();
+  }
+
   function updateScreenAutoFitModeById(screenId, modeRaw) {
     const id = String(screenId || "");
     if (!id) return;
@@ -10295,7 +11328,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function addLiveMenuItem(groupId, type = "screen") {
     const id = String(groupId || "");
     if (!id) return;
-    const normalizedType = String(type || "").toLowerCase() === "data" ? "data" : "screen";
+    const normalizedType = (() => {
+      const next = String(type || "").toLowerCase();
+      if (next === "data") return "data";
+      if (next === "reports") return "reports";
+      return "screen";
+    })();
     setLiveMenuGroups((prev) => {
       const nextGroups = normalizeLiveMenuGroups(prev, screens).map((group) => {
         if (group.id !== id) return group;
@@ -10306,6 +11344,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 id: `live-item-${uid()}`,
                 type: "data",
                 dataTable: String(databaseTablesForMenu[0] || "").trim(),
+                label: "",
+                restricted: false,
+                allowedRoleIds: [],
+              }
+            : normalizedType === "reports"
+            ? {
+                id: `live-item-${uid()}`,
+                type: "reports",
                 label: "",
                 restricted: false,
                 allowedRoleIds: [],
@@ -10330,12 +11376,26 @@ const CONTENT_FIT_HEADROOM = 0.94;
           ...group,
           items: group.items.map((item) => {
             if (item.id !== iId) return item;
-            const nextType = String(patch?.type || item.type || "").toLowerCase() === "data" ? "data" : "screen";
+            const nextType = (() => {
+              const next = String(patch?.type || item.type || "").toLowerCase();
+              if (next === "data") return "data";
+              if (next === "reports") return "reports";
+              return "screen";
+            })();
             if (nextType === "data") {
               return {
                 id: item.id,
                 type: "data",
                 dataTable: String(patch?.dataTable ?? item.dataTable ?? "").trim(),
+                label: String(patch?.label ?? item.label ?? "").trim(),
+                restricted: Boolean(patch?.restricted ?? item?.restricted),
+                allowedRoleIds: normalizeRoleIdList(patch?.allowedRoleIds ?? item?.allowedRoleIds),
+              };
+            }
+            if (nextType === "reports") {
+              return {
+                id: item.id,
+                type: "reports",
                 label: String(patch?.label ?? item.label ?? "").trim(),
                 restricted: Boolean(patch?.restricted ?? item?.restricted),
                 allowedRoleIds: normalizeRoleIdList(patch?.allowedRoleIds ?? item?.allowedRoleIds),
@@ -10411,7 +11471,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   function resolveLiveMenuItemLabel(item, screen = null) {
-    const isData = item?.type === "data";
+    const type = String(item?.type || "").trim().toLowerCase();
+    const isData = type === "data";
+    const isReports = type === "reports";
     if (isData) {
       const configuredTable = String(item?.dataTable || "").trim();
       return (
@@ -10419,6 +11481,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
         normalizeTableDisplayName(configuredTable) ||
         "Data"
       );
+    }
+    if (isReports) {
+      return String(item?.label || "").trim() || "Reports";
     }
     const targetScreen =
       screen ||
@@ -10441,7 +11506,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
       );
       return;
     }
-    if (item.type === "data") {
+    const itemType = String(item?.type || "").trim().toLowerCase();
+    if (itemType === "data") {
       const table = String(item.dataTable || "").trim();
       if (table) {
         openDrawer("database", {
@@ -10451,6 +11517,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         return;
       }
       openDrawer("database", { forceDatabaseDataTab: true });
+      return;
+    }
+    if (itemType === "reports") {
+      openDrawer("reports");
       return;
     }
     const screenId = String(item.screenId || "");
@@ -10746,6 +11816,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         setHudFields={setHudFields}
         applySingleId={applySingleId}
         applySingleTagPath={applySingleTagPath}
+        applySingleEType={applySingleEType}
         applySingleFill={applySingleFill}
         applySingleStroke={applySingleStroke}
         applySingleSvgStrokeWidth={applySingleSvgStrokeWidth}
@@ -10761,6 +11832,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         applySingleTextAlign={applySingleTextAlign}
         applySingleWidgetSettings={applySingleWidgetSettings}
         opcTags={opcTags}
+        svgETypeOptions={svgETypeOptions}
         duplicateOffset={duplicateOffset}
         setDuplicateOffset={setDuplicateOffset}
         convertPolylinesToSvg={convertSelectedPolylinesToSvg}
@@ -10815,6 +11887,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           canvasViewportScrollRef.current = { x, y };
         }}
         liveClickable={isLiveMode && canInteractLiveScreens}
+        isLiveMode={isLiveMode}
           zoom={zoom}          // ✅ NEW
           onWheel={onWheelZoom} // ✅ NEW
           vbW={vbW}
@@ -10859,6 +11932,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         }
         overlaySelectionUI={overlaySelectionUI}
         overlayGroupSelectionUI={overlayGroupSelectionUI}
+        shapeSelectionUI={shapeSelectionUI}
         overlayLocalBBox={overlayLocalBBox}
         marquee={marquee}
         pan={pan}
@@ -10869,6 +11943,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         routeStrokeColorByGroupPath={routeStrokeColorByGroupPath}
         svgLiveValuesByGroupPath={svgLiveValuesByGroupPath}
         opcLiveValues={opcLiveValues}
+        opcTags={opcTags}
         widgetDbValues={widgetDbValues}
         onWidgetDurationPresetChange={onWidgetDurationPresetChange}
         hiddenTagBubbleIds={hiddenTagBubbleIds}
@@ -10908,7 +11983,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             }}
           >
             <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
-              {String(liveEquipmentDrawerEntry.overlay?.name || "Equipment")}
+              {getOverlayPopupTagName(liveEquipmentDrawerEntry.overlay)}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <button
@@ -10947,7 +12022,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           </div>
           <div style={{ padding: "8px 10px 0", display: "grid", gap: 4 }}>
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              Tag Path: {String(liveEquipmentDrawerEntry.overlay?.tagPath || "-")}
+              Tag Name: {getOverlayPopupTagName(liveEquipmentDrawerEntry.overlay)}
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
               eType: {String(resolveOverlayEType(liveEquipmentDrawerEntry.overlay) || "-")}
@@ -11061,7 +12136,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     style={{ fontSize: 12, fontWeight: 800, color: "var(--text)", cursor: "move" }}
                     title="Drag to move"
                   >
-                    {String(overlay.name || "Equipment")}
+                    {getOverlayPopupTagName(overlay)}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <button
@@ -11105,7 +12180,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </div>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  Tag Path: {String(overlay.tagPath || "-")}
+                  Tag Name: {getOverlayPopupTagName(overlay)}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   eType: {String(resolveOverlayEType(overlay) || "-")}
@@ -11172,7 +12247,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   onMouseDown={(e) => beginLiveEquipmentCardMove(e, id)}
                 >
                   <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
-                    {String(overlay.name || "Equipment")}
+                    {getOverlayPopupTagName(overlay)}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <button
@@ -11235,7 +12310,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </div>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  Tag Path: {String(overlay.tagPath || "-")}
+                  Tag Name: {getOverlayPopupTagName(overlay)}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   eType: {String(resolveOverlayEType(overlay) || "-")}
@@ -11386,7 +12461,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
 
 
-      {showZoom && (
+      {showZoom && !isLiveMode && (
         <>
         <div
           ref={zoomPanelRef}
@@ -11531,6 +12606,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
               </button>
               <button
                 className="top-menu-btn"
+                title="Circle"
+                style={dockToolButtonStyle(tool === "circle")}
+                onClick={() => {
+                  setTool("circle");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Circle</span> : null}
+              </button>
+              <button
+                className="top-menu-btn"
                 title="Text"
                 style={dockToolButtonStyle(tool === "text")}
                 onClick={() => {
@@ -11586,16 +12677,62 @@ const CONTENT_FIT_HEADROOM = 0.94;
           >
             {/* Zoom buttons */}
             {[
-              { label: "+", onClick: zoomIn, holdAction: zoomIn, title: "Zoom In" },
-              { label: "-", onClick: zoomOut, holdAction: zoomOut, title: "Zoom Out" },
-              { label: "R", onClick: zoomReset, title: "Reset Zoom (100%)" },
               {
-                label: isAppFullscreen ? "[]-" : "[]",
+                icon: (
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                    <path d="M11 8v6M8 11h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <path d="M16 16l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                ),
+                onClick: zoomIn,
+                holdAction: zoomIn,
+                title: "Zoom In",
+              },
+              {
+                icon: (
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                    <path d="M8 11h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <path d="M16 16l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                ),
+                onClick: zoomOut,
+                holdAction: zoomOut,
+                title: "Zoom Out",
+              },
+              {
+                icon: (
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M6 8a7 7 0 1 1-1 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <path d="M6 4v4h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ),
+                onClick: zoomReset,
+                title: "Reset Zoom (100%)",
+              },
+              {
+                icon: isAppFullscreen ? (
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <path d="M8 8h8v8H8z" stroke="currentColor" strokeWidth="2" />
+                  </svg>
+                ),
                 onClick: toggleAppFullscreen,
                 title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
               },
               {
-                label: "S",
+                icon: (
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M5 4h11l3 3v13H5V4z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                    <path d="M8 4v6h8V4" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                    <path d="M9 20v-6h6v6" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  </svg>
+                ),
                 onClick: () => saveProjectToDb({ silent: false, teamMerge: true }),
                 title: "Save Project",
                 disabled: String(projectStatus || "").trim().toLowerCase() === "saving...",
@@ -11653,7 +12790,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   cursor: btn.disabled ? "not-allowed" : "pointer",
                 }}
               >
-                {btn.label}
+                {btn.icon}
                 {!isLiveMode && designDockExpanded ? (
                   <span style={{ fontSize: 11, fontWeight: 700 }}>{btn.title}</span>
                 ) : null}
@@ -11896,6 +13033,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
               >
                 <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>▭</span>
                 Rectangle
+              </div>
+              <div
+                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                onClick={() => {
+                  setTool("circle");
+                  setContextMenu(null);
+                }}
+              >
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>◯</span>
+                Circle
               </div>
               <div
                 style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
@@ -12380,84 +13527,110 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div
                   style={{
                     ...drawerContentShellStyle,
-                    background: useLightLiveDataSurface ? "#ffffff" : "var(--bg-soft)",
+                    padding: drawerContentPadding,
                   }}
                 >
-                <div
-                  style={{
-                    height: "100%",
-                    display: "flex",
-                    flexDirection: "column",
-                    minHeight: 0,
-                    background: useLightLiveDataSurface ? "#ffffff" : "var(--bg-soft)",
-                  }}
-                >
-                  {!databaseDataOnlyMode ? (
-                    <div style={{ display: "flex", gap: 8, padding: `10px ${drawerContentPadding}px`, borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
-	                      <button
-	                        data-preserve-style="true"
-	                        onClick={() => setDatabaseTab("data")}
-	                        style={drawerTabButtonStyle(databaseTab === "data")}
-	                        title="Data"
-	                      >
-	                        Data
-	                      </button>
-	                      <button
-	                        data-preserve-style="true"
-	                        onClick={() => setDatabaseTab("dataset")}
-	                        style={drawerTabButtonStyle(databaseTab === "dataset")}
-	                        title="Dataset"
-	                      >
-	                        Dataset
-	                      </button>
-	                      <button
-	                        data-preserve-style="true"
-	                        onClick={() => setDatabaseTab("config")}
-	                        style={drawerTabButtonStyle(databaseTab === "config")}
-	                        title="Config"
-	                      >
-	                        Config
-	                      </button>
-	                      <button
-	                        data-preserve-style="true"
-	                        onClick={() => setDatabaseTab("designer")}
-	                        style={drawerTabButtonStyle(databaseTab === "designer")}
-	                        title="Designer"
-	                      >
-	                        Designer
-	                      </button>
+                  <div
+                    style={{
+                      height: "100%",
+                      display: "flex",
+                      flexDirection: "column",
+                      minHeight: 0,
+                    }}
+                  >
+                    {!databaseDataOnlyMode ? (
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          padding: "2px 2px 10px",
+                          borderBottom: "1px solid var(--border)",
+                          marginBottom: 10,
+                        }}
+                      >
+                        <button
+                          data-preserve-style="true"
+                          onClick={() => setDatabaseTab("data")}
+                          style={drawerTabButtonStyle(databaseTab === "data")}
+                          title="Data"
+                        >
+                          Data
+                        </button>
+                        <button
+                          data-preserve-style="true"
+                          onClick={() => setDatabaseTab("dataset")}
+                          style={drawerTabButtonStyle(databaseTab === "dataset")}
+                          title="Dataset"
+                        >
+                          Dataset
+                        </button>
+                        <button
+                          data-preserve-style="true"
+                          onClick={() => setDatabaseTab("config")}
+                          style={drawerTabButtonStyle(databaseTab === "config")}
+                          title="Config"
+                        >
+                          Config
+                        </button>
+                        <button
+                          data-preserve-style="true"
+                          onClick={() => setDatabaseTab("diagnostics")}
+                          style={drawerTabButtonStyle(databaseTab === "diagnostics")}
+                          title="Diagnostics"
+                        >
+                          Diagnostics
+                        </button>
+                        <button
+                          data-preserve-style="true"
+                          onClick={() => setDatabaseTab("designer")}
+                          style={drawerTabButtonStyle(databaseTab === "designer")}
+                          title="Designer"
+                        >
+                          Designer
+                        </button>
+                      </div>
+                    ) : null}
+                    <div
+                      style={{
+                        flex: "1 1 auto",
+                        minHeight: 0,
+                        overflow: "hidden",
+                        border: "1px solid var(--border)",
+                        borderRadius: 12,
+                        background: useLightLiveDataSurface ? "#ffffff" : "var(--bg-elev)",
+                      }}
+                    >
+                      {databaseDataOnlyMode ? (
+                        <DataBrowser
+                          embedded
+                          embeddedPath={databaseEmbeddedPath}
+                          embeddedRouteId={databaseEmbeddedRouteId}
+                          embeddedRouteName={databaseEmbeddedRouteName}
+                          hideTableSelector={isLiveMode && databaseDataOnlyMode}
+                          hideListFieldControls={isLiveMode && databaseDataOnlyMode}
+                          useWhiteBackground={useLightLiveDataSurface}
+                        />
+                      ) : databaseTab === "dataset" ? (
+                        <DatasetBuilder embedded />
+                      ) : databaseTab === "designer" ? (
+                        <SqlDesigner embedded selectedTableHint={activeDatabaseTable} />
+                      ) : databaseTab === "diagnostics" ? (
+                        <DatabaseConfigPanel embedded mode="diagnostics" />
+                      ) : databaseTab === "config" ? (
+                        <DatabaseConfigPanel embedded mode="config" />
+                      ) : (
+                        <DataBrowser
+                          embedded
+                          embeddedPath={databaseEmbeddedPath}
+                          embeddedRouteId={databaseEmbeddedRouteId}
+                          embeddedRouteName={databaseEmbeddedRouteName}
+                          hideTableSelector={isLiveMode && databaseDataOnlyMode}
+                          hideListFieldControls={isLiveMode && databaseDataOnlyMode}
+                          useWhiteBackground={useLightLiveDataSurface}
+                        />
+                      )}
                     </div>
-                  ) : null}
-                  <div style={{ flex: "1 1 auto", minHeight: 0, overflow: "hidden" }}>
-                    {databaseDataOnlyMode ? (
-                      <DataBrowser
-                        embedded
-                        embeddedPath={databaseEmbeddedPath}
-                        embeddedRouteId={databaseEmbeddedRouteId}
-                        embeddedRouteName={databaseEmbeddedRouteName}
-                        hideTableSelector={isLiveMode && databaseDataOnlyMode}
-                        hideListFieldControls={isLiveMode && databaseDataOnlyMode}
-                        useWhiteBackground={useLightLiveDataSurface}
-                      />
-                    ) : databaseTab === "dataset" ? (
-                      <DatasetBuilder embedded />
-                    ) : databaseTab === "designer" ? (
-                      <SqlDesigner embedded selectedTableHint={activeDatabaseTable} />
-                    ) : databaseTab === "config" ? (
-                      <DatabaseConfigPanel embedded />
-                    ) : (
-                      <DataBrowser
-                        embedded
-                        embeddedPath={databaseEmbeddedPath}
-                        embeddedRouteId={databaseEmbeddedRouteId}
-                        embeddedRouteName={databaseEmbeddedRouteName}
-                        hideTableSelector={isLiveMode && databaseDataOnlyMode}
-                        hideListFieldControls={isLiveMode && databaseDataOnlyMode}
-                        useWhiteBackground={useLightLiveDataSurface}
-                      />
-                    )}
                   </div>
-                </div>
                 </div>
               ) : drawerView === "reports" ? (
                 <div style={drawerContentShellStyle}>
@@ -13224,6 +14397,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
               </button>
               <button
                 className="top-menu-btn"
+                title="Circle"
+                style={topMenuModeButtonStyle(tool === "circle")}
+                onClick={() => {
+                  setTool("circle");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </button>
+              <button
+                className="top-menu-btn"
                 title="Text"
                 style={topMenuModeButtonStyle(tool === "text")}
                 onClick={() => {
@@ -13358,8 +14546,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
           >
             {liveMenuMobileItems.length ? (
               liveMenuMobileItems.map(({ groupName, item }, idx) => {
-                const isData = item?.type === "data";
-                const screen = !isData ? screens.find((s) => s.id === item.screenId) || null : null;
+                const itemType = String(item?.type || "").trim().toLowerCase();
+                const isData = itemType === "data";
+                const isReports = itemType === "reports";
+                const screen = itemType === "screen" ? screens.find((s) => s.id === item.screenId) || null : null;
                 const label = resolveLiveMenuItemLabel(item, screen);
                 const active = isData
                   ? showMainDrawer &&
@@ -13367,6 +14557,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     (String(item?.dataTable || "").trim()
                       ? String(item?.dataTable || "").trim() === activeDatabaseTable
                       : true)
+                  : isReports
+                  ? showMainDrawer && drawerView === "reports"
                   : String(item?.screenId || "") === String(activeScreenId);
                 const locked = !canOpenLiveMenuItem(item);
                 const initials = label
@@ -13375,7 +14567,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   .join(" ")
                   .replace(/[^a-zA-Z0-9]/g, "")
                   .slice(0, 3)
-                  .toUpperCase() || (isData ? "DAT" : "SCR");
+                  .toUpperCase() || (isData ? "DAT" : isReports ? "RPT" : "SCR");
                 return (
                   <button
                     key={`live-menu-mobile-item-${item?.id || idx}`}
@@ -13570,30 +14762,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
               gap: 4,
             }}
           >
-            {liveMenuIsExpanded ? (
-              <button
-                title={showZoom ? "Hide zoom controls" : "Show zoom controls"}
-                onClick={() => setShowZoom((v) => !v)}
-                style={{
-                  width: isLiveMobile ? 28 : 24,
-                  height: isLiveMobile ? 28 : 24,
-                  borderRadius: 7,
-                  border: "1px solid var(--border)",
-                  background: showZoom ? "var(--selected-bg)" : "transparent",
-                  color: showZoom ? "var(--selected-text)" : "var(--text)",
-                  display: "grid",
-                  placeItems: "center",
-                  cursor: "pointer",
-                  flex: "0 0 auto",
-                  padding: 0,
-                }}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
-                  <path d="M20 20l-4.2-4.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                </svg>
-              </button>
-            ) : null}
+            {null}
 	            <button
 	              onClick={() => setLiveMenuCollapsed((v) => !v)}
 	              title={liveMenuCollapsed ? "Expand menu" : "Collapse menu"}
@@ -13779,8 +14948,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     </button>
                   )}
                   {!groupCollapsed && group.items.map((item) => {
-                    const isData = item.type === "data";
-                    const screen = !isData ? screens.find((s) => s.id === item.screenId) || null : null;
+                    const itemType = String(item?.type || "").trim().toLowerCase();
+                    const isData = itemType === "data";
+                    const isReports = itemType === "reports";
+                    const isScreen = itemType === "screen";
+                    const screen = isScreen ? screens.find((s) => s.id === item.screenId) || null : null;
                     const label = resolveLiveMenuItemLabel(item, screen);
                     const active = isData
                       ? showMainDrawer &&
@@ -13788,6 +14960,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         (String(item.dataTable || "").trim()
                           ? String(item.dataTable || "").trim() === activeDatabaseTable
                           : true)
+                      : isReports
+                      ? showMainDrawer && drawerView === "reports"
                       : String(item.screenId || "") === String(activeScreenId);
                     const locked = !canOpenLiveMenuItem(item);
                     const initials = label
@@ -13796,9 +14970,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
                       .join(" ")
                       .replace(/[^a-zA-Z0-9]/g, "")
                       .slice(0, 3)
-                      .toUpperCase() || (isData ? "DAT" : "SCR");
+                      .toUpperCase() || (isData ? "DAT" : isReports ? "RPT" : "SCR");
                     const collapsedHover = !liveMenuIsExpanded && liveMenuHoverItemId === String(item.id || "");
-                    const showJobFormBtn = liveMenuIsExpanded && !isData;
+                    const showJobFormBtn = liveMenuIsExpanded && isScreen;
                     return (
                       <div
                         key={`live-menu-item-${item.id}`}
@@ -13814,7 +14988,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         <button
                           onClick={locked ? undefined : () => activateLiveMenuItem(item)}
                           onDoubleClick={(e) => {
-                            if (liveMenuIsExpanded || isData) return;
+                            if (liveMenuIsExpanded || !isScreen) return;
                             e.preventDefault();
                             e.stopPropagation();
                             if (locked) return;
@@ -13889,7 +15063,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                           title={
                             locked
                               ? `${label} (Locked)`
-                              : !liveMenuIsExpanded && !isData
+                              : !liveMenuIsExpanded && isScreen
                               ? `${label} (Double-click for Job Form)`
                               : label
                           }
@@ -14002,6 +15176,182 @@ const CONTENT_FIT_HEADROOM = 0.94;
               </div>
             )}
           </div>
+          {showZoom ? (
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                padding: liveMenuIsExpanded ? "6px 8px" : "6px",
+                display: "grid",
+                gap: 6,
+                background: "color-mix(in srgb, var(--bg-elev) 94%, #0b1c36 6%)",
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: liveMenuIsExpanded ? "repeat(3, minmax(0, 1fr))" : "1fr",
+                  gap: 6,
+                  justifyItems: "center",
+                }}
+              >
+                {[
+                  {
+                    key: "zoom-in",
+                    title: "Zoom In",
+                    onClick: zoomIn,
+                    holdAction: zoomIn,
+                    icon: (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                        <path d="M11 8v6M8 11h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M16 16l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    ),
+                  },
+                  {
+                    key: "zoom-out",
+                    title: "Zoom Out",
+                    onClick: zoomOut,
+                    holdAction: zoomOut,
+                    icon: (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                        <path d="M8 11h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M16 16l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    ),
+                  },
+                  {
+                    key: "zoom-reset",
+                    title: "Reset Zoom (100%)",
+                    onClick: zoomReset,
+                    icon: (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M6 8a7 7 0 1 1-1 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M6 4v4h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ),
+                  },
+                  {
+                    key: "zoom-fullscreen",
+                    title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
+                    onClick: toggleAppFullscreen,
+                    icon: isAppFullscreen ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M8 8h8v8H8z" stroke="currentColor" strokeWidth="2" />
+                      </svg>
+                    ),
+                  },
+                  {
+                    key: "zoom-hide",
+                    title: "Hide Zoom",
+                    onClick: () => setShowZoom(false),
+                    icon: (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                      </svg>
+                    ),
+                  },
+                ].map((btn) => (
+                  <button
+                    key={btn.key}
+                    type="button"
+                    title={btn.title}
+                    disabled={Boolean(btn.disabled)}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => {
+                      if (btn.disabled) return;
+                      if (btn.holdAction) {
+                        startZoomHold(btn.holdAction, e);
+                        return;
+                      }
+                      e.stopPropagation();
+                    }}
+                    onPointerUp={() => {
+                      if (btn.holdAction) stopZoomHold();
+                    }}
+                    onPointerCancel={() => {
+                      if (btn.holdAction) stopZoomHold();
+                    }}
+                    onPointerLeave={() => {
+                      if (btn.holdAction) stopZoomHold();
+                    }}
+                    onClick={btn.holdAction ? undefined : btn.onClick}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-elev)",
+                      color: "var(--text)",
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.14)",
+                      display: "grid",
+                      placeItems: "center",
+                      lineHeight: 0,
+                      padding: 0,
+                      cursor: btn.disabled ? "not-allowed" : "pointer",
+                      opacity: btn.disabled ? 0.58 : 1,
+                    }}
+                  >
+                    <span style={{ display: "grid", placeItems: "center", width: 14, height: 14 }}>{btn.icon}</span>
+                  </button>
+                ))}
+              </div>
+              {liveMenuIsExpanded ? (
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: "var(--text-muted)",
+                    textAlign: "center",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  Zoom {Math.round((zoom || 1) * 100)}%
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                padding: liveMenuIsExpanded ? "6px 8px" : "6px 4px",
+                display: "grid",
+                justifyItems: "center",
+                background: "color-mix(in srgb, var(--bg-elev) 94%, #0b1c36 6%)",
+              }}
+            >
+              <button
+                type="button"
+                title="Show zoom controls"
+                onClick={() => setShowZoom(true)}
+                style={{
+                  width: liveMenuIsExpanded ? 30 : 24,
+                  height: liveMenuIsExpanded ? 30 : 24,
+                  borderRadius: liveMenuIsExpanded ? 9 : 8,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-elev)",
+                  color: "var(--text)",
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.14)",
+                  display: "grid",
+                  placeItems: "center",
+                  lineHeight: 0,
+                  padding: 0,
+                  cursor: "pointer",
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                  <path d="M20 20l-4.2-4.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+          )}
         </div>
       ) : null}
 
@@ -14672,7 +16022,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </button>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  Build grouped live menu entries from canvas screens or data tables.
+                  Build grouped live menu entries from canvas screens, data tables, or reports.
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Menu changes save automatically.
@@ -14702,7 +16052,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         alignSelf: "start",
                       }}
                     >
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 6, alignItems: "center" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 6, alignItems: "center" }}>
                         <input
                           value={group.name}
                           onChange={(e) => renameLiveMenuGroup(group.id, e.target.value)}
@@ -14730,6 +16080,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
                           title="Add Data Screen Item"
                         >
                           + Data
+                        </button>
+                        <button
+                          onClick={() => addLiveMenuItem(group.id, "reports")}
+                          style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 8px" }}
+                          title="Add Reports Item"
+                        >
+                          + Reports
                         </button>
                       </div>
                       <div style={{ display: "grid", gap: 6 }}>
@@ -14762,6 +16119,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                             >
                               <option value="screen">Canvas</option>
                               <option value="data">Data</option>
+                              <option value="reports">Reports</option>
                             </select>
                             {item.type === "data" ? (
                               <select
@@ -14787,6 +16145,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
                                   <option value="">No tables</option>
                                 )}
                               </select>
+                            ) : item.type === "reports" ? (
+                              <div
+                                style={{
+                                  border: "1px solid var(--border)",
+                                  background: "var(--bg)",
+                                  color: "var(--text-muted)",
+                                  borderRadius: 6,
+                                  padding: "5px 6px",
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                }}
+                                title="Opens Reports drawer"
+                              >
+                                Reports Page
+                              </div>
                             ) : (
                               <select
                                 value={item.screenId || ""}
@@ -15251,7 +16624,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         </button>
       ) : null}
 
-      {!showZoom && !(isLiveMode && isLiveMobile) && (
+      {!showZoom && !isLiveMode && (
         <button
           title="Show Zoom"
           onClick={() => setShowZoom(true)}
@@ -15279,4 +16652,5 @@ const CONTENT_FIT_HEADROOM = 0.94;
     </div>
   );
 }
+
 

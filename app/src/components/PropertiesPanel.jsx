@@ -248,6 +248,7 @@ export default function PropertiesPanel({
   setHudFields,
   applySingleId,
   applySingleTagPath,
+  applySingleEType,
   applySingleFill,
   applySingleStroke,
   applySingleSvgStrokeWidth,
@@ -270,6 +271,7 @@ export default function PropertiesPanel({
   applySingleWidgetSettings,
 
   opcTags,
+  svgETypeOptions,
   duplicateOffset,
   setDuplicateOffset,
   bounds,
@@ -344,6 +346,7 @@ export default function PropertiesPanel({
   latest.current = {
     applySingleId,
     applySingleTagPath,
+    applySingleEType,
     applySingleFill,
     applySingleStroke,
     applySingleSvgStrokeWidth,
@@ -362,6 +365,25 @@ export default function PropertiesPanel({
     applySingleTextAlign,
     applySingleWidgetSettings,
   };
+
+  const svgETypeSelectOptions = useMemo(() => {
+    const values = Array.isArray(svgETypeOptions) ? svgETypeOptions : [];
+    const seen = new Set();
+    const out = [{ value: "", label: "Select eType" }];
+    for (const raw of values) {
+      const value = String(raw || "").trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ value, label: value });
+    }
+    const current = String(hudFields?.eType || "").trim();
+    if (current && !seen.has(current.toLowerCase())) {
+      out.push({ value: current, label: current });
+    }
+    return out;
+  }, [svgETypeOptions, hudFields?.eType]);
 
   // ✅ refresh bbox draft when hudFields x/y/w/h update
   useEffect(() => {
@@ -492,6 +514,7 @@ export default function PropertiesPanel({
   const isWidget = isSingle && singleKind === "Widget";
   const isPoly = isSingle && singleKind === "Polyline";
   const isText = isSingle && singleKind === "Text";
+  const isShapeGroup = !isSingle && (Array.isArray(selectedIds) ? selectedIds.length : 0) > 0;
 
   const arrowOptions = [
     { value: "none", label: "None" },
@@ -687,6 +710,7 @@ export default function PropertiesPanel({
       a.applySingleTagPath?.(next.tagPath);
 
       if (isSvg) {
+        a.applySingleEType?.(next.eType);
         a.applySingleSvgStrokeWidth?.(next.strokeWidth);
         a.applySingleFaultSim?.(Boolean(next.faultSimulated));
         const w = Number.parseFloat(next.w);
@@ -704,6 +728,7 @@ export default function PropertiesPanel({
 
       if (isPoly) {
         a.applySingleStroke?.(next.stroke);
+        a.applySingleFill?.(next.fill);
         a.applySingleArrowStart?.(next.arrowStart ?? "none");
         a.applySingleArrowEnd?.(next.arrowEnd ?? "none");
         a.applySingleLineStyle?.(next.lineStyle ?? "solid");
@@ -882,6 +907,18 @@ export default function PropertiesPanel({
             {/* SVG */}
             {isSvg && (
               <>
+                <SelectRow
+                  label="eType"
+                  value={hudFields.eType ?? ""}
+                  onChange={(v) => {
+                    setHudFields((p) => ({ ...p, eType: v }));
+                    applySingleEType?.(v);
+                  }}
+                  onBlur={() => {}}
+                  options={svgETypeSelectOptions}
+                  searchable
+                  searchPlaceholder="Search eType..."
+                />
                 <SelectRow
                   label="UDT"
                   value={svgTemplateKey || svgTemplateOptions?.[0]?.value || ""}
@@ -1342,6 +1379,18 @@ export default function PropertiesPanel({
                 onBlur={() => {
                   if (!isSvg) applySingleStroke(hudFields.stroke);
                 }}
+                placeholder="#111111"
+              />
+            )}
+
+            {(isPoly || isShapeGroup) && (
+              <Row
+                label="Fill"
+                type="color"
+                showHex
+                value={hudFields.fill}
+                onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
+                onBlur={() => applySingleFill?.(hudFields.fill)}
                 placeholder="#111111"
               />
             )}

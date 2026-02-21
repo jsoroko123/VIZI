@@ -148,6 +148,7 @@ export default function ReportDesigner({
   embedded = false,
   datasetOnly = false,
   titleOverride = "",
+  hideEditorTitle = false,
 }) {
   function readDefaultLogo() {
     try {
@@ -263,13 +264,30 @@ export default function ReportDesigner({
   }, [lockEditorTab, datasetOnly, initialEditorTab, editorTab]);
 
   const rootStyle = embedded
-    ? { position: "relative", width: "100%", height: "100%", background: "var(--bg)", color: "var(--text)", overflow: "hidden" }
-    : { position: "fixed", inset: 0, background: "var(--bg)", color: "var(--text)", overflow: "hidden" };
+    ? {
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        background: "var(--bg-elev)",
+        color: "var(--text)",
+        overflow: "hidden",
+        padding: 10,
+        boxSizing: "border-box",
+        fontFamily: "system-ui, Avenir, Helvetica, Arial, sans-serif",
+      }
+    : {
+        position: "fixed",
+        inset: 0,
+        background: "var(--bg-elev)",
+        color: "var(--text)",
+        overflow: "hidden",
+        fontFamily: "system-ui, Avenir, Helvetica, Arial, sans-serif",
+      };
   const editorTitle = String(titleOverride || "").trim() || (datasetOnly ? "Dataset Builder" : "Report Designer");
   const workspaceColumns = datasetOnly ? "1fr" : `${editorWidth}px 8px 1fr`;
   const compactDatasetLayout = datasetOnly;
-  const datasetGap = compactDatasetLayout ? 6 : 8;
-  const datasetControlPadding = compactDatasetLayout ? "6px 8px" : "8px 10px";
+  const datasetGap = compactDatasetLayout ? 10 : 8;
+  const datasetControlPadding = compactDatasetLayout ? "8px 10px" : "8px 10px";
 
   const activeReport = useMemo(
     () => reports.find((r) => String(r.id) === String(activeReportId || "")) || null,
@@ -2573,8 +2591,18 @@ export default function ReportDesigner({
     ) : (
     <div className="report-designer-root" style={rootStyle}>
       <div style={{ height: "100%", display: "grid", gridTemplateColumns: workspaceColumns, gap: 0, padding: 0, boxSizing: "border-box" }}>
-        <div style={{ border: "1px solid var(--border)", borderRadius: 0, background: "var(--bg-elev)", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0, minWidth: 0 }}>
-          <div style={{ padding: "12px 12px 0", fontSize: 18, fontWeight: 800, marginBottom: 10 }}>{editorTitle}</div>
+        <div style={{ border: "1px solid var(--border)", borderRadius: embedded ? 12 : 0, background: "var(--bg-elev)", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0, minWidth: 0 }}>
+          {!hideEditorTitle ? (
+            <div
+              style={
+                datasetOnly
+                  ? { padding: "10px 12px 0", fontSize: 16, fontWeight: 800, marginBottom: 10, fontFamily: "inherit" }
+                  : { padding: "12px 12px 0", fontSize: 18, fontWeight: 800, marginBottom: 10 }
+              }
+            >
+              {editorTitle}
+            </div>
+          ) : null}
           {!hideTopTabs ? (
           <div style={{ padding: "0 12px 10px", display: "flex", gap: 8 }}>
             <button
@@ -2616,7 +2644,7 @@ export default function ReportDesigner({
             </button>
           </div>
           ) : null}
-          <div style={{ display: "grid", gap: datasetGap, padding: compactDatasetLayout ? "0 8px 8px" : "0 12px 12px", overflowY: "auto", overflowX: "hidden", minHeight: 0, flex: "1 1 auto", position: "relative", minWidth: 0 }}>
+          <div style={{ display: "grid", gap: datasetGap, padding: compactDatasetLayout ? "8px 10px 10px" : "0 12px 12px", overflowY: "auto", overflowX: "hidden", minHeight: 0, flex: "1 1 auto", position: "relative", minWidth: 0 }}>
             {editorTab === "datasets" ? (
               <div
                 style={{
@@ -2627,7 +2655,7 @@ export default function ReportDesigner({
                   display: "grid",
                   gap: datasetGap,
                   alignContent: "start",
-                  padding: compactDatasetLayout ? "0 8px 8px" : "0 12px 12px",
+                  padding: compactDatasetLayout ? "8px 10px 10px" : "0 12px 12px",
                   overflowY: "auto",
                   overflowX: "hidden",
                   boxSizing: "border-box",

@@ -69,11 +69,27 @@ app.use((err, _req, res, next) => {
   next(err);
 });
 
-const DATABASE_URL = process.env.DATABASE_URL || "";
+let DATABASE_URL = process.env.DATABASE_URL || "";
+let DB_POOL_MAX = Math.max(1, Number.parseInt(String(process.env.DB_POOL_MAX || "10"), 10) || 10);
 const DB_POOL_MAX_LISTENERS = Math.max(
   20,
   Number.parseInt(String(process.env.DB_POOL_MAX_LISTENERS || "100"), 10) || 100
 );
+const APP_PACKAGE_JSON_PATH = path.resolve(REPO_ROOT, "package.json");
+const APP_VERSION = (() => {
+  const envVersion = String(process.env.APP_VERSION || "").trim();
+  if (envVersion) return envVersion;
+  try {
+    const text = String(fs.readFileSync(APP_PACKAGE_JSON_PATH, "utf8") || "").trim();
+    const parsed = text ? JSON.parse(text) : {};
+    const pkgVersion = String(parsed?.version || "").trim();
+    return pkgVersion || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
+const EXPECTED_DB_VERSION = String(process.env.DB_SCHEMA_VERSION || APP_VERSION).trim() || APP_VERSION;
+const AUTO_ALIGN_DB_VERSION = String(process.env.AUTO_ALIGN_DB_VERSION || "true").trim().toLowerCase() !== "false";
 
 function quoteIdent(name) {
   const safe = /^[a-zA-Z0-9_]+$/.test(name);
@@ -170,9 +186,9 @@ function parseDatabaseConnectionInfo(connectionString) {
   }
 }
 
-async function ensureDatabaseExists() {
-  if (!DATABASE_URL) return;
-  const url = new URL(DATABASE_URL);
+async function ensureDatabaseExists(connectionString = DATABASE_URL) {
+  if (!connectionString) return;
+  const url = new URL(connectionString);
   const dbName = url.pathname.replace("/", "");
   if (!dbName) return;
 
@@ -241,12 +257,12 @@ const OPC_TREND_RETENTION_MS = Math.max(
     7 * 24 * 60 * 60 * 1000
 );
 const PROJECT_VERSION_KEEP_PER_PROJECT = Math.max(
-  25,
-  Number.parseInt(process.env.PROJECT_VERSION_KEEP_PER_PROJECT || "250", 10) || 250
+  10,
+  Number.parseInt(process.env.PROJECT_VERSION_KEEP_PER_PROJECT || "25", 10) || 25
 );
 const PROJECT_VERSION_MIN_INTERVAL_MS = Math.max(
   1000,
-  Number.parseInt(process.env.PROJECT_VERSION_MIN_INTERVAL_MS || "12000", 10) || 12000
+  Number.parseInt(process.env.PROJECT_VERSION_MIN_INTERVAL_MS || "30000", 10) || 30000
 );
 const PROJECT_VERSION_MAINTENANCE_MS = Math.max(
   30000,
@@ -257,11 +273,39 @@ const PROJECT_VERSION_COMPACT_BATCH = Math.max(
   Number.parseInt(process.env.PROJECT_VERSION_COMPACT_BATCH || "12", 10) || 12
 );
 const PROJECT_VERSION_CODEC = "json-gzip-v1";
+const PROJECT_VERSION_KEEP_MIN_PER_PROJECT = Math.max(
+  1,
+  Math.min(
+    PROJECT_VERSION_KEEP_PER_PROJECT,
+    Number.parseInt(process.env.PROJECT_VERSION_KEEP_MIN_PER_PROJECT || "8", 10) || 8
+  )
+);
+const PROJECT_VERSION_KEEP_BYTES_PER_PROJECT = Math.max(
+  8 * 1024 * 1024,
+  Number.parseInt(
+    process.env.PROJECT_VERSION_KEEP_BYTES_PER_PROJECT || `${128 * 1024 * 1024}`,
+    10
+  ) || 128 * 1024 * 1024
+);
 const TREND_CODEC = "json-gzip-v1";
 const trendBuffers = new Map();
 let trendLastCleanupAt = 0;
 let trendTagConfigCache = { loadedAt: 0, map: null };
 let projectVersionMaintenanceInFlight = false;
+let dbMaintenanceInFlight = false;
+const DB_MAINTENANCE_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.DB_MAINTENANCE_MS || `${5 * 60 * 1000}`, 10) || 5 * 60 * 1000
+);
+const SUPPORT_CHAT_RETENTION_MS = Math.max(
+  24 * 60 * 60 * 1000,
+  Number.parseInt(process.env.SUPPORT_CHAT_RETENTION_MS || `${90 * 24 * 60 * 60 * 1000}`, 10) ||
+    90 * 24 * 60 * 60 * 1000
+);
+const SUPPORT_CHAT_MAX_ROWS = Math.max(
+  1000,
+  Number.parseInt(process.env.SUPPORT_CHAT_MAX_ROWS || "50000", 10) || 50000
+);
 const DEFAULT_OPC_CONFIG = {
   plcs: [],
   opcua: { port: 4840, resourcePath: "/UA/ControlLogix", name: "ControlLogix" },
@@ -3573,18 +3617,33 @@ async function pruneProjectVersions(projectId) {
   if (!pid || !pool) return 0;
   const { rowCount } = await pool.query(
     `
-    WITH keep AS (
-      SELECT id
+    WITH ranked AS (
+      SELECT
+        id,
+        ROW_NUMBER() OVER (ORDER BY saved_at DESC, id DESC) AS rn,
+        SUM(
+          COALESCE(octet_length(previous_data_gz), 0)::bigint +
+          COALESCE(octet_length(next_data_gz), 0)::bigint
+        ) OVER (ORDER BY saved_at DESC, id DESC) AS cum_bytes
       FROM project_versions
       WHERE project_id = $1
-      ORDER BY saved_at DESC, id DESC
-      LIMIT $2
+    ),
+    keep AS (
+      SELECT id
+      FROM ranked
+      WHERE rn <= $2
+        AND (cum_bytes <= $3 OR rn <= $4)
     )
     DELETE FROM project_versions pv
     WHERE pv.project_id = $1
       AND NOT EXISTS (SELECT 1 FROM keep k WHERE k.id = pv.id)
     `,
-    [pid, PROJECT_VERSION_KEEP_PER_PROJECT]
+    [
+      pid,
+      PROJECT_VERSION_KEEP_PER_PROJECT,
+      PROJECT_VERSION_KEEP_BYTES_PER_PROJECT,
+      PROJECT_VERSION_KEEP_MIN_PER_PROJECT,
+    ]
   );
   return Number(rowCount || 0);
 }
@@ -3732,11 +3791,20 @@ async function runProjectVersionMaintenance() {
 
     const { rows: projectRows } = await pool.query(
       `
-      SELECT DISTINCT project_id
+      SELECT project_id
       FROM project_versions
-      ORDER BY project_id
-      LIMIT 200
+      GROUP BY project_id
+      HAVING
+        COUNT(*) > $1
+        OR SUM(
+          COALESCE(octet_length(previous_data_gz), 0)::bigint +
+          COALESCE(octet_length(next_data_gz), 0)::bigint
+        ) > $2
+      ORDER BY MAX(saved_at) DESC
+      LIMIT 500
       `
+      ,
+      [PROJECT_VERSION_KEEP_PER_PROJECT, PROJECT_VERSION_KEEP_BYTES_PER_PROJECT]
     );
     for (const row of projectRows) {
       const pid = String(row?.project_id || "").trim();
@@ -3747,6 +3815,160 @@ async function runProjectVersionMaintenance() {
     // ignore maintenance errors
   } finally {
     projectVersionMaintenanceInFlight = false;
+  }
+}
+
+function parseDatabaseUrlObject(connectionString) {
+  const raw = String(connectionString || "").trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw);
+  } catch {
+    return null;
+  }
+}
+
+function upsertEnvVar(filePath, key, value) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return;
+  const nextValue = String(value ?? "");
+  let text = "";
+  if (fs.existsSync(filePath)) {
+    text = String(fs.readFileSync(filePath, "utf8") || "");
+  }
+  const lines = text.split(/\r?\n/);
+  const re = new RegExp(`^\\s*${normalizedKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*=`);
+  let found = false;
+  const nextLines = lines.map((line) => {
+    if (!found && re.test(line)) {
+      found = true;
+      return `${normalizedKey}=${nextValue}`;
+    }
+    return line;
+  });
+  if (!found) nextLines.push(`${normalizedKey}=${nextValue}`);
+  const nextText = `${nextLines.join("\n").replace(/\n+$/, "")}\n`;
+  fs.writeFileSync(filePath, nextText, "utf8");
+}
+
+async function rebuildDatabasePool(connectionString, poolMax = DB_POOL_MAX) {
+  const safeConn = String(connectionString || "").trim();
+  if (!safeConn) throw new Error("DATABASE_URL is required.");
+  const nextPool = new Pool({
+    connectionString: safeConn,
+    max: Math.max(1, Number.parseInt(String(poolMax || DB_POOL_MAX), 10) || DB_POOL_MAX),
+  });
+  if (typeof nextPool.setMaxListeners === "function") {
+    nextPool.setMaxListeners(DB_POOL_MAX_LISTENERS);
+  }
+  try {
+    await nextPool.query("SELECT 1");
+  } catch (err) {
+    await nextPool.end().catch(() => {});
+    throw err;
+  }
+
+  const oldPool = pool;
+  pool = nextPool;
+  DATABASE_URL = safeConn;
+  DB_POOL_MAX = Math.max(1, Number.parseInt(String(poolMax || DB_POOL_MAX), 10) || DB_POOL_MAX);
+  process.env.DATABASE_URL = DATABASE_URL;
+  process.env.DB_POOL_MAX = String(DB_POOL_MAX);
+  if (oldPool) {
+    oldPool.end().catch(() => {});
+  }
+}
+
+async function ensureSystemVersionState() {
+  if (!pool) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS system_version_state (
+      id SMALLINT PRIMARY KEY,
+      app_version TEXT NOT NULL,
+      db_version TEXT NOT NULL,
+      expected_db_version TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(
+    `
+    INSERT INTO system_version_state (id, app_version, db_version, expected_db_version, updated_at)
+    VALUES (1, $1, $2, $2, now())
+    ON CONFLICT (id) DO NOTHING;
+  `,
+    [APP_VERSION, EXPECTED_DB_VERSION]
+  );
+  await pool.query(
+    `
+    UPDATE system_version_state
+    SET app_version = $1,
+        expected_db_version = $2,
+        db_version = CASE WHEN $3 THEN $2 ELSE db_version END,
+        updated_at = now()
+    WHERE id = 1;
+  `,
+    [APP_VERSION, EXPECTED_DB_VERSION, AUTO_ALIGN_DB_VERSION]
+  );
+}
+
+async function getSystemVersionState() {
+  if (!pool) {
+    return {
+      appVersion: APP_VERSION,
+      dbVersion: "",
+      expectedDbVersion: EXPECTED_DB_VERSION,
+      aligned: false,
+      autoAlign: AUTO_ALIGN_DB_VERSION,
+      updatedAt: "",
+    };
+  }
+  await ensureSystemVersionState();
+  const result = await pool.query(
+    "SELECT app_version, db_version, expected_db_version, updated_at::text AS updated_at FROM system_version_state WHERE id = 1 LIMIT 1"
+  );
+  const row = result.rows?.[0] || {};
+  const appVersion = String(row?.app_version || APP_VERSION);
+  const dbVersion = String(row?.db_version || "");
+  const expectedDbVersion = String(row?.expected_db_version || EXPECTED_DB_VERSION);
+  const aligned = !!dbVersion && dbVersion === expectedDbVersion && appVersion === APP_VERSION;
+  return {
+    appVersion,
+    dbVersion,
+    expectedDbVersion,
+    aligned,
+    autoAlign: AUTO_ALIGN_DB_VERSION,
+    updatedAt: String(row?.updated_at || ""),
+  };
+}
+
+async function runDatabaseMaintenance() {
+  if (!pool || dbMaintenanceInFlight) return;
+  dbMaintenanceInFlight = true;
+  try {
+    await pool.query("DELETE FROM user_sessions WHERE expires_at < now()");
+
+    const chatCutoff = new Date(Date.now() - SUPPORT_CHAT_RETENTION_MS).toISOString();
+    await pool.query("DELETE FROM support_chat_messages WHERE created_at < $1::timestamptz", [chatCutoff]);
+    await pool.query(
+      `
+      WITH keep AS (
+        SELECT id
+        FROM support_chat_messages
+        ORDER BY created_at DESC, id DESC
+        LIMIT $1
+      )
+      DELETE FROM support_chat_messages m
+      WHERE NOT EXISTS (SELECT 1 FROM keep k WHERE k.id = m.id)
+      `,
+      [SUPPORT_CHAT_MAX_ROWS]
+    );
+
+    const trendCutoff = Date.now() - OPC_TREND_RETENTION_MS;
+    await pool.query("DELETE FROM opc_tag_trend_chunks WHERE to_ts < $1", [trendCutoff]);
+  } catch {
+    // ignore maintenance errors
+  } finally {
+    dbMaintenanceInFlight = false;
   }
 }
 
@@ -3959,9 +4181,14 @@ app.get("/api/opc/config", async (_req, res) => {
         try {
           const fileStat = fs.statSync(OPC_CONFIG_PATH);
           const fileUpdatedAtMs = fileStat?.mtimeMs || 0;
-          if (fileUpdatedAtMs > dbUpdatedAtMs) {
-            const raw = fs.readFileSync(OPC_CONFIG_PATH, "utf-8");
-            const parsed = JSON.parse(raw || "{}");
+          const raw = fs.readFileSync(OPC_CONFIG_PATH, "utf-8");
+          const parsed = JSON.parse(raw || "{}");
+          const dbTags = Array.isArray(row?.config?.tags) ? row.config.tags : [];
+          const fileTags = Array.isArray(parsed?.tags) ? parsed.tags : [];
+          // Prefer DB as source of truth once it has tags.
+          // Only recover from file when DB tags are empty and file has tags.
+          const shouldPreferFile = dbTags.length === 0 && fileTags.length > 0;
+          if (shouldPreferFile) {
             await pool.query(
               "INSERT INTO opc_config (id, config) VALUES (1, $1::jsonb) ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now()",
               [JSON.stringify(parsed)]
@@ -3999,6 +4226,59 @@ app.post("/api/opc/config", async (req, res) => {
       "INSERT INTO opc_config (id, config) VALUES (1, $1::jsonb) ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now()",
       [JSON.stringify(next)]
     );
+    const tags = Array.isArray(next?.tags) ? next.tags : [];
+    const equipmentByTagPath = new Map();
+    for (const tag of tags) {
+      const topic = String(tag?.topic || "").trim();
+      const group = String(tag?.groupName || "").trim();
+      if (!topic || !group) continue;
+      const tagPath = `${topic}.${group}`;
+      const key = String(tagPath).toLowerCase();
+      if (equipmentByTagPath.has(key)) continue;
+      const fallbackName = String(group || topic).trim();
+      const type = String(tag?.plcType || tag?.uaType || "").trim();
+      equipmentByTagPath.set(key, {
+        tagPath,
+        name: fallbackName,
+        type,
+      });
+    }
+    await pool.query("BEGIN");
+    try {
+      for (const row of equipmentByTagPath.values()) {
+        await pool.query(
+          `
+          INSERT INTO equipment (name, type, visible, "new", tag_path, tag_sync_managed)
+          VALUES ($1, $2, true, false, $3, true)
+          ON CONFLICT (tag_path) DO UPDATE SET
+            name = CASE
+              WHEN COALESCE(NULLIF(TRIM(equipment.name), ''), '') = '' THEN EXCLUDED.name
+              ELSE equipment.name
+            END,
+            type = CASE
+              WHEN COALESCE(NULLIF(TRIM(equipment.type), ''), '') = '' THEN EXCLUDED.type
+              ELSE equipment.type
+            END,
+            tag_sync_managed = true
+          `,
+          [row.name, row.type, row.tagPath]
+        );
+      }
+      const activeTagPaths = Array.from(equipmentByTagPath.values()).map((row) => row.tagPath);
+      await pool.query(
+        `
+        DELETE FROM equipment
+        WHERE tag_sync_managed = true
+          AND COALESCE(NULLIF(TRIM(tag_path), ''), '') <> ''
+          AND NOT (tag_path = ANY($1::text[]))
+        `,
+        [activeTagPaths]
+      );
+      await pool.query("COMMIT");
+    } catch (syncErr) {
+      await pool.query("ROLLBACK");
+      throw syncErr;
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to save OPC config." });
@@ -5182,10 +5462,52 @@ app.delete("/api/opc/templates/:name", async (req, res) => {
   }
 });
 
+app.get("/api/system/version", async (_req, res) => {
+  try {
+    const state = await getSystemVersionState();
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load system version." });
+  }
+});
+
+app.put("/api/system/version/align", async (_req, res) => {
+  try {
+    await ensureSystemVersionState();
+    await pool.query(
+      `
+      UPDATE system_version_state
+      SET app_version = $1,
+          db_version = $2,
+          expected_db_version = $2,
+          updated_at = now()
+      WHERE id = 1
+    `,
+      [APP_VERSION, EXPECTED_DB_VERSION]
+    );
+    const state = await getSystemVersionState();
+    res.json({ ok: true, state });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to align system version." });
+  }
+});
+
 app.get("/api/db/config", async (_req, res) => {
   try {
     const connection = parseDatabaseConnectionInfo(DATABASE_URL);
+    const connectionUrl = parseDatabaseUrlObject(DATABASE_URL);
+    const editable = {
+      protocol: String(connectionUrl?.protocol || "postgres:").replace(/:$/, "") || "postgres",
+      host: String(connectionUrl?.hostname || "").trim(),
+      port: Number.isFinite(Number(connectionUrl?.port)) ? Number(connectionUrl.port) : 5432,
+      database: String(connectionUrl?.pathname || "").replace(/^\//, "").trim(),
+      user: decodeURIComponent(String(connectionUrl?.username || "").trim()),
+      passwordSet: String(connectionUrl?.password || "").trim().length > 0,
+      sslMode: String(connectionUrl?.searchParams?.get("sslmode") || "").trim(),
+      applicationName: String(connectionUrl?.searchParams?.get("application_name") || "").trim(),
+    };
     const poolInfo = {
+      configuredMax: DB_POOL_MAX,
       max: Number.isFinite(Number(pool?.options?.max)) ? Number(pool.options.max) : null,
       total: Number.isFinite(Number(pool?.totalCount)) ? Number(pool.totalCount) : 0,
       idle: Number.isFinite(Number(pool?.idleCount)) ? Number(pool.idleCount) : 0,
@@ -5233,8 +5555,11 @@ app.get("/api/db/config", async (_req, res) => {
       error = "Database pool is not initialized.";
     }
 
+    const versionState = await getSystemVersionState();
     res.json({
       connection,
+      editable,
+      versions: versionState,
       pool: poolInfo,
       health: {
         connected,
@@ -5255,6 +5580,75 @@ app.get("/api/db/config", async (_req, res) => {
   }
 });
 
+app.put("/api/db/config", async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const currentUrl = parseDatabaseUrlObject(DATABASE_URL);
+    if (!currentUrl) {
+      res.status(500).json({ error: "Current DATABASE_URL is invalid or not configured." });
+      return;
+    }
+
+    const incoming = body?.connection && typeof body.connection === "object" ? body.connection : {};
+    const protocol = String(incoming.protocol || currentUrl.protocol.replace(/:$/, "") || "postgres")
+      .trim()
+      .replace(/:$/, "");
+    const host = String(incoming.host || currentUrl.hostname || "").trim();
+    const database = String(incoming.database || currentUrl.pathname.replace(/^\//, "") || "").trim();
+    const user = String(incoming.user || decodeURIComponent(currentUrl.username || "") || "").trim();
+    const sslMode = String(
+      incoming.sslMode != null ? incoming.sslMode : currentUrl.searchParams.get("sslmode") || ""
+    ).trim();
+    const applicationName = String(
+      incoming.applicationName != null
+        ? incoming.applicationName
+        : currentUrl.searchParams.get("application_name") || ""
+    ).trim();
+    const nextPortRaw = incoming.port != null ? incoming.port : currentUrl.port || 5432;
+    const port = Number.parseInt(String(nextPortRaw), 10);
+    const nextPoolMax = Number.parseInt(String(body.poolMax != null ? body.poolMax : DB_POOL_MAX), 10);
+    const password = incoming.password != null ? String(incoming.password) : "";
+
+    if (!host || !database || !user || !Number.isFinite(port) || port <= 0 || port > 65535) {
+      res.status(400).json({ error: "Host, port, database, and user are required." });
+      return;
+    }
+    if (protocol !== "postgres" && protocol !== "postgresql") {
+      res.status(400).json({ error: "Protocol must be postgres or postgresql." });
+      return;
+    }
+    if (!Number.isFinite(nextPoolMax) || nextPoolMax < 1 || nextPoolMax > 200) {
+      res.status(400).json({ error: "poolMax must be between 1 and 200." });
+      return;
+    }
+
+    const nextUrl = new URL(currentUrl.toString());
+    nextUrl.protocol = `${protocol}:`;
+    nextUrl.hostname = host;
+    nextUrl.port = String(port);
+    nextUrl.pathname = `/${database}`;
+    nextUrl.username = user;
+    if (password.length > 0) {
+      nextUrl.password = password;
+    }
+    if (sslMode) nextUrl.searchParams.set("sslmode", sslMode);
+    else nextUrl.searchParams.delete("sslmode");
+    if (applicationName) nextUrl.searchParams.set("application_name", applicationName);
+    else nextUrl.searchParams.delete("application_name");
+
+    await ensureDatabaseExists(nextUrl.toString());
+    await rebuildDatabasePool(nextUrl.toString(), nextPoolMax);
+
+    const envPath = path.resolve(AI_SERVER_DIR, ".env");
+    upsertEnvVar(envPath, "DATABASE_URL", nextUrl.toString());
+    upsertEnvVar(envPath, "DB_POOL_MAX", String(nextPoolMax));
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to save database config." });
+  }
+});
+
 app.get("/api/db/diagnostics/postgres", async (_req, res) => {
   try {
     if (!pool) {
@@ -5270,7 +5664,7 @@ app.get("/api/db/diagnostics/postgres", async (_req, res) => {
       }
     };
 
-    const [settingsRes, activityRes, dbStatRes, sizeRes, bgwriterRes, walRes, locksRes, uptimeRes] = await Promise.all([
+    const [settingsRes, activityRes, dbStatRes, sizeRes, topTablesRes, bgwriterRes, walRes, locksRes, uptimeRes] = await Promise.all([
       safeQuery(
         `
         SELECT name, setting, unit
@@ -5329,6 +5723,20 @@ app.get("/api/db/diagnostics/postgres", async (_req, res) => {
       `),
       safeQuery(`
         SELECT
+          c.relname AS table_name,
+          COALESCE(s.n_live_tup, 0)::bigint AS est_rows,
+          pg_total_relation_size(c.oid)::bigint AS total_bytes,
+          pg_relation_size(c.oid)::bigint AS table_bytes,
+          pg_indexes_size(c.oid)::bigint AS index_bytes
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+        WHERE n.nspname = 'public' AND c.relkind = 'r'
+        ORDER BY pg_total_relation_size(c.oid) DESC
+        LIMIT 25
+      `),
+      safeQuery(`
+        SELECT
           checkpoints_timed::bigint,
           checkpoints_req::bigint,
           checkpoint_write_time::double precision,
@@ -5373,6 +5781,7 @@ app.get("/api/db/diagnostics/postgres", async (_req, res) => {
     const activity = activityRes.rows?.[0] || {};
     const dbStat = dbStatRes.rows?.[0] || {};
     const size = sizeRes.rows?.[0] || {};
+    const topTables = Array.isArray(topTablesRes.rows) ? topTablesRes.rows : [];
     const bgwriter = bgwriterRes.rows?.[0] || {};
     const wal = walRes.rows?.[0] || {};
     const locks = locksRes.rows?.[0] || {};
@@ -5384,6 +5793,7 @@ app.get("/api/db/diagnostics/postgres", async (_req, res) => {
       connections: activity,
       database: dbStat,
       size,
+      topTables,
       bgwriter,
       wal,
       locks,
@@ -5615,9 +6025,10 @@ app.post("/api/db/batch-first-values", async (req, res) => {
 app.get("/api/db/tables", async (_req, res) => {
   try {
     const q = `
-      SELECT table_name
+      SELECT DISTINCT table_name
       FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      WHERE table_schema = ANY(current_schemas(false))
+        AND table_type = 'BASE TABLE'
       ORDER BY table_name;
     `;
     const { rows } = await pool.query(q);
@@ -7304,10 +7715,11 @@ app.post("/api/ai/apply", async (req, res) => {
 
 async function start() {
   await ensureDatabaseExists();
-  pool = new Pool({ connectionString: DATABASE_URL });
+  pool = new Pool({ connectionString: DATABASE_URL, max: DB_POOL_MAX });
   if (typeof pool.setMaxListeners === "function") {
     pool.setMaxListeners(DB_POOL_MAX_LISTENERS);
   }
+  await ensureSystemVersionState();
   await ensureDesignerTablesFromSchema(pool);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ui_table_config (
@@ -7996,6 +8408,15 @@ async function start() {
     ALTER TABLE equipment
     ADD COLUMN IF NOT EXISTS tag_path TEXT;
   `);
+  await pool.query(`
+    ALTER TABLE equipment
+    ADD COLUMN IF NOT EXISTS tag_sync_managed BOOLEAN NOT NULL DEFAULT false;
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS equipment_tag_path_unique_idx
+    ON equipment(tag_path)
+    WHERE tag_path IS NOT NULL AND btrim(tag_path) <> '';
+  `);
   await pool.query(
     `
     INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
@@ -8009,6 +8430,53 @@ async function start() {
     [
       JSON.stringify(["name", "type", "floor", "groupNumber", "visible", "new", "tag_path"]),
       JSON.stringify(["name", "description", "type", "floor", "groupNumber", "visible", "new", "notes", "tag_path"]),
+    ]
+  );
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS etype (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL DEFAULT ''
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE etype
+    ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE etype
+    ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    INSERT INTO etype (name, description)
+    VALUES
+      ('Motor', 'Motor-driven equipment'),
+      ('Conveyor', 'Conveyor equipment'),
+      ('Bin', 'Storage bin equipment'),
+      ('Valve', 'Valve equipment'),
+      ('Fan', 'Fan or blower equipment')
+    ON CONFLICT DO NOTHING;
+  `);
+  await pool.query(`
+    INSERT INTO etype (name)
+    SELECT DISTINCT TRIM(type)
+    FROM equipment
+    WHERE COALESCE(TRIM(type), '') <> ''
+    ON CONFLICT DO NOTHING;
+  `);
+  await pool.query(
+    `
+    INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
+    VALUES (
+      'etype',
+      $1::jsonb,
+      $2::jsonb
+    )
+    ON CONFLICT (table_name) DO NOTHING
+    `,
+    [
+      JSON.stringify(["name", "description"]),
+      JSON.stringify(["name", "description"]),
     ]
   );
   await pool.query(`
@@ -8074,9 +8542,15 @@ async function start() {
   setTimeout(() => {
     void runProjectVersionMaintenance();
   }, 5000);
+  setTimeout(() => {
+    void runDatabaseMaintenance();
+  }, 7000);
   setInterval(() => {
     void runProjectVersionMaintenance();
   }, PROJECT_VERSION_MAINTENANCE_MS);
+  setInterval(() => {
+    void runDatabaseMaintenance();
+  }, DB_MAINTENANCE_MS);
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`AI server listening on http://localhost:${PORT}`);

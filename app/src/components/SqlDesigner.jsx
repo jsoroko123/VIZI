@@ -489,9 +489,9 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
         height: "100%",
         minHeight: 0,
         overflow: "auto",
-        padding: embedded ? 0 : 16,
+        padding: embedded ? 10 : 16,
         boxSizing: "border-box",
-        background: "var(--bg-soft)",
+        background: "var(--bg-elev)",
         color: "var(--text)",
       }}
     >
@@ -598,68 +598,75 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                   key={`new-col-${idx}`}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                    gap: 6,
-                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 0",
+                    borderBottom:
+                      idx < newTableColumns.length - 1
+                        ? "1px solid color-mix(in srgb, var(--border) 72%, transparent)"
+                        : "none",
                   }}
                 >
-                  <input
-                    style={{ ...inputStyle, width: "100%" }}
-                    value={col.name}
-                    placeholder="column_name"
-                    disabled={col.locked}
-                    onChange={(e) =>
-                      setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, name: e.target.value } : r)))
-                    }
-                  />
-                  <select
-                    style={{ ...inputStyle, width: "100%" }}
-                    value={col.type}
-                    disabled={col.locked}
-                    onChange={(e) =>
-                      setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, type: e.target.value } : r)))
-                    }
-                  >
-                    {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                  <input
-                    style={{ ...inputStyle, width: "100%" }}
-                    value={col.defaultValue}
-                    placeholder="default"
-                    disabled={col.locked}
-                    onChange={(e) =>
-                      setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, defaultValue: e.target.value } : r)))
-                    }
-                  />
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6 }}>
                     <input
-                      type="checkbox"
-                      checked={col.nullable}
+                      style={{ ...inputStyle, width: "100%" }}
+                      value={col.name}
+                      placeholder="column_name"
                       disabled={col.locked}
                       onChange={(e) =>
-                        setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, nullable: e.target.checked } : r)))
+                        setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, name: e.target.value } : r)))
                       }
                     />
-                    Nullable
-                  </label>
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                    <input
-                      type="checkbox"
-                      checked={col.primaryKey}
+                    <select
+                      style={{ ...inputStyle, width: "100%" }}
+                      value={col.type}
                       disabled={col.locked}
                       onChange={(e) =>
-                        setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, primaryKey: e.target.checked } : r)))
+                        setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, type: e.target.value } : r)))
+                      }
+                    >
+                      {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                    <input
+                      style={{ ...inputStyle, width: "100%" }}
+                      value={col.defaultValue}
+                      placeholder="default"
+                      disabled={col.locked}
+                      onChange={(e) =>
+                        setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, defaultValue: e.target.value } : r)))
                       }
                     />
-                    PK
-                  </label>
-                  <button
-                    style={{ ...buttonStyle, width: "100%" }}
-                    onClick={() => setNewTableColumns((prev) => prev.filter((_, i) => i !== idx))}
-                    disabled={Boolean(col.locked) || newTableColumns.length <= 3}
-                  >
-                    Remove
-                  </button>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={col.nullable}
+                        disabled={col.locked}
+                        onChange={(e) =>
+                          setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, nullable: e.target.checked } : r)))
+                        }
+                      />
+                      Nullable
+                    </label>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={col.primaryKey}
+                        disabled={col.locked}
+                        onChange={(e) =>
+                          setNewTableColumns((prev) => prev.map((r, i) => (i === idx ? { ...r, primaryKey: e.target.checked } : r)))
+                        }
+                      />
+                      PK
+                    </label>
+                    <button
+                      style={{ ...buttonStyle, marginLeft: "auto" }}
+                      onClick={() => setNewTableColumns((prev) => prev.filter((_, i) => i !== idx))}
+                      disabled={Boolean(col.locked) || newTableColumns.length <= 3}
+                    >
+                      Remove
+                    </button>
+                  </div>
                 </div>
               ))}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>

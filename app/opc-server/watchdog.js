@@ -72,6 +72,14 @@ function startChild() {
 
   child.on("exit", (code, signal) => {
     if (stopping) return;
+    if (!signal && Number(code) === 72) {
+      // Fatal startup conflict (e.g., OPC UA port already in use). Do not restart-loop.
+      // eslint-disable-next-line no-console
+      console.error("[watchdog] opc-server exited with fatal port-conflict code 72. Not restarting.");
+      releaseLock();
+      process.exit(72);
+      return;
+    }
     const ranForMs = Date.now() - childStartedAt;
     if (ranForMs >= 30000) {
       restartDelayMs = 1000;

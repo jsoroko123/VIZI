@@ -28,12 +28,27 @@ function asPct(value, fallback = "--") {
   return `${n.toFixed(1)}%`;
 }
 
-export default function DatabaseConfigPanel({ embedded = false }) {
+export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) {
   const [data, setData] = useState(null);
   const [pgDiag, setPgDiag] = useState(null);
   const [appDiag, setAppDiag] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [saveOk, setSaveOk] = useState("");
+  const [aligningVersion, setAligningVersion] = useState(false);
+  const [form, setForm] = useState({
+    protocol: "postgres",
+    host: "",
+    port: "5432",
+    database: "",
+    user: "",
+    password: "",
+    sslMode: "",
+    applicationName: "",
+    poolMax: "10",
+  });
 
   const load = async () => {
     setLoading(true);
@@ -79,7 +94,43 @@ export default function DatabaseConfigPanel({ embedded = false }) {
     void load();
   }, []);
 
+  useEffect(() => {
+    if (!data || typeof data !== "object") return;
+    const editable = data?.editable && typeof data.editable === "object" ? data.editable : {};
+    const connection = data?.connection && typeof data.connection === "object" ? data.connection : {};
+    const pool = data?.pool && typeof data.pool === "object" ? data.pool : {};
+    setForm((prev) => ({
+      ...prev,
+      protocol: String(editable?.protocol || connection?.protocol || prev.protocol || "postgres"),
+      host: String(editable?.host || connection?.host || prev.host || ""),
+      port: String(
+        Number.isFinite(Number(editable?.port))
+          ? Number(editable.port)
+          : Number.isFinite(Number(connection?.port))
+          ? Number(connection.port)
+          : Number.isFinite(Number(prev.port))
+          ? Number(prev.port)
+          : 5432
+      ),
+      database: String(editable?.database || connection?.database || prev.database || ""),
+      user: String(editable?.user || connection?.user || prev.user || ""),
+      password: "",
+      sslMode: String(editable?.sslMode || connection?.sslMode || prev.sslMode || ""),
+      applicationName: String(
+        editable?.applicationName || connection?.applicationName || prev.applicationName || ""
+      ),
+      poolMax: String(
+        Number.isFinite(Number(pool?.configuredMax))
+          ? Number(pool.configuredMax)
+          : Number.isFinite(Number(pool?.max))
+          ? Number(pool.max)
+          : 10
+      ),
+    }));
+  }, [data]);
+
   const connection = data?.connection && typeof data.connection === "object" ? data.connection : {};
+  const versions = data?.versions && typeof data.versions === "object" ? data.versions : {};
   const health = data?.health && typeof data.health === "object" ? data.health : {};
   const pool = data?.pool && typeof data.pool === "object" ? data.pool : {};
   const catalog = data?.catalog && typeof data.catalog === "object" ? data.catalog : {};
@@ -136,9 +187,89 @@ export default function DatabaseConfigPanel({ embedded = false }) {
     border: "1px solid var(--border)",
     borderRadius: 12,
     background: "var(--bg-elev)",
-    padding: 12,
+    padding: 14,
     display: "grid",
-    gap: 8,
+    gap: 10,
+  };
+  const inputStyle = {
+    width: "100%",
+    minHeight: 30,
+    border: "1px solid var(--border)",
+    borderRadius: 8,
+    background: "var(--bg-soft)",
+    color: "var(--text)",
+    padding: "6px 8px",
+    boxSizing: "border-box",
+    fontSize: 12,
+  };
+  const panelMode = String(mode || "all").trim().toLowerCase();
+  const showConfig = panelMode !== "diagnostics";
+  const showDiagnostics = panelMode !== "config";
+  const panelTitle =
+    panelMode === "config"
+      ? "Database Config"
+      : panelMode === "diagnostics"
+      ? "Database Diagnostics"
+      : "Database Configuration";
+
+  const onField = (key, value) => {
+    setSaveError("");
+    setSaveOk("");
+    setForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const saveConfig = async () => {
+    setSaving(true);
+    setSaveError("");
+    setSaveOk("");
+    try {
+      const res = await fetch("/api/db/config", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          connection: {
+            protocol: form.protocol,
+            host: form.host,
+            port: form.port,
+            database: form.database,
+            user: form.user,
+            password: form.password,
+            sslMode: form.sslMode,
+            applicationName: form.applicationName,
+          },
+          poolMax: form.poolMax,
+        }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(payload?.error || "Failed to save database config."));
+      setSaveOk("Saved.");
+      await load();
+    } catch (err) {
+      setSaveError(String(err?.message || "Failed to save database config."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const alignVersion = async () => {
+    setAligningVersion(true);
+    setSaveError("");
+    setSaveOk("");
+    try {
+      const res = await fetch("/api/system/version/align", {
+        method: "PUT",
+        credentials: "include",
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(payload?.error || "Failed to align versions."));
+      setSaveOk("Version aligned.");
+      await load();
+    } catch (err) {
+      setSaveError(String(err?.message || "Failed to align versions."));
+    } finally {
+      setAligningVersion(false);
+    }
   };
 
   return (
@@ -148,14 +279,14 @@ export default function DatabaseConfigPanel({ embedded = false }) {
         height: "100%",
         boxSizing: "border-box",
         overflow: embedded ? "auto" : "visible",
-        padding: embedded ? 0 : 12,
+        padding: embedded ? 10 : 12,
         display: "grid",
-        gap: 10,
+        gap: 12,
         alignContent: "start",
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text)" }}>Database Configuration</div>
+        <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text)" }}>{panelTitle}</div>
         <button
           type="button"
           data-preserve-style="true"
@@ -180,21 +311,89 @@ export default function DatabaseConfigPanel({ embedded = false }) {
         <div style={{ ...cardStyle, border: "1px solid #f04438", color: "#b42318" }}>{error}</div>
       ) : null}
 
+      {showConfig ? (
+      <div style={cardStyle}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Version Alignment</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
+          <div><strong>App:</strong> {asText(versions?.appVersion)}</div>
+          <div><strong>DB:</strong> {asText(versions?.dbVersion)}</div>
+          <div><strong>Expected DB:</strong> {asText(versions?.expectedDbVersion)}</div>
+          <div><strong>Status:</strong> {versions?.aligned ? "Aligned" : "Mismatch"}</div>
+        </div>
+        {!versions?.aligned ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              type="button"
+              data-preserve-style="true"
+              onClick={() => void alignVersion()}
+              style={{
+                border: "1px solid #2b6cff",
+                background: aligningVersion ? "var(--bg-soft)" : "#2b6cff",
+                color: aligningVersion ? "var(--text-muted)" : "#fff",
+                borderRadius: 8,
+                padding: "6px 10px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: aligningVersion ? "not-allowed" : "pointer",
+              }}
+              disabled={aligningVersion}
+            >
+              {aligningVersion ? "Aligning..." : "Align DB Version"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+      ) : null}
+
+      {showConfig ? (
       <div style={cardStyle}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Connection</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
+          <select value={form.protocol} onChange={(e) => onField("protocol", e.target.value)} style={inputStyle}>
+            <option value="postgres">postgres</option>
+            <option value="postgresql">postgresql</option>
+          </select>
+          <input value={form.host} onChange={(e) => onField("host", e.target.value)} style={inputStyle} placeholder="host" />
+          <input value={form.port} onChange={(e) => onField("port", e.target.value)} style={inputStyle} placeholder="port" />
+          <input value={form.database} onChange={(e) => onField("database", e.target.value)} style={inputStyle} placeholder="database" />
+          <input value={form.user} onChange={(e) => onField("user", e.target.value)} style={inputStyle} placeholder="user" />
+          <input value={form.password} onChange={(e) => onField("password", e.target.value)} style={inputStyle} placeholder="password (leave blank to keep)" type="password" />
+          <input value={form.sslMode} onChange={(e) => onField("sslMode", e.target.value)} style={inputStyle} placeholder="sslmode (optional)" />
+          <input value={form.applicationName} onChange={(e) => onField("applicationName", e.target.value)} style={inputStyle} placeholder="application_name (optional)" />
+          <input value={form.poolMax} onChange={(e) => onField("poolMax", e.target.value)} style={inputStyle} placeholder="pool max" />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => void saveConfig()}
+            style={{
+              border: "1px solid #2b6cff",
+              background: saving ? "var(--bg-soft)" : "#2b6cff",
+              color: saving ? "var(--text-muted)" : "#fff",
+              borderRadius: 8,
+              padding: "6px 10px",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: saving ? "not-allowed" : "pointer",
+            }}
+            disabled={saving}
+          >
+            {saving ? "Saving..." : "Save Config"}
+          </button>
+          <div style={{ fontSize: 12, color: saveError ? "#b42318" : "var(--text-muted)" }}>
+            {saveError || saveOk || ""}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
           <div><strong>Status:</strong> {connection?.configured ? "Configured" : "Not configured"}</div>
-          <div><strong>Protocol:</strong> {asText(connection?.protocol)}</div>
-          <div><strong>Host:</strong> {asText(connection?.host)}</div>
-          <div><strong>Port:</strong> {asNumber(connection?.port)}</div>
-          <div><strong>Database:</strong> {asText(connection?.database)}</div>
-          <div><strong>User:</strong> {asText(connection?.user)}</div>
           <div><strong>SSL:</strong> {connection?.ssl === true ? "Enabled" : "Disabled"}</div>
-          <div><strong>SSL Mode:</strong> {asText(connection?.sslMode)}</div>
-          <div><strong>App Name:</strong> {asText(connection?.applicationName)}</div>
+          <div><strong>Current Pool Max:</strong> {asNumber(pool?.configuredMax ?? pool?.max)}</div>
         </div>
       </div>
+      ) : null}
 
+      {showConfig ? (
       <div style={cardStyle}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Health</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
@@ -217,7 +416,9 @@ export default function DatabaseConfigPanel({ embedded = false }) {
           </div>
         ) : null}
       </div>
+      ) : null}
 
+      {showConfig ? (
       <div style={cardStyle}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Pool</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
@@ -227,7 +428,9 @@ export default function DatabaseConfigPanel({ embedded = false }) {
           <div><strong>Waiting:</strong> {asNumber(pool?.waiting)}</div>
         </div>
       </div>
+      ) : null}
 
+      {showDiagnostics ? (
       <div style={cardStyle}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>App Performance (AI + OPC Runtime)</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
@@ -267,7 +470,9 @@ export default function DatabaseConfigPanel({ embedded = false }) {
           </div>
         ) : null}
       </div>
+      ) : null}
 
+      {showDiagnostics ? (
       <div style={cardStyle}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>PostgreSQL Memory And Workers</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
@@ -281,7 +486,9 @@ export default function DatabaseConfigPanel({ embedded = false }) {
           <div><strong>Parallel Maint:</strong> {asNumber(settingVal("max_parallel_maintenance_workers"))}</div>
         </div>
       </div>
+      ) : null}
 
+      {showDiagnostics ? (
       <div style={cardStyle}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>PostgreSQL Runtime</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
@@ -298,7 +505,9 @@ export default function DatabaseConfigPanel({ embedded = false }) {
           <strong>Uptime:</strong> {asNumber(pgUptime?.uptime_seconds)} s | <strong>Checked:</strong> {pgCheckedAtText}
         </div>
       </div>
+      ) : null}
 
+      {showDiagnostics ? (
       <div style={cardStyle}>
         <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>PostgreSQL Storage, WAL, Checkpoints, Locks</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
@@ -315,6 +524,7 @@ export default function DatabaseConfigPanel({ embedded = false }) {
           <div><strong>Waiting Locks:</strong> {asNumber(pgLocks?.waiting)}</div>
         </div>
       </div>
+      ) : null}
     </div>
   );
 }

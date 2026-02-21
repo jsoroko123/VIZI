@@ -4,13 +4,17 @@ import { normalizeRoleIdList } from "../utils/projectHelpers";
 export function useLiveMenuAccess({
   canViewDataPages,
   canViewScreenPages,
+  canViewReportsPages,
   currentUserRoleIds,
 }) {
   const canAccessLiveMenuItem = useCallback(
     (item) => {
+      const type = String(item?.type || "").toLowerCase();
       const areaAllowed =
-        String(item?.type || "").toLowerCase() === "data"
+        type === "data"
           ? canViewDataPages
+          : type === "reports"
+          ? canViewReportsPages
           : canViewScreenPages;
       if (!areaAllowed) return false;
       const restricted = Boolean(item?.restricted);
@@ -22,7 +26,7 @@ export function useLiveMenuAccess({
       }
       return false;
     },
-    [canViewDataPages, canViewScreenPages, currentUserRoleIds]
+    [canViewDataPages, canViewReportsPages, canViewScreenPages, currentUserRoleIds]
   );
 
   const isLiveMenuItemRoleRestricted = useCallback(

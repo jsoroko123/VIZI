@@ -173,6 +173,13 @@ async function main() {
   const heartbeatFailureThreshold = Number.isFinite(heartbeatFailureThresholdRaw)
     ? Math.max(1, Math.min(10, heartbeatFailureThresholdRaw))
     : 3;
+  const readReconnectErrorThresholdRaw = Number.parseInt(
+    String(runtime?.readReconnectErrorThreshold ?? "3"),
+    10
+  );
+  const readReconnectErrorThreshold = Number.isFinite(readReconnectErrorThresholdRaw)
+    ? Math.max(1, Math.min(20, readReconnectErrorThresholdRaw))
+    : 3;
   const mqttEnabled = runtime?.mqttEnabled === true;
   const mqttBrokerUrl = String(runtime?.mqttBrokerUrl || "mqtt://localhost:1883").trim();
   const mqttClientId = String(runtime?.mqttClientId || "").trim();
@@ -313,10 +320,12 @@ async function main() {
   const plcConnected = new Map();
   const plcLastPollAt = new Map();
   const plcPollInFlight = new Map();
+  const plcReconnectInFlight = new Map();
   const plcReadCursor = new Map();
   const plcDeferredReads = new Map();
   const plcHeartbeatFailureStreak = new Map();
   const plcConnectFailureStreak = new Map();
+  const plcReadTransportFailureStreak = new Map();
   const tagValues = new Map();
   const tagErrors = new Map();
   const tagLastRead = new Map();
@@ -676,13 +685,28 @@ async function main() {
   });
 
   async function connectPlcWithRetry(name, plc) {
+    const existing = plcReconnectInFlight.get(name);
+    if (existing) return existing;
+    const run = async () => {
     if (!opcConnectionEnabled) {
       plcConnected.set(name, false);
       return;
     }
     const isTimeoutLikeError = (err) => {
       const msg = String(err?.message || err || "").toLowerCase();
-      return msg.includes("timeout") || msg.includes("timeout-recv-data") || msg.includes("recv-data");
+      return (
+        msg.includes("timeout") ||
+        msg.includes("timeout-recv-data") ||
+        msg.includes("recv-data") ||
+        msg.includes("pool is draining") ||
+        msg.includes("cannot accept work") ||
+        msg.includes("connection lost") ||
+        msg.includes("disconnected")
+      );
+    };
+    const isForwardOpenError = (err) => {
+      const msg = String(err?.message || err || "").toLowerCase();
+      return msg.includes("forward open failed") || msg.includes("forward open");
     };
     let attempts = 0;
     while (true) {
@@ -692,11 +716,6 @@ async function main() {
       }
       attempts += 1;
       try {
-        try {
-          if (plc?.disconnected !== true) await plc.close();
-        } catch {
-          // ignore stale close errors before reconnect
-        }
         await plc.connect();
         plcConnected.set(name, true);
         plcHeartbeatFailureStreak.set(name, 0);
@@ -716,6 +735,7 @@ async function main() {
         } catch {
           // ignore close failures during reconnect
         }
+        const forwardOpenFailure = isForwardOpenError(err);
         if (isTimeoutLikeError(err)) {
           const nextReceiveTimeout = Math.min(120000, Math.max(plcReceiveTimeoutMs, Number(plc.timeoutReceive || plcReceiveTimeoutMs)) + 5000);
           plc.timeoutReceive = nextReceiveTimeout;
@@ -725,7 +745,15 @@ async function main() {
           console.warn(`PLC ${name} connect failed after ${attempts} attempts.`, err?.message || err);
           return;
         }
-        const retryDelay = Math.min(30000, reconnectDelayMs * 2 ** Math.min(5, Math.max(0, nextStreak - 1)));
+        const retryDelayBase = forwardOpenFailure ? Math.max(10000, reconnectDelayMs * 2) : reconnectDelayMs;
+        const retryDelayCap = forwardOpenFailure ? 60000 : 30000;
+        const retryDelay = Math.min(retryDelayCap, retryDelayBase * 2 ** Math.min(5, Math.max(0, nextStreak - 1)));
+        if (forwardOpenFailure) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `PLC ${name} rejected CIP Forward Open. Another client/session may be online (e.g. Studio 5000/RSLinx), or path/slot is wrong.`
+          );
+        }
         // eslint-disable-next-line no-console
         console.warn(
           `PLC ${name} connect failed, retrying in ${retryDelay}ms (streak ${nextStreak}, recvTimeout ${plc.timeoutReceive}ms)...`,
@@ -734,6 +762,12 @@ async function main() {
         await sleep(retryDelay);
       }
     }
+    };
+    const promise = run().finally(() => {
+      plcReconnectInFlight.delete(name);
+    });
+    plcReconnectInFlight.set(name, promise);
+    return promise;
   }
 
   plcs.forEach((p) => {
@@ -747,8 +781,19 @@ async function main() {
     }
     plc.on("disconnect", (reason) => {
       plcConnected.set(p.name, false);
-      // eslint-disable-next-line no-console
-      console.warn(`PLC ${p.name} disconnected.`, reason?.message || reason || "unknown");
+      const text = String(reason?.message || reason || "unknown");
+      const reconnecting = Boolean(plcReconnectInFlight.get(p.name));
+      if (reconnecting && text.toLowerCase().includes("close connection")) {
+        // Expected during reconnect transitions; avoid noisy warning spam.
+        // eslint-disable-next-line no-console
+        console.log(`PLC ${p.name} connection reset during reconnect.`);
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(`PLC ${p.name} disconnected.`, text);
+      }
+      if (opcConnectionEnabled) {
+        void connectPlcWithRetry(p.name, plc);
+      }
     });
     plcClients.set(p.name, plc);
     plcConnected.set(p.name, false);
@@ -757,6 +802,7 @@ async function main() {
     plcDeferredReads.set(p.name, 0);
     plcHeartbeatFailureStreak.set(p.name, 0);
     plcConnectFailureStreak.set(p.name, 0);
+    plcReadTransportFailureStreak.set(p.name, 0);
   });
 
   if (opcConnectionEnabled) {
@@ -986,8 +1032,23 @@ async function main() {
         msg.includes("econnrefused") ||
         msg.includes("broken pipe") ||
         msg.includes("write eof") ||
-        msg.includes("ehostunreach")
+        msg.includes("ehostunreach") ||
+        msg.includes("pool is draining") ||
+        msg.includes("cannot accept work")
       );
+    };
+    const noteTransportReadFailure = (err) => {
+      if (!shouldRetryReadError(err)) return;
+      const next = Number(plcReadTransportFailureStreak.get(plcName) || 0) + 1;
+      plcReadTransportFailureStreak.set(plcName, next);
+      if (next < readReconnectErrorThreshold) return;
+      if (plcReconnectInFlight.get(plcName)) return;
+      plcConnected.set(plcName, false);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `PLC ${plcName} transport read failures reached ${next}/${readReconnectErrorThreshold}; reconnecting...`
+      );
+      void connectPlcWithRetry(plcName, plc);
     };
     async function readWithTimeout(tagPath) {
       const attempts = 1 + Math.max(0, Number(readRetryCount) || 0);
@@ -1174,6 +1235,7 @@ async function main() {
                 } catch (err) {
                   const singleDuration = Math.max(0, Date.now() - singleStartedAt);
                   markTagError(item.tag, now, singleDuration, item.baseInterval, err || batchErr);
+                  noteTransportReadFailure(err || batchErr);
                 }
               }
             }
@@ -1190,6 +1252,7 @@ async function main() {
             } catch (err) {
               const durationMs = Math.max(0, Date.now() - readStartedAt);
               markTagError(item.tag, now, durationMs, item.baseInterval, err);
+              noteTransportReadFailure(err);
             }
           }
         }
@@ -1199,6 +1262,7 @@ async function main() {
       if (didRead) {
         plcLastPollAt.set(plcName, now);
         plcHeartbeatFailureStreak.set(plcName, 0);
+        plcReadTransportFailureStreak.set(plcName, 0);
       }
       writeStatus();
     }, tickMs);
@@ -1213,6 +1277,7 @@ async function main() {
         return;
       }
       try {
+        if (plcReconnectInFlight.get(plcName)) return;
         if (!plcConnected.get(plcName)) {
           await connectPlcWithRetry(plcName, plc);
           writeStatus();
@@ -1245,11 +1310,7 @@ async function main() {
           return;
         }
         plcConnected.set(plcName, false);
-        try {
-          await plc.close();
-        } catch {
-          // ignore close failures
-        }
+        void connectPlcWithRetry(plcName, plc);
         // eslint-disable-next-line no-console
         console.warn(`PLC ${plcName} heartbeat failed (threshold reached).`, err?.message || err);
       } finally {
@@ -1303,5 +1364,10 @@ async function main() {
 main().catch((err) => {
   // eslint-disable-next-line no-console
   console.error(err);
+  if (String(err?.code || "") === "EADDRINUSE") {
+    // Distinct exit code so watchdog can avoid restart loops on hard port conflicts.
+    process.exit(72);
+    return;
+  }
   process.exit(1);
 });

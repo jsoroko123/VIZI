@@ -5,7 +5,6 @@ export default function LiveAlarmBar({
   hasLiveAlarms,
   theme,
   top,
-  left,
   height,
   alarmCount,
   liveAlarmMarqueeViewportRef,
@@ -24,8 +23,10 @@ export default function LiveAlarmBar({
       style={{
         position: "fixed",
         top,
-        left,
+        left: 0,
         right: 0,
+        width: "100vw",
+        maxWidth: "100vw",
         height,
         zIndex: 230,
         borderTop: hasLiveAlarms
