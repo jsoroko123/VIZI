@@ -8,6 +8,7 @@ import os from "os";
 import OpenAI from "openai";
 import pkg from "pg";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gzipSync, gunzipSync } from "node:zlib";
 
@@ -296,6 +297,7 @@ async function ensureDatabaseExists(connectionString = DATABASE_URL) {
 
 let pool = null;
 let opcTagScaleCache = { loadedAt: 0, map: new Map() };
+let serviceControlLocked = false;
 
 const SESSION_COOKIE = "vizi_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -2654,6 +2656,26 @@ function resolveOllamaNativeBaseUrl({ baseUrl = "", ollamaNativeUrl = "" } = {})
   } catch {
     return "";
   }
+}
+
+function requireAreaEdit(areaKey) {
+  return async (req, res, next) => {
+    try {
+      const userId = Number.parseInt(String(req.user?.id || ""), 10);
+      if (!Number.isFinite(userId) || userId <= 0) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const allowed = await canUserEditArea(userId, areaKey);
+      if (!allowed) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      next();
+    } catch (err) {
+      res.status(500).json({ error: err?.message || "Authorization failed." });
+    }
+  };
 }
 
 let ollamaUnloadTimer = null;
@@ -6264,6 +6286,159 @@ app.get("/api/diagnostics/app", async (_req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load app diagnostics." });
+  }
+});
+
+function resolveServiceLauncherPaths() {
+  const rootCandidates = [
+    REPO_ROOT,
+    DEFAULT_APP_ROOT,
+    path.resolve(DEFAULT_APP_ROOT, ".."),
+  ].filter(Boolean);
+  for (const root of rootCandidates) {
+    const startCmd = path.resolve(root, "Start-Mesora.cmd");
+    const stopCmd = path.resolve(root, "Stop-Mesora.cmd");
+    const runPs1 = path.resolve(root, "Run-Mesora.ps1");
+    if (fs.existsSync(startCmd) && fs.existsSync(stopCmd)) {
+      return { root, startCmd, stopCmd, runPs1 };
+    }
+  }
+  return {
+    root: REPO_ROOT,
+    startCmd: path.resolve(REPO_ROOT, "Start-Mesora.cmd"),
+    stopCmd: path.resolve(REPO_ROOT, "Stop-Mesora.cmd"),
+    runPs1: path.resolve(REPO_ROOT, "Run-Mesora.ps1"),
+  };
+}
+
+function runDetachedWindowsPowerShell(commandText, cwd) {
+  const child = spawn(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", commandText],
+    {
+      cwd,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      shell: false,
+    }
+  );
+  child.unref();
+}
+
+app.post("/api/server/services/start", requireAreaEdit("server"), async (_req, res) => {
+  try {
+    if (process.platform !== "win32") {
+      res.status(400).json({ error: "Service control currently supports Windows installs only." });
+      return;
+    }
+    if (serviceControlLocked) {
+      res.status(409).json({ error: "Another service action is already running." });
+      return;
+    }
+    serviceControlLocked = true;
+    const launchers = resolveServiceLauncherPaths();
+    const startCmdExists = fs.existsSync(launchers.startCmd);
+    if (!startCmdExists) {
+      serviceControlLocked = false;
+      res.status(500).json({ error: `Start launcher not found: ${launchers.startCmd}` });
+      return;
+    }
+
+    const cmdText = `& '${launchers.startCmd.replace(/'/g, "''")}'`;
+    runDetachedWindowsPowerShell(cmdText, launchers.root);
+    setTimeout(() => {
+      serviceControlLocked = false;
+    }, 3000);
+
+    res.json({
+      ok: true,
+      action: "start",
+      message: "Start requested for all Mesora services.",
+      root: launchers.root,
+    });
+  } catch (err) {
+    serviceControlLocked = false;
+    res.status(500).json({ error: err?.message || "Failed to start services." });
+  }
+});
+
+app.post("/api/server/services/stop", requireAreaEdit("server"), async (_req, res) => {
+  try {
+    if (process.platform !== "win32") {
+      res.status(400).json({ error: "Service control currently supports Windows installs only." });
+      return;
+    }
+    if (serviceControlLocked) {
+      res.status(409).json({ error: "Another service action is already running." });
+      return;
+    }
+    serviceControlLocked = true;
+    const launchers = resolveServiceLauncherPaths();
+    const stopCmdExists = fs.existsSync(launchers.stopCmd);
+    if (!stopCmdExists) {
+      serviceControlLocked = false;
+      res.status(500).json({ error: `Stop launcher not found: ${launchers.stopCmd}` });
+      return;
+    }
+
+    const cmdText = `Start-Sleep -Milliseconds 750; & '${launchers.stopCmd.replace(/'/g, "''")}'`;
+    runDetachedWindowsPowerShell(cmdText, launchers.root);
+    setTimeout(() => {
+      serviceControlLocked = false;
+    }, 3000);
+
+    res.json({
+      ok: true,
+      action: "stop",
+      message: "Stop requested for all Mesora services.",
+      root: launchers.root,
+    });
+  } catch (err) {
+    serviceControlLocked = false;
+    res.status(500).json({ error: err?.message || "Failed to stop services." });
+  }
+});
+
+app.post("/api/server/services/restart", requireAreaEdit("server"), async (_req, res) => {
+  try {
+    if (process.platform !== "win32") {
+      res.status(400).json({ error: "Service control currently supports Windows installs only." });
+      return;
+    }
+    if (serviceControlLocked) {
+      res.status(409).json({ error: "Another service action is already running." });
+      return;
+    }
+    serviceControlLocked = true;
+    const launchers = resolveServiceLauncherPaths();
+    const stopCmdExists = fs.existsSync(launchers.stopCmd);
+    const startCmdExists = fs.existsSync(launchers.startCmd);
+    if (!stopCmdExists || !startCmdExists) {
+      serviceControlLocked = false;
+      res.status(500).json({
+        error: `Required launchers not found. Start: ${launchers.startCmd} Stop: ${launchers.stopCmd}`,
+      });
+      return;
+    }
+
+    const stopEsc = launchers.stopCmd.replace(/'/g, "''");
+    const startEsc = launchers.startCmd.replace(/'/g, "''");
+    const cmdText = `Start-Sleep -Milliseconds 750; & '${stopEsc}'; Start-Sleep -Seconds 1; & '${startEsc}'`;
+    runDetachedWindowsPowerShell(cmdText, launchers.root);
+    setTimeout(() => {
+      serviceControlLocked = false;
+    }, 4500);
+
+    res.json({
+      ok: true,
+      action: "restart",
+      message: "Restart requested for all Mesora services.",
+      root: launchers.root,
+    });
+  } catch (err) {
+    serviceControlLocked = false;
+    res.status(500).json({ error: err?.message || "Failed to restart services." });
   }
 });
 

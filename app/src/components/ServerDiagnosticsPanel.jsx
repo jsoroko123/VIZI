@@ -47,6 +47,8 @@ function asPct(value, fallback = "--") {
 export default function ServerDiagnosticsPanel({ embedded = false }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [serviceBusyAction, setServiceBusyAction] = useState("");
+  const [serviceActionMessage, setServiceActionMessage] = useState("");
   const [updatedAt, setUpdatedAt] = useState(0);
   const [payload, setPayload] = useState({
     health: null,
@@ -97,6 +99,32 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
       setError(String(err?.message || "Failed to load diagnostics."));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const runServiceAction = async (action) => {
+    const op = String(action || "").trim().toLowerCase();
+    if (!op) return;
+    if (serviceBusyAction) return;
+    setServiceActionMessage("");
+    setServiceBusyAction(op);
+    try {
+      const res = await fetch(`/api/server/services/${op}`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(data?.error || `Failed to ${op} services.`));
+      setServiceActionMessage(String(data?.message || `Service ${op} requested.`));
+      if (op !== "stop") {
+        setTimeout(() => {
+          void load();
+        }, 2000);
+      }
+    } catch (err) {
+      setServiceActionMessage(String(err?.message || `Failed to ${op} services.`));
+    } finally {
+      setTimeout(() => setServiceBusyAction(""), 1200);
     }
   };
 
@@ -337,6 +365,69 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
         <div style={opcPill.style}>{opcPill.text}</div>
         <div style={dbPill.style}>{dbPill.text}</div>
         </div>
+      </div>
+
+      <div style={{ ...panelStyle, gap: 10 }}>
+        <div style={sectionTitleStyle}>Service Control</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            data-preserve-style="true"
+            disabled={Boolean(serviceBusyAction)}
+            onClick={() => void runServiceAction("start")}
+            style={{
+              border: "1px solid #12b76a",
+              background: serviceBusyAction === "start" ? "var(--bg-soft)" : "#12b76a",
+              color: serviceBusyAction === "start" ? "var(--text-muted)" : "#fff",
+              borderRadius: 8,
+              padding: "6px 12px",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: serviceBusyAction ? "not-allowed" : "pointer",
+            }}
+          >
+            {serviceBusyAction === "start" ? "Starting..." : "Start All"}
+          </button>
+          <button
+            type="button"
+            data-preserve-style="true"
+            disabled={Boolean(serviceBusyAction)}
+            onClick={() => void runServiceAction("restart")}
+            style={{
+              border: "1px solid #2b6cff",
+              background: serviceBusyAction === "restart" ? "var(--bg-soft)" : "#2b6cff",
+              color: serviceBusyAction === "restart" ? "var(--text-muted)" : "#fff",
+              borderRadius: 8,
+              padding: "6px 12px",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: serviceBusyAction ? "not-allowed" : "pointer",
+            }}
+          >
+            {serviceBusyAction === "restart" ? "Restarting..." : "Restart All"}
+          </button>
+          <button
+            type="button"
+            data-preserve-style="true"
+            disabled={Boolean(serviceBusyAction)}
+            onClick={() => void runServiceAction("stop")}
+            style={{
+              border: "1px solid #f04438",
+              background: serviceBusyAction === "stop" ? "var(--bg-soft)" : "#f04438",
+              color: serviceBusyAction === "stop" ? "var(--text-muted)" : "#fff",
+              borderRadius: 8,
+              padding: "6px 12px",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: serviceBusyAction ? "not-allowed" : "pointer",
+            }}
+          >
+            {serviceBusyAction === "stop" ? "Stopping..." : "Stop All"}
+          </button>
+        </div>
+        {serviceActionMessage ? (
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{serviceActionMessage}</div>
+        ) : null}
       </div>
 
       <div style={panelStyle}>

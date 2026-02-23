@@ -233,28 +233,34 @@ $chkSkipPostgres.Add_CheckedChanged({
 $appendLog = {
   param([string]$Line)
   if ([string]::IsNullOrWhiteSpace($Line)) { return }
-  $write = {
-    param([string]$Msg)
-    $txtLog.AppendText($Msg + [Environment]::NewLine)
+  if ($txtLog.IsDisposed) { return }
+  $msg = $Line
+  $write = [System.Windows.Forms.MethodInvoker]{
+    if ($txtLog.IsDisposed) { return }
+    $txtLog.AppendText($msg + [Environment]::NewLine)
     $txtLog.SelectionStart = $txtLog.TextLength
     $txtLog.ScrollToCaret()
   }
   if ($txtLog.InvokeRequired) {
-    [void]$txtLog.BeginInvoke($write, @($Line))
+    try {
+      [void]$txtLog.Invoke($write)
+    } catch {}
   } else {
-    & $write $Line
+    $write.Invoke()
   }
 }
 
 $onInstallFinished = {
   param([int]$ExitCode)
-  $finish = {
-    param([int]$Code)
+  if ($form.IsDisposed) { return }
+  $code = [int]$ExitCode
+  $finish = [System.Windows.Forms.MethodInvoker]{
+    if ($form.IsDisposed) { return }
     $btnInstall.Enabled = $true
     $btnCancel.Enabled = $true
     $progress.Style = "Blocks"
     & $setInputsEnabled $true
-    if ($Code -eq 0) {
+    if ($code -eq 0) {
       $status.Text = "Install completed successfully."
       $status.ForeColor = [System.Drawing.Color]::FromArgb(30, 85, 30)
       [System.Windows.Forms.MessageBox]::Show(
@@ -275,148 +281,173 @@ $onInstallFinished = {
     }
   }
   if ($form.InvokeRequired) {
-    [void]$form.BeginInvoke($finish, @($ExitCode))
+    try {
+      [void]$form.Invoke($finish)
+    } catch {}
   } else {
-    & $finish $ExitCode
+    $finish.Invoke()
   }
 }
 
 $btnInstall.Add_Click({
-  $pgPort = 0
-  $aiPort = 0
-  $opcUaPort = 0
-  if (-not [int]::TryParse($txtPgPort.Text, [ref]$pgPort) -or $pgPort -lt 1 -or $pgPort -gt 65535) {
-    [System.Windows.Forms.MessageBox]::Show(
-      "PostgreSQL port must be a number between 1 and 65535.",
-      "Mesora Installer",
-      [System.Windows.Forms.MessageBoxButtons]::OK,
-      [System.Windows.Forms.MessageBoxIcon]::Warning
-    ) | Out-Null
-    return
-  }
-  if (-not [int]::TryParse($txtAiPort.Text, [ref]$aiPort) -or $aiPort -lt 1 -or $aiPort -gt 65535) {
-    [System.Windows.Forms.MessageBox]::Show(
-      "Mesora web/API port must be a number between 1 and 65535.",
-      "Mesora Installer",
-      [System.Windows.Forms.MessageBoxButtons]::OK,
-      [System.Windows.Forms.MessageBoxIcon]::Warning
-    ) | Out-Null
-    return
-  }
-  if (-not [int]::TryParse($txtOpcUaPort.Text, [ref]$opcUaPort) -or $opcUaPort -lt 1 -or $opcUaPort -gt 65535) {
-    [System.Windows.Forms.MessageBox]::Show(
-      "OPC UA port must be a number between 1 and 65535.",
-      "Mesora Installer",
-      [System.Windows.Forms.MessageBoxButtons]::OK,
-      [System.Windows.Forms.MessageBoxIcon]::Warning
-    ) | Out-Null
-    return
-  }
-
-  if ([string]::IsNullOrWhiteSpace($txtRoot.Text)) {
-    [System.Windows.Forms.MessageBox]::Show(
-      "Please select an install folder.",
-      "Mesora Installer",
-      [System.Windows.Forms.MessageBoxButtons]::OK,
-      [System.Windows.Forms.MessageBoxIcon]::Warning
-    ) | Out-Null
-    return
-  }
-  if (-not (Test-Path $installScript)) {
-    [System.Windows.Forms.MessageBox]::Show(
-      "Install script not found: $installScript",
-      "Mesora Installer",
-      [System.Windows.Forms.MessageBoxButtons]::OK,
-      [System.Windows.Forms.MessageBoxIcon]::Error
-    ) | Out-Null
-    return
-  }
-  if (-not $chkSkipPostgres.Checked) {
-    if ([string]::IsNullOrWhiteSpace($txtPgUser.Text)) {
+  try {
+    $pgPort = 0
+    $aiPort = 0
+    $opcUaPort = 0
+    if (-not [int]::TryParse($txtPgPort.Text, [ref]$pgPort) -or $pgPort -lt 1 -or $pgPort -gt 65535) {
       [System.Windows.Forms.MessageBox]::Show(
-        "Please enter PostgreSQL admin username.",
+        "PostgreSQL port must be a number between 1 and 65535.",
         "Mesora Installer",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Warning
       ) | Out-Null
       return
     }
-    if ([string]::IsNullOrWhiteSpace($txtPgPassword.Text)) {
+    if (-not [int]::TryParse($txtAiPort.Text, [ref]$aiPort) -or $aiPort -lt 1 -or $aiPort -gt 65535) {
       [System.Windows.Forms.MessageBox]::Show(
-        "Please enter PostgreSQL admin password.",
+        "Mesora web/API port must be a number between 1 and 65535.",
         "Mesora Installer",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Warning
       ) | Out-Null
       return
     }
-  }
-
-  $argList = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", $installScript,
-    "-InstallRoot", $txtRoot.Text,
-    "-PostgresPort", "$pgPort",
-    "-AiServerPort", "$aiPort",
-    "-OpcUaPort", "$opcUaPort"
-  )
-  if ($chkSkipPostgres.Checked) { $argList += "-SkipPostgresInstall" }
-  if ($chkUseInstall.Checked) { $argList += "-UseNpmInstall" }
-  if (-not $chkSkipPostgres.Checked) {
-    $argList += @("-PostgresSuperUser", $txtPgUser.Text)
-    $argList += @("-PostgresSuperPassword", $txtPgPassword.Text)
-  }
-
-  $cmdLine = ($argList | ForEach-Object { Quote-Arg $_ }) -join " "
-  $txtLog.Clear()
-  & $appendLog ("[" + (Get-Date).ToString("HH:mm:ss") + "] Starting installer...")
-  & $appendLog ("powershell.exe " + $cmdLine)
-
-  $btnInstall.Enabled = $false
-  $btnCancel.Enabled = $false
-  & $setInputsEnabled $false
-  $status.Text = "Installing... this can take several minutes."
-  $status.ForeColor = [System.Drawing.Color]::FromArgb(34, 73, 135)
-  $progress.Style = "Marquee"
-  $progress.MarqueeAnimationSpeed = 20
-  $form.Refresh()
-
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = "powershell.exe"
-  $psi.Arguments = $cmdLine
-  $psi.UseShellExecute = $false
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.CreateNoWindow = $true
-
-  $proc = New-Object System.Diagnostics.Process
-  $proc.StartInfo = $psi
-  $proc.EnableRaisingEvents = $true
-
-  $proc.add_OutputDataReceived({
-    if ($_.Data -ne $null) {
-      & $appendLog $_.Data
+    if (-not [int]::TryParse($txtOpcUaPort.Text, [ref]$opcUaPort) -or $opcUaPort -lt 1 -or $opcUaPort -gt 65535) {
+      [System.Windows.Forms.MessageBox]::Show(
+        "OPC UA port must be a number between 1 and 65535.",
+        "Mesora Installer",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+      ) | Out-Null
+      return
     }
-  })
-  $proc.add_ErrorDataReceived({
-    if ($_.Data -ne $null) {
-      & $appendLog ("[ERR] " + $_.Data)
-    }
-  })
-  $proc.add_Exited({
-    & $appendLog ("[" + (Get-Date).ToString("HH:mm:ss") + "] Installer exited with code " + $proc.ExitCode + ".")
-    & $onInstallFinished $proc.ExitCode
-    $proc.Dispose()
-  })
 
-  if (-not $proc.Start()) {
-    & $appendLog "[ERR] Failed to start installer process."
+    if ([string]::IsNullOrWhiteSpace($txtRoot.Text)) {
+      [System.Windows.Forms.MessageBox]::Show(
+        "Please select an install folder.",
+        "Mesora Installer",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+      ) | Out-Null
+      return
+    }
+    if (-not (Test-Path $installScript)) {
+      [System.Windows.Forms.MessageBox]::Show(
+        "Install script not found: $installScript",
+        "Mesora Installer",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Error
+      ) | Out-Null
+      return
+    }
+    if (-not $chkSkipPostgres.Checked) {
+      if ([string]::IsNullOrWhiteSpace($txtPgUser.Text)) {
+        [System.Windows.Forms.MessageBox]::Show(
+          "Please enter PostgreSQL admin username.",
+          "Mesora Installer",
+          [System.Windows.Forms.MessageBoxButtons]::OK,
+          [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        return
+      }
+      if ([string]::IsNullOrWhiteSpace($txtPgPassword.Text)) {
+        [System.Windows.Forms.MessageBox]::Show(
+          "Please enter PostgreSQL admin password.",
+          "Mesora Installer",
+          [System.Windows.Forms.MessageBoxButtons]::OK,
+          [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        return
+      }
+    }
+
+    $argList = @(
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-File", $installScript,
+      "-InstallRoot", $txtRoot.Text,
+      "-PostgresPort", "$pgPort",
+      "-AiServerPort", "$aiPort",
+      "-OpcUaPort", "$opcUaPort"
+    )
+    if ($chkSkipPostgres.Checked) { $argList += "-SkipPostgresInstall" }
+    if ($chkUseInstall.Checked) { $argList += "-UseNpmInstall" }
+    if (-not $chkSkipPostgres.Checked) {
+      $argList += @("-PostgresSuperUser", $txtPgUser.Text)
+      $argList += @("-PostgresSuperPassword", $txtPgPassword.Text)
+    }
+
+    $cmdLine = ($argList | ForEach-Object { Quote-Arg $_ }) -join " "
+    $txtLog.Clear()
+    & $appendLog ("[" + (Get-Date).ToString("HH:mm:ss") + "] Starting installer...")
+    & $appendLog ("powershell.exe " + $cmdLine)
+
+    $btnInstall.Enabled = $false
+    $btnCancel.Enabled = $false
+    & $setInputsEnabled $false
+    $status.Text = "Installing... this can take several minutes."
+    $status.ForeColor = [System.Drawing.Color]::FromArgb(34, 73, 135)
+    $progress.Style = "Marquee"
+    $progress.MarqueeAnimationSpeed = 20
+    $form.Refresh()
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "powershell.exe"
+    $psi.Arguments = $cmdLine
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    $proc.EnableRaisingEvents = $true
+    $proc.SynchronizingObject = $form
+
+    $proc.add_OutputDataReceived({
+      param($sender, $eventArgs)
+      try {
+        if ($eventArgs.Data -ne $null) {
+          & $appendLog $eventArgs.Data
+        }
+      } catch {}
+    })
+    $proc.add_ErrorDataReceived({
+      param($sender, $eventArgs)
+      try {
+        if ($eventArgs.Data -ne $null) {
+          & $appendLog ("[ERR] " + $eventArgs.Data)
+        }
+      } catch {}
+    })
+    $proc.add_Exited({
+      param($sender, $eventArgs)
+      try {
+        $code = 1
+        try { $code = [int]$sender.ExitCode } catch {}
+        & $appendLog ("[" + (Get-Date).ToString("HH:mm:ss") + "] Installer exited with code " + $code + ".")
+        & $onInstallFinished $code
+      } catch {
+        try { & $appendLog ("[ERR] GUI exit handler failed: " + $_.Exception.Message) } catch {}
+        & $onInstallFinished 1
+      } finally {
+        try { $sender.Dispose() } catch {}
+      }
+    })
+
+    if (-not $proc.Start()) {
+      & $appendLog "[ERR] Failed to start installer process."
+      & $onInstallFinished 1
+      return
+    }
+    $proc.BeginOutputReadLine()
+    $proc.BeginErrorReadLine()
+  } catch {
+    try {
+      & $appendLog ("[ERR] Installer GUI exception: " + $_.Exception.Message)
+    } catch {}
     & $onInstallFinished 1
-    return
   }
-  $proc.BeginOutputReadLine()
-  $proc.BeginErrorReadLine()
 })
 
 [void]$form.ShowDialog()

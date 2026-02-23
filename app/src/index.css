@@ -37,6 +37,10 @@ body,
   --selected-border: var(--accent);
   --selected-text: var(--accent-text);
   --selected-shadow: 0 0 0 1px var(--accent-ring), 0 8px 18px color-mix(in srgb, var(--accent) 24%, transparent);
+  --field-disabled-bg: #eef2f7;
+  --field-disabled-text: #6b7280;
+  --field-disabled-border: rgba(15, 23, 42, 0.18);
+  --field-disabled-placeholder: #9ca3af;
 
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
@@ -154,6 +158,10 @@ body[data-theme="dark"] {
   --selected-border: var(--accent);
   --selected-text: var(--accent-text);
   --selected-shadow: 0 0 0 1px var(--accent-ring), 0 10px 22px color-mix(in srgb, var(--accent) 34%, transparent);
+  --field-disabled-bg: #212c3c;
+  --field-disabled-text: #c7d2e5;
+  --field-disabled-border: rgba(148, 163, 184, 0.5);
+  --field-disabled-placeholder: #9fb0ca;
   color-scheme: dark;
 }
 
@@ -171,6 +179,26 @@ body[data-theme="dark"] {
 
 :root[data-theme="dark"] input[type="checkbox"]:disabled {
   opacity: 1;
+}
+
+:root[data-theme="dark"] input:not([type="checkbox"]):disabled,
+:root[data-theme="dark"] select:disabled,
+:root[data-theme="dark"] textarea:disabled,
+body[data-theme="dark"] input:not([type="checkbox"]):disabled,
+body[data-theme="dark"] select:disabled,
+body[data-theme="dark"] textarea:disabled {
+  background: var(--field-disabled-bg) !important;
+  color: var(--field-disabled-text) !important;
+  border-color: var(--field-disabled-border) !important;
+  opacity: 1 !important;
+  cursor: not-allowed;
+}
+
+:root[data-theme="dark"] input:not([type="checkbox"]):disabled::placeholder,
+:root[data-theme="dark"] textarea:disabled::placeholder,
+body[data-theme="dark"] input:not([type="checkbox"]):disabled::placeholder,
+body[data-theme="dark"] textarea:disabled::placeholder {
+  color: var(--field-disabled-placeholder) !important;
 }
 
 @keyframes vizi-live-alarm-flip-in {

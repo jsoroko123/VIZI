@@ -16,6 +16,8 @@ const payloadEntries = [
   "opc-server",
   "scripts",
   "dist",
+  "src/assets/SVG_Files",
+  "src/assets/SVG_Files_Streamlined",
   "package.json",
   "package-lock.json",
   "README.md",

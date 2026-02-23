@@ -4,7 +4,7 @@
       "name": "PLC-1",
       "host": "192.168.1.10",
       "slot": 0,
-      "pollMs": 500
+      "pollMs": 1000
     }
   ],
   "opcua": {
@@ -15,15 +15,18 @@
   "pollMs": 1000,
   "runtime": {
     "opcConnectionEnabled": true,
+    "multiReadEnabled": false,
+    "multiReadBatchSize": 8,
+    "maxReadsPerTick": 150,
     "readTimeoutMs": 7000,
     "readRetryCount": 3,
     "readRetryDelayMs": 250,
-    "plcConnectTimeoutMs": 15000,
-    "plcReceiveTimeoutMs": 45000,
+    "plcConnectTimeoutMs": 20000,
+    "plcReceiveTimeoutMs": 60000,
     "reconnectDelayMs": 3000,
     "heartbeatEnabled": true,
-    "heartbeatMs": 10000,
-    "heartbeatFailureThreshold": 5,
+    "heartbeatMs": 8000,
+    "heartbeatFailureThreshold": 4,
     "readReconnectErrorThreshold": 4
   },
   "topics": [
@@ -31,7 +34,7 @@
       "name": "Main",
       "prefix": "",
       "plcName": "PLC-1",
-      "samplingInterval": 500,
+      "samplingInterval": 1000,
       "enabled": true
     }
   ],

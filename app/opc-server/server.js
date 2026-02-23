@@ -139,24 +139,24 @@ async function main() {
   const config = await loadConfig();
   const runtime = config?.runtime || {};
   let opcConnectionEnabled = runtime?.opcConnectionEnabled !== false;
-  const multiReadEnabled = runtime?.multiReadEnabled !== false;
+  const multiReadEnabled = runtime?.multiReadEnabled === true;
   const multiReadBatchSizeRaw = Number.parseInt(String(runtime?.multiReadBatchSize ?? "16"), 10);
   const multiReadBatchSize = Number.isFinite(multiReadBatchSizeRaw)
     ? Math.max(1, Math.min(25, multiReadBatchSizeRaw))
     : 16;
-  const maxReadsPerTickRaw = Number.parseInt(String(runtime?.maxReadsPerTick ?? "300"), 10);
+  const maxReadsPerTickRaw = Number.parseInt(String(runtime?.maxReadsPerTick ?? "150"), 10);
   const maxReadsPerTick = Number.isFinite(maxReadsPerTickRaw)
     ? Math.max(10, Math.min(5000, maxReadsPerTickRaw))
-    : 300;
-  const readTimeoutMs = parsePositiveMs(runtime?.readTimeoutMs, 3000);
-  const readRetryCountRaw = Number.parseInt(String(runtime?.readRetryCount ?? "2"), 10);
+    : 150;
+  const readTimeoutMs = parsePositiveMs(runtime?.readTimeoutMs, 7000);
+  const readRetryCountRaw = Number.parseInt(String(runtime?.readRetryCount ?? "3"), 10);
   const readRetryCount = Number.isFinite(readRetryCountRaw)
     ? Math.max(0, Math.min(5, readRetryCountRaw))
-    : 2;
-  const readRetryDelayMsRaw = Number.parseInt(String(runtime?.readRetryDelayMs ?? "100"), 10);
+    : 3;
+  const readRetryDelayMsRaw = Number.parseInt(String(runtime?.readRetryDelayMs ?? "250"), 10);
   const readRetryDelayMs = Number.isFinite(readRetryDelayMsRaw)
     ? Math.max(0, Math.min(5000, readRetryDelayMsRaw))
-    : 100;
+    : 250;
   const plcConnectTimeoutMs = parsePositiveMs(runtime?.plcConnectTimeoutMs, Math.max(5000, readTimeoutMs * 3));
   const plcReceiveTimeoutMs = parsePositiveMs(runtime?.plcReceiveTimeoutMs, Math.max(15000, readTimeoutMs * 6));
   const errorBackoffEnabled = runtime?.errorBackoffEnabled !== false;

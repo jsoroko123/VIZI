@@ -797,28 +797,96 @@ function New-Shortcut {
     [string]$ShortcutPath,
     [string]$TargetPath,
     [string]$WorkingDirectory,
-    [string]$Description
+    [string]$Description,
+    [string]$IconPath = ""
   )
   $wsh = New-Object -ComObject WScript.Shell
   $shortcut = $wsh.CreateShortcut($ShortcutPath)
   $shortcut.TargetPath = $TargetPath
   $shortcut.WorkingDirectory = $WorkingDirectory
   $shortcut.Description = $Description
-  $shortcut.IconLocation = "shell32.dll,220"
+  if ($IconPath -and (Test-Path $IconPath)) {
+    $shortcut.IconLocation = "$IconPath,0"
+  } else {
+    $shortcut.IconLocation = "shell32.dll,220"
+  }
   $shortcut.Save()
+}
+
+function Ensure-LogoIco {
+  param(
+    [string]$Root
+  )
+
+  $candidatePng = @(
+    (Join-Path $Root "public\logo.png"),
+    (Join-Path $Root "src\assets\Images\logo.png")
+  ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+  if (-not $candidatePng) {
+    return ""
+  }
+
+  $iconDir = Join-Path $Root "icons"
+  New-Item -ItemType Directory -Path $iconDir -Force | Out-Null
+  $icoPath = Join-Path $iconDir "mesora-logo.ico"
+
+  try {
+    Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue | Out-Null
+    $img = [System.Drawing.Image]::FromFile($candidatePng)
+    try {
+      $width = [Math]::Min(256, [int]$img.Width)
+      $height = [Math]::Min(256, [int]$img.Height)
+    } finally {
+      $img.Dispose()
+    }
+
+    $pngBytes = [System.IO.File]::ReadAllBytes($candidatePng)
+    $fs = [System.IO.File]::Open($icoPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+    try {
+      $bw = New-Object System.IO.BinaryWriter($fs)
+      try {
+        # ICONDIR
+        $bw.Write([UInt16]0) # reserved
+        $bw.Write([UInt16]1) # icon type
+        $bw.Write([UInt16]1) # image count
+        # ICONDIRENTRY
+        $bw.Write([Byte](if ($width -ge 256) { 0 } else { $width }))
+        $bw.Write([Byte](if ($height -ge 256) { 0 } else { $height }))
+        $bw.Write([Byte]0)   # color count
+        $bw.Write([Byte]0)   # reserved
+        $bw.Write([UInt16]1) # planes
+        $bw.Write([UInt16]32) # bit count
+        $bw.Write([UInt32]$pngBytes.Length) # bytes in resource
+        $bw.Write([UInt32]22) # image offset
+        $bw.Write($pngBytes)
+      } finally {
+        $bw.Dispose()
+      }
+    } finally {
+      $fs.Dispose()
+    }
+    return $icoPath
+  } catch {
+    Write-Warning "Could not generate Mesora icon from logo: $($_.Exception.Message)"
+    return ""
+  }
 }
 
 function New-WebsiteShortcut {
   param(
     [string]$ShortcutPath,
-    [string]$Url
+    [string]$Url,
+    [string]$IconPath = ""
   )
 
+  $iconFile = if ($IconPath -and (Test-Path $IconPath)) { $IconPath } else { "%SystemRoot%\System32\SHELL32.dll" }
+  $iconIndex = if ($IconPath -and (Test-Path $IconPath)) { 0 } else { 220 }
   $content = @"
 [InternetShortcut]
 URL=$Url
-IconFile=%SystemRoot%\System32\SHELL32.dll
-IconIndex=220
+IconFile=$iconFile
+IconIndex=$iconIndex
 "@
   Set-Content -Path $ShortcutPath -Value $content -Encoding Ascii
 }
@@ -834,27 +902,32 @@ function Create-Shortcuts {
   $startMenuPrograms = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
   $shortcutName = "Mesora.lnk"
   $webShortcutName = "Mesora Web.url"
+  $iconPath = Ensure-LogoIco -Root $Root
 
   Write-Step "Creating shortcuts"
   New-Shortcut `
     -ShortcutPath (Join-Path $desktopPath $shortcutName) `
     -TargetPath $StartCmdPath `
     -WorkingDirectory $Root `
-    -Description "Start Mesora"
+    -Description "Start Mesora" `
+    -IconPath $iconPath
 
   New-Shortcut `
     -ShortcutPath (Join-Path $startMenuPrograms $shortcutName) `
     -TargetPath $StartCmdPath `
     -WorkingDirectory $Root `
-    -Description "Start Mesora"
+    -Description "Start Mesora" `
+    -IconPath $iconPath
 
   New-WebsiteShortcut `
     -ShortcutPath (Join-Path $desktopPath $webShortcutName) `
-    -Url $WebUrl
+    -Url $WebUrl `
+    -IconPath $iconPath
 
   New-WebsiteShortcut `
     -ShortcutPath (Join-Path $startMenuPrograms $webShortcutName) `
-    -Url $WebUrl
+    -Url $WebUrl `
+    -IconPath $iconPath
 }
 
 if (-not $SourceRoot) {

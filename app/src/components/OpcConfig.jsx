@@ -100,13 +100,41 @@ function TrashCanIcon({ size = 12 }) {
   );
 }
 
+function EditPencilIcon({ size = 14 }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="m16.5 3.5 4 4L8 20l-5 1 1-5Z" />
+    </svg>
+  );
+}
+
+function SaveDiskIcon({ size = 14 }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+      <path d="M17 21v-8H7v8" />
+      <path d="M7 3v5h8" />
+    </svg>
+  );
+}
+
+function CancelXIcon({ size = 14 }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m18 6-12 12" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
 
 function defaultRuntimeConfig() {
   return {
     opcConnectionEnabled: true,
-    multiReadEnabled: true,
-    multiReadBatchSize: 16,
-    maxReadsPerTick: 300,
+    multiReadEnabled: false,
+    multiReadBatchSize: 8,
+    maxReadsPerTick: 150,
     mqttEnabled: false,
     mqttBrokerUrl: "mqtt://localhost:1883",
     mqttClientId: "",
@@ -116,11 +144,11 @@ function defaultRuntimeConfig() {
     mqttWriteTopic: "mesora/opc/write",
     mqttQos: 0,
     mqttRetain: false,
-    readTimeoutMs: 3000,
-    readRetryCount: 2,
-    readRetryDelayMs: 100,
-    plcConnectTimeoutMs: 9000,
-    plcReceiveTimeoutMs: 18000,
+    readTimeoutMs: 7000,
+    readRetryCount: 3,
+    readRetryDelayMs: 250,
+    plcConnectTimeoutMs: 20000,
+    plcReceiveTimeoutMs: 60000,
     errorBackoffEnabled: true,
     errorBackoffBaseMs: 1000,
     errorBackoffMaxMs: 15000,
@@ -130,8 +158,8 @@ function defaultRuntimeConfig() {
     reconnectDelayMs: 2000,
     reconnectMaxAttempts: "",
     heartbeatEnabled: true,
-    heartbeatFailureThreshold: 3,
-    heartbeatMs: 5000,
+    heartbeatFailureThreshold: 4,
+    heartbeatMs: 8000,
   };
 }
 
@@ -155,7 +183,10 @@ function normalizeRuntimeConfig(value) {
   const readRetryDelayMs = parseOptionalMs(incoming.readRetryDelayMs) || defaults.readRetryDelayMs;
   return {
     opcConnectionEnabled: incoming.opcConnectionEnabled !== false,
-    multiReadEnabled: incoming.multiReadEnabled !== false,
+    multiReadEnabled:
+      incoming.multiReadEnabled == null
+        ? defaults.multiReadEnabled
+        : incoming.multiReadEnabled !== false,
     multiReadBatchSize,
     maxReadsPerTick,
     mqttEnabled: incoming.mqttEnabled === true,
@@ -6273,7 +6304,37 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, flex: "1 1 0", minHeight: 0 }}>
           {opcConfigSectionTab === "opcua" ? (
           <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", minHeight: 0, height: "100%", overflow: "auto" }}>
-            <div style={{ fontWeight: 700, marginBottom: 10 }}>OPC UA</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+              <div style={{ fontWeight: 700 }}>OPC UA</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {opcUaEditing ? (
+                  <button
+                    type="button"
+                    onClick={cancelOpcUaEdit}
+                    style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 8px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                    title="Cancel OPC changes"
+                    aria-label="Cancel OPC changes"
+                  >
+                    <CancelXIcon />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!opcUaEditing) {
+                      beginOpcUaEdit();
+                      return;
+                    }
+                    void saveOpcUaEdit();
+                  }}
+                  style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 8px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                  title={opcUaEditing ? "Save OPC settings" : "Edit OPC settings"}
+                  aria-label={opcUaEditing ? "Save OPC settings" : "Edit OPC settings"}
+                >
+                  {opcUaEditing ? <SaveDiskIcon /> : <EditPencilIcon />}
+                </button>
+              </div>
+            </div>
             <label style={{ display: "grid", gap: 6, fontSize: 12, marginBottom: 10 }}>
               Port
               <input
@@ -6318,14 +6379,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     ...p,
                     runtime: {
                       ...normalizeRuntimeConfig(p.runtime),
-                      multiReadEnabled: true,
-                      multiReadBatchSize: 12,
-                      maxReadsPerTick: 250,
-                      readTimeoutMs: 3000,
-                      readRetryCount: 2,
-                      readRetryDelayMs: 100,
+                      multiReadEnabled: false,
+                      multiReadBatchSize: 8,
+                      maxReadsPerTick: 150,
+                      readTimeoutMs: 7000,
+                      readRetryCount: 3,
+                      readRetryDelayMs: 250,
                       heartbeatEnabled: true,
-                      heartbeatMs: 5000,
+                      heartbeatMs: 8000,
                     },
                   }))
                 }
@@ -6365,14 +6426,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     ...p,
                     runtime: {
                       ...normalizeRuntimeConfig(p.runtime),
-                      multiReadEnabled: true,
+                      multiReadEnabled: false,
                       multiReadBatchSize: 8,
                       maxReadsPerTick: 120,
-                      readTimeoutMs: 3500,
-                      readRetryCount: 2,
-                      readRetryDelayMs: 120,
+                      readTimeoutMs: 7000,
+                      readRetryCount: 3,
+                      readRetryDelayMs: 250,
                       heartbeatEnabled: true,
-                      heartbeatMs: 6000,
+                      heartbeatMs: 8000,
                     },
                   }))
                 }
@@ -6602,31 +6663,42 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 Enable Error Backoff
               </label>
             </div>
-            <div style={{ marginTop: "auto", display: "flex", gap: 8, paddingTop: 10, position: "sticky", bottom: 0, background: "var(--bg-elev)" }}>
-              {opcUaEditing ? (
-                <button onClick={cancelOpcUaEdit} style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 10, padding: "8px 12px" }}>
-                  Cancel
-                </button>
-              ) : null}
-              <button
-                onClick={() => {
-                  if (!opcUaEditing) {
-                    beginOpcUaEdit();
-                    return;
-                  }
-                  void saveOpcUaEdit();
-                }}
-                style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 10, padding: "8px 12px" }}
-              >
-                {opcUaEditing ? "Save" : "Edit"}
-              </button>
-            </div>
           </div>
           ) : null}
 
           {opcConfigSectionTab === "mqtt" ? (
           <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", minHeight: 0, height: "100%", overflow: "auto" }}>
-            <div style={{ fontWeight: 700, marginBottom: 10 }}>MQTT</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+              <div style={{ fontWeight: 700 }}>MQTT</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {opcUaEditing ? (
+                  <button
+                    type="button"
+                    onClick={cancelOpcUaEdit}
+                    style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 8px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                    title="Cancel OPC changes"
+                    aria-label="Cancel OPC changes"
+                  >
+                    <CancelXIcon />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!opcUaEditing) {
+                      beginOpcUaEdit();
+                      return;
+                    }
+                    void saveOpcUaEdit();
+                  }}
+                  style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 8px", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                  title={opcUaEditing ? "Save OPC settings" : "Edit OPC settings"}
+                  aria-label={opcUaEditing ? "Save OPC settings" : "Edit OPC settings"}
+                >
+                  {opcUaEditing ? <SaveDiskIcon /> : <EditPencilIcon />}
+                </button>
+              </div>
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, gridColumn: "1 / span 2" }} title="Enable MQTT publish/subscribe bridge. Save config and restart OPC server to apply.">
                 <input
@@ -6713,25 +6785,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 />
                 MQTT Retain Status
               </label>
-            </div>
-            <div style={{ marginTop: "auto", display: "flex", gap: 8, paddingTop: 10, position: "sticky", bottom: 0, background: "var(--bg-elev)" }}>
-              {opcUaEditing ? (
-                <button onClick={cancelOpcUaEdit} style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 10, padding: "8px 12px" }}>
-                  Cancel
-                </button>
-              ) : null}
-              <button
-                onClick={() => {
-                  if (!opcUaEditing) {
-                    beginOpcUaEdit();
-                    return;
-                  }
-                  void saveOpcUaEdit();
-                }}
-                style={{ border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 10, padding: "8px 12px" }}
-              >
-                {opcUaEditing ? "Save" : "Edit"}
-              </button>
             </div>
           </div>
           ) : null}
