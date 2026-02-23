@@ -1,10 +1,13 @@
 import { Fragment } from "react";
+import { createPortal } from "react-dom";
 
 export default function LiveAlarmBar({
   visible,
   hasLiveAlarms,
   theme,
   top,
+  left = 0,
+  right = 0,
   height,
   alarmCount,
   liveAlarmMarqueeViewportRef,
@@ -15,19 +18,21 @@ export default function LiveAlarmBar({
 }) {
   if (!visible) return null;
 
-  return (
+  const bar = (
     <div
       className={`vizi-live-alarmbar vizi-scroll ${hasLiveAlarms ? "is-alert" : "is-clear"}`}
       onClick={onOpenAlarms}
       title="Open alarms"
       style={{
         position: "fixed",
-        top,
-        left: 0,
-        right: 0,
+        inset: `${Number(top) || 0}px 0 auto 0`,
+        left,
+        right,
         width: "100vw",
-        maxWidth: "100vw",
+        minWidth: "100vw",
+        maxWidth: "none",
         height,
+        boxSizing: "border-box",
         zIndex: 230,
         borderTop: hasLiveAlarms
           ? "1px solid color-mix(in srgb, #ef4444 22%, rgba(255,255,255,0.3) 78%)"
@@ -102,7 +107,7 @@ export default function LiveAlarmBar({
             className="vizi-live-alarm-marquee-track"
             style={{ ["--alarm-marquee-duration"]: `${liveAlarmMarqueeDurationSec}s` }}
           >
-            {[0, 1].map((segment) => (
+            {[0, 1, 2, 3].map((segment) => (
               <Fragment key={`alarm-marquee-segment-${segment}`}>
                 <div
                   className="vizi-live-alarm-marquee-group"
@@ -127,4 +132,9 @@ export default function LiveAlarmBar({
       ) : null}
     </div>
   );
+
+  if (typeof document !== "undefined" && document.body) {
+    return createPortal(bar, document.body);
+  }
+  return bar;
 }

@@ -1,0 +1,17 @@
+{
+  "name": "Mesora",
+  "createdAt": "2026-02-23T19:33:32.089Z",
+  "appRoot": "C:\\Projects\\Vizi\\app",
+  "payload": [
+    "installer",
+    "ai-server",
+    "opc-server",
+    "scripts",
+    "dist",
+    "package.json",
+    "package-lock.json",
+    "README.md",
+    "Install-Mesora.bat",
+    "Install-Mesora.command"
+  ]
+}

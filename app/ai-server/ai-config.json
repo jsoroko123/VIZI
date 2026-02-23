@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "activeAgentId": "default-openai",
+  "agents": [
+    {
+      "id": "default-openai",
+      "name": "Ollama",
+      "provider": "ollama",
+      "model": "llama3.1",
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKey": "ollama",
+      "ollamaNativeUrl": "",
+      "enabled": true
+    }
+  ]
+}

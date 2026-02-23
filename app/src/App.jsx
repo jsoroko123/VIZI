@@ -628,7 +628,7 @@ export default function App() {
   const initialStoredProjectId = readStoredActiveProjectId();
   const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle"
   const DEFAULT_STROKE = "#808080";
-  const DEFAULT_FILL = "#cccccc";
+  const DEFAULT_FILL = "#CCCCCC";
   const [shapes, setShapes] = useState([]); // polyline | rect | circle | text
 
   // Multi-selection
@@ -672,7 +672,7 @@ export default function App() {
   const [overlayResize, setOverlayResize] = useState(null); // single: { id, anchorLocal, anchorWorld, startDist, origScaleX, origScaleY } | group: { kind:"group", anchorWorld, startDist, overlays:[{id, tx, ty, sx, sy}] }
   const [shapeResize, setShapeResize] = useState(null); // { corner, anchor:{x,y} }
 
-  // ✅ Export settings (dynamic)
+  // ? Export settings (dynamic)
   const [exportVB, setExportVB] = useState({ x: 0, y: 0, w: 1600, h: 900 });
   const [exportBasis, setExportBasis] = useState({ w: 1600, h: 900 }); // affects Perspective "basis"
   const [showZoom, setShowZoom] = useState(true);
@@ -706,7 +706,7 @@ export default function App() {
   const [liveEquipmentDockSideById, setLiveEquipmentDockSideById] = useState({});
   const [liveEquipmentFloatingById, setLiveEquipmentFloatingById] = useState({});
   const [liveEquipmentConnectFxById, setLiveEquipmentConnectFxById] = useState({});
-  const MAX_LIVE_EQUIPMENT_POPUPS = 10;
+  const MAX_LIVE_EQUIPMENT_POPUPS = 120;
   const prevLiveEquipmentOverlayIdsRef = useRef([]);
   const liveEquipmentConnectFxTimersRef = useRef(new Map());
   const liveEquipmentCardRefs = useRef(new Map());
@@ -788,6 +788,7 @@ export default function App() {
   const [projectIdentityReady, setProjectIdentityReady] = useState(() => !initialStoredProjectId);
   const [lastProjectSaveAt, setLastProjectSaveAt] = useState("");
   const [lastProjectSaveKind, setLastProjectSaveKind] = useState(""); // "auto" | "manual" | ""
+  const [hasPendingAutoSave, setHasPendingAutoSave] = useState(false);
   const [activeProjectUpdatedAt, setActiveProjectUpdatedAt] = useState("");
   const [activeProjectUpdatedBy, setActiveProjectUpdatedBy] = useState("");
   const [projectCursors, setProjectCursors] = useState([]);
@@ -1279,7 +1280,7 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    const onBeforeUnload = () => {
+    const onBeforeUnload = (event) => {
       const id = String(activeProjectIdRef.current || "").trim();
       if (!id) return;
       try {
@@ -1304,6 +1305,15 @@ export default function App() {
         );
       } catch {
         // ignore
+      }
+      const shouldWarn =
+        pendingSilentSaveRef.current ||
+        projectSaveInFlightRef.current ||
+        !!queuedSaveAfterFlightRef.current ||
+        hasUnsavedProjectChangesFromRefs();
+      if (shouldWarn) {
+        event.preventDefault();
+        event.returnValue = "";
       }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
@@ -2668,8 +2678,8 @@ export default function App() {
       borderRadius: 6,
       fontSize: compact ? 9 : 10,
       fontWeight: 700,
-      minHeight: compact ? 22 : 26,
-      padding: compact ? "3px 6px" : "4px 8px",
+      height: compact ? 26 : 30,
+      padding: compact ? "0 6px" : "0 8px",
       cursor: "pointer",
       opacity: 1,
       transition: "transform 90ms ease, filter 120ms ease, border-color 120ms ease",
@@ -2951,20 +2961,18 @@ export default function App() {
         details: buildLiveEquipmentDetails(overlay),
       }));
   }, [svgOverlays, liveEquipmentOverlayIds, svgLiveValuesByGroupPath, opcLiveValues, opcTags]);
-  const liveEquipmentDrawerEntry = useMemo(() => {
-    const id = String(liveEquipmentDrawerOverlayId || "").trim();
-    if (!id) return null;
-    return (
-      liveEquipmentOverlays.find((entry) => String(entry?.overlay?.id || "") === id) || null
-    );
-  }, [liveEquipmentOverlays, liveEquipmentDrawerOverlayId]);
+  const isLiveEquipmentLeftDockMode = useMemo(
+    () => !!String(liveEquipmentDrawerOverlayId || "").trim(),
+    [liveEquipmentDrawerOverlayId]
+  );
+  const liveEquipmentDrawerEntries = useMemo(() => {
+    if (!isLiveEquipmentLeftDockMode) return [];
+    return liveEquipmentOverlays;
+  }, [isLiveEquipmentLeftDockMode, liveEquipmentOverlays]);
   const liveEquipmentDockEntries = useMemo(() => {
-    const drawerId = String(liveEquipmentDrawerOverlayId || "").trim();
-    if (!drawerId) return liveEquipmentOverlays;
-    return liveEquipmentOverlays.filter(
-      (entry) => String(entry?.overlay?.id || "") !== drawerId
-    );
-  }, [liveEquipmentOverlays, liveEquipmentDrawerOverlayId]);
+    if (isLiveEquipmentLeftDockMode) return [];
+    return liveEquipmentOverlays;
+  }, [isLiveEquipmentLeftDockMode, liveEquipmentOverlays]);
   const liveEquipmentTopDockEntries = useMemo(
     () =>
       liveEquipmentDockEntries.filter(
@@ -3074,7 +3082,7 @@ export default function App() {
   }, [opcTags, selectedOverlayIds, selectedIds, svgOverlays]);
 
 
-  const PAN_SPEED = 0.05; // 🔥 adjust this to taste
+  const PAN_SPEED = 0.05; // ?? adjust this to taste
 
   const svgTagGroupMenuFilteredOptions = useMemo(() => {
     const q = normalizeTagValue(contextSvgTagQuery).toLowerCase();
@@ -3564,7 +3572,7 @@ export default function App() {
     const payload = getProjectPayload();
     const text = JSON.stringify(payload, null, 2);
 
-    // ✅ Best: overwrite same file via File System Access API
+    // ? Best: overwrite same file via File System Access API
     if (window.showSaveFilePicker) {
       const handle = await window.showSaveFilePicker({
         suggestedName: `${(projectName || "project").replace(/[^\w\- ]+/g, "").trim() || "project"}.json`,
@@ -3586,7 +3594,7 @@ export default function App() {
       return;
     }
 
-    // ✅ Fallback: browser can't overwrite → downloads a new file
+    // ? Fallback: browser can't overwrite ? downloads a new file
     downloadTextFile(`${projectName || "project"}.json`, text);
   }
 
@@ -3594,7 +3602,7 @@ export default function App() {
     const payload = getProjectPayload();
     const text = JSON.stringify(payload, null, 2);
 
-    // ✅ If we already have a handle, overwrite the same file
+    // ? If we already have a handle, overwrite the same file
     const handle = projectHandleRef.current;
     if (handle?.createWritable) {
       const writable = await handle.createWritable();
@@ -3608,7 +3616,7 @@ export default function App() {
   }
 
   async function loadProjectViaPicker() {
-    // ✅ Best: File System Access API open picker
+    // ? Best: File System Access API open picker
     if (window.showOpenFilePicker) {
       const [handle] = await window.showOpenFilePicker({
         multiple: false,
@@ -3633,13 +3641,13 @@ export default function App() {
 
       applyProjectPayload(data);
 
-      // ✅ remember this file so Save overwrites it next time
+      // ? remember this file so Save overwrites it next time
       projectHandleRef.current = handle;
       if (handle?.name) setProjectName(handle.name.replace(/\.json$/i, ""));
       return;
     }
 
-    // ✅ Fallback: trigger hidden <input type=file> (your existing projectFileRef approach)
+    // ? Fallback: trigger hidden <input type=file> (your existing projectFileRef approach)
     projectFileRef.current?.click();
   }
 
@@ -3867,6 +3875,11 @@ export default function App() {
       setActiveProjectUpdatedBy(String(next?.updated_by_username || ""));
       setLastProjectSaveAt(String(next?.updated_at || new Date().toISOString()));
       setLastProjectSaveKind(silent ? "auto" : "manual");
+      setHasPendingAutoSave(
+        hasUnsavedProjectChangesFromRefs() ||
+          pendingSilentSaveRef.current ||
+          !!queuedSaveAfterFlightRef.current
+      );
       if (!silent) {
         const by = String(next?.updated_by_username || "").trim();
         setProjectStatus(by ? `Saved (by ${by})` : "Saved");
@@ -3883,6 +3896,11 @@ export default function App() {
     } catch (err) {
       const message = err?.message || "Save failed.";
       setProjectStatus(options?.silent ? `Autosave failed: ${message}` : message);
+      setHasPendingAutoSave(
+        hasUnsavedProjectChangesFromRefs() ||
+          pendingSilentSaveRef.current ||
+          !!queuedSaveAfterFlightRef.current
+      );
       savedOk = false;
     } finally {
       projectSaveInFlightRef.current = false;
@@ -3907,6 +3925,7 @@ function flushScheduledProjectSave() {
     if (!pendingSilentSaveRef.current) return;
     if (!projectHydrationReadyRef.current) {
       pendingSilentSaveRef.current = false;
+      setHasPendingAutoSave(false);
       return;
     }
     if (projectSaveInFlightRef.current) {
@@ -3926,6 +3945,7 @@ function flushScheduledProjectSave() {
   function scheduleProjectAutoSave(delayMs = 450) {
     if (!projectHydrationReadyRef.current) return;
     pendingSilentSaveRef.current = true;
+    setHasPendingAutoSave(true);
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, delayMs);
   }
@@ -3976,6 +3996,7 @@ function flushScheduledProjectSave() {
       setActiveProjectUpdatedBy(String(data?.updated_by_username || ""));
       setLastProjectSaveAt(String(data?.updated_at || ""));
       setLastProjectSaveKind("");
+      setHasPendingAutoSave(false);
       lastProjectSignatureRef.current = projectPayloadSignature(data?.data || {});
       projectHandleRef.current = null;
       const by = String(data?.updated_by_username || "").trim();
@@ -4044,6 +4065,7 @@ function flushScheduledProjectSave() {
     setActiveProjectUpdatedBy("");
     setLastProjectSaveAt("");
     setLastProjectSaveKind("");
+    setHasPendingAutoSave(false);
     lastProjectSignatureRef.current = projectPayloadSignature({
       name: "Untitled",
       canvasBackground: normalizeProjectCanvasBackground(null),
@@ -4753,6 +4775,7 @@ function flushScheduledProjectSave() {
   }, []);
 
   function openDrawer(view, options = {}) {
+    if (!canLeaveSaveDrawerState()) return;
     const next = view || "ai";
     const areaForView =
       next === "plc"
@@ -4840,6 +4863,96 @@ function flushScheduledProjectSave() {
     setProfileError("");
     setProfileStatus("");
     setUserSettingsEditing(false);
+  }
+
+  function hasUnsavedProjectSettingsDraft() {
+    if (!projectNameEditing) return false;
+    return (
+      String(projectNameDraft || "") !== String(projectName || "") ||
+      normalizeProjectMode(projectModeDraft) !== normalizeProjectMode(projectMode) ||
+      normalizeProjectCanvasBackground(projectCanvasBackgroundDraft) !==
+        normalizeProjectCanvasBackground(projectCanvasBackground)
+    );
+  }
+
+  function hasUnsavedUserSettingsDraft() {
+    if (!userSettingsEditing) return false;
+    return (
+      String(profileDraft.username || "") !== String(user?.username || "") ||
+      String(profileDraft.display_name || "") !== String(user?.display_name || "") ||
+      String(profileDraft.avatar_url || "") !== String(user?.avatar_url || "")
+    );
+  }
+
+  function hasUnsavedSecurityDraft() {
+    return (
+      String(passwordDraft.current || "").trim().length > 0 ||
+      String(passwordDraft.next || "").trim().length > 0
+    );
+  }
+
+  function confirmDiscardDrawerChanges(message) {
+    if (typeof window === "undefined") return true;
+    return window.confirm(message);
+  }
+
+  function canCloseProjectDrawer() {
+    if (!showProjectDrawer) return true;
+    if (!hasUnsavedProjectSettingsDraft()) return true;
+    return confirmDiscardDrawerChanges(
+      "You have unsaved Project settings changes. Discard them and close the drawer?"
+    );
+  }
+
+  function canCloseUserDrawer() {
+    if (!showUserDrawer) return true;
+    if (!hasUnsavedUserSettingsDraft() && !hasUnsavedSecurityDraft()) return true;
+    return confirmDiscardDrawerChanges(
+      "You have unsaved User/Security changes. Discard them and close the drawer?"
+    );
+  }
+
+  function canLeaveSaveDrawerState() {
+    if (!canCloseProjectDrawer()) return false;
+    if (!canCloseUserDrawer()) return false;
+    return true;
+  }
+
+  function closeProjectDrawerSafely() {
+    if (!canCloseProjectDrawer()) return false;
+    setShowProjectDrawer(false);
+    return true;
+  }
+
+  function closeUserDrawerSafely() {
+    if (!canCloseUserDrawer()) return false;
+    setShowUserDrawer(false);
+    return true;
+  }
+
+  function closeSecurityDrawerSafely() {
+    if (hasUnsavedSecurityDraft()) {
+      const ok = confirmDiscardDrawerChanges(
+        "You have unsaved Security password changes. Discard them and close the drawer?"
+      );
+      if (!ok) return false;
+    }
+    setShowSecurityDrawer(false);
+    return true;
+  }
+
+  function openUserDrawerSafely() {
+    if (!canLeaveSaveDrawerState()) return;
+    setShowMainDrawer(false);
+    setShowSecurityDrawer(false);
+    setShowUserDrawer(true);
+  }
+
+  function openSecurityDrawerSafely() {
+    if (!canLeaveSaveDrawerState()) return;
+    setShowMainDrawer(false);
+    setShowUserDrawer(false);
+    setShowSecurityDrawer(true);
   }
 
   async function saveUserSettingsEdit() {
@@ -5010,7 +5123,7 @@ function flushScheduledProjectSave() {
   }, [canManageSecurity]);
 
 
-  // ✅ ZOOM (main svg)
+  // ? ZOOM (main svg)
   const ZOOM_MIN = 0.25;
   const ZOOM_MAX = 8;
   const ZOOM_STEP = 1.01;
@@ -5363,18 +5476,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
         continue;
       }
       if (s?.type === "text") {
-        const x = Number(s.x) || 0;
-        const y = Number(s.y) || 0;
-        const fontSize = Math.max(8, Number(s.fontSize) || 24);
-        const txt = String(s.text || "");
-        const estW = Math.max(10, txt.length * fontSize * 0.6);
-        const estH = Math.max(10, fontSize * 1.2);
-        const anchor = s.anchor === "middle" || s.anchor === "end" ? s.anchor : "start";
-        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
-        minX = Math.min(minX, x + ax);
-        minY = Math.min(minY, y - estH);
-        maxX = Math.max(maxX, x + ax + estW);
-        maxY = Math.max(maxY, y);
+        const tb = textBoxFromShape(s);
+        if (!tb) continue;
+        minX = Math.min(minX, tb.x);
+        minY = Math.min(minY, tb.y);
+        maxX = Math.max(maxX, tb.x + tb.w);
+        maxY = Math.max(maxY, tb.y + tb.h);
         count += 1;
       }
     }
@@ -5659,7 +5766,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const data = buildProjectPayload();
       const json = JSON.stringify(data, null, 2);
 
-      // ✅ Preferred: File System Access API (real overwrite)
+      // ? Preferred: File System Access API (real overwrite)
       if ("showSaveFilePicker" in window) {
         const handle = await window.showSaveFilePicker({
           suggestedName: `${projectName || "project"}.json`,
@@ -5682,7 +5789,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         return;
       }
 
-      // 🟡 Fallback: download (cannot overwrite same file in most browsers)
+      // ?? Fallback: download (cannot overwrite same file in most browsers)
       downloadTextFile(`${projectName || "project"}.json`, json, "application/json;charset=utf-8");
     }
 
@@ -5720,7 +5827,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setZoom(1);
       setPan({ x: 0, y: 0 });
 
-      // “forget” current file
+      // �forget� current file
       setProjectHandle(null);
       setProjectName("Untitled");
     }
@@ -5750,27 +5857,36 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
 
 
+  function textBoxFromShape(shape, options = {}) {
+    if (!shape) return null;
+    const minW = Number.isFinite(Number(options.minW)) ? Number(options.minW) : 10;
+    const minH = Number.isFinite(Number(options.minH)) ? Number(options.minH) : 10;
+    const charWidth = Number.isFinite(Number(options.charWidth)) ? Number(options.charWidth) : 0.6;
+    const fontSize = Math.max(8, Number(shape.fontSize ?? 24) || 24);
+    const text = String(shape.text ?? "");
+    const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
+    const w = Math.max(minW, text.length * fontSize * charWidth);
+    const h = Math.max(minH, fontSize * 1.2);
+    const ax = anchor === "middle" ? -w / 2 : anchor === "end" ? -w : 0;
+    return {
+      x: Number(shape.x ?? 0) + ax,
+      y: Number(shape.y ?? 0),
+      w,
+      h,
+      anchor,
+    };
+  }
+
   function approxTextBBox(t) {
     if (!t) return null;
-
-    const x = Number(t.x ?? 0);
-    const y = Number(t.y ?? 0);
-
-    const fontSize = Number(t.fontSize ?? 16);
-    const text = String(t.text ?? "");
-
-    // ✅ If you store width/height, prefer that
+    const base = textBoxFromShape(t, { minW: 8, minH: 8 });
+    if (!base) return null;
     const wStored = Number(t.w);
     const hStored = Number(t.h);
     if (Number.isFinite(wStored) && Number.isFinite(hStored)) {
-      return { x, y, w: wStored, h: hStored };
+      return { x: base.x, y: base.y, w: wStored, h: hStored };
     }
-
-    // ✅ Cheap approximation so properties panel works immediately
-    const w = Math.max(8, text.length * fontSize * 0.6);
-    const h = Math.max(8, fontSize * 1.2);
-
-    return { x, y, w, h };
+    return { x: base.x, y: base.y, w: base.w, h: base.h };
   }
 
 
@@ -5870,12 +5986,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const svg = doc.querySelector("svg");
       if (!svg) return null;
 
-      // ✅ 1) Root <svg> itself (your Inkscape files store it here)
+      // ? 1) Root <svg> itself (your Inkscape files store it here)
       const rootW = parseLen(svg.getAttribute("kewidth"));
       const rootH = parseLen(svg.getAttribute("keheight"));
       if (rootW > 0 && rootH > 0) return { w: rootW, h: rootH };
 
-      // ✅ 2) Any descendant element with kewidth/keheight
+      // ? 2) Any descendant element with kewidth/keheight
       const node = svg.querySelector("[kewidth][keheight]");
       if (node) {
         const w = parseLen(node.getAttribute("kewidth"));
@@ -5982,7 +6098,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
   }
 
-  // ✅ Mouse wheel zoom handler
+  // ? Mouse wheel zoom handler
   function onWheelZoom(e) {
     const target = e.target;
     const interactiveSelector =
@@ -5998,13 +6114,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     e.preventDefault();
 
-    const factor = e.deltaMode === 1 ? 20 : 1; // line → px
+    const factor = e.deltaMode === 1 ? 20 : 1; // line ? px
 
     let dx = 0;
     let dy = 0;
 
     if (e.shiftKey) {
-      // 🔥 SHIFT = horizontal pan
+      // ?? SHIFT = horizontal pan
       dx = e.deltaY * factor;
     } else {
       // normal vertical pan
@@ -6341,10 +6457,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
     }
 
-    // ✅ SNAP LOGIC (final)
-    // - no modifier → free
-    // - Shift → snap
-    // - Alt → never snap
+    // ? SNAP LOGIC (final)
+    // - no modifier ? free
+    // - Shift ? snap
+    // - Alt ? never snap
     if (evt.shiftKey && !evt.altKey) {
       x = snap(x, GRID);
       y = snap(y, GRID);
@@ -6383,6 +6499,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setEditingId(null);
     setInlineEdit({ id, value: String(t.text || ""), kind: "shape" });
     setShowHUD(false);
+    setTool("select");
   }
 
   function startRectAt(p) {
@@ -6433,7 +6550,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   // ---------- Overlay bbox helpers ----------
   function overlayLocalBBox(overlayId) {
-    // ✅ FIRST: use stored bbox if present (this is your kewidth/keheight box)
+    // ? FIRST: use stored bbox if present (this is your kewidth/keheight box)
     const o = svgOverlays.find((x) => x.id === overlayId);
     if (o?.bbox) return o.bbox;
 
@@ -7042,17 +7159,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (!s) continue;
 
       if (s.type === "text") {
-        const fontSize = Number(s.fontSize ?? 24);
-        const txt = String(s.text ?? "");
-        const estW = Math.max(10, txt.length * fontSize * 0.6);
-        const estH = Math.max(10, fontSize * 1.2);
-        const anchor = s.anchor ?? "start";
-        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+        const tb = textBoxFromShape(s);
+        if (!tb) continue;
         items.push({
-          x: Number(s.x ?? 0) + ax,
-          y: Number(s.y ?? 0) - estH,
-          w: estW,
-          h: estH,
+          x: tb.x,
+          y: tb.y,
+          w: tb.w,
+          h: tb.h,
         });
         continue;
       }
@@ -7189,7 +7302,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       refW = Math.max(0, leftmost.w);
     }
 
-    const dx = refW + pad; // ✅ width of leftmost element + offset
+    const dx = refW + pad; // ? width of leftmost element + offset
 
     // build duplicates
     pushHistory();
@@ -7199,7 +7312,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       .map((s) => {
         const id = uid();
 
-        // ✅ Text duplicate (shift right only)
+        // ? Text duplicate (shift right only)
         if (s.type === "text") {
           return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
         }
@@ -7208,7 +7321,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           return { ...s, id, x: Number(s.x ?? 0) + dx, y: Number(s.y ?? 0) };
         }
 
-        // ✅ Polyline duplicate
+        // ? Polyline duplicate
         if (Array.isArray(s.points)) {
           return {
             ...s,
@@ -7225,13 +7338,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
       .filter((o) => curSelOvers.includes(o.id))
       .map((o) => {
         const id = uid();
-        return { ...o, id, tx: o.tx + dx, ty: o.ty }; // ✅ keep Y
+        return { ...o, id, tx: o.tx + dx, ty: o.ty }; // ? keep Y
       });
 
     if (shapeDups.length) setShapes((prev) => [...prev, ...shapeDups]);
     if (overlayDups.length) setSvgOverlays((prev) => [...prev, ...overlayDups]);
 
-    // ✅ IMPORTANT: set selection AFTER state applies (so next Ctrl+D sees selection)
+    // ? IMPORTANT: set selection AFTER state applies (so next Ctrl+D sees selection)
     queueMicrotask(() => {
       setSelectedIds(shapeDups.map((s) => s.id));
       setSelectedOverlayIds(overlayDups.map((o) => o.id));
@@ -7286,17 +7399,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const boxes = [];
       for (const s of clip.shapes) {
         if (s.type === "text") {
-          const fontSize = Number(s.fontSize ?? 24);
-          const txt = String(s.text ?? "");
-          const estW = Math.max(10, txt.length * fontSize * 0.6);
-          const estH = Math.max(10, fontSize * 1.2);
-          const anchor = s.anchor ?? "start";
-          const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+          const tb = textBoxFromShape(s);
+          if (!tb) continue;
           boxes.push({
-            x: Number(s.x ?? 0) + ax,
-            y: Number(s.y ?? 0) - estH,
-            w: estW,
-            h: estH,
+            x: tb.x,
+            y: tb.y,
+            w: tb.w,
+            h: tb.h,
           });
         } else if (s.type === "rect" || s.type === "circle") {
           boxes.push({
@@ -7378,7 +7487,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const poly = {
       id,
       type: "polyline",
-      tagPath: "", // ✅ NEW
+      tagPath: "", // ? NEW
       points: [p, { x: p.x, y: p.y }], // last is preview
       stroke: "#808080",
       fill: "transparent",
@@ -7577,7 +7686,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   //   e.preventDefault();
   //   e.stopPropagation();
 
-  //   const p = svgPoint(e);      // uses clientX/clientY → world coords
+  //   const p = svgPoint(e);      // uses clientX/clientY ? world coords
   //   setImportAnchor(p);
   //   console.log("IMPORT MARKER SET:", p);
   // }
@@ -7742,7 +7851,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const anchorWorld = worldFromLocal(o, anchorLocal.x, anchorLocal.y);
 
     const startDist = Math.max(1, distance(startWorld, anchorWorld));
-    pushHistory(); // ✅ UNDO: start of overlay resize
+    pushHistory(); // ? UNDO: start of overlay resize
     setOverlayResize({
       id,
       isWidget: !!o?.widget,
@@ -7760,7 +7869,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const svg = doc.querySelector("svg");
       if (!svg) return null;
 
-      // 1️⃣ Ignition-style properties
+      // 1ï¸âƒ£ Ignition-style properties
       const kw = svg.getAttribute("kewidth");
       const kh = svg.getAttribute("keheight");
 
@@ -7772,7 +7881,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         }
       }
 
-      // 2️⃣ Standard width/height
+      // 2ï¸âƒ£ Standard width/height
       const wAttr = svg.getAttribute("width");
       const hAttr = svg.getAttribute("height");
 
@@ -7784,7 +7893,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         }
       }
 
-      // 3️⃣ ViewBox fallback
+      // 3ï¸âƒ£ ViewBox fallback
       const vb = svg.getAttribute("viewBox");
       if (vb) {
         const [, , vw, vh] = vb.split(/\s+/).map(Number);
@@ -7801,7 +7910,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
 
 
-  // ✅ Lazy/eager compatible SVG import
+  // ? Lazy/eager compatible SVG import
   async function onPickSvg(fileKey, anchorOverride, overlayExtras = {}, rawOverride = null) {
     const entry = rawOverride ?? getSvgEntry(fileKey);
     if (!entry) return;
@@ -7812,7 +7921,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const parsed = stripOuterSvg(raw);
     if (!parsed) return;
 
-    pushHistory(); // ✅ undo import
+    pushHistory(); // ? undo import
 
     const pad = 40;
     const availW = vbW - pad * 2;
@@ -7822,13 +7931,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const parsedEType = extractSvgEType(raw, fileKey);
     const baseVb = parsed.vb; // {x,y,w,h}
 
-    // ✅ If key exists, overlay local coords become 0..key.w / 0..key.h
+    // ? If key exists, overlay local coords become 0..key.w / 0..key.h
     let localVb = key ? { x: 0, y: 0, w: key.w, h: key.h } : baseVb;
     if (!localVb || !Number.isFinite(localVb.w) || !Number.isFinite(localVb.h) || localVb.w <= 0 || localVb.h <= 0) {
       localVb = { x: 0, y: 0, w: 100, h: 100 };
     }
 
-    // ✅ Normalize inner so geometry matches localVb
+    // ? Normalize inner so geometry matches localVb
     let inner = parsed.inner;
 
     if (key && baseVb?.w > 0 && baseVb?.h > 0) {
@@ -7845,7 +7954,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const srcW = Math.max(localVb.w, 1);
     const srcH = Math.max(localVb.h, 1);
 
-    // ✅ If kewidth/keheight exists, import at EXACT size (1 world unit = 1 key unit)
+    // ? If kewidth/keheight exists, import at EXACT size (1 world unit = 1 key unit)
     // Otherwise default to 350 width.
     const scale = key ? 1 : Math.min(350 / srcW, vbH / srcH);
 
@@ -7857,7 +7966,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const tx = anchor.x - scale * srcCx;
     const ty = anchor.y - scale * srcCy;
 
-    // ✅ bbox must be in the SAME local coordinate system the overlay uses
+    // ? bbox must be in the SAME local coordinate system the overlay uses
     const bbox = { x: localVb.x, y: localVb.y, width: localVb.w, height: localVb.h };
     const clamped = clampOverlayTransformToCanvas(tx, ty, scale, scale, bbox);
 
@@ -8131,7 +8240,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const s = shapes.find((x) => x.id === id);
       if (!s) continue;
 
-      // ✅ Polyline
+      // ? Polyline
       if (s.type === "polyline" || Array.isArray(s.points)) {
         if (!Array.isArray(s.points)) continue;
         const bb = bboxOfPoints(s.points);
@@ -8140,27 +8249,20 @@ const CONTENT_FIT_HEADROOM = 0.94;
         continue;
       }
 
-      // ✅ Text
+      // ? Text
       if (s.type === "text") {
-        const fontSize = Number(s.fontSize ?? 24);
-        const txt = String(s.text ?? "");
-        const estW = Math.max(10, txt.length * fontSize * 0.6); // rough width
-        const estH = Math.max(10, fontSize * 1.2);
-
-        // anchor: start | middle | end
-        const anchor = s.anchor ?? "start";
-        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
-
+        const tb = textBoxFromShape(s);
+        if (!tb) continue;
         boxes.push({
-          x: Number(s.x ?? 0) + ax,
-          y: Number(s.y ?? 0) - estH, // ✅ better bbox: y is top; text y is baseline
-          w: estW,
-          h: estH,
+          x: tb.x,
+          y: tb.y,
+          w: tb.w,
+          h: tb.h,
         });
         continue;
       }
 
-      // ✅ Rectangle
+      // ? Rectangle
       if (s.type === "rect" || s.type === "circle") {
         boxes.push({
           x: Number(s.x ?? 0),
@@ -8221,7 +8323,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     strokeWidth: "",
     arrowStart: "none",
     arrowEnd: "none",
-    lineStyle: "solid",   // ✅ NEW
+    lineStyle: "solid",   // ? NEW
     x: "",
     y: "",
     w: "",
@@ -8306,7 +8408,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     let strokeWidth = "";
     let arrowStart = "none";
     let arrowEnd = "none";
-    let lineStyle = "solid"; // ✅ NEW
+    let lineStyle = "solid"; // ? NEW
 
     if (isSingle && singleKind === "Polyline") {
       const s = shapes.find((x) => x.id === singleId);
@@ -8317,7 +8419,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         stroke = s.stroke || DEFAULT_STROKE;
         arrowStart = s.arrowStart ?? "none";
         arrowEnd = s.arrowEnd ?? "none";
-        lineStyle = s.lineStyle ?? "solid"; // ✅ NEW
+        lineStyle = s.lineStyle ?? "solid"; // ? NEW
       }
     } else if (isSingle && (singleKind === "SVG" || singleKind === "Widget")) {
       const o = svgOverlays.find((x) => x.id === singleId);
@@ -8461,7 +8563,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       strokeWidth,
       arrowStart,
       arrowEnd,
-      lineStyle, // ✅ NEW
+      lineStyle, // ? NEW
       x: String(fmt(selectedBBox.x)),
       y: String(fmt(selectedBBox.y)),
       w: String(fmt(selectedBBox.w)),
@@ -8886,7 +8988,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         )
       );
 
-      return; // ✅ stop here so old min(sx,sy) logic doesn't interfere
+      return; // ? stop here so old min(sx,sy) logic doesn't interfere
     }
 
     const base = selectedBBox;
@@ -8911,7 +9013,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         prev.map((s) => {
           if (!selectedIds.includes(s.id)) return s;
 
-          // ✅ Polyline
+          // ? Polyline
           if ((s.type === "polyline" || Array.isArray(s.points)) && Array.isArray(s.points)) {
             const pts = s.points.map((p) => ({
               x: base.x + (p.x - base.x) * sx + dx,
@@ -8920,7 +9022,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             return { ...s, points: pts };
           }
 
-          // ✅ Text
+          // ? Text
           if (s.type === "text") {
             const newX = base.x + (Number(s.x ?? 0) - base.x) * sx + dx;
             const newY = base.y + (Number(s.y ?? 0) - base.y) * sy + dy;
@@ -9133,7 +9235,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const list = Array.isArray(prev) ? prev : [];
       if (list.some((x) => String(x || "") === nextId)) return list;
       const without = list.filter((x) => String(x || "") !== nextId);
-      return [...without, nextId].slice(-MAX_LIVE_EQUIPMENT_POPUPS);
+      const nextList = [...without, nextId];
+      if (nextList.length <= MAX_LIVE_EQUIPMENT_POPUPS) return nextList;
+      return nextList.slice(nextList.length - MAX_LIVE_EQUIPMENT_POPUPS);
     });
   }
 
@@ -9145,7 +9249,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === String(id || ""));
         return overlay && !overlay.widget;
       });
-      const capped = keep.slice(-MAX_LIVE_EQUIPMENT_POPUPS);
+      const capped =
+        keep.length > MAX_LIVE_EQUIPMENT_POPUPS
+          ? keep.slice(keep.length - MAX_LIVE_EQUIPMENT_POPUPS)
+          : keep;
       return capped.length === list.length ? list : capped;
     });
     setLiveEquipmentDockSideById((prev) => {
@@ -9200,7 +9307,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const nextId = String(id || "").trim();
     if (!nextId) return;
     if (String(liveEquipmentDrawerOverlayId || "") === nextId) {
-      setLiveEquipmentDrawerOverlayId("");
+      const remainingIds = (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds : [])
+        .map((x) => String(x || "").trim())
+        .filter((x) => x && x !== nextId);
+      setLiveEquipmentDrawerOverlayId(remainingIds[0] || "");
     }
     setLiveEquipmentDockSideById((prev) => {
       const map = prev && typeof prev === "object" ? prev : {};
@@ -9514,7 +9624,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     e.preventDefault();
     e.stopPropagation();
 
-    // ✅ While drawing: right-click removes the last SAVED segment (2 entries back)
+    // ? While drawing: right-click removes the last SAVED segment (2 entries back)
     if (tool === "polyline" && drawing?.mode === "draw-poly") {
       const id = drawing.id;
 
@@ -9538,7 +9648,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
-    // ✅ Not drawing: keep your import-marker right-double-click
+    // ? Not drawing: keep your import-marker right-double-click
     const now = performance.now();
     const dt = now - (lastRightClickRef.current || 0);
     lastRightClickRef.current = now;
@@ -9563,18 +9673,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     for (const s of shapesRef.current || []) {
       if (s.type === "text") {
-        const fontSize = Number(s.fontSize ?? 24);
-        const txt = String(s.text ?? "");
-        const estW = Math.max(10, txt.length * fontSize * 0.6);
-        const estH = Math.max(10, fontSize * 1.2);
-        const anchor = s.anchor ?? "start";
-        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+        const tb = textBoxFromShape(s);
+        if (!tb) continue;
         const pad = 8;
         const r = {
-          x: Number(s.x ?? 0) + ax - pad,
-          y: Number(s.y ?? 0) - pad,
-          w: Math.max(estW + pad * 2, 60),
-          h: Math.max(estH + pad * 2, 28),
+          x: tb.x - pad,
+          y: tb.y - pad,
+          w: Math.max(tb.w + pad * 2, 60),
+          h: Math.max(tb.h + pad * 2, 28),
         };
         if (pointInRect(p, r)) { hit = true; hitShapeId = s.id; break; }
       } else if (s.type === "rect" || s.type === "circle") {
@@ -9609,7 +9715,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
     }
 
-    // ✅ If nothing directly hit, allow right-click on current group bbox
+    // ? If nothing directly hit, allow right-click on current group bbox
     if (!hit && selectedBBox) {
       const r = { x: selectedBBox.x, y: selectedBBox.y, w: selectedBBox.w, h: selectedBBox.h };
       if (pointInRect(p, r)) {
@@ -9752,6 +9858,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (drawing?.mode === "draw-poly") {
       const id = drawing.id;
+      const PREVIEW_SMOOTH_ALPHA = 0.45;
+      const PREVIEW_MIN_MOVE = 0.35;
 
       setShapes((prev) =>
         prev.map((s) => {
@@ -9760,10 +9868,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
           const pts = s.points.slice();
           const fixed = pts.slice(0, -1);             // points excluding preview
           const last = fixed[fixed.length - 1] || pts[0];
+          const prevPreview = pts[pts.length - 1] || last;
 
           let nextP = svgPoint(e);
 
-          // ✅ ALT = straight line (horizontal/vertical) from last fixed point
+          // ? ALT = straight line (horizontal/vertical) from last fixed point
           if (e.altKey && last) {
             nextP = constrainHV(last, nextP);
           }
@@ -9772,6 +9881,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
           const SNAP_DIST = 12;
           if (first && distance(nextP, first) <= SNAP_DIST) {
             nextP = { x: first.x, y: first.y };
+          }
+
+          // Smooth preview updates to reduce micro-jitter while drawing.
+          // Keep ALT constrained mode unfiltered for precise orthogonal segments.
+          if (!e.altKey && prevPreview) {
+            nextP = {
+              x: prevPreview.x + (nextP.x - prevPreview.x) * PREVIEW_SMOOTH_ALPHA,
+              y: prevPreview.y + (nextP.y - prevPreview.y) * PREVIEW_SMOOTH_ALPHA,
+            };
+          }
+          if (prevPreview && distance(prevPreview, nextP) < PREVIEW_MIN_MOVE) {
+            return s;
           }
 
           pts[pts.length - 1] = { x: nextP.x, y: nextP.y };
@@ -10139,7 +10260,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (marquee) {
       const r = rectFrom2Points(marquee.start, marquee.cur);
 
-      // ✅ Shapes (polylines + text + rect) in rect
+      // ? Shapes (polylines + text + rect) in rect
       const hitShapeIds = shapes
         .filter((s) => {
           // Polyline bbox
@@ -10152,19 +10273,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
           // Text bbox (approx)
           if (s.type === "text") {
-            const fontSize = Number(s.fontSize ?? 24);
-            const txt = String(s.text ?? "");
-            const estW = Math.max(10, txt.length * fontSize * 0.6);
-            const estH = Math.max(10, fontSize * 1.2);
-
-            const anchor = s.anchor ?? "start";
-            const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
-
+            const tb = textBoxFromShape(s);
+            if (!tb) return false;
             const br = {
-              x: Number(s.x ?? 0) + ax,
-              y: Number(s.y ?? 0) - estH, // baseline -> top
-              w: estW,
-              h: estH,
+              x: tb.x,
+              y: tb.y,
+              w: tb.w,
+              h: tb.h,
             };
             return rectsIntersect(r, br);
           }
@@ -10183,7 +10298,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         })
         .map((s) => s.id);
 
-      // ✅ Overlays in rect
+      // ? Overlays in rect
       const hitOvers = svgOverlays
         .filter((o) => {
           const bb = overlayLocalBBox(o.id);
@@ -10483,6 +10598,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function shapeSelectionUI() {
     if (!selectedBBox || !selectedIds.length || selectedOverlayIds.length) return null;
+    const selectedShapeItems = (Array.isArray(shapesRef.current) ? shapesRef.current : []).filter(
+      (s) => (selectedIds || []).includes(s?.id)
+    );
+    const onlyPolylinesSelected =
+      selectedShapeItems.length > 0 &&
+      selectedShapeItems.every(
+        (s) => String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points)
+      );
+    if (onlyPolylinesSelected) return null;
     const x = Number(selectedBBox.x || 0);
     const y = Number(selectedBBox.y || 0);
     const w = Math.max(1, Number(selectedBBox.w || 0));
@@ -11621,7 +11745,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const liveBottomCarouselHeightPx = isLiveMode && isLiveMobile ? 84 : 0;
   const canvasReadOnly = isLiveMode || !canEditProject;
   const liveEquipmentDrawerWidthPx =
-    isLiveMode && liveEquipmentDrawerEntry ? 360 : 0;
+    isLiveMode && isLiveEquipmentLeftDockMode ? 360 : 0;
   const mainDrawerAppendFromLeft =
     isLiveMode && showMainDrawer && drawerView === "database";
   const mainDrawerAppendLeftPx =
@@ -11656,22 +11780,31 @@ const CONTENT_FIT_HEADROOM = 0.94;
   );
   const hasLiveAlarms = liveActiveAlarmsWithOccurred.length > 0;
   const liveAlarmMarqueeItems = useMemo(() => {
-    return (liveActiveAlarmsWithOccurred || []).map((alarm) => {
+    const out = [];
+    const seen = new Set();
+    for (const alarm of liveActiveAlarmsWithOccurred || []) {
       const at =
         Number(alarm?.occurredAt || 0) > 0
           ? new Date(alarm.occurredAt).toLocaleString()
           : "";
-      return {
-        id: String(alarm.id || ""),
-        label: `${alarm.label}: ${alarm.value} ${alarm.operator} ${alarm.threshold}`,
+      const id = String(alarm?.id || "").trim();
+      const label = `${alarm?.label || "Alarm"}: ${alarm?.value ?? "-"} ${alarm?.operator || ""} ${alarm?.threshold ?? ""}`.trim();
+      const dedupeKey = id || `${alarm?.topic || ""}|${label}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      out.push({
+        id,
+        label,
         at,
-        title: `${alarm.topic ? `${alarm.topic} • ` : ""}${alarm.label}: ${alarm.value} ${alarm.operator} ${alarm.threshold}${at ? ` • ${at}` : ""}`,
-      };
-    });
+        title: `${alarm.topic ? `${alarm.topic} \u2022 ` : ""}${label}${at ? ` \u2022 ${at}` : ""}`,
+      });
+    }
+    return out;
   }, [liveActiveAlarmsWithOccurred]);
-  const [liveAlarmMarqueeDurationSec, setLiveAlarmMarqueeDurationSec] = useState(
-    LIVE_ALARM_MARQUEE_DURATION_SEC
-  );
+  const liveAlarmMarqueeDurationSec = LIVE_ALARM_MARQUEE_DURATION_SEC;
+  const userSettingsDirty = hasUnsavedUserSettingsDraft();
+  const projectSettingsDirty = hasUnsavedProjectSettingsDraft();
+  const securitySettingsDirty = hasUnsavedSecurityDraft();
   const useLightLiveDataSurface = isLiveMode && databaseDataOnlyMode && theme !== "dark";
   const alarmDatabasePath = useMemo(() => {
     const list = Array.isArray(databaseTablesForMenu) ? databaseTablesForMenu : [];
@@ -11727,46 +11860,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return next;
     });
   }, [liveActiveAlarms]);
-
-  useEffect(() => {
-    const viewport = liveAlarmMarqueeViewportRef.current;
-    const track = liveAlarmMarqueeTrackRef.current;
-    if (!viewport || !track || !hasLiveAlarms) {
-      setLiveAlarmMarqueeDurationSec(LIVE_ALARM_MARQUEE_DURATION_SEC);
-      return undefined;
-    }
-
-    const pxPerSec = 52; // keep scroll speed visually constant
-    const compute = () => {
-      const total = Number(track.scrollWidth || 0);
-      // track is rendered as three identical segments (group+gap x3)
-      const oneLoopDistance = total > 0 ? total / 3 : 0;
-      if (!Number.isFinite(oneLoopDistance) || oneLoopDistance <= 0) return;
-      const next = Math.max(18, Math.min(240, oneLoopDistance / pxPerSec));
-      setLiveAlarmMarqueeDurationSec((prev) =>
-        Math.abs(Number(prev || 0) - next) >= 0.25 ? next : prev
-      );
-    };
-
-    compute();
-    let raf = 0;
-    const schedule = () => {
-      if (raf) return;
-      raf = window.requestAnimationFrame(() => {
-        raf = 0;
-        compute();
-      });
-    };
-    const ro = new ResizeObserver(schedule);
-    ro.observe(viewport);
-    ro.observe(track);
-    window.addEventListener("resize", schedule);
-    return () => {
-      if (raf) window.cancelAnimationFrame(raf);
-      ro.disconnect();
-      window.removeEventListener("resize", schedule);
-    };
-  }, [hasLiveAlarms, liveAlarmMarqueeItems, theme]);
 
   return (
     <div
@@ -11888,8 +11981,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         }}
         liveClickable={isLiveMode && canInteractLiveScreens}
         isLiveMode={isLiveMode}
-          zoom={zoom}          // ✅ NEW
-          onWheel={onWheelZoom} // ✅ NEW
+          zoom={zoom}          // ? NEW
+          onWheel={onWheelZoom} // ? NEW
           vbW={vbW}
           vbH={vbH}
           tool={isLiveMode ? "select" : tool}
@@ -11953,7 +12046,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         collaboratorCursors={projectCursors}
       />
 
-      {isLiveMode && liveEquipmentDrawerEntry ? (
+      {isLiveMode && isLiveEquipmentLeftDockMode && liveEquipmentDrawerEntries.length ? (
         <div
           style={{
             position: "fixed",
@@ -11968,7 +12061,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             background: "var(--bg-elev)",
             boxShadow: "0 16px 32px rgba(2,8,23,0.22)",
             display: "grid",
-            gridTemplateRows: "auto auto 1fr",
+            gridTemplateRows: "auto 1fr",
             overflow: "hidden",
           }}
         >
@@ -11983,7 +12076,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             }}
           >
             <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
-              {getOverlayPopupTagName(liveEquipmentDrawerEntry.overlay)}
+              Equipment Dock ({liveEquipmentDrawerEntries.length})
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <button
@@ -11992,67 +12085,102 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   border: "1px solid var(--border)",
                   background: "var(--bg)",
                   borderRadius: 7,
-                  padding: "2px 8px",
                   cursor: "pointer",
                   color: "var(--text)",
                   fontSize: 11,
-                  fontWeight: 700,
+                  width: 26,
+                  height: 24,
+                  display: "grid",
+                  placeItems: "center",
+                  padding: 0,
                 }}
                 title="Return to bottom dock"
+                aria-label="Return to bottom dock"
               >
-                Dock
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M12 4v9m0 0-3-3m3 3 3-3M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               </button>
-              <button
-                onClick={() => closeLiveEquipmentCard(liveEquipmentDrawerEntry.overlay?.id)}
+            </div>
+          </div>
+          <div className="vizi-scroll" style={{ overflow: "auto", padding: "10px", display: "grid", gap: 10, alignContent: "start" }}>
+            {liveEquipmentDrawerEntries.map(({ overlay, details }) => (
+              <div
+                key={`live-equipment-drawer-card-${overlay.id}`}
                 style={{
+                  borderRadius: 10,
                   border: "1px solid var(--border)",
                   background: "var(--bg)",
-                  borderRadius: 7,
-                  padding: "2px 6px",
-                  cursor: "pointer",
-                  color: "var(--text)",
-                  fontSize: 11,
+                  boxShadow: "0 8px 16px rgba(0,0,0,0.2)",
+                  padding: 9,
+                  display: "grid",
+                  gap: 6,
+                  alignContent: "start",
                 }}
-                aria-label="Close equipment info"
-                title="Close"
               >
-                ✕
-              </button>
-            </div>
-          </div>
-          <div style={{ padding: "8px 10px 0", display: "grid", gap: 4 }}>
-            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              Tag Name: {getOverlayPopupTagName(liveEquipmentDrawerEntry.overlay)}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              eType: {String(resolveOverlayEType(liveEquipmentDrawerEntry.overlay) || "-")}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              Overlay ID: {String(liveEquipmentDrawerEntry.overlay?.id || "-")}
-            </div>
-          </div>
-          <div className="vizi-scroll" style={{ overflow: "auto", padding: "8px 10px 10px", display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
-            {Array.isArray(liveEquipmentDrawerEntry.details) &&
-            liveEquipmentDrawerEntry.details.length ? (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "6px 10px", fontSize: 11 }}>
-                {liveEquipmentDrawerEntry.details.map((row, idx) => (
-                  <Fragment key={`live-equipment-drawer-row-${liveEquipmentDrawerEntry.overlay?.id}-${idx}`}>
-                    <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
-                    <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
-                  </Fragment>
-                ))}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+                    {getOverlayPopupTagName(overlay)}
+                  </div>
+                  <button
+                    onClick={() => closeLiveEquipmentCard(overlay?.id)}
+                    style={{
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-elev)",
+                      borderRadius: 7,
+                      width: 26,
+                      height: 24,
+                      display: "grid",
+                      placeItems: "center",
+                      padding: 0,
+                      cursor: "pointer",
+                      color: "var(--text)",
+                      fontSize: 11,
+                    }}
+                    aria-label="Close equipment info"
+                    title="Close"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Tag Name: {getOverlayPopupTagName(overlay)}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  eType: {String(resolveOverlayEType(overlay) || "-")}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Overlay ID: {String(overlay?.id || "-")}
+                </div>
+                <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6, color: "var(--text)" }}>Live Data</div>
+                  {Array.isArray(details) && details.length ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 10, rowGap: 4, alignContent: "start", alignItems: "center", fontSize: 11 }}>
+                      {details.map((row, idx) => (
+                        <Fragment key={`live-equipment-drawer-row-${overlay?.id}-${idx}`}>
+                          <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
+                          <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
+                        </Fragment>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      No live values found for this equipment.
+                    </div>
+                  )}
+                </div>
+                {renderLiveMotorControls(overlay, false)}
               </div>
-            ) : (
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                No live values found for this equipment.
-              </div>
-            )}
-            {renderLiveMotorControls(liveEquipmentDrawerEntry.overlay, false)}
+            ))}
           </div>
         </div>
       ) : null}
-
       {isLiveMode && liveEquipmentDockEntries.length > 0 ? (
         <>
           <LiveEquipmentConnectorLayer
@@ -12124,6 +12252,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         padding: 9,
                         display: "grid",
                         gap: 6,
+                        alignContent: "start",
                         pointerEvents: "auto",
                       }}
                       className="vizi-scroll"
@@ -12171,11 +12300,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     <button
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={() => closeLiveEquipmentCard(overlay.id)}
-                      style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, padding: "2px 6px", cursor: "pointer", color: "var(--text)", fontSize: 11 }}
+                      style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, width: 26, height: 24, display: "grid", placeItems: "center", padding: 0, cursor: "pointer", color: "var(--text)", fontSize: 11 }}
                       aria-label="Close equipment info"
                       title="Close"
                     >
-                      ✕
+                      {"\u2715"}
                     </button>
                   </div>
                 </div>
@@ -12191,7 +12320,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, color: "var(--text)" }}>Live Data</div>
                   {details.length ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "4px 8px", fontSize: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 8, rowGap: 3, alignContent: "start", alignItems: "center", fontSize: 10 }}>
                       {details.map((row, idx) => (
                         <Fragment key={`live-equipment-row-${overlay.id}-${idx}`}>
                           <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
@@ -12236,6 +12365,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   padding: 9,
                   display: "grid",
                   gap: 6,
+                  alignContent: "start",
                   zIndex: 206,
                   pointerEvents: "auto",
                 }}
@@ -12259,15 +12389,25 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         borderRadius: 7,
                         cursor: "pointer",
                         color: "var(--text)",
-                        fontSize: 10,
+                        fontSize: 11,
+                        width: 26,
                         height: 24,
-                        padding: "0 8px",
-                        fontWeight: 700,
+                        display: "grid",
+                        placeItems: "center",
+                        padding: 0,
                       }}
                       title="Dock"
                       aria-label="Dock"
                     >
-                      Dock
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          d="M12 4v9m0 0-3-3m3 3 3-3M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
                     </button>
                     <button
                       onMouseDown={(e) => e.stopPropagation()}
@@ -12301,11 +12441,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     <button
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={() => closeLiveEquipmentCard(id)}
-                      style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, padding: "2px 6px", cursor: "pointer", color: "var(--text)", fontSize: 11 }}
+                      style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, width: 26, height: 24, display: "grid", placeItems: "center", padding: 0, cursor: "pointer", color: "var(--text)", fontSize: 11 }}
                       aria-label="Close equipment info"
                       title="Close"
                     >
-                      ✕
+                      {"\u2715"}
                     </button>
                   </div>
                 </div>
@@ -12321,7 +12461,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, color: "var(--text)" }}>Live Data</div>
                   {details.length ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "4px 8px", fontSize: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 8, rowGap: 3, alignContent: "start", alignItems: "center", fontSize: 10 }}>
                       {details.map((row, idx) => (
                         <Fragment key={`live-equipment-floating-row-${overlay.id}-${idx}`}>
                           <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
@@ -12406,7 +12546,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           const input = e.currentTarget;
           const file = input.files?.[0];
 
-          // ✅ allow selecting same file again later
+          // ? allow selecting same file again later
           input.value = "";
 
           if (!file) return;
@@ -12438,7 +12578,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
           if (Number.isFinite(data.zoom)) setZoom(data.zoom);
 
-          // ✅ update project metadata
+          // ? update project metadata
           setProjectHandle(null); // loaded from download; no writable handle
           setProjectName(
             (data?.name && String(data.name)) ||
@@ -12736,6 +12876,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 onClick: () => saveProjectToDb({ silent: false, teamMerge: true }),
                 title: "Save Project",
                 disabled: String(projectStatus || "").trim().toLowerCase() === "saving...",
+                pendingAutosave: hasPendingAutoSave,
               },
             ].map((btn) => (
               <button
@@ -12771,6 +12912,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 onClick={btn.holdAction ? undefined : btn.onClick}
                 style={{
                   ...(isLiveMode ? {} : dockToolButtonStyle(false)),
+                  ...(!isLiveMode && btn.pendingAutosave
+                    ? {
+                        border: "1px solid #f59e0b",
+                        background:
+                          "linear-gradient(180deg, color-mix(in srgb, #f59e0b 22%, var(--bg-elev) 78%) 0%, color-mix(in srgb, #f59e0b 14%, var(--bg-elev) 86%) 100%)",
+                        color: "#f59e0b",
+                        boxShadow: "0 0 0 1px rgba(245,158,11,0.18), 0 8px 20px rgba(245,158,11,0.16)",
+                      }
+                    : {}),
                   width: isLiveMode ? 26 : designDockExpanded ? "100%" : topMenuIconButtonStyle.width,
                   height: isLiveMode ? 26 : topMenuIconButtonStyle.height,
                   minHeight: isLiveMode ? 26 : undefined,
@@ -12981,7 +13131,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 }}
               >
                 SVG's
-                <span style={{ color: "var(--text-muted)" }}>▸</span>
+                <span style={{ color: "var(--text-muted)" }}>{"\u25B8"}</span>
               </div>
               {(clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
                 <div
@@ -13001,7 +13151,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   setContextMenu(null);
                 }}
               >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↶</span>
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>{"\u21B6"}</span>
                 Undo
               </div>
               <div
@@ -13011,7 +13161,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   setContextMenu(null);
                 }}
               >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↷</span>
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>{"\u21B7"}</span>
                 Redo
               </div>
               <div
@@ -13021,7 +13171,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   setContextMenu(null);
                 }}
               >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>／</span>
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>ï¼</span>
                 Polyline
               </div>
               <div
@@ -13031,7 +13181,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   setContextMenu(null);
                 }}
               >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>▭</span>
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>{"\u25AD"}</span>
                 Rectangle
               </div>
               <div
@@ -13041,7 +13191,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   setContextMenu(null);
                 }}
               >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>◯</span>
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>{"\u25EF"}</span>
                 Circle
               </div>
               <div
@@ -13061,7 +13211,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   setContextMenu(null);
                 }}
               >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>↔</span>
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>{"\u2194"}</span>
                 Move
               </div>
               
@@ -13418,7 +13568,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 </div>
                 {isOpcDrawerView ? (
                   <div
-                    title={opcLiveLastError || `Live values: ${opcLiveValueCount} • Last update: ${opcLiveUpdatedAtLabel}`}
+                    title={opcLiveLastError || `Live values: ${opcLiveValueCount} \u2022 Last update: ${opcLiveUpdatedAtLabel}`}
                     style={{
                       border: `1px solid ${
                         opcLiveLastError
@@ -13470,7 +13620,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   title={mainDrawerFullscreen ? "Windowed" : "Fullscreen"}
                   aria-label={mainDrawerFullscreen ? "Windowed" : "Fullscreen"}
                 >
-                  {mainDrawerFullscreen ? "❐" : "⛶"}
+                  {mainDrawerFullscreen ? "\u2750" : "\u26F6"}
                 </button>
                 <button
                   onClick={() => setShowMainDrawer(false)}
@@ -13478,7 +13628,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   title="Close"
                   aria-label="Close"
                 >
-                  ✕
+                  {"\u2715"}
                 </button>
               </div>
             </div>
@@ -13757,11 +13907,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     }
                     void saveUserSettingsEdit();
                   }}
-                  style={drawerHeaderButtonStyle}
+                  style={
+                    userSettingsDirty
+                      ? {
+                          ...drawerHeaderButtonStyle,
+                          border: "1px solid #f59e0b",
+                          color: "#f59e0b",
+                          background:
+                            "linear-gradient(180deg, color-mix(in srgb, #f59e0b 18%, var(--bg-elev) 82%) 0%, color-mix(in srgb, #f59e0b 10%, var(--bg-elev) 90%) 100%)",
+                        }
+                      : drawerHeaderButtonStyle
+                  }
                   title={userSettingsEditing ? "Save" : "Edit"}
                   aria-label={userSettingsEditing ? "Save" : "Edit"}
                 >
-                  {userSettingsEditing ? "✓" : "✎"}
+                  {userSettingsEditing ? "\u2713" : "\u270E"}
                 </button>
                 <button
                   onClick={() => setUserDrawerFullscreen((v) => !v)}
@@ -13769,15 +13929,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   title={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
                   aria-label={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
                 >
-                  {userDrawerFullscreen ? "❐" : "⛶"}
+                  {userDrawerFullscreen ? "\u2750" : "\u26F6"}
                 </button>
                 <button
-                  onClick={() => setShowUserDrawer(false)}
+                  onClick={closeUserDrawerSafely}
                   style={drawerHeaderButtonStyle}
                   title="Close"
                   aria-label="Close"
                 >
-                  ✕
+                  {"\u2715"}
                 </button>
               </div>
             </div>
@@ -13963,8 +14123,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   <button
                     onClick={() => void saveSecurityPassword()}
                     style={{
-                      border: "1px solid #2f6dff",
-                      background: "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
+                      border: securitySettingsDirty ? "1px solid #f59e0b" : "1px solid #2f6dff",
+                      background: securitySettingsDirty
+                        ? "linear-gradient(180deg, #f7b547 0%, #f59e0b 100%)"
+                        : "linear-gradient(180deg, #3a7bff 0%, #2b6cff 100%)",
                       color: "white",
                       borderRadius: 8,
                       padding: "6px 12px",
@@ -13973,7 +14135,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
                       fontSize: 11,
                       cursor: "pointer",
                       fontWeight: 700,
-                      boxShadow: "0 8px 16px rgba(43,108,255,0.32)",
+                      boxShadow: securitySettingsDirty
+                        ? "0 8px 16px rgba(245,158,11,0.32)"
+                        : "0 8px 16px rgba(43,108,255,0.32)",
                     }}
                   >
                     Update
@@ -14137,15 +14301,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   title={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
                   aria-label={userDrawerFullscreen ? "Windowed" : "Fullscreen"}
                 >
-                  {userDrawerFullscreen ? "❐" : "⛶"}
+                  {userDrawerFullscreen ? "\u2750" : "\u26F6"}
                 </button>
                 <button
-                  onClick={() => setShowSecurityDrawer(false)}
+                  onClick={closeSecurityDrawerSafely}
                   style={drawerHeaderButtonStyle}
                   title="Close"
                   aria-label="Close"
                 >
-                  ✕
+                  ?
                 </button>
               </div>
             </div>
@@ -14227,7 +14391,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
             {showLiveIdentityChips ? (
               <>
                 <button
-                  onClick={() => setShowProjectDrawer((v) => !v)}
+                  onClick={() => {
+                    if (showProjectDrawer) {
+                      closeProjectDrawerSafely();
+                      return;
+                    }
+                    if (!canLeaveSaveDrawerState()) return;
+                    setShowProjectDrawer(true);
+                  }}
                   aria-label={showProjectDrawer ? "Hide Project Drawer" : "Show Project Drawer"}
                   title={
                     projectIdentityReady
@@ -14490,6 +14661,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
           setShowUserDrawer={setShowUserDrawer}
           setShowSecurityDrawer={setShowSecurityDrawer}
           openDrawer={openDrawer}
+          openUserDrawer={openUserDrawerSafely}
+          openSecurityDrawer={openSecurityDrawerSafely}
           user={user}
           avatarLabel={avatarLabel}
         />
@@ -14501,6 +14674,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         theme={theme}
         top={TOP_BAR_H}
         left={0}
+        right={0}
         height={LIVE_ALARM_BAR_H}
         alarmCount={liveActiveAlarmsWithOccurred.length}
         liveAlarmMarqueeViewportRef={liveAlarmMarqueeViewportRef}
@@ -15406,11 +15580,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     }
                     void saveProjectNameFromSettings();
                   }}
-                  style={drawerHeaderButtonStyle}
+                  style={
+                    projectSettingsDirty
+                      ? {
+                          ...drawerHeaderButtonStyle,
+                          border: "1px solid #f59e0b",
+                          color: "#f59e0b",
+                          background:
+                            "linear-gradient(180deg, color-mix(in srgb, #f59e0b 18%, var(--bg-elev) 82%) 0%, color-mix(in srgb, #f59e0b 10%, var(--bg-elev) 90%) 100%)",
+                        }
+                      : drawerHeaderButtonStyle
+                  }
                   title={projectNameEditing ? "Save Project Changes" : "Edit Project"}
                   aria-label={projectNameEditing ? "Save Project Changes" : "Edit Project"}
                 >
-                  {projectNameEditing ? "✓" : "✎"}
+                  {projectNameEditing ? "\u2713" : "\u270E"}
                 </button>
               ) : null}
               <button
@@ -15419,15 +15603,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 title="Toggle Project Drawer Fullscreen"
                 aria-label={projectDrawerFullscreen ? "Windowed" : "Fullscreen"}
               >
-                {projectDrawerFullscreen ? "❐" : "⛶"}
+                {projectDrawerFullscreen ? "\u2750" : "\u26F6"}
               </button>
-              <button
-                onClick={() => setShowProjectDrawer(false)}
+                <button
+                onClick={closeProjectDrawerSafely}
                 style={drawerHeaderButtonStyle}
                 title="Close Project Drawer"
                 aria-label="Close"
               >
-                ✕
+                {"\u2715"}
               </button>
             </div>
           </div>
@@ -15784,10 +15968,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               flex: "0 0 auto",
                             }}
                             title={`Delete ${s.name || "screen"}`}
-                          >
-                            ×
-                          </button>
-                        </div>
+                  >
+                    {"\u2715"}
+                  </button>
+                </div>
                         <div style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) 18px minmax(0,1fr)", gap: 6, alignItems: "center" }}>
                           <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>W</span>
                           <input
@@ -16241,7 +16425,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               }}
                               title="Move up"
                             >
-                              ↑
+                              ?
                             </button>
                             <button
                               onClick={() => moveLiveMenuItem(group.id, item.id, 1)}
@@ -16258,7 +16442,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               }}
                               title="Move down"
                             >
-                              ↓
+                              ?
                             </button>
                             <button
                               onClick={() => deleteLiveMenuItem(group.id, item.id)}
@@ -16273,7 +16457,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               }}
                               title="Delete item"
                             >
-                              ×
+                              Ã—
                             </button>
                             {item?.restricted ? (
                               <div
@@ -16489,7 +16673,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   >
                     <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", marginBottom: 2 }}>
                       {String(row?.author || "User")}
-                      {at && !Number.isNaN(at.getTime()) ? ` • ${at.toLocaleString()}` : ""}
+                      {at && !Number.isNaN(at.getTime()) ? ` \u2022 ${at.toLocaleString()}` : ""}
                     </div>
                     <div style={{ fontSize: 12, lineHeight: 1.35, color: "var(--text)", whiteSpace: "pre-wrap" }}>
                       {String(row?.message || "")}
@@ -16652,5 +16836,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
     </div>
   );
 }
+
 
 

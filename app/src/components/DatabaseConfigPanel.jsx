@@ -438,7 +438,12 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
           <div><strong>Uptime:</strong> {asNumber(appInfo?.uptimeSec)} s</div>
           <div><strong>Node:</strong> {asText(appInfo?.nodeVersion)}</div>
           <div><strong>Platform:</strong> {asText(appInfo?.platform)} / {asText(appInfo?.arch)}</div>
-          <div><strong>RSS:</strong> {asBytes(appInfo?.rssBytes)}</div>
+          <div><strong>Host CPU:</strong> {asPct(appInfo?.hostCpuUsagePct)}</div>
+          <div><strong>App CPU:</strong> {asPct(appInfo?.cpuUsagePct)}</div>
+          <div><strong>System Memory:</strong> {asPct(appInfo?.systemMemoryUsedPct)}</div>
+          <div><strong>RAM Used:</strong> {asBytes(appInfo?.usedMemoryBytes)} / {asBytes(appInfo?.totalMemoryBytes)}</div>
+          <div><strong>App Memory Used:</strong> {asBytes(appInfo?.rssBytes)}</div>
+          <div><strong>App RAM Share:</strong> {asPct(appInfo?.appMemoryOfSystemPct)}</div>
           <div><strong>Heap Used:</strong> {asBytes(appInfo?.heapUsedBytes)}</div>
           <div><strong>Heap Total:</strong> {asBytes(appInfo?.heapTotalBytes)}</div>
           <div><strong>External:</strong> {asBytes(appInfo?.externalBytes)}</div>

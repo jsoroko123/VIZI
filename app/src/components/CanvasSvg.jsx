@@ -100,6 +100,24 @@ export default function CanvasSvg({
   const themeStrokeDefault = "#808080";
   const isDarkTheme = String(theme || "").toLowerCase() === "dark";
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
+  const getTextBounds = (shape, options = {}) => {
+    if (!shape) return null;
+    const minW = Number.isFinite(Number(options.minW)) ? Number(options.minW) : 40;
+    const minH = Number.isFinite(Number(options.minH)) ? Number(options.minH) : 24;
+    const charWidth = Number.isFinite(Number(options.charWidth)) ? Number(options.charWidth) : 0.6;
+    const fontSize = Math.max(8, Number(shape.fontSize || 24));
+    const text = String(shape.text || "");
+    const w = Math.max(minW, text.length * fontSize * charWidth);
+    const h = Math.max(minH, fontSize * 1.2);
+    const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
+    const ax = anchor === "middle" ? -w / 2 : anchor === "end" ? -w : 0;
+    return {
+      x: Number(shape.x || 0) + ax,
+      y: Number(shape.y || 0),
+      w,
+      h,
+    };
+  };
 
   // wrapper size for rulers
   const wrapRef = useRef(null);
@@ -3453,8 +3471,6 @@ export default function CanvasSvg({
               const dynamicColor = getTagColor(s.tagPath);
 
               if (s.type === "text") {
-                const selected = selectedIds.includes(s.id);
-                const isEditing = editingId === s.id;
                 const isInline = inlineEditId === s.id;
 
                 return (
@@ -3475,12 +3491,8 @@ export default function CanvasSvg({
                   >
                     {/* Invisible hitbox so right-click works anywhere over text bounds */}
                     {(() => {
-                      const fontSize = s.fontSize || 24;
-                      const text = s.text || "";
-                      const estW = Math.max(40, text.length * fontSize * 0.6);
-                      const estH = Math.max(24, fontSize * 1.2);
-                      const anchor = s.anchor || "start";
-                      const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+                      const tb = getTextBounds(s);
+                      if (!tb) return null;
                       const onCtx = (e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -3492,10 +3504,10 @@ export default function CanvasSvg({
                       };
                       return (
                         <rect
-                          x={s.x + ax - 6}
-                          y={s.y - estH - 6}
-                          width={estW + 12}
-                          height={estH + 12}
+                          x={tb.x - 6}
+                          y={tb.y - 6}
+                          width={tb.w + 12}
+                          height={tb.h + 12}
                           fill="rgba(0,0,0,0.001)"
                           pointerEvents="all"
                           onMouseDown={(e) => {
@@ -3545,20 +3557,7 @@ export default function CanvasSvg({
                       {s.text || ""}
                     </text>
 
-                    {/* optional selection box/handle (easy version: underline) */}
-                    {(selected || isEditing) && (
-                      <rect
-                        x={s.x - 4}
-                        y={s.y - 4}
-                        width={Math.max(40, (s.text?.length || 1) * (s.fontSize || 24) * 0.6)}
-                        height={(s.fontSize || 24) + 8}
-                        fill="none"
-                        stroke="#2b6cff"
-                        strokeWidth={1.5}
-                        strokeDasharray="6 4"
-                        pointerEvents="none"
-                      />
-                    )}
+                    {/* Selection box is rendered centrally via shapeSelectionUI to avoid duplicates */}
                   </g>
                 );
               }

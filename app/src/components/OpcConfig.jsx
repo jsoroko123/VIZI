@@ -66,6 +66,18 @@ function normalizeAlarmThreshold(value) {
   return String(value).trim();
 }
 
+function normalizeStateMappingRow(row, options = {}) {
+  const src = row && typeof row === "object" ? row : {};
+  const defaultField = String(options.defaultField ?? "State Text");
+  const defaultColor = String(options.defaultColor ?? "#000000");
+  return {
+    ...src,
+    field: String(src.field ?? defaultField).trim() || defaultField,
+    state: String(src.state ?? "").trim(),
+    color: String(src.color ?? defaultColor).trim() || defaultColor,
+  };
+}
+
 function TrashCanIcon({ size = 12 }) {
   return (
     <svg
@@ -262,18 +274,18 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     },
   ]);
   const [templateStateMappings, setTemplateStateMappings] = useState([
-    { field: "", state: "", color: "" },
+    { field: "State Text", state: "", color: "#000000" },
   ]);
   const [templateParent, setTemplateParent] = useState("");
   const [editTemplate, setEditTemplate] = useState("");
   const [templateOriginalName, setTemplateOriginalName] = useState("");
   const [templateEditing, setTemplateEditing] = useState(true);
   const [tagMappings, setTagMappings] = useState([]);
-  const [manualTagMappings, setManualTagMappings] = useState([{ field: "", state: "", color: "" }]);
+  const [manualTagMappings, setManualTagMappings] = useState([{ field: "State Text", state: "", color: "#000000" }]);
   const [mappingSets, setMappingSets] = useState([]);
   const [mappingSetName, setMappingSetName] = useState("");
   const [mappingSetOriginalName, setMappingSetOriginalName] = useState("");
-  const [mappingSetRows, setMappingSetRows] = useState([{ field: "", state: "", color: "" }]);
+  const [mappingSetRows, setMappingSetRows] = useState([{ field: "State Text", state: "", color: "#000000" }]);
   const [applyTemplate, setApplyTemplate] = useState("");
   const [applyTemplateSearch, setApplyTemplateSearch] = useState("");
   const [applyTemplateExpandedByName, setApplyTemplateExpandedByName] = useState({});
@@ -465,6 +477,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const lastSavedRef = useRef("");
   const opcUaSnapshotRef = useRef(null);
   const lastLiveErrorsRef = useRef({});
+  const seenOpcIssueIdsRef = useRef(new Set());
   const mappingSetAutoSelectedRef = useRef(false);
   const drawerMenuRef = useRef(null);
   const drawerMenuBtnRef = useRef(null);
@@ -676,14 +689,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           }]
     );
     const nextMappings = Array.isArray(tmpl.state_mappings)
-      ? tmpl.state_mappings.map((m) => ({
-          field: String(m?.field ?? ""),
-          state: String(m?.state ?? ""),
-          color: String(m?.color ?? ""),
-        }))
+      ? tmpl.state_mappings.map((m) => normalizeStateMappingRow(m))
       : [];
     setTemplateStateMappings(
-      nextMappings.length ? nextMappings : [{ field: "", state: "", color: "" }]
+      nextMappings.length ? nextMappings : [{ field: "State Text", state: "", color: "#000000" }]
     );
   }, [editTemplate, templates]);
 
@@ -739,6 +748,27 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               tag: String(name || "").trim(),
               count: prevCount,
               kind: "cleared",
+            });
+          });
+          const runtimeIssues = Array.isArray(data?.runtime?.issueLog) ? data.runtime.issueLog : [];
+          runtimeIssues.forEach((issue, idx) => {
+            const rawId = String(issue?.id || "").trim();
+            if (!rawId || seenOpcIssueIdsRef.current.has(rawId)) return;
+            seenOpcIssueIdsRef.current.add(rawId);
+            const at = Number(issue?.at || now);
+            const severity = String(issue?.severity || "error").trim().toLowerCase();
+            const plcName = String(issue?.plcName || "").trim();
+            const tagKey = String(issue?.tagKey || "").trim();
+            const kindText = String(issue?.kind || "opc_issue").trim();
+            const message = String(issue?.message || "").trim();
+            nextLogEntries.push({
+              id: `${rawId}-${idx}`,
+              at: Number.isFinite(at) ? at : now,
+              tag: tagKey || plcName || kindText || "OPC",
+              count: "",
+              kind: severity === "info" ? "info" : severity === "warn" ? "warn" : "error",
+              message: message || kindText || "OPC issue",
+              source: "runtime",
             });
           });
           if (nextLogEntries.length) {
@@ -1233,14 +1263,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return;
     }
     const set = mappingSets.find((s) => s.name === mappingSetName);
-    const rows = Array.isArray(set?.mappings)
-      ? set.mappings.map((m) => ({
-          field: String(m?.field ?? "State Text"),
-          state: String(m?.state ?? ""),
-          color: String(m?.color ?? ""),
-        }))
-      : [];
-    setMappingSetRows(rows.length ? rows : [{ field: "", state: "", color: "" }]);
+    const rows = Array.isArray(set?.mappings) ? set.mappings.map((m) => normalizeStateMappingRow(m)) : [];
+    setMappingSetRows(rows.length ? rows : [{ field: "State Text", state: "", color: "#000000" }]);
   }, [mappingSetName, mappingSets]);
 
   function resolveTemplateStateMappings(name) {
@@ -2003,12 +2027,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       await persistConfig(nextConfig, "Tag saved.");
       const tagKey = getTagLegacyKey({ name, topic });
       const cleanedMappings = (manualTagMappings || [])
-        .map((row) => ({
-          field: String(row?.field ?? "State Text").trim() || "State Text",
-          state: String(row?.state ?? "").trim(),
-          color: String(row?.color ?? "").trim(),
-        }))
-        .filter((row) => row.state && row.color);
+        .map((row) => normalizeStateMappingRow(row))
+        .filter((row) => row.state);
       if (tagKey && cleanedMappings.length) {
         const res = await fetch("/api/opc/tag-mappings", {
           method: "POST",
@@ -2043,7 +2063,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       groupName: "",
       deadband: "",
     });
-    setManualTagMappings([{ field: "", state: "", color: "" }]);
+    setManualTagMappings([{ field: "State Text", state: "", color: "#000000" }]);
     setTagTableEditing(false);
     setEditingTagIndex(null);
   }
@@ -2189,12 +2209,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       }))
       .filter((row) => row.name || row.tagPath);
     const stateMappings = (templateStateMappings || [])
-      .map((row) => ({
-        field: String(row?.field ?? "").trim(),
-        state: String(row?.state ?? "").trim(),
-        color: String(row?.color ?? "").trim(),
-      }))
-      .filter((row) => row.state && row.color);
+      .map((row) => normalizeStateMappingRow(row))
+      .filter((row) => row.state);
     const parentName = String(templateParent || "").trim();
     if (!name || !fields.length) {
       setError("UDT name and fields required.");
@@ -2430,7 +2446,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     setTemplateOriginalName("");
     setTemplateParent("");
     setTemplateFieldRows(rows);
-    setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+    setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
     setTemplateEditing(true);
     setTemplateName(groupName || "NewUDT");
     setStatus(`Loaded ${rows.length} fields from group "${groupName || "Ungrouped"}".`);
@@ -2457,7 +2473,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{errorLogEntries.length} entries</div>
             <button
-              onClick={() => setErrorLogEntries([])}
+              onClick={() => {
+                setErrorLogEntries([]);
+                seenOpcIssueIdsRef.current.clear();
+              }}
               style={{
                 border: "1px solid var(--border)",
                 background: "var(--bg-elev)",
@@ -2492,12 +2511,35 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   fontSize: 12,
                 }}
               >
-                <div style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {entry.tag}
+                <div style={{ minWidth: 0, overflow: "hidden" }}>
+                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {entry.tag}
+                  </div>
+                  {String(entry?.message || "").trim() ? (
+                    <div style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 2 }}>
+                      {String(entry.message)}
+                    </div>
+                  ) : null}
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
-                  <span style={{ color: entry.kind === "error" ? "#b42318" : "#027a48", fontWeight: 600 }}>
-                    {entry.kind === "error" ? `err ${entry.count}` : "cleared"}
+                  <span
+                    style={{
+                      color:
+                        entry.kind === "error"
+                          ? "#b42318"
+                          : entry.kind === "warn"
+                          ? "#b54708"
+                          : "#027a48",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {entry.kind === "error"
+                      ? (entry?.count != null && String(entry.count) !== "" ? `err ${entry.count}` : "error")
+                      : entry.kind === "warn"
+                      ? "warn"
+                      : entry.kind === "info"
+                      ? "info"
+                      : "cleared"}
                   </span>
                   <span style={{ color: "var(--text-muted)" }}>
                     {new Date(entry.at).toLocaleTimeString()}
@@ -2516,6 +2558,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const db = serverDiagnostics?.db && typeof serverDiagnostics.db === "object" ? serverDiagnostics.db : {};
     const opc = serverDiagnostics?.opc && typeof serverDiagnostics.opc === "object" ? serverDiagnostics.opc : {};
     const runtime = opc?.runtime && typeof opc.runtime === "object" ? opc.runtime : {};
+    const plcTargets = Array.isArray(runtime?.plcTargets) ? runtime.plcTargets : [];
     const formatNum = (value) => (Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : "--");
     const formatBytes = (value) => {
       const n = Number(value);
@@ -2545,8 +2588,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <div><strong>Uptime:</strong> {formatNum(app?.uptimeSec)} s</div>
           <div><strong>Node:</strong> {String(app?.nodeVersion || "--")}</div>
           <div><strong>Load 1m:</strong> {formatNum(app?.loadAvg1m)}</div>
-          <div><strong>RSS:</strong> {formatBytes(app?.rssBytes)}</div>
+          <div><strong>Host CPU:</strong> {Number.isFinite(Number(app?.hostCpuUsagePct)) ? `${Number(app.hostCpuUsagePct).toFixed(1)}%` : "--"}</div>
+          <div><strong>App CPU:</strong> {Number.isFinite(Number(app?.cpuUsagePct)) ? `${Number(app.cpuUsagePct).toFixed(1)}%` : "--"}</div>
+          <div><strong>System RAM:</strong> {Number.isFinite(Number(app?.systemMemoryUsedPct)) ? `${Number(app.systemMemoryUsedPct).toFixed(1)}%` : "--"}</div>
+          <div><strong>RAM Used:</strong> {formatBytes(app?.usedMemoryBytes)} / {formatBytes(app?.totalMemoryBytes)}</div>
+          <div><strong>App Memory Used:</strong> {formatBytes(app?.rssBytes)}</div>
           <div><strong>Heap Used:</strong> {formatBytes(app?.heapUsedBytes)}</div>
+          <div><strong>Heap Total:</strong> {formatBytes(app?.heapTotalBytes)}</div>
+          <div><strong>App RAM Share:</strong> {Number.isFinite(Number(app?.appMemoryOfSystemPct)) ? `${Number(app.appMemoryOfSystemPct).toFixed(2)}%` : "--"}</div>
           <div><strong>DB Ping:</strong> {Number.isFinite(Number(db?.pingMs)) ? `${Math.round(Number(db.pingMs))} ms` : "--"}</div>
           <div><strong>OPC Connected:</strong> {opc?.connected ? "Yes" : "No"}</div>
           <div><strong>Last Poll Age:</strong> {Number.isFinite(Number(opc?.lastPollAgeMs)) ? `${Math.round(Number(opc.lastPollAgeMs))} ms` : "--"}</div>
@@ -2560,6 +2609,20 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         </div>
         <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
           <strong>Quality Counts:</strong> {qualitySummary}
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+          <strong>Active PLC Targets:</strong>{" "}
+          {plcTargets.length
+            ? plcTargets
+                .map((t) => {
+                  const name = String(t?.name || "").trim() || "(unnamed)";
+                  const host = String(t?.host || "").trim() || "--";
+                  const slot = Number.isFinite(Number(t?.slot)) ? Math.round(Number(t.slot)) : 0;
+                  const connected = t?.connected === true ? "connected" : "disconnected";
+                  return `${name} ${host}/slot${slot} (${connected})`;
+                })
+                .join(" | ")
+            : "--"}
         </div>
         {String(db?.error || "").trim() ? (
           <div style={{ marginTop: 6, fontSize: 12, color: "#b42318" }}>
@@ -3202,7 +3265,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                   <button
                     onClick={() =>
-                      setManualTagMappings((prev) => [...prev, { field: "State Text", state: "", color: "" }])
+                      setManualTagMappings((prev) => [...prev, { field: "State Text", state: "", color: "#000000" }])
                     }
                     style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                   >
@@ -4537,7 +4600,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       alarmOperator: "==",
                       alarmValue: "",
                     }]);
-                    setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+                    setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
                     setTemplateEditing(true);
                   }
                 }}
@@ -4573,7 +4636,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         alarmOperator: "==",
                         alarmValue: "",
                       }]);
-                      setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+                      setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
                       setTemplateEditing(true);
                     }}
                     style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
@@ -4604,7 +4667,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         alarmOperator: "==",
                         alarmValue: "",
                       }]);
-                      setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+                      setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
                       setTemplateEditing(true);
                     }}
                     style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
@@ -4730,7 +4793,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       alarmOperator: "==",
                       alarmValue: "",
                     }]);
-                    setTemplateStateMappings([{ field: "", state: "", color: "" }]);
+                    setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
                     setTemplateEditing(true);
                   }}
                   style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
@@ -4768,7 +4831,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       setMappingSetOriginalName(next);
                       setMappingSetName(next);
                       if (!next) {
-                        setMappingSetRows([{ field: "", state: "", color: "" }]);
+                        setMappingSetRows([{ field: "State Text", state: "", color: "#000000" }]);
                       }
                     }}
                     style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
@@ -4786,7 +4849,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     onClick={() => {
                       setMappingSetName("");
                       setMappingSetOriginalName("");
-                      setMappingSetRows([{ field: "", state: "", color: "" }]);
+                      setMappingSetRows([{ field: "State Text", state: "", color: "#000000" }]);
                     }}
                     style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
                   >
@@ -4826,7 +4889,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         if (reload.ok) setMappingSets(payload.sets || []);
                         setMappingSetName("");
                         setMappingSetOriginalName("");
-                        setMappingSetRows([{ field: "", state: "", color: "" }]);
+                        setMappingSetRows([{ field: "State Text", state: "", color: "#000000" }]);
                         setStatus("Mapping set deleted.");
                       } catch (err) {
                         setError(err?.message || "Delete failed.");
@@ -4950,7 +5013,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   onClick={() =>
                     setMappingSetRows((prev) => [
                       ...prev,
-                      { field: "", state: "", color: "" },
+                      { field: "State Text", state: "", color: "#000000" },
                     ])
                   }
                   style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
@@ -4967,12 +5030,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       return;
                     }
                     const cleaned = (mappingSetRows || [])
-                      .map((row) => ({
-                        field: String(row?.field ?? "State Text").trim() || "State Text",
-                        state: String(row?.state ?? "").trim(),
-                        color: String(row?.color ?? "").trim(),
-                      }))
-                      .filter((row) => row.state && row.color);
+                      .map((row) => normalizeStateMappingRow(row))
+                      .filter((row) => row.state);
                     try {
                       const res = await fetch("/api/opc/mapping-sets", {
                         method: "POST",
@@ -4990,7 +5049,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         return next.sort((a, b) => String(a.name).localeCompare(String(b.name)));
                       });
                       setMappingSetRows(
-                        cleaned.length ? cleaned : [{ field: "", state: "", color: "" }]
+                        cleaned.length ? cleaned : [{ field: "State Text", state: "", color: "#000000" }]
                       );
                       if (mappingSetOriginalName && mappingSetOriginalName !== name) {
                         try {
@@ -5211,10 +5270,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       }
       if (!resolvedPath) return next;
       if (!removeChildren) {
-        return next.filter((row) => {
+        // Remove exactly one matching row to avoid accidental bulk deletes.
+        const removeIdx = next.findIndex((row) => {
           const rowPath = String(row?.tagPath || row?.name || "").trim();
-          return rowPath !== resolvedPath;
+          return rowPath === resolvedPath;
         });
+        if (removeIdx >= 0) next.splice(removeIdx, 1);
+        return next;
       }
       return next.filter((row) => {
         const rowPath = String(row?.tagPath || row?.name || "").trim();
@@ -5264,6 +5326,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           };
           const row = rowEntry?.row || resolvedRow || fallbackRow;
           const rowIdx = Number.isFinite(rowEntry?.idx) ? rowEntry.idx : -1;
+          const isDirectRow = rowIdx >= 0;
           const hasNestedChildren = Array.isArray(node?.children) && node.children.length > 0;
           const nodeKey = `template-tree:${fieldPath || fieldName}`;
           const expanded = templateFieldTreeExpanded[nodeKey] ?? false;
@@ -5324,28 +5387,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   {isArray ? <span style={{ color: "#2b6cff", fontWeight: 700 }}>[array]</span> : null}
                   {hasNested ? <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>(group)</span> : null}
                 </div>
-                <button
-                  type="button"
-                  data-preserve-style="true"
-                  onClick={() => {
-                    setTemplateEditing(true);
-                    setTemplateFieldTreeExpanded((prev) => ({ ...prev, [nodeKey]: true }));
-                    setTemplateFieldEditingKey((prev) => (prev === nodeKey ? "" : nodeKey));
-                  }}
-                  style={{
-                    border: "1px solid #2b6cff",
-                    background: activeRowEditing ? "#2b6cff" : "var(--bg-elev)",
-                    color: activeRowEditing ? "#fff" : "#2b6cff",
-                    borderRadius: 6,
-                    padding: "4px 8px",
-                    fontSize: 11,
-                    fontWeight: 700,
-                    lineHeight: 1.2,
-                    cursor: "pointer",
-                  }}
-                >
-                  {activeRowEditing ? "Save" : "Edit"}
-                </button>
+                <span />
               </div>
               {expanded && hasNested ? (
                 <div
@@ -5378,11 +5420,44 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       disabled={!templateEditing || !activeRowEditing}
                     />
                   </label>
-                  <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "end" }}>
+                  <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "end", gap: 8 }}>
                     <button
                       type="button"
                       data-preserve-style="true"
-                      onClick={() => removeTemplateFieldRow(rowIdx, row, fieldPath, true)}
+                      onClick={async () => {
+                        setTemplateEditing(true);
+                        setTemplateFieldTreeExpanded((prev) => ({ ...prev, [nodeKey]: true }));
+                        if (activeRowEditing) {
+                          await saveTemplate();
+                          setTemplateFieldEditingKey("");
+                          return;
+                        }
+                        setTemplateFieldEditingKey(nodeKey);
+                      }}
+                      style={{
+                        border: "1px solid #2b6cff",
+                        background: activeRowEditing ? "#2b6cff" : "var(--bg-elev)",
+                        color: activeRowEditing ? "#fff" : "#2b6cff",
+                        borderRadius: 6,
+                        padding: "5px 10px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        lineHeight: 1.2,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {activeRowEditing ? "Save" : "Edit"}
+                    </button>
+                    <button
+                      type="button"
+                      data-preserve-style="true"
+                      onClick={() => {
+                        if (!isDirectRow) {
+                          setError("This field group is inherited from a parent template. Edit the parent template to delete it.");
+                          return;
+                        }
+                        removeTemplateFieldRow(rowIdx, row, fieldPath, true);
+                      }}
                       style={{
                         border: "1px solid #f04438",
                         background: "#f04438",
@@ -5394,7 +5469,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         lineHeight: 1.2,
                         cursor: templateEditing ? "pointer" : "default",
                       }}
-                      disabled={!templateEditing || !activeRowEditing}
+                      disabled={!templateEditing || !isDirectRow}
+                      title={!isDirectRow ? "Inherited from parent template" : "Delete group"}
                     >
                       Delete Group
                     </button>
@@ -5519,19 +5595,22 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   </label>
                   <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
                     Mapping Set
-                    <select
+                    <input
+                      list={`tmpl-tree-map-list-${nodeKey}`}
                       value={String(row?.mappingSet || "")}
                       onChange={(e) => updateTemplateFieldRow(rowIdx, "mappingSet", e.target.value, row, fieldPath)}
                       style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
                       disabled={!templateEditing || !activeRowEditing}
-                    >
+                      placeholder={mappingSets.length ? "Select or type mapping set" : "Type mapping set name"}
+                    />
+                    <datalist id={`tmpl-tree-map-list-${nodeKey}`}>
                       <option value="">None</option>
                       {mappingSets.map((m) => (
                         <option key={`tmpl-tree-map-${nodeKey}-${m.name}`} value={m.name}>
                           {m.name}
                         </option>
                       ))}
-                    </select>
+                    </datalist>
                   </label>
                   <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
                     Alarm
@@ -5570,11 +5649,44 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       disabled={row?.alarmEnabled !== true || !templateEditing || !activeRowEditing}
                     />
                   </label>
-                  <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "end", gridColumn: "1 / -1" }}>
+                  <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "end", gap: 8, gridColumn: "1 / -1" }}>
                     <button
                       type="button"
                       data-preserve-style="true"
-                      onClick={() => removeTemplateFieldRow(rowIdx, row, fieldPath, false)}
+                      onClick={async () => {
+                        setTemplateEditing(true);
+                        setTemplateFieldTreeExpanded((prev) => ({ ...prev, [nodeKey]: true }));
+                        if (activeRowEditing) {
+                          await saveTemplate();
+                          setTemplateFieldEditingKey("");
+                          return;
+                        }
+                        setTemplateFieldEditingKey(nodeKey);
+                      }}
+                      style={{
+                        border: "1px solid #2b6cff",
+                        background: activeRowEditing ? "#2b6cff" : "var(--bg-elev)",
+                        color: activeRowEditing ? "#fff" : "#2b6cff",
+                        borderRadius: 6,
+                        padding: "5px 10px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        lineHeight: 1.2,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {activeRowEditing ? "Save" : "Edit"}
+                    </button>
+                    <button
+                      type="button"
+                      data-preserve-style="true"
+                      onClick={() => {
+                        if (!isDirectRow) {
+                          setError("This field is inherited from a parent template. Edit the parent template to delete it.");
+                          return;
+                        }
+                        removeTemplateFieldRow(rowIdx, row, fieldPath, false);
+                      }}
                       style={{
                         border: "1px solid #f04438",
                         background: "#f04438",
@@ -5586,7 +5698,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         lineHeight: 1.2,
                         cursor: templateEditing ? "pointer" : "default",
                       }}
-                      disabled={!templateEditing || !activeRowEditing}
+                      disabled={!templateEditing || !isDirectRow}
+                      title={!isDirectRow ? "Inherited from parent template" : "Delete field"}
                     >
                       Delete Field
                     </button>

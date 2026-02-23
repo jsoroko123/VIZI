@@ -9,6 +9,8 @@ param(
   [switch]$UseNpmInstall,
   [string]$PostgresVersion = "17",
   [int]$PostgresPort = 5432,
+  [int]$AiServerPort = 5055,
+  [int]$OpcUaPort = 4840,
   [string]$PostgresSuperUser = "postgres",
   [string]$PostgresSuperPassword = "postgres",
   [string]$PostgresDatabase = "mesora_db",
@@ -66,6 +68,14 @@ function Get-CommandPathOrEmpty {
     return ""
   }
   return $cmd.Source
+}
+
+function Get-NpmLauncher {
+  $npmCmd = Get-Command -Name "npm.cmd" -ErrorAction SilentlyContinue
+  if ($npmCmd -and $npmCmd.Source) {
+    return $npmCmd.Source
+  }
+  return "npm"
 }
 
 function Ensure-Node {
@@ -128,6 +138,25 @@ function Find-OllamaPath {
   return ""
 }
 
+function Install-OllamaDirect {
+  $url = "https://ollama.com/download/OllamaSetup.exe"
+  $tempExe = Join-Path $env:TEMP "OllamaSetup.exe"
+
+  Write-Step "Downloading Ollama installer"
+  Invoke-WebRequest -Uri $url -OutFile $tempExe -UseBasicParsing
+  if (-not (Test-Path $tempExe)) {
+    throw "Failed to download Ollama installer."
+  }
+
+  Write-Step "Running Ollama installer"
+  try {
+    Invoke-Checked -FilePath $tempExe -Arguments @("/S")
+  } catch {
+    Write-Warning "Silent Ollama install failed. Retrying interactive installer."
+    Invoke-Checked -FilePath $tempExe -Arguments @()
+  }
+}
+
 function Ensure-Ollama {
   param([switch]$AllowInstall)
 
@@ -142,24 +171,55 @@ function Ensure-Ollama {
   }
 
   $wingetPath = Get-CommandPathOrEmpty -Name "winget"
-  if (-not $wingetPath) {
-    throw "Ollama is missing and winget is unavailable. Install Ollama manually and rerun."
-  }
+  if ($wingetPath) {
+    Write-Step "Installing Ollama via winget"
+    $installAttempts = @(
+      @(
+        "install",
+        "--id", "Ollama.Ollama",
+        "--exact",
+        "--source", "winget",
+        "--silent",
+        "--accept-package-agreements",
+        "--accept-source-agreements"
+      ),
+      @(
+        "source",
+        "update"
+      ),
+      @(
+        "install",
+        "--id", "Ollama.Ollama",
+        "--exact",
+        "--source", "winget",
+        "--accept-package-agreements",
+        "--accept-source-agreements"
+      )
+    )
 
-  Write-Step "Installing Ollama"
-  Invoke-Checked -FilePath "winget" -Arguments @(
-    "install",
-    "--id", "Ollama.Ollama",
-    "--exact",
-    "--source", "winget",
-    "--silent",
-    "--accept-package-agreements",
-    "--accept-source-agreements"
-  )
+    foreach ($attempt in $installAttempts) {
+      try {
+        Invoke-Checked -FilePath "winget" -Arguments $attempt
+        break
+      } catch {
+        Write-Warning ($_.Exception.Message)
+      }
+    }
+  } else {
+    Write-Warning "winget is unavailable. Falling back to direct Ollama installer."
+  }
 
   $ollamaPath = Find-OllamaPath
   if (-not $ollamaPath) {
-    throw "Ollama installer finished, but ollama.exe was not found."
+    try {
+      Install-OllamaDirect
+    } catch {
+      throw "Failed to install Ollama automatically. Install Ollama manually from https://ollama.com/download/windows and rerun installer. Details: $($_.Exception.Message)"
+    }
+    $ollamaPath = Find-OllamaPath
+    if (-not $ollamaPath) {
+      throw "Ollama install completed but ollama.exe was not found. Install manually and rerun installer."
+    }
   }
   return $ollamaPath
 }
@@ -436,6 +496,64 @@ function Set-AiDatabaseUrl {
   Set-Content -Path $envPath -Value $content -Encoding Ascii
 }
 
+function Upsert-EnvValue {
+  param(
+    [string]$EnvPath,
+    [string]$Key,
+    [string]$Value
+  )
+  if (-not (Test-Path $EnvPath)) {
+    return
+  }
+  $content = Get-Content $EnvPath -Raw
+  $escapedKey = [Regex]::Escape($Key)
+  if ($content -match "(?m)^$escapedKey=.*$") {
+    $content = [Regex]::Replace($content, "(?m)^$escapedKey=.*$", "$Key=$Value")
+  } else {
+    if ($content -and -not $content.EndsWith("`n")) {
+      $content += "`r`n"
+    }
+    $content += "$Key=$Value`r`n"
+  }
+  Set-Content -Path $EnvPath -Value $content -Encoding Ascii
+}
+
+function Set-AiServerPort {
+  param(
+    [string]$Root,
+    [int]$Port
+  )
+  if ($Port -lt 1 -or $Port -gt 65535) {
+    throw "AiServerPort must be between 1 and 65535."
+  }
+  $envPath = Join-Path $Root "ai-server\.env"
+  Upsert-EnvValue -EnvPath $envPath -Key "PORT" -Value "$Port"
+}
+
+function Set-OpcUaPort {
+  param(
+    [string]$Root,
+    [int]$Port
+  )
+  if ($Port -lt 1 -or $Port -gt 65535) {
+    throw "OpcUaPort must be between 1 and 65535."
+  }
+  $configPath = Join-Path $Root "opc-server\config.json"
+  if (-not (Test-Path $configPath)) {
+    return
+  }
+  $raw = Get-Content $configPath -Raw
+  if (-not $raw) {
+    return
+  }
+  $json = $raw | ConvertFrom-Json
+  if (-not $json.opcua) {
+    $json | Add-Member -MemberType NoteProperty -Name "opcua" -Value ([pscustomobject]@{})
+  }
+  $json.opcua.port = $Port
+  ($json | ConvertTo-Json -Depth 100) | Set-Content -Path $configPath -Encoding Ascii
+}
+
 function Set-AiOllamaSettings {
   param(
     [string]$Root,
@@ -488,7 +606,7 @@ function Copy-AppTree {
     "/E",
     "/R:1",
     "/W:1",
-    "/XD", ".git", "node_modules", "dist", ".vite",
+    "/XD", ".git", "node_modules", ".vite",
     "/XF", "*.log"
   ) -NoNewWindow -Wait -PassThru
   if ($copyProcess.ExitCode -gt 7) {
@@ -519,28 +637,85 @@ function Install-Dependencies {
   )
 
   $npmArgs = if ($UseInstall) { @("install") } else { @("ci") }
-  Write-Step "Installing root dependencies ($($npmArgs -join ' '))"
-  Invoke-Checked -FilePath "npm" -Arguments $npmArgs -WorkingDirectory $Root
+  $npmLauncher = Get-NpmLauncher
+  $targets = @(
+    @{ Name = "root"; Dir = $Root },
+    @{ Name = "OPC server"; Dir = (Join-Path $Root "opc-server") },
+    @{ Name = "AI server"; Dir = (Join-Path $Root "ai-server") }
+  )
 
-  Write-Step "Installing OPC server dependencies ($($npmArgs -join ' '))"
-  Invoke-Checked -FilePath "npm" -Arguments $npmArgs -WorkingDirectory (Join-Path $Root "opc-server")
+  foreach ($target in $targets) {
+    $dir = [string]$target.Dir
+    $name = [string]$target.Name
+    try {
+      Write-Step "Installing $name dependencies ($($npmArgs -join ' '))"
+      Invoke-Checked -FilePath $npmLauncher -Arguments $npmArgs -WorkingDirectory $dir
+    } catch {
+      if ($UseInstall -or ($npmArgs -join " ") -eq "install") {
+        throw
+      }
+      Write-Warning "npm ci failed for $name. Falling back to npm install."
+      Invoke-Checked -FilePath $npmLauncher -Arguments @("install") -WorkingDirectory $dir
+    }
+  }
+}
 
-  Write-Step "Installing AI server dependencies ($($npmArgs -join ' '))"
-  Invoke-Checked -FilePath "npm" -Arguments $npmArgs -WorkingDirectory (Join-Path $Root "ai-server")
+function Build-Frontend {
+  param([string]$Root)
+
+  $indexHtml = Join-Path $Root "index.html"
+  $viteConfig = Join-Path $Root "vite.config.js"
+  $distIndex = Join-Path $Root "dist\index.html"
+  if ((-not (Test-Path $indexHtml)) -or (-not (Test-Path $viteConfig))) {
+    if (Test-Path $distIndex) {
+      Write-Warning "Frontend source files are not present in this package. Using prebuilt dist bundle."
+      return
+    }
+    throw "Frontend source files are missing and no prebuilt dist bundle was found."
+  }
+
+  $npmLauncher = Get-NpmLauncher
+  Write-Step "Building frontend bundle (npm run build)"
+  Invoke-Checked -FilePath $npmLauncher -Arguments @("run", "build") -WorkingDirectory $Root
 }
 
 function Write-LauncherScripts {
-  param([string]$Root)
+  param(
+    [string]$Root,
+    [int]$AiPort = 5055,
+    [int]$OpcUaPortValue = 4840
+  )
 
   $startCmdPath = Join-Path $Root "Start-Mesora.cmd"
   $startCmd = @"
 @echo off
 setlocal
 cd /d "%~dp0"
-call npm run dev
+set MESORA_AI_PORT=$AiPort
+set MESORA_OPCUA_PORT=$OpcUaPortValue
+call npm run start:prod
 endlocal
 "@
   Set-Content -Path $startCmdPath -Value $startCmd -Encoding Ascii
+
+  $runPs1Path = Join-Path $Root "Run-Mesora.ps1"
+  $runPs1 = @"
+Set-StrictMode -Version Latest
+`$ErrorActionPreference = "Stop"
+
+Set-Location -Path (Split-Path -Parent `$MyInvocation.MyCommand.Path)
+`$env:MESORA_AI_PORT = "$AiPort"
+`$env:MESORA_OPCUA_PORT = "$OpcUaPortValue"
+`$npm = Get-Command -Name "npm.cmd" -ErrorAction SilentlyContinue
+if (`$npm -and `$npm.Source) {
+  & `$npm.Source run start:prod
+  exit `$LASTEXITCODE
+}
+
+& npm run start:prod
+exit `$LASTEXITCODE
+"@
+  Set-Content -Path $runPs1Path -Value $runPs1 -Encoding Ascii
 
   $stopCmdPath = Join-Path $Root "Stop-Mesora.cmd"
   $escapedRoot = [Regex]::Escape($Root)
@@ -555,7 +730,65 @@ endlocal
 
   return @{
     Start = $startCmdPath
+    RunPs1 = $runPs1Path
     Stop = $stopCmdPath
+    WebUrl = "http://localhost:$AiPort"
+  }
+}
+
+function Register-AutoStartTask {
+  param(
+    [string]$Root,
+    [string]$RunScriptPath
+  )
+
+  $taskName = "Mesora Auto Start"
+  $quotedScript = '"' + $RunScriptPath.Replace('"', '""') + '"'
+  $taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $quotedScript"
+
+  Write-Step "Registering Windows startup task"
+  try {
+    Invoke-Checked -FilePath "schtasks.exe" -Arguments @(
+      "/Create",
+      "/TN", $taskName,
+      "/SC", "ONLOGON",
+      "/TR", $taskCommand,
+      "/F"
+    )
+    Write-Host "Startup task registered: $taskName"
+  } catch {
+    Write-Warning "Unable to register startup task automatically. You can still start with Start-Mesora.cmd. Details: $($_.Exception.Message)"
+  }
+}
+
+function Start-MesoraNow {
+  param(
+    [string]$Root,
+    [string]$RunScriptPath
+  )
+
+  Write-Step "Starting Mesora services"
+  try {
+    $existing = Get-NetTCPConnection -State Listen -LocalPort 5055 -ErrorAction SilentlyContinue
+    if ($existing) {
+      Write-Host "Mesora appears to already be running on port 5055."
+      return
+    }
+  } catch {
+    # Ignore detection errors and attempt to start.
+  }
+
+  try {
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+      "-NoProfile",
+      "-ExecutionPolicy", "Bypass",
+      "-WindowStyle", "Hidden",
+      "-File", $RunScriptPath
+    ) -WindowStyle Hidden -WorkingDirectory $Root | Out-Null
+    Start-Sleep -Seconds 2
+    Write-Host "Mesora launch requested (background)."
+  } catch {
+    Write-Warning "Failed to start Mesora automatically. Launch manually with Start-Mesora.cmd. Details: $($_.Exception.Message)"
   }
 }
 
@@ -575,15 +808,32 @@ function New-Shortcut {
   $shortcut.Save()
 }
 
+function New-WebsiteShortcut {
+  param(
+    [string]$ShortcutPath,
+    [string]$Url
+  )
+
+  $content = @"
+[InternetShortcut]
+URL=$Url
+IconFile=%SystemRoot%\System32\SHELL32.dll
+IconIndex=220
+"@
+  Set-Content -Path $ShortcutPath -Value $content -Encoding Ascii
+}
+
 function Create-Shortcuts {
   param(
     [string]$Root,
-    [string]$StartCmdPath
+    [string]$StartCmdPath,
+    [string]$WebUrl = "http://localhost:5055"
   )
 
   $desktopPath = [Environment]::GetFolderPath("Desktop")
   $startMenuPrograms = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
   $shortcutName = "Mesora.lnk"
+  $webShortcutName = "Mesora Web.url"
 
   Write-Step "Creating shortcuts"
   New-Shortcut `
@@ -597,6 +847,14 @@ function Create-Shortcuts {
     -TargetPath $StartCmdPath `
     -WorkingDirectory $Root `
     -Description "Start Mesora"
+
+  New-WebsiteShortcut `
+    -ShortcutPath (Join-Path $desktopPath $webShortcutName) `
+    -Url $WebUrl
+
+  New-WebsiteShortcut `
+    -ShortcutPath (Join-Path $startMenuPrograms $webShortcutName) `
+    -Url $WebUrl
 }
 
 if (-not $SourceRoot) {
@@ -605,6 +863,9 @@ if (-not $SourceRoot) {
 
 $SourceRoot = (Resolve-Path $SourceRoot).Path
 $InstallRoot = [Environment]::ExpandEnvironmentVariables($InstallRoot)
+if ($PostgresPort -lt 1 -or $PostgresPort -gt 65535) { throw "PostgresPort must be between 1 and 65535." }
+if ($AiServerPort -lt 1 -or $AiServerPort -gt 65535) { throw "AiServerPort must be between 1 and 65535." }
+if ($OpcUaPort -lt 1 -or $OpcUaPort -gt 65535) { throw "OpcUaPort must be between 1 and 65535." }
 
 Write-Host "Mesora installer starting..." -ForegroundColor Green
 Write-Host "Source:  $SourceRoot"
@@ -613,6 +874,8 @@ Write-Host "Install: $InstallRoot"
 Ensure-Node -AllowInstall:(-not $SkipNodeInstall)
 Copy-AppTree -From $SourceRoot -To $InstallRoot
 Ensure-ConfigFiles -Root $InstallRoot
+Set-AiServerPort -Root $InstallRoot -Port $AiServerPort
+Set-OpcUaPort -Root $InstallRoot -Port $OpcUaPort
 
 if (-not $SkipPostgresInstall) {
   $pg = Ensure-Postgres `
@@ -639,24 +902,27 @@ if (-not $SkipPostgresInstall) {
     -Password $PostgresAppPassword
 }
 
-if (-not $SkipOllamaInstall) {
-  $ollamaPath = Ensure-Ollama -AllowInstall:$true
-  Pull-OllamaModel -OllamaPath $ollamaPath -Model $OllamaModel
-  Set-AiOllamaSettings -Root $InstallRoot -Model $OllamaModel
-}
+Write-Step "AI runtime install"
+Write-Host "Ollama auto-install has been removed from the installer."
+Write-Host "Configure AI providers/agents from: /ai-config after install."
 
 if (-not $SkipDependencyInstall) {
   Install-Dependencies -Root $InstallRoot -UseInstall:$UseNpmInstall
+  Build-Frontend -Root $InstallRoot
 }
 
-$launchers = Write-LauncherScripts -Root $InstallRoot
+$launchers = Write-LauncherScripts -Root $InstallRoot -AiPort $AiServerPort -OpcUaPortValue $OpcUaPort
+Register-AutoStartTask -Root $InstallRoot -RunScriptPath $launchers.RunPs1
+Start-MesoraNow -Root $InstallRoot -RunScriptPath $launchers.RunPs1
 if (-not $NoShortcuts) {
-  Create-Shortcuts -Root $InstallRoot -StartCmdPath $launchers.Start
+  Create-Shortcuts -Root $InstallRoot -StartCmdPath $launchers.Start -WebUrl $launchers.WebUrl
 }
 
 Write-Step "Install complete"
 Write-Host "Start Mesora with:"
 Write-Host "  $($launchers.Start)"
+Write-Host "Open Mesora web UI:"
+Write-Host "  $($launchers.WebUrl)"
 Write-Host ""
 Write-Host "If AI features are needed, update:"
 Write-Host "  $InstallRoot\ai-server\.env"

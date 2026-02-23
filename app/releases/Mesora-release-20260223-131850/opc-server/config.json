@@ -1,0 +1,65 @@
+{
+  "plcs": [
+    {
+      "name": "PLC1",
+      "host": "10.0.0.39",
+      "slot": 0,
+      "pollMs": 500
+    }
+  ],
+  "tags": [
+    {
+      "name": "HO_7700_PELLET_MILL.i_MonTime",
+      "uaType": "Float",
+      "plcType": "REAL",
+      "tagPath": "HO_7700_PELLET_MILL.i_MonTime",
+      "topic": "PLC1",
+      "groupName": "Test Alarms",
+      "alarmEnabled": true,
+      "alarmOperator": ">=",
+      "alarmValue": "-999999",
+      "alarmTest": true
+    },
+    {
+      "name": "HO_7700_PELLET_MILL.HMI_State",
+      "uaType": "Float",
+      "enabled": true,
+      "plcType": "REAL",
+      "tagPath": "HO_7700_PELLET_MILL.HMI_State",
+      "topic": "PLC1",
+      "groupName": "Test Alarms",
+      "alarmEnabled": true,
+      "alarmOperator": ">=",
+      "alarmValue": "-999999",
+      "alarmTest": true
+    }
+  ],
+  "opcua": {
+    "name": "ControlLogix",
+    "port": 4840,
+    "resourcePath": "/UA/ControlLogix"
+  },
+  "pollMs": 1000,
+  "runtime": {
+    "opcConnectionEnabled": true,
+    "readTimeoutMs": 7000,
+    "readRetryCount": 3,
+    "readRetryDelayMs": 250,
+    "plcConnectTimeoutMs": 15000,
+    "plcReceiveTimeoutMs": 45000,
+    "reconnectDelayMs": 3000,
+    "heartbeatEnabled": true,
+    "heartbeatMs": 10000,
+    "heartbeatFailureThreshold": 5,
+    "readReconnectErrorThreshold": 4
+  },
+  "topics": [
+    {
+      "name": "PLC1",
+      "prefix": "Test",
+      "plcName": "PLC1",
+      "samplingInterval": 500,
+      "enabled": true
+    }
+  ]
+}

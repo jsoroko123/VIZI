@@ -10,6 +10,8 @@ export default function TopBarRightControls({
   setShowUserDrawer,
   setShowSecurityDrawer,
   openDrawer,
+  openUserDrawer,
+  openSecurityDrawer,
   user,
   avatarLabel,
   compact = false,
@@ -81,6 +83,10 @@ export default function TopBarRightControls({
                     return;
                   }
                   if (item.key === "security") {
+                    if (typeof openSecurityDrawer === "function") {
+                      openSecurityDrawer();
+                      return;
+                    }
                     setShowMainDrawer(false);
                     setShowUserDrawer(false);
                     setShowSecurityDrawer(true);
@@ -125,6 +131,10 @@ export default function TopBarRightControls({
       </div>
       <button
         onClick={() => {
+          if (typeof openUserDrawer === "function") {
+            openUserDrawer();
+            return;
+          }
           setShowMainDrawer(false);
           setShowSecurityDrawer(false);
           setShowUserDrawer(true);

@@ -1,0 +1,193 @@
+import { spawn } from "node:child_process";
+import process from "node:process";
+
+const MESORA_AI_PORT_RAW = Number.parseInt(String(process.env.MESORA_AI_PORT || "5055"), 10);
+const MESORA_AI_PORT =
+  Number.isFinite(MESORA_AI_PORT_RAW) && MESORA_AI_PORT_RAW > 0 && MESORA_AI_PORT_RAW <= 65535
+    ? MESORA_AI_PORT_RAW
+    : 5055;
+const MESORA_OPCUA_PORT_RAW = Number.parseInt(String(process.env.MESORA_OPCUA_PORT || "4840"), 10);
+const MESORA_OPCUA_PORT =
+  Number.isFinite(MESORA_OPCUA_PORT_RAW) && MESORA_OPCUA_PORT_RAW > 0 && MESORA_OPCUA_PORT_RAW <= 65535
+    ? MESORA_OPCUA_PORT_RAW
+    : 4840;
+const STARTUP_PORTS = [MESORA_OPCUA_PORT, MESORA_AI_PORT];
+const processes = [];
+let stopping = false;
+const AI_SERVER_URL = `http://127.0.0.1:${MESORA_AI_PORT}`;
+
+function run(name, command, args, envOverrides = {}) {
+  const child = spawn(command, args, {
+    stdio: "inherit",
+    shell: true,
+    env: { ...process.env, ...envOverrides },
+  });
+
+  processes.push(child);
+
+  child.on("exit", (code, signal) => {
+    if (stopping) return;
+    console.error(`[${name}] exited (code=${code ?? "null"}, signal=${signal ?? "null"}). Stopping all services.`);
+    shutdown(code ?? 1);
+  });
+}
+
+function shutdown(exitCode = 0) {
+  if (stopping) return;
+  stopping = true;
+
+  for (const child of processes) {
+    if (!child.killed) {
+      child.kill("SIGTERM");
+    }
+  }
+
+  setTimeout(() => {
+    for (const child of processes) {
+      if (!child.killed) {
+        child.kill("SIGKILL");
+      }
+    }
+    process.exit(exitCode);
+  }, 1500);
+}
+
+process.on("SIGINT", () => shutdown(0));
+process.on("SIGTERM", () => shutdown(0));
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+function getListeningPidsWindows(ports) {
+  const psCommand = [
+    `$ports = @(${ports.join(",")})`,
+    "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |",
+    "Where-Object { $ports -contains $_.LocalPort } |",
+    "Select-Object -ExpandProperty OwningProcess -Unique",
+  ].join(" ");
+
+  const result = spawn("powershell", ["-NoProfile", "-Command", psCommand], {
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+  });
+
+  return new Promise((resolve) => {
+    let stdout = "";
+    result.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    result.on("close", () => {
+      const pids = stdout
+        .split(/\r?\n/)
+        .map((line) => Number.parseInt(line.trim(), 10))
+        .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+      resolve(unique(pids));
+    });
+  });
+}
+
+async function cleanStartupPorts(ports) {
+  if (process.platform !== "win32") return;
+
+  const pids = await getListeningPidsWindows(ports);
+  if (pids.length === 0) return;
+
+  console.log(`[clean] Stopping stale listeners on ports ${ports.join(", ")} (pids: ${pids.join(", ")})`);
+
+  for (const pid of pids) {
+    await new Promise((resolve) => {
+      const killer = spawn("taskkill", ["/F", "/PID", String(pid)], {
+        stdio: "ignore",
+        shell: false,
+      });
+      killer.on("close", () => resolve());
+      killer.on("error", () => resolve());
+    });
+  }
+
+  await sleep(500);
+}
+
+async function getStaleAppPidsWindows() {
+  const cwdPattern = String(process.cwd() || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "''");
+  const psCommand = [
+    "Get-CimInstance Win32_Process |",
+    "Where-Object {",
+    "($_.Name -in @('node.exe','cmd.exe')) -and",
+    `($_.CommandLine -match '${cwdPattern}') -and`,
+    "($_.CommandLine -match 'start-all\\.js|start-prod\\.js|watchdog\\.js|opc-server\\\\server\\.js|ai-server\\\\server\\.js|--prefix opc-server run start:watchdog|--prefix ai-server run start:watchdog')",
+    "} | Select-Object -ExpandProperty ProcessId",
+  ].join(" ");
+
+  const result = spawn("powershell", ["-NoProfile", "-Command", psCommand], {
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
+  });
+
+  return new Promise((resolve) => {
+    let stdout = "";
+    result.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    result.on("close", () => {
+      const pids = stdout
+        .split(/\r?\n/)
+        .map((line) => Number.parseInt(line.trim(), 10))
+        .filter(
+          (pid) =>
+            Number.isInteger(pid) &&
+            pid > 0 &&
+            pid !== process.pid &&
+            pid !== process.ppid,
+        );
+      resolve(unique(pids));
+    });
+  });
+}
+
+async function killPids(pids, reason) {
+  if (pids.length === 0) return;
+  console.log(`[clean] ${reason} (pids: ${pids.join(", ")})`);
+
+  for (const pid of pids) {
+    await new Promise((resolve) => {
+      const killer = spawn("taskkill", ["/F", "/PID", String(pid)], {
+        stdio: "ignore",
+        shell: false,
+      });
+      killer.on("close", () => resolve());
+      killer.on("error", () => resolve());
+    });
+  }
+}
+
+async function cleanStartup() {
+  if (process.platform !== "win32") return;
+
+  const stalePids = await getStaleAppPidsWindows();
+  await killPids(stalePids, "Stopping stale app processes");
+
+  await cleanStartupPorts(STARTUP_PORTS);
+}
+
+await cleanStartup();
+
+run(
+  "opc-server",
+  "npm",
+  ["--prefix", "opc-server", "run", "start:watchdog"],
+  { AI_SERVER_URL }
+);
+run(
+  "ai-server",
+  "npm",
+  ["--prefix", "ai-server", "run", "start:watchdog"],
+  { PORT: String(MESORA_AI_PORT) }
+);

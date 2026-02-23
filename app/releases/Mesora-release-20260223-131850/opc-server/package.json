@@ -1,0 +1,15 @@
+{
+  "name": "mesora-opc-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "start:watchdog": "node watchdog.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.3",
+    "node-logix": "^1.0.8",
+    "node-opcua": "^2.127.0"
+  }
+}

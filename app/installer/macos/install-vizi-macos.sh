@@ -202,7 +202,6 @@ copy_app_tree() {
   rsync -a --delete \
     --exclude ".git" \
     --exclude "node_modules" \
-    --exclude "dist" \
     --exclude ".vite" \
     --exclude "*.log" \
     "${SOURCE_ROOT}/" "${INSTALL_ROOT}/"
@@ -316,14 +315,35 @@ install_dependencies() {
     npm_args=("install")
   fi
 
-  log_step "Installing root dependencies (npm ${npm_args[*]})"
-  (cd "${INSTALL_ROOT}" && npm "${npm_args[@]}")
+  install_with_fallback() {
+    local label="$1"
+    local dir="$2"
+    log_step "Installing ${label} dependencies (npm ${npm_args[*]})"
+    if (cd "${dir}" && npm "${npm_args[@]}"); then
+      return 0
+    fi
+    if [[ "${USE_NPM_INSTALL}" -eq 1 ]]; then
+      return 1
+    fi
+    echo "WARN: npm ci failed for ${label}. Falling back to npm install."
+    (cd "${dir}" && npm install)
+  }
 
-  log_step "Installing OPC server dependencies (npm ${npm_args[*]})"
-  (cd "${INSTALL_ROOT}/opc-server" && npm "${npm_args[@]}")
+  install_with_fallback "root" "${INSTALL_ROOT}"
+  install_with_fallback "OPC server" "${INSTALL_ROOT}/opc-server"
+  install_with_fallback "AI server" "${INSTALL_ROOT}/ai-server"
+}
 
-  log_step "Installing AI server dependencies (npm ${npm_args[*]})"
-  (cd "${INSTALL_ROOT}/ai-server" && npm "${npm_args[@]}")
+build_frontend() {
+  if [[ ! -f "${INSTALL_ROOT}/index.html" || ! -f "${INSTALL_ROOT}/vite.config.js" ]]; then
+    if [[ -f "${INSTALL_ROOT}/dist/index.html" ]]; then
+      echo "WARN: Frontend source files are not present in this package. Using prebuilt dist bundle."
+      return 0
+    fi
+    fail "Frontend source files are missing and no prebuilt dist bundle was found."
+  fi
+  log_step "Building frontend bundle (npm run build)"
+  (cd "${INSTALL_ROOT}" && npm run build)
 }
 
 write_launchers() {
@@ -334,7 +354,7 @@ write_launchers() {
 #!/bin/bash
 set -euo pipefail
 cd "${INSTALL_ROOT}"
-npm run dev
+npm run start:prod
 EOF
 
   cat > "${stop_path}" <<EOF
@@ -357,6 +377,9 @@ ensure_config_files
 ensure_postgres
 ensure_ollama
 install_dependencies
+if [[ "${SKIP_DEPENDENCY_INSTALL}" -eq 0 ]]; then
+  build_frontend
+fi
 write_launchers
 
 log_step "Install complete"

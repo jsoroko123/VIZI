@@ -193,7 +193,7 @@ body[data-theme="dark"] {
     transform: translate3d(0, 0, 0);
   }
   to {
-    transform: translate3d(-50%, 0, 0);
+    transform: translate3d(-25%, 0, 0);
   }
 }
 
@@ -332,29 +332,31 @@ body[data-theme="light"] .vizi-live-alarmbar.is-alert .vizi-live-alarmbar-title 
   display: inline-flex;
   height: 100%;
   align-items: center;
-  min-width: max-content;
-  width: max-content;
+  min-width: 400%;
+  width: 400%;
   gap: 0;
-  padding-left: 8px;
+  padding-left: 0;
   will-change: transform;
   animation: vizi-live-alarm-marquee var(--alarm-marquee-duration, 42s) linear infinite;
   transform: translate3d(0, 0, 0);
 }
 
 .vizi-live-alarm-marquee-group {
-  display: inline-flex;
+  display: flex;
   height: 100%;
   align-items: center;
   justify-content: flex-start;
-  flex: 0 0 auto;
-  width: max-content;
+  flex: 0 0 25%;
+  min-width: 25%;
+  width: 25%;
   gap: 10px;
-  padding-right: 22px;
+  padding-right: 12px;
+  box-sizing: border-box;
 }
 
 .vizi-live-alarm-marquee-gap {
   flex: 0 0 auto;
-  width: 10px;
+  width: 24px;
 }
 
 .vizi-live-alarm-marquee-item {

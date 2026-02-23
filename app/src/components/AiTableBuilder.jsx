@@ -734,6 +734,22 @@ export default function AiTableBuilder() {
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button
               onClick={() => {
+                window.location.assign("/ai-config");
+              }}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 10,
+                padding: "8px 12px",
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              AI Config
+            </button>
+            <button
+              onClick={() => {
                 setMessages([]);
                 setPrompt("");
                 setSelectedReportId("");

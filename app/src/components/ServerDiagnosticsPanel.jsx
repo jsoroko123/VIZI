@@ -54,6 +54,7 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     opcConfig: null,
     dbConfig: null,
     pgDiag: null,
+    appDiag: null,
   });
 
   const load = async () => {
@@ -67,12 +68,13 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     };
 
     try {
-      const [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes] = await Promise.allSettled([
+      const [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes, appDiagRes] = await Promise.allSettled([
         fetchJson("/api/health"),
         fetchJson("/api/opc/status"),
         fetchJson("/api/opc/config"),
         fetchJson("/api/db/config"),
         fetchJson("/api/db/diagnostics/postgres"),
+        fetchJson("/api/diagnostics/app"),
       ]);
 
       const next = {
@@ -81,12 +83,13 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
         opcConfig: opcConfigRes.status === "fulfilled" ? opcConfigRes.value : null,
         dbConfig: dbConfigRes.status === "fulfilled" ? dbConfigRes.value : null,
         pgDiag: pgDiagRes.status === "fulfilled" ? pgDiagRes.value : null,
+        appDiag: appDiagRes.status === "fulfilled" ? appDiagRes.value : null,
       };
 
       setPayload(next);
       setUpdatedAt(Date.now());
 
-      const errors = [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes]
+      const errors = [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes, appDiagRes]
         .filter((r) => r.status === "rejected")
         .map((r) => String(r.reason?.message || "Request failed"));
       if (errors.length) setError(errors[0]);
@@ -109,6 +112,8 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     const opcConfig = payload.opcConfig && typeof payload.opcConfig === "object" ? payload.opcConfig : {};
     const dbConfig = payload.dbConfig && typeof payload.dbConfig === "object" ? payload.dbConfig : {};
     const pgDiag = payload.pgDiag && typeof payload.pgDiag === "object" ? payload.pgDiag : {};
+    const appDiag = payload.appDiag && typeof payload.appDiag === "object" ? payload.appDiag : {};
+    const appInfo = appDiag?.app && typeof appDiag.app === "object" ? appDiag.app : {};
 
     const tags = Array.isArray(opcConfig.tags) ? opcConfig.tags : [];
     const topics = Array.isArray(opcConfig.topics) ? opcConfig.topics : [];
@@ -187,6 +192,17 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
       writes: opcStatus?.runtime?.writeMetrics || {},
       dbLatencyMs: Number(dbConfig?.health?.latencyMs),
       dbCheckedAt: Number(dbConfig?.health?.checkedAt),
+      appCheckedAt: Number(appDiag?.checkedAt),
+      appCpuUsagePct: Number(appInfo?.cpuUsagePct),
+      hostCpuUsagePct: Number(appInfo?.hostCpuUsagePct),
+      cpuCores: Number(appInfo?.cpuCores),
+      appRssBytes: Number(appInfo?.rssBytes),
+      appHeapUsedBytes: Number(appInfo?.heapUsedBytes),
+      appHeapTotalBytes: Number(appInfo?.heapTotalBytes),
+      totalMemoryBytes: Number(appInfo?.totalMemoryBytes),
+      usedMemoryBytes: Number(appInfo?.usedMemoryBytes),
+      systemMemoryUsedPct: Number(appInfo?.systemMemoryUsedPct),
+      appMemoryOfSystemPct: Number(appInfo?.appMemoryOfSystemPct),
       pgCheckedAt: Number(pgDiag?.checkedAt),
       sharedBuffersBytes: toBytes(settingValue("shared_buffers"), unitValue("shared_buffers")),
       workMemBytes: toBytes(settingValue("work_mem"), unitValue("work_mem")),
@@ -378,6 +394,43 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
           <div style={metricCardStyle}>
             <div style={metricLabelStyle}>Last Poll</div>
             <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.opcLastPollAt)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={panelStyle}>
+        <div style={sectionTitleStyle}>PC And App Runtime</div>
+        <div style={statGridStyle}>
+          <div style={metricCardStyle}>
+            <div style={metricLabelStyle}>Host CPU</div>
+            <div style={metricValueStyle}>{asPct(summary.hostCpuUsagePct)}</div>
+            <div style={metricSubStyle}>{asCount(summary.cpuCores)} cores</div>
+          </div>
+          <div style={metricCardStyle}>
+            <div style={metricLabelStyle}>App CPU</div>
+            <div style={metricValueStyle}>{asPct(summary.appCpuUsagePct)}</div>
+            <div style={metricSubStyle}>Process usage</div>
+          </div>
+          <div style={metricCardStyle}>
+            <div style={metricLabelStyle}>System Memory Used</div>
+            <div style={metricValueStyle}>{asPct(summary.systemMemoryUsedPct)}</div>
+            <div style={metricSubStyle}>
+              {asBytes(summary.usedMemoryBytes)} / {asBytes(summary.totalMemoryBytes)}
+            </div>
+          </div>
+          <div style={metricCardStyle}>
+            <div style={metricLabelStyle}>App Memory Used</div>
+            <div style={metricValueStyle}>{asBytes(summary.appRssBytes)}</div>
+            <div style={metricSubStyle}>RSS, {asPct(summary.appMemoryOfSystemPct)} of system RAM</div>
+          </div>
+          <div style={metricCardStyle}>
+            <div style={metricLabelStyle}>App Heap Used</div>
+            <div style={metricValueStyle}>{asBytes(summary.appHeapUsedBytes)}</div>
+            <div style={metricSubStyle}>of {asBytes(summary.appHeapTotalBytes)}</div>
+          </div>
+          <div style={metricCardStyle}>
+            <div style={metricLabelStyle}>App Checked</div>
+            <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.appCheckedAt)}</div>
           </div>
         </div>
       </div>

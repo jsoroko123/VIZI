@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from "./components/AuthContext.jsx";
 import { installAlertToasts } from "./utils/toast";
 
 const AiTableBuilder = lazy(() => import("./components/AiTableBuilder.jsx"));
+const AiConfigPanel = lazy(() => import("./components/AiConfigPanel.jsx"));
 const DataBrowser = lazy(() => import("./components/DataBrowser.jsx"));
 const ReportDesigner = lazy(() => import("./components/ReportDesigner.jsx"));
 const OpcConfig = lazy(() => import("./components/OpcConfig.jsx"));
@@ -70,6 +71,14 @@ createRoot(document.getElementById('root')).render(
               element={
                 <RequireAuth>
                   <AiTableBuilder />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/ai-config"
+              element={
+                <RequireAuth>
+                  <AiConfigPanel />
                 </RequireAuth>
               }
             />
