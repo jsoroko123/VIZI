@@ -19,9 +19,9 @@ function cardStyle(accent = "var(--border)") {
     border: `1px solid ${accent}`,
     borderRadius: 12,
     background: "var(--bg-elev)",
-    padding: 12,
+    padding: 14,
     display: "grid",
-    gap: 8,
+    gap: 10,
   };
 }
 
@@ -268,11 +268,11 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     text: ok ? textOk : textBad,
     style: {
       border: `1px solid ${ok ? "#12b76a" : "#f04438"}`,
-      background: ok ? "rgba(18,183,106,0.12)" : "rgba(240,68,56,0.12)",
-      color: ok ? "#12b76a" : "#f04438",
+      background: "var(--bg-soft)",
+      color: ok ? "#067647" : "#b42318",
       borderRadius: 999,
       padding: "4px 10px",
-      fontSize: 11,
+      fontSize: 12,
       fontWeight: 700,
       width: "fit-content",
       whiteSpace: "nowrap",
@@ -280,58 +280,40 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     },
   });
 
-  const aiPill = pill(summary.aiHealthy, "AI Healthy", "AI Offline");
+  const aiPill = pill(summary.aiHealthy, "App Healthy", "App Offline");
   const opcPill = pill(summary.opcConnected, "OPC Connected", "OPC Disconnected");
   const dbPill = pill(summary.dbConnected, "DB Connected", "DB Disconnected");
 
-  const panelStyle = {
-    border: "1px solid var(--border)",
-    borderRadius: 14,
-    background: "var(--bg-elev)",
-    padding: 14,
-    display: "grid",
-    gap: 12,
-    boxShadow: "0 8px 20px rgba(0,0,0,0.08)",
-  };
+  const panelStyle = cardStyle();
   const sectionTitleStyle = {
-    fontSize: 10,
-    fontWeight: 800,
-    letterSpacing: "0.06em",
-    textTransform: "uppercase",
+    fontSize: 12,
+    fontWeight: 700,
     color: "var(--text-muted)",
   };
   const statGridStyle = {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
-    gap: 10,
+    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+    gap: 8,
   };
-  const metricCardStyle = {
-    border: "1px solid var(--border)",
-    borderRadius: 10,
-    background: "color-mix(in srgb, var(--bg-soft) 92%, var(--bg-elev) 8%)",
-    padding: "10px 12px",
-    display: "grid",
-    gap: 2,
-  };
-  const metricLabelStyle = { fontSize: 10, fontWeight: 700, color: "var(--text-muted)" };
-  const metricValueStyle = { fontSize: 18, fontWeight: 800, lineHeight: 1.15 };
-  const metricSubStyle = { fontSize: 10, color: "var(--text-muted)" };
+  const kvStyle = { fontSize: 12, color: "var(--text)" };
+  const kvSubStyle = { fontSize: 12, color: "var(--text-muted)" };
 
   return (
     <div
       style={{
         height: "100%",
         boxSizing: "border-box",
-        overflow: embedded ? "visible" : "auto",
-        padding: embedded ? 0 : 16,
+        overflow: embedded ? "auto" : "visible",
+        padding: embedded ? 10 : 12,
         display: "grid",
         gap: 12,
         alignContent: "start",
+        width: "100%",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
         <div style={{ display: "grid", gap: 2 }}>
-          <div style={{ fontSize: 16, fontWeight: 900, letterSpacing: "0.01em" }}>Server Diagnostics</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text)" }}>Server Diagnostics</div>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
             Updated: {asDate(updatedAt)}
           </div>
@@ -347,12 +329,12 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
             color: loading ? "var(--text-muted)" : "#fff",
             borderRadius: 8,
             padding: "6px 10px",
-            fontSize: 11,
+            fontSize: 12,
             fontWeight: 700,
             cursor: loading ? "not-allowed" : "pointer",
           }}
         >
-          {loading ? "Refreshing..." : "Refresh"}
+          {loading ? "Loading..." : "Refresh"}
         </button>
       </div>
 
@@ -380,8 +362,8 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
               background: serviceBusyAction === "start" ? "var(--bg-soft)" : "#12b76a",
               color: serviceBusyAction === "start" ? "var(--text-muted)" : "#fff",
               borderRadius: 8,
-              padding: "6px 12px",
-              fontSize: 11,
+              padding: "6px 10px",
+              fontSize: 12,
               fontWeight: 700,
               cursor: serviceBusyAction ? "not-allowed" : "pointer",
             }}
@@ -398,8 +380,8 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
               background: serviceBusyAction === "restart" ? "var(--bg-soft)" : "#2b6cff",
               color: serviceBusyAction === "restart" ? "var(--text-muted)" : "#fff",
               borderRadius: 8,
-              padding: "6px 12px",
-              fontSize: 11,
+              padding: "6px 10px",
+              fontSize: 12,
               fontWeight: 700,
               cursor: serviceBusyAction ? "not-allowed" : "pointer",
             }}
@@ -416,8 +398,8 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
               background: serviceBusyAction === "stop" ? "var(--bg-soft)" : "#f04438",
               color: serviceBusyAction === "stop" ? "var(--text-muted)" : "#fff",
               borderRadius: 8,
-              padding: "6px 12px",
-              fontSize: 11,
+              padding: "6px 10px",
+              fontSize: 12,
               fontWeight: 700,
               cursor: serviceBusyAction ? "not-allowed" : "pointer",
             }}
@@ -426,173 +408,117 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
           </button>
         </div>
         {serviceActionMessage ? (
-          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{serviceActionMessage}</div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--text-muted)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              padding: "6px 8px",
+              whiteSpace: "normal",
+              wordBreak: "break-word",
+            }}
+          >
+            {serviceActionMessage}
+          </div>
         ) : null}
       </div>
 
       <div style={panelStyle}>
         <div style={sectionTitleStyle}>OPC Inventory</div>
         <div style={statGridStyle}>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>PLCs</div>
-            <div style={metricValueStyle}>{asCount(summary.plcCount)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Connected PLCs</div>
-            <div style={metricValueStyle}>{asCount(summary.connectedCount)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Topics</div>
-            <div style={metricValueStyle}>{asCount(summary.topicCount)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Total Tags</div>
-            <div style={metricValueStyle}>{asCount(summary.tagCount)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Enabled Tags</div>
-            <div style={metricValueStyle}>{asCount(summary.enabledTagCount)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Muted Tags</div>
-            <div style={metricValueStyle}>{asCount(summary.mutedTagCount)}</div>
-          </div>
+          <div style={kvStyle}><strong>PLCs:</strong> {asCount(summary.plcCount)}</div>
+          <div style={kvStyle}><strong>Connected PLCs:</strong> {asCount(summary.connectedCount)}</div>
+          <div style={kvStyle}><strong>Topics:</strong> {asCount(summary.topicCount)}</div>
+          <div style={kvStyle}><strong>Total Tags:</strong> {asCount(summary.tagCount)}</div>
+          <div style={kvStyle}><strong>Enabled Tags:</strong> {asCount(summary.enabledTagCount)}</div>
+          <div style={kvStyle}><strong>Muted Tags:</strong> {asCount(summary.mutedTagCount)}</div>
         </div>
       </div>
 
       <div style={panelStyle}>
         <div style={sectionTitleStyle}>OPC Performance</div>
         <div style={statGridStyle}>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Longest Read</div>
-            <div style={metricValueStyle}>{asMs(summary.longestReadMs)}</div>
-            <div style={metricSubStyle}>Peak single read duration</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Average Read</div>
-            <div style={metricValueStyle}>{asMs(summary.avgReadMs)}</div>
-            <div style={metricSubStyle}>Across active diagnostics</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Read Cycle Span</div>
-            <div style={metricValueStyle}>{asMs(summary.readCycleMs)}</div>
-            <div style={metricSubStyle}>First to last read in cycle</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Last OPC Publish</div>
-            <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.opcLastAt)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Last Poll</div>
-            <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.opcLastPollAt)}</div>
-          </div>
+          <div style={kvStyle}><strong>Longest Read:</strong> {asMs(summary.longestReadMs)}</div>
+          <div style={kvStyle}><strong>Average Read:</strong> {asMs(summary.avgReadMs)}</div>
+          <div style={kvStyle}><strong>Read Cycle Span:</strong> {asMs(summary.readCycleMs)}</div>
+          <div style={kvStyle}><strong>Last OPC Publish:</strong> {asDate(summary.opcLastAt)}</div>
+          <div style={kvStyle}><strong>Last Poll:</strong> {asDate(summary.opcLastPollAt)}</div>
+          <div style={kvSubStyle}>Peak single read duration and cycle timing.</div>
         </div>
       </div>
 
       <div style={panelStyle}>
         <div style={sectionTitleStyle}>PC And App Runtime</div>
         <div style={statGridStyle}>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Host CPU</div>
-            <div style={metricValueStyle}>{asPct(summary.hostCpuUsagePct)}</div>
-            <div style={metricSubStyle}>{asCount(summary.cpuCores)} cores</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>App CPU</div>
-            <div style={metricValueStyle}>{asPct(summary.appCpuUsagePct)}</div>
-            <div style={metricSubStyle}>Process usage</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>System Memory Used</div>
-            <div style={metricValueStyle}>{asPct(summary.systemMemoryUsedPct)}</div>
-            <div style={metricSubStyle}>
-              {asBytes(summary.usedMemoryBytes)} / {asBytes(summary.totalMemoryBytes)}
-            </div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>App Memory Used</div>
-            <div style={metricValueStyle}>{asBytes(summary.appRssBytes)}</div>
-            <div style={metricSubStyle}>RSS, {asPct(summary.appMemoryOfSystemPct)} of system RAM</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>App Heap Used</div>
-            <div style={metricValueStyle}>{asBytes(summary.appHeapUsedBytes)}</div>
-            <div style={metricSubStyle}>of {asBytes(summary.appHeapTotalBytes)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>App Checked</div>
-            <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.appCheckedAt)}</div>
-          </div>
+          <div style={kvStyle}><strong>Host CPU:</strong> {asPct(summary.hostCpuUsagePct)}</div>
+          <div style={kvStyle}><strong>App CPU:</strong> {asPct(summary.appCpuUsagePct)}</div>
+          <div style={kvStyle}><strong>CPU Cores:</strong> {asCount(summary.cpuCores)}</div>
+          <div style={kvStyle}><strong>System Memory Used:</strong> {asPct(summary.systemMemoryUsedPct)}</div>
+          <div style={kvStyle}><strong>RAM Used:</strong> {asBytes(summary.usedMemoryBytes)} / {asBytes(summary.totalMemoryBytes)}</div>
+          <div style={kvStyle}><strong>App Memory Used:</strong> {asBytes(summary.appRssBytes)}</div>
+          <div style={kvStyle}><strong>App RAM Share:</strong> {asPct(summary.appMemoryOfSystemPct)}</div>
+          <div style={kvStyle}><strong>App Heap Used:</strong> {asBytes(summary.appHeapUsedBytes)}</div>
+          <div style={kvStyle}><strong>App Heap Total:</strong> {asBytes(summary.appHeapTotalBytes)}</div>
+          <div style={kvStyle}><strong>App Checked:</strong> {asDate(summary.appCheckedAt)}</div>
         </div>
       </div>
 
       <div style={panelStyle}>
         <div style={sectionTitleStyle}>Database And Writes</div>
         <div style={statGridStyle}>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>DB Latency</div>
-            <div style={metricValueStyle}>{asMs(summary.dbLatencyMs)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Write Count</div>
-            <div style={metricValueStyle}>{asCount(summary.writes?.count)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Write Avg</div>
-            <div style={metricValueStyle}>{asMs(summary.writes?.avgMs)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>Write Max</div>
-            <div style={metricValueStyle}>{asMs(summary.writes?.maxMs)}</div>
-          </div>
-          <div style={metricCardStyle}>
-            <div style={metricLabelStyle}>DB Health Checked</div>
-            <div style={{ ...metricValueStyle, fontSize: 13 }}>{asDate(summary.dbCheckedAt)}</div>
-          </div>
+          <div style={kvStyle}><strong>DB Latency:</strong> {asMs(summary.dbLatencyMs)}</div>
+          <div style={kvStyle}><strong>Write Count:</strong> {asCount(summary.writes?.count)}</div>
+          <div style={kvStyle}><strong>Write Avg:</strong> {asMs(summary.writes?.avgMs)}</div>
+          <div style={kvStyle}><strong>Write Max:</strong> {asMs(summary.writes?.maxMs)}</div>
+          <div style={kvStyle}><strong>DB Health Checked:</strong> {asDate(summary.dbCheckedAt)}</div>
         </div>
       </div>
 
       <div style={panelStyle}>
         <div style={sectionTitleStyle}>PostgreSQL Memory And Workers</div>
         <div style={statGridStyle}>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Shared Buffers</div><div style={metricValueStyle}>{asBytes(summary.sharedBuffersBytes)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Work Mem</div><div style={metricValueStyle}>{asBytes(summary.workMemBytes)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Maintenance Work Mem</div><div style={metricValueStyle}>{asBytes(summary.maintenanceWorkMemBytes)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Effective Cache Size</div><div style={metricValueStyle}>{asBytes(summary.effectiveCacheBytes)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Max Worker Processes</div><div style={metricValueStyle}>{asCount(summary.maxWorkerProcesses)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Max Parallel Workers</div><div style={metricValueStyle}>{asCount(summary.maxParallelWorkers)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Per Gather</div><div style={metricValueStyle}>{asCount(summary.maxParallelPerGather)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Parallel Maintenance</div><div style={metricValueStyle}>{asCount(summary.maxParallelMaintenanceWorkers)}</div></div>
+          <div style={kvStyle}><strong>Shared Buffers:</strong> {asBytes(summary.sharedBuffersBytes)}</div>
+          <div style={kvStyle}><strong>Work Mem:</strong> {asBytes(summary.workMemBytes)}</div>
+          <div style={kvStyle}><strong>Maintenance Work Mem:</strong> {asBytes(summary.maintenanceWorkMemBytes)}</div>
+          <div style={kvStyle}><strong>Effective Cache Size:</strong> {asBytes(summary.effectiveCacheBytes)}</div>
+          <div style={kvStyle}><strong>Max Worker Processes:</strong> {asCount(summary.maxWorkerProcesses)}</div>
+          <div style={kvStyle}><strong>Max Parallel Workers:</strong> {asCount(summary.maxParallelWorkers)}</div>
+          <div style={kvStyle}><strong>Per Gather:</strong> {asCount(summary.maxParallelPerGather)}</div>
+          <div style={kvStyle}><strong>Parallel Maintenance:</strong> {asCount(summary.maxParallelMaintenanceWorkers)}</div>
         </div>
       </div>
 
       <div style={panelStyle}>
         <div style={sectionTitleStyle}>PostgreSQL Runtime</div>
         <div style={statGridStyle}>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Connections</div><div style={metricValueStyle}>{asCount(summary.dbConnectionsTotal)}</div><div style={metricSubStyle}>Max {asCount(summary.maxConnections)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Active</div><div style={metricValueStyle}>{asCount(summary.dbConnectionsActive)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Idle</div><div style={metricValueStyle}>{asCount(summary.dbConnectionsIdle)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Waiting Sessions</div><div style={metricValueStyle}>{asCount(summary.dbConnectionsWaiting)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Cache Hit Ratio</div><div style={metricValueStyle}>{asPct(summary.cacheHitPct)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Temp Files</div><div style={metricValueStyle}>{asCount(summary.tempFiles)}</div><div style={metricSubStyle}>{asBytes(summary.tempBytes)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Deadlocks</div><div style={metricValueStyle}>{asCount(summary.deadlocks)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Uptime</div><div style={metricValueStyle}>{asCount(summary.uptimeSeconds, "--")}s</div><div style={metricSubStyle}>Checked {asDate(summary.pgCheckedAt)}</div></div>
+          <div style={kvStyle}><strong>Connections:</strong> {asCount(summary.dbConnectionsTotal)} / {asCount(summary.maxConnections)}</div>
+          <div style={kvStyle}><strong>Active:</strong> {asCount(summary.dbConnectionsActive)}</div>
+          <div style={kvStyle}><strong>Idle:</strong> {asCount(summary.dbConnectionsIdle)}</div>
+          <div style={kvStyle}><strong>Waiting Sessions:</strong> {asCount(summary.dbConnectionsWaiting)}</div>
+          <div style={kvStyle}><strong>Cache Hit Ratio:</strong> {asPct(summary.cacheHitPct)}</div>
+          <div style={kvStyle}><strong>Temp Files:</strong> {asCount(summary.tempFiles)}</div>
+          <div style={kvStyle}><strong>Temp Bytes:</strong> {asBytes(summary.tempBytes)}</div>
+          <div style={kvStyle}><strong>Deadlocks:</strong> {asCount(summary.deadlocks)}</div>
+          <div style={kvSubStyle}><strong>Uptime:</strong> {asCount(summary.uptimeSeconds, "--")} s | <strong>Checked:</strong> {asDate(summary.pgCheckedAt)}</div>
         </div>
       </div>
 
       <div style={panelStyle}>
         <div style={sectionTitleStyle}>Storage, WAL, Checkpoints, Locks</div>
         <div style={statGridStyle}>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Database Size</div><div style={metricValueStyle}>{asBytes(summary.dbBytes)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Tables Size</div><div style={metricValueStyle}>{asBytes(summary.tablesBytes)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Indexes Size</div><div style={metricValueStyle}>{asBytes(summary.indexesBytes)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>WAL Bytes</div><div style={metricValueStyle}>{asBytes(summary.walBytes)}</div><div style={metricSubStyle}>{asCount(summary.walRecords)} records</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Timed Checkpoints</div><div style={metricValueStyle}>{asCount(summary.checkpointsTimed)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Requested Checkpoints</div><div style={metricValueStyle}>{asCount(summary.checkpointsReq)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Checkpoint Write Time</div><div style={metricValueStyle}>{asMs(summary.checkpointWriteMs)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Checkpoint Sync Time</div><div style={metricValueStyle}>{asMs(summary.checkpointSyncMs)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Total Locks</div><div style={metricValueStyle}>{asCount(summary.lockCount)}</div></div>
-          <div style={metricCardStyle}><div style={metricLabelStyle}>Waiting Locks</div><div style={metricValueStyle}>{asCount(summary.lockWaiting)}</div></div>
+          <div style={kvStyle}><strong>Database Size:</strong> {asBytes(summary.dbBytes)}</div>
+          <div style={kvStyle}><strong>Tables Size:</strong> {asBytes(summary.tablesBytes)}</div>
+          <div style={kvStyle}><strong>Indexes Size:</strong> {asBytes(summary.indexesBytes)}</div>
+          <div style={kvStyle}><strong>WAL Bytes:</strong> {asBytes(summary.walBytes)}</div>
+          <div style={kvStyle}><strong>WAL Records:</strong> {asCount(summary.walRecords)}</div>
+          <div style={kvStyle}><strong>Timed Checkpoints:</strong> {asCount(summary.checkpointsTimed)}</div>
+          <div style={kvStyle}><strong>Requested Checkpoints:</strong> {asCount(summary.checkpointsReq)}</div>
+          <div style={kvStyle}><strong>Checkpoint Write Time:</strong> {asMs(summary.checkpointWriteMs)}</div>
+          <div style={kvStyle}><strong>Checkpoint Sync Time:</strong> {asMs(summary.checkpointSyncMs)}</div>
+          <div style={kvStyle}><strong>Total Locks:</strong> {asCount(summary.lockCount)}</div>
+          <div style={kvStyle}><strong>Waiting Locks:</strong> {asCount(summary.lockWaiting)}</div>
         </div>
       </div>
     </div>

@@ -169,6 +169,7 @@ async function main() {
   const reconnectMaxAttempts = parsePositiveNumber(runtime?.reconnectMaxAttempts, null);
   const heartbeatEnabled = runtime?.heartbeatEnabled !== false;
   const heartbeatMs = parsePositiveMs(runtime?.heartbeatMs, 5000);
+  const heartbeatReconnectOnFailure = runtime?.heartbeatReconnectOnFailure === true;
   const heartbeatFailureThresholdRaw = Number.parseInt(String(runtime?.heartbeatFailureThreshold ?? "3"), 10);
   const heartbeatFailureThreshold = Number.isFinite(heartbeatFailureThresholdRaw)
     ? Math.max(1, Math.min(10, heartbeatFailureThresholdRaw))
@@ -576,7 +577,7 @@ async function main() {
       return { ok: false, status: 409, error: "OPC connection is disabled." };
     }
     const plc = plcClients.get(tag.plcName);
-    if (!plc || !plcConnected.get(tag.plcName)) {
+    if (!plc) {
       pushIssue({
         severity: "warn",
         kind: "plc_write_not_connected",
@@ -585,6 +586,26 @@ async function main() {
         message: `Write rejected. PLC ${tag.plcName} is not connected.`,
       });
       return { ok: false, status: 503, error: `PLC ${tag.plcName} is not connected.` };
+    }
+    if (!plcConnected.get(tag.plcName)) {
+      pushIssue({
+        severity: "warn",
+        kind: "plc_write_reconnect_attempt",
+        plcName: tag.plcName,
+        tagKey: tag.tagKey,
+        message: `PLC ${tag.plcName} not connected during write. Attempting reconnect.`,
+      });
+      await connectPlcWithRetry(tag.plcName, plc);
+      if (!plcConnected.get(tag.plcName)) {
+        pushIssue({
+          severity: "warn",
+          kind: "plc_write_not_connected",
+          plcName: tag.plcName,
+          tagKey: tag.tagKey,
+          message: `Write rejected. PLC ${tag.plcName} is not connected.`,
+        });
+        return { ok: false, status: 503, error: `PLC ${tag.plcName} is not connected.` };
+      }
     }
     const normalized = normalizeWriteValueForTag(tag, value);
     await plc.write(tag.tagPath || tag.name, normalized);
@@ -1133,6 +1154,7 @@ async function main() {
           reconnectDelayMs,
           reconnectMaxAttempts,
           heartbeatEnabled,
+          heartbeatReconnectOnFailure,
           heartbeatFailureThreshold,
           plcConnectTimeoutMs,
           plcReceiveTimeoutMs,
@@ -1493,16 +1515,28 @@ async function main() {
           });
           return;
         }
-        plcConnected.set(plcName, false);
-        void connectPlcWithRetry(plcName, plc);
-        // eslint-disable-next-line no-console
-        console.warn(`PLC ${plcName} heartbeat failed (threshold reached).`, err?.message || err);
-        pushIssue({
-          severity: "error",
-          kind: "plc_heartbeat_failed",
-          plcName,
-          message: `Heartbeat failed (${nextStreak}/${heartbeatFailureThreshold}): ${toIssueMessage(err)}`,
-        });
+        if (heartbeatReconnectOnFailure) {
+          plcConnected.set(plcName, false);
+          void connectPlcWithRetry(plcName, plc);
+          // eslint-disable-next-line no-console
+          console.warn(`PLC ${plcName} heartbeat failed (threshold reached, reconnecting).`, err?.message || err);
+          pushIssue({
+            severity: "error",
+            kind: "plc_heartbeat_failed_reconnecting",
+            plcName,
+            message: `Heartbeat failed (${nextStreak}/${heartbeatFailureThreshold}); reconnecting: ${toIssueMessage(err)}`,
+          });
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn(`PLC ${plcName} heartbeat failed (threshold reached, keeping session).`, err?.message || err);
+          pushIssue({
+            severity: "error",
+            kind: "plc_heartbeat_failed_non_disruptive",
+            plcName,
+            message: `Heartbeat failed (${nextStreak}/${heartbeatFailureThreshold}); keeping existing session: ${toIssueMessage(err)}`,
+          });
+          plcHeartbeatFailureStreak.set(plcName, 0);
+        }
       } finally {
         writeStatus();
       }

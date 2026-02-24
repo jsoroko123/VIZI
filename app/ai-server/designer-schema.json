@@ -1,5 +1,237 @@
 {
   "version": 1,
-  "updatedAt": "2026-02-17T00:25:29.273Z",
-  "tables": {}
+  "updatedAt": "2026-02-24T17:14:23.299Z",
+  "tables": {
+    "bin": {
+      "name": "bin",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false,
+          "defaultSql": "",
+          "primaryKey": true
+        },
+        {
+          "name": "name",
+          "type": "character varying",
+          "nullable": false,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "product_id",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "defaultSql": "now()",
+          "primaryKey": false
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "defaultSql": "now()",
+          "primaryKey": false
+        },
+        {
+          "name": "binNo",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        }
+      ],
+      "updatedAt": "2026-02-24T13:41:44.794Z"
+    },
+    "route_bin_group": {
+      "name": "route_bin_group",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "type",
+          "type": "character varying",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "group_number",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "route_id",
+          "type": "bigint",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "mix_type",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "is_blend",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "false",
+          "primaryKey": false
+        },
+        {
+          "name": "require_100percent",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "true",
+          "primaryKey": false
+        },
+        {
+          "name": "require_product_check",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "false",
+          "primaryKey": false
+        },
+        {
+          "name": "max_target",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "100",
+          "primaryKey": false
+        },
+        {
+          "name": "hide_in_recipe",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "false",
+          "primaryKey": false
+        },
+        {
+          "name": "hide_in_job",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "false",
+          "primaryKey": false
+        },
+        {
+          "name": "has_registration",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "true",
+          "primaryKey": false
+        },
+        {
+          "name": "use_percentage",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "use_weight",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "true",
+          "primaryKey": false
+        },
+        {
+          "name": "max_ingredients",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "8",
+          "primaryKey": false
+        },
+        {
+          "name": "unit",
+          "type": "character varying",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "unit_scale",
+          "type": "double precision",
+          "nullable": true,
+          "defaultSql": "1",
+          "primaryKey": false
+        },
+        {
+          "name": "default_bin_index",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "allow_sub_ingr_list",
+          "type": "boolean",
+          "nullable": true,
+          "defaultSql": "false",
+          "primaryKey": false
+        },
+        {
+          "name": "defaul_ttarget",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "0",
+          "primaryKey": false
+        },
+        {
+          "name": "sort_order",
+          "type": "integer",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false,
+          "defaultSql": "",
+          "primaryKey": true
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "defaultSql": "''::text",
+          "primaryKey": false
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "nullable": false,
+          "defaultSql": "''::text",
+          "primaryKey": false
+        }
+      ],
+      "updatedAt": "2026-02-24T17:14:23.296Z"
+    }
+  }
 }

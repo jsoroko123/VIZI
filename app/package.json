@@ -16,7 +16,8 @@
     "install:mac": "bash installer/macos/install-mesora-macos.sh",
     "svg:streamline": "node scripts/streamline-svg-library.mjs",
     "opc-server": "npm --prefix opc-server start",
-    "ai-server": "npm --prefix ai-server start"
+    "app-server": "npm --prefix ai-server start",
+    "ai-server": "npm run app-server"
   },
   "dependencies": {
     "@techstark/opencv-js": "^4.12.0-release.1",
@@ -25,6 +26,7 @@
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.2.0",
     "react-router-dom": "^6.26.2",
+    "react-select": "^5.10.2",
     "recharts": "^3.7.0",
     "tesseract.js": "^7.0.0"
   },

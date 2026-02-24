@@ -122,7 +122,7 @@ async function getStaleAppPidsWindows() {
     "Where-Object {",
     "($_.Name -in @('node.exe','cmd.exe')) -and",
     `($_.CommandLine -match '${cwdPattern}') -and`,
-    "($_.CommandLine -match 'start-all\\.js|start-prod\\.js|watchdog\\.js|opc-server\\\\server\\.js|ai-server\\\\server\\.js|--prefix opc-server run start:watchdog|--prefix ai-server run start:watchdog')",
+    "($_.CommandLine -match 'start-all\\.js|start-prod\\.js|watchdog\\.js|opc-server\\\\server\\.js|ai-server\\\\server\\.js|--prefix opc-server run start:watchdog|--prefix ai-server run start:watchdog|--prefix ai-server run app-server:watchdog')",
     "} | Select-Object -ExpandProperty ProcessId",
   ].join(" ");
 
@@ -186,7 +186,7 @@ run(
   { AI_SERVER_URL }
 );
 run(
-  "ai-server",
+  "app-server",
   "npm",
   ["--prefix", "ai-server", "run", "start:watchdog"],
   { PORT: String(MESORA_AI_PORT) }

@@ -79,6 +79,7 @@ export default function CanvasSvg({
   opcLiveValues,
   opcTags,
   widgetDbValues,
+  binProductLabelByOverlayId,
   onWidgetDurationPresetChange,
   hiddenTagBubbleIds,
   onHideTagBubble,
@@ -100,6 +101,7 @@ export default function CanvasSvg({
   const themeStrokeDefault = "#808080";
   const isDarkTheme = String(theme || "").toLowerCase() === "dark";
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
+  const [viewportScroll, setViewportScroll] = useState({ x: 0, y: 0 });
   const getTextBounds = (shape, options = {}) => {
     if (!shape) return null;
     const minW = Number.isFinite(Number(options.minW)) ? Number(options.minW) : 40;
@@ -117,6 +119,37 @@ export default function CanvasSvg({
       w,
       h,
     };
+  };
+  const replaceSvgProductPlaceholder = (innerSvg, productLabel) => {
+    const source = String(innerSvg || "");
+    const label = String(productLabel || "").trim();
+    if (!source.trim() || !label) return source;
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(
+        `<svg xmlns="http://www.w3.org/2000/svg">${source}</svg>`,
+        "image/svg+xml"
+      );
+      if (doc.querySelector("parsererror")) return source;
+      const nodes = Array.from(doc.querySelectorAll("text"));
+      let replaced = 0;
+      nodes.forEach((node) => {
+        const current = String(node?.textContent || "").trim();
+        if (!current) return;
+        if (/^product$/i.test(current) || /^\{\{?\s*product\s*\}?\}$/i.test(current)) {
+          node.textContent = label;
+          replaced += 1;
+        }
+      });
+      if (!replaced) return source;
+      const serializer = new XMLSerializer();
+      const root = doc.documentElement;
+      return Array.from(root.childNodes)
+        .map((node) => serializer.serializeToString(node))
+        .join("");
+    } catch {
+      return source;
+    }
   };
 
   // wrapper size for rulers
@@ -142,6 +175,7 @@ export default function CanvasSvg({
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (Math.abs(el.scrollLeft - x) > 0.5) el.scrollLeft = x;
     if (Math.abs(el.scrollTop - y) > 0.5) el.scrollTop = y;
+    setViewportScroll({ x: Number(el.scrollLeft || 0), y: Number(el.scrollTop || 0) });
   }, [viewportScrollTarget?.x, viewportScrollTarget?.y]);
 
   // ✅ marquee rect coords (WORLD coords)
@@ -3032,15 +3066,19 @@ export default function CanvasSvg({
 
     const majorPx = 100;
     const minorPx = 20;
+    const scrollX = Math.max(0, Number(viewportScroll?.x) || 0);
+    const startTick = Math.floor(scrollX / minorPx) * minorPx;
+    const endTick = scrollX + W;
 
     const ticks = [];
-    for (let x = 0; x <= W; x += minorPx) {
-      const isMajor = x % majorPx === 0;
+    for (let tick = startTick; tick <= endTick; tick += minorPx) {
+      const x = tick - scrollX;
+      const isMajor = tick % majorPx === 0;
       const len = isMajor ? 12 : 7;
 
       ticks.push(
         <line
-          key={`t-${x}`}
+          key={`t-${tick}`}
           x1={x + 0.5}
           y1={H}
           x2={x + 0.5}
@@ -3051,10 +3089,10 @@ export default function CanvasSvg({
       );
 
       if (isMajor) {
-        const labelPx = Math.max(0, Math.round(x));
+        const labelPx = Math.max(0, Math.round(tick));
         ticks.push(
           <text
-            key={`tl-${x}`}
+            key={`tl-${tick}`}
             x={x + 2}
             y={12}
             fontSize={10}
@@ -3320,6 +3358,7 @@ export default function CanvasSvg({
             x: Number(target?.scrollLeft || 0),
             y: Number(target?.scrollTop || 0),
           };
+          setViewportScroll(next);
           if (typeof onViewportScroll === "function") {
             onViewportScroll({
               x: next.x,
@@ -3700,6 +3739,11 @@ export default function CanvasSvg({
               const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
               const arrowStart = s.arrowStart ?? "none";
               const arrowEnd = s.arrowEnd ?? "none";
+              const polyCursor = isLiveMode
+                ? "default"
+                : tool === "select"
+                ? "move"
+                : "crosshair";
               const ptsForDisplay = pointsForMarker(s.points);
               const polyFillRaw = String(s.fill ?? "").trim().toLowerCase();
               const polyFill =
@@ -3738,7 +3782,7 @@ export default function CanvasSvg({
                       }
                     }}
                     pointerEvents="auto"
-                    style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+                    style={{ cursor: polyCursor }}
                   />
 
                   {isEditing && (
@@ -3790,7 +3834,7 @@ export default function CanvasSvg({
                       }
                     }}
                     pointerEvents="auto"
-                    style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+                    style={{ cursor: polyCursor }}
                   />
 
                   {isEditing && (
@@ -3889,6 +3933,13 @@ export default function CanvasSvg({
                           </g>
                         );
                       }
+                      const overlayEType = String(o?.eType || "").trim().toLowerCase();
+                      const dynamicBinProductLabel = String(
+                        binProductLabelByOverlayId?.[String(o?.id || "")] || ""
+                      ).trim();
+                      const shouldReplaceBinProduct =
+                        !!dynamicBinProductLabel &&
+                        (overlayEType === "bin" || overlayEType.startsWith("bin"));
                       const tagFill = getTagColor(o.tagPath);
                       const routeStroke = getRouteStrokeColorForOverlay(o);
                       const isFaultSimulated = Boolean(o.faultSimulated);
@@ -3908,6 +3959,9 @@ export default function CanvasSvg({
                         : useForcedStroke
                         ? overrideSvgStrokeOnly(o.inner)
                         : o.inner;
+                      if (shouldReplaceBinProduct) {
+                        inner = replaceSvgProductPlaceholder(inner, dynamicBinProductLabel);
+                      }
                       if (isFaultSimulated) {
                         // Fault simulation should only affect fill, not stroke.
                         inner = inner
@@ -3973,70 +4027,7 @@ export default function CanvasSvg({
                     );
                   })() : null}
 
-                  {(overlayModeState === "manual" || overlayModeState === "maintenance") && (() => {
-                    const bb = o?.bbox || overlayLocalBBox(o.id);
-                    if (!bb) return null;
-                    const wr = overlayWorldRect(o, bb);
-                    const isMaintenance = overlayModeState === "maintenance";
-                    const bubbleR = 9 * inv;
-                    const bubbleCx = wr.x + wr.w + 12 * inv;
-                    const bubbleCy = wr.y + 10 * inv;
-                    const anchorX = wr.x + wr.w;
-                    const anchorY = wr.y + Math.max(6 * inv, Math.min(wr.h - 6 * inv, 10 * inv));
-                    const dx = bubbleCx - anchorX;
-                    const dy = bubbleCy - anchorY;
-                    const dist = Math.max(1e-6, Math.hypot(dx, dy));
-                    const ux = dx / dist;
-                    const uy = dy / dist;
-                    const lineEndX = bubbleCx - ux * bubbleR;
-                    const lineEndY = bubbleCy - uy * bubbleR;
-                    return (
-                      <g pointerEvents="none" aria-hidden="true">
-                        <line
-                          x1={anchorX}
-                          y1={anchorY}
-                          x2={lineEndX}
-                          y2={lineEndY}
-                          stroke={isMaintenance ? "#b45309" : "#7e22ce"}
-                          strokeWidth={1.35 * inv}
-                          strokeLinecap="round"
-                          vectorEffect="non-scaling-stroke"
-                        />
-                        <circle
-                          cx={bubbleCx}
-                          cy={bubbleCy}
-                          r={bubbleR}
-                          fill={isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)"}
-                          stroke={isMaintenance ? "#f59e0b" : "#a855f7"}
-                          strokeWidth={1.25 * inv}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                        <g
-                          transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.6 * inv}) translate(-12 -12)`}
-                          fill="none"
-                          stroke={isMaintenance ? "#b45309" : "#7e22ce"}
-                          strokeWidth={1.9}
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          {isMaintenance ? (
-                            <>
-                              <path d="M20 4.5 14.2 10.3" />
-                              <path d="M10.2 14.3 4.2 20.3 2.7 18.8l6-6" />
-                              <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
-                            </>
-                          ) : (
-                            <>
-                              <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
-                              <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
-                              <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
-                              <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
-                            </>
-                          )}
-                        </g>
-                      </g>
-                    );
-                  })()}
+                  {null}
 
                   {isLineMode && (() => {
                     const bb = overlayLocalBBox(o.id);
@@ -4099,6 +4090,72 @@ export default function CanvasSvg({
             {selectedIds?.length > 0 && selectedOverlayIds?.length === 0 && shapeSelectionUI
               ? shapeSelectionUI(z)
               : null}
+            {svgOverlays.map((o) => {
+              const overlayModeState = getOverlayModeState(o);
+              if (overlayModeState !== "manual" && overlayModeState !== "maintenance") return null;
+              const bb = o?.bbox || overlayLocalBBox(o.id);
+              if (!bb) return null;
+              const wr = overlayWorldRect(o, bb);
+              const isMaintenance = overlayModeState === "maintenance";
+              const bubbleR = 9 * inv;
+              const bubbleCx = wr.x + wr.w + 12 * inv;
+              const bubbleCy = wr.y + 10 * inv;
+              const anchorX = wr.x + wr.w;
+              const anchorY = wr.y + Math.max(6 * inv, Math.min(wr.h - 6 * inv, 10 * inv));
+              const dx = bubbleCx - anchorX;
+              const dy = bubbleCy - anchorY;
+              const dist = Math.max(1e-6, Math.hypot(dx, dy));
+              const ux = dx / dist;
+              const uy = dy / dist;
+              const lineEndX = bubbleCx - ux * bubbleR;
+              const lineEndY = bubbleCy - uy * bubbleR;
+              return (
+                <g key={`overlay-mode-badge-${o.id}`} pointerEvents="none" aria-hidden="true">
+                  <line
+                    x1={anchorX}
+                    y1={anchorY}
+                    x2={lineEndX}
+                    y2={lineEndY}
+                    stroke={isMaintenance ? "#b45309" : "#7e22ce"}
+                    strokeWidth={1.35 * inv}
+                    strokeLinecap="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <circle
+                    cx={bubbleCx}
+                    cy={bubbleCy}
+                    r={bubbleR}
+                    fill={isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)"}
+                    stroke={isMaintenance ? "#f59e0b" : "#a855f7"}
+                    strokeWidth={1.25 * inv}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <g
+                    transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.6 * inv}) translate(-12 -12)`}
+                    fill="none"
+                    stroke={isMaintenance ? "#b45309" : "#7e22ce"}
+                    strokeWidth={1.9}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    {isMaintenance ? (
+                      <>
+                        <path d="M20 4.5 14.2 10.3" />
+                        <path d="M10.2 14.3 4.2 20.3 2.7 18.8l6-6" />
+                        <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
+                      </>
+                    ) : (
+                      <>
+                        <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
+                        <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
+                        <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
+                        <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
+                      </>
+                    )}
+                  </g>
+                </g>
+              );
+            })}
 
             {collabCursors.length > 0 && (
               <g pointerEvents="none">

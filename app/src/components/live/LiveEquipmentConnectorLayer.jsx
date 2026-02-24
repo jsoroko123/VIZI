@@ -11,7 +11,7 @@ export default function LiveEquipmentConnectorLayer({ lines, connectFxById }) {
         width: "100%",
         height: "100%",
         pointerEvents: "none",
-        zIndex: 204,
+        zIndex: 11990,
         overflow: "visible",
       }}
     >
@@ -39,16 +39,6 @@ export default function LiveEquipmentConnectorLayer({ lines, connectFxById }) {
                 }}
               />
             ) : null}
-            <circle
-              cx={line.fromX}
-              cy={line.fromY}
-              r="3.2"
-              fill="rgba(43,108,255,0.8)"
-              style={{
-                transformOrigin: `${line.fromX}px ${line.fromY}px`,
-                animation: showConnectFx ? "live-eq-link-dot-connect 0.9s ease-out 1" : undefined,
-              }}
-            />
           </g>
         );
       })}

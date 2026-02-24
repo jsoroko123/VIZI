@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
+﻿import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { dismissToast, showToast, toastError, toastSuccess } from "../utils/toast";
 
 const DIAGNOSTICS_UI_MAX_ROWS = 500;
@@ -296,6 +296,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       samplingInterval: "",
       topic: "",
       enabled: true,
+      showPopupTagValue: true,
       mappingSet: "",
       scale: 1,
       decimals: 0,
@@ -343,6 +344,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     samplingInterval: "",
     topic: "",
     enabled: true,
+    showPopupTagValue: true,
     muted: false,
     mappingSet: "",
     groupName: "",
@@ -509,6 +511,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const opcUaSnapshotRef = useRef(null);
   const lastLiveErrorsRef = useRef({});
   const seenOpcIssueIdsRef = useRef(new Set());
+  const opcIssueClearCutoffAtRef = useRef(0);
   const mappingSetAutoSelectedRef = useRef(false);
   const drawerMenuRef = useRef(null);
   const drawerMenuBtnRef = useRef(null);
@@ -691,6 +694,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             samplingInterval: f?.samplingInterval ?? "",
             topic: f?.topic || "",
             enabled: f?.enabled !== false,
+            showPopupTagValue: f?.showPopupTagValue !== false,
             mappingSet: String(f?.mappingSet || ""),
             scale: Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1,
             decimals: Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 0,
@@ -703,7 +707,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     setTemplateFieldRows(
       nextFields.length
         ? nextFields
-        : [{
+          : [{
             name: "",
             tagPath: "",
             uaType: "",
@@ -711,6 +715,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             samplingInterval: "",
             topic: "",
             enabled: true,
+            showPopupTagValue: true,
             mappingSet: "",
             scale: 1,
             decimals: 0,
@@ -785,8 +790,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           runtimeIssues.forEach((issue, idx) => {
             const rawId = String(issue?.id || "").trim();
             if (!rawId || seenOpcIssueIdsRef.current.has(rawId)) return;
+            const issueAtRaw = Number(issue?.at || now);
+            const issueAt = Number.isFinite(issueAtRaw) ? issueAtRaw : now;
+            const clearCutoff = Number(opcIssueClearCutoffAtRef.current || 0);
+            if (clearCutoff > 0 && issueAt <= clearCutoff) {
+              seenOpcIssueIdsRef.current.add(rawId);
+              return;
+            }
             seenOpcIssueIdsRef.current.add(rawId);
-            const at = Number(issue?.at || now);
             const severity = String(issue?.severity || "error").trim().toLowerCase();
             const plcName = String(issue?.plcName || "").trim();
             const tagKey = String(issue?.tagKey || "").trim();
@@ -794,7 +805,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             const message = String(issue?.message || "").trim();
             nextLogEntries.push({
               id: `${rawId}-${idx}`,
-              at: Number.isFinite(at) ? at : now,
+              at: issueAt,
               tag: tagKey || plcName || kindText || "OPC",
               count: "",
               kind: severity === "info" ? "info" : severity === "warn" ? "warn" : "error",
@@ -1897,6 +1908,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           uaType: "",
           topic: defaultTopic,
           enabled: true,
+          showPopupTagValue: true,
           trendEnabled: false,
           trendMode: "value",
           trendSampleMs: "",
@@ -1932,6 +1944,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           decimals,
           samplingInterval,
           deadband,
+          showPopupTagValue: row?.showPopupTagValue !== false,
           muted: row?.muted === true,
           trendEnabled: row?.trendEnabled === true,
           trendMode: normalizeTrendMode(row?.trendMode),
@@ -2041,6 +2054,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         samplingInterval: parseOptionalMs(samplingInterval) || undefined,
         deadband: parseOptionalNonNegative(manualTag.deadband) || undefined,
         enabled: manualTag.enabled !== false,
+        showPopupTagValue: manualTag.showPopupTagValue !== false,
         muted: manualTag.muted === true,
         trendEnabled: manualTag.trendEnabled === true,
         trendMode: normalizeTrendMode(manualTag.trendMode),
@@ -2083,6 +2097,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       samplingInterval: "",
       topic: "",
       enabled: true,
+      showPopupTagValue: true,
       muted: false,
       trendEnabled: false,
       trendMode: "value",
@@ -2231,6 +2246,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             : Number(row.samplingInterval),
         topic: String(row?.topic || "").trim(),
         enabled: row?.enabled !== false,
+        showPopupTagValue: row?.showPopupTagValue !== false,
         mappingSet: String(row?.mappingSet || "").trim(),
         scale: Number.isFinite(Number(row?.scale)) ? Number(row.scale) : 1,
         decimals: Number.isFinite(Number(row?.decimals)) ? Number(row.decimals) : 0,
@@ -2391,6 +2407,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         pollMs: fieldPollMs,
         samplingInterval: fieldSampling,
         enabled: fieldEnabled,
+        showPopupTagValue: f?.showPopupTagValue !== false,
         mappingSet: fieldMappingSet || String(applyMappingSet || "").trim(),
         scale: fieldScale,
         decimals: fieldDecimals,
@@ -2505,6 +2522,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{errorLogEntries.length} entries</div>
             <button
               onClick={() => {
+                opcIssueClearCutoffAtRef.current = Date.now();
                 setErrorLogEntries([]);
                 seenOpcIssueIdsRef.current.clear();
               }}
@@ -2935,8 +2953,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       display: "inline-flex",
       alignItems: "center",
       justifyContent: "center",
-      width: 28,
-      height: 28,
+      width: 32,
+                                                      height: 32,
+                                                      minWidth: 32,
+                                                      minHeight: 32,
       border: "1px solid #f04438",
       background: "#f04438",
       color: "#ffffff",
@@ -3312,6 +3332,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     />
                     Enabled
                   </label>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }} title="Show current tag value in live equipment popup cards.">
+                    <input
+                      type="checkbox"
+                      checked={manualTag.showPopupTagValue !== false}
+                      onChange={(e) => setManualTag((prev) => ({ ...prev, showPopupTagValue: e.target.checked }))}
+                    />
+                    Show Tag Value In Popup
+                  </label>
                 <button
                   onClick={addManualTag}
                   title="Add Tag"
@@ -3344,6 +3372,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       samplingInterval: "",
                       topic: "",
                       enabled: true,
+                      showPopupTagValue: true,
                       mappingSet: "",
                       alarmEnabled: false,
                       alarmOperator: "==",
@@ -3755,8 +3784,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                   background: "var(--bg-elev)",
                                   color: "#2b6cff",
                                   borderRadius: 6,
-                                  width: 28,
-                                  height: 28,
+                                  width: 32,
+                                                      height: 32,
+                                                      minWidth: 32,
+                                                      minHeight: 32,
                                   padding: 0,
                                   display: "inline-flex",
                                   alignItems: "center",
@@ -3808,11 +3839,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                           .map((x) => x.trim())
                                           .filter(Boolean).length - 1
                                       );
-                                const hasChildren = sortedGroups.some((candidate) => {
+                                const hasDescendantGroups = sortedGroups.some((candidate) => {
                                   const candidateName = String(candidate?.groupName || "").trim();
                                   if (!candidateName || candidateName === groupName) return false;
                                   return candidateName.startsWith(`${groupName}.`);
                                 });
+                                const hasChildren = hasDescendantGroups || (Array.isArray(tagGroup.items) && tagGroup.items.length > 0);
                                 const groupLabel =
                                   groupDepth > 0
                                     ? String(groupName).split(".").filter(Boolean).slice(-1)[0]
@@ -3879,8 +3911,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             background: "var(--bg-elev)",
                                             color: "#2b6cff",
                                             borderRadius: 6,
-                                            width: 28,
-                                            height: 28,
+                                            width: 32,
+                                                      height: 32,
+                                                      minWidth: 32,
+                                                      minHeight: 32,
                                             padding: 0,
                                             display: "inline-flex",
                                             alignItems: "center",
@@ -3902,8 +3936,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             background: "#f04438",
                                             color: "white",
                                             borderRadius: 6,
-                                            width: 28,
-                                            height: 28,
+                                            width: 32,
+                                                      height: 32,
+                                                      minWidth: 32,
+                                                      minHeight: 32,
                                             padding: 0,
                                             marginLeft: 8,
                                             display: "inline-flex",
@@ -3975,20 +4011,28 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                   String(b.path || b.tag?.name || "")
                                                 )
                                               );
+                                            const normalizedGroupName = normalizeTagName(groupName || "");
                                             const walk = (arr, depth, out) => {
                                               sortNodes(arr).forEach((node) => {
                                                 const hasChildren = node.children.length > 0;
+                                                const hideSyntheticRoot =
+                                                  node.synthetic === true &&
+                                                  normalizeTagName(node.path || "") === normalizedGroupName;
                                                 const expandedKey = `topic:${topicKey}::group:${groupName}::tag:${node.path || node.idx}`;
-                                                const expanded = expandedPrefixes[expandedKey] ?? true;
-                                                out.push({
-                                                  ...node,
-                                                  depth,
-                                                  hasChildren,
-                                                  expanded,
-                                                  expandedKey,
-                                                });
+                                                const expanded = hideSyntheticRoot
+                                                  ? true
+                                                  : (expandedPrefixes[expandedKey] ?? true);
+                                                if (!hideSyntheticRoot) {
+                                                  out.push({
+                                                    ...node,
+                                                    depth,
+                                                    hasChildren,
+                                                    expanded,
+                                                    expandedKey,
+                                                  });
+                                                }
                                                 if (hasChildren && expanded) {
-                                                  walk(node.children, depth + 1, out);
+                                                  walk(node.children, hideSyntheticRoot ? depth : depth + 1, out);
                                                 }
                                               });
                                             };
@@ -4001,74 +4045,79 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                           const tagObj = t || {};
                                           const isSynthetic = synthetic === true || !t || !Number.isInteger(idx);
                                           const rowEditing = !isSynthetic && tagTableEditing && editingTagIndex === idx;
+                                          const showEnabledCol = showTagColumn("enabled");
+                                          const showMutedCol = showTagColumn("muted");
+                                          const showTrendCol = showTagColumn("trend");
+                                          const syntheticLeadSpan =
+                                            (showEnabledCol ? 1 : 0) +
+                                            (showMutedCol ? 1 : 0) +
+                                            (showTrendCol ? 1 : 0) +
+                                            1;
                                         return (
                                           <Fragment key={`tag-row-${isSynthetic ? path : idx}`}>
                                           <tr style={{ borderTop: "1px solid var(--border)", background: isSynthetic ? "var(--bg-soft)" : "transparent" }}>
-                                            {showTagColumn("enabled") ? (
+                                            {showEnabledCol && !isSynthetic ? (
                                               <td style={{ padding: "8px 16px 8px 10px" }}>
-                                                {isSynthetic ? null : (
-                                                  <input
-                                                    type="checkbox"
-                                                    checked={tagObj.enabled !== false}
-                                                    onChange={(e) => {
-                                                      if (!rowEditing) return;
-                                                      updateTag(idx, "enabled", e.target.checked);
-                                                    }}
-                                                    onClick={(e) => {
-                                                      if (rowEditing) return;
-                                                      e.preventDefault();
-                                                      e.stopPropagation();
-                                                    }}
-                                                    aria-disabled={!rowEditing}
-                                                    style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
-                                                  />
-                                                )}
+                                                <input
+                                                  type="checkbox"
+                                                  checked={tagObj.enabled !== false}
+                                                  onChange={(e) => {
+                                                    if (!rowEditing) return;
+                                                    updateTag(idx, "enabled", e.target.checked);
+                                                  }}
+                                                  onClick={(e) => {
+                                                    if (rowEditing) return;
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                  }}
+                                                  aria-disabled={!rowEditing}
+                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
+                                                />
                                               </td>
                                             ) : null}
-                                            {showTagColumn("muted") ? (
+                                            {showMutedCol && !isSynthetic ? (
                                               <td style={{ padding: "8px 16px 8px 10px" }}>
-                                                {isSynthetic ? null : (
-                                                  <input
-                                                    type="checkbox"
-                                                    checked={tagObj.muted === true}
-                                                    onChange={(e) => {
-                                                      if (!rowEditing) return;
-                                                      updateTag(idx, "muted", e.target.checked);
-                                                    }}
-                                                    onClick={(e) => {
-                                                      if (rowEditing) return;
-                                                      e.preventDefault();
-                                                      e.stopPropagation();
-                                                    }}
-                                                    aria-disabled={!rowEditing}
-                                                    style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
-                                                  />
-                                                )}
+                                                <input
+                                                  type="checkbox"
+                                                  checked={tagObj.muted === true}
+                                                  onChange={(e) => {
+                                                    if (!rowEditing) return;
+                                                    updateTag(idx, "muted", e.target.checked);
+                                                  }}
+                                                  onClick={(e) => {
+                                                    if (rowEditing) return;
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                  }}
+                                                  aria-disabled={!rowEditing}
+                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
+                                                />
                                               </td>
                                             ) : null}
-                                            {showTagColumn("trend") ? (
+                                            {showTrendCol && !isSynthetic ? (
                                               <td style={{ padding: "8px 16px 8px 10px" }}>
-                                                {isSynthetic ? null : (
-                                                  <input
-                                                    type="checkbox"
-                                                    checked={tagObj.trendEnabled === true}
-                                                    onChange={(e) => {
-                                                      if (!rowEditing) return;
-                                                      updateTag(idx, "trendEnabled", e.target.checked);
-                                                    }}
-                                                    onClick={(e) => {
-                                                      if (rowEditing) return;
-                                                      e.preventDefault();
-                                                      e.stopPropagation();
-                                                    }}
-                                                    aria-disabled={!rowEditing}
-                                                    style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
-                                                  />
-                                                )}
+                                                <input
+                                                  type="checkbox"
+                                                  checked={tagObj.trendEnabled === true}
+                                                  onChange={(e) => {
+                                                    if (!rowEditing) return;
+                                                    updateTag(idx, "trendEnabled", e.target.checked);
+                                                  }}
+                                                  onClick={(e) => {
+                                                    if (rowEditing) return;
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                  }}
+                                                  aria-disabled={!rowEditing}
+                                                  style={{ accentColor: "#22c55e", opacity: 1, cursor: rowEditing ? "pointer" : "not-allowed" }}
+                                                />
                                               </td>
                                             ) : null}
                                             {showTagColumn("name") ? (
-                                              <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
+                                              <td
+                                                colSpan={isSynthetic ? syntheticLeadSpan : 1}
+                                                style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}
+                                              >
                                                 <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: Math.max(0, depth) * 14 }}>
                                                   {hasChildren ? (
                                                     <button
@@ -4185,22 +4234,70 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                         borderRadius: 4,
                                                       }}
                                                     >
-                                                      <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
-                                                        <div style={{ width: 84, minWidth: 84, textAlign: "right", lineHeight: 1.2 }}>
+                                                      <div
+                                                        style={{
+                                                          display: "flex",
+                                                          alignItems: "center",
+                                                          gap: 16,
+                                                          width: "100%",
+                                                          maxWidth: 500,
+                                                          flexWrap: "nowrap",
+                                                        }}
+                                                      >
+                                                        {!tagObj.muted ? (
                                                           <div
                                                             style={{
-                                                              color: tagObj.enabled === false ? "#b42318" : "var(--text)",
-                                                              fontWeight: 600,
+                                                              width: 160,
+                                                              minWidth: 160,
+                                                              flex: "0 0 160px",
+                                                              border: "1px solid var(--border)",
+                                                              borderRadius: 8,
+                                                              padding: "3px 8px",
+                                                              background: "var(--bg-soft)",
+                                                              lineHeight: 1.1,
                                                             }}
                                                           >
-                                                            {tagObj.enabled === false
-                                                              ? "Disabled"
-                                                              : formatLiveNumber(scaledValue, decimals)}
+                                                            <div style={{ fontSize: 9, color: "var(--text-muted)", marginBottom: 1 }}>Live</div>
+                                                            <div
+                                                              style={{
+                                                                color: tagObj.enabled === false ? "var(--text-muted)" : "var(--text)",
+                                                                fontWeight: 700,
+                                                                fontVariantNumeric: "tabular-nums",
+                                                                textAlign: "right",
+                                                                paddingRight: 2,
+                                                              }}
+                                                            >
+                                                              {tagObj.enabled === false ? "Disabled" : formatLiveNumber(scaledValue, decimals)}
+                                                            </div>
+                                                            <div
+                                                              style={{
+                                                                minHeight: 0,
+                                                                color: "#f97066",
+                                                                fontSize: 10,
+                                                                textAlign: "right",
+                                                                fontVariantNumeric: "tabular-nums",
+                                                              }}
+                                                            >
+                                                              {errorCount > 0 ? `err ${errorCount}` : ""}
+                                                            </div>
                                                           </div>
-                                                          <div style={{ minHeight: 14, color: "#b42318", fontSize: 11 }}>
-                                                            {errorCount > 0 ? `(err ${errorCount})` : ""}
+                                                        ) : (
+                                                          <div
+                                                            aria-hidden="true"
+                                                            style={{
+                                                              width: 160,
+                                                              minWidth: 160,
+                                                              flex: "0 0 160px",
+                                                              border: "1px solid var(--border)",
+                                                              borderRadius: 8,
+                                                              padding: "3px 8px",
+                                                              background: "var(--bg-soft)",
+                                                              lineHeight: 1.1,
+                                                            }}
+                                                          >
+                                                            <div style={{ minHeight: 28 }} />
                                                           </div>
-                                                        </div>
+                                                        )}
                                                         <input
                                                           value={writeDraft}
                                                           onChange={(e) =>
@@ -4216,13 +4313,16 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                           }}
                                                           placeholder="Write value"
                                                           style={{
-                                                            width: 132,
+                                                            width: 160,
+                                                            minWidth: 160,
+                                                            flex: "0 0 160px",
                                                             border: "1px solid var(--border)",
                                                             borderRadius: 6,
-                                                            padding: "4px 6px",
+                                                            padding: "4px 10px",
                                                             fontSize: 11,
                                                             background: "var(--bg-elev)",
                                                             color: "var(--text)",
+                                                            height: 26,
                                                           }}
                                                         />
                                                         <button
@@ -4234,8 +4334,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                             background: writeBusy ? "var(--bg-soft)" : "#2b6cff",
                                                             color: writeBusy ? "var(--text-muted)" : "white",
                                                             borderRadius: 6,
-                                                            padding: "4px 8px",
+                                                            padding: "4px 12px",
                                                             fontSize: 11,
+                                                            minHeight: 26,
+                                                            width: 72,
+                                                            minWidth: 72,
                                                             cursor: writeBusy ? "not-allowed" : "pointer",
                                                           }}
                                                         >
@@ -4257,15 +4360,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                     }}
                                                     style={{
                                                       ...drawerButtonStyle,
-                                                      width: 28,
-                                                      height: 28,
+                                                      width: 32,
+                                                      height: 32,
+                                                      minWidth: 32,
+                                                      minHeight: 32,
                                                       border: "1px solid #2b6cff",
                                                       background: rowEditing ? "#2b6cff" : "var(--bg-elev)",
                                                       color: rowEditing ? "white" : "#2b6cff",
                                                       borderRadius: 8,
+                                                      display: "inline-flex",
+                                                      alignItems: "center",
+                                                      justifyContent: "center",
+                                                      padding: 0,
                                                     }}
                                                   >
-                                                    ✎
+                                                    {"\u270e"}
                                                   </button>
                                                   <button
                                                     onClick={() => requestRemoveTag(idx, t)}
@@ -4273,8 +4382,17 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                     aria-label="Delete tag"
                                                     style={{
                                                       ...dangerIconButtonStyle,
+                                                      width: 32,
+                                                      height: 32,
+                                                      minWidth: 32,
+                                                      minHeight: 32,
                                                       fontWeight: 700,
                                                       fontSize: 11,
+                                                      borderRadius: 8,
+                                                      display: "inline-flex",
+                                                      alignItems: "center",
+                                                      justifyContent: "center",
+                                                      padding: 0,
                                                     }}
                                                   >
                                                     <TrashCanIcon />
@@ -4433,6 +4551,16 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                           type="checkbox"
                                                           checked={t.enabled !== false}
                                                           onChange={(e) => updateTag(idx, "enabled", e.target.checked)}
+                                                        />
+                                                      </div>
+                                                    </label>
+                                                    <label style={{ display: "grid", gap: 6, fontSize: 12 }} title="Show current tag value in live equipment popup cards.">
+                                                      Popup Value
+                                                      <div>
+                                                        <input
+                                                          type="checkbox"
+                                                          checked={t.showPopupTagValue !== false}
+                                                          onChange={(e) => updateTag(idx, "showPopupTagValue", e.target.checked)}
                                                         />
                                                       </div>
                                                     </label>
@@ -5211,6 +5339,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         samplingInterval: "",
         topic: topicKey,
         enabled: true,
+        showPopupTagValue: true,
         muted: false,
         trendEnabled: false,
         trendMode: "value",
@@ -5268,6 +5397,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         samplingInterval: fallbackRow?.samplingInterval ?? "",
         topic: String(fallbackRow?.topic || "").trim(),
         enabled: fallbackRow?.enabled !== false,
+        showPopupTagValue: fallbackRow?.showPopupTagValue !== false,
         mappingSet: String(fallbackRow?.mappingSet || "").trim(),
         scale: Number.isFinite(Number(fallbackRow?.scale)) ? Number(fallbackRow.scale) : 1,
         decimals: Number.isFinite(Number(fallbackRow?.decimals)) ? Number(fallbackRow.decimals) : 0,
@@ -5401,7 +5531,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   }}
                   title={expanded ? "Collapse" : "Expand"}
                 >
-                  {expanded ? "−" : "+"}
+                  {expanded ? "âˆ’" : "+"}
                 </button>
                 <input
                   type="checkbox"
@@ -5597,6 +5727,18 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         type="checkbox"
                         checked={row?.enabled !== false}
                         onChange={(e) => updateTemplateFieldRow(rowIdx, "enabled", e.target.checked, row, fieldPath)}
+                        style={{ width: 14, height: 14 }}
+                        disabled={!templateEditing || !activeRowEditing}
+                      />
+                    </span>
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }} title="Show current tag value in live equipment popup cards.">
+                    Popup Value
+                    <span style={{ minHeight: 30, display: "inline-flex", alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={row?.showPopupTagValue !== false}
+                        onChange={(e) => updateTemplateFieldRow(rowIdx, "showPopupTagValue", e.target.checked, row, fieldPath)}
                         style={{ width: 14, height: 14 }}
                         disabled={!templateEditing || !activeRowEditing}
                       />
@@ -7052,8 +7194,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                               display: "inline-flex",
                               alignItems: "center",
                               justifyContent: "center",
-                              width: 28,
-                              height: 28,
+                              width: 32,
+                                                      height: 32,
+                                                      minWidth: 32,
+                                                      minHeight: 32,
                               border: "1px solid #f04438",
                               background: "#f04438",
                               color: "#ffffff",
@@ -7231,3 +7375,5 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   </div>
   );
 }
+
+

@@ -2274,7 +2274,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
           const raw = String(err?.message || "Failed to start live debug session.");
           const friendly =
             /404|failed to fetch|network|route|not found/i.test(raw)
-              ? "Live debug service is unavailable. Restart AI server and app dev services, then reopen PLC AI tab."
+              ? "Live debug service is unavailable. Restart App server and app dev services, then reopen PLC AI tab."
               : raw;
           setDebugSessionError(friendly);
         }

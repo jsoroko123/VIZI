@@ -15,7 +15,7 @@ function makeNewAgent(index = 0) {
   };
 }
 
-export default function AiConfigPanel() {
+export default function AiConfigPanel({ embedded = false }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [providers, setProviders] = useState([]);
@@ -121,14 +121,23 @@ export default function AiConfigPanel() {
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        width: "100%",
+        height: "100%",
         overflow: "auto",
         background: "var(--bg)",
         color: "var(--text)",
+        boxSizing: "border-box",
       }}
     >
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "18px 16px 28px" }}>
+      <div
+        style={{
+          width: "100%",
+          maxWidth: "none",
+          margin: 0,
+          padding: embedded ? "12px" : "18px 16px 28px",
+          boxSizing: "border-box",
+        }}
+      >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 22, fontWeight: 800 }}>AI Config</div>

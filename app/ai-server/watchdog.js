@@ -32,7 +32,7 @@ function acquireLock() {
       const existingPid = Number.parseInt(String(existingRaw || "").trim(), 10);
       if (pidIsRunning(existingPid)) {
         // eslint-disable-next-line no-console
-        console.log(`[watchdog] ai-server already running under pid ${existingPid}. Exiting duplicate.`);
+        console.log(`[watchdog] app-server already running under pid ${existingPid}. Exiting duplicate.`);
         return false;
       }
       fs.unlinkSync(lockPath);
@@ -80,7 +80,7 @@ function startChild() {
     }
     const reason = signal ? `signal ${signal}` : `code ${code}`;
     // eslint-disable-next-line no-console
-    console.log(`[watchdog] ai-server exited (${reason}). Restarting in ${Math.round(restartDelayMs / 1000)}s...`);
+    console.log(`[watchdog] app-server exited (${reason}). Restarting in ${Math.round(restartDelayMs / 1000)}s...`);
     restartTimer = setTimeout(startChild, restartDelayMs);
   });
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toastError, toastSuccess } from "../utils/toast";
 import { showConfirmDialog } from "../utils/confirmDialog";
+import SearchableSelect from "./SearchableSelect";
 
 export default function DataBrowser({
   embedded = false,
@@ -14,10 +15,16 @@ export default function DataBrowser({
 }) {
   const { table, id } = useParams();
   const navigate = useNavigate();
+  const normalizeTableName = (value) => {
+    const v = String(value || "").trim();
+    if (v === "routes") return "route";
+    if (v === "projects") return "project";
+    return v;
+  };
   const [embeddedTable, setEmbeddedTable] = useState("");
   const [embeddedDetailId, setEmbeddedDetailId] = useState("");
-  const currentTable = embedded ? String(embeddedTable || "") : String(table || "");
-  const hideTopSelector = hideTableSelector || (!embedded && currentTable === "routes");
+  const currentTable = embedded ? normalizeTableName(embeddedTable) : normalizeTableName(table);
+  const hideTopSelector = hideTableSelector || (!embedded && currentTable === "route");
   const detailId = embedded ? String(embeddedDetailId || "") : id ? String(id) : "";
   const [tables, setTables] = useState([]);
   const [columns, setColumns] = useState([]);
@@ -40,9 +47,16 @@ export default function DataBrowser({
   const [status, setStatus] = useState("");
   const [typeMap, setTypeMap] = useState({});
   const [foreignKeyMeta, setForeignKeyMeta] = useState({});
+  const [fkFallbackOptions, setFkFallbackOptions] = useState({});
   const [formEnabled, setFormEnabled] = useState(false);
   const [alarmViewTab, setAlarmViewTab] = useState("active");
   const [rowsTruncated, setRowsTruncated] = useState(false);
+  const [childRelations, setChildRelations] = useState([]);
+  const [childRelationPickByTable, setChildRelationPickByTable] = useState({});
+  const [childRelationBusyByTable, setChildRelationBusyByTable] = useState({});
+  const [childRelationErrorByTable, setChildRelationErrorByTable] = useState({});
+  const [childRelationActiveTab, setChildRelationActiveTab] = useState("");
+  const [detailViewTab, setDetailViewTab] = useState("fields");
   const TABLE_FETCH_BATCH = 200;
   const TABLE_FETCH_MAX = 10000;
 
@@ -309,7 +323,7 @@ export default function DataBrowser({
     if (!m) return;
     const nextTable = decodeURIComponent(String(m[1] || "")).trim();
     const nextDetailId = decodeURIComponent(String(m[2] || "")).trim();
-    if (nextTable) setEmbeddedTable(nextTable);
+    if (nextTable) setEmbeddedTable(normalizeTableName(nextTable));
     setEmbeddedDetailId(nextDetailId);
   }, [embedded, embeddedPath]);
 
@@ -370,6 +384,7 @@ export default function DataBrowser({
       setDetail(null);
       setTypeMap({});
       setForeignKeyMeta({});
+      setFkFallbackOptions({});
       setFormDraft({});
       setFormEnabled(false);
       try {
@@ -396,7 +411,7 @@ export default function DataBrowser({
   async function fetchRowsSnapshot() {
     if (!currentTable) return { rows: [] };
     const projectParam =
-      currentTable === "routes" && activeProjectId
+      currentTable === "route" && activeProjectId
         ? `&project_id=${encodeURIComponent(activeProjectId)}`
         : "";
     let offset = 0;
@@ -439,6 +454,137 @@ export default function DataBrowser({
     }
     loadRows();
   }, [currentTable, activeProjectId, showJobsRouteContext, normalizedEmbeddedRouteId]);
+
+  useEffect(() => {
+    let alive = true;
+    const readRowValue = (row, key) => {
+      if (!row || typeof row !== "object") return undefined;
+      const exact = String(key || "").trim();
+      if (!exact) return undefined;
+      if (Object.prototype.hasOwnProperty.call(row, exact)) return row[exact];
+      const lower = exact.toLowerCase();
+      const match = Object.keys(row).find((k) => String(k || "").toLowerCase() === lower);
+      if (match && Object.prototype.hasOwnProperty.call(row, match)) return row[match];
+      if (exact.includes("_")) {
+        const camel = exact.replace(/_([a-z])/g, (_m, ch) => String(ch || "").toUpperCase());
+        if (Object.prototype.hasOwnProperty.call(row, camel)) return row[camel];
+      }
+      return undefined;
+    };
+    const filterRowsForActiveProject = (items) => {
+      const list = Array.isArray(items) ? items : [];
+      const pid = String(activeProjectId || "").trim();
+      if (!pid) return list;
+      const hasProjectField = list.some((row) => {
+        const value = readRowValue(row, "project_id");
+        return value != null && String(value).trim() !== "";
+      });
+      if (!hasProjectField) return list;
+      const scoped = list.filter((row) => String(readRowValue(row, "project_id") ?? "").trim() === pid);
+      if (scoped.length) return scoped;
+      const globalRows = list.filter((row) => String(readRowValue(row, "project_id") ?? "").trim() === "");
+      return globalRows.length ? globalRows : list;
+    };
+    const buildRefTableCandidates = (localColumn, refTable) => {
+      const out = [];
+      const seen = new Set();
+      const push = (name) => {
+        const value = String(name || "").trim();
+        if (!value) return;
+        const key = value.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(value);
+      };
+      const local = String(localColumn || "").trim().toLowerCase();
+      if (local === "product_id") {
+        push(refTable || "product");
+        return out;
+      }
+      const stem = String(localColumn || "").trim().replace(/_id$/i, "");
+      push(refTable);
+      if (stem) {
+        push(stem);
+        push(`${stem}s`);
+        push(`${stem}es`);
+        if (stem.endsWith("y") && stem.length > 1) push(`${stem.slice(0, -1)}ies`);
+        push(`tbl_${stem}`);
+      }
+      return out;
+    };
+    const mapRowsToOptions = (items, refColumn, labelColumn) => {
+      const seen = new Set();
+      return (Array.isArray(items) ? items : [])
+        .map((row) => {
+          const rawValue = readRowValue(row, refColumn);
+          if (rawValue == null || String(rawValue).trim() === "") return null;
+          const value = String(rawValue).trim();
+          const rawLabel = readRowValue(row, labelColumn);
+          const label = rawLabel == null || String(rawLabel).trim() === "" ? value : String(rawLabel).trim();
+          return { value, label };
+        })
+        .filter((opt) => {
+          if (!opt) return false;
+          if (seen.has(opt.value)) return false;
+          seen.add(opt.value);
+          return true;
+        });
+    };
+    const fetchOptionsForTable = async (tableName, refColumn, labelColumn) => {
+      const queries = [];
+      if (activeProjectId) queries.push(`?limit=1000&project_id=${encodeURIComponent(activeProjectId)}`);
+      queries.push("?limit=1000");
+      for (const query of queries) {
+        try {
+          const res = await fetch(`/api/db/${encodeURIComponent(tableName)}${query}`);
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) continue;
+          const baseRows = Array.isArray(data?.rows) ? data.rows : [];
+          const rows = query.includes("project_id=") ? baseRows : filterRowsForActiveProject(baseRows);
+          const options = mapRowsToOptions(rows, refColumn, labelColumn);
+          if (options.length) return options;
+        } catch {
+          // ignore fallback load failures
+        }
+      }
+      return [];
+    };
+    const fkEntries = Object.entries(foreignKeyMeta || {}).filter(([, meta]) => {
+      const hasRelation =
+        meta &&
+        String(meta?.referencedTable || "").trim() &&
+        String(meta?.referencedColumn || "").trim();
+      const hasOptions = Array.isArray(meta?.options) && meta.options.length > 0;
+      return hasRelation && !hasOptions;
+    });
+    if (!fkEntries.length) {
+      setFkFallbackOptions({});
+      return () => {
+        alive = false;
+      };
+    }
+    (async () => {
+      const next = {};
+      for (const [localColumn, meta] of fkEntries) {
+        const refTable = String(meta?.referencedTable || "").trim();
+        const refColumn = String(meta?.referencedColumn || "").trim();
+        const labelColumn = String(meta?.labelColumn || refColumn).trim();
+        if (!refTable || !refColumn) continue;
+        const tableCandidates = buildRefTableCandidates(localColumn, refTable);
+        for (const tableName of tableCandidates) {
+          const options = await fetchOptionsForTable(tableName, refColumn, labelColumn);
+          if (!options.length) continue;
+          next[localColumn] = options;
+          break;
+        }
+      }
+      if (!alive) return;
+      setFkFallbackOptions(next);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [foreignKeyMeta, activeProjectId]);
 
   useEffect(() => {
     if (detailId) {
@@ -506,10 +652,206 @@ export default function DataBrowser({
       if (!res.ok) throw new Error(data?.error || "Failed to load detail.");
       const row = data.row || null;
       setDetail(row);
-      setFormDraft(row || {});
+      setFormDraft(normalizeDraftForForm(row || {}));
       setFormEnabled(false);
     } catch (err) {
       setError(err?.message || "Failed to load detail.");
+    }
+  }
+
+  const readRowValueLoose = (row, key) => {
+    if (!row || typeof row !== "object") return undefined;
+    const exact = String(key || "").trim();
+    if (!exact) return undefined;
+    if (Object.prototype.hasOwnProperty.call(row, exact)) return row[exact];
+    const lower = exact.toLowerCase();
+    const match = Object.keys(row).find((k) => String(k || "").toLowerCase() === lower);
+    if (match && Object.prototype.hasOwnProperty.call(row, match)) return row[match];
+    return undefined;
+  };
+
+  const getRelationRowId = (row, relation) => {
+    const pk = String(relation?.primaryKey || "").trim();
+    if (pk) {
+      const v = readRowValueLoose(row, pk);
+      if (v != null && String(v).trim() !== "") return String(v).trim();
+    }
+    const fallback = readRowValueLoose(row, "id");
+    return fallback == null ? "" : String(fallback).trim();
+  };
+
+  const getRelationRowLabel = (row, relation) => {
+    const candidates = ["name", "title", "label", "description"];
+    for (const key of candidates) {
+      const v = readRowValueLoose(row, key);
+      if (v != null && String(v).trim()) return String(v).trim();
+    }
+    const idValue = getRelationRowId(row, relation);
+    return idValue || "(row)";
+  };
+
+  async function fetchAllRowsForTable(tableName) {
+    const rowsOut = [];
+    let offset = 0;
+    while (offset < TABLE_FETCH_MAX) {
+      const res = await fetch(
+        `/api/db/${encodeURIComponent(tableName)}?limit=${TABLE_FETCH_BATCH}&offset=${offset}`
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `Failed to load ${tableName}.`);
+      const chunk = Array.isArray(data?.rows) ? data.rows : [];
+      rowsOut.push(...chunk);
+      if (chunk.length < TABLE_FETCH_BATCH) break;
+      offset += TABLE_FETCH_BATCH;
+    }
+    return rowsOut;
+  }
+
+  useEffect(() => {
+    let alive = true;
+    async function loadChildRelations() {
+      const parentTable = String(currentTable || "").trim();
+      if (!parentTable || !selectedId || isNewDetail) {
+        if (alive) {
+          setChildRelations([]);
+          setChildRelationPickByTable({});
+          setChildRelationBusyByTable({});
+          setChildRelationErrorByTable({});
+        }
+        return;
+      }
+      const parentRow = detail && typeof detail === "object" ? detail : null;
+      try {
+        const schemaRes = await fetch("/api/db/designer/schema");
+        const schemaData = await schemaRes.json();
+        if (!schemaRes.ok) throw new Error(schemaData?.error || "Failed to load relation schema.");
+        const tablesMeta = Array.isArray(schemaData?.tables) ? schemaData.tables : [];
+        const relations = [];
+        for (const tableMeta of tablesMeta) {
+          const childTable = String(tableMeta?.name || "").trim();
+          if (!childTable || childTable === parentTable) continue;
+          const fks = tableMeta?.foreignKeys && typeof tableMeta.foreignKeys === "object" ? tableMeta.foreignKeys : {};
+          const fkCandidates = [];
+          const seenFk = new Set();
+          for (const fk of Object.values(fks)) {
+            const referencedTable = String(fk?.referencedTable || "").trim();
+            const referencedColumn = String(fk?.referencedColumn || "").trim();
+            const childFkColumn = String(fk?.column || "").trim();
+            const constraintName = String(fk?.constraintName || "").trim();
+            if (!referencedTable || !referencedColumn || !childFkColumn) continue;
+            if (referencedTable !== parentTable) continue;
+            const key = constraintName
+              ? `c:${constraintName}`
+              : `s:${childFkColumn}->${referencedTable}.${referencedColumn}`;
+            if (seenFk.has(key)) continue;
+            seenFk.add(key);
+            fkCandidates.push({ referencedColumn, childFkColumn, constraintName });
+          }
+          if (!fkCandidates.length) continue;
+          const allChildRows = await fetchAllRowsForTable(childTable);
+          for (const fk of fkCandidates) {
+            const referencedColumn = String(fk?.referencedColumn || "").trim();
+            const childFkColumn = String(fk?.childFkColumn || "").trim();
+            const constraintName = String(fk?.constraintName || "").trim();
+            if (!referencedColumn || !childFkColumn) continue;
+            const parentValueRaw =
+              readRowValueLoose(parentRow, referencedColumn) ??
+              (String(primaryKey || "").trim() === referencedColumn ? selectedId : undefined);
+            const parentValue = parentValueRaw == null ? "" : String(parentValueRaw).trim();
+            if (!parentValue) continue;
+            const linkedRows = allChildRows.filter((row) => {
+              const v = readRowValueLoose(row, childFkColumn);
+              return String(v ?? "").trim() === parentValue;
+            });
+            const unlinkedRows = allChildRows.filter((row) => {
+              const v = readRowValueLoose(row, childFkColumn);
+              return String(v ?? "").trim() === "";
+            });
+            relations.push({
+              table: childTable,
+              primaryKey: String(tableMeta?.primaryKey || "").trim(),
+              childFkColumn,
+              referencedColumn,
+              constraintName,
+              parentValue,
+              linkedRows,
+              unlinkedRows,
+            });
+          }
+        }
+        if (!alive) return;
+        setChildRelations(relations);
+        setChildRelationPickByTable((prev) => {
+          const next = {};
+          relations.forEach((rel) => {
+            const key = getChildRelationTabKey(rel);
+            if (!key) return;
+            const current = String(prev?.[key] || "").trim();
+            const valid = rel.unlinkedRows.some((row) => getRelationRowId(row, rel) === current);
+            next[key] = valid ? current : "";
+          });
+          return next;
+        });
+      } catch (err) {
+        if (!alive) return;
+        setChildRelations([]);
+        setChildRelationErrorByTable({
+          __global__: String(err?.message || "Failed to load one-to-many relations."),
+        });
+      }
+    }
+    loadChildRelations();
+    return () => {
+      alive = false;
+    };
+  }, [currentTable, selectedId, isNewDetail, detail, primaryKey]);
+
+  useEffect(() => {
+    const currentKey = String(childRelationActiveTab || "").trim();
+    if (!childRelations.length) {
+      if (currentKey) setChildRelationActiveTab("");
+      return;
+    }
+    const hasCurrent = childRelations.some((relation) => getChildRelationTabKey(relation) === currentKey);
+    if (!hasCurrent) {
+      setChildRelationActiveTab(getChildRelationTabKey(childRelations[0]));
+    }
+  }, [childRelations, childRelationActiveTab]);
+
+  useEffect(() => {
+    if (!childRelations.length && detailViewTab === "relations") {
+      setDetailViewTab("fields");
+    }
+  }, [childRelations, detailViewTab]);
+
+  async function updateChildRelationLink(relation, rowId, parentValueRaw) {
+    const relationKey = getChildRelationTabKey(relation);
+    const table = String(relation?.table || "").trim();
+    const rowKey = String(rowId || "").trim();
+    const childPk = String(relation?.primaryKey || "").trim();
+    const childFkColumn = String(relation?.childFkColumn || "").trim();
+    if (!relationKey || !table || !rowKey || !childFkColumn) return;
+    const parentValue = parentValueRaw == null ? null : String(parentValueRaw).trim();
+    setChildRelationBusyByTable((prev) => ({ ...(prev || {}), [relationKey]: true }));
+    setChildRelationErrorByTable((prev) => ({ ...(prev || {}), [relationKey]: "" }));
+    try {
+      const pkQuery = childPk ? `?pk=${encodeURIComponent(childPk)}` : "";
+      const res = await fetch(`/api/db/${encodeURIComponent(table)}/${encodeURIComponent(rowKey)}${pkQuery}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [childFkColumn]: parentValue }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to update relation.");
+      await reloadRows();
+      if (selectedId && !isNewDetail) await reloadDetailRow(selectedId);
+      toastSuccess("Relation updated.");
+    } catch (err) {
+      const msg = String(err?.message || "Failed to update relation.");
+      setChildRelationErrorByTable((prev) => ({ ...(prev || {}), [relationKey]: msg }));
+      toastError(msg);
+    } finally {
+      setChildRelationBusyByTable((prev) => ({ ...(prev || {}), [relationKey]: false }));
     }
   }
 
@@ -575,7 +917,7 @@ export default function DataBrowser({
     setError("");
     const payload = buildPayload(formDraft);
     const pendingDetailOrder = Array.isArray(detailFieldOrder) ? [...detailFieldOrder] : [];
-    if (currentTable === "routes" && activeProjectId && !payload.project_id) {
+    if (currentTable === "route" && activeProjectId && !payload.project_id) {
       payload.project_id = activeProjectId;
     }
     if (
@@ -599,7 +941,7 @@ export default function DataBrowser({
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || "Update failed.");
         setDetail(data.row || null);
-        setFormDraft(data.row || {});
+        setFormDraft(normalizeDraftForForm(data.row || {}));
       } else {
         const res = await fetch(`/api/db/${currentTable}`, {
           method: "POST",
@@ -609,7 +951,7 @@ export default function DataBrowser({
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || "Insert failed.");
         setDetail(data.row || null);
-        setFormDraft(data.row || {});
+        setFormDraft(normalizeDraftForForm(data.row || {}));
       }
       await saveDetailFields(pendingDetailOrder);
       await reloadRows();
@@ -665,9 +1007,60 @@ export default function DataBrowser({
     return "text";
   }
 
+  function toLocalDateInputValue(raw) {
+    if (raw == null || String(raw).trim() === "") return "";
+    const text = String(raw).trim();
+    const plainDate = text.match(/^\d{4}-\d{2}-\d{2}$/);
+    if (plainDate) return text;
+    const d = new Date(text);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  function toLocalDateTimeInputValue(raw) {
+    if (raw == null || String(raw).trim() === "") return "";
+    const text = String(raw).trim();
+    const d = new Date(text);
+    if (Number.isNaN(d.getTime())) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${y}-${m}-${day}T${hh}:${mm}`;
+  }
+
+  function normalizeDraftForForm(rawDraft) {
+    const draft = rawDraft && typeof rawDraft === "object" ? rawDraft : {};
+    const out = { ...draft };
+    Object.keys(out).forEach((key) => {
+      const t = String(typeMap?.[key] || "").toLowerCase();
+      if (!t) return;
+      if (t.includes("date") && !t.includes("time")) {
+        out[key] = toLocalDateInputValue(out[key]);
+        return;
+      }
+      if (t.includes("timestamp") || t.includes("time")) {
+        out[key] = toLocalDateTimeInputValue(out[key]);
+      }
+    });
+    return out;
+  }
+
   function coerceValue(columnName, value) {
     const t = typeMap[columnName] || "";
     if (value === "" || value === undefined) return null;
+    if (t.includes("date") && !t.includes("time")) {
+      return String(value).trim() || null;
+    }
+    if (t.includes("timestamp") || t.includes("time")) {
+      const parsed = new Date(String(value));
+      if (Number.isNaN(parsed.getTime())) return null;
+      return parsed.toISOString();
+    }
     if (t.includes("bool")) return Boolean(value);
     if (
       t.includes("int") ||
@@ -715,12 +1108,194 @@ export default function DataBrowser({
     return String(value);
   }
 
+  const getChildRelationTabKey = (relation) => {
+    const tableKey = String(relation?.table || "").trim();
+    const fkKey = String(relation?.childFkColumn || "").trim();
+    return `${tableKey}:${fkKey}`;
+  };
+
   function buildPayload(draft) {
     const out = {};
     Object.keys(draft || {}).forEach((k) => {
       out[k] = coerceValue(k, draft[k]);
     });
     return out;
+  }
+
+  function getActiveChildRelation() {
+    if (isNewDetail || !String(selectedId || "").trim()) return null;
+    if (!childRelations.length && !childRelationErrorByTable?.__global__) return null;
+    const activeTabKey = String(childRelationActiveTab || "").trim();
+    const activeRelation =
+      childRelations.find((relation) => getChildRelationTabKey(relation) === activeTabKey) || childRelations[0] || null;
+    return activeRelation;
+  }
+
+  function renderChildRelationTabs() {
+    if (isNewDetail || !String(selectedId || "").trim()) return null;
+    if (childRelations.length <= 1) return null;
+    const activeRelation = getActiveChildRelation();
+    return (
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {childRelations.map((relation) => {
+          const tabKey = getChildRelationTabKey(relation);
+          const linkedRows = Array.isArray(relation?.linkedRows) ? relation.linkedRows : [];
+          const active = tabKey === getChildRelationTabKey(activeRelation);
+          return (
+            <button
+              key={`relation-tab-${tabKey}`}
+              type="button"
+              onClick={() => setChildRelationActiveTab(tabKey)}
+              style={{
+                ...(active ? primaryButton : ghostButton),
+                padding: "5px 9px",
+                fontSize: 11,
+                borderRadius: 8,
+                boxShadow: active ? primaryButton.boxShadow : "none",
+              }}
+            >
+              {labelize(relation?.table)}.{String(relation?.childFkColumn || "")} ({linkedRows.length})
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderChildRelationsSection() {
+    const activeRelation = getActiveChildRelation();
+    if (!activeRelation && !childRelationErrorByTable?.__global__) return null;
+    return (
+      <div style={{ display: "grid", gap: 8, marginTop: 0, marginBottom: 8 }}>
+        {activeRelation ? (() => {
+          const relation = activeRelation;
+          const tableKey = String(relation?.table || "");
+          const relationKey = getChildRelationTabKey(relation);
+          const linkedRows = Array.isArray(relation?.linkedRows) ? relation.linkedRows : [];
+          const unlinkedRows = Array.isArray(relation?.unlinkedRows) ? relation.unlinkedRows : [];
+          const pickValue = String(childRelationPickByTable?.[relationKey] || "").trim();
+          const busy = childRelationBusyByTable?.[relationKey] === true;
+          const relError = String(childRelationErrorByTable?.[relationKey] || "").trim();
+          return (
+            <div
+              key={`relation-panel-${relationKey}`}
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: 8,
+                background: "var(--bg-soft)",
+                display: "grid",
+                gap: 6,
+              }}
+            >
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)" }}>
+                {labelize(tableKey)} via {String(relation?.childFkColumn || "")} ({linkedRows.length})
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <select
+                  value={pickValue}
+                  onChange={(e) =>
+                    setChildRelationPickByTable((prev) => ({
+                      ...(prev || {}),
+                      [relationKey]: String(e.target.value || ""),
+                    }))
+                  }
+                  disabled={busy}
+                  style={{
+                    flex: "1 1 auto",
+                    minWidth: 0,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-elev)",
+                    color: "var(--text)",
+                    borderRadius: 6,
+                    padding: "4px 6px",
+                    fontSize: 11,
+                  }}
+                >
+                  <option value="">Select {labelize(tableKey)}...</option>
+                  {unlinkedRows.map((row) => {
+                    const rowId = getRelationRowId(row, relation);
+                    if (!rowId) return null;
+                    const rowLabel = getRelationRowLabel(row, relation);
+                    return (
+                      <option key={`relation-unlinked-${tableKey}-${rowId}`} value={rowId}>
+                        {rowLabel}
+                      </option>
+                    );
+                  })}
+                </select>
+                <button
+                  type="button"
+                  disabled={!pickValue || busy}
+                  onClick={() => updateChildRelationLink(relation, pickValue, relation.parentValue)}
+                  style={{
+                    ...primaryButton,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    opacity: !pickValue || busy ? 0.6 : 1,
+                    cursor: !pickValue || busy ? "not-allowed" : "pointer",
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+              {linkedRows.length ? (
+                <div style={{ display: "grid", gap: 4 }}>
+                  {linkedRows.map((row) => {
+                    const rowId = getRelationRowId(row, relation);
+                    if (!rowId) return null;
+                    const rowLabel = getRelationRowLabel(row, relation);
+                    return (
+                      <div
+                        key={`relation-linked-${tableKey}-${rowId}`}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          border: "1px solid var(--border)",
+                          borderRadius: 6,
+                          padding: "4px 6px",
+                          background: "var(--bg-elev)",
+                        }}
+                      >
+                        <div style={{ fontSize: 11, color: "var(--text)" }}>{rowLabel}</div>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => updateChildRelationLink(relation, rowId, null)}
+                          style={{
+                            ...iconActionButton,
+                            width: 24,
+                            height: 24,
+                            border: "1px solid var(--danger)",
+                            color: "var(--danger)",
+                            background: "transparent",
+                            boxShadow: "none",
+                            opacity: busy ? 0.55 : 1,
+                          }}
+                          title="Remove from this list"
+                        >
+                          {"\u2715"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>No linked rows.</div>
+              )}
+              {relError ? <div style={{ fontSize: 10, color: "var(--danger)" }}>{relError}</div> : null}
+            </div>
+          );
+        })() : null}
+        {childRelationErrorByTable?.__global__ ? (
+          <div style={{ fontSize: 11, color: "var(--danger)" }}>
+            {String(childRelationErrorByTable.__global__ || "")}
+          </div>
+        ) : null}
+      </div>
+    );
   }
 
   async function saveListFields() {
@@ -796,10 +1371,13 @@ export default function DataBrowser({
             <div style={{ ...cardStyle }}>
               <div style={sectionTitleStyle}>Tables</div>
               <div style={{ display: "grid", gap: 8 }}>
-                <select
+                <SearchableSelect
                   value={currentTable || ""}
-                  onChange={(e) => navigateData(`/data/${e.target.value}`)}
+                  onChange={(nextValue) => navigateData(`/data/${String(nextValue || "").trim()}`)}
                   disabled={!tableList.length}
+                  options={tableList.map((t) => ({ value: t, label: labelize(t) }))}
+                  placeholder="Search/select table..."
+                  title="Select table"
                   style={{
                     border: "1px solid var(--border)",
                     background: "var(--bg-elev)",
@@ -809,14 +1387,8 @@ export default function DataBrowser({
                     fontSize: 12,
                     fontWeight: 600,
                   }}
-                >
-                  {!tableList.length ? <option value="">No tables found</option> : null}
-                  {tableList.map((t) => (
-                    <option key={`table-select-${t}`} value={t}>
-                      {labelize(t)}
-                    </option>
-                  ))}
-                </select>
+                />
+                {!tableList.length ? <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No tables found</div> : null}
               </div>
             </div>
           ) : null}
@@ -835,14 +1407,37 @@ export default function DataBrowser({
               }}
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Details</div>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Details</div>
+                  <button
+                    type="button"
+                    onClick={() => setDetailViewTab("fields")}
+                    style={{ ...(detailViewTab === "fields" ? primaryButton : ghostButton), padding: "5px 9px", fontSize: 11 }}
+                  >
+                    Fields
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDetailViewTab("relations")}
+                    disabled={!childRelations.length}
+                    style={{
+                      ...(detailViewTab === "relations" ? primaryButton : ghostButton),
+                      padding: "5px 9px",
+                      fontSize: 11,
+                      opacity: childRelations.length ? 1 : 0.45,
+                      cursor: childRelations.length ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    Relations
+                  </button>
+                </div>
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                   {!isAlarmTable ? (
                     <>
                       <button
                         onClick={() => {
                           if (!detail && !isNewDetail) return;
-                          setFormDraft(detail || {});
+                          setFormDraft(normalizeDraftForForm(detail || {}));
                           setFormEnabled(true);
                         }}
                         disabled={formEnabled || (!detail && !isNewDetail)}
@@ -880,7 +1475,7 @@ export default function DataBrowser({
                             return;
                           }
                           if (detail) {
-                            setFormDraft(detail || {});
+                            setFormDraft(normalizeDraftForForm(detail || {}));
                           } else {
                             setFormDraft({});
                           }
@@ -941,6 +1536,13 @@ export default function DataBrowser({
                 <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Select a table to begin.</div>
               ) : (
                 <>
+                  {detailViewTab === "relations" ? (
+                    <>
+                      {renderChildRelationTabs()}
+                      {renderChildRelationsSection()}
+                    </>
+                  ) : null}
+                  {detailViewTab === "fields" ? (
                   <div
                     style={{
                       display: "grid",
@@ -971,14 +1573,18 @@ export default function DataBrowser({
                           foreignKeyMeta && typeof foreignKeyMeta === "object"
                             ? foreignKeyMeta[c.column_name]
                             : null;
-                        const fkOptions = Array.isArray(fkMeta?.options) ? fkMeta.options : [];
+                        const fkMetaOptions = Array.isArray(fkMeta?.options) ? fkMeta.options : [];
+                        const fkClientFallback = Array.isArray(fkFallbackOptions?.[c.column_name])
+                          ? fkFallbackOptions[c.column_name]
+                          : [];
+                        const fkOptions = fkMetaOptions.length ? fkMetaOptions : fkClientFallback;
                         const isForeignKeyField = Boolean(
                           fkMeta &&
                             String(fkMeta?.referencedTable || "").trim() &&
                             String(fkMeta?.referencedColumn || "").trim()
                         );
                         const isProjectField =
-                          currentTable === "routes" && c.column_name === "project_id";
+                          currentTable === "route" && c.column_name === "project_id";
                         const isEquipmentTagGroupField =
                           currentTable === "equipment" && c.column_name === "tag_path";
                         return (
@@ -1147,7 +1753,7 @@ export default function DataBrowser({
                         );
                       })}
                   </div>
-
+                  ) : null}
                   {isManagedAlarmTable ? (
                     <div
                       style={{

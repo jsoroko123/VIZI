@@ -108,7 +108,7 @@ async function getStaleAppPidsWindows() {
     "Where-Object {",
     "($_.Name -in @('node.exe','cmd.exe')) -and",
     "($_.CommandLine -match 'Projects\\\\Vizi\\\\app') -and",
-    "($_.CommandLine -match 'start-all\\.js|watchdog\\.js|opc-server\\\\server\\.js|ai-server\\\\server\\.js|--prefix opc-server run start:watchdog|--prefix ai-server run start:watchdog|npm run dev:vite|vite\\\\bin\\\\vite\\.js')",
+    "($_.CommandLine -match 'start-all\\.js|watchdog\\.js|opc-server\\\\server\\.js|ai-server\\\\server\\.js|--prefix opc-server run start:watchdog|--prefix ai-server run start:watchdog|--prefix ai-server run app-server:watchdog|npm run dev:vite|vite\\\\bin\\\\vite\\.js')",
     "} | Select-Object -ExpandProperty ProcessId",
   ].join(" ");
 
@@ -166,5 +166,5 @@ async function cleanStartup() {
 await cleanStartup();
 
 run("opc-server", "npm", ["--prefix", "opc-server", "run", "start:watchdog"]);
-run("ai-server", "npm", ["--prefix", "ai-server", "run", "start:watchdog"]);
+run("app-server", "npm", ["--prefix", "ai-server", "run", "start:watchdog"]);
 run("vite", "npm", ["run", "dev:vite"]);

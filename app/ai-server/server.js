@@ -2348,9 +2348,12 @@ function pickReferenceLabelColumn(columnNames, referencedColumn) {
 async function getForeignKeysForTable(table) {
   const fkSql = `
     SELECT
+      tc.constraint_name AS constraint_name,
       kcu.column_name AS local_column,
       ccu.table_name AS referenced_table,
-      ccu.column_name AS referenced_column
+      ccu.column_name AS referenced_column,
+      rc.delete_rule AS delete_rule,
+      rc.update_rule AS update_rule
     FROM information_schema.table_constraints tc
     JOIN information_schema.key_column_usage kcu
       ON tc.constraint_name = kcu.constraint_name
@@ -2358,6 +2361,9 @@ async function getForeignKeysForTable(table) {
     JOIN information_schema.constraint_column_usage ccu
       ON ccu.constraint_name = tc.constraint_name
      AND ccu.table_schema = tc.table_schema
+    LEFT JOIN information_schema.referential_constraints rc
+      ON rc.constraint_name = tc.constraint_name
+     AND rc.constraint_schema = tc.table_schema
     WHERE tc.constraint_type = 'FOREIGN KEY'
       AND tc.table_schema = 'public'
       AND tc.table_name = $1
@@ -2442,10 +2448,14 @@ async function getForeignKeysForTable(table) {
   }
 
   for (const fk of fkRows) {
+    const constraintName = String(fk?.constraint_name || "").trim();
     const localColumn = String(fk?.local_column || "").trim();
     const refTable = String(fk?.referenced_table || "").trim();
     const refColumn = String(fk?.referenced_column || "").trim();
+    const onDelete = String(fk?.delete_rule || "NO ACTION").trim().toUpperCase();
+    const onUpdate = String(fk?.update_rule || "NO ACTION").trim().toUpperCase();
     if (
+      !/^[a-zA-Z0-9_]+$/.test(constraintName) ||
       !/^[a-zA-Z0-9_]+$/.test(localColumn) ||
       !/^[a-zA-Z0-9_]+$/.test(refTable) ||
       !/^[a-zA-Z0-9_]+$/.test(refColumn)
@@ -2453,13 +2463,20 @@ async function getForeignKeysForTable(table) {
       continue;
     }
     const { labelColumn, options } = await loadReferenceOptions(localColumn, refTable, refColumn);
-    out[localColumn] = {
+    const fkEntry = {
       column: localColumn,
+      constraintName,
       referencedTable: refTable,
       referencedColumn: refColumn,
+      onDelete,
+      onUpdate,
       labelColumn,
       options,
     };
+    if (!out[localColumn]) out[localColumn] = fkEntry;
+    const uniqueKey =
+      normalizeDbIdentifier(`${localColumn}__${constraintName}`.slice(0, 60), "foreign key meta key");
+    out[uniqueKey] = fkEntry;
   }
 
   // Fallback for naming-convention relations when FK constraints are missing:
@@ -2574,7 +2591,18 @@ async function verifySchemaCoverage() {
     opc_mapping_sets: ["name", "mappings", "updated_at"],
     opc_config: ["id", "config", "updated_at"],
     opc_status: ["id", "status", "updated_at"],
-    projects: ["id", "name", "data", "created_at", "updated_at", "updated_by"],
+    project: ["id", "name", "data", "created_at", "updated_at", "updated_by"],
+    route: ["id", "route_id", "route_number", "state", "route_color", "project_id", "created_at", "updated_at"],
+    route_bin_list: [
+      "id",
+      "name",
+      "description",
+      "bin_number",
+      "hide_job_form",
+      "assigned_bin_group",
+      "created_at",
+      "updated_at",
+    ],
     product: ["id", "name", "description", "created_at", "updated_at"],
     bin: ["id", "name", "description", "product_id", "created_at", "updated_at"],
     equipment: [
@@ -2613,27 +2641,36 @@ async function verifySchemaCoverage() {
     }
   }
 
-  const { rows: routesTable } = await pool.query(
+  const { rows: routeTable } = await pool.query(
     `
     SELECT 1
     FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'routes'
+    WHERE table_schema = 'public' AND table_name = 'route'
     LIMIT 1
     `
   );
-  if (routesTable.length) {
+  if (routeTable.length) {
     const { rows: routeCols } = await pool.query(
       `
       SELECT 1
       FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = 'routes' AND column_name = 'project_id'
+      WHERE table_schema = 'public' AND table_name = 'route' AND column_name = 'project_id'
       LIMIT 1
       `
     );
     if (!routeCols.length) {
-      throw new Error(`Schema verification failed: table "routes" missing column "project_id"`);
+      throw new Error(`Schema verification failed: table "route" missing column "project_id"`);
     }
   }
+}
+
+function normalizeLegacyTableName(value) {
+  const table = String(value || "").trim();
+  if (table === "projects") return "project";
+  if (table === "routes") return "route";
+  if (table === "tbl_routebingroup") return "route_bin_group";
+  if (table === "tbl_routebinlist") return "route_bin_list";
+  return table;
 }
 
 const OLLAMA_IDLE_UNLOAD_MS = Math.max(
@@ -4475,30 +4512,8 @@ app.get("/api/opc/config", async (_req, res) => {
     );
     if (rows.length) {
       const row = rows[0] || {};
-      const dbUpdatedAtMs = row?.updated_at ? new Date(row.updated_at).getTime() : 0;
-      if (fs.existsSync(OPC_CONFIG_PATH)) {
-        try {
-          const fileStat = fs.statSync(OPC_CONFIG_PATH);
-          const fileUpdatedAtMs = fileStat?.mtimeMs || 0;
-          const raw = fs.readFileSync(OPC_CONFIG_PATH, "utf-8");
-          const parsed = JSON.parse(raw || "{}");
-          const dbTags = Array.isArray(row?.config?.tags) ? row.config.tags : [];
-          const fileTags = Array.isArray(parsed?.tags) ? parsed.tags : [];
-          // Prefer DB as source of truth once it has tags.
-          // Only recover from file when DB tags are empty and file has tags.
-          const shouldPreferFile = dbTags.length === 0 && fileTags.length > 0;
-          if (shouldPreferFile) {
-            await pool.query(
-              "INSERT INTO opc_config (id, config) VALUES (1, $1::jsonb) ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now()",
-              [JSON.stringify(parsed)]
-            );
-            res.json(parsed);
-            return;
-          }
-        } catch {
-          // If file read/sync fails, fall back to DB config.
-        }
-      }
+      // DB is the source of truth after row creation. Do not rehydrate from file here,
+      // otherwise user deletions can be unintentionally restored from stale config.json.
       res.json(row.config);
       return;
     }
@@ -4598,7 +4613,7 @@ app.get("/api/projects", async (_req, res) => {
     const { rows } = await pool.query(
       `
       SELECT p.id, p.name, p.updated_at, p.updated_by, u.username AS updated_by_username
-      FROM projects p
+      FROM project p
       LEFT JOIN users u ON u.id = p.updated_by
       ORDER BY p.updated_at DESC
       `
@@ -4619,7 +4634,7 @@ app.get("/api/projects/:id", async (req, res) => {
     const { rows } = await pool.query(
       `
       SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
-      FROM projects p
+      FROM project p
       LEFT JOIN users u ON u.id = p.updated_by
       WHERE p.id = $1
       `,
@@ -4724,7 +4739,7 @@ app.post("/api/projects", async (req, res) => {
     const id = incomingId || crypto.randomUUID();
     if (incomingId) {
       const { rows: nameRows } = await pool.query(
-        "SELECT id FROM projects WHERE name = $1 AND id <> $2",
+        "SELECT id FROM project WHERE name = $1 AND id <> $2",
         [name, incomingId]
       );
       if (nameRows.length) {
@@ -4734,7 +4749,7 @@ app.post("/api/projects", async (req, res) => {
       const { rows: existingRows } = await pool.query(
         `
         SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
-        FROM projects p
+        FROM project p
         LEFT JOIN users u ON u.id = p.updated_by
         WHERE p.id = $1
         LIMIT 1
@@ -4762,7 +4777,7 @@ app.post("/api/projects", async (req, res) => {
           : data;
       await pool.query(
         `
-        INSERT INTO projects (id, name, data, updated_by)
+        INSERT INTO project (id, name, data, updated_by)
         VALUES ($1, $2, $3::jsonb, $4)
         ON CONFLICT (id)
         DO UPDATE SET
@@ -4776,7 +4791,7 @@ app.post("/api/projects", async (req, res) => {
       const { rows } = await pool.query(
         `
         SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
-        FROM projects p
+        FROM project p
         LEFT JOIN users u ON u.id = p.updated_by
         WHERE p.id = $1
         `,
@@ -4798,7 +4813,7 @@ app.post("/api/projects", async (req, res) => {
     const { rows: existingByName } = await pool.query(
       `
       SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
-      FROM projects p
+      FROM project p
       LEFT JOIN users u ON u.id = p.updated_by
       WHERE p.name = $1
       LIMIT 1
@@ -4826,7 +4841,7 @@ app.post("/api/projects", async (req, res) => {
         : data;
     await pool.query(
       `
-      INSERT INTO projects (id, name, data, updated_by)
+      INSERT INTO project (id, name, data, updated_by)
       VALUES ($1, $2, $3::jsonb, $4)
       ON CONFLICT (name)
       DO UPDATE SET
@@ -4839,7 +4854,7 @@ app.post("/api/projects", async (req, res) => {
     const { rows } = await pool.query(
       `
       SELECT p.id, p.name, p.data, p.updated_at, p.updated_by, u.username AS updated_by_username
-      FROM projects p
+      FROM project p
       LEFT JOIN users u ON u.id = p.updated_by
       WHERE p.name = $1
       `,
@@ -4868,7 +4883,7 @@ app.delete("/api/projects/:id", async (req, res) => {
       res.status(400).json({ error: "Project id required." });
       return;
     }
-    await pool.query("DELETE FROM projects WHERE id = $1", [id]);
+    await pool.query("DELETE FROM project WHERE id = $1", [id]);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to delete project." });
@@ -6311,6 +6326,36 @@ function resolveServiceLauncherPaths() {
   };
 }
 
+function toPsSingleQuoted(value) {
+  return `'${String(value || "").replace(/'/g, "''")}'`;
+}
+
+function buildFallbackStartCommand(root) {
+  const rootEsc = toPsSingleQuoted(root);
+  const aiPort = Number.parseInt(String(process.env.PORT || "5055"), 10);
+  const opcUaPort = Number.parseInt(String(process.env.MESORA_OPCUA_PORT || "4840"), 10);
+  const aiPortSafe = Number.isFinite(aiPort) && aiPort > 0 ? aiPort : 5055;
+  const opcUaPortSafe = Number.isFinite(opcUaPort) && opcUaPort > 0 ? opcUaPort : 4840;
+  return [
+    `$root = ${rootEsc}`,
+    "Set-Location -Path $root",
+    `$env:MESORA_AI_PORT = '${aiPortSafe}'`,
+    `$env:MESORA_OPCUA_PORT = '${opcUaPortSafe}'`,
+    "$npm = Get-Command -Name 'npm.cmd' -ErrorAction SilentlyContinue",
+    "if ($npm -and $npm.Source) { & $npm.Source run start:prod; exit $LASTEXITCODE }",
+    "& npm run start:prod",
+  ].join("; ");
+}
+
+function buildFallbackStopCommand(root) {
+  const escapedRootRegex = String(root || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "''");
+  return [
+    `Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'node.exe' -or $_.Name -eq 'cmd.exe' -or $_.Name -eq 'powershell.exe') -and $_.CommandLine -match '${escapedRootRegex}' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }`,
+  ].join("; ");
+}
+
 function runDetachedWindowsPowerShell(commandText, cwd) {
   const child = spawn(
     "powershell.exe",
@@ -6339,13 +6384,9 @@ app.post("/api/server/services/start", requireAreaEdit("server"), async (_req, r
     serviceControlLocked = true;
     const launchers = resolveServiceLauncherPaths();
     const startCmdExists = fs.existsSync(launchers.startCmd);
-    if (!startCmdExists) {
-      serviceControlLocked = false;
-      res.status(500).json({ error: `Start launcher not found: ${launchers.startCmd}` });
-      return;
-    }
-
-    const cmdText = `& '${launchers.startCmd.replace(/'/g, "''")}'`;
+    const cmdText = startCmdExists
+      ? `& ${toPsSingleQuoted(launchers.startCmd)}`
+      : buildFallbackStartCommand(launchers.root);
     runDetachedWindowsPowerShell(cmdText, launchers.root);
     setTimeout(() => {
       serviceControlLocked = false;
@@ -6356,6 +6397,7 @@ app.post("/api/server/services/start", requireAreaEdit("server"), async (_req, r
       action: "start",
       message: "Start requested for all Mesora services.",
       root: launchers.root,
+      mode: startCmdExists ? "launcher" : "fallback",
     });
   } catch (err) {
     serviceControlLocked = false;
@@ -6376,13 +6418,9 @@ app.post("/api/server/services/stop", requireAreaEdit("server"), async (_req, re
     serviceControlLocked = true;
     const launchers = resolveServiceLauncherPaths();
     const stopCmdExists = fs.existsSync(launchers.stopCmd);
-    if (!stopCmdExists) {
-      serviceControlLocked = false;
-      res.status(500).json({ error: `Stop launcher not found: ${launchers.stopCmd}` });
-      return;
-    }
-
-    const cmdText = `Start-Sleep -Milliseconds 750; & '${launchers.stopCmd.replace(/'/g, "''")}'`;
+    const cmdText = stopCmdExists
+      ? `Start-Sleep -Milliseconds 750; & ${toPsSingleQuoted(launchers.stopCmd)}`
+      : `Start-Sleep -Milliseconds 750; ${buildFallbackStopCommand(launchers.root)}`;
     runDetachedWindowsPowerShell(cmdText, launchers.root);
     setTimeout(() => {
       serviceControlLocked = false;
@@ -6393,6 +6431,7 @@ app.post("/api/server/services/stop", requireAreaEdit("server"), async (_req, re
       action: "stop",
       message: "Stop requested for all Mesora services.",
       root: launchers.root,
+      mode: stopCmdExists ? "launcher" : "fallback",
     });
   } catch (err) {
     serviceControlLocked = false;
@@ -6414,17 +6453,13 @@ app.post("/api/server/services/restart", requireAreaEdit("server"), async (_req,
     const launchers = resolveServiceLauncherPaths();
     const stopCmdExists = fs.existsSync(launchers.stopCmd);
     const startCmdExists = fs.existsSync(launchers.startCmd);
-    if (!stopCmdExists || !startCmdExists) {
-      serviceControlLocked = false;
-      res.status(500).json({
-        error: `Required launchers not found. Start: ${launchers.startCmd} Stop: ${launchers.stopCmd}`,
-      });
-      return;
-    }
-
-    const stopEsc = launchers.stopCmd.replace(/'/g, "''");
-    const startEsc = launchers.startCmd.replace(/'/g, "''");
-    const cmdText = `Start-Sleep -Milliseconds 750; & '${stopEsc}'; Start-Sleep -Seconds 1; & '${startEsc}'`;
+    const stopCmd = stopCmdExists
+      ? `& ${toPsSingleQuoted(launchers.stopCmd)}`
+      : buildFallbackStopCommand(launchers.root);
+    const startCmd = startCmdExists
+      ? `& ${toPsSingleQuoted(launchers.startCmd)}`
+      : buildFallbackStartCommand(launchers.root);
+    const cmdText = `Start-Sleep -Milliseconds 750; ${stopCmd}; Start-Sleep -Seconds 1; ${startCmd}`;
     runDetachedWindowsPowerShell(cmdText, launchers.root);
     setTimeout(() => {
       serviceControlLocked = false;
@@ -6435,6 +6470,7 @@ app.post("/api/server/services/restart", requireAreaEdit("server"), async (_req,
       action: "restart",
       message: "Restart requested for all Mesora services.",
       root: launchers.root,
+      mode: stopCmdExists && startCmdExists ? "launcher" : "fallback",
     });
   } catch (err) {
     serviceControlLocked = false;
@@ -6906,9 +6942,59 @@ app.post("/api/db/designer/foreign-key", async (req, res) => {
   }
 });
 
+app.put("/api/db/designer/foreign-key", async (req, res) => {
+  try {
+    const oldFromTable = normalizeDbIdentifier(req.body?.oldFromTable, "old source table");
+    const oldConstraintName = normalizeDbIdentifier(req.body?.oldConstraintName, "old constraint name");
+    const fromTable = normalizeDbIdentifier(req.body?.fromTable, "source table");
+    const fromColumn = normalizeDbIdentifier(req.body?.fromColumn, "source column");
+    const toTable = normalizeDbIdentifier(req.body?.toTable, "target table");
+    const toColumn = normalizeDbIdentifier(req.body?.toColumn, "target column");
+    const actionAllow = new Set(["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"]);
+    const onDelete = String(req.body?.onDelete || "NO ACTION").trim().toUpperCase();
+    const onUpdate = String(req.body?.onUpdate || "NO ACTION").trim().toUpperCase();
+    if (!actionAllow.has(onDelete) || !actionAllow.has(onUpdate)) {
+      res.status(400).json({ error: "Invalid FK action." });
+      return;
+    }
+    const rawConstraint = String(req.body?.constraintName || "").trim();
+    const constraintName = rawConstraint
+      ? normalizeDbIdentifier(rawConstraint, "constraint name")
+      : normalizeDbIdentifier(`fk_${fromTable}_${fromColumn}_${toTable}_${toColumn}`.slice(0, 60), "constraint name");
+    await pool.query(
+      `ALTER TABLE ${safeIdent(oldFromTable)} DROP CONSTRAINT IF EXISTS ${safeIdent(oldConstraintName)}`
+    );
+    const sql = `
+      ALTER TABLE ${safeIdent(fromTable)}
+      ADD CONSTRAINT ${safeIdent(constraintName)}
+      FOREIGN KEY (${safeIdent(fromColumn)})
+      REFERENCES ${safeIdent(toTable)} (${safeIdent(toColumn)})
+      ON DELETE ${onDelete}
+      ON UPDATE ${onUpdate}
+    `;
+    await pool.query(sql);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to update foreign key." });
+  }
+});
+
+app.delete("/api/db/designer/foreign-key", async (req, res) => {
+  try {
+    const fromTable = normalizeDbIdentifier(req.body?.fromTable, "source table");
+    const constraintName = normalizeDbIdentifier(req.body?.constraintName, "constraint name");
+    await pool.query(
+      `ALTER TABLE ${safeIdent(fromTable)} DROP CONSTRAINT IF EXISTS ${safeIdent(constraintName)}`
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to delete foreign key." });
+  }
+});
+
 app.get("/api/db/:table/meta", async (req, res) => {
   try {
-    const table = String(req.params.table || "");
+    const table = normalizeLegacyTableName(req.params.table);
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
       res.status(400).json({ error: "Invalid table name." });
       return;
@@ -6930,7 +7016,7 @@ app.get("/api/db/:table/meta", async (req, res) => {
 
   app.get("/api/db/:table", async (req, res) => {
     try {
-      const table = String(req.params.table || "");
+      const table = normalizeLegacyTableName(req.params.table);
       if (!/^[a-zA-Z0-9_]+$/.test(table)) {
         res.status(400).json({ error: "Invalid table name." });
         return;
@@ -6940,12 +7026,12 @@ app.get("/api/db/:table/meta", async (req, res) => {
       const pk = await getPrimaryKey(table);
       const order = pk ? `ORDER BY ${safeIdent(pk)}` : "";
       const projectId =
-        table === "routes" && req.query.project_id ? String(req.query.project_id) : "";
+        table === "route" && req.query.project_id ? String(req.query.project_id) : "";
       const where = projectId ? "WHERE project_id = $3" : "";
       const sql = `SELECT * FROM ${safeIdent(table)} ${where} ${order} LIMIT $1 OFFSET $2`;
       const params = projectId ? [limit, offset, projectId] : [limit, offset];
       const { rows } = await pool.query(sql, params);
-      if (DEBUG_ROUTES && table === "routes") {
+      if (DEBUG_ROUTES && table === "route") {
         // eslint-disable-next-line no-console
         console.log("[routes api] query", {
           limit,
@@ -6970,7 +7056,7 @@ app.get("/api/db/:table/meta", async (req, res) => {
 
 app.get("/api/db/:table/:id", async (req, res) => {
   try {
-    const table = String(req.params.table || "");
+    const table = normalizeLegacyTableName(req.params.table);
     const id = req.params.id;
     const pkOverride = req.query.pk ? String(req.query.pk) : null;
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
@@ -6992,7 +7078,7 @@ app.get("/api/db/:table/:id", async (req, res) => {
 
 app.put("/api/db/:table/config", async (req, res) => {
   try {
-    const table = String(req.params.table || "");
+    const table = normalizeLegacyTableName(req.params.table);
     const listFields = req.body?.list_fields;
     const detailFields = req.body?.detail_fields;
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
@@ -7036,7 +7122,7 @@ app.put("/api/db/:table/config", async (req, res) => {
 
 app.post("/api/db/:table", async (req, res) => {
   try {
-    const table = String(req.params.table || "");
+    const table = normalizeLegacyTableName(req.params.table);
     const body = req.body || {};
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
       res.status(400).json({ error: "Invalid table name." });
@@ -7065,9 +7151,9 @@ app.post("/api/db/:table", async (req, res) => {
 
 app.put("/api/db/:table/:id", async (req, res) => {
   try {
-    const table = String(req.params.table || "");
+    const table = normalizeLegacyTableName(req.params.table);
     const id = req.params.id;
-    const body = req.body || {};
+    const body = { ...(req.body || {}) };
     const pkOverride = req.query.pk ? String(req.query.pk) : null;
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
       res.status(400).json({ error: "Invalid table name." });
@@ -7077,6 +7163,61 @@ app.put("/api/db/:table/:id", async (req, res) => {
     if (!pk || !/^[a-zA-Z0-9_]+$/.test(pk)) {
       res.status(400).json({ error: "No primary key found for table." });
       return;
+    }
+    // Normalize/validate bin.product_id so FK failures become clear user errors.
+    if (table === "bin" && Object.prototype.hasOwnProperty.call(body, "product_id")) {
+      const raw = body.product_id;
+      if (raw == null || String(raw).trim() === "") {
+        body.product_id = null;
+      } else {
+        const text = String(raw).trim();
+        if (!/^\d+$/.test(text)) {
+          res.status(400).json({ error: "Invalid product_id. Expected numeric id or null." });
+          return;
+        }
+        const productId = Number(text);
+        const candidateTables = ["product"];
+        let productExists = false;
+        for (const candidateRaw of candidateTables) {
+          const candidate = String(candidateRaw || "").trim();
+          if (!candidate || !/^[a-zA-Z0-9_]+$/.test(candidate)) continue;
+          const tableExists = await pool.query(
+            `
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = $1
+            LIMIT 1
+            `,
+            [candidate]
+          );
+          if (!tableExists.rows.length) continue;
+          const candidatePk = (await getPrimaryKey(candidate)) || "id";
+          if (!/^[a-zA-Z0-9_]+$/.test(candidatePk)) continue;
+          const pkColumnExists = await pool.query(
+            `
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+            LIMIT 1
+            `,
+            [candidate, candidatePk]
+          );
+          if (!pkColumnExists.rows.length) continue;
+          const { rows: productRows } = await pool.query(
+            `SELECT 1 FROM ${safeIdent(candidate)} WHERE ${safeIdent(candidatePk)} = $1 LIMIT 1`,
+            [productId]
+          );
+          if (productRows.length) {
+            productExists = true;
+            break;
+          }
+        }
+        if (!productExists) {
+          res.status(400).json({ error: `Product id ${productId} does not exist.` });
+          return;
+        }
+        body.product_id = productId;
+      }
     }
     const keys = Object.keys(body).filter((k) => k !== pk);
     if (!keys.length) {
@@ -7096,7 +7237,7 @@ app.put("/api/db/:table/:id", async (req, res) => {
 
 app.delete("/api/db/:table/:id", async (req, res) => {
   try {
-    const table = String(req.params.table || "");
+    const table = normalizeLegacyTableName(req.params.table);
     const id = req.params.id;
     const pkOverride = req.query.pk ? String(req.query.pk) : null;
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
@@ -8697,7 +8838,21 @@ async function start() {
     ON opc_alarm_state(updated_at DESC);
   `);
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS projects (
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'projects'
+      ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'project'
+      ) THEN
+        ALTER TABLE projects RENAME TO project;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS project (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       data JSONB NOT NULL,
@@ -8706,29 +8861,29 @@ async function start() {
     );
   `);
   await pool.query(`
-    ALTER TABLE projects
+    ALTER TABLE project
     ADD COLUMN IF NOT EXISTS updated_by INT;
   `);
   await pool.query(`
     DO $$
     BEGIN
       IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'projects_updated_by_fkey'
+        SELECT 1 FROM pg_constraint WHERE conname = 'project_updated_by_fkey'
       ) THEN
-        ALTER TABLE projects
-        ADD CONSTRAINT projects_updated_by_fkey
+        ALTER TABLE project
+        ADD CONSTRAINT project_updated_by_fkey
         FOREIGN KEY (updated_by) REFERENCES users(id)
         ON DELETE SET NULL;
       END IF;
     END$$;
   `);
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS projects_name_idx ON projects(name);
+    CREATE UNIQUE INDEX IF NOT EXISTS project_name_idx ON project(name);
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS project_versions (
       id BIGSERIAL PRIMARY KEY,
-      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
       saved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       saved_by INT REFERENCES users(id) ON DELETE SET NULL,
       base_updated_at TIMESTAMPTZ,
@@ -8770,7 +8925,21 @@ async function start() {
     ON project_versions(project_id, next_hash);
   `);
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS routes (
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'routes'
+      ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'route'
+      ) THEN
+        ALTER TABLE routes RENAME TO route;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS route (
       id BIGSERIAL PRIMARY KEY,
       route_id TEXT,
       route_number TEXT,
@@ -8782,32 +8951,411 @@ async function start() {
     );
   `);
   await pool.query(`
-    ALTER TABLE routes
+    ALTER TABLE route
     ADD COLUMN IF NOT EXISTS route_id TEXT;
   `);
   await pool.query(`
-    ALTER TABLE routes
+    ALTER TABLE route
     ADD COLUMN IF NOT EXISTS route_number TEXT;
   `);
   await pool.query(`
-    ALTER TABLE routes
+    ALTER TABLE route
     ADD COLUMN IF NOT EXISTS state TEXT;
   `);
   await pool.query(`
-    ALTER TABLE routes
+    ALTER TABLE route
     ADD COLUMN IF NOT EXISTS route_color TEXT;
   `);
   await pool.query(`
-    ALTER TABLE routes
+    ALTER TABLE route
     ADD COLUMN IF NOT EXISTS project_id TEXT;
   `);
   await pool.query(`
-    ALTER TABLE routes
+    ALTER TABLE route
     ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
   `);
   await pool.query(`
-    ALTER TABLE routes
+    ALTER TABLE route
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'tbl_routebingroup'
+      ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'route_bin_group'
+      ) THEN
+        ALTER TABLE tbl_routebingroup RENAME TO route_bin_group;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'tbl_routebinlist'
+      ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'route_bin_list'
+      ) THEN
+        ALTER TABLE tbl_routebinlist RENAME TO route_bin_list;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS route_bin_group (
+      id BIGSERIAL PRIMARY KEY,
+      tbl_index INTEGER GENERATED BY DEFAULT AS IDENTITY,
+      groupid INTEGER,
+      groupname VARCHAR(50),
+      grouptype VARCHAR(16),
+      grouplistnumber INTEGER,
+      routenumber BIGINT,
+      mixtype INTEGER,
+      isblend BOOLEAN DEFAULT false,
+      require100percent BOOLEAN DEFAULT true,
+      requireproductcheck BOOLEAN DEFAULT false,
+      maxtarget INTEGER DEFAULT 100,
+      hideinrecipe BOOLEAN DEFAULT false,
+      hideinjob BOOLEAN DEFAULT false,
+      hasregistration BOOLEAN DEFAULT true,
+      usepercentage BOOLEAN,
+      useweight BOOLEAN,
+      enabled BOOLEAN DEFAULT true,
+      maxingredients INTEGER DEFAULT 8,
+      unit VARCHAR(50),
+      unitsscale DOUBLE PRECISION DEFAULT 1,
+      defaultbinindex INTEGER,
+      allowsubingrlist BOOLEAN DEFAULT false,
+      defaulttarget INTEGER DEFAULT 0,
+      sortorder INTEGER
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS id BIGINT;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS tbl_index INTEGER;
+  `);
+  await pool.query(`
+    DO $$
+    DECLARE
+      seq_name TEXT := 'route_bin_group_id_seed_seq';
+      max_id BIGINT := 0;
+    BEGIN
+      CREATE SEQUENCE IF NOT EXISTS route_bin_group_id_seed_seq;
+      UPDATE route_bin_group AS g
+      SET id = g.tbl_index
+      WHERE g.id IS NULL
+        AND g.tbl_index IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM route_bin_group AS g2
+          WHERE g2.id = g.tbl_index
+            AND g2.ctid <> g.ctid
+        );
+      SELECT COALESCE(MAX(id), 0) INTO max_id FROM route_bin_group;
+      PERFORM setval(seq_name, GREATEST(max_id, 1), true);
+      UPDATE route_bin_group
+      SET id = nextval(seq_name)
+      WHERE id IS NULL;
+    END$$;
+  `);
+  await applyPrimaryKeyState(pool, "route_bin_group", "id", true);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS groupid INTEGER;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS groupname VARCHAR(50);
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS grouptype VARCHAR(16);
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS grouplistnumber INTEGER;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS routenumber BIGINT;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS mixtype INTEGER;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS isblend BOOLEAN DEFAULT false;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS require100percent BOOLEAN DEFAULT true;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS requireproductcheck BOOLEAN DEFAULT false;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS maxtarget INTEGER DEFAULT 100;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS hideinrecipe BOOLEAN DEFAULT false;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS hideinjob BOOLEAN DEFAULT false;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS hasregistration BOOLEAN DEFAULT true;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS usepercentage BOOLEAN;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS useweight BOOLEAN;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT true;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS maxingredients INTEGER DEFAULT 8;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS unit VARCHAR(50);
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS unitsscale DOUBLE PRECISION DEFAULT 1;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS defaultbinindex INTEGER;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS allowsubingrlist BOOLEAN DEFAULT false;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS defaulttarget INTEGER DEFAULT 0;
+  `);
+  await pool.query(`
+    ALTER TABLE route_bin_group
+    ADD COLUMN IF NOT EXISTS sortorder INTEGER;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname IN ('route_bin_group_routenumber_fkey', 'tbl_routebingroup_routenumber_fkey')
+      ) THEN
+        ALTER TABLE route_bin_group
+        ADD CONSTRAINT route_bin_group_routenumber_fkey
+        FOREIGN KEY (routenumber) REFERENCES route(id)
+        ON DELETE SET NULL;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    DO $$
+    DECLARE
+      rec RECORD;
+    BEGIN
+      FOR rec IN
+        SELECT con.conname
+        FROM pg_constraint con
+        JOIN pg_class child ON child.oid = con.conrelid
+        JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+        JOIN pg_class parent ON parent.oid = con.confrelid
+        JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+        JOIN pg_attribute child_att
+          ON child_att.attrelid = child.oid
+         AND child_att.attnum = con.conkey[1]
+        JOIN pg_attribute parent_att
+          ON parent_att.attrelid = parent.oid
+         AND parent_att.attnum = con.confkey[1]
+        WHERE con.contype = 'f'
+          AND child_ns.nspname = 'public'
+          AND parent_ns.nspname = 'public'
+          AND child.relname = 'route_bin_group'
+          AND parent.relname = 'route'
+          AND array_length(con.conkey, 1) = 1
+          AND array_length(con.confkey, 1) = 1
+          AND child_att.attname = 'id'
+          AND parent_att.attname = 'id'
+      LOOP
+        EXECUTE format('ALTER TABLE route_bin_group DROP CONSTRAINT IF EXISTS %I', rec.conname);
+      END LOOP;
+    END$$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'route_bin_group'
+          AND indexname IN ('route_bin_group_routenumber_idx', 'tbl_routebingroup_routenumber_idx')
+      ) THEN
+        CREATE INDEX route_bin_group_routenumber_idx ON route_bin_group(routenumber);
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'route_bin_group_route_id_fkey'
+      ) THEN
+        ALTER TABLE route_bin_group DROP CONSTRAINT route_bin_group_route_id_fkey;
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'route_bin_group'
+          AND indexname = 'route_bin_group_route_id_idx'
+      ) THEN
+        DROP INDEX IF EXISTS route_bin_group_route_id_idx;
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'route_bin_group' AND column_name = 'route_id'
+      ) THEN
+        ALTER TABLE route_bin_group DROP COLUMN route_id;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'route_bin_group'
+          AND indexname IN ('route_bin_group_groupid_idx', 'tbl_routebingroup_groupid_idx')
+      ) THEN
+        CREATE INDEX route_bin_group_groupid_idx ON route_bin_group(groupid);
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS route_bin_list (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT,
+      description TEXT,
+      bin_number VARCHAR(10),
+      hide_job_form BOOLEAN DEFAULT false,
+      assigned_bin_group BIGINT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS name TEXT;`);
+  await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS description TEXT;`);
+  await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS bin_number VARCHAR(10);`);
+  await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS hide_job_form BOOLEAN DEFAULT false;`);
+  await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS assigned_bin_group BIGINT;`);
+  await pool.query(
+    `ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();`
+  );
+  await pool.query(
+    `ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();`
+  );
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'route_bin_list' AND column_name = 'binnumber'
+      ) THEN
+        UPDATE route_bin_list
+        SET bin_number = COALESCE(bin_number, binnumber)
+        WHERE binnumber IS NOT NULL;
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'route_bin_list' AND column_name = 'hidejobform'
+      ) THEN
+        UPDATE route_bin_list
+        SET hide_job_form = COALESCE(hide_job_form, hidejobform)
+        WHERE hidejobform IS NOT NULL;
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'route_bin_list' AND column_name = 'assignedbingroup'
+      ) THEN
+        UPDATE route_bin_list
+        SET assigned_bin_group = COALESCE(assigned_bin_group, assignedbingroup)
+        WHERE assignedbingroup IS NOT NULL;
+      END IF;
+      UPDATE route_bin_list
+      SET name = COALESCE(name, bin_number)
+      WHERE name IS NULL AND bin_number IS NOT NULL;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'route_bin_list' AND column_name = 'binnumber'
+      ) THEN
+        ALTER TABLE route_bin_list DROP COLUMN binnumber;
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'route_bin_list' AND column_name = 'hidejobform'
+      ) THEN
+        ALTER TABLE route_bin_list DROP COLUMN hidejobform;
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'route_bin_list' AND column_name = 'assignedbingroup'
+      ) THEN
+        ALTER TABLE route_bin_list DROP COLUMN assignedbingroup;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'tbl_routebinlist_assignedbingroup_fkey'
+      ) THEN
+        ALTER TABLE route_bin_list DROP CONSTRAINT tbl_routebinlist_assignedbingroup_fkey;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'route_bin_list_assigned_bin_group_fkey'
+      ) THEN
+        ALTER TABLE route_bin_list
+        ADD CONSTRAINT route_bin_list_assigned_bin_group_fkey
+        FOREIGN KEY (assigned_bin_group) REFERENCES route_bin_group(id)
+        ON DELETE SET NULL;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS route_bin_list_assigned_bin_group_idx
+    ON route_bin_list(assigned_bin_group);
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS jobs (
@@ -8927,6 +9475,29 @@ async function start() {
     ]
   );
   await pool.query(`
+    UPDATE ui_table_config
+    SET
+      list_fields = (
+        SELECT COALESCE(jsonb_agg(
+          CASE
+            WHEN elem = 'route_id' THEN 'routenumber'::text
+            ELSE elem
+          END
+        ), '[]'::jsonb)
+        FROM jsonb_array_elements_text(COALESCE(ui_table_config.list_fields, '[]'::jsonb)) AS elem
+      ),
+      detail_fields = (
+        SELECT COALESCE(jsonb_agg(
+          CASE
+            WHEN elem = 'route_id' THEN 'routenumber'::text
+            ELSE elem
+          END
+        ), '[]'::jsonb)
+        FROM jsonb_array_elements_text(COALESCE(ui_table_config.detail_fields, '[]'::jsonb)) AS elem
+      )
+    WHERE table_name = 'route_bin_group';
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS product (
       id BIGSERIAL PRIMARY KEY,
       name TEXT NOT NULL DEFAULT '',
@@ -8976,11 +9547,109 @@ async function start() {
   `);
   await pool.query(`
     ALTER TABLE bin
+    ALTER COLUMN product_id DROP NOT NULL;
+  `);
+  await pool.query(`
+    ALTER TABLE bin
     ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
   `);
   await pool.query(`
     ALTER TABLE bin
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    UPDATE bin AS b
+    SET product_id = NULL
+    WHERE b.product_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM product AS p WHERE p.id = b.product_id
+      );
+  `);
+  await pool.query(`
+    DO $$
+    DECLARE
+      rec RECORD;
+    BEGIN
+      FOR rec IN
+        SELECT
+          con.conname AS constraint_name,
+          nsp.nspname AS table_schema,
+          cls.relname AS table_name
+        FROM pg_constraint con
+        JOIN pg_class cls ON cls.oid = con.conrelid
+        JOIN pg_namespace nsp ON nsp.oid = cls.relnamespace
+        JOIN pg_class ref ON ref.oid = con.confrelid
+        JOIN pg_namespace ref_nsp ON ref_nsp.oid = ref.relnamespace
+        WHERE con.contype = 'f'
+          AND ref_nsp.nspname = 'public'
+          AND ref.relname = 'products'
+      LOOP
+        EXECUTE format(
+          'ALTER TABLE %I.%I DROP CONSTRAINT IF EXISTS %I',
+          rec.table_schema,
+          rec.table_name,
+          rec.constraint_name
+        );
+      END LOOP;
+    END$$;
+  `);
+  await pool.query(`
+    DO $$
+    DECLARE
+      rec RECORD;
+    BEGIN
+      FOR rec IN
+        SELECT
+          con.conname AS constraint_name,
+          nsp.nspname AS table_schema,
+          cls.relname AS table_name
+        FROM pg_constraint con
+        JOIN pg_class cls ON cls.oid = con.conrelid
+        JOIN pg_namespace nsp ON nsp.oid = cls.relnamespace
+        JOIN pg_class ref ON ref.oid = con.confrelid
+        JOIN pg_namespace ref_nsp ON ref_nsp.oid = ref.relnamespace
+        WHERE con.contype = 'f'
+          AND ref_nsp.nspname = 'public'
+          AND ref.relname = 'bins'
+      LOOP
+        EXECUTE format(
+          'ALTER TABLE %I.%I DROP CONSTRAINT IF EXISTS %I',
+          rec.table_schema,
+          rec.table_name,
+          rec.constraint_name
+        );
+      END LOOP;
+    END$$;
+  `);
+  await pool.query(`DROP TABLE IF EXISTS products CASCADE;`);
+  await pool.query(`DROP TABLE IF EXISTS bins CASCADE;`);
+  await pool.query(`
+    DELETE FROM ui_table_config
+    WHERE table_name IN ('products', 'bins', 'tbl_product', 'tbl_bin');
+  `);
+  await pool.query(`
+    DELETE FROM ui_table_config
+    WHERE table_name IN ('projects', 'routes')
+      AND EXISTS (
+        SELECT 1
+        FROM ui_table_config cfg2
+        WHERE cfg2.table_name = CASE
+          WHEN ui_table_config.table_name = 'projects' THEN 'project'
+          WHEN ui_table_config.table_name = 'routes' THEN 'route'
+          ELSE ui_table_config.table_name
+        END
+      );
+  `);
+  await pool.query(`
+    UPDATE ui_table_config
+    SET table_name = CASE
+      WHEN table_name = 'projects' THEN 'project'
+      WHEN table_name = 'routes' THEN 'route'
+      WHEN table_name = 'tbl_routebingroup' THEN 'route_bin_group'
+      WHEN table_name = 'tbl_routebinlist' THEN 'route_bin_list'
+      ELSE table_name
+    END
+    WHERE table_name IN ('projects', 'routes', 'tbl_routebingroup', 'tbl_routebinlist');
   `);
   await pool.query(`
     DO $$
@@ -9023,6 +9692,29 @@ async function start() {
     `
     INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
     VALUES (
+      'route_bin_list',
+      $1::jsonb,
+      $2::jsonb
+    )
+    ON CONFLICT (table_name) DO NOTHING
+    `,
+    [
+      JSON.stringify(["name", "bin_number", "assigned_bin_group", "updated_at"]),
+      JSON.stringify([
+        "name",
+        "description",
+        "bin_number",
+        "hide_job_form",
+        "assigned_bin_group",
+        "created_at",
+        "updated_at",
+      ]),
+    ]
+  );
+  await pool.query(
+    `
+    INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
+    VALUES (
       'bin',
       $1::jsonb,
       $2::jsonb
@@ -9032,6 +9724,46 @@ async function start() {
     [
       JSON.stringify(["name", "product_id", "updated_at"]),
       JSON.stringify(["name", "description", "product_id", "created_at", "updated_at"]),
+    ]
+  );
+  await pool.query(
+    `
+    INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
+    VALUES (
+      'route_bin_group',
+      $1::jsonb,
+      $2::jsonb
+    )
+    ON CONFLICT (table_name) DO NOTHING
+    `,
+    [
+      JSON.stringify(["groupname", "routenumber", "enabled", "sortorder"]),
+      JSON.stringify([
+        "routenumber",
+        "groupid",
+        "groupname",
+        "grouptype",
+        "grouplistnumber",
+        "routenumber",
+        "mixtype",
+        "isblend",
+        "require100percent",
+        "requireproductcheck",
+        "maxtarget",
+        "hideinrecipe",
+        "hideinjob",
+        "hasregistration",
+        "usepercentage",
+        "useweight",
+        "enabled",
+        "maxingredients",
+        "unit",
+        "unitsscale",
+        "defaultbinindex",
+        "allowsubingrlist",
+        "defaulttarget",
+        "sortorder",
+      ]),
     ]
   );
   await pool.query(`
@@ -9179,25 +9911,25 @@ async function start() {
     BEGIN
       IF EXISTS (
         SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'routes'
+        WHERE table_schema = 'public' AND table_name = 'route'
       ) THEN
-        ALTER TABLE routes
+        ALTER TABLE route
         ADD COLUMN IF NOT EXISTS project_id TEXT;
 
         IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint WHERE conname = 'routes_project_id_fkey'
+          SELECT 1 FROM pg_constraint WHERE conname = 'route_project_id_fkey'
         ) THEN
-          ALTER TABLE routes
-          ADD CONSTRAINT routes_project_id_fkey
-          FOREIGN KEY (project_id) REFERENCES projects(id)
+          ALTER TABLE route
+          ADD CONSTRAINT route_project_id_fkey
+          FOREIGN KEY (project_id) REFERENCES project(id)
           ON DELETE SET NULL;
         END IF;
 
         IF NOT EXISTS (
           SELECT 1 FROM pg_indexes
-          WHERE schemaname = 'public' AND tablename = 'routes' AND indexname = 'routes_project_id_idx'
+          WHERE schemaname = 'public' AND tablename = 'route' AND indexname = 'route_project_id_idx'
         ) THEN
-          CREATE INDEX routes_project_id_idx ON routes(project_id);
+          CREATE INDEX route_project_id_idx ON route(project_id);
         END IF;
       END IF;
     END$$;
@@ -9229,7 +9961,7 @@ async function start() {
   }, DB_MAINTENANCE_MS);
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
-    console.log(`AI server listening on http://localhost:${PORT}`);
+    console.log(`App server listening on http://localhost:${PORT}`);
     setInterval(() => {
       void runPlcDebugSessionRefreshTick();
     }, Math.max(1000, Math.floor(PLC_DEBUG_SESSION_POLL_MS / 2)));

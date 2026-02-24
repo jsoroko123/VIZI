@@ -248,6 +248,7 @@ export default function PropertiesPanel({
   setHudFields,
   applySingleId,
   applySingleTagPath,
+  applySingleBinBinding,
   applySingleEType,
   applySingleFill,
   applySingleStroke,
@@ -272,6 +273,7 @@ export default function PropertiesPanel({
 
   opcTags,
   svgETypeOptions,
+  svgBinOptions,
   duplicateOffset,
   setDuplicateOffset,
   bounds,
@@ -346,6 +348,7 @@ export default function PropertiesPanel({
   latest.current = {
     applySingleId,
     applySingleTagPath,
+    applySingleBinBinding,
     applySingleEType,
     applySingleFill,
     applySingleStroke,
@@ -514,6 +517,7 @@ export default function PropertiesPanel({
   const isWidget = isSingle && singleKind === "Widget";
   const isPoly = isSingle && singleKind === "Polyline";
   const isText = isSingle && singleKind === "Text";
+  const isBinSvg = isSvg && String(hudFields?.eType || "").trim().toLowerCase().startsWith("bin");
   const isShapeGroup = !isSingle && (Array.isArray(selectedIds) ? selectedIds.length : 0) > 0;
 
   const arrowOptions = [
@@ -639,6 +643,14 @@ export default function PropertiesPanel({
   const isTrendChartKind =
     widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart";
   const chartMinMaxDisabled = isTrendChartKind && widgetAxisModeVal !== "manual";
+  const svgBinSelectOptions = useMemo(() => {
+    const base = Array.isArray(svgBinOptions) ? [...svgBinOptions] : [];
+    const current = String(hudFields?.binBindingKey || "").trim();
+    if (current && !base.some((opt) => String(opt?.value || "") === current)) {
+      base.push({ value: current, label: current, group: "Custom" });
+    }
+    return base.length ? base : [{ value: "", label: "Auto-match (Tag Path/Name)" }];
+  }, [svgBinOptions, hudFields?.binBindingKey]);
   const duplicateOffsetVal = dupDraft;
   const svgTemplateOptions = (svgFiles || []).map((f) => ({
     value: f.key,
@@ -711,6 +723,7 @@ export default function PropertiesPanel({
 
       if (isSvg) {
         a.applySingleEType?.(next.eType);
+        a.applySingleBinBinding?.(next.binBindingKey);
         a.applySingleSvgStrokeWidth?.(next.strokeWidth);
         a.applySingleFaultSim?.(Boolean(next.faultSimulated));
         const w = Number.parseFloat(next.w);
@@ -919,6 +932,21 @@ export default function PropertiesPanel({
                   searchable
                   searchPlaceholder="Search eType..."
                 />
+                {isBinSvg && (
+                  <SelectRow
+                    label="Bin Row"
+                    value={String(hudFields?.binBindingKey || "")}
+                    onChange={(v) => {
+                      const nextValue = String(v || "");
+                      setHudFields((p) => ({ ...p, binBindingKey: nextValue }));
+                      applySingleBinBinding?.(nextValue);
+                    }}
+                    onBlur={() => {}}
+                    options={svgBinSelectOptions}
+                    searchable
+                    searchPlaceholder="Search bins..."
+                  />
+                )}
                 <SelectRow
                   label="UDT"
                   value={svgTemplateKey || svgTemplateOptions?.[0]?.value || ""}

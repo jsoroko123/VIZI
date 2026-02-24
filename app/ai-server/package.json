@@ -1,11 +1,12 @@
 {
-  "name": "mesora-ai-server",
+  "name": "mesora-app-server",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "start:watchdog": "node watchdog.js"
+    "start:watchdog": "node watchdog.js",
+    "app-server:watchdog": "node watchdog.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

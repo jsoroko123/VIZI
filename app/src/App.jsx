@@ -71,6 +71,7 @@ const VIEWPORT_ZOOM_CACHE_KEY = "vizi_zoom_by_viewport";
 const SVG_RAW_CACHE_MAX = 96;
 const LIVE_ALARM_BAR_H = 34;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
+const LIVE_EQUIPMENT_Z_BASE = 12000;
 const SCREEN_SIZE_PRESETS = [
   { value: "1280x720", label: "HD 1280x720", w: 1280, h: 720 },
   { value: "1600x900", label: "HD+ 1600x900", w: 1600, h: 900 },
@@ -434,6 +435,16 @@ function resolveOverlayEType(overlay) {
   return inferETypeFromFileKey(overlay?.sourceKey || overlay?.name || "");
 }
 
+function isMotorEType(value) {
+  const key = normalizeRouteTagKey(value);
+  return key === "motor" || key.startsWith("motor");
+}
+
+function isBinEType(value) {
+  const key = normalizeRouteTagKey(value);
+  return key === "bin" || key.startsWith("bin");
+}
+
 function isOverlayETypeAutoManaged(overlay) {
   if (!overlay || typeof overlay !== "object") return false;
   if (overlay.eTypeAuto === false) return false;
@@ -663,6 +674,8 @@ export default function App() {
   const svgMenuInputRef = useRef(null);
   const [duplicateOffset, setDuplicateOffset] = useState(20);
   const duplicateOffsetRef = useRef(20);
+  const mouseMoveRafRef = useRef(0);
+  const pendingMouseMoveRef = useRef(null);
   const [polyHandleMenu, setPolyHandleMenu] = useState(null);
 
   // SVG overlays (imported files): { id, name, inner, tx, ty, scale, fill, stroke, tagPath }
@@ -712,6 +725,8 @@ export default function App() {
   const liveEquipmentCardRefs = useRef(new Map());
   const liveEquipmentDragRef = useRef(null);
   const liveEquipmentModeToggleHintRef = useRef({});
+  const liveEquipmentZCounterRef = useRef(0);
+  const [liveEquipmentZById, setLiveEquipmentZById] = useState({});
   const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
   const [liveEquipmentDrawerOverlayId, setLiveEquipmentDrawerOverlayId] = useState("");
   const [liveEquipmentWriteBusyByOverlay, setLiveEquipmentWriteBusyByOverlay] = useState({});
@@ -777,6 +792,7 @@ export default function App() {
       pan: { x: 0, y: 0 },
       zoom: 1,
       showInLiveMenu: true,
+      routeId: "",
     },
   ]);
   const [activeScreenId, setActiveScreenId] = useState("screen-1");
@@ -784,6 +800,14 @@ export default function App() {
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(() => initialStoredProjectId);
   const [projectRouteRows, setProjectRouteRows] = useState([]);
+  const [projectEquipmentRows, setProjectEquipmentRows] = useState([]);
+  const [projectBinRows, setProjectBinRows] = useState([]);
+  const [projectBinTableName, setProjectBinTableName] = useState("");
+  const [projectProductRows, setProjectProductRows] = useState([]);
+  const [projectProductTableName, setProjectProductTableName] = useState("");
+  const [liveBinProductDraftByOverlay, setLiveBinProductDraftByOverlay] = useState({});
+  const [liveBinProductSaveBusyByOverlay, setLiveBinProductSaveBusyByOverlay] = useState({});
+  const [liveBinProductSaveErrorByOverlay, setLiveBinProductSaveErrorByOverlay] = useState({});
   const [projectStatus, setProjectStatus] = useState("");
   const [projectIdentityReady, setProjectIdentityReady] = useState(() => !initialStoredProjectId);
   const [lastProjectSaveAt, setLastProjectSaveAt] = useState("");
@@ -990,6 +1014,7 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let inFlight = false;
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     async function loadDbTablesForMenu() {
       const retries = [0, 250, 700];
@@ -1401,10 +1426,12 @@ export default function App() {
     loadTemplates();
     loadTagMappings();
     loadMappingSets();
-    const configId = setInterval(loadConfig, isPageVisible ? 5000 : 25000);
-    const templateId = setInterval(loadTemplates, isPageVisible ? 10000 : 30000);
-    const mappingId = setInterval(loadTagMappings, isPageVisible ? 10000 : 30000);
-    const mappingSetId = setInterval(loadMappingSets, isPageVisible ? 10000 : 30000);
+    const configPollMs = isPageVisible ? (isLiveMode ? 8000 : 12000) : 60000;
+    const metaPollMs = isPageVisible ? 20000 : 180000;
+    const configId = setInterval(loadConfig, configPollMs);
+    const templateId = setInterval(loadTemplates, metaPollMs);
+    const mappingId = setInterval(loadTagMappings, metaPollMs);
+    const mappingSetId = setInterval(loadMappingSets, metaPollMs);
     return () => {
       alive = false;
       clearInterval(configId);
@@ -1412,7 +1439,7 @@ export default function App() {
       clearInterval(mappingId);
       clearInterval(mappingSetId);
     };
-  }, []);
+  }, [isPageVisible, isLiveMode]);
 
   useEffect(() => {
     let alive = true;
@@ -1444,7 +1471,7 @@ export default function App() {
     pollStatus();
     const id = setInterval(
       pollStatus,
-      isPageVisible ? (isLiveMode ? 1200 : 3000) : 10000
+      isPageVisible ? (isLiveMode ? 2000 : 5000) : 15000
     );
     return () => {
       alive = false;
@@ -1464,17 +1491,28 @@ export default function App() {
         )
       );
       if (!sessionIds.length) return;
+      const staleIds = new Set();
       await Promise.all(
         sessionIds.map(async (id) => {
           try {
-            await fetch(`/api/ai/plc-debug-sessions/${encodeURIComponent(id)}`, {
+            const res = await fetch(`/api/ai/plc-debug-sessions/${encodeURIComponent(id)}`, {
               credentials: "include",
             });
+            if (res.status === 404) staleIds.add(id);
           } catch {
             // keepalive is best-effort only
           }
         })
       );
+      if (staleIds.size && alive) {
+        setProjectPlcs((prev) =>
+          (Array.isArray(prev) ? prev : []).map((plc) => {
+            const sessionId = String(plc?.debugSessionId || "").trim();
+            if (!sessionId || !staleIds.has(sessionId)) return plc;
+            return { ...plc, debugSessionId: "" };
+          })
+        );
+      }
     };
     void pollSessionKeepAlive();
     const id = setInterval(pollSessionKeepAlive, isPageVisible ? 12000 : 30000);
@@ -1535,7 +1573,7 @@ export default function App() {
     pollWidgetDbValues();
     const id = setInterval(
       pollWidgetDbValues,
-      isPageVisible ? (isLiveMode ? 3000 : 4500) : 10000
+      isPageVisible ? (isLiveMode ? 4000 : 7000) : 15000
     );
     return () => {
       alive = false;
@@ -2440,8 +2478,8 @@ export default function App() {
   const renderLiveMotorControls = (overlay, compact = false) => {
     const overlayId = String(overlay?.id || "").trim();
     if (!overlayId) return null;
-    const eType = String(resolveOverlayEType(overlay) || "").trim().toLowerCase();
-    if (eType !== "motor") return null;
+    const eType = String(resolveOverlayEType(overlay) || "").trim();
+    if (!isMotorEType(eType)) return null;
     const writeStateKeyFor = (action) =>
       `${overlayId}::${normalizeRouteTagKey(String(action || "command"))}`;
     const isActionBusy = (action) => liveEquipmentWriteBusyByOverlay?.[writeStateKeyFor(action)] === true;
@@ -2857,6 +2895,48 @@ export default function App() {
       rows.push({ key: label, value: value == null || value === "" ? "-" : String(value) });
     };
     if (eType) rows.push({ key: "UDT", value: eType });
+    const popupTagValueEnabled = (() => {
+      if (!path) return true;
+      const target = normalizeTagValue(path).toLowerCase();
+      if (!target) return true;
+      const tags = Array.isArray(opcTags) ? opcTags : [];
+      for (const t of tags) {
+        const topic = normalizeTagValue(t?.topic || "");
+        const group = normalizeTagValue(t?.groupName || "");
+        const name = normalizeTagValue(t?.name || "");
+        const memberPath = normalizeTagValue(t?.tagPath || name);
+        const candidates = [
+          topic && group && memberPath ? `${topic}.${group}.${memberPath}` : "",
+          topic && memberPath ? `${topic}.${memberPath}` : "",
+          group && memberPath ? `${group}.${memberPath}` : "",
+          memberPath,
+          name,
+        ]
+          .map((x) => normalizeTagValue(x))
+          .filter(Boolean);
+        const matched = candidates.some((c) => {
+          const cl = c.toLowerCase();
+          return cl === target || cl.endsWith(`.${target}`) || target.endsWith(`.${cl}`);
+        });
+        if (matched) return t?.showPopupTagValue !== false;
+      }
+      return true;
+    })();
+    if (path && popupTagValueEnabled) {
+      const resolvedPath =
+        findLiveTagPathMatch([path]) ||
+        findOpcConfiguredTagPathMatch(overlay, [path]) ||
+        "";
+      if (resolvedPath) {
+        const liveValue =
+          Object.prototype.hasOwnProperty.call(opcLiveValues || {}, resolvedPath)
+            ? opcLiveValues[resolvedPath]
+            : opcLiveValues?.[String(resolvedPath).toLowerCase()];
+        if (liveValue != null && liveValue !== "") {
+          pushRow("Tag Value", liveValue);
+        }
+      }
+    }
     const groupLive = path
       ? svgLiveValuesByGroupPath.get(path) || svgLiveValuesByGroupPath.get(path.toLowerCase()) || null
       : null;
@@ -2951,6 +3031,410 @@ export default function App() {
     if (!rawName) return "Equipment";
     return rawName.replace(/\.svg$/i, "").trim() || "Equipment";
   };
+  const getOverlayEquipmentDescription = (overlay) => {
+    const path = normalizeTagValue(overlay?.tagPath || "");
+    if (!path) return "";
+    const pathLower = path.toLowerCase();
+    const normalizeLoose = (value) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    const pathLoose = normalizeLoose(path);
+    const rows = Array.isArray(projectEquipmentRows) ? projectEquipmentRows : [];
+    for (const row of rows) {
+      const description = String(
+        row?.description ?? row?.Description ?? row?.equipment_description ?? row?.equipmentDescription ?? ""
+      ).trim();
+      if (!description) continue;
+      const keys = [
+        row?.tag_path,
+        row?.tagPath,
+        row?.svg_tag_path,
+        row?.svgTagPath,
+        row?.path,
+        row?.Path,
+        row?.name,
+        row?.Name,
+      ]
+        .map((v) => normalizeTagValue(v))
+        .filter(Boolean);
+      const matched = keys.some((k) => {
+        const kl = k.toLowerCase();
+        if (kl === pathLower || kl.endsWith(`.${pathLower}`) || pathLower.endsWith(`.${kl}`)) return true;
+        const loose = normalizeLoose(k);
+        return !!(loose && pathLoose && (loose.includes(pathLoose) || pathLoose.includes(loose)));
+      });
+      if (matched) return description;
+    }
+    return "";
+  };
+  const getProjectBinBindingKey = (row) => {
+    const id = String(
+      row?.id ??
+        row?.bin_id ??
+        row?.binId ??
+        row?.bin_index ??
+        row?.binIndex ??
+        row?.tbl_index ??
+        ""
+    ).trim();
+    if (id) return `id:${id}`;
+    const path = normalizeTagValue(
+      row?.tag_path ?? row?.tagPath ?? row?.svg_tag_path ?? row?.svgTagPath ?? row?.path ?? row?.Path ?? ""
+    ).toLowerCase();
+    if (path) return `path:${path}`;
+    const name = normalizeTagValue(row?.bin_name ?? row?.binName ?? row?.name ?? row?.Name ?? "").toLowerCase();
+    if (name) return `name:${name}`;
+    return "";
+  };
+  const getProjectBinRowId = (row) =>
+    String(
+      row?.id ?? row?.tbl_index ?? row?.bin_id ?? row?.binId ?? row?.bin_index ?? row?.binIndex ?? ""
+    ).trim();
+  const getProjectBinName = (row) =>
+    normalizeTagValue(row?.bin_name ?? row?.binName ?? row?.name ?? row?.Name ?? "");
+  const getProjectBinPath = (row) =>
+    normalizeTagValue(row?.tag_path ?? row?.tagPath ?? row?.svg_tag_path ?? row?.svgTagPath ?? row?.path ?? row?.Path ?? "");
+  const getProjectBinBindingCandidates = (raw) => {
+    const text = String(raw || "").trim();
+    if (!text) return [];
+    const lower = text.toLowerCase();
+    const out = new Set([lower]);
+    const normalizedText = normalizeTagValue(text).toLowerCase();
+    if (normalizedText) out.add(normalizedText);
+    const colon = lower.indexOf(":");
+    if (colon > 0) {
+      const prefix = lower.slice(0, colon).trim();
+      const rest = lower.slice(colon + 1).trim();
+      if ((prefix === "id" || prefix === "path" || prefix === "name") && rest) out.add(rest);
+    } else {
+      if (/^\d+$/.test(lower)) out.add(`id:${lower}`);
+      if (normalizedText) {
+        out.add(`path:${normalizedText}`);
+        out.add(`name:${normalizedText}`);
+      }
+      const paired = text.match(/^(.*?)\s*\((.+)\)\s*$/);
+      if (paired) {
+        const left = normalizeTagValue(paired[1]).toLowerCase();
+        const right = normalizeTagValue(paired[2]).toLowerCase();
+        if (left) {
+          out.add(left);
+          out.add(`name:${left}`);
+        }
+        if (right) {
+          out.add(right);
+          out.add(`path:${right}`);
+        }
+      }
+    }
+    return Array.from(out).filter(Boolean);
+  };
+  const getBinRowIdFromBindingKey = (raw) => {
+    const candidates = getProjectBinBindingCandidates(raw);
+    for (const token of candidates) {
+      const t = String(token || "").trim().toLowerCase();
+      if (!t) continue;
+      if (t.startsWith("id:")) {
+        const id = t.slice(3).trim();
+        if (id) return id;
+      }
+      if (/^\d+$/.test(t)) return t;
+    }
+    return "";
+  };
+  const getProjectRowId = (row) =>
+    String(
+      row?.id ??
+        row?.tbl_index ??
+        row?.bin_id ??
+        row?.binId ??
+        row?.bin_index ??
+        row?.binIndex ??
+        row?.product_id ??
+        row?.productId ??
+        ""
+    ).trim();
+  const getProjectProductName = (row) =>
+    normalizeTagValue(row?.name ?? row?.product_name ?? row?.productName ?? row?.Name ?? "") || "(Unnamed)";
+  const productNameById = useMemo(() => {
+    const map = new Map();
+    const rows = Array.isArray(projectProductRows) ? projectProductRows : [];
+    rows.forEach((row) => {
+      const id = getProjectRowId(row);
+      if (!id) return;
+      const name = getProjectProductName(row);
+      map.set(id, name);
+    });
+    return map;
+  }, [projectProductRows]);
+  const saveBinProductAssignment = async (overlay, row, nextProductIdRaw) => {
+    const overlayId = String(overlay?.id || "").trim();
+    const rowId = getProjectBinRowId(row) || getBinRowIdFromBindingKey(overlay?.binBindingKey);
+    const table = String(projectBinTableName || "bin").trim();
+    if (!overlayId || !rowId || !table) return;
+    const valueText = String(nextProductIdRaw || "").trim();
+    const numeric = /^\d+$/.test(valueText) ? Number(valueText) : valueText;
+    const value = valueText ? numeric : null;
+    setLiveBinProductSaveBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: true }));
+    setLiveBinProductSaveErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+    try {
+      const res = await fetch(`/api/db/${encodeURIComponent(table)}/${encodeURIComponent(rowId)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ product_id: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to assign product.");
+      const updatedRow = data?.row && typeof data.row === "object" ? data.row : null;
+      if (updatedRow) {
+        setProjectBinRows((prev) =>
+          (Array.isArray(prev) ? prev : []).map((r) => {
+            const id = getProjectBinRowId(r);
+            return id && id === rowId ? { ...r, ...updatedRow } : r;
+          })
+        );
+      }
+      setLiveBinProductDraftByOverlay((prev) => ({ ...(prev || {}), [overlayId]: valueText }));
+      toastSuccess("Bin product updated.");
+    } catch (err) {
+      const msg = String(err?.message || "Failed to assign product.");
+      setLiveBinProductSaveErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: msg }));
+      toastError(msg);
+    } finally {
+      setLiveBinProductSaveBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: false }));
+    }
+  };
+  const findProjectBinRowForOverlay = (overlay) => {
+    if (!overlay) return null;
+    const bindingCandidates = getProjectBinBindingCandidates(overlay?.binBindingKey);
+    if (bindingCandidates.length) {
+      const candidateSet = new Set(bindingCandidates);
+      const rows = Array.isArray(projectBinRows) ? projectBinRows : [];
+      const direct = rows.find((row) => {
+        const rowKey = String(getProjectBinBindingKey(row) || "").trim().toLowerCase();
+        const rowId = getProjectBinRowId(row).toLowerCase();
+        const rowPath = getProjectBinPath(row).toLowerCase();
+        const rowName = getProjectBinName(row).toLowerCase();
+        const rowKeys = [
+          rowKey,
+          rowId,
+          rowPath,
+          rowName,
+          rowId ? `id:${rowId}` : "",
+          rowPath ? `path:${rowPath}` : "",
+          rowName ? `name:${rowName}` : "",
+        ].filter(Boolean);
+        return rowKeys.some((k) => candidateSet.has(k));
+      });
+      if (direct) return direct;
+    }
+    const normalizeLoose = (value) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    const overlayTagPath = normalizeTagValue(overlay?.tagPath || "");
+    const overlayName = normalizeTagValue(getOverlayPopupTagName(overlay) || overlay?.name || "");
+    const pathLower = overlayTagPath.toLowerCase();
+    const nameLower = overlayName.toLowerCase();
+    const pathLoose = normalizeLoose(overlayTagPath);
+    const nameLoose = normalizeLoose(overlayName);
+    const rows = Array.isArray(projectBinRows) ? projectBinRows : [];
+    let best = null;
+    let bestScore = -1;
+    for (const row of rows) {
+      const fields = [
+        row?.tag_path,
+        row?.tagPath,
+        row?.svg_tag_path,
+        row?.svgTagPath,
+        row?.bin_name,
+        row?.binName,
+        row?.name,
+        row?.Name,
+        row?.path,
+        row?.Path,
+      ]
+        .map((v) => normalizeTagValue(v))
+        .filter(Boolean);
+      if (!fields.length) continue;
+      let score = 0;
+      for (const raw of fields) {
+        const lower = raw.toLowerCase();
+        const loose = normalizeLoose(raw);
+        if (pathLower && (lower === pathLower || lower.endsWith(`.${pathLower}`) || pathLower.endsWith(`.${lower}`))) score = Math.max(score, 100);
+        if (nameLower && lower === nameLower) score = Math.max(score, 90);
+        if (pathLoose && loose && (loose === pathLoose || loose.includes(pathLoose) || pathLoose.includes(loose))) score = Math.max(score, 70);
+        if (nameLoose && loose && (loose === nameLoose || loose.includes(nameLoose) || nameLoose.includes(loose))) score = Math.max(score, 60);
+      }
+      if (score > bestScore) {
+        best = row;
+        bestScore = score;
+      }
+    }
+    return bestScore > 0 ? best : null;
+  };
+  const getOverlayBinProductName = (overlay) => {
+    const row = findProjectBinRowForOverlay(overlay);
+    if (!row) return "";
+    const productId = normalizeTagValue(
+      row?.product_id ?? row?.productId ?? row?.product_index ?? row?.productIndex ?? ""
+    );
+    if (productId) {
+      const fromMap = String(productNameById.get(productId) || "").trim();
+      if (fromMap) return fromMap;
+    }
+    return normalizeTagValue(
+      row?.product_name ?? row?.productName ?? row?.product ?? row?.Product ?? row?.material ?? row?.Material ?? ""
+    );
+  };
+  const getOverlayPopupTitle = (overlay) => {
+    const eType = String(resolveOverlayEType(overlay) || "").trim();
+    if (isBinEType(eType)) {
+      const row = findProjectBinRowForOverlay(overlay);
+      const name = getProjectBinName(row);
+      if (name) return name;
+    }
+    return getOverlayPopupTagName(overlay);
+  };
+  const getOverlayPopupSubline = (overlay) => {
+    const eType = String(resolveOverlayEType(overlay) || "").trim();
+    if (!isBinEType(eType)) return "";
+    const row = findProjectBinRowForOverlay(overlay);
+    return getProjectBinPath(row);
+  };
+  const renderLiveBinDetails = (overlay, compact = false) => {
+    const eType = String(resolveOverlayEType(overlay) || "").trim();
+    if (!isBinEType(eType)) return null;
+    const row = findProjectBinRowForOverlay(overlay);
+    const readField = (keys) => {
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(row || {}, key)) {
+          const value = row?.[key];
+          if (value != null && String(value).trim() !== "") return String(value).trim();
+        }
+      }
+      return "";
+    };
+    const overlayId = String(overlay?.id || "").trim();
+    const name = readField(["bin_name", "binName", "name", "Name"]) || "-";
+    const tagPath = readField(["tag_path", "tagPath", "svg_tag_path", "svgTagPath", "path", "Path"]);
+    const material = readField(["material", "Material", "product", "Product", "product_name", "productName"]);
+    const currentProductName = String(getOverlayBinProductName(overlay) || material || "-");
+    const capacity = readField(["capacity", "Capacity", "max_capacity", "maxCapacity", "max_qty", "maxQty"]);
+    const level = readField(["level", "Level", "current_level", "currentLevel", "qty", "quantity", "Quantity"]);
+    const status = readField(["status", "Status", "state", "State"]);
+    const rows = [
+      { key: "Bin", value: name },
+      { key: "Tag Path", value: tagPath || "-" },
+      { key: "Product", value: currentProductName || "-" },
+      { key: "Level", value: level || "-" },
+      { key: "Capacity", value: capacity || "-" },
+      { key: "Status", value: status || "-" },
+    ];
+    const productOptions = (Array.isArray(projectProductRows) ? projectProductRows : [])
+      .map((p) => ({ id: getProjectRowId(p), name: getProjectProductName(p) }))
+      .filter((p) => p.id);
+    const currentProductId = normalizeTagValue(
+      row?.product_id ?? row?.productId ?? row?.product_index ?? row?.productIndex ?? ""
+    );
+    const draftProductId = String(liveBinProductDraftByOverlay?.[overlayId] ?? currentProductId ?? "").trim();
+    const saveBusy = liveBinProductSaveBusyByOverlay?.[overlayId] === true;
+    const saveError = String(liveBinProductSaveErrorByOverlay?.[overlayId] || "").trim();
+    const fallbackRowId = getBinRowIdFromBindingKey(overlay?.binBindingKey);
+    const canSave = !!(getProjectBinRowId(row) || fallbackRowId);
+    return (
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: compact ? 5 : 6 }}>
+        <div
+          style={{
+            fontSize: compact ? 10 : 11,
+            fontWeight: 700,
+            marginBottom: compact ? 4 : 6,
+            color: "var(--text)",
+          }}
+        >
+          Bin Details
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr auto",
+            columnGap: compact ? 8 : 10,
+            rowGap: compact ? 3 : 4,
+            alignContent: "start",
+            alignItems: "center",
+            fontSize: compact ? 10 : 11,
+          }}
+        >
+          {rows.map((entry) => (
+            <Fragment key={`live-bin-detail-${String(overlay?.id || "")}-${entry.key}`}>
+              <div style={{ color: "var(--text-muted)" }}>{entry.key}</div>
+              <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{entry.value}</div>
+            </Fragment>
+          ))}
+        </div>
+        <div style={{ display: "grid", gap: 6, marginTop: compact ? 6 : 8 }}>
+          <div style={{ fontSize: compact ? 10 : 11, color: "var(--text-muted)" }}>Assign Product</div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <select
+              value={draftProductId}
+              onChange={(e) => {
+                const value = String(e.target.value || "");
+                setLiveBinProductDraftByOverlay((prev) => ({ ...(prev || {}), [overlayId]: value }));
+              }}
+              style={{
+                flex: "1 1 auto",
+                minWidth: 0,
+                height: compact ? 24 : 26,
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 7,
+                padding: "0 8px",
+                fontSize: compact ? 10 : 11,
+              }}
+              disabled={saveBusy}
+            >
+              <option value="">None</option>
+              {productOptions.map((opt) => (
+                <option key={`bin-product-opt-${opt.id}`} value={opt.id}>
+                  {opt.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() =>
+                saveBinProductAssignment(
+                  overlay,
+                  row || (fallbackRowId ? { id: fallbackRowId, tbl_index: fallbackRowId } : null),
+                  draftProductId
+                )
+              }
+              disabled={!canSave || saveBusy}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--accent)",
+                color: "var(--accent-text)",
+                borderRadius: 7,
+                height: compact ? 24 : 26,
+                minWidth: compact ? 54 : 60,
+                padding: compact ? "0 8px" : "0 10px",
+                fontSize: compact ? 10 : 11,
+                fontWeight: 700,
+                cursor: !canSave || saveBusy ? "not-allowed" : "pointer",
+                opacity: !canSave || saveBusy ? 0.7 : 1,
+              }}
+            >
+              {saveBusy ? "Saving" : "Save"}
+            </button>
+          </div>
+          {saveError ? (
+            <div style={{ fontSize: compact ? 9 : 10, color: "var(--danger)" }}>{saveError}</div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
   const liveEquipmentOverlays = useMemo(() => {
     const byId = new Map((svgOverlays || []).map((o) => [String(o.id || ""), o]));
     return (liveEquipmentOverlayIds || [])
@@ -2961,6 +3445,35 @@ export default function App() {
         details: buildLiveEquipmentDetails(overlay),
       }));
   }, [svgOverlays, liveEquipmentOverlayIds, svgLiveValuesByGroupPath, opcLiveValues, opcTags]);
+  const binProductLabelByOverlayId = useMemo(() => {
+    const out = {};
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      const eType = String(resolveOverlayEType(overlay) || "").trim();
+      if (!isBinEType(eType)) return;
+      const label = String(getOverlayBinProductName(overlay) || "").trim();
+      if (label) out[id] = label;
+    });
+    return out;
+  }, [svgOverlays, projectBinRows, productNameById]);
+  const svgBinBindingOptions = useMemo(() => {
+    const options = [{ value: "", label: "Auto-match (Tag Path/Name)" }];
+    const seen = new Set();
+    const rows = Array.isArray(projectBinRows) ? projectBinRows : [];
+    rows.forEach((row) => {
+      const value = getProjectBinBindingKey(row);
+      if (!value) return;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const name = normalizeTagValue(row?.bin_name ?? row?.binName ?? row?.name ?? row?.Name ?? "") || "(Unnamed)";
+      const path = normalizeTagValue(row?.tag_path ?? row?.tagPath ?? row?.svg_tag_path ?? row?.svgTagPath ?? "");
+      const label = path ? `${name} (${path})` : name;
+      options.push({ value, label, group: "Bin" });
+    });
+    return options;
+  }, [projectBinRows]);
   const isLiveEquipmentLeftDockMode = useMemo(
     () => !!String(liveEquipmentDrawerOverlayId || "").trim(),
     [liveEquipmentDrawerOverlayId]
@@ -3728,7 +4241,7 @@ export default function App() {
       }
       try {
         const pid = encodeURIComponent(normalizeTagValue(activeProjectId));
-        const res = await fetch(`/api/db/routes?limit=2000&project_id=${pid}`);
+        const res = await fetch(`/api/db/route?limit=2000&project_id=${pid}`);
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || "Failed to load routes.");
         const rows = Array.isArray(data?.rows) ? data.rows : [];
@@ -3738,7 +4251,7 @@ export default function App() {
         }
 
         // Fallback for schemas/endpoints that do not support project_id filtering.
-        const allRes = await fetch("/api/db/routes?limit=2000");
+        const allRes = await fetch("/api/db/route?limit=2000");
         const allData = await allRes.json();
         if (!allRes.ok) throw new Error(allData?.error || "Failed to load routes.");
         const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
@@ -3753,6 +4266,249 @@ export default function App() {
       alive = false;
     };
   }, [activeProjectId]);
+
+  useEffect(() => {
+    let alive = true;
+
+    const filterRowsForActiveProject = (rows) => {
+      const list = Array.isArray(rows) ? rows : [];
+      const pid = normalizeTagValue(activeProjectId);
+      if (!pid) return list;
+      const hasProjectField = list.some(
+        (row) =>
+          row &&
+          typeof row === "object" &&
+          (Object.prototype.hasOwnProperty.call(row, "project_id") ||
+            Object.prototype.hasOwnProperty.call(row, "projectId"))
+      );
+      if (!hasProjectField) return list;
+      const scoped = list.filter((row) => {
+        const rowPid = normalizeTagValue(row?.project_id ?? row?.projectId ?? "");
+        return rowPid === pid;
+      });
+      if (scoped.length) return scoped;
+      const globalRows = list.filter((row) => {
+        const rowPid = normalizeTagValue(row?.project_id ?? row?.projectId ?? "");
+        return !rowPid;
+      });
+      return globalRows.length ? globalRows : list;
+    };
+
+    async function loadProjectBins() {
+      if (!activeProjectId) {
+        if (alive) setProjectBinRows([]);
+        if (alive) setProjectBinTableName("");
+        return;
+      }
+      const pid = encodeURIComponent(normalizeTagValue(activeProjectId));
+      const query = `?limit=2000&project_id=${pid}`;
+      const candidateTables = ["bin"];
+      for (const tableName of candidateTables) {
+        try {
+          const res = await fetch(`/api/db/${tableName}${query}`);
+          const data = await res.json();
+          if (!res.ok) continue;
+          const rows = Array.isArray(data?.rows) ? data.rows : [];
+          if (rows.length > 0) {
+            if (alive) {
+              setProjectBinRows(filterRowsForActiveProject(rows));
+              setProjectBinTableName(tableName);
+            }
+            return;
+          }
+          const allRes = await fetch(`/api/db/${tableName}?limit=2000`);
+          const allData = await allRes.json();
+          if (!allRes.ok) continue;
+          const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
+          if (allRows.length > 0) {
+            if (alive) {
+              setProjectBinRows(filterRowsForActiveProject(allRows));
+              setProjectBinTableName(tableName);
+            }
+            return;
+          }
+        } catch {
+          // try fallback table name
+        }
+      }
+      if (alive) {
+        setProjectBinRows([]);
+        setProjectBinTableName("");
+      }
+    }
+
+    const refreshProjectBins = async () => {
+      if (inFlight || !alive) return;
+      inFlight = true;
+      try {
+        await loadProjectBins();
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refreshProjectBins();
+    const pollMs = isPageVisible ? (isLiveMode ? 2500 : 6000) : 12000;
+    const id = window.setInterval(() => {
+      void refreshProjectBins();
+    }, pollMs);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [activeProjectId, isLiveMode, isPageVisible]);
+
+  useEffect(() => {
+    let alive = true;
+    let inFlight = false;
+
+    const filterRowsForActiveProject = (rows) => {
+      const list = Array.isArray(rows) ? rows : [];
+      const pid = normalizeTagValue(activeProjectId);
+      if (!pid) return list;
+      const hasProjectField = list.some(
+        (row) =>
+          row &&
+          typeof row === "object" &&
+          (Object.prototype.hasOwnProperty.call(row, "project_id") ||
+            Object.prototype.hasOwnProperty.call(row, "projectId"))
+      );
+      if (!hasProjectField) return list;
+      return list.filter((row) => {
+        const rowPid = normalizeTagValue(row?.project_id ?? row?.projectId ?? "");
+        return rowPid === pid;
+      });
+    };
+
+    async function loadProjectProducts() {
+      const pidRaw = normalizeTagValue(activeProjectId);
+      const pid = encodeURIComponent(pidRaw);
+      const scopedQuery = `?limit=2000&project_id=${pid}`;
+      const unscopedQuery = `?limit=2000`;
+      const candidateTables = ["product"];
+      for (const tableName of candidateTables) {
+        try {
+          const res = await fetch(`/api/db/${tableName}${pidRaw ? scopedQuery : unscopedQuery}`);
+          const data = await res.json();
+          if (!res.ok) continue;
+          const rows = Array.isArray(data?.rows) ? data.rows : [];
+          if (rows.length > 0) {
+            if (alive) {
+              setProjectProductRows(filterRowsForActiveProject(rows));
+              setProjectProductTableName(tableName);
+            }
+            return;
+          }
+          const allRes = await fetch(`/api/db/${tableName}?limit=2000`);
+          const allData = await allRes.json();
+          if (!allRes.ok) continue;
+          const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
+          if (allRows.length > 0) {
+            if (alive) {
+              setProjectProductRows(filterRowsForActiveProject(allRows));
+              setProjectProductTableName(tableName);
+            }
+            return;
+          }
+        } catch {
+          // try fallback table name
+        }
+      }
+      if (alive) {
+        setProjectProductRows([]);
+        setProjectProductTableName("");
+      }
+    }
+
+    const refreshProjectProducts = async () => {
+      if (inFlight || !alive) return;
+      inFlight = true;
+      try {
+        await loadProjectProducts();
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refreshProjectProducts();
+    const pollMs = isPageVisible ? (isLiveMode ? 2500 : 6000) : 12000;
+    const id = window.setInterval(() => {
+      void refreshProjectProducts();
+    }, pollMs);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [activeProjectId, isLiveMode, isPageVisible]);
+
+  useEffect(() => {
+    let alive = true;
+    let inFlight = false;
+
+    const filterRowsForActiveProject = (rows) => {
+      const list = Array.isArray(rows) ? rows : [];
+      const pid = normalizeTagValue(activeProjectId);
+      if (!pid) return list;
+      const hasProjectField = list.some(
+        (row) =>
+          row &&
+          typeof row === "object" &&
+          (Object.prototype.hasOwnProperty.call(row, "project_id") ||
+            Object.prototype.hasOwnProperty.call(row, "projectId"))
+      );
+      if (!hasProjectField) return list;
+      return list.filter((row) => {
+        const rowPid = normalizeTagValue(row?.project_id ?? row?.projectId ?? "");
+        return rowPid === pid;
+      });
+    };
+
+    async function loadProjectEquipment() {
+      if (!activeProjectId) {
+        if (alive) setProjectEquipmentRows([]);
+        return;
+      }
+      try {
+        const pid = encodeURIComponent(normalizeTagValue(activeProjectId));
+        const res = await fetch(`/api/db/equipment?limit=2000&project_id=${pid}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load equipment.");
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        if (rows.length > 0) {
+          if (alive) setProjectEquipmentRows(filterRowsForActiveProject(rows));
+          return;
+        }
+
+        const allRes = await fetch("/api/db/equipment?limit=2000");
+        const allData = await allRes.json();
+        if (!allRes.ok) throw new Error(allData?.error || "Failed to load equipment.");
+        const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
+        if (alive) setProjectEquipmentRows(filterRowsForActiveProject(allRows));
+      } catch {
+        if (alive) setProjectEquipmentRows([]);
+      }
+    }
+
+    const refreshProjectEquipment = async () => {
+      if (inFlight || !alive) return;
+      inFlight = true;
+      try {
+        await loadProjectEquipment();
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refreshProjectEquipment();
+    const pollMs = isPageVisible ? (isLiveMode ? 2500 : 6000) : 12000;
+    const id = window.setInterval(() => {
+      void refreshProjectEquipment();
+    }, pollMs);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [activeProjectId, isLiveMode, isPageVisible]);
 
   useEffect(() => {
     if (activeProjectId) {
@@ -4253,7 +5009,7 @@ function flushScheduledProjectSave() {
       }
     }
     pollCursors();
-    const id = setInterval(pollCursors, isPageVisible ? 2500 : 8000);
+    const id = setInterval(pollCursors, isPageVisible ? 5000 : 12000);
     return () => {
       alive = false;
       clearInterval(id);
@@ -8317,6 +9073,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const [hudFields, setHudFields] = useState({
     id: "",
     tagPath: "",
+    binBindingKey: "",
     eType: "",
     fill: DEFAULT_FILL,
     stroke: DEFAULT_STROKE,
@@ -8361,6 +9118,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setHudFields({
         id: "",
         tagPath: "",
+        binBindingKey: "",
         eType: "",
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
@@ -8448,6 +9206,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         setHudFields({
           id: idText,
           tagPath,
+          binBindingKey: String(o.binBindingKey || ""),
           eType: String(o.eType || resolveOverlayEType(o) || ""),
           fill,
           stroke,
@@ -8505,6 +9264,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         setHudFields({
           id: idText,
           tagPath,
+          binBindingKey: "",
           eType: "",
           fill,
           stroke,
@@ -8557,6 +9317,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setHudFields({
       id: idText,
       tagPath,
+      binBindingKey: "",
       eType: "",
       fill,
       stroke,
@@ -9136,6 +9897,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setLiveEquipmentOverlayIds([]);
     setLiveEquipmentDockSideById({});
     setLiveEquipmentFloatingById({});
+    setLiveEquipmentZById({});
+    liveEquipmentZCounterRef.current = 0;
     setLiveEquipmentDrawerOverlayId("");
   }, [isLiveMode]);
 
@@ -9222,6 +9985,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     e.stopPropagation();
     const nextId = String(id || "").trim();
     if (!nextId) return;
+    bringLiveEquipmentToFront(nextId);
     const viewportRect =
       svgRef.current?.closest?.(".vizi-scroll")?.getBoundingClientRect?.() ||
       svgRef.current?.getBoundingClientRect?.() ||
@@ -9295,6 +10059,24 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
       return changed ? next : map;
     });
+    setLiveEquipmentZById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      const valid = new Set(
+        (liveEquipmentOverlayIds || [])
+          .map((id) => String(id || "").trim())
+          .filter(Boolean)
+      );
+      let changed = false;
+      const next = {};
+      for (const [id, z] of Object.entries(map)) {
+        if (!valid.has(id)) {
+          changed = true;
+          continue;
+        }
+        next[id] = Number(z) || 0;
+      }
+      return changed ? next : map;
+    });
     if (String(liveEquipmentDrawerOverlayId || "").trim()) {
       const drawerOverlay = (svgOverlays || []).find(
         (o) => String(o?.id || "") === String(liveEquipmentDrawerOverlayId || "")
@@ -9320,6 +10102,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return next;
     });
     setLiveEquipmentFloatingById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      if (!Object.prototype.hasOwnProperty.call(map, nextId)) return map;
+      const next = { ...map };
+      delete next[nextId];
+      return next;
+    });
+    setLiveEquipmentZById((prev) => {
       const map = prev && typeof prev === "object" ? prev : {};
       if (!Object.prototype.hasOwnProperty.call(map, nextId)) return map;
       const next = { ...map };
@@ -9374,6 +10163,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (e.button !== 0) return;
     const nextId = String(id || "").trim();
     if (!nextId) return;
+    bringLiveEquipmentToFront(nextId);
     const pos = liveEquipmentFloatingById?.[nextId];
     if (!pos) return;
     liveEquipmentDragRef.current = {
@@ -9395,6 +10185,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
     const nextId = String(id || "").trim();
     if (!nextId) return;
+    bringLiveEquipmentToFront(nextId);
     const existing = liveEquipmentFloatingById?.[nextId];
     let originX = Number(existing?.x);
     let originY = Number(existing?.y);
@@ -9465,6 +10256,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
     liveEquipmentDockScrollRafRef.current = window.requestAnimationFrame(() => {
       liveEquipmentDockScrollRafRef.current = 0;
       setLiveEquipmentDockTick((v) => v + 1);
+    });
+  }
+
+  function bringLiveEquipmentToFront(id) {
+    const nextId = String(id || "").trim();
+    if (!nextId) return;
+    liveEquipmentZCounterRef.current += 1;
+    const nextZ = liveEquipmentZCounterRef.current;
+    setLiveEquipmentZById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      if (Number(map[nextId] || 0) === nextZ) return map;
+      return { ...map, [nextId]: nextZ };
     });
   }
 
@@ -9767,7 +10570,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
   }
 
-  function onMouseMove(e) {
+  function onMouseMoveImmediate(e) {
     const maybeAutoPanDuringDrag = (evt) => {
       const el = svgRef.current;
       if (!el) return false;
@@ -10097,11 +10900,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const dy = pointer.y - dragAll.startWorld.y;
       const maxX = Math.max(0, Number(vbW) || 0);
       const maxY = Math.max(0, Number(vbH) || 0);
+      const dragShapeById = new Map(
+        (Array.isArray(dragAll.shapes) ? dragAll.shapes : []).map((item) => [String(item?.id || ""), item])
+      );
+      const dragOverlayById = new Map(
+        (Array.isArray(dragAll.overlays) ? dragAll.overlays : []).map((item) => [String(item?.id || ""), item])
+      );
 
-      if (dragAll.shapes?.length) {
+      if (dragShapeById.size) {
         setShapes((prev) => {
           const next = prev.map((s) => {
-            const rec = dragAll.shapes.find((x) => x.id === s.id);
+            const rec = dragShapeById.get(String(s?.id || ""));
             if (!rec) return s;
 
             if (rec.kind === "text" && s.type === "text") {
@@ -10156,10 +10965,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         });
       }
 
-    if (dragAll.overlays?.length) {
+    if (dragOverlayById.size) {
       let dynamicCanvasW = maxX;
       for (const o of svgOverlays) {
-        const rec = dragAll.overlays.find((x) => x.id === o.id);
+        const rec = dragOverlayById.get(String(o?.id || ""));
         if (!rec) continue;
         const bb = o?.bbox || overlayLocalBBox(o.id);
         if (!bb) continue;
@@ -10186,7 +10995,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
       setSvgOverlays((prev) => {
         const next = prev.map((o) => {
-          const rec = dragAll.overlays.find((x) => x.id === o.id);
+          const rec = dragOverlayById.get(String(o?.id || ""));
           if (!rec) return o;
           const bb = o?.bbox || overlayLocalBBox(o.id);
           const sx = overlayScaleX(o);
@@ -10242,6 +11051,24 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
+  }
+
+  function onMouseMove(e) {
+    const eventLike = {
+      clientX: Number(e?.clientX) || 0,
+      clientY: Number(e?.clientY) || 0,
+      altKey: !!e?.altKey,
+      shiftKey: !!e?.shiftKey,
+    };
+    pendingMouseMoveRef.current = eventLike;
+    if (mouseMoveRafRef.current) return;
+    mouseMoveRafRef.current = window.requestAnimationFrame(() => {
+      mouseMoveRafRef.current = 0;
+      const nextEvent = pendingMouseMoveRef.current;
+      pendingMouseMoveRef.current = null;
+      if (!nextEvent) return;
+      onMouseMoveImmediate(nextEvent);
+    });
   }
 
   function onMouseUp() {
@@ -10364,6 +11191,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
       window.removeEventListener("blur", handleUp);
     };
   }, [dragAll, dragHandle, overlayResize, shapeResize, marquee, canvasPanDrag, drawing, onMouseMove, onMouseUp]);
+
+  useEffect(() => {
+    return () => {
+      if (mouseMoveRafRef.current) {
+        window.cancelAnimationFrame(mouseMoveRafRef.current);
+        mouseMoveRafRef.current = 0;
+      }
+      pendingMouseMoveRef.current = null;
+    };
+  }, []);
 
 
 
@@ -11228,6 +12065,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
+  function applySingleBinBinding(nextRaw) {
+    if (!isSingle || !singleId || singleKind !== "SVG") return;
+    const v = String(nextRaw ?? "").trim();
+    setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, binBindingKey: v } : o)));
+    scheduleProjectAutoSave();
+  }
+
   function finishCircleDrawing(circleId) {
     if (!circleId) return;
     setShapes((prev) =>
@@ -11909,6 +12753,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         setHudFields={setHudFields}
         applySingleId={applySingleId}
         applySingleTagPath={applySingleTagPath}
+        applySingleBinBinding={applySingleBinBinding}
         applySingleEType={applySingleEType}
         applySingleFill={applySingleFill}
         applySingleStroke={applySingleStroke}
@@ -11926,6 +12771,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         applySingleWidgetSettings={applySingleWidgetSettings}
         opcTags={opcTags}
         svgETypeOptions={svgETypeOptions}
+        svgBinOptions={svgBinBindingOptions}
         duplicateOffset={duplicateOffset}
         setDuplicateOffset={setDuplicateOffset}
         convertPolylinesToSvg={convertSelectedPolylinesToSvg}
@@ -12038,6 +12884,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         opcLiveValues={opcLiveValues}
         opcTags={opcTags}
         widgetDbValues={widgetDbValues}
+        binProductLabelByOverlayId={binProductLabelByOverlayId}
         onWidgetDurationPresetChange={onWidgetDurationPresetChange}
         hiddenTagBubbleIds={hiddenTagBubbleIds}
         onHideTagBubble={(id) =>
@@ -12054,7 +12901,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             top: TOP_BAR_H + liveAlarmBarOffset + 8,
             bottom: 8,
             width: liveEquipmentDrawerWidthPx - 16,
-            zIndex: 208,
+            zIndex: LIVE_EQUIPMENT_Z_BASE + 50,
             pointerEvents: "auto",
             border: "1px solid var(--border)",
             borderRadius: 12,
@@ -12125,8 +12972,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
-                    {getOverlayPopupTagName(overlay)}
+                  <div style={{ display: "grid", gap: 2 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+                      {getOverlayPopupTitle(overlay)}
+                    </div>
+                    {getOverlayPopupSubline(overlay) ? (
+                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                        {getOverlayPopupSubline(overlay)}
+                      </div>
+                    ) : null}
                   </div>
                   <button
                     onClick={() => closeLiveEquipmentCard(overlay?.id)}
@@ -12150,13 +13004,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </button>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  Tag Name: {getOverlayPopupTagName(overlay)}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  eType: {String(resolveOverlayEType(overlay) || "-")}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  Overlay ID: {String(overlay?.id || "-")}
+                  Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6, color: "var(--text)" }}>Live Data</div>
@@ -12176,6 +13024,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   )}
                 </div>
                 {renderLiveMotorControls(overlay, false)}
+                {renderLiveBinDetails(overlay, false)}
               </div>
             ))}
           </div>
@@ -12212,7 +13061,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   position: "fixed",
                   left: projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx + 10,
                   right: 10,
-                  zIndex: 205,
+                  zIndex: LIVE_EQUIPMENT_Z_BASE,
                   pointerEvents: "none",
                   ...lane.style,
                 }}
@@ -12261,11 +13110,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, cursor: "move" }}
                   onMouseDown={(e) => beginLiveEquipmentCardMove(e, overlay.id)}
                 >
-                  <div
-                    style={{ fontSize: 12, fontWeight: 800, color: "var(--text)", cursor: "move" }}
-                    title="Drag to move"
-                  >
-                    {getOverlayPopupTagName(overlay)}
+                  <div style={{ display: "grid", gap: 2 }}>
+                    <div
+                      style={{ fontSize: 12, fontWeight: 800, color: "var(--text)", cursor: "move" }}
+                      title="Drag to move"
+                    >
+                      {getOverlayPopupTitle(overlay)}
+                    </div>
+                    {getOverlayPopupSubline(overlay) ? (
+                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                        {getOverlayPopupSubline(overlay)}
+                      </div>
+                    ) : null}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <button
@@ -12309,13 +13165,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </div>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  Tag Name: {getOverlayPopupTagName(overlay)}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  eType: {String(resolveOverlayEType(overlay) || "-")}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  Overlay ID: {String(overlay.id || "-")}
+                  Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, color: "var(--text)" }}>Live Data</div>
@@ -12333,6 +13183,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   )}
                 </div>
                 {renderLiveMotorControls(overlay, true)}
+                {renderLiveBinDetails(overlay, true)}
                     </div>
                   ))}
                 </div>
@@ -12366,18 +13217,28 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   display: "grid",
                   gap: 6,
                   alignContent: "start",
-                  zIndex: 206,
+                  zIndex: LIVE_EQUIPMENT_Z_BASE + 100 + Number(liveEquipmentZById?.[id] || 0),
                   pointerEvents: "auto",
                 }}
                 className="vizi-scroll"
-                onMouseDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => {
+                  bringLiveEquipmentToFront(id);
+                  e.stopPropagation();
+                }}
               >
                 <div
                   style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, cursor: "move" }}
                   onMouseDown={(e) => beginLiveEquipmentCardMove(e, id)}
                 >
-                  <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
-                    {getOverlayPopupTagName(overlay)}
+                  <div style={{ display: "grid", gap: 2 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+                      {getOverlayPopupTitle(overlay)}
+                    </div>
+                    {getOverlayPopupSubline(overlay) ? (
+                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                        {getOverlayPopupSubline(overlay)}
+                      </div>
+                    ) : null}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <button
@@ -12401,7 +13262,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <path
-                          d="M12 4v9m0 0-3-3m3 3 3-3M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"
+                          d="M4 5h16v14H4zM9 5v14M13 12h5M16 9l3 3-3 3"
                           stroke="currentColor"
                           strokeWidth="2"
                           strokeLinecap="round"
@@ -12450,13 +13311,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </div>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  Tag Name: {getOverlayPopupTagName(overlay)}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  eType: {String(resolveOverlayEType(overlay) || "-")}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  Overlay ID: {String(overlay.id || "-")}
+                  Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, color: "var(--text)" }}>Live Data</div>
@@ -12474,6 +13329,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   )}
                 </div>
                 {renderLiveMotorControls(overlay, true)}
+                {renderLiveBinDetails(overlay, true)}
               </div>
             );
           })}
@@ -13700,6 +14556,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
                       >
                         <button
                           data-preserve-style="true"
+                          onClick={() => setDatabaseTab("designer")}
+                          style={drawerTabButtonStyle(databaseTab === "designer")}
+                          title="Designer"
+                        >
+                          Designer
+                        </button>
+                        <button
+                          data-preserve-style="true"
                           onClick={() => setDatabaseTab("data")}
                           style={drawerTabButtonStyle(databaseTab === "data")}
                           title="Data"
@@ -13729,14 +14593,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
                           title="Diagnostics"
                         >
                           Diagnostics
-                        </button>
-                        <button
-                          data-preserve-style="true"
-                          onClick={() => setDatabaseTab("designer")}
-                          style={drawerTabButtonStyle(databaseTab === "designer")}
-                          title="Designer"
-                        >
-                          Designer
                         </button>
                       </div>
                     ) : null}

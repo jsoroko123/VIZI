@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import defaultReportLogo from "../assets/Images/logo.png";
+import SearchableSelect from "./SearchableSelect";
 import { toastError, toastSuccess } from "../utils/toast";
 import "./ReportDesigner.css";
 
@@ -219,6 +220,7 @@ export default function ReportDesigner({
   const [datasets, setDatasets] = useState([]);
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [datasetDraftName, setDatasetDraftName] = useState("");
+  const [datasetEditing, setDatasetEditing] = useState(false);
   const [selectedTextDatasetId, setSelectedTextDatasetId] = useState("");
   const [selectedTextDatasetColumn, setSelectedTextDatasetColumn] = useState("");
   const [textWidgets, setTextWidgets] = useState([]);
@@ -288,6 +290,41 @@ export default function ReportDesigner({
   const compactDatasetLayout = datasetOnly;
   const datasetGap = compactDatasetLayout ? 10 : 8;
   const datasetControlPadding = compactDatasetLayout ? "8px 10px" : "8px 10px";
+  const datasetToolbarButtonStyle = {
+    border: "1px solid var(--border)",
+    background: "var(--bg-soft)",
+    color: "var(--text)",
+    borderRadius: 8,
+    width: 32,
+    minWidth: 32,
+    height: 30,
+    padding: 0,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+  };
+  const datasetToolbarPrimaryButtonStyle = {
+    ...datasetToolbarButtonStyle,
+    border: "1px solid #12b76a",
+    background: "#12b76a",
+    color: "white",
+  };
+  const datasetToolbarDangerButtonStyle = {
+    ...datasetToolbarButtonStyle,
+    border: "1px solid #f04438",
+    background: "#f04438",
+    color: "white",
+  };
+  const datasetToolbarDisabledStyle = {
+    opacity: 0.55,
+    cursor: "not-allowed",
+  };
+  const datasetReadOnly = Boolean(selectedDatasetId) && !datasetEditing;
+  const canDatasetEdit = Boolean(selectedDatasetId) && !datasetEditing;
+  const canDatasetSave = !running && (!selectedDatasetId || datasetEditing);
+  const canDatasetCancel = datasetEditing;
+  const canDatasetDelete = Boolean(selectedDatasetId) && !datasetEditing;
 
   const activeReport = useMemo(
     () => reports.find((r) => String(r.id) === String(activeReportId || "")) || null,
@@ -330,6 +367,37 @@ export default function ReportDesigner({
     return selectedTextDataset.columns.map((c) => String(c)).filter(Boolean);
   }, [selectedTextDataset]);
 
+  function applyDatasetToDraft(dataset) {
+    const ds = dataset && typeof dataset === "object" ? dataset : null;
+    if (!ds) return;
+    const source = ds.source && typeof ds.source === "object" ? ds.source : null;
+    if (!source) return;
+    const sourceModeValue =
+      String(source.mode || "") === "table"
+        ? "table"
+        : String(source.mode || "") === "routine"
+          ? "routine"
+          : "sql";
+    setSourceMode(sourceModeValue);
+    setSelectedTable(String(source.table || ""));
+    setSelectedColumns(
+      source.selectedColumns && typeof source.selectedColumns === "object" ? source.selectedColumns : {}
+    );
+    setTableFilters(Array.isArray(source.tableFilters) ? source.tableFilters : []);
+    setTableGroupByColumns(
+      Array.isArray(source.groupByColumns)
+        ? source.groupByColumns.map((c) => String(c || "")).filter(Boolean)
+        : []
+    );
+    setTableLimit(Math.min(1000, Math.max(1, Number(source.limit) || 100)));
+    setSql(String(source.sql || ""));
+    setSelectedRoutineOid(String(source.routineOid || ""));
+    setRoutineArgs(Array.isArray(source.routineArgs) ? source.routineArgs : []);
+    setColumns(Array.isArray(ds.columns) ? ds.columns.map((c) => String(c || "")).filter(Boolean) : []);
+    setRows(Array.isArray(ds.rows) ? ds.rows : []);
+    setSummaryRow(ds?.summaryRow ?? null);
+  }
+
   function createDefaultTextWidget() {
     return {
       id: `txt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -370,6 +438,12 @@ export default function ReportDesigner({
       setDatasetDraftName("");
     }
   }, [selectedDataset, selectedDatasetId]);
+
+  useEffect(() => {
+    if (!selectedDatasetId || !selectedDataset) return;
+    if (datasetEditing) return;
+    applyDatasetToDraft(selectedDataset);
+  }, [selectedDatasetId, selectedDataset, datasetEditing]);
   const reportFilterControls = useMemo(() => {
     const rows = [];
     (Array.isArray(tableWidgets) ? tableWidgets : []).forEach((tbl) => {
@@ -879,6 +953,7 @@ export default function ReportDesigner({
     setSummaryRow(null);
     setDatasets([]);
     setSelectedDatasetId("");
+    setDatasetEditing(false);
     setSelectedTextDatasetId("");
     setSelectedTextDatasetColumn("");
     setTextWidgets([]);
@@ -910,6 +985,7 @@ export default function ReportDesigner({
     setSummaryRow(null);
     setDatasets([]);
     setSelectedDatasetId("");
+    setDatasetEditing(false);
     setSelectedTextDatasetId("");
     setSelectedTextDatasetColumn("");
     setTextWidgets([]);
@@ -1887,8 +1963,10 @@ export default function ReportDesigner({
           ? "Dataset saved."
           : "Dataset saved in draft. Save report to persist it."
       );
+      return true;
     } catch (err) {
       setError(err?.message || "Failed to save dataset.");
+      return false;
     } finally {
       setRunning(false);
     }
@@ -1962,6 +2040,7 @@ export default function ReportDesigner({
     setDatasets(nextDatasets);
     setTableWidgets(nextTableWidgets);
     setSelectedDatasetId(nextSelectedDatasetId);
+    setDatasetEditing(false);
     setSelectedTextDatasetId(nextSelectedTextDatasetId);
     setSelectedTextDatasetColumn(nextSelectedTextDatasetColumn);
     const layoutTargetId = datasetOnly ? DATASET_LAYOUT_ID : activeReportId;
@@ -1984,6 +2063,7 @@ export default function ReportDesigner({
     );
     setSelectedDatasetId("");
     setDatasetDraftName(suggested);
+    setDatasetEditing(true);
     setStatus("New dataset draft.");
   }
 
@@ -2662,45 +2742,126 @@ export default function ReportDesigner({
                 }}
               >
                 <div style={{ display: "grid", gap: datasetGap, minWidth: 0 }}>
-                  <div style={{ display: "flex", gap: datasetGap, flexWrap: "wrap", minWidth: 0 }}>
-                    <select
-                      value={selectedDatasetId}
-                      onChange={(e) => setSelectedDatasetId(e.target.value)}
-                      style={{ flex: "1 1 220px", minWidth: 0, border: "1px solid var(--border)", background: "var(--bg-soft)", color: "var(--text)", borderRadius: 8, padding: datasetControlPadding }}
-                    >
-                      <option value="">New Dataset</option>
-                      {datasets.map((ds) => (
-                        <option key={`dataset-screen-${ds.id}`} value={String(ds.id)}>
-                          {String(ds.name || "Dataset")}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={createNewDatasetDraft}
-                      style={{ border: "1px solid var(--border)", background: "var(--bg-soft)", color: "var(--text)", borderRadius: 8, padding: datasetControlPadding, cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}
-                    >
-                      New
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (!selectedDatasetId) return;
-                        removeDatasetById(selectedDatasetId);
-                      }}
-                      disabled={!selectedDatasetId}
-                      style={{ border: "1px solid #f04438", background: selectedDatasetId ? "#f04438" : "rgba(240,68,56,0.55)", color: "white", borderRadius: 8, padding: datasetControlPadding, cursor: selectedDatasetId ? "pointer" : "not-allowed", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}
-                    >
-                      Delete
-                    </button>
+                  <div style={{ display: "flex", gap: datasetGap, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+                    <div style={{ flex: "1 1 260px", minWidth: 220 }}>
+                      <SearchableSelect
+                        value={selectedDatasetId}
+                        onChange={(nextId) => {
+                          const id = String(nextId || "").trim();
+                          if (!id) {
+                            createNewDatasetDraft();
+                            return;
+                          }
+                          const nextDataset =
+                            (Array.isArray(datasets) ? datasets : []).find(
+                              (d) => String(d?.id || "") === id
+                            ) || null;
+                          setSelectedDatasetId(id);
+                          setDatasetEditing(false);
+                          if (nextDataset) applyDatasetToDraft(nextDataset);
+                        }}
+                        options={(Array.isArray(datasets) ? datasets : []).map((ds) => ({
+                          value: String(ds?.id || ""),
+                          label: String(ds?.name || "Dataset"),
+                        }))}
+                        placeholder="Search/select dataset..."
+                        style={{
+                          border: "1px solid var(--border)",
+                          background: "var(--bg-soft)",
+                          color: "var(--text)",
+                          borderRadius: 8,
+                          fontSize: 12,
+                          height: 30,
+                        }}
+                      />
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <button
+                        onClick={createNewDatasetDraft}
+                        style={datasetToolbarButtonStyle}
+                        title="New dataset"
+                        aria-label="New dataset"
+                      >
+                        <Icon>
+                          <path d="M12 5v14" />
+                          <path d="M5 12h14" />
+                        </Icon>
+                      </button>
+                      <button
+                        onClick={() => setDatasetEditing(true)}
+                        disabled={!canDatasetEdit}
+                        style={canDatasetEdit ? datasetToolbarButtonStyle : { ...datasetToolbarButtonStyle, ...datasetToolbarDisabledStyle }}
+                        title="Edit dataset"
+                        aria-label="Edit dataset"
+                      >
+                        <Icon>
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+                        </Icon>
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const ok = await upsertDatasetFromCurrentSource(datasetDraftName);
+                          if (ok) setDatasetEditing(false);
+                        }}
+                        disabled={!canDatasetSave}
+                        style={canDatasetSave ? datasetToolbarPrimaryButtonStyle : { ...datasetToolbarPrimaryButtonStyle, ...datasetToolbarDisabledStyle }}
+                        title="Save dataset"
+                        aria-label="Save dataset"
+                      >
+                        <Icon>
+                          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                          <path d="M17 21v-8H7v8" />
+                          <path d="M7 3v5h8" />
+                        </Icon>
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (selectedDataset) {
+                            applyDatasetToDraft(selectedDataset);
+                            setDatasetDraftName(String(selectedDataset?.name || ""));
+                          }
+                          setDatasetEditing(false);
+                        }}
+                        disabled={!canDatasetCancel}
+                        style={canDatasetCancel ? datasetToolbarButtonStyle : { ...datasetToolbarButtonStyle, ...datasetToolbarDisabledStyle }}
+                        title="Cancel edit"
+                        aria-label="Cancel edit"
+                      >
+                        <Icon>
+                          <path d="M18 6L6 18" />
+                          <path d="M6 6l12 12" />
+                        </Icon>
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!selectedDatasetId) return;
+                          removeDatasetById(selectedDatasetId);
+                        }}
+                        disabled={!canDatasetDelete}
+                        style={canDatasetDelete ? datasetToolbarDangerButtonStyle : { ...datasetToolbarDangerButtonStyle, ...datasetToolbarDisabledStyle }}
+                        title="Delete dataset"
+                        aria-label="Delete dataset"
+                      >
+                        <Icon>
+                          <path d="M3 6h18" />
+                          <path d="M8 6V4h8v2" />
+                          <path d="M19 6l-1 14H6L5 6" />
+                        </Icon>
+                      </button>
+                    </div>
                   </div>
                   <input
                     value={datasetDraftName}
                     onChange={(e) => setDatasetDraftName(e.target.value)}
                     placeholder="Dataset Name"
+                    disabled={datasetReadOnly}
                     style={{ border: "1px solid var(--border)", background: "var(--bg-soft)", color: "var(--text)", borderRadius: 8, padding: datasetControlPadding, minWidth: 0 }}
                   />
                   <select
                     value={sourceMode}
                     onChange={(e) => setSourceMode(e.target.value)}
+                    disabled={datasetReadOnly}
                     style={{ border: "1px solid var(--border)", background: "var(--bg-soft)", color: "var(--text)", borderRadius: 8, padding: datasetControlPadding, minWidth: 0 }}
                   >
                     <option value="table">Table</option>
@@ -2712,6 +2873,7 @@ export default function ReportDesigner({
                       <select
                         value={selectedTable}
                         onChange={(e) => setSelectedTable(e.target.value)}
+                        disabled={datasetReadOnly}
                         style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: datasetControlPadding, minWidth: 0 }}
                       >
                         <option value="">Select Table...</option>
@@ -2728,6 +2890,7 @@ export default function ReportDesigner({
                         value={Number.isFinite(Number(tableLimit)) ? Number(tableLimit) : 100}
                         onChange={(e) => setTableLimit(Math.min(1000, Math.max(1, Number(e.target.value) || 100)))}
                         placeholder="Limit"
+                        disabled={datasetReadOnly}
                         style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: datasetControlPadding, minWidth: 0 }}
                       />
                       <details
@@ -2745,12 +2908,14 @@ export default function ReportDesigner({
                           <div style={{ display: "flex", gap: 6 }}>
                             <button
                               onClick={() => setTableGroupByColumns(tableColumns.filter((c) => !!selectedColumns[c]))}
+                              disabled={datasetReadOnly}
                               style={{ border: "1px solid var(--border)", background: "var(--bg-soft)", color: "var(--text)", borderRadius: 8, padding: "4px 8px", cursor: "pointer", fontSize: 11 }}
                             >
                               Add All
                             </button>
                             <button
                               onClick={() => setTableGroupByColumns([])}
+                              disabled={datasetReadOnly}
                               style={{ border: "1px solid var(--border)", background: "var(--bg-soft)", color: "var(--text)", borderRadius: 8, padding: "4px 8px", cursor: "pointer", fontSize: 11 }}
                             >
                               Clear
@@ -2765,6 +2930,7 @@ export default function ReportDesigner({
                                 <input
                                   type="checkbox"
                                   checked={tableGroupByColumns.includes(String(col))}
+                                  disabled={datasetReadOnly}
                                   onChange={(e) =>
                                     setTableGroupByColumns((prev) => {
                                       const set = new Set(normalizeGroupByColumns(prev, tableColumns));
@@ -2788,13 +2954,14 @@ export default function ReportDesigner({
                     </div>
                   ) : null}
                   {sourceMode === "sql" ? (
-                    <textarea value={sql} onChange={(e) => setSql(e.target.value)} rows={8} placeholder="SELECT ... FROM ... " style={{ border: "1px solid var(--border)", background: "#0f172a", color: "#e2e8f0", borderRadius: 8, padding: "10px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, minWidth: 0 }} />
+                    <textarea disabled={datasetReadOnly} value={sql} onChange={(e) => setSql(e.target.value)} rows={8} placeholder="SELECT ... FROM ... " style={{ border: "1px solid var(--border)", background: "#0f172a", color: "#e2e8f0", borderRadius: 8, padding: "10px", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, minWidth: 0 }} />
                   ) : null}
                   {sourceMode === "routine" ? (
                     <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: compactDatasetLayout ? 6 : 8, display: "grid", gap: datasetGap, background: "var(--bg-soft)", minWidth: 0 }}>
                       <select
                         value={selectedRoutineOid}
                         onChange={(e) => setSelectedRoutineOid(e.target.value)}
+                        disabled={datasetReadOnly}
                         style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", color: "var(--text)", borderRadius: 8, padding: datasetControlPadding, minWidth: 0 }}
                       >
                         <option value="">Select Routine...</option>
@@ -2810,6 +2977,7 @@ export default function ReportDesigner({
                             <input
                               key={`ds-routine-arg-${idx}`}
                               value={String(routineArgs[idx] ?? "")}
+                              disabled={datasetReadOnly}
                               onChange={(e) =>
                                 setRoutineArgs((prev) => {
                                   const next = [...prev];
@@ -2825,22 +2993,6 @@ export default function ReportDesigner({
                       ) : null}
                     </div>
                   ) : null}
-                  <div style={{ display: "flex", gap: datasetGap, flexWrap: "wrap" }}>
-                    <button
-                      onClick={() => upsertDatasetFromCurrentSource(datasetDraftName)}
-                      style={{ border: "1px solid #12b76a", background: "#12b76a", color: "white", borderRadius: 8, padding: compactDatasetLayout ? "6px 10px" : "8px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}
-                    >
-                      Save Dataset
-                    </button>
-                    {selectedDatasetId ? (
-                      <button
-                        onClick={() => refreshDatasetById(selectedDatasetId)}
-                        style={{ border: "1px solid var(--border)", background: "var(--bg-soft)", color: "var(--text)", borderRadius: 8, padding: datasetControlPadding, cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}
-                      >
-                        Refresh Dataset
-                      </button>
-                    ) : null}
-                  </div>
                   <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-soft)", overflow: "hidden" }}>
                     <div style={{ padding: compactDatasetLayout ? "6px 8px" : "8px 10px", borderBottom: "1px solid var(--border)", fontSize: 12, fontWeight: 700 }}>
                       Preview

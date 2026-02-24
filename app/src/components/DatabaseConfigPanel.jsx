@@ -432,7 +432,7 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
 
       {showDiagnostics ? (
       <div style={cardStyle}>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>App Performance (AI + OPC Runtime)</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>App Performance (App + OPC Runtime)</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
           <div><strong>PID:</strong> {asNumber(appInfo?.pid)}</div>
           <div><strong>Uptime:</strong> {asNumber(appInfo?.uptimeSec)} s</div>
