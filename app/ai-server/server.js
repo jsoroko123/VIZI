@@ -2329,19 +2329,8 @@ async function applyPrimaryKeyState(db, table, column, shouldBePrimary) {
 
 function pickReferenceLabelColumn(columnNames, referencedColumn) {
   const cols = Array.isArray(columnNames) ? columnNames.map((c) => String(c)) : [];
-  const lower = new Set(cols.map((c) => c.toLowerCase()));
-  const preferred = [
-    "name",
-    "title",
-    "label",
-    "display_name",
-    "description",
-    "code",
-  ];
-  const found = preferred.find((p) => lower.has(p));
-  if (found) {
-    return cols.find((c) => c.toLowerCase() === found) || referencedColumn;
-  }
+  const nameCol = cols.find((c) => c.toLowerCase() === "name");
+  if (nameCol) return nameCol;
   return referencedColumn;
 }
 

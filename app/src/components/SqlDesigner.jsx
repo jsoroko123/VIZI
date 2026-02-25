@@ -82,6 +82,8 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
   const [showAddColumnRow, setShowAddColumnRow] = useState(false);
   const [inlineColumnEdits, setInlineColumnEdits] = useState({});
   const [designerTab, setDesignerTab] = useState("schema");
+  const [listFieldsConfig, setListFieldsConfig] = useState([]);
+  const [hiddenDetailColumnsText, setHiddenDetailColumnsText] = useState("");
 
   const [fkDraft, setFkDraft] = useState({
     connectionType: "many_to_one",
@@ -293,17 +295,54 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
       return;
     }
     try {
-      const res = await fetch(`/api/db/${encodeURIComponent(table)}/meta`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(String(data?.error || "Failed to load table metadata."));
+      const [metaRes, cfgRes] = await Promise.all([
+        fetch(`/api/db/${encodeURIComponent(table)}/meta`),
+        fetch(`/api/db/${encodeURIComponent(table)}?limit=1&offset=0`),
+      ]);
+      const data = await metaRes.json();
+      const cfgData = await cfgRes.json().catch(() => ({}));
+      if (!metaRes.ok) throw new Error(String(data?.error || "Failed to load table metadata."));
       const cols = Array.isArray(data?.columns) ? data.columns : [];
       setSchemaRows(cols);
       setPrimaryKey(data?.primaryKey || null);
       setForeignKeys(data?.foreignKeys && typeof data.foreignKeys === "object" ? data.foreignKeys : {});
       setRenameTableTo(table);
+      const listFields = Array.isArray(cfgData?.listFields) ? cfgData.listFields : [];
+      const detailFields = Array.isArray(cfgData?.detailFields) ? cfgData.detailFields : [];
+      setListFieldsConfig(listFields);
+      const detailSet = new Set(detailFields.map((name) => String(name || "")));
+      const hidden = cols
+        .map((col) => String(col?.column_name || ""))
+        .filter((name) => name && detailFields.length && !detailSet.has(name));
+      setHiddenDetailColumnsText(hidden.join(", "));
     } catch (err) {
       toastError(String(err?.message || "Failed to load table metadata."));
     }
+  }
+
+  async function saveHiddenDetailColumns(hiddenColumnsText) {
+    if (!selectedTable) return;
+    const hiddenSet = new Set(
+      String(hiddenColumnsText || "")
+        .split(",")
+        .map((v) => String(v || "").trim())
+        .filter(Boolean)
+    );
+    const detailFields = schemaRows
+      .map((col) => String(col?.column_name || ""))
+      .filter((name) => name && !hiddenSet.has(name));
+    const listFields = Array.isArray(listFieldsConfig)
+      ? listFieldsConfig
+      : schemaRows
+          .map((col) => String(col?.column_name || ""))
+          .filter((name) => name && name !== "id");
+    const res = await fetch(`/api/db/${encodeURIComponent(selectedTable)}/config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ list_fields: listFields, detail_fields: detailFields }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.error || "Failed to save detail fields."));
   }
 
   useEffect(() => {
@@ -1034,6 +1073,27 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                   )}
                 </button>
               </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 6, marginBottom: 8 }}>
+              <input
+                style={{ ...inputStyle, width: "100%" }}
+                value={hiddenDetailColumnsText}
+                placeholder="Hide on Details (comma-separated column names)"
+                onChange={(e) => setHiddenDetailColumnsText(e.target.value)}
+              />
+              <button
+                style={primaryButtonStyle}
+                onClick={() =>
+                  runAction(
+                    () => saveHiddenDetailColumns(hiddenDetailColumnsText),
+                    "Details hidden columns updated."
+                  )
+                }
+                title="Save hidden details"
+                aria-label="Save hidden details"
+              >
+                Save
+              </button>
             </div>
             {selectedTable ? (
               <div style={{ overflowX: "auto" }}>

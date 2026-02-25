@@ -157,6 +157,24 @@ export default function DataBrowser({
     if (alarmViewTab === "shelved" && hasAlarmShelvedColumn) return (rows || []).filter((r) => isRowShelvedAlarm(r));
     return rows || [];
   }, [rows, hasAlarmActiveColumn, hasAlarmShelvedColumn, alarmViewTab]);
+  const detailRenderOrder = useMemo(() => {
+    const all = (columns || []).map((c) => String(c?.column_name || "")).filter(Boolean);
+    if (!detailFieldOrder.length) return all;
+    const known = new Set(all);
+    const seen = new Set();
+    const out = [];
+    detailFieldOrder.forEach((name) => {
+      const key = String(name || "");
+      if (!key || !known.has(key) || seen.has(key)) return;
+      seen.add(key);
+      out.push(key);
+    });
+    all.forEach((name) => {
+      if (seen.has(name)) return;
+      out.push(name);
+    });
+    return out;
+  }, [columns, detailFieldOrder]);
 
   useEffect(() => {
     if (isAlarmTable) setAlarmViewTab("active");
@@ -568,7 +586,7 @@ export default function DataBrowser({
       for (const [localColumn, meta] of fkEntries) {
         const refTable = String(meta?.referencedTable || "").trim();
         const refColumn = String(meta?.referencedColumn || "").trim();
-        const labelColumn = String(meta?.labelColumn || refColumn).trim();
+        const labelColumn = String(meta?.labelColumn || "name").trim();
         if (!refTable || !refColumn) continue;
         const tableCandidates = buildRefTableCandidates(localColumn, refTable);
         for (const tableName of tableCandidates) {
@@ -823,6 +841,11 @@ export default function DataBrowser({
       setDetailViewTab("fields");
     }
   }, [childRelations, detailViewTab]);
+
+  useEffect(() => {
+    // Default to field editing when switching records/tables so columns are never "missing" by default.
+    setDetailViewTab("fields");
+  }, [currentTable, selectedId, detailId]);
 
   async function updateChildRelationLink(relation, rowId, parentValueRaw) {
     const relationKey = getChildRelationTabKey(relation);
@@ -1559,12 +1582,9 @@ export default function DataBrowser({
                       marginBottom: 10,
                     }}
                   >
-                    {(detailFieldOrder.length
-                      ? detailFieldOrder
-                      : columns.filter((c) => !isHiddenColumn(c.column_name)).map((c) => c.column_name)
-                    )
-                      .filter((name) => !isHiddenColumn(name))
-                      .map((columnName) => {
+                      {detailRenderOrder
+                        .filter((name) => !isHiddenColumn(name))
+                        .map((columnName) => {
                         const c = columns.find((col) => col.column_name === columnName);
                         if (!c) return null;
                         return (
@@ -1607,9 +1627,7 @@ export default function DataBrowser({
                           if (!formEnabled) return;
                           if (!dragDetailField || dragDetailField === c.column_name) return;
                           e.preventDefault();
-                          const current = detailFieldOrder.length
-                            ? detailFieldOrder
-                            : columns.filter((col) => !isHiddenColumn(col.column_name)).map((col) => col.column_name);
+                          const current = detailRenderOrder.filter((name) => !isHiddenColumn(name));
                           const from = current.indexOf(dragDetailField);
                           const to = current.indexOf(c.column_name);
                           if (from < 0 || to < 0) return;
