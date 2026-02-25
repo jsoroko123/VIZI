@@ -4111,7 +4111,7 @@ export default function PlcAnalyzer({
       style={{
         height: "100%",
         overflow: "auto",
-        padding: 10,
+        padding: "0 10px 10px",
         boxSizing: "border-box",
         display: "grid",
         gap: 6,
@@ -4169,13 +4169,13 @@ export default function PlcAnalyzer({
           })}
         </div>
       ) : null}
-      <div style={{ display: "grid", gap: 2 }}>
+      <div style={{ display: "grid", gap: codeGenOnlyView ? 0 : 2 }}>
         <div style={{ fontSize: 14, fontWeight: 800 }}>{codeGenOnlyView ? "Code Gen Pro" : "PLC L5X/L5K Analyzer"}</div>
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          {codeGenOnlyView
-            ? "Build Code Gen tags/groups and generate export rows."
-            : "Upload an .l5x or .l5k file to scan controller metadata, tags, programs, routines, modules, and AOIs."}
-        </div>
+        {!codeGenOnlyView ? (
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Upload an .l5x or .l5k file to scan controller metadata, tags, programs, routines, modules, and AOIs.
+          </div>
+        ) : null}
       </div>
 
       {visiblePlcTabs.length > 1 ? (
@@ -5368,9 +5368,6 @@ export default function PlcAnalyzer({
 
       {activeTab === "code-gen-pro" ? (
         <>
-          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            Source: <strong style={{ color: "var(--text)" }}>{selected?.name || "No PLC selected"}</strong>
-          </div>
           {!selected ? (
             <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
               Select or upload an L5X/L5K file in Overview first.

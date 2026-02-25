@@ -326,14 +326,7 @@ export default function DataBrowser({
 
   useEffect(() => {
     if (!embedded) return;
-    if (currentTable) return;
-    if (!Array.isArray(tableList) || !tableList.length) return;
-    setEmbeddedTable(String(tableList[0] || ""));
-    setEmbeddedDetailId("");
-  }, [embedded, currentTable, tableList]);
-
-  useEffect(() => {
-    if (!embedded) return;
+    if (!hideTableSelector) return;
     const raw = String(embeddedPath || "").trim();
     if (!raw) return;
     const normalized = raw.startsWith("/data/") ? raw : `/data/${raw.replace(/^\/+/, "")}`;
@@ -341,9 +334,23 @@ export default function DataBrowser({
     if (!m) return;
     const nextTable = decodeURIComponent(String(m[1] || "")).trim();
     const nextDetailId = decodeURIComponent(String(m[2] || "")).trim();
-    if (nextTable) setEmbeddedTable(normalizeTableName(nextTable));
-    setEmbeddedDetailId(nextDetailId);
-  }, [embedded, embeddedPath]);
+    const normalizedNextTable = normalizeTableName(nextTable);
+    if (normalizedNextTable) {
+      setEmbeddedTable(normalizedNextTable);
+    }
+    if (nextDetailId) {
+      setEmbeddedDetailId(nextDetailId);
+      return;
+    }
+    const normalizedCurrent = normalizeTableName(embeddedTable);
+    if (
+      normalizedNextTable &&
+      normalizedCurrent &&
+      normalizedNextTable.toLowerCase() !== normalizedCurrent.toLowerCase()
+    ) {
+      setEmbeddedDetailId("");
+    }
+  }, [embedded, embeddedPath, hideTableSelector, embeddedTable]);
 
   useEffect(() => {
     function handleStorage(event) {
@@ -1375,6 +1382,25 @@ export default function DataBrowser({
     setEmbeddedDetailId(decodeURIComponent(String(m[2] || "")));
   };
 
+  const handleTableSelectChange = (nextValue) => {
+    const nextTable = String(nextValue || "").trim();
+    if (!nextTable) {
+      if (embedded) {
+        setEmbeddedTable("");
+        setEmbeddedDetailId("");
+      } else {
+        navigate("/data");
+      }
+      return;
+    }
+    const normalizedCurrent = normalizeTableName(currentTable).toLowerCase();
+    const normalizedNext = normalizeTableName(nextTable).toLowerCase();
+    if (normalizedCurrent && normalizedCurrent === normalizedNext) {
+      return;
+    }
+    navigateData(`/data/${nextTable}`);
+  };
+
   return (
     <div style={pageStyle}>
       <div style={shellStyle}>
@@ -1396,7 +1422,7 @@ export default function DataBrowser({
               <div style={{ display: "grid", gap: 8 }}>
                 <SearchableSelect
                   value={currentTable || ""}
-                  onChange={(nextValue) => navigateData(`/data/${String(nextValue || "").trim()}`)}
+                  onChange={handleTableSelectChange}
                   disabled={!tableList.length}
                   options={tableList.map((t) => ({ value: t, label: labelize(t) }))}
                   placeholder="Search/select table..."

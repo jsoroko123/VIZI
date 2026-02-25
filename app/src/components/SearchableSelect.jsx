@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function normalizeOptions(options) {
   return (Array.isArray(options) ? options : [])
@@ -34,6 +34,7 @@ export default function SearchableSelect({
   );
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
 
   const borderRadius = Number(style.borderRadius) || 10;
   const fontSize = Number(style.fontSize) || 12;
@@ -57,8 +58,22 @@ export default function SearchableSelect({
     onChange?.(v);
   };
 
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event) => {
+      const root = rootRef.current;
+      const target = event?.target;
+      if (root && target instanceof Node && root.contains(target)) return;
+      setOpen(false);
+      setQuery(selected?.label || "");
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [open, selected]);
+
   return (
     <div
+      ref={rootRef}
       title={title}
       aria-label={ariaLabel || title || placeholder}
       style={{ position: "relative", width: "100%", minWidth: 0 }}
@@ -85,7 +100,7 @@ export default function SearchableSelect({
           disabled={disabled}
           placeholder={placeholder}
           onFocus={() => {
-            setQuery(selected?.label || "");
+            setQuery("");
             setOpen(true);
           }}
           onChange={(e) => {
@@ -95,16 +110,7 @@ export default function SearchableSelect({
           onBlur={() => {
             window.setTimeout(() => {
               setOpen(false);
-              const exact =
-                normalized.find((opt) => String(opt.label).toLowerCase() === String(query || "").trim().toLowerCase()) || null;
-              if (exact) {
-                onChange?.(String(exact.value || ""));
-                setQuery(exact.label);
-              } else if (!String(query || "").trim()) {
-                onChange?.("");
-              } else {
-                setQuery(selected?.label || "");
-              }
+              setQuery(selected?.label || "");
             }, 120);
           }}
           style={{
@@ -145,20 +151,37 @@ export default function SearchableSelect({
           type="button"
           disabled={disabled}
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => {
+            setOpen((v) => {
+              const next = !v;
+              if (next) setQuery("");
+              return next;
+            });
+          }}
           style={{
             border: "none",
             borderLeft: "1px solid var(--border)",
             background: "transparent",
-            color: "var(--text-muted)",
-            width: 26,
+            color: "var(--text)",
+            width: 30,
             height: "100%",
             cursor: disabled ? "not-allowed" : "pointer",
+            display: "grid",
+            placeItems: "center",
+            padding: 0,
           }}
           aria-label="Toggle options"
           title="Toggle options"
         >
-          ▾
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M6 9l6 6 6-6"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </button>
       </div>
       {open && !disabled ? (
