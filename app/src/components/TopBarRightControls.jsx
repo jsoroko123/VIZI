@@ -45,6 +45,7 @@ export default function TopBarRightControls({
       >
         {[
           { key: "theme", label: "Theme", alwaysVisible: true },
+          { key: "code-gen-pro", label: "Code Gen", areaKey: "plc" },
           { key: "plc", label: "PLC", areaKey: "plc" },
           { key: "opc", label: "OPC", areaKey: "opc" },
           { key: "server", label: "Server", areaKey: "server" },

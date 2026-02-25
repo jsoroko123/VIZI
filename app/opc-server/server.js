@@ -167,6 +167,15 @@ async function main() {
   const deadbandDefault = parseNonNegativeNumber(runtime?.deadbandDefault, null);
   const reconnectDelayMs = parsePositiveMs(runtime?.reconnectDelayMs, 2000);
   const reconnectMaxAttempts = parsePositiveNumber(runtime?.reconnectMaxAttempts, null);
+  const timeoutAutoRestartEnabled = runtime?.timeoutAutoRestartEnabled !== false;
+  const timeoutAutoRestartStreakRaw = Number.parseInt(
+    String(runtime?.timeoutAutoRestartStreak ?? "8"),
+    10
+  );
+  const timeoutAutoRestartStreak = Number.isFinite(timeoutAutoRestartStreakRaw)
+    ? Math.max(2, Math.min(100, timeoutAutoRestartStreakRaw))
+    : 8;
+  const timeoutAutoRestartWindowMs = parsePositiveMs(runtime?.timeoutAutoRestartWindowMs, 180000);
   const heartbeatEnabled = runtime?.heartbeatEnabled !== false;
   const heartbeatMs = parsePositiveMs(runtime?.heartbeatMs, 5000);
   const heartbeatReconnectOnFailure = runtime?.heartbeatReconnectOnFailure === true;
@@ -327,6 +336,19 @@ async function main() {
   const plcHeartbeatFailureStreak = new Map();
   const plcConnectFailureStreak = new Map();
   const plcReadTransportFailureStreak = new Map();
+  const plcTimeoutFailureWindow = new Map();
+  const isTimeoutLikeError = (err) => {
+    const msg = String(err?.message || err || "").toLowerCase();
+    return (
+      msg.includes("timeout") ||
+      msg.includes("timeout-recv-data") ||
+      msg.includes("recv-data") ||
+      msg.includes("pool is draining") ||
+      msg.includes("cannot accept work") ||
+      msg.includes("connection lost") ||
+      msg.includes("disconnected")
+    );
+  };
   const tagValues = new Map();
   const tagErrors = new Map();
   const tagLastRead = new Map();
@@ -807,17 +829,30 @@ async function main() {
       plcConnected.set(name, false);
       return;
     }
-    const isTimeoutLikeError = (err) => {
-      const msg = String(err?.message || err || "").toLowerCase();
-      return (
-        msg.includes("timeout") ||
-        msg.includes("timeout-recv-data") ||
-        msg.includes("recv-data") ||
-        msg.includes("pool is draining") ||
-        msg.includes("cannot accept work") ||
-        msg.includes("connection lost") ||
-        msg.includes("disconnected")
+    const recordTimeoutFailureAndMaybeRestart = (plcName, reason) => {
+      if (!timeoutAutoRestartEnabled) return;
+      const now = Date.now();
+      const prev = plcTimeoutFailureWindow.get(plcName) || { startAt: now, count: 0 };
+      const withinWindow = now - Number(prev.startAt || 0) <= timeoutAutoRestartWindowMs;
+      const next = withinWindow
+        ? { startAt: Number(prev.startAt || now), count: Number(prev.count || 0) + 1 }
+        : { startAt: now, count: 1 };
+      plcTimeoutFailureWindow.set(plcName, next);
+      if (next.count < timeoutAutoRestartStreak) return;
+      // eslint-disable-next-line no-console
+      console.error(
+        `[opc-server] PLC ${plcName} hit ${next.count} timeout-like failures in ${Math.round(
+          (now - next.startAt) / 1000
+        )}s. Restarting process to self-recover...`,
+        reason
       );
+      pushIssue({
+        severity: "error",
+        kind: "plc_timeout_auto_restart",
+        plcName,
+        message: `Auto-restart triggered after repeated timeout errors: ${toIssueMessage(reason)}`,
+      });
+      setTimeout(() => process.exit(73), 50);
     };
     const isForwardOpenError = (err) => {
       const msg = String(err?.message || err || "").toLowerCase();
@@ -860,6 +895,7 @@ async function main() {
         if (isTimeoutLikeError(err)) {
           const nextReceiveTimeout = Math.min(120000, Math.max(plcReceiveTimeoutMs, Number(plc.timeoutReceive || plcReceiveTimeoutMs)) + 5000);
           plc.timeoutReceive = nextReceiveTimeout;
+          recordTimeoutFailureAndMaybeRestart(name, err);
         }
         if (reconnectMaxAttempts && attempts >= reconnectMaxAttempts) {
           // eslint-disable-next-line no-console
@@ -936,6 +972,23 @@ async function main() {
           plcName: p.name,
           message: `PLC ${p.name} disconnected: ${text}`,
         });
+      }
+      if (isTimeoutLikeError(reason)) {
+        const now = Date.now();
+        const prev = plcTimeoutFailureWindow.get(p.name) || { startAt: now, count: 0 };
+        const withinWindow = now - Number(prev.startAt || 0) <= timeoutAutoRestartWindowMs;
+        const next = withinWindow
+          ? { startAt: Number(prev.startAt || now), count: Number(prev.count || 0) + 1 }
+          : { startAt: now, count: 1 };
+        plcTimeoutFailureWindow.set(p.name, next);
+        if (timeoutAutoRestartEnabled && next.count >= timeoutAutoRestartStreak) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[opc-server] PLC ${p.name} disconnect timeout streak reached ${next.count}. Restarting process...`,
+            text
+          );
+          setTimeout(() => process.exit(73), 50);
+        }
       }
       if (opcConnectionEnabled) {
         void connectPlcWithRetry(p.name, plc);

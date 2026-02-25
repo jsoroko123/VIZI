@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
+    "start": "node watchdog.js",
+    "start:raw": "node server.js",
     "start:watchdog": "node watchdog.js"
   },
   "dependencies": {

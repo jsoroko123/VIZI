@@ -1,6 +1,968 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toastError, toastInfo, toastSuccess } from "../utils/toast";
 
+const CODE_GEN_GROUP_TYPES = ["Route", "SubRoute", "Sender", "Receiver", "Bin", "Group", "Equipment"];
+const CODE_GEN_FORMATS = ["l5x-template", "list", "io-map"];
+const REQUIRED_BATCHCONTROL_TYPES = [
+  "BatchControl",
+  "BatchControl_Bin",
+  "BatchControl_HMI_Read",
+  "BatchControl_HMI_Write",
+  "BatchControl_Mixer",
+  "BatchControl_Plc",
+  "BatchControl_Recipe",
+  "BatchControl_RecipeIngr",
+  "BatchController",
+  "BatchController_RecipeCheck",
+  "BatchController_SimWeight",
+  "BinControl_Mgr",
+  "BinController",
+  "BinController_Initialize",
+  "BinController_BinUpdate",
+  "BinController_RecipeCheck",
+  "BinController_JobChange",
+];
+
+function normalizeCodeGenFormat(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return CODE_GEN_FORMATS.includes(raw) ? raw : "l5x-template";
+}
+
+function normalizeCodeGenGroupType(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "Group";
+  if (raw.toLowerCase() === "object") return "Group";
+  const matched = CODE_GEN_GROUP_TYPES.find((item) => item.toLowerCase() === raw.toLowerCase());
+  return matched || "Group";
+}
+
+function collectAutoTagStubsFromRoutineXml(routineXmlBlocks = []) {
+  const instructionNames = new Set(
+    [
+      "AFI",
+      "CPS",
+      "EQ",
+      "GSV",
+      "JSR",
+      "LIMIT",
+      "MOVE",
+      "NE",
+      "NOP",
+      "ONS",
+      "OTE",
+      "OTL",
+      "OTU",
+      "RES",
+      "TON",
+      "XIC",
+      "XIO",
+    ].map((x) => x.toLowerCase())
+  );
+  const tagTypeByName = new Map();
+  const inferAndSet = (name, logicText) => {
+    const tag = String(name || "").trim();
+    if (!tag || /^s:/i.test(tag)) return;
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const timerUsage = new RegExp(`\\b(?:RES|TON)\\s*\\(\\s*${escaped}(?:\\b|\\s|[),.\\[])`, "i");
+    const boolUsage = new RegExp(`\\b(?:ONS|XIC|XIO|OTE|OTL|OTU)\\s*\\(\\s*${escaped}(?:\\b|\\s|[),.\\[])`, "i");
+    const gsvDestUsage = new RegExp(`\\bGSV\\s*\\([^\\)]*,[^\\)]*,[^\\)]*,\\s*${escaped}(?:\\b|\\s|[),.\\[])`, "i");
+    const current = String(tagTypeByName.get(tag) || "");
+    let next = current || "DINT";
+    if (timerUsage.test(logicText)) next = "TIMER";
+    else if (boolUsage.test(logicText)) next = current === "TIMER" ? "TIMER" : "BOOL";
+    else if (gsvDestUsage.test(logicText)) next = current || "DINT";
+    if (!current || (current !== "TIMER" && next === "TIMER")) tagTypeByName.set(tag, next);
+    else if (!current) tagTypeByName.set(tag, next);
+  };
+  (Array.isArray(routineXmlBlocks) ? routineXmlBlocks : []).forEach((block) => {
+    const textMatches = Array.from(String(block || "").matchAll(/<Text\b[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/Text>/gi)).map((m) =>
+      String(m?.[1] || "")
+    );
+    const logicText = textMatches.join("\n");
+    if (!logicText.trim()) return;
+    const identifiers = Array.from(
+      logicText.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)?(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]]+\])*)\b/g)
+    )
+      .map((m) => String(m?.[1] || "").trim())
+      .filter(Boolean);
+    identifiers.forEach((id) => {
+      const base = String(id || "").split(".")[0].split("[")[0].trim();
+      if (!base) return;
+      if (instructionNames.has(base.toLowerCase())) return;
+      if (/^[0-9]+$/.test(base)) return;
+      inferAndSet(base, logicText);
+    });
+  });
+  return Array.from(tagTypeByName.entries()).map(([name, dataType]) => ({
+    name,
+    dataType: String(dataType || "DINT"),
+    block: `<Tag Name="${name}" Class="Standard" TagType="Base" DataType="${String(dataType || "DINT")}" Constant="false" ExternalAccess="Read/Write" OpcUaAccess="None"/>`,
+  }));
+}
+
+function indentBlock(text, prefix = "    ") {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
+}
+
+function extractRouteDataTypeXmlBlocks(rawText, selectedRouteNumbers = []) {
+  const src = String(rawText || "");
+  if (!src) return [];
+  const builtIn = new Set([
+    "bool",
+    "bit",
+    "sint",
+    "int",
+    "dint",
+    "lint",
+    "usint",
+    "uint",
+    "udint",
+    "ulint",
+    "real",
+    "lreal",
+    "string",
+    "time",
+    "date",
+    "datetime",
+    "tod",
+    "timer",
+    ]);
+  const blocks = [];
+  const blockByName = new Map();
+  const re = /<DataType\b[\s\S]*?<\/DataType>/gi;
+  let match = re.exec(src);
+  while (match) {
+    const block = String(match[0] || "");
+    const headMatch = block.match(/<DataType\b([^>]*)>/i);
+    const name = headMatch ? extractAttr(String(headMatch[1] || ""), "Name") : "";
+    const refs = Array.from(
+      new Set(
+        Array.from(block.matchAll(/\bDataType\s*=\s*"([^"]+)"/gi))
+          .map((m) => String(m?.[1] || "").trim())
+          .filter(Boolean)
+      )
+    );
+    blocks.push({ name: String(name || "").trim(), block, refs });
+    if (String(name || "").trim()) blockByName.set(String(name).trim().toLowerCase(), { block, refs });
+    match = re.exec(src);
+  }
+  const selectedNums = new Set(
+    (Array.isArray(selectedRouteNumbers) ? selectedRouteNumbers : [])
+      .map((n) => String(n || "").trim())
+      .filter(Boolean)
+  );
+  const includeByRouteNumber = (nameRaw) => {
+    const name = String(nameRaw || "");
+    if (!/route/i.test(name)) return false;
+    const m = name.match(/route\s*([0-9]+)/i);
+    if (!m) return true; // shared Route types (no explicit number)
+    if (!selectedNums.size) return true;
+    return selectedNums.has(String(m[1] || "").trim());
+  };
+  const queue = blocks
+    .filter((x) => includeByRouteNumber(x?.name))
+    .map((x) => String(x.name || "").trim())
+    .filter(Boolean);
+  const include = new Set(queue.map((x) => x.toLowerCase()));
+  while (queue.length) {
+    const current = String(queue.shift() || "").trim().toLowerCase();
+    const row = blockByName.get(current);
+    if (!row) continue;
+    (Array.isArray(row.refs) ? row.refs : []).forEach((ref) => {
+      const refName = String(ref || "").trim();
+      if (!refName) return;
+      const refKey = refName.toLowerCase();
+      if (builtIn.has(refKey)) return;
+      if (!blockByName.has(refKey)) return;
+      if (include.has(refKey)) return;
+      include.add(refKey);
+      queue.push(refName);
+    });
+  }
+  return blocks
+    .filter((x) => include.has(String(x?.name || "").trim().toLowerCase()))
+    .map((x) => x.block);
+}
+
+function extractNamedRouteDataTypeBlocks(rawText) {
+  const src = String(rawText || "");
+  if (!src) return [];
+  const out = [];
+  const re = /<DataType\b[\s\S]*?<\/DataType>/gi;
+  let match = re.exec(src);
+  while (match) {
+    const block = String(match[0] || "");
+    const headMatch = block.match(/<DataType\b([^>]*)>/i);
+    const name = headMatch ? extractAttr(String(headMatch[1] || ""), "Name") : "";
+    if (!String(name || "").trim()) {
+      match = re.exec(src);
+      continue;
+    }
+    if (!/route/i.test(String(name || ""))) {
+      match = re.exec(src);
+      continue;
+    }
+    out.push({ name: String(name).trim(), block });
+    match = re.exec(src);
+  }
+  return out;
+}
+
+function extractNamedDataTypeBlocks(rawText) {
+  const src = String(rawText || "");
+  if (!src) return [];
+  const out = [];
+  const re = /<DataType\b[\s\S]*?<\/DataType>/gi;
+  let match = re.exec(src);
+  while (match) {
+    const block = String(match[0] || "");
+    const headMatch = block.match(/<DataType\b([^>]*)>/i);
+    const name = headMatch ? extractAttr(String(headMatch[1] || ""), "Name") : "";
+    if (!String(name || "").trim()) {
+      match = re.exec(src);
+      continue;
+    }
+    const refs = Array.from(
+      new Set(
+        Array.from(block.matchAll(/\bDataType\s*=\s*"([^"]+)"/gi))
+          .map((m) => String(m?.[1] || "").trim())
+          .filter(Boolean)
+      )
+    );
+    out.push({ name: String(name).trim(), block, refs });
+    match = re.exec(src);
+  }
+  return out;
+}
+
+function buildBinControlTemplateDataTypeBlocks(rawText, objectNames = []) {
+  const allBlocks = extractNamedDataTypeBlocks(rawText);
+  if (!allBlocks.length) return [];
+  const names = Array.from(
+    new Set((Array.isArray(objectNames) ? objectNames : []).map((v) => String(v || "").trim()).filter(Boolean))
+  );
+  if (!names.length) return [];
+  const shared = allBlocks.filter((row) => {
+    const name = String(row?.name || "");
+    return (
+      /^bincontrol$/i.test(name) ||
+      /^bincontrol_/i.test(name) ||
+      /^bincontroller$/i.test(name) ||
+      /^bincontroller_/i.test(name)
+    );
+  });
+  const template = allBlocks.filter((row) => /^bincontrol1(?:_|$)/i.test(String(row?.name || "")));
+  const out = [...shared.map((row) => String(row?.block || ""))];
+  names.forEach((name) => {
+    template.forEach((row) => {
+      let block = String(row?.block || "");
+      block = block.split("BinControl1").join(name);
+      block = block.split("bincontrol1").join(name.toLowerCase());
+      out.push(block);
+    });
+  });
+  const dedup = new Map();
+  out.forEach((block) => {
+    const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+    const name = head ? extractAttr(String(head[1] || ""), "Name") : "";
+    const key = String(name || "").trim().toLowerCase();
+    if (!key) return;
+    dedup.set(key, String(block || ""));
+  });
+  return Array.from(dedup.values());
+}
+
+function buildBatchControlTemplateDataTypeBlocks(rawText) {
+  const allBlocks = extractNamedDataTypeBlocks(rawText);
+  if (!allBlocks.length) return [];
+  const builtIn = new Set([
+    "bool", "bit", "sint", "int", "dint", "lint", "usint", "uint", "udint", "ulint",
+    "real", "lreal", "string", "time", "date", "datetime", "tod", "timer",
+  ]);
+  const byName = new Map(
+    allBlocks.map((row) => [String(row?.name || "").trim().toLowerCase(), row])
+  );
+  const queue = REQUIRED_BATCHCONTROL_TYPES
+    .map((name) => String(name || "").trim())
+    .filter((name) => byName.has(name.toLowerCase()));
+  const include = new Set(queue.map((n) => n.toLowerCase()));
+  while (queue.length) {
+    const current = String(queue.shift() || "").trim().toLowerCase();
+    const row = byName.get(current);
+    if (!row) continue;
+    (Array.isArray(row.refs) ? row.refs : []).forEach((ref) => {
+      const key = String(ref || "").trim().toLowerCase();
+      if (!key || builtIn.has(key) || include.has(key)) return;
+      if (!byName.has(key)) return;
+      include.add(key);
+      queue.push(key);
+    });
+  }
+  const out = allBlocks
+    .filter((row) => include.has(String(row?.name || "").trim().toLowerCase()))
+    .map((row) => String(row?.block || ""));
+  const outNames = new Set(
+    out.map((block) => {
+      const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+      return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim().toLowerCase() : "";
+    }).filter(Boolean)
+  );
+  REQUIRED_BATCHCONTROL_TYPES.forEach((typeName) => {
+    const key = String(typeName || "").trim().toLowerCase();
+    if (!key || outNames.has(key)) return;
+    out.push(
+      [
+        `<DataType Name="${typeName}" Family="NoFamily" Class="User">`,
+        "  <Members>",
+        '    <Member Name="Reserved" DataType="DINT"/>',
+        "  </Members>",
+        "</DataType>",
+      ].join("\n")
+    );
+    outNames.add(key);
+  });
+  return out;
+}
+
+function extractNamedTagXmlBlocks(rawText) {
+  const src = String(rawText || "");
+  if (!src) return [];
+  const out = [];
+  const blockRe = /<Tag\b[\s\S]*?<\/Tag>/gi;
+  let block = blockRe.exec(src);
+  while (block) {
+    const text = String(block[0] || "");
+    const head = text.match(/<Tag\b([^>]*)>/i);
+    const name = head ? extractAttr(String(head[1] || ""), "Name") : "";
+    if (String(name || "").trim()) out.push({ name: String(name).trim(), block: text });
+    block = blockRe.exec(src);
+  }
+  const selfRe = /<Tag\b([^>]*)\/>/gi;
+  let self = selfRe.exec(src);
+  while (self) {
+    const attrs = String(self[1] || "");
+    if (attrs.trim().startsWith("/")) {
+      self = selfRe.exec(src);
+      continue;
+    }
+    const name = extractAttr(attrs, "Name");
+    if (String(name || "").trim()) out.push({ name: String(name).trim(), block: String(self[0] || "") });
+    self = selfRe.exec(src);
+  }
+  return out;
+}
+
+function buildRouteTemplateTagBlocks(rawText, routeNames = []) {
+  const tags = extractNamedTagXmlBlocks(rawText);
+  if (!tags.length) return [];
+  const toSelfClosingTag = (blockText) => {
+    const src = String(blockText || "");
+    const openSelf = src.match(/<Tag\b([^>]*)\/>/i);
+    if (openSelf) {
+      const attrs = String(openSelf[1] || "").replace(/\/\s*$/, "").trim();
+      return `<Tag${attrs ? ` ${attrs}` : ""}/>`;
+    }
+    const open = src.match(/<Tag\b([^>]*)>/i);
+    const attrs = open ? String(open[1] || "").trim() : "";
+    return `<Tag${attrs ? ` ${attrs}` : ""}/>`;
+  };
+  const routeNameList = Array.from(
+    new Set((Array.isArray(routeNames) ? routeNames : []).map((v) => String(v || "").trim()).filter(Boolean))
+  );
+  const shared = tags.filter((row) => /^route$/i.test(String(row?.name || "")));
+  const routeOne = tags.filter((row) => /^route1/i.test(String(row?.name || "")));
+  const out = [...shared.map((row) => toSelfClosingTag(row.block))];
+  routeNameList.forEach((routeName) => {
+    routeOne.forEach((row) => {
+      let block = String(row?.block || "");
+      block = block.split("Route1").join(routeName);
+      block = block.split("route1").join(routeName.toLowerCase());
+      out.push(toSelfClosingTag(block));
+    });
+  });
+  const dedup = new Map();
+  out.forEach((block) => {
+    const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+    const name = head ? extractAttr(String(head[1] || ""), "Name") : "";
+    const key = String(name || "").trim().toLowerCase();
+    if (!key) return;
+    dedup.set(key, String(block || ""));
+  });
+  return Array.from(dedup.values());
+}
+
+function buildBinControlTemplateTagBlocks(rawText, objectNames = []) {
+  const tags = extractNamedTagXmlBlocks(rawText);
+  if (!tags.length) return [];
+  const names = Array.from(
+    new Set((Array.isArray(objectNames) ? objectNames : []).map((v) => String(v || "").trim()).filter(Boolean))
+  );
+  if (!names.length) return [];
+  const toSelfClosingTag = (blockText) => {
+    const src = String(blockText || "");
+    const openSelf = src.match(/<Tag\b([^>]*)\/>/i);
+    if (openSelf) {
+      const attrs = String(openSelf[1] || "").replace(/\/\s*$/, "").trim();
+      return `<Tag${attrs ? ` ${attrs}` : ""}/>`;
+    }
+    const open = src.match(/<Tag\b([^>]*)>/i);
+    const attrs = open ? String(open[1] || "").trim() : "";
+    return `<Tag${attrs ? ` ${attrs}` : ""}/>`;
+  };
+  const shared = tags.filter((row) => /^bincontrol$/i.test(String(row?.name || "")));
+  const template = tags.filter((row) => /^bincontrol1/i.test(String(row?.name || "")));
+  const out = [...shared.map((row) => toSelfClosingTag(row.block))];
+  names.forEach((name) => {
+    template.forEach((row) => {
+      let block = String(row?.block || "");
+      block = block.split("BinControl1").join(name);
+      block = block.split("bincontrol1").join(name.toLowerCase());
+      out.push(toSelfClosingTag(block));
+    });
+  });
+  const dedup = new Map();
+  out.forEach((block) => {
+    const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+    const name = head ? extractAttr(String(head[1] || ""), "Name") : "";
+    const key = String(name || "").trim().toLowerCase();
+    if (!key) return;
+    dedup.set(key, String(block || ""));
+  });
+  return Array.from(dedup.values());
+}
+
+function extractTagDataTypeNames(tagBlocks = []) {
+  const out = new Set();
+  (Array.isArray(tagBlocks) ? tagBlocks : []).forEach((block) => {
+    const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+    const dataType = head ? String(extractAttr(String(head[1] || ""), "DataType") || "").trim() : "";
+    if (dataType) out.add(dataType);
+  });
+  return Array.from(out.values());
+}
+
+function buildDataTypeClosureByNames(rawText, rootTypeNames = []) {
+  const all = extractNamedDataTypeBlocks(rawText);
+  if (!all.length) return [];
+  const builtIn = new Set([
+    "bool", "bit", "sint", "int", "dint", "lint", "usint", "uint", "udint", "ulint",
+    "real", "lreal", "string", "time", "date", "datetime", "tod", "timer",
+  ]);
+  const byName = new Map(
+    all.map((row) => [String(row?.name || "").trim().toLowerCase(), row])
+  );
+  const queue = Array.from(
+    new Set((Array.isArray(rootTypeNames) ? rootTypeNames : []).map((v) => String(v || "").trim()).filter(Boolean))
+  );
+  const include = new Set(queue.map((n) => n.toLowerCase()));
+  while (queue.length) {
+    const current = String(queue.shift() || "").trim().toLowerCase();
+    const row = byName.get(current);
+    if (!row) continue;
+    (Array.isArray(row.refs) ? row.refs : []).forEach((ref) => {
+      const key = String(ref || "").trim().toLowerCase();
+      if (!key || builtIn.has(key) || include.has(key)) return;
+      if (!byName.has(key)) return;
+      include.add(key);
+      queue.push(key);
+    });
+  }
+  return all
+    .filter((row) => include.has(String(row?.name || "").trim().toLowerCase()))
+    .map((row) => String(row?.block || ""));
+}
+
+function buildExplicitBinObjectTagBlocks(binNames = []) {
+  return Array.from(
+    new Set((Array.isArray(binNames) ? binNames : []).map((v) => String(v || "").trim()).filter(Boolean))
+  ).map(
+    (name) =>
+      `<Tag Name="${name}" Class="Standard" TagType="Base" DataType="BatchControl_Bin" Constant="false" ExternalAccess="Read/Write" OpcUaAccess="None"/>`
+  );
+}
+
+function buildSubRouteObjectTagBlocks(subRouteNames = []) {
+  const names = Array.from(
+    new Set((Array.isArray(subRouteNames) ? subRouteNames : []).map((v) => String(v || "").trim()).filter(Boolean))
+  );
+  const out = [];
+  names.forEach((base) => {
+    out.push(
+      `<Tag Name="${base}" Class="Standard" TagType="Base" DataType="Route" Constant="false" ExternalAccess="Read/Write" OpcUaAccess="None"/>`
+    );
+    out.push(
+      `<Tag Name="${base}_Data" Class="Standard" TagType="Base" DataType="Route1Data" Constant="false" ExternalAccess="Read/Write" OpcUaAccess="None"/>`
+    );
+    out.push(
+      `<Tag Name="${base}_Group_Mgr" Class="Standard" TagType="Base" DataType="GroupControl_Mgr" Constant="false" ExternalAccess="Read/Write" OpcUaAccess="None"/>`
+    );
+    out.push(
+      `<Tag Name="${base}_Tool" Class="Standard" TagType="Base" DataType="GroupControl_RouteTool" Constant="false" ExternalAccess="Read/Write" OpcUaAccess="None"/>`
+    );
+  });
+  return out;
+}
+
+function filterTagBlocksByObjectNames(tagBlocks = [], options = {}) {
+  const blocks = Array.isArray(tagBlocks) ? tagBlocks : [];
+  const routeNames = Array.isArray(options?.routeNames) ? options.routeNames : [];
+  const subRouteNames = Array.isArray(options?.subRouteNames) ? options.subRouteNames : [];
+  const ioNames = Array.isArray(options?.ioNames) ? options.ioNames : [];
+  const binNames = Array.isArray(options?.binNames) ? options.binNames : [];
+  const matchExactOrUnderscore = (value, root) => {
+    const v = String(value || "").toLowerCase();
+    const r = String(root || "").toLowerCase();
+    return !!r && (v === r || v.startsWith(`${r}_`));
+  };
+  return blocks.filter((block) => {
+    const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+    const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+    if (!name) return false;
+    const lower = name.toLowerCase();
+    const isBinScopedTag = /_bin[a-z0-9]+(?:_|$)/i.test(lower);
+    for (const io of ioNames) {
+      if (!matchExactOrUnderscore(lower, io)) continue;
+      // Keep sender/receiver tags, but only keep bin-scoped tags if that bin exists in object tree.
+      if (!isBinScopedTag) return true;
+      for (const bin of binNames) {
+        if (matchExactOrUnderscore(lower, bin)) return true;
+      }
+      return false;
+    }
+    for (const bin of binNames) {
+      if (matchExactOrUnderscore(lower, bin)) return true;
+    }
+    const looksLikeNestedRouteTag = /^route[^_]*_[^_]+(?:_|$)/i.test(lower);
+    if (looksLikeNestedRouteTag) {
+      for (const subRoute of subRouteNames) {
+        if (matchExactOrUnderscore(lower, subRoute)) return true;
+      }
+      return false;
+    }
+    for (const route of routeNames) {
+      const r = String(route || "").trim();
+      if (!r) continue;
+      if (lower === r.toLowerCase()) return true;
+      if (lower.startsWith(`${r.toLowerCase()}_data`)) return true;
+    }
+    for (const subRoute of subRouteNames) {
+      if (matchExactOrUnderscore(lower, subRoute)) return true;
+    }
+    return false;
+  });
+}
+
+function buildRouteTemplateDataTypeBlocks(rawText, routeNames = []) {
+  const REQUIRED_ROUTE_GENERIC_TYPES = [
+    "Route_Array",
+    "Route_Cmd",
+    "Route_Group",
+    "Route_GroupControl",
+    "Route_HMI_Read",
+    "Route_HMI_Write",
+    "Route_Job_State",
+    "Route_Route_State",
+    "Route_Status",
+  ];
+  const inferMembersFromDecoratedData = (typeName) => {
+    const src = String(rawText || "");
+    if (!src) return [];
+    const wanted = String(typeName || "").trim().toLowerCase();
+    if (!wanted) return [];
+    const members = new Map();
+    const structRe = /<Structure\b([^>]*)>([\s\S]*?)<\/Structure>/gi;
+    let sm = structRe.exec(src);
+    while (sm) {
+      const attrs = String(sm[1] || "");
+      const body = String(sm[2] || "");
+      const dt = extractAttr(attrs, "DataType");
+      if (String(dt || "").trim().toLowerCase() !== wanted) {
+        sm = structRe.exec(src);
+        continue;
+      }
+      const memberRe = /<DataValueMember\b([^>]*)\/>/gi;
+      let mm = memberRe.exec(body);
+      while (mm) {
+        const ma = String(mm[1] || "");
+        const name = extractAttr(ma, "Name");
+        const dataType = extractAttr(ma, "DataType") || "DINT";
+        const key = String(name || "").trim().toLowerCase();
+        if (key && !members.has(key)) {
+          members.set(key, { name: String(name || "").trim(), dataType: String(dataType || "").trim() || "DINT" });
+        }
+        mm = memberRe.exec(body);
+      }
+      sm = structRe.exec(src);
+    }
+    return Array.from(members.values());
+  };
+  const makeGenericRouteTypeBlock = (typeName) => {
+    const inferred = inferMembersFromDecoratedData(typeName);
+    const memberLines = inferred.length
+      ? inferred.map((m) => `    <Member Name="${m.name}" DataType="${m.dataType}"/>`)
+      : ['    <Member Name="Reserved" DataType="DINT"/>'];
+    return [
+      `<DataType Name="${typeName}" Family="NoFamily" Class="User">`,
+      "  <Members>",
+      ...memberLines,
+      "  </Members>",
+      "</DataType>",
+    ].join("\n");
+  };
+  const isRouteTemplateTypeName = (name) => {
+    const value = String(name || "").trim();
+    if (!value) return false;
+    if (/^route$/i.test(value)) return true;
+    if (/^route_/i.test(value)) return true;
+    return /^route1data(?:_|$)/i.test(value);
+  };
+  const routeTypes = extractNamedRouteDataTypeBlocks(rawText).filter((x) =>
+    isRouteTemplateTypeName(String(x?.name || ""))
+  );
+  if (!routeTypes.length) return [];
+  const shared = routeTypes.filter((x) => /^route$/i.test(String(x?.name || "")));
+  const genericRouteTypes = routeTypes.filter((x) => /^route_/i.test(String(x?.name || "")));
+  const templateRouteOne = routeTypes.filter((x) => /^route1data(?:_|$)/i.test(String(x?.name || "")));
+  const routeNameList = Array.from(
+    new Set((Array.isArray(routeNames) ? routeNames : []).map((v) => String(v || "").trim()).filter(Boolean))
+  );
+  const out = [
+    ...shared.map((x) => String(x.block || "")),
+    ...genericRouteTypes.map((x) => String(x.block || "")),
+  ];
+  routeNameList.forEach((routeName) => {
+    const sourceBlocks = templateRouteOne || [];
+    sourceBlocks.forEach((entry) => {
+      let block = String(entry?.block || "");
+      const routeDataPrefix = `${routeName}Data`;
+      block = block.split("Route1Data").join(routeDataPrefix);
+      block = block.split("route1data").join(routeDataPrefix.toLowerCase());
+      block = block.split("Route1").join(routeName);
+      block = block.split("route1").join(routeName.toLowerCase());
+      out.push(block);
+    });
+  });
+  const dedup = new Map();
+  out.forEach((block) => {
+    const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+    const name = head ? extractAttr(String(head[1] || ""), "Name") : "";
+    const key = String(name || "").trim().toLowerCase();
+    if (!key) return;
+    dedup.set(key, String(block || ""));
+  });
+  REQUIRED_ROUTE_GENERIC_TYPES.forEach((typeName) => {
+    const key = String(typeName || "").trim().toLowerCase();
+    if (!key || dedup.has(key)) return;
+    dedup.set(key, makeGenericRouteTypeBlock(typeName));
+  });
+  return Array.from(dedup.values());
+}
+
+function filterRouteMembersToRouteLike(blockText) {
+  const builtIn = new Set([
+    "bool",
+    "bit",
+    "sint",
+    "int",
+    "dint",
+    "lint",
+    "usint",
+    "uint",
+    "udint",
+    "ulint",
+    "real",
+    "lreal",
+    "string",
+    "time",
+    "date",
+    "datetime",
+    "tod",
+    "timer",
+  ]);
+  const keepDataType = (value) => {
+    const key = String(value || "").trim().toLowerCase();
+    if (!key) return false;
+    if (builtIn.has(key)) return true;
+    if (key.includes("route")) return true;
+    if (key.includes("job")) return true;
+    if (key.includes("bincontrol")) return true;
+    if (key.includes("batchcontrol")) return true;
+    return false;
+  };
+  let out = String(blockText || "");
+  out = out.replace(/<Member\b([^>]*)\/>/gi, (full, attrs) => {
+    const dt = extractAttr(String(attrs || ""), "DataType");
+    return keepDataType(dt) ? full : "";
+  });
+  out = out.replace(/<Member\b([^>]*)>[\s\S]*?<\/Member>/gi, (full, attrs) => {
+    const dt = extractAttr(String(attrs || ""), "DataType");
+    return keepDataType(dt) ? full : "";
+  });
+  return out;
+}
+
+function findMissingCustomTypeRefs(dataTypeBlocks = []) {
+  const builtIn = new Set([
+    "bool",
+    "bit",
+    "sint",
+    "int",
+    "dint",
+    "lint",
+    "usint",
+    "uint",
+    "udint",
+    "ulint",
+    "real",
+    "lreal",
+    "string",
+    "time",
+    "date",
+    "datetime",
+    "tod",
+    "timer",
+  ]);
+  const blocks = Array.isArray(dataTypeBlocks) ? dataTypeBlocks : [];
+  const names = new Set();
+  blocks.forEach((block) => {
+    const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+    const name = head ? extractAttr(String(head[1] || ""), "Name") : "";
+    if (name) names.add(String(name).trim());
+  });
+  const missing = new Set();
+  blocks.forEach((block) => {
+    const refs = Array.from(String(block || "").matchAll(/\bDataType\s*=\s*"([^"]+)"/gi))
+      .map((m) => String(m?.[1] || "").trim())
+      .filter(Boolean);
+    refs.forEach((ref) => {
+      const key = String(ref || "").toLowerCase();
+      if (builtIn.has(key)) return;
+      if (names.has(ref)) return;
+      missing.add(ref);
+    });
+  });
+  return Array.from(missing.values());
+}
+
+function collectCustomDataTypeRefs(dataTypeBlocks = []) {
+  const builtIn = new Set([
+    "bool",
+    "bit",
+    "sint",
+    "int",
+    "dint",
+    "lint",
+    "usint",
+    "uint",
+    "udint",
+    "ulint",
+    "real",
+    "lreal",
+    "string",
+    "time",
+    "date",
+    "datetime",
+    "tod",
+    "timer",
+  ]);
+  const refs = new Set();
+  (Array.isArray(dataTypeBlocks) ? dataTypeBlocks : []).forEach((block) => {
+    Array.from(String(block || "").matchAll(/\bDataType\s*=\s*"([^"]+)"/gi))
+      .map((m) => String(m?.[1] || "").trim())
+      .filter(Boolean)
+      .forEach((name) => {
+        const key = String(name || "").toLowerCase();
+        if (!key || builtIn.has(key)) return;
+        refs.add(String(name));
+      });
+  });
+  return Array.from(refs.values());
+}
+
+function extractAoiXmlBlocksByName(rawText, names = []) {
+  const src = String(rawText || "");
+  if (!src) return [];
+  const wanted = new Set((Array.isArray(names) ? names : []).map((n) => String(n || "").trim().toLowerCase()).filter(Boolean));
+  if (!wanted.size) return [];
+  const out = [];
+  const re = /<AddOnInstructionDefinition\b[\s\S]*?<\/AddOnInstructionDefinition>/gi;
+  let match = re.exec(src);
+  while (match) {
+    const block = String(match[0] || "");
+    const head = block.match(/<AddOnInstructionDefinition\b([^>]*)>/i);
+    const name = head ? extractAttr(String(head[1] || ""), "Name") : "";
+    const key = String(name || "").trim().toLowerCase();
+    if (key && wanted.has(key)) out.push(block);
+    match = re.exec(src);
+  }
+  return out;
+}
+
+function extractAllAoiXmlBlocks(rawText) {
+  const src = String(rawText || "");
+  if (!src) return [];
+  const out = [];
+  const re = /<AddOnInstructionDefinition\b[\s\S]*?<\/AddOnInstructionDefinition>/gi;
+  let match = re.exec(src);
+  while (match) {
+    out.push(String(match[0] || ""));
+    match = re.exec(src);
+  }
+  return out;
+}
+
+function buildImportSafeAoiXmlBlocks(rawText, dataTypeBlocks = []) {
+  const src = String(rawText || "");
+  if (!src) return [];
+  const builtIn = new Set([
+    "bool",
+    "bit",
+    "sint",
+    "int",
+    "dint",
+    "lint",
+    "usint",
+    "uint",
+    "udint",
+    "ulint",
+    "real",
+    "lreal",
+    "string",
+    "time",
+    "date",
+    "datetime",
+    "tod",
+    "timer",
+  ]);
+  const udtNames = new Set(
+    (Array.isArray(dataTypeBlocks) ? dataTypeBlocks : [])
+      .map((block) => {
+        const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+        return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim().toLowerCase() : "";
+      })
+      .filter(Boolean)
+  );
+  const all = extractAllAoiXmlBlocks(src)
+    .map((block) => {
+      const head = String(block || "").match(/<AddOnInstructionDefinition\b([^>]*)>/i);
+      const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+      const key = name.toLowerCase();
+      const refs = Array.from(String(block || "").matchAll(/\bDataType\s*=\s*"([^"]+)"/gi))
+        .map((m) => String(m?.[1] || "").trim().toLowerCase())
+        .filter(Boolean);
+      return { block: String(block || ""), name, key, refs };
+    })
+    .filter((row) => row.key && !udtNames.has(row.key)); // avoid AOI/UDT name collisions
+  const keep = new Map(all.map((row) => [row.key, row]));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const keepNames = new Set(keep.keys());
+    for (const [key, row] of Array.from(keep.entries())) {
+      const hasUnresolved = row.refs.some((ref) => {
+        if (!ref || builtIn.has(ref)) return false;
+        if (udtNames.has(ref)) return false;
+        if (keepNames.has(ref)) return false; // AOI dependency
+        return true;
+      });
+      if (hasUnresolved) {
+        keep.delete(key);
+        changed = true;
+      }
+    }
+  }
+  return Array.from(keep.values()).map((row) => row.block);
+}
+
+function extractCustomDataTypeRefsFromBlocks(blocks = [], excludedNames = []) {
+  const builtIn = new Set([
+    "bool",
+    "bit",
+    "sint",
+    "int",
+    "dint",
+    "lint",
+    "usint",
+    "uint",
+    "udint",
+    "ulint",
+    "real",
+    "lreal",
+    "string",
+    "time",
+    "date",
+    "datetime",
+    "tod",
+    "timer",
+  ]);
+  const excluded = new Set((Array.isArray(excludedNames) ? excludedNames : []).map((x) => String(x || "").trim().toLowerCase()));
+  const refs = new Map();
+  (Array.isArray(blocks) ? blocks : []).forEach((block) => {
+    Array.from(String(block || "").matchAll(/\bDataType\s*=\s*"([^"]+)"/gi))
+      .map((m) => String(m?.[1] || "").trim())
+      .filter(Boolean)
+      .forEach((name) => {
+        const key = name.toLowerCase();
+        if (!key || builtIn.has(key) || excluded.has(key)) return;
+        if (!refs.has(key)) refs.set(key, name);
+      });
+  });
+  return Array.from(refs.values());
+}
+
+function pruneTemplateToSelectedRoutes(rawText, selectedRouteNumbers = []) {
+  const src = String(rawText || "");
+  if (!src) return src;
+  const selected = new Set(
+    (Array.isArray(selectedRouteNumbers) ? selectedRouteNumbers : [])
+      .map((n) => String(n || "").trim())
+      .filter(Boolean)
+  );
+  if (!selected.size) return src;
+  const keepByName = (name) => {
+    const value = String(name || "");
+    const m = value.match(/route\s*([0-9]+)/i);
+    if (!m) return true;
+    return selected.has(String(m[1] || "").trim());
+  };
+  let out = src;
+  out = out.replace(/<DataType\b([\s\S]*?)<\/DataType>/gi, (block, attrs) => {
+    const name = extractAttr(String(attrs || ""), "Name");
+    return keepByName(name) ? block : "";
+  });
+  out = out.replace(/<Tag\b([\s\S]*?)\/>/gi, (block, attrs) => {
+    const name = extractAttr(String(attrs || ""), "Name");
+    return keepByName(name) ? block : "";
+  });
+  out = out.replace(/<Tag\b([\s\S]*?)>([\s\S]*?)<\/Tag>/gi, (block, attrs) => {
+    const name = extractAttr(String(attrs || ""), "Name");
+    return keepByName(name) ? block : "";
+  });
+  return out;
+}
+
+function pruneBinArtifactsFromTemplate(rawText) {
+  let out = String(rawText || "");
+  if (!out) return out;
+  const keepByName = (name) => !/\bbin\b/i.test(String(name || ""));
+  out = out.replace(/<DataType\b([\s\S]*?)<\/DataType>/gi, (block, attrs) => {
+    const name = extractAttr(String(attrs || ""), "Name");
+    return keepByName(name) ? block : "";
+  });
+  out = out.replace(/<Tag\b([\s\S]*?)\/>/gi, (block, attrs) => {
+    const name = extractAttr(String(attrs || ""), "Name");
+    return keepByName(name) ? block : "";
+  });
+  out = out.replace(/<Tag\b([\s\S]*?)>([\s\S]*?)<\/Tag>/gi, (block, attrs) => {
+    const name = extractAttr(String(attrs || ""), "Name");
+    return keepByName(name) ? block : "";
+  });
+  return out;
+}
+
 function isImportableFieldName(name) {
   return String(name || "").trim().toLowerCase() !== "class";
 }
@@ -1231,18 +2193,24 @@ export default function PlcAnalyzer({
   const [dataTypeExcludedFieldsByPlc, setDataTypeExcludedFieldsByPlc] = useState({});
   const [aoiLogicExpandedByName, setAoiLogicExpandedByName] = useState({});
   const [aoiLogicSearch, setAoiLogicSearch] = useState("");
-  const [codeGenFormat, setCodeGenFormat] = useState("list");
+  const [codeGenFormat, setCodeGenFormat] = useState("l5x-template");
   const [codeGenTagSearch, setCodeGenTagSearch] = useState("");
   const [codeGenTagsByPlc, setCodeGenTagsByPlc] = useState({});
   const [codeGenNewTagDraft, setCodeGenNewTagDraft] = useState("");
   const [codeGenNewTagEquipmentDraft, setCodeGenNewTagEquipmentDraft] = useState("");
   const [codeGenTagMetaByPlc, setCodeGenTagMetaByPlc] = useState({});
   const [codeGenGroupsByPlc, setCodeGenGroupsByPlc] = useState({});
+  const [codeGenTemplateRouteIdDraft, setCodeGenTemplateRouteIdDraft] = useState("");
+  const [codeGenRouteTemplateTextByPlc, setCodeGenRouteTemplateTextByPlc] = useState({});
+  const [codeGenTemplateRouteNameByPlc, setCodeGenTemplateRouteNameByPlc] = useState({});
   const [codeGenGroupNameDraft, setCodeGenGroupNameDraft] = useState("");
+  const [codeGenGroupTypeDraft, setCodeGenGroupTypeDraft] = useState("Group");
   const [codeGenGroupParentDraft, setCodeGenGroupParentDraft] = useState("");
+  const [codeGenSelectedGroupId, setCodeGenSelectedGroupId] = useState("");
   const [codeGenExpandedGroupsByPlc, setCodeGenExpandedGroupsByPlc] = useState({});
   const [codeGenDragTag, setCodeGenDragTag] = useState("");
   const [codeGenPersistReadyByPlc, setCodeGenPersistReadyByPlc] = useState({});
+  const [codeGenReady, setCodeGenReady] = useState(false);
   const [plcTopTab, setPlcTopTab] = useState(
     String(initialTab || "").trim() === "code-gen-pro" ? "code-gen-pro" : "plc"
   );
@@ -1278,12 +2246,7 @@ export default function PlcAnalyzer({
     const nonCodeGen = base.filter((tab) => String(tab?.key || "") !== "code-gen-pro");
     return nonCodeGen.length ? nonCodeGen : base;
   }, [allowedPlcTabSet, plcTabs, plcTopTab]);
-  const showTopLevelPlcTabs = useMemo(() => {
-    const hasCodeGen = plcTabs.some((tab) => String(tab?.key || "") === "code-gen-pro");
-    if (!hasCodeGen) return false;
-    if (!allowedPlcTabSet) return true;
-    return allowedPlcTabSet.has("code-gen-pro");
-  }, [allowedPlcTabSet, plcTabs]);
+  const showTopLevelPlcTabs = false;
   const codeGenOnlyView = String(plcTopTab || "") === "code-gen-pro";
 
   const selected = useMemo(() => {
@@ -1308,14 +2271,14 @@ export default function PlcAnalyzer({
   const memberPickerSelected = Array.isArray(memberPickerSelectionByPlc?.[chatKey])
     ? memberPickerSelectionByPlc[chatKey]
     : [];
-  const aoiTemplates = useMemo(
-    () => scanAoiTemplates(String(selected?.rawText || "")),
-    [selected?.rawText]
-  );
-  const dataTypeTemplates = useMemo(
-    () => scanDataTypeTemplates(String(selected?.rawText || "")),
-    [selected?.rawText]
-  );
+  const aoiTemplates = useMemo(() => {
+    if (String(activeTab || "") !== "aoi-templates") return [];
+    return scanAoiTemplates(String(selected?.rawText || ""));
+  }, [activeTab, selected?.rawText]);
+  const dataTypeTemplates = useMemo(() => {
+    if (String(activeTab || "") !== "datatype-templates") return [];
+    return scanDataTypeTemplates(String(selected?.rawText || ""));
+  }, [activeTab, selected?.rawText]);
   const filteredAoiTemplates = useMemo(() => {
     const q = String(aoiTemplateSearch || "").trim().toLowerCase();
     if (!q) return aoiTemplates;
@@ -1344,10 +2307,10 @@ export default function PlcAnalyzer({
       );
     });
   }, [dataTypeTemplates, dataTypeTemplateSearch]);
-  const aoiLogicBlocks = useMemo(
-    () => extractAoiLogicBlocks(String(selected?.rawText || ""), String(analysis?.fileFormat || "")),
-    [selected?.rawText, analysis?.fileFormat]
-  );
+  const aoiLogicBlocks = useMemo(() => {
+    if (String(activeTab || "") !== "aoi-logic") return [];
+    return extractAoiLogicBlocks(String(selected?.rawText || ""), String(analysis?.fileFormat || ""));
+  }, [activeTab, selected?.rawText, analysis?.fileFormat]);
   const filteredAoiLogicBlocks = useMemo(() => {
     const q = String(aoiLogicSearch || "").trim().toLowerCase();
     if (!q) return aoiLogicBlocks;
@@ -1361,7 +2324,28 @@ export default function PlcAnalyzer({
     () => (codeGenTagMetaByPlc?.[chatKey] && typeof codeGenTagMetaByPlc[chatKey] === "object" ? codeGenTagMetaByPlc[chatKey] : {}),
     [chatKey, codeGenTagMetaByPlc]
   );
+  const codeGenRouteTemplateText = useMemo(
+    () => String(codeGenRouteTemplateTextByPlc?.[chatKey] || ""),
+    [chatKey, codeGenRouteTemplateTextByPlc]
+  );
+  const codeGenTemplateRouteName = useMemo(
+    () => String(codeGenTemplateRouteNameByPlc?.[chatKey] || ""),
+    [chatKey, codeGenTemplateRouteNameByPlc]
+  );
   const codeGenOutputText = useMemo(() => {
+    if (String(activeTab || "") !== "code-gen-pro" || !codeGenReady) return "";
+    const escapeXml = (value) =>
+      String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+    const sanitizeControllerName = (value) => {
+      const cleaned = String(value || "").replace(/[^A-Za-z0-9_]/g, "_");
+      const collapsed = cleaned.replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+      return collapsed || "MyController";
+    };
     const tags = Array.from(new Set(codeGenUserTags.map((t) => String(t || "").trim()).filter(Boolean))).sort((a, b) =>
       a.localeCompare(b)
     );
@@ -1395,6 +2379,810 @@ export default function PlcAnalyzer({
       });
     });
 
+    if (codeGenFormat === "l5x-template") {
+      const controllerName = sanitizeControllerName(selected?.name || "MyController");
+      const sourceRouteName = String(codeGenTemplateRouteName || "").trim();
+      const routeObject =
+        groups.find(
+          (g) =>
+            String(g?.groupType || "").trim().toLowerCase() === "route" ||
+            /^route\s*\d*$/i.test(String(g?.name || "").trim())
+        ) || null;
+      const targetRouteName = String(routeObject?.name || sourceRouteName).trim();
+      const hasRouteObject = !!routeObject;
+      const routeObjectNames = Array.from(
+        new Set(
+          groups
+            .filter(
+              (g) =>
+                String(g?.groupType || "").trim().toLowerCase() === "route" ||
+                /^route\s*\d*$/i.test(String(g?.name || "").trim())
+            )
+            .map((g) => String(g?.name || "").trim())
+            .filter(Boolean)
+        )
+      );
+      const findRouteAncestorName = (group) => {
+        let cursor = group;
+        let guard = 0;
+        while (cursor && guard < 64) {
+          const type = String(cursor?.groupType || "").trim().toLowerCase();
+          const name = String(cursor?.name || "").trim();
+          if (type === "route" || /^route\s*\d*$/i.test(name)) return name;
+          const pid = String(cursor?.parentId || "").trim();
+          cursor = pid ? groupById.get(pid) || null : null;
+          guard += 1;
+        }
+        return "";
+      };
+      const binControlObjectNames = Array.from(
+        new Set(
+          groups
+            .filter((g) => {
+              const type = String(g?.groupType || "").trim().toLowerCase();
+              return type === "sender" || type === "receiver";
+            })
+            .map((g) => {
+              const ownName = String(g?.name || "").trim();
+              const routeAncestor = findRouteAncestorName(g);
+              if (!ownName) return "";
+              return routeAncestor ? `${routeAncestor}_${ownName}` : ownName;
+            })
+            .filter(Boolean)
+        )
+      );
+      const subRouteObjectNames = Array.from(
+        new Set(
+          groups
+            .filter((g) => String(g?.groupType || "").trim().toLowerCase() === "subroute")
+            .map((g) => {
+              const ownName = String(g?.name || "").trim();
+              const routeAncestor = findRouteAncestorName(g);
+              if (!ownName || !routeAncestor) return "";
+              const routePrefix = `${routeAncestor}_`.toLowerCase();
+              if (ownName.toLowerCase().startsWith(routePrefix)) return ownName;
+              return `${routeAncestor}_${ownName}`;
+            })
+            .filter(Boolean)
+        )
+      );
+      const binObjectNames = Array.from(
+        new Set(
+          groups
+            .filter((g) => String(g?.groupType || "").trim().toLowerCase() === "bin")
+            .map((g) => {
+              const ownName = String(g?.name || "").trim();
+              if (!ownName) return "";
+              let cursor = g;
+              let guard = 0;
+              while (cursor && guard < 64) {
+                const type = String(cursor?.groupType || "").trim().toLowerCase();
+                const name = String(cursor?.name || "").trim();
+                if ((type === "sender" || type === "receiver") && name) {
+                  const routeAncestor = findRouteAncestorName(cursor);
+                  const parentName = routeAncestor ? `${routeAncestor}_${name}` : name;
+                  return `${parentName}_${ownName}`;
+                }
+                const pid = String(cursor?.parentId || "").trim();
+                cursor = pid ? groupById.get(pid) || null : null;
+                guard += 1;
+              }
+              return ownName;
+            })
+            .filter(Boolean)
+        )
+      );
+      const buildMainRoutineProgramsXml = () => {
+        const PROGRAM_NAME = "Routing";
+        const MAIN_ROUTINE_NAME = "MainRoutine";
+        const LEGACY_PROGRAM_NAME = "MainProgram";
+        const LEGACY_MAIN_ROUTINE_NAME = "Main";
+        const isRouteType = (group) => String(group?.groupType || "").trim().toLowerCase() === "route";
+        const isSubRouteType = (group) => String(group?.groupType || "").trim().toLowerCase() === "subroute";
+        const childrenByParent = new Map();
+        groups.forEach((g) => {
+          const pid = String(g?.parentId || "").trim();
+          if (!pid) return;
+          if (!childrenByParent.has(pid)) childrenByParent.set(pid, []);
+          childrenByParent.get(pid).push(g);
+        });
+        const routeRoots = groups.filter((g) => isRouteType(g));
+        const routeExec = [];
+        let routeArrayIndex = 0;
+        routeRoots.forEach((routeRoot) => {
+          const routeName = String(routeRoot?.name || "").trim();
+          if (!routeName) return;
+          const routeChildren = (childrenByParent.get(String(routeRoot?.id || "").trim()) || []).filter((g) => isSubRouteType(g));
+          if (routeChildren.length) {
+            routeExec.push({ kind: "route-control", routeName, sourceTemplate: "Route1_0_Control" });
+            routeChildren.forEach((sub) => {
+              const subName = String(sub?.name || "").trim();
+              if (!subName) return;
+              // SubRoute tags are generated as <RouteName>_<SubRouteName>; keep routine calls aligned.
+              const routePrefix = `${routeName}_`.toLowerCase();
+              const fullSubRouteName = subName.toLowerCase().startsWith(routePrefix)
+                ? subName
+                : `${routeName}_${subName}`;
+              routeExec.push({
+                kind: "route-run",
+                routeName: fullSubRouteName,
+                baseRouteName: routeName,
+                index: routeArrayIndex,
+                controlSourceTemplate: "Route1_1_Control",
+                statusSourceTemplate: "Route1_1_Status",
+              });
+              routeArrayIndex += 1;
+            });
+            return;
+          }
+          routeExec.push({
+            kind: "route-run",
+            routeName,
+            baseRouteName: routeName,
+            index: routeArrayIndex,
+            controlSourceTemplate: "Route1_1_Control",
+            statusSourceTemplate: "Route1_1_Status",
+          });
+          routeArrayIndex += 1;
+        });
+        const rungBlocks = routeExec.map((row, idx) => {
+          if (row.kind === "route-control") {
+            return [
+              `            <Rung Number="${idx}" Type="N">`,
+              `              <Comment><![CDATA[${row.routeName}]]></Comment>`,
+              `              <Text><![CDATA[JSR(${row.routeName}_0_Control,0);]]></Text>`,
+              "            </Rung>",
+            ].join("\n");
+          }
+          return [
+            `            <Rung Number="${idx}" Type="N">`,
+            `              <Comment><![CDATA[${row.routeName}]]></Comment>`,
+            `              <Text><![CDATA[[MOVE(${row.index},${row.routeName}.RouteArrayPointer) ,CPS(${row.routeName},Route_Array.Route[${row.index}],1) ,JSR(${row.routeName}_Control,0) ,JSR(${row.routeName}_Status,0) ,CPS(${row.routeName},Route_Array.Route[${row.index}],1) ];]]></Text>`,
+            "            </Rung>",
+          ].join("\n");
+        });
+        const rllContent = rungBlocks.length
+          ? ["            <RLLContent>", rungBlocks.join("\n"), "            </RLLContent>"].join("\n")
+          : "            <RLLContent/>";
+        const sourceText = /<RSLogix5000Content\b/i.test(String(selected?.rawText || ""))
+          ? String(selected?.rawText || "")
+          : String(codeGenRouteTemplateText || "");
+        const sourceIsMainRoutineExport =
+          /TargetType\s*=\s*"Routine"/i.test(sourceText) && /TargetName\s*=\s*"Main"/i.test(sourceText);
+        const preferredMainProgramNames = ["KE_MainProgram", "MainProgram"];
+        const findProgramBodyByName = (programName) => {
+          const wanted = String(programName || "").trim().toLowerCase();
+          if (!wanted) return "";
+          const re = /<Program\b([^>]*)>([\s\S]*?)<\/Program>/gi;
+          let m = re.exec(sourceText);
+          while (m) {
+            const attrs = String(m[1] || "");
+            const name = String(extractAttr(attrs, "Name") || "").trim().toLowerCase();
+            if (name === wanted) return String(m[2] || "");
+            m = re.exec(sourceText);
+          }
+          return "";
+        };
+        const getRoutineTemplateFromText = (text, routineName) => {
+          const wanted = String(routineName || "").trim().toLowerCase();
+          if (!wanted) return "";
+          const re = /<Routine\b([^>]*)>([\s\S]*?)<\/Routine>/gi;
+          let m = re.exec(String(text || ""));
+          while (m) {
+            const attrs = String(m[1] || "");
+            const name = String(extractAttr(attrs, "Name") || "").trim().toLowerCase();
+            if (name === wanted) return `<Routine ${attrs.trim()}>\n${String(m[2] || "").trim()}\n</Routine>`;
+            m = re.exec(String(text || ""));
+          }
+          return "";
+        };
+        const getRoutineTemplatesByNameFromText = (text, routineName) => {
+          const wanted = String(routineName || "").trim().toLowerCase();
+          if (!wanted) return [];
+          const out = [];
+          const re = /<Routine\b([^>]*)>([\s\S]*?)<\/Routine>/gi;
+          let m = re.exec(String(text || ""));
+          while (m) {
+            const attrs = String(m[1] || "");
+            const name = String(extractAttr(attrs, "Name") || "").trim().toLowerCase();
+            if (name === wanted) out.push(`<Routine ${attrs.trim()}>\n${String(m[2] || "").trim()}\n</Routine>`);
+            m = re.exec(String(text || ""));
+          }
+          return out;
+        };
+        const getRoutineTemplateByName = (routineName) => {
+          // For main-program routines, force source from the real main program first
+          // so we don't accidentally copy same-named routines from other programs (ex: bins).
+          const mainProgramRoutineNames = new Set(
+            ["main", "alarmreset", "generalalarms", "scalecoms", "io_mapping", "ios_mapping", "io_mappingho", "io_mappingww", "hoscalecoms", "wwscalecoms"]
+          );
+          const wanted = String(routineName || "").trim().toLowerCase();
+          if (mainProgramRoutineNames.has(wanted)) {
+            if (sourceIsMainRoutineExport && wanted === "main") {
+              const mainOnly = getRoutineTemplateFromText(sourceText, "Main");
+              if (mainOnly) return mainOnly;
+            }
+            for (const programName of preferredMainProgramNames) {
+              const body = findProgramBodyByName(programName);
+              if (!body) continue;
+              const block = getRoutineTemplateFromText(body, routineName);
+              if (block) return block;
+            }
+            if (wanted === "main") {
+              // Fallback only: pick the best global Main by expected call signature.
+              const candidates = getRoutineTemplatesByNameFromText(sourceText, "Main");
+              const scored = candidates
+                .map((block) => {
+                  const text = String(block || "").toLowerCase();
+                  let score = 0;
+                  if (text.includes('use="target"')) score += 8;
+                  if (text.includes("jsr(io_mapping,0)")) score += 6;
+                  if (text.includes("jsr(scalecoms,0)")) score += 6;
+                  if (text.includes("jsr(io_mapping")) score += 2;
+                  if (text.includes("jsr(alarmreset")) score += 2;
+                  if (text.includes("jsr(generalalarms")) score += 2;
+                  if (text.includes("jsr(scalecoms")) score += 2;
+                  if (text.includes("jsr(io_mappingww")) score -= 3;
+                  if (text.includes("jsr(io_mappingho")) score -= 3;
+                  if (text.includes("jsr(hoscalecoms")) score -= 3;
+                  if (text.includes("jsr(wwscalecoms")) score -= 3;
+                  return { block, score };
+                })
+                .sort((a, b) => b.score - a.score);
+              if (scored.length && scored[0].score > 0) return scored[0].block;
+            }
+          }
+          return getRoutineTemplateFromText(sourceText, routineName);
+        };
+        const makeEmptyRoutine = (name) =>
+          [`          <Routine Name="${name}" Type="RLL">`, "            <RLLContent/>", "          </Routine>"].join("\n");
+        const allowedRouteNames = new Set(
+          routeExec
+            .map((row) => String(row?.routeName || "").trim())
+            .filter(Boolean)
+            .map((name) => name.toLowerCase())
+        );
+        const pruneRoutineByAllowedRoutes = (routineXml) => {
+          let out = String(routineXml || "");
+          if (!out || !allowedRouteNames.size) return out;
+          out = out.replace(/<Text\b[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/Text>/gi, (full, cdata) => {
+            const src = String(cdata || "");
+            const parts = src.split(";");
+            const kept = parts.filter((segment) => {
+              const text = String(segment || "");
+              const routeRefs = Array.from(text.matchAll(/\bRoute\d+(?:_\d+)?\b/gi)).map((m) => String(m[0] || ""));
+              if (!routeRefs.length) return true;
+              return routeRefs.every((name) => allowedRouteNames.has(String(name || "").toLowerCase()));
+            });
+            return `<Text><![CDATA[${kept.join(";")}]]></Text>`;
+          });
+          return out;
+        };
+        const getRoutineTemplateByCandidates = (routineNames = []) => {
+          const names = Array.isArray(routineNames) ? routineNames : [];
+          for (const candidate of names) {
+            const found = getRoutineTemplateByName(candidate);
+            if (found) return { sourceName: String(candidate || ""), block: found };
+          }
+          return { sourceName: "", block: "" };
+        };
+        const materializeRoutine = (sourceRoutineName, targetRoutineName, sourceTagName, targetTagName) => {
+          const tmpl = getRoutineTemplateByName(sourceRoutineName);
+          if (!tmpl) return makeEmptyRoutine(targetRoutineName);
+          let out = String(tmpl || "");
+          out = out.replace(/<Routine\b([^>]*)>/i, `<Routine Name="${targetRoutineName}" Type="RLL">`);
+          if (sourceTagName && targetTagName && sourceTagName !== targetTagName) {
+            out = out.split(sourceTagName).join(targetTagName);
+            out = out.split(String(sourceTagName).toLowerCase()).join(String(targetTagName).toLowerCase());
+          }
+          if (String(targetRoutineName || "").trim().toLowerCase() === "alarmreset") {
+            out = pruneRoutineByAllowedRoutes(out);
+          }
+          return indentBlock(out, "          ");
+        };
+        const generatedRoutineBlocks = [];
+        const seenRoutineNames = new Set();
+        routeExec.forEach((row) => {
+          if (row.kind === "route-control") {
+            const name = `${row.routeName}_0_Control`;
+            if (!seenRoutineNames.has(name.toLowerCase())) {
+              seenRoutineNames.add(name.toLowerCase());
+              generatedRoutineBlocks.push(
+                materializeRoutine(
+                  String(row.sourceTemplate || "Route1_0_Control"),
+                  name,
+                  "Route1",
+                  row.routeName
+                )
+              );
+            }
+            return;
+          }
+          const controlName = `${row.routeName}_Control`;
+          const statusName = `${row.routeName}_Status`;
+          if (!seenRoutineNames.has(controlName.toLowerCase())) {
+            seenRoutineNames.add(controlName.toLowerCase());
+            generatedRoutineBlocks.push(
+              materializeRoutine(
+                String(row.controlSourceTemplate || "Route1_1_Control"),
+                controlName,
+                "Route1_1",
+                row.routeName
+              )
+            );
+          }
+          if (!seenRoutineNames.has(statusName.toLowerCase())) {
+            seenRoutineNames.add(statusName.toLowerCase());
+            generatedRoutineBlocks.push(
+              materializeRoutine(
+                String(row.statusSourceTemplate || "Route1_1_Status"),
+                statusName,
+                "Route1_1",
+                row.routeName
+              )
+            );
+          }
+        });
+        const legacyRoutineSpecs = [
+          { targetName: "Main", sourceCandidates: ["Main"] },
+          { targetName: "AlarmReset", sourceCandidates: ["AlarmReset"] },
+          { targetName: "GeneralAlarms", sourceCandidates: ["GeneralAlarms"] },
+          { targetName: "ScaleComs", sourceCandidates: ["ScaleComs", "HOScaleComs", "WWScaleComs"] },
+          { targetName: "IO_Mapping", sourceCandidates: ["IO_Mapping", "IO_MappingHO", "IO_MappingWW"] },
+        ];
+        const legacyRoutineBlocks = [];
+        const legacySeen = new Set();
+        legacyRoutineSpecs.forEach((spec) => {
+          const targetName = String(spec?.targetName || "").trim();
+          if (!targetName) return;
+          const key = targetName.toLowerCase();
+          if (legacySeen.has(key)) return;
+          legacySeen.add(key);
+          const match = getRoutineTemplateByCandidates(spec?.sourceCandidates);
+          if (match?.sourceName) {
+            legacyRoutineBlocks.push(materializeRoutine(match.sourceName, targetName));
+            return;
+          }
+          legacyRoutineBlocks.push(makeEmptyRoutine(targetName));
+        });
+        const allRoutineBlocksForStubScan = [
+          ...generatedRoutineBlocks.map((x) => String(x || "")),
+          ...legacyRoutineBlocks.map((x) => String(x || "")),
+        ];
+        const autoTagStubs = collectAutoTagStubsFromRoutineXml(allRoutineBlocksForStubScan);
+        const programsXml = [
+          "    <Programs>",
+          `      <Program Name="${PROGRAM_NAME}" TestEdits="false" Disabled="false" MainRoutineName="${MAIN_ROUTINE_NAME}">`,
+          "        <Tags/>",
+          "        <Routines>",
+          `          <Routine Name="${MAIN_ROUTINE_NAME}" Type="RLL">`,
+          rllContent,
+          "          </Routine>",
+          ...generatedRoutineBlocks,
+          "        </Routines>",
+          "      </Program>",
+          `      <Program Name="${LEGACY_PROGRAM_NAME}" TestEdits="false" Disabled="false" MainRoutineName="${LEGACY_MAIN_ROUTINE_NAME}">`,
+          "        <Tags/>",
+          "        <Routines>",
+          ...legacyRoutineBlocks,
+          "        </Routines>",
+          "      </Program>",
+          "    </Programs>",
+        ].join("\n");
+        return { programsXml, autoTagStubs };
+      };
+      const { programsXml, autoTagStubs: autoProgramTagStubs } = buildMainRoutineProgramsXml();
+      const selectedRouteNumbersRaw = routeObjectNames
+        .map((name) => {
+          const m = String(name || "").match(/route\s*([0-9]+)/i);
+          return m ? String(m[1] || "").trim() : "";
+        })
+        .filter(Boolean);
+      const selectedRouteNumbers = selectedRouteNumbersRaw.length ? selectedRouteNumbersRaw : ["1"];
+      const savedTemplateText = String(codeGenRouteTemplateText || "");
+      const uploadedRawText = String(selected?.rawText || "");
+      const templateRawText = /<RSLogix5000Content\b/i.test(uploadedRawText)
+        ? uploadedRawText
+        : savedTemplateText;
+      const fullTemplateSource = /<RSLogix5000Content\b/i.test(templateRawText) ? templateRawText : "";
+      if (hasRouteObject && /<RSLogix5000Content\b/i.test(fullTemplateSource)) {
+        const REQUIRED_ROUTE_GENERIC_TYPES = [
+          "Route_Array",
+          "Route_Cmd",
+          "Route_Group",
+          "Route_GroupControl",
+          "Route_HMI_Read",
+          "Route_HMI_Write",
+          "Route_Job_State",
+          "Route_Route_State",
+          "Route_Status",
+        ];
+        const makeGenericRouteTypeBlock = (typeName) =>
+          [
+            `<DataType Name="${typeName}" Family="NoFamily" Class="User">`,
+            "  <Members>",
+            '    <Member Name="Reserved" DataType="DINT"/>',
+            "  </Members>",
+            "</DataType>",
+          ].join("\n");
+        let templated = fullTemplateSource;
+        const sourceRouteId = String(codeGenTemplateRouteIdDraft || "").trim();
+        templated = pruneTemplateToSelectedRoutes(templated, ["1"]);
+        if (sourceRouteName && targetRouteName && sourceRouteName !== targetRouteName) {
+          templated = templated.split(sourceRouteName).join(targetRouteName);
+        }
+        templated = templated.split("Route1").join(targetRouteName || sourceRouteName);
+        templated = templated.split("route1").join(String(targetRouteName || sourceRouteName).toLowerCase());
+        templated = templated.split("{{ROUTE_NAME}}").join(targetRouteName || sourceRouteName);
+        templated = templated.split("{{ROUTE_ID}}").join(sourceRouteId);
+        templated = templated.split("{Route}").join(targetRouteName || sourceRouteName);
+        templated = templated.split("{{ROUTE}}").join(targetRouteName || sourceRouteName);
+        templated = pruneTemplateToSelectedRoutes(templated, selectedRouteNumbers);
+        templated = pruneBinArtifactsFromTemplate(templated);
+        // Keep only Route template datatypes (Route1-based) + required AOI code.
+        let scopedRouteTypes = buildRouteTemplateDataTypeBlocks(templated, routeObjectNames).map((b) =>
+          filterRouteMembersToRouteLike(b)
+        );
+        const sourceGenericByName = new Map(
+          extractNamedRouteDataTypeBlocks(String(templateRawText || ""))
+            .filter((row) => /^route_/i.test(String(row?.name || "")))
+            .map((row) => [String(row?.name || "").trim().toLowerCase(), String(row?.block || "")])
+        );
+        const scopedNameSet = new Set(
+          scopedRouteTypes
+            .map((block) => {
+              const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+              return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim().toLowerCase() : "";
+            })
+            .filter(Boolean)
+        );
+        REQUIRED_ROUTE_GENERIC_TYPES.forEach((typeName) => {
+          const key = String(typeName || "").trim().toLowerCase();
+          if (!key || scopedNameSet.has(key)) return;
+          const fromSource = String(sourceGenericByName.get(key) || "").trim();
+          scopedRouteTypes.push(fromSource || makeGenericRouteTypeBlock(typeName));
+          scopedNameSet.add(key);
+        });
+        if (binControlObjectNames.length) {
+          const binControlBlocks = buildBinControlTemplateDataTypeBlocks(
+            String(templateRawText || ""),
+            binControlObjectNames
+          );
+          const nameSet = new Set(
+            scopedRouteTypes
+              .map((block) => {
+                const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+                return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim().toLowerCase() : "";
+              })
+              .filter(Boolean)
+          );
+          binControlBlocks.forEach((block) => {
+            const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+            const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+            const key = name.toLowerCase();
+            if (!key || nameSet.has(key)) return;
+            nameSet.add(key);
+            scopedRouteTypes.push(block);
+          });
+        }
+        const batchControlBlocks = buildBatchControlTemplateDataTypeBlocks(String(templateRawText || ""));
+        if (batchControlBlocks.length) {
+          const nameSet = new Set(
+            scopedRouteTypes
+              .map((block) => {
+                const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+                return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim().toLowerCase() : "";
+              })
+              .filter(Boolean)
+          );
+          batchControlBlocks.forEach((block) => {
+            const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+            const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+            const key = name.toLowerCase();
+            if (!key || nameSet.has(key)) return;
+            nameSet.add(key);
+            scopedRouteTypes.push(block);
+          });
+        }
+        const routeTagBlocks = buildRouteTemplateTagBlocks(String(templateRawText || ""), routeObjectNames);
+        const binControlTagBlocks = buildBinControlTemplateTagBlocks(
+          String(templateRawText || ""),
+          binControlObjectNames
+        );
+        const subRouteTagBlocks = buildSubRouteObjectTagBlocks(subRouteObjectNames);
+        const mergedTagBlocks = [...routeTagBlocks, ...binControlTagBlocks, ...subRouteTagBlocks];
+        const tagDedup = new Map();
+        mergedTagBlocks.forEach((block) => {
+          const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+          const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+          const key = name.toLowerCase();
+          if (!key) return;
+          tagDedup.set(key, String(block || ""));
+        });
+        const filteredTagBlocks = filterTagBlocksByObjectNames(Array.from(tagDedup.values()), {
+          routeNames: routeObjectNames,
+          ioNames: binControlObjectNames,
+          binNames: binObjectNames,
+        });
+        const explicitBinTagBlocks = buildExplicitBinObjectTagBlocks(binObjectNames);
+        explicitBinTagBlocks.forEach((block) => {
+          const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+          const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+          const key = name.toLowerCase();
+          if (!key) return;
+          tagDedup.set(key, block);
+        });
+        const filteredWithExplicitBins = filterTagBlocksByObjectNames(Array.from(tagDedup.values()), {
+          routeNames: routeObjectNames,
+          subRouteNames: subRouteObjectNames,
+          ioNames: binControlObjectNames,
+          binNames: binObjectNames,
+        });
+        const tagBlocksWithAutoStubs = (() => {
+          const byName = new Map();
+          filteredWithExplicitBins.forEach((block) => {
+            const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+            const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+            const key = name.toLowerCase();
+            if (!key) return;
+            byName.set(key, String(block || ""));
+          });
+          (Array.isArray(autoProgramTagStubs) ? autoProgramTagStubs : []).forEach((row) => {
+            const block = String(row?.block || "");
+            const name = String(row?.name || "").trim();
+            const key = name.toLowerCase();
+            if (!key || byName.has(key)) return;
+            byName.set(key, block);
+          });
+          return Array.from(byName.values());
+        })();
+        const requiredTypeNamesFromTags = extractTagDataTypeNames(tagBlocksWithAutoStubs);
+        const requiredTypeBlocks = buildDataTypeClosureByNames(String(templateRawText || ""), requiredTypeNamesFromTags);
+        if (requiredTypeBlocks.length) {
+          const nameSet = new Set(
+            scopedRouteTypes
+              .map((block) => {
+                const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+                return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim().toLowerCase() : "";
+              })
+              .filter(Boolean)
+          );
+          requiredTypeBlocks.forEach((block) => {
+            const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+            const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+            const key = name.toLowerCase();
+            if (!key || nameSet.has(key)) return;
+            nameSet.add(key);
+            scopedRouteTypes.push(block);
+          });
+        }
+        const allAoiBlocks = extractAllAoiXmlBlocks(String(templateRawText || ""));
+        const allAoiNames = allAoiBlocks
+          .map((block) => {
+            const head = String(block || "").match(/<AddOnInstructionDefinition\b([^>]*)>/i);
+            return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+          })
+          .filter(Boolean);
+        const aoiRequiredTypeNames = extractCustomDataTypeRefsFromBlocks(allAoiBlocks, allAoiNames);
+        const aoiRequiredTypeBlocks = buildDataTypeClosureByNames(String(templateRawText || ""), aoiRequiredTypeNames);
+        if (aoiRequiredTypeBlocks.length) {
+          const nameSet = new Set(
+            scopedRouteTypes
+              .map((block) => {
+                const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+                return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim().toLowerCase() : "";
+              })
+              .filter(Boolean)
+          );
+          aoiRequiredTypeBlocks.forEach((block) => {
+            const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+            const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+            const key = name.toLowerCase();
+            if (!key || nameSet.has(key)) return;
+            nameSet.add(key);
+            scopedRouteTypes.push(block);
+          });
+        }
+        const dataTypesXml = scopedRouteTypes.map((b) => indentBlock(b, "      ")).join("\n");
+        const requiredAoiBlocks = buildImportSafeAoiXmlBlocks(String(templateRawText || ""), scopedRouteTypes);
+        const aoiXml = requiredAoiBlocks.map((b) => indentBlock(b, "      ")).join("\n");
+        const tagsXml = tagBlocksWithAutoStubs.map((b) => indentBlock(b, "      ")).join("\n");
+        templated = templated
+          .replace(/<DataTypes\b[^>]*>[\s\S]*?<\/DataTypes>/i, dataTypesXml ? `    <DataTypes>\n${dataTypesXml}\n    </DataTypes>` : "    <DataTypes/>")
+          .replace(/<DataTypes\s*\/>/i, dataTypesXml ? `    <DataTypes>\n${dataTypesXml}\n    </DataTypes>` : "    <DataTypes/>")
+          .replace(/<Modules\b[^>]*>[\s\S]*?<\/Modules>/gi, "    <Modules/>")
+          .replace(/<Modules\s*\/>/gi, "    <Modules/>")
+          .replace(/<Module\b[^>]*>[\s\S]*?<\/Module>/gi, "")
+          .replace(/<Module\b[^>]*\/>/gi, "")
+          .replace(
+            /<AddOnInstructionDefinitions\b[^>]*>[\s\S]*?<\/AddOnInstructionDefinitions>/i,
+            aoiXml ? `    <AddOnInstructionDefinitions>\n${aoiXml}\n    </AddOnInstructionDefinitions>` : "    <AddOnInstructionDefinitions/>"
+          )
+          .replace(
+            /<AddOnInstructionDefinitions\s*\/>/i,
+            aoiXml ? `    <AddOnInstructionDefinitions>\n${aoiXml}\n    </AddOnInstructionDefinitions>` : "    <AddOnInstructionDefinitions/>"
+          )
+          .replace(/<Tags\b[^>]*>[\s\S]*?<\/Tags>/gi, tagsXml ? `    <Tags>\n${tagsXml}\n    </Tags>` : "    <Tags/>")
+          .replace(/<Tags\s*\/>/gi, tagsXml ? `    <Tags>\n${tagsXml}\n    </Tags>` : "    <Tags/>")
+          .replace(/<Data\b[^>]*>[\s\S]*?<\/Data>/gi, "")
+          .replace(/<Data\b[^>]*\/>/gi, "")
+          .replace(
+            /<Programs\b[^>]*>[\s\S]*?<\/Programs>/i,
+            programsXml
+          )
+          .replace(
+            /<Programs\s*\/>/i,
+            programsXml
+          )
+          .replace(
+            /<Tasks\b[^>]*>[\s\S]*?<\/Tasks>/i,
+            [
+              "    <Tasks>",
+              "      <Task Name=\"MainTask\" Type=\"CONTINUOUS\" Priority=\"10\" Watchdog=\"500\" DisableUpdateOutputs=\"false\" InhibitTask=\"false\">",
+              "        <ScheduledPrograms>",
+              "          <ScheduledProgram Name=\"MainProgram\"/>",
+              "          <ScheduledProgram Name=\"Routing\"/>",
+              "        </ScheduledPrograms>",
+              "      </Task>",
+              "    </Tasks>",
+            ].join("\n")
+          )
+          .replace(
+            /<Tasks\s*\/>/i,
+            [
+              "    <Tasks>",
+              "      <Task Name=\"MainTask\" Type=\"CONTINUOUS\" Priority=\"10\" Watchdog=\"500\" DisableUpdateOutputs=\"false\" InhibitTask=\"false\">",
+              "        <ScheduledPrograms>",
+              "          <ScheduledProgram Name=\"MainProgram\"/>",
+              "          <ScheduledProgram Name=\"Routing\"/>",
+              "        </ScheduledPrograms>",
+              "      </Task>",
+              "    </Tasks>",
+            ].join("\n")
+          );
+        return templated;
+      }
+      const routeDataTypeBlocks = !hasRouteObject
+        ? []
+        : buildRouteTemplateDataTypeBlocks(String(templateRawText || ""), routeObjectNames).map((b) =>
+            filterRouteMembersToRouteLike(b)
+          );
+      const senderDataTypeBlocks = binControlObjectNames.length
+        ? buildBinControlTemplateDataTypeBlocks(String(templateRawText || ""), binControlObjectNames)
+        : [];
+      const batchControlDataTypeBlocks = buildBatchControlTemplateDataTypeBlocks(String(templateRawText || ""));
+      const routeTagBlocks = hasRouteObject
+        ? buildRouteTemplateTagBlocks(String(templateRawText || ""), routeObjectNames)
+        : [];
+      const binControlTagBlocks = binControlObjectNames.length
+        ? buildBinControlTemplateTagBlocks(String(templateRawText || ""), binControlObjectNames)
+        : [];
+      const finalTagBlocks = (() => {
+        const dedup = new Map();
+        [...routeTagBlocks, ...binControlTagBlocks].forEach((block) => {
+          const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+          const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+          const key = name.toLowerCase();
+          if (!key) return;
+          dedup.set(key, String(block || ""));
+        });
+        buildExplicitBinObjectTagBlocks(binObjectNames).forEach((block) => {
+          const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+          const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+          const key = name.toLowerCase();
+          if (!key) return;
+          dedup.set(key, String(block || ""));
+        });
+        return filterTagBlocksByObjectNames(Array.from(dedup.values()), {
+          routeNames: routeObjectNames,
+          subRouteNames: subRouteObjectNames,
+          ioNames: binControlObjectNames,
+          binNames: binObjectNames,
+        });
+      })();
+      const finalTagBlocksWithAutoStubs = (() => {
+        const byName = new Map();
+        finalTagBlocks.forEach((block) => {
+          const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+          const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+          const key = name.toLowerCase();
+          if (!key) return;
+          byName.set(key, String(block || ""));
+        });
+        (Array.isArray(autoProgramTagStubs) ? autoProgramTagStubs : []).forEach((row) => {
+          const block = String(row?.block || "");
+          const name = String(row?.name || "").trim();
+          const key = name.toLowerCase();
+          if (!key || byName.has(key)) return;
+          byName.set(key, block);
+        });
+        return Array.from(byName.values());
+      })();
+      const dataTypeDedup = new Map();
+      [...routeDataTypeBlocks, ...senderDataTypeBlocks, ...batchControlDataTypeBlocks].forEach((block) => {
+        const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+        const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+        const key = name.toLowerCase();
+        if (!key) return;
+        dataTypeDedup.set(key, block);
+      });
+      const requiredTypeNamesFromTags = extractTagDataTypeNames(finalTagBlocksWithAutoStubs);
+      const requiredTypeBlocks = buildDataTypeClosureByNames(String(templateRawText || ""), requiredTypeNamesFromTags);
+      requiredTypeBlocks.forEach((block) => {
+        const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+        const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+        const key = name.toLowerCase();
+        if (!key || dataTypeDedup.has(key)) return;
+        dataTypeDedup.set(key, block);
+      });
+      const allAoiBlocks = extractAllAoiXmlBlocks(String(templateRawText || ""));
+      const allAoiNames = allAoiBlocks
+        .map((block) => {
+          const head = String(block || "").match(/<AddOnInstructionDefinition\b([^>]*)>/i);
+          return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+        })
+        .filter(Boolean);
+      const aoiRequiredTypeNames = extractCustomDataTypeRefsFromBlocks(allAoiBlocks, allAoiNames);
+      const aoiRequiredTypeBlocks = buildDataTypeClosureByNames(String(templateRawText || ""), aoiRequiredTypeNames);
+      aoiRequiredTypeBlocks.forEach((block) => {
+        const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+        const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+        const key = name.toLowerCase();
+        if (!key || dataTypeDedup.has(key)) return;
+        dataTypeDedup.set(key, block);
+      });
+      const requiredAoiBlocks = buildImportSafeAoiXmlBlocks(
+        String(templateRawText || ""),
+        Array.from(dataTypeDedup.values())
+      );
+      const aoiBlocksIndented = requiredAoiBlocks.map((block) => indentBlock(block, "      "));
+      const routeDataTypeBlocksIndented = Array.from(dataTypeDedup.values()).map((block) => indentBlock(block, "      "));
+      const objectRows = groups
+        .map((group) => {
+          const name = String(group?.name || "").trim();
+          if (!name) return "";
+          const id = String(group?.id || "").trim();
+          const path = resolveGroupPath(id);
+          const type = normalizeCodeGenGroupType(group?.groupType);
+          return `    <!-- ${escapeXml(type)}: ${escapeXml(path || name)} -->`;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+        .join("\n");
+      return [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        `<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="35.00" TargetName="${escapeXml(controllerName)}" TargetType="Controller" ContainsContext="true" ExportOptions="References NoRawData L5KData DecoratedData Context Dependencies ForceProtectedEncoding AllProjDocTrans">`,
+        `  <Controller Name="${escapeXml(controllerName)}" ProcessorType="1756-L8x" MajorRev="35" MinorRev="11" TimeSlice="20" ShareUnusedTimeSlice="1">`,
+        objectRows ? "    <!-- Objects built in Code Gen Pro -->" : "",
+        objectRows,
+        "    <RedundancyInfo Enabled=\"false\"/>",
+        "    <Security Code=\"0\"/>",
+        routeDataTypeBlocksIndented.length ? "    <DataTypes>" : "    <DataTypes/>",
+        routeDataTypeBlocksIndented.join("\n"),
+        routeDataTypeBlocksIndented.length ? "    </DataTypes>" : "",
+        "    <Modules/>",
+        aoiBlocksIndented.length ? "    <AddOnInstructionDefinitions>" : "    <AddOnInstructionDefinitions/>",
+        aoiBlocksIndented.join("\n"),
+        aoiBlocksIndented.length ? "    </AddOnInstructionDefinitions>" : "",
+        finalTagBlocksWithAutoStubs.length ? "    <Tags>" : "    <Tags/>",
+        finalTagBlocksWithAutoStubs.map((b) => indentBlock(b, "      ")).join("\n"),
+        finalTagBlocksWithAutoStubs.length ? "    </Tags>" : "",
+        programsXml,
+        "    <Tasks>",
+        "      <Task Name=\"MainTask\" Type=\"CONTINUOUS\" Priority=\"10\" Watchdog=\"500\" DisableUpdateOutputs=\"false\" InhibitTask=\"false\">",
+        "        <ScheduledPrograms>",
+        "          <ScheduledProgram Name=\"MainProgram\"/>",
+        "          <ScheduledProgram Name=\"Routing\"/>",
+        "        </ScheduledPrograms>",
+        "      </Task>",
+        "    </Tasks>",
+        "  </Controller>",
+        "</RSLogix5000Content>",
+      ]
+        .filter((line) => line !== "")
+        .join("\n");
+    }
+
     if (codeGenFormat === "io-map") {
       const rows = ["Tag,EquipmentType,Group"];
       tags.forEach((tag) => {
@@ -1409,7 +3197,20 @@ export default function PlcAnalyzer({
       rows.push(`${tag},${equipmentType}`);
     });
     return rows.join("\n");
-  }, [chatKey, codeGenFormat, codeGenGroupsByPlc, codeGenTagMeta, codeGenUserTags]);
+  }, [
+    activeTab,
+    codeGenReady,
+    chatKey,
+    codeGenFormat,
+    codeGenGroupsByPlc,
+    codeGenRouteTemplateText,
+    codeGenTagMeta,
+    codeGenTemplateRouteIdDraft,
+    codeGenTemplateRouteName,
+    codeGenUserTags,
+    selected?.rawText,
+    selected?.name,
+  ]);
   const codeGenGroups = useMemo(
     () => (Array.isArray(codeGenGroupsByPlc?.[chatKey]) ? codeGenGroupsByPlc[chatKey] : []),
     [chatKey, codeGenGroupsByPlc]
@@ -1451,10 +3252,12 @@ export default function PlcAnalyzer({
       const name = String(group?.name || "").trim();
       const parentId = String(group?.parentId || "").trim();
       const dbId = String(group?.dbId || "").trim();
+      const groupType = normalizeCodeGenGroupType(group?.groupType);
       const row = {
         id,
         name,
         parentId,
+        groupType,
         tags: (Array.isArray(group?.tags) ? group.tags : [])
           .map((t) => String(t || "").trim())
           .filter((t) => tags.includes(t)),
@@ -1464,13 +3267,25 @@ export default function PlcAnalyzer({
     });
     const expandedGroupIds = Array.from(codeGenExpandedSet.values()).map((id) => String(id || "").trim()).filter(Boolean);
     return {
-      format: String(codeGenFormat || "list"),
+      format: normalizeCodeGenFormat(codeGenFormat),
       tags,
       tagMeta,
       groups,
       expandedGroupIds,
+      l5xTemplateText: String(codeGenRouteTemplateText || ""),
+      templateRouteId: String(codeGenTemplateRouteIdDraft || ""),
+      templateRouteName: String(codeGenTemplateRouteName || ""),
     };
-  }, [codeGenExpandedSet, codeGenFormat, codeGenGroups, codeGenTagMeta, codeGenUserTags]);
+  }, [
+    codeGenExpandedSet,
+    codeGenFormat,
+    codeGenGroups,
+    codeGenRouteTemplateText,
+    codeGenTagMeta,
+    codeGenTemplateRouteIdDraft,
+    codeGenTemplateRouteName,
+    codeGenUserTags,
+  ]);
   const codeGenPersistSnapshot = useMemo(() => JSON.stringify(codeGenPersistProfile), [codeGenPersistProfile]);
   const dataTypeTemplateByName = useMemo(() => {
     const stripFamilyQualifier = (value) =>
@@ -1579,7 +3394,7 @@ export default function PlcAnalyzer({
     setExpandedSummaryByKey({});
   }, [selected?.id]);
   useEffect(() => {
-    if (String(initialTab || "").trim() === "code-gen-pro") setPlcTopTab("code-gen-pro");
+    setPlcTopTab(String(initialTab || "").trim() === "code-gen-pro" ? "code-gen-pro" : "plc");
   }, [initialTab]);
   useEffect(() => {
     if (String(activeTab || "") !== "code-gen-pro") {
@@ -1598,6 +3413,14 @@ export default function PlcAnalyzer({
     }
   }, [activeTab, plcTopTab]);
   useEffect(() => {
+    if (String(activeTab || "") !== "code-gen-pro") {
+      setCodeGenReady(false);
+      return;
+    }
+    const timer = setTimeout(() => setCodeGenReady(true), 0);
+    return () => clearTimeout(timer);
+  }, [activeTab]);
+  useEffect(() => {
     const current = String(activeTab || "").trim();
     const available = Array.isArray(visiblePlcTabs) ? visiblePlcTabs : [];
     if (!available.length) return;
@@ -1609,11 +3432,53 @@ export default function PlcAnalyzer({
   }, [activeTab, initialTab, visiblePlcTabs]);
   useEffect(() => {
     const validIds = new Set(codeGenGroups.map((g) => String(g?.id || "").trim()).filter(Boolean));
-    validIds.add("__route__");
     if (codeGenGroupParentDraft && !validIds.has(String(codeGenGroupParentDraft || "").trim())) {
       setCodeGenGroupParentDraft("");
     }
-  }, [codeGenGroups, codeGenGroupParentDraft]);
+    if (codeGenSelectedGroupId && !validIds.has(String(codeGenSelectedGroupId || "").trim())) {
+      setCodeGenSelectedGroupId("");
+    }
+  }, [codeGenGroupParentDraft, codeGenGroups, codeGenSelectedGroupId]);
+  useEffect(() => {
+    if (String(activeTab || "") !== "code-gen-pro" || !codeGenReady) return;
+    const key = String(chatKey || "").trim();
+    const raw = String(selected?.rawText || "");
+    if (!key || key === "__none__" || !raw.trim()) return;
+    const timer = setTimeout(() => {
+      const isL5xXml = /<RSLogix5000Content\b/i.test(raw);
+      const routeMatches = Array.from(new Set((raw.match(/\bRoute\d+\b/g) || []).map((v) => String(v || "").trim()))).filter(Boolean);
+      const inferredRouteName = routeMatches.find((v) => String(v).toLowerCase() === "route1") || routeMatches[0] || "";
+      const routeIdMatch =
+        raw.match(/\b(i[_\s-]*routeid|route[_\s-]*id)\b[^0-9\-]*(-?\d+)/i) ||
+        raw.match(/\bRouteID\b[^0-9\-]*(-?\d+)/i);
+      const inferredRouteId = routeIdMatch ? String(routeIdMatch[2] || routeIdMatch[1] || "").trim() : "";
+      const tokenized = raw
+        .split(inferredRouteName || "__no_route_name__")
+        .join(inferredRouteName ? "{{ROUTE_NAME}}" : inferredRouteName)
+        .split(inferredRouteId || "__no_route_id__")
+        .join(inferredRouteId ? "{{ROUTE_ID}}" : inferredRouteId);
+      if (isL5xXml) {
+        setCodeGenRouteTemplateTextByPlc((prev) => ({ ...(prev || {}), [key]: tokenized }));
+      }
+      if (inferredRouteName) {
+        setCodeGenTemplateRouteNameByPlc((prev) => ({ ...(prev || {}), [key]: inferredRouteName }));
+      }
+      setCodeGenTemplateRouteIdDraft(inferredRouteId);
+      if (isL5xXml && inferredRouteName && tokenized.trim()) {
+        const templateKey = inferredRouteName.toLowerCase();
+        fetch(`/api/ai/route-template/${encodeURIComponent(templateKey)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            routeName: inferredRouteName,
+            sourceFileName: String(selected?.name || ""),
+            templateText: tokenized,
+          }),
+        }).catch(() => {});
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [activeTab, codeGenReady, chatKey, selected?.rawText, selected?.name]);
   useEffect(() => {
     const validTagSet = new Set(Array.isArray(codeGenUserTags) ? codeGenUserTags : []);
     updateCodeGenGroups((curr) => {
@@ -1628,6 +3493,40 @@ export default function PlcAnalyzer({
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatKey, codeGenUserTags]);
+  useEffect(() => {
+    const key = String(chatKey || "").trim();
+    if (!key || key === "__none__") return;
+    if (String(codeGenRouteTemplateTextByPlc?.[key] || "").trim()) return;
+    const routeObjectName = String(
+      (Array.isArray(codeGenGroupsByPlc?.[key]) ? codeGenGroupsByPlc[key] : []).find(
+        (g) => String(g?.groupType || "").trim().toLowerCase() === "route"
+      )?.name || ""
+    ).trim();
+    if (!routeObjectName) return;
+    const templateKey = routeObjectName.toLowerCase();
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/route-template/${encodeURIComponent(templateKey)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || cancelled) return;
+        const template = data?.template && typeof data.template === "object" ? data.template : null;
+        if (!template) return;
+        const templateText = String(template?.templateText || "");
+        if (!templateText.trim()) return;
+        setCodeGenRouteTemplateTextByPlc((prev) => ({ ...(prev || {}), [key]: templateText }));
+        const routeName = String(template?.routeName || routeObjectName).trim();
+        if (routeName) {
+          setCodeGenTemplateRouteNameByPlc((prev) => ({ ...(prev || {}), [key]: routeName }));
+        }
+      } catch {
+        // best effort
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chatKey, codeGenGroupsByPlc, codeGenRouteTemplateTextByPlc]);
   useEffect(() => {
     const validTagSet = new Set(Array.isArray(codeGenUserTags) ? codeGenUserTags : []);
     setCodeGenTagMetaByPlc((prev) => {
@@ -1673,6 +3572,7 @@ export default function PlcAnalyzer({
                 const name = String(group?.name || "").trim();
                 const parentId = String(group?.parentId || "").trim();
                 const dbId = String(group?.dbId || "").trim();
+                const groupType = normalizeCodeGenGroupType(group?.groupType || group?.grouptype);
                 const tags = (Array.isArray(group?.tags) ? group.tags : [])
                   .map((t) => normalizeCodeGenTag(t))
                   .filter((t) => loadedTags.includes(t));
@@ -1681,6 +3581,7 @@ export default function PlcAnalyzer({
                   id,
                   name,
                   parentId,
+                  groupType,
                   tags: Array.from(new Set(tags)),
                   ...(dbId ? { dbId, dbSyncState: "ok" } : {}),
                 };
@@ -1693,26 +3594,41 @@ export default function PlcAnalyzer({
               .filter(Boolean)
               .filter((id) => loadedGroups.some((g) => String(g?.id || "") === id))
           : [];
-        const loadedFormat = String(profile?.format || "list").trim() || "list";
+        const loadedFormatRaw = normalizeCodeGenFormat(profile?.format);
+        const loadedFormat = loadedFormatRaw === "list" ? "l5x-template" : loadedFormatRaw;
         if (cancelled) return;
         setCodeGenTagsByPlc((prev) => ({ ...(prev || {}), [key]: loadedTags }));
         setCodeGenTagMetaByPlc((prev) => ({ ...(prev || {}), [key]: loadedTagMeta }));
         setCodeGenGroupsByPlc((prev) => ({ ...(prev || {}), [key]: loadedGroups }));
         setCodeGenExpandedGroupsByPlc((prev) => ({ ...(prev || {}), [key]: loadedExpanded }));
-        setCodeGenFormat(loadedFormat === "io-map" ? "io-map" : "list");
+        setCodeGenFormat(loadedFormat);
+        setCodeGenRouteTemplateTextByPlc((prev) => ({
+          ...(prev || {}),
+          [key]: String(profile?.l5xTemplateText || ""),
+        }));
+        setCodeGenTemplateRouteNameByPlc((prev) => ({
+          ...(prev || {}),
+          [key]: String(profile?.templateRouteName || ""),
+        }));
+        setCodeGenTemplateRouteIdDraft(String(profile?.templateRouteId || ""));
+        setCodeGenGroupTypeDraft("Group");
         setCodeGenGroupParentDraft("");
         codeGenLastSavedSnapshotByPlcRef.current[key] = JSON.stringify({
-          format: loadedFormat === "io-map" ? "io-map" : "list",
+          format: loadedFormat,
           tags: loadedTags,
           tagMeta: loadedTagMeta,
           groups: loadedGroups.map((g) => ({
             id: String(g?.id || ""),
             name: String(g?.name || ""),
             parentId: String(g?.parentId || ""),
+            groupType: normalizeCodeGenGroupType(g?.groupType),
             tags: Array.isArray(g?.tags) ? g.tags : [],
             ...(String(g?.dbId || "").trim() ? { dbId: String(g.dbId) } : {}),
           })),
           expandedGroupIds: loadedExpanded,
+          l5xTemplateText: String(profile?.l5xTemplateText || ""),
+          templateRouteId: String(profile?.templateRouteId || ""),
+          templateRouteName: String(profile?.templateRouteName || ""),
         });
       } catch (err) {
         if (!cancelled) toastError(String(err?.message || "Failed to load Code Gen profile."));
@@ -2187,6 +4103,36 @@ export default function PlcAnalyzer({
     }
   };
 
+  const exportCodeGenOutput = () => {
+    const text = String(codeGenOutputText || "").trim();
+    if (!text) {
+      toastInfo("Nothing to export from current output.");
+      return;
+    }
+    const format = normalizeCodeGenFormat(codeGenFormat);
+    const ext = format === "l5x-template" ? "l5x" : "csv";
+    const baseNameRaw = String(selected?.name || "code_gen_output")
+      .replace(/\.[^/.]+$/, "")
+      .replace(/[^A-Za-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    const suffix = format === "l5x-template" ? "starter" : format;
+    const fileName = `${baseNameRaw || "code_gen_output"}_${suffix}.${ext}`;
+    try {
+      const blob = new Blob([text], { type: ext === "l5x" ? "application/xml;charset=utf-8" : "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      toastSuccess(`Exported ${fileName}`);
+    } catch {
+      toastError("Export failed.");
+    }
+  };
+
   const updateCodeGenGroups = (updater) => {
     setCodeGenGroupsByPlc((prev) => {
       const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
@@ -2349,13 +4295,14 @@ export default function PlcAnalyzer({
       toastInfo("Enter a group name.");
       return;
     }
-    const parentDraft = String(codeGenGroupParentDraft || "").trim();
-    const parentId = parentDraft === "__route__" ? "" : parentDraft;
+    const groupType = normalizeCodeGenGroupType(codeGenGroupTypeDraft);
+    const parentId = String(codeGenGroupParentDraft || "").trim();
     const parentGroup = codeGenGroups.find((g) => String(g?.id || "") === parentId) || null;
     const nextGroup = {
       id: `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       name,
-      parentId: parentId || "",
+      parentId,
+      groupType,
       tags: [],
       dbId: "",
       dbSyncState: "pending",
@@ -2372,7 +4319,7 @@ export default function PlcAnalyzer({
       const dbGroupName = name.slice(0, 50);
       const payload = {
         groupname: dbGroupName,
-        grouptype: "Route",
+        grouptype: groupType,
         enabled: true,
         sortorder: codeGenGroups.length + 1,
       };
@@ -2454,6 +4401,15 @@ export default function PlcAnalyzer({
     if (!id || !nextName) return;
     updateCodeGenGroups((curr) =>
       curr.map((g) => (String(g?.id || "") === id ? { ...g, name: nextName } : g))
+    );
+  };
+
+  const setCodeGenGroupType = (groupId, nextTypeRaw) => {
+    const id = String(groupId || "").trim();
+    if (!id) return;
+    const nextType = normalizeCodeGenGroupType(nextTypeRaw);
+    updateCodeGenGroups((curr) =>
+      curr.map((g) => (String(g?.id || "") === id ? { ...g, groupType: nextType } : g))
     );
   };
 
@@ -4113,11 +6069,9 @@ export default function PlcAnalyzer({
         overflow: "auto",
         padding: "0 10px 10px",
         boxSizing: "border-box",
-        display: "grid",
+        display: "flex",
+        flexDirection: "column",
         gap: 6,
-        gridAutoRows: "max-content",
-        alignContent: "start",
-        alignItems: "start",
       }}
     >
       {showTopLevelPlcTabs ? (
@@ -5059,7 +7013,18 @@ export default function PlcAnalyzer({
               No routine ladder logic blocks found in this file.
             </div>
           ) : (
-            <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
+            <div
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                background: "var(--bg-elev)",
+                overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 0,
+                flex: 1,
+              }}
+            >
               <div
                 style={{
                   display: "flex",
@@ -5367,13 +7332,51 @@ export default function PlcAnalyzer({
       ) : null}
 
       {activeTab === "code-gen-pro" ? (
-        <>
+        <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
           {!selected ? (
-            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
+            <div
+              style={{
+                border: "1px dashed var(--border)",
+                borderRadius: 10,
+                padding: 16,
+                fontSize: 12,
+                color: "var(--text-muted)",
+                minHeight: 0,
+                flex: 1,
+              }}
+            >
               Select or upload an L5X/L5K file in Overview first.
             </div>
+          ) : !codeGenReady ? (
+            <div
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                background: "var(--bg-elev)",
+                minHeight: 0,
+                flex: 1,
+                display: "grid",
+                placeItems: "center",
+                color: "var(--text-muted)",
+                fontSize: 12,
+              }}
+            >
+              Loading Code Gen Pro...
+            </div>
           ) : (
-            <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
+            <div
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                background: "var(--bg-elev)",
+                overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 0,
+                flex: 1,
+                height: "100%",
+              }}
+            >
                 <div
                   style={{
                     display: "grid",
@@ -5401,11 +7404,11 @@ export default function PlcAnalyzer({
                 </div>
               </div>
 
-              <div style={{ padding: 10, display: "grid", gap: 8 }}>
+              <div style={{ padding: 10, display: "flex", flexDirection: "column", gap: 8, minHeight: 0, flex: 1 }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                   <select
                     value={codeGenFormat}
-                    onChange={(e) => setCodeGenFormat(String(e.target.value || "list"))}
+                    onChange={(e) => setCodeGenFormat(normalizeCodeGenFormat(e.target.value))}
                     style={{
                       border: "1px solid var(--border)",
                       background: "var(--bg)",
@@ -5416,27 +7419,50 @@ export default function PlcAnalyzer({
                       minWidth: 220,
                     }}
                   >
+                    <option value="l5x-template">L5X Starter Template</option>
                     <option value="list">Tag + Equipment CSV</option>
                     <option value="io-map">Tag + Equipment + Group CSV</option>
                   </select>
-                  <button
-                    type="button"
-                    data-preserve-style="true"
-                    onClick={copyCodeGenOutput}
-                    style={{
-                      marginLeft: "auto",
-                      border: "1px solid #2b6cff",
-                      background: "#2b6cff",
-                      color: "#fff",
-                      borderRadius: 8,
-                      padding: "6px 10px",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Copy Output
-                  </button>
+                  <div style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
+                    <button
+                      type="button"
+                      data-preserve-style="true"
+                      onClick={copyCodeGenOutput}
+                      style={{
+                        border: "1px solid #2b6cff",
+                        background: "#2b6cff",
+                        color: "#fff",
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Copy Output
+                    </button>
+                    <button
+                      type="button"
+                      data-preserve-style="true"
+                      onClick={exportCodeGenOutput}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                        borderRadius: 8,
+                        padding: "6px 10px",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Export
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  Route template is auto-captured from the uploaded file and stored in the database profile.
+                  {codeGenTemplateRouteName ? ` Source route: ${codeGenTemplateRouteName}.` : ""}
                 </div>
 
                 <div
@@ -5445,6 +7471,10 @@ export default function PlcAnalyzer({
                     borderRadius: 8,
                     background: "var(--bg)",
                     overflow: "hidden",
+                    display: "grid",
+                    gridTemplateRows: "auto 1fr",
+                    minHeight: 0,
+                    flex: 1,
                   }}
                 >
                   <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontWeight: 700 }}>
@@ -5453,9 +7483,10 @@ export default function PlcAnalyzer({
                   <div
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "minmax(220px, 1fr) minmax(320px, 1.2fr)",
+                      gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
                       gap: 0,
-                      minHeight: 340,
+                      minHeight: 0,
+                      height: "100%",
                     }}
                   >
                     <div style={{ borderRight: "1px solid var(--border)", display: "grid", gridTemplateRows: "auto auto 1fr" }}>
@@ -5658,7 +7689,7 @@ export default function PlcAnalyzer({
                       </div>
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0 }}>
+                    <div style={{ borderRight: "1px solid var(--border)", display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0 }}>
                       <div style={{ padding: 8, borderBottom: "1px solid var(--border)", display: "grid", gap: 6 }}>
                         <div style={{ display: "grid", gridTemplateColumns: "minmax(120px,1fr) minmax(120px,1fr) auto", gap: 6 }}>
                           <input
@@ -5675,8 +7706,8 @@ export default function PlcAnalyzer({
                             }}
                           />
                           <select
-                            value={codeGenGroupParentDraft}
-                            onChange={(e) => setCodeGenGroupParentDraft(String(e.target.value || ""))}
+                            value={codeGenGroupTypeDraft}
+                            onChange={(e) => setCodeGenGroupTypeDraft(String(e.target.value || "Group"))}
                             style={{
                               border: "1px solid var(--border)",
                               background: "var(--bg-elev)",
@@ -5686,11 +7717,9 @@ export default function PlcAnalyzer({
                               fontSize: 11,
                             }}
                           >
-                            <option value="">Root Group</option>
-                            <option value="__route__">Route</option>
-                            {codeGenGroups.map((group) => (
-                              <option key={`parent-opt-${group.id}`} value={String(group.id || "")}>
-                                {String(group.name || "Group")}
+                            {CODE_GEN_GROUP_TYPES.map((groupType) => (
+                              <option key={`group-type-opt-${groupType}`} value={groupType}>
+                                {groupType}
                               </option>
                             ))}
                           </select>
@@ -5713,14 +7742,43 @@ export default function PlcAnalyzer({
                           </button>
                         </div>
                         <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                          Drag tags from the left pane and drop onto a group node.
+                          Parent Group:{" "}
+                          <span style={{ color: "var(--text)", fontWeight: 700 }}>
+                            {(() => {
+                              const parent = codeGenGroups.find((g) => String(g?.id || "") === String(codeGenGroupParentDraft || ""));
+                              return parent ? String(parent?.name || "Group") : "Main";
+                            })()}
+                          </span>{" "}
+                          - click any group row below to nest under it.
                         </div>
+                        <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Drag tags from the left pane and drop onto a group node.</div>
                       </div>
-                      <div className="vizi-scroll" style={{ overflow: "auto", padding: 8, display: "grid", gap: 6, alignContent: "start" }}>
-                        {(() => {
+                      <div
+                        style={{
+                          minHeight: 0,
+                          display: "grid",
+                          gridTemplateColumns: "minmax(0, 1fr)",
+                          gap: 8,
+                          padding: 8,
+                        }}
+                      >
+                        <div className="vizi-scroll" style={{ overflow: "auto", display: "grid", gap: 6, alignContent: "start" }}>
+                          {(() => {
+                          const groupTreeSort = (a, b) => {
+                            const typeRank = (row) => {
+                              const t = String(row?.groupType || "").trim().toLowerCase();
+                              if (t === "subroute") return 0;
+                              if (t === "sender") return 1;
+                              if (t === "receiver") return 2;
+                              return 3;
+                            };
+                            const byType = typeRank(a) - typeRank(b);
+                            if (byType !== 0) return byType;
+                            return String(a?.name || "").localeCompare(String(b?.name || ""));
+                          };
                           const rootGroups = codeGenGroups
                             .filter((g) => !String(g?.parentId || "").trim())
-                            .sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
+                            .sort(groupTreeSort);
                           const childrenByParent = new Map();
                           codeGenGroups.forEach((g) => {
                             const parent = String(g?.parentId || "").trim();
@@ -5731,10 +7789,18 @@ export default function PlcAnalyzer({
                           const renderGroupNode = (group, depth = 0, path = new Set()) => {
                             const id = String(group?.id || "");
                             if (!id) return null;
+                            const typeKey = String(group?.groupType || "").trim().toLowerCase();
+                            const typeTint = (() => {
+                              if (typeKey === "route") return "rgba(43,108,255,0.10)";
+                              if (typeKey === "subroute") return "rgba(18,183,106,0.10)";
+                              if (typeKey === "sender") return "rgba(245,158,11,0.10)";
+                              if (typeKey === "receiver") return "rgba(6,182,212,0.10)";
+                              if (typeKey === "bin") return "rgba(99,102,241,0.10)";
+                              if (typeKey === "equipment") return "rgba(148,163,184,0.10)";
+                              return "rgba(148,163,184,0.06)";
+                            })();
                             const isCycle = path.has(id);
-                            const children = (childrenByParent.get(id) || [])
-                              .slice()
-                              .sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
+                            const children = (childrenByParent.get(id) || []).slice().sort(groupTreeSort);
                             const hasChildren = children.length > 0;
                             const expanded = codeGenExpandedSet.has(id);
                             const tags = (Array.isArray(group?.tags) ? group.tags : [])
@@ -5744,8 +7810,12 @@ export default function PlcAnalyzer({
                             const nextPath = new Set(path);
                             nextPath.add(id);
                             return (
-                              <div key={`group-node-${id}`} style={{ marginLeft: depth * 14, display: "grid", gap: 4 }}>
+                              <div key={`group-node-${id}`} style={{ marginLeft: depth * 12, display: "grid", gap: 3 }}>
                                 <div
+                                  onClick={() => {
+                                    setCodeGenGroupParentDraft(id);
+                                    setCodeGenSelectedGroupId(id);
+                                  }}
                                   onDragOver={(e) => e.preventDefault()}
                                   onDrop={(e) => {
                                     e.preventDefault();
@@ -5758,13 +7828,17 @@ export default function PlcAnalyzer({
                                   style={{
                                     border: "1px solid var(--border)",
                                     borderRadius: 8,
-                                    background: "var(--bg-elev)",
-                                    padding: 6,
+                                    background:
+                                      String(codeGenGroupParentDraft || "") === id
+                                        ? `color-mix(in srgb, ${typeTint} 160%, var(--bg-elev))`
+                                        : `color-mix(in srgb, ${typeTint} 100%, var(--bg-elev))`,
+                                    padding: 4,
                                     display: "grid",
-                                    gap: 6,
+                                    gap: 4,
+                                    cursor: "pointer",
                                   }}
                                 >
-                                  <div style={{ display: "grid", gridTemplateColumns: "20px minmax(0,1fr) auto auto", gap: 6, alignItems: "center" }}>
+                                  <div style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) minmax(100px,auto) auto", gap: 5, alignItems: "center" }}>
                                     <button
                                       type="button"
                                       data-preserve-style="true"
@@ -5774,9 +7848,9 @@ export default function PlcAnalyzer({
                                         background: "var(--bg)",
                                         color: "var(--text)",
                                         borderRadius: 5,
-                                        width: 20,
-                                        height: 20,
-                                        fontSize: 11,
+                                        width: 18,
+                                        height: 18,
+                                        fontSize: 10,
                                         fontWeight: 700,
                                         lineHeight: 1,
                                         padding: 0,
@@ -5794,39 +7868,36 @@ export default function PlcAnalyzer({
                                         background: "var(--bg)",
                                         color: "var(--text)",
                                         borderRadius: 6,
-                                        padding: "4px 6px",
-                                        fontSize: 11,
+                                        height: 18,
+                                        padding: "0 6px",
+                                        lineHeight: "16px",
+                                        fontSize: 10,
                                         fontWeight: 700,
                                         minWidth: 0,
                                       }}
                                     />
-                                    <span
+                                    <select
+                                      value={normalizeCodeGenGroupType(group?.groupType)}
+                                      onChange={(e) => setCodeGenGroupType(id, e.target.value)}
                                       style={{
-                                        fontSize: 10,
-                                        color:
-                                          String(group?.dbSyncState || "") === "ok"
-                                            ? "#12b76a"
-                                            : String(group?.dbSyncState || "") === "error"
-                                              ? "#f04438"
-                                              : "var(--text-muted)",
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg)",
+                                        color: "var(--text)",
+                                        borderRadius: 6,
+                                        height: 18,
+                                        padding: "0 6px",
+                                        lineHeight: "16px",
+                                        fontSize: 9,
                                         fontWeight: 700,
-                                        minWidth: 34,
-                                        textAlign: "center",
                                       }}
-                                      title={
-                                        String(group?.dbSyncState || "") === "ok"
-                                          ? "Saved to Route DB"
-                                          : String(group?.dbSyncState || "") === "error"
-                                            ? String(group?.dbError || "Route DB sync failed")
-                                            : "Saving to Route DB"
-                                      }
+                                      title="Group type"
                                     >
-                                      {String(group?.dbSyncState || "") === "ok"
-                                        ? "DB"
-                                        : String(group?.dbSyncState || "") === "error"
-                                          ? "DB!"
-                                          : "Saving"}
-                                    </span>
+                                      {CODE_GEN_GROUP_TYPES.map((groupType) => (
+                                        <option key={`group-node-type-${id}-${groupType}`} value={groupType}>
+                                          {groupType}
+                                        </option>
+                                      ))}
+                                    </select>
                                     <button
                                       type="button"
                                       data-preserve-style="true"
@@ -5836,16 +7907,22 @@ export default function PlcAnalyzer({
                                         background: "#f04438",
                                         color: "#fff",
                                         borderRadius: 6,
-                                        padding: "4px 6px",
+                                        width: 18,
+                                        height: 18,
+                                        padding: 0,
+                                        display: "grid",
+                                        placeItems: "center",
                                         fontSize: 10,
                                         fontWeight: 700,
                                         cursor: "pointer",
                                       }}
+                                      title="Delete group"
+                                      aria-label="Delete group"
                                     >
-                                      Delete
+                                      ×
                                     </button>
                                   </div>
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                                     {tags.map((tag) => (
                                       <div
                                         key={`group-tag-${id}-${tag}`}
@@ -5860,8 +7937,8 @@ export default function PlcAnalyzer({
                                           background: "color-mix(in srgb, #2b6cff 12%, var(--bg-elev))",
                                           color: "var(--text)",
                                           borderRadius: 999,
-                                          padding: "4px 8px",
-                                          fontSize: 10,
+                                          padding: "3px 7px",
+                                          fontSize: 9,
                                           fontWeight: 700,
                                           display: "inline-flex",
                                           alignItems: "center",
@@ -5894,9 +7971,6 @@ export default function PlcAnalyzer({
                                         </button>
                                       </div>
                                     ))}
-                                    {!tags.length ? (
-                                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Drop tags here</div>
-                                    ) : null}
                                   </div>
                                 </div>
                                 {hasChildren && expanded && !isCycle ? (
@@ -5914,38 +7988,167 @@ export default function PlcAnalyzer({
                               No groups yet. Create one above and drag tags into it.
                             </div>
                           );
+                          })()}
+                        </div>
+                        <div
+                          style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 8,
+                            background: "var(--bg-elev)",
+                            minHeight: 0,
+                            overflow: "hidden",
+                            display: "none",
+                            gridTemplateRows: "auto 1fr",
+                          }}
+                        >
+                          <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontWeight: 700 }}>
+                            Group Details
+                          </div>
+                          <div className="vizi-scroll" style={{ overflow: "auto", padding: 8, display: "grid", gap: 8, alignContent: "start" }}>
+                            {(() => {
+                              const selectedGroup =
+                                codeGenGroups.find((g) => String(g?.id || "") === String(codeGenSelectedGroupId || "")) || null;
+                              if (!selectedGroup) {
+                                return <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Click an object row to view details.</div>;
+                              }
+                              const selectedId = String(selectedGroup?.id || "");
+                              const parent = codeGenGroups.find((g) => String(g?.id || "") === String(selectedGroup?.parentId || "")) || null;
+                              const childrenCount = codeGenGroups.filter(
+                                (g) => String(g?.parentId || "") === selectedId
+                              ).length;
+                              const tags = (Array.isArray(selectedGroup?.tags) ? selectedGroup.tags : [])
+                                .map((x) => String(x || "").trim())
+                                .filter(Boolean)
+                                .sort((a, b) => a.localeCompare(b));
+                              const byId = new Map(codeGenGroups.map((g) => [String(g?.id || ""), g]));
+                              const pathParts = [];
+                              let cursor = selectedGroup;
+                              let guard = 0;
+                              while (cursor && guard < 30) {
+                                pathParts.unshift(String(cursor?.name || "Group"));
+                                const pid = String(cursor?.parentId || "");
+                                cursor = pid ? byId.get(pid) || null : null;
+                                guard += 1;
+                              }
+                              const fullPath = pathParts.join(" / ");
+                              const rowStyle = { display: "grid", gridTemplateColumns: "90px minmax(0,1fr)", gap: 8, fontSize: 11, alignItems: "start" };
+                              const keyStyle = { color: "var(--text-muted)", fontWeight: 700 };
+                              return (
+                                <>
+                                  <div style={rowStyle}><div style={keyStyle}>Name</div><div style={{ color: "var(--text)", fontWeight: 700 }}>{String(selectedGroup?.name || "")}</div></div>
+                                  <div style={rowStyle}><div style={keyStyle}>Type</div><div style={{ color: "var(--text)" }}>{normalizeCodeGenGroupType(selectedGroup?.groupType)}</div></div>
+                                  <div style={rowStyle}><div style={keyStyle}>Parent</div><div style={{ color: "var(--text)" }}>{parent ? String(parent?.name || "") : "Main"}</div></div>
+                                  <div style={rowStyle}><div style={keyStyle}>Path</div><div style={{ color: "var(--text)" }}>{fullPath || "-"}</div></div>
+                                  <div style={rowStyle}><div style={keyStyle}>Children</div><div style={{ color: "var(--text)" }}>{childrenCount}</div></div>
+                                  <div style={rowStyle}><div style={keyStyle}>Tags</div><div style={{ color: "var(--text)" }}>{tags.length}</div></div>
+                                  <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)" }}>Assigned Tags</div>
+                                    {tags.length ? (
+                                      tags.map((tag) => (
+                                        <div key={`detail-tag-${selectedId}-${tag}`} style={{ fontSize: 10, color: "var(--text)" }}>
+                                          {tag}
+                                          {String(codeGenTagMeta?.[tag]?.equipmentType || "").trim()
+                                            ? ` (${String(codeGenTagMeta?.[tag]?.equipmentType || "").trim()})`
+                                            : ""}
+                                        </div>
+                                      ))
+                                    ) : (
+                                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No tags assigned.</div>
+                                    )}
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        borderLeft: "1px solid var(--border)",
+                        borderRadius: 0,
+                        background: "var(--bg-elev)",
+                        minHeight: 0,
+                        overflow: "hidden",
+                        display: "grid",
+                        gridTemplateRows: "auto 1fr",
+                      }}
+                    >
+                      <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontWeight: 700 }}>
+                        Group Details
+                      </div>
+                      <div className="vizi-scroll" style={{ overflow: "auto", padding: 8, display: "grid", gap: 8, alignContent: "start" }}>
+                        {(() => {
+                          const selectedGroup =
+                            codeGenGroups.find((g) => String(g?.id || "") === String(codeGenSelectedGroupId || "")) || null;
+                          if (!selectedGroup) {
+                            return <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Click an object row to view details.</div>;
+                          }
+                          const selectedId = String(selectedGroup?.id || "");
+                          const parent = codeGenGroups.find((g) => String(g?.id || "") === String(selectedGroup?.parentId || "")) || null;
+                          const childrenCount = codeGenGroups.filter((g) => String(g?.parentId || "") === selectedId).length;
+                          const tags = (Array.isArray(selectedGroup?.tags) ? selectedGroup.tags : [])
+                            .map((x) => String(x || "").trim())
+                            .filter(Boolean)
+                            .sort((a, b) => a.localeCompare(b));
+                          const byId = new Map(codeGenGroups.map((g) => [String(g?.id || ""), g]));
+                          const pathParts = [];
+                          let cursor = selectedGroup;
+                          let guard = 0;
+                          while (cursor && guard < 30) {
+                            pathParts.unshift(String(cursor?.name || "Group"));
+                            const pid = String(cursor?.parentId || "");
+                            cursor = pid ? byId.get(pid) || null : null;
+                            guard += 1;
+                          }
+                          const fullPath = pathParts.join(" / ");
+                          const rowStyle = { display: "grid", gridTemplateColumns: "90px minmax(0,1fr)", gap: 8, fontSize: 11, alignItems: "start" };
+                          const keyStyle = { color: "var(--text-muted)", fontWeight: 700 };
+                          return (
+                            <>
+                              <div style={rowStyle}><div style={keyStyle}>Name</div><div style={{ color: "var(--text)", fontWeight: 700 }}>{String(selectedGroup?.name || "")}</div></div>
+                              <div style={rowStyle}><div style={keyStyle}>Type</div><div style={{ color: "var(--text)" }}>{normalizeCodeGenGroupType(selectedGroup?.groupType)}</div></div>
+                              <div style={rowStyle}><div style={keyStyle}>Parent</div><div style={{ color: "var(--text)" }}>{parent ? String(parent?.name || "") : "Main"}</div></div>
+                              <div style={rowStyle}><div style={keyStyle}>Path</div><div style={{ color: "var(--text)" }}>{fullPath || "-"}</div></div>
+                              <div style={rowStyle}><div style={keyStyle}>Children</div><div style={{ color: "var(--text)" }}>{childrenCount}</div></div>
+                              <div style={rowStyle}><div style={keyStyle}>Tags</div><div style={{ color: "var(--text)" }}>{tags.length}</div></div>
+                            </>
+                          );
                         })()}
                       </div>
                     </div>
                   </div>
                 </div>
 
-                <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}>
-                  <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontWeight: 700 }}>
-                    Generated Output
+                {codeGenFormat === "l5x-template" ? null : (
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}>
+                    <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontWeight: 700 }}>
+                      Generated Output
+                    </div>
+                    <pre
+                      style={{
+                        margin: 0,
+                        padding: 10,
+                        fontSize: 11,
+                        lineHeight: 1.45,
+                        color: "var(--text)",
+                        maxHeight: 320,
+                        overflow: "auto",
+                        whiteSpace: "pre",
+                      }}
+                    >
+                      {codeGenOutputText || "// No generated output for this selection."}
+                    </pre>
                   </div>
-                  <pre
-                    style={{
-                      margin: 0,
-                      padding: 10,
-                      fontSize: 11,
-                      lineHeight: 1.45,
-                      color: "var(--text)",
-                      maxHeight: 320,
-                      overflow: "auto",
-                      whiteSpace: "pre",
-                    }}
-                  >
-                    {codeGenOutputText || "// No generated output for this selection."}
-                  </pre>
-                </div>
+                )}
 
               </div>
             </div>
           )}
-        </>
+        </div>
       ) : null}
 
     </div>
   );
 }
+

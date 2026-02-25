@@ -401,6 +401,10 @@ export default function App() {
   const { user, logout, updateProfile, changePassword, refresh } = useAuth();
   const initialStoredProjectId = readStoredActiveProjectId();
   const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle"
+  useEffect(() => {
+    // Warm-load PLC/Code Gen chunk so opening drawer feels instant.
+    import("./components/PlcAnalyzer").catch(() => {});
+  }, []);
   const DEFAULT_STROKE = "#808080";
   const DEFAULT_FILL = "#CCCCCC";
   const [shapes, setShapes] = useState([]); // polyline | rect | circle | text
@@ -14088,7 +14092,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     ? "AI"
                     : drawerView === "reports"
                     ? "Report Designer"
-                    : drawerView === "plc" || drawerView === "code-gen-pro"
+                    : drawerView === "code-gen-pro"
+                    ? "Code Gen"
+                    : drawerView === "plc"
                     ? "PLC"
                     : drawerView === "server"
                     ? "Server Diagnostics"
@@ -14201,10 +14207,19 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   <HelpPanel inline onClose={() => setShowMainDrawer(false)} />
                 </div>
               ) : drawerView === "plc" || drawerView === "code-gen-pro" ? (
-                <div style={drawerContentShellStyle}>
+                <div
+                  style={{
+                    ...drawerContentShellStyle,
+                    overflow: "hidden",
+                    display: "flex",
+                    flexDirection: "column",
+                    minHeight: 0,
+                  }}
+                >
                   <PlcAnalyzer
                     plcItems={projectPlcs}
                     onChange={setProjectPlcs}
+                    initialTab={drawerView === "code-gen-pro" ? "code-gen-pro" : "overview"}
                     svgCatalog={aiSvgCatalog}
                     onInsertSvg={handleAiInsertSvg}
                   />

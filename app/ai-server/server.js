@@ -609,13 +609,90 @@ function serializePlcDebugSession(session) {
   };
 }
 
-function getPlcDebugSession(sessionId) {
+function hydratePlcDebugSession(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const session = {
+    id: String(raw.id || "").trim(),
+    plcName: String(raw.plcName || "").trim() || "PLC",
+    watchTags: normalizeDebugTagList(raw.watchTags || [], PLC_DEBUG_MAX_WATCH_TAGS),
+    routineHints: normalizeDebugTagList(raw.routineHints || [], 32),
+    controllerTags: normalizeDebugTagList(raw.controllerTags || [], 300),
+    pollMs: Math.max(1000, Number.parseInt(String(raw.pollMs || PLC_DEBUG_SESSION_POLL_MS), 10) || PLC_DEBUG_SESSION_POLL_MS),
+    createdAt: Number(raw.createdAt || 0) || Date.now(),
+    updatedAt: Number(raw.updatedAt || 0) || 0,
+    lastTouchedAt: Number(raw.lastTouchedAt || 0) || Date.now(),
+    lastRefreshAt: Number(raw.lastRefreshAt || 0) || 0,
+    lastError: String(raw.lastError || ""),
+    snapshot: raw.snapshot && typeof raw.snapshot === "object" ? raw.snapshot : null,
+  };
+  if (!session.id) return null;
+  return session;
+}
+
+async function loadPlcDebugSessionFromStore(sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return null;
+  try {
+    const { rows } = await pool.query(
+      "SELECT session_data FROM plc_debug_session WHERE id = $1 LIMIT 1",
+      [id]
+    );
+    if (!rows.length) return null;
+    return hydratePlcDebugSession(rows[0]?.session_data || null);
+  } catch {
+    return null;
+  }
+}
+
+async function upsertPlcDebugSessionInStore(session) {
+  const payload = serializePlcDebugSession(session);
+  if (!payload?.id) return;
+  const sessionData = {
+    ...payload,
+    controllerTags: Array.isArray(session?.controllerTags) ? session.controllerTags : [],
+    lastRefreshAt: Number(session?.lastRefreshAt || 0) || 0,
+  };
+  await pool.query(
+    `
+      INSERT INTO plc_debug_session (id, session_data, updated_at, last_touched_at)
+      VALUES ($1, $2::jsonb, now(), to_timestamp($3::double precision / 1000.0))
+      ON CONFLICT (id) DO UPDATE
+      SET
+        session_data = EXCLUDED.session_data,
+        updated_at = now(),
+        last_touched_at = EXCLUDED.last_touched_at
+    `,
+    [payload.id, JSON.stringify(sessionData), Number(sessionData.lastTouchedAt || Date.now())]
+  );
+}
+
+async function deletePlcDebugSessionFromStore(sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return;
+  await pool.query("DELETE FROM plc_debug_session WHERE id = $1", [id]);
+}
+
+async function deleteExpiredPlcDebugSessionsFromStore(maxAgeMs = PLC_DEBUG_SESSION_TTL_MS) {
+  const ttlMs = Math.max(60_000, Number(maxAgeMs || PLC_DEBUG_SESSION_TTL_MS) || PLC_DEBUG_SESSION_TTL_MS);
+  await pool.query(
+    "DELETE FROM plc_debug_session WHERE last_touched_at < now() - (($1::bigint || ' milliseconds')::interval)",
+    [ttlMs]
+  );
+}
+
+async function getPlcDebugSession(sessionId) {
   const id = String(sessionId || "").trim();
   if (!id) return null;
   const session = plcDebugSessions.get(id);
-  if (!session) return null;
-  session.lastTouchedAt = Date.now();
-  return session;
+  if (session) {
+    session.lastTouchedAt = Date.now();
+    return session;
+  }
+  const fromStore = await loadPlcDebugSessionFromStore(id);
+  if (!fromStore) return null;
+  fromStore.lastTouchedAt = Date.now();
+  plcDebugSessions.set(id, fromStore);
+  return fromStore;
 }
 
 async function runPlcDebugSessionRefreshTick() {
@@ -631,12 +708,14 @@ async function runPlcDebugSessionRefreshTick() {
       const lastTouchedAt = Number(session.lastTouchedAt || 0);
       if (now - lastTouchedAt > PLC_DEBUG_SESSION_TTL_MS) {
         plcDebugSessions.delete(id);
+        await deletePlcDebugSessionFromStore(id).catch(() => {});
         continue;
       }
       const pollMs = Math.max(1000, Number(session.pollMs || PLC_DEBUG_SESSION_POLL_MS));
       if (now - Number(session.lastRefreshAt || 0) < pollMs) continue;
       session.lastRefreshAt = now;
       await refreshPlcDebugSession(session);
+      await upsertPlcDebugSessionInStore(session).catch(() => {});
     }
   } finally {
     plcDebugRefreshBusy = false;
@@ -1063,6 +1142,234 @@ function normalizeControllerTags(rawTags, limit = 300) {
     if (out.length >= limit) break;
   }
   return out;
+}
+
+function extractXmlAttr(attrText, name) {
+  if (!attrText) return "";
+  const dq = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i");
+  const dm = String(attrText).match(dq);
+  if (dm) return String(dm[1] || "").trim();
+  const sq = new RegExp(`\\b${name}\\s*=\\s*'([^']*)'`, "i");
+  const sm = String(attrText).match(sq);
+  if (sm) return String(sm[1] || "").trim();
+  const bare = new RegExp(`\\b${name}\\s*=\\s*([^\\s>]+)`, "i");
+  const bm = String(attrText).match(bare);
+  return bm ? String(bm[1] || "").trim() : "";
+}
+
+function filterRouteMembersToRouteLikeXml(dataTypeBlockText) {
+  const builtIn = new Set([
+    "bool",
+    "bit",
+    "sint",
+    "int",
+    "dint",
+    "lint",
+    "usint",
+    "uint",
+    "udint",
+    "ulint",
+    "real",
+    "lreal",
+    "string",
+    "time",
+    "date",
+    "datetime",
+    "tod",
+    "timer",
+  ]);
+  const keepDataType = (value) => {
+    const key = String(value || "").trim().toLowerCase();
+    if (!key) return false;
+    if (builtIn.has(key)) return true;
+    if (key.includes("route")) return true;
+    if (key.includes("job")) return true;
+    if (key.includes("bincontrol")) return true;
+    if (key.includes("batchcontrol")) return true;
+    return false;
+  };
+  let out = String(dataTypeBlockText || "");
+  out = out.replace(/<Member\b([^>]*)\/>/gi, (full, attrs) => {
+    const dt = extractXmlAttr(String(attrs || ""), "DataType");
+    return keepDataType(dt) ? full : "";
+  });
+  out = out.replace(/<Member\b([^>]*)>[\s\S]*?<\/Member>/gi, (full, attrs) => {
+    const dt = extractXmlAttr(String(attrs || ""), "DataType");
+    return keepDataType(dt) ? full : "";
+  });
+  return out;
+}
+
+function extractRouteOnlyDataTypeBlocks(rawL5xText) {
+  const src = String(rawL5xText || "");
+  if (!src) return [];
+  const REQUIRED_ROUTE_GENERIC_TYPES = [
+    "Route_Array",
+    "Route_Cmd",
+    "Route_Group",
+    "Route_GroupControl",
+    "Route_HMI_Read",
+    "Route_HMI_Write",
+    "Route_Job_State",
+    "Route_Route_State",
+    "Route_Status",
+  ];
+  const REQUIRED_BATCHCONTROL_TYPES = [
+    "BatchControl",
+    "BatchControl_Bin",
+    "BatchControl_HMI_Read",
+    "BatchControl_HMI_Write",
+    "BatchControl_Mixer",
+    "BatchControl_Plc",
+    "BatchControl_Recipe",
+    "BatchControl_RecipeIngr",
+    "BatchController",
+    "BatchController_RecipeCheck",
+    "BatchController_SimWeight",
+    "BinControl_Mgr",
+  ];
+  const inferMembersFromDecoratedData = (typeName) => {
+    const wanted = String(typeName || "").trim().toLowerCase();
+    if (!wanted) return [];
+    const members = new Map();
+    const structRe = /<Structure\b([^>]*)>([\s\S]*?)<\/Structure>/gi;
+    let sm = structRe.exec(src);
+    while (sm) {
+      const attrs = String(sm[1] || "");
+      const body = String(sm[2] || "");
+      const dt = extractXmlAttr(attrs, "DataType");
+      if (String(dt || "").trim().toLowerCase() !== wanted) {
+        sm = structRe.exec(src);
+        continue;
+      }
+      const memberRe = /<DataValueMember\b([^>]*)\/>/gi;
+      let mm = memberRe.exec(body);
+      while (mm) {
+        const ma = String(mm[1] || "");
+        const name = extractXmlAttr(ma, "Name");
+        const dataType = extractXmlAttr(ma, "DataType") || "DINT";
+        const key = String(name || "").trim().toLowerCase();
+        if (key && !members.has(key)) {
+          members.set(key, { name: String(name || "").trim(), dataType: String(dataType || "").trim() || "DINT" });
+        }
+        mm = memberRe.exec(body);
+      }
+      sm = structRe.exec(src);
+    }
+    return Array.from(members.values());
+  };
+  const makeGenericRouteTypeBlock = (typeName) => {
+    const inferred = inferMembersFromDecoratedData(typeName);
+    const memberLines = inferred.length
+      ? inferred.map((m) => `    <Member Name="${m.name}" DataType="${m.dataType}"/>`)
+      : ['    <Member Name="Reserved" DataType="DINT"/>'];
+    return [
+      `<DataType Name="${typeName}" Family="NoFamily" Class="User">`,
+      "  <Members>",
+      ...memberLines,
+      "  </Members>",
+      "</DataType>",
+    ].join("\n");
+  };
+  const isRouteTemplateTypeName = (name) => {
+    const value = String(name || "").trim();
+    if (!value) return false;
+    if (/^route$/i.test(value)) return true;
+    if (/^route1data(?:_|$)/i.test(value)) return true;
+    if (/^route_/i.test(value)) return true;
+    if (/^batchcontrol$/i.test(value)) return true;
+    return /^batchcontrol_/i.test(value);
+  };
+  const routeBlocks = [];
+  const re = /<DataType\b[\s\S]*?<\/DataType>/gi;
+  let match = re.exec(src);
+  while (match) {
+    const block = String(match[0] || "");
+    const headMatch = block.match(/<DataType\b([^>]*)>/i);
+    const name = headMatch ? extractXmlAttr(String(headMatch[1] || ""), "Name") : "";
+    const lower = String(name || "").trim();
+    if (!isRouteTemplateTypeName(lower)) {
+      match = re.exec(src);
+      continue;
+    }
+    routeBlocks.push(filterRouteMembersToRouteLikeXml(block));
+    match = re.exec(src);
+  }
+  const dedup = new Map();
+  routeBlocks.forEach((block) => {
+    const headMatch = String(block || "").match(/<DataType\b([^>]*)>/i);
+    const name = headMatch ? extractXmlAttr(String(headMatch[1] || ""), "Name") : "";
+    const key = String(name || "").trim().toLowerCase();
+    if (!key) return;
+    dedup.set(key, String(block || ""));
+  });
+  REQUIRED_ROUTE_GENERIC_TYPES.forEach((typeName) => {
+    const key = String(typeName || "").trim().toLowerCase();
+    if (!key || dedup.has(key)) return;
+    dedup.set(key, makeGenericRouteTypeBlock(typeName));
+  });
+  REQUIRED_BATCHCONTROL_TYPES.forEach((typeName) => {
+    const key = String(typeName || "").trim().toLowerCase();
+    if (!key || dedup.has(key)) return;
+    dedup.set(key, makeGenericRouteTypeBlock(typeName));
+  });
+  return Array.from(dedup.values());
+}
+
+function buildRouteStarterTemplateFromL5x(rawL5xText) {
+  const src = String(rawL5xText || "");
+  if (!/<RSLogix5000Content\b/i.test(src)) return src;
+  const rsAttrs = String((src.match(/<RSLogix5000Content\b([^>]*)>/i) || [])[1] || "").trim();
+  const controllerAttrs = String((src.match(/<Controller\b([^>]*)>/i) || [])[1] || "").trim();
+  const routeDataTypeBlocks = extractRouteOnlyDataTypeBlocks(src);
+  const dataTypeBody = routeDataTypeBlocks
+    .map((block) =>
+      String(block || "")
+        .split(/\r?\n/)
+        .map((line) => `      ${line}`)
+        .join("\n")
+    )
+    .join("\n");
+  const rsOpen = rsAttrs
+    ? `<RSLogix5000Content ${rsAttrs}>`
+    : '<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="35.00" TargetName="CodeGenStarter" TargetType="Controller" ContainsContext="true">';
+  const ctrlOpen = controllerAttrs
+    ? `  <Controller ${controllerAttrs}>`
+    : '  <Controller Name="CodeGenStarter" ProcessorType="1756-L8x" MajorRev="35" MinorRev="11">';
+  return [
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+    rsOpen,
+    ctrlOpen,
+    '    <RedundancyInfo Enabled="false"/>',
+    '    <Security Code="0"/>',
+    dataTypeBody ? "    <DataTypes>" : "    <DataTypes/>",
+    dataTypeBody,
+    dataTypeBody ? "    </DataTypes>" : "",
+    "    <Modules/>",
+    "    <AddOnInstructionDefinitions/>",
+    "    <Tags/>",
+    "    <Programs>",
+    '      <Program Name="MainProgram" TestEdits="false" Disabled="false" MainRoutineName="MainRoutine">',
+    "        <Tags/>",
+    "        <Routines>",
+    '          <Routine Name="MainRoutine" Type="RLL">',
+    "            <RLLContent/>",
+    "          </Routine>",
+    "        </Routines>",
+    "      </Program>",
+    "    </Programs>",
+    "    <Tasks>",
+    '      <Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500" DisableUpdateOutputs="false" InhibitTask="false">',
+    "        <ScheduledPrograms>",
+    '          <ScheduledProgram Name="MainProgram"/>',
+    "        </ScheduledPrograms>",
+    "      </Task>",
+    "    </Tasks>",
+    "  </Controller>",
+    "</RSLogix5000Content>",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 }
 
 function normalizeSvgCatalog(rawCatalog, limit = 450) {
@@ -7861,7 +8168,7 @@ app.post("/api/ai/plc-debug-sessions", async (req, res) => {
     const routineHintsRaw = Array.isArray(source?.routineHints) ? source.routineHints : [];
     const now = Date.now();
 
-    let session = requestedId ? plcDebugSessions.get(requestedId) : null;
+    let session = requestedId ? await getPlcDebugSession(requestedId) : null;
     if (!session) {
       const id = `plcdbg-${now.toString(36)}-${crypto.randomBytes(5).toString("hex")}`;
       session = {
@@ -7892,6 +8199,7 @@ app.post("/api/ai/plc-debug-sessions", async (req, res) => {
     session.lastTouchedAt = now;
     session.lastRefreshAt = now;
     await refreshPlcDebugSession(session);
+    await upsertPlcDebugSessionInStore(session).catch(() => {});
     res.json({ ok: true, session: serializePlcDebugSession(session) });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to create PLC debug session." });
@@ -7900,7 +8208,7 @@ app.post("/api/ai/plc-debug-sessions", async (req, res) => {
 
 app.get("/api/ai/plc-debug-sessions/:id", async (req, res) => {
   try {
-    const session = getPlcDebugSession(req.params.id);
+    const session = await getPlcDebugSession(req.params.id);
     if (!session) {
       res.status(404).json({ error: "Debug session not found." });
       return;
@@ -7910,6 +8218,7 @@ app.get("/api/ai/plc-debug-sessions/:id", async (req, res) => {
       session.lastRefreshAt = now;
       await refreshPlcDebugSession(session);
     }
+    await upsertPlcDebugSessionInStore(session).catch(() => {});
     res.json({ ok: true, session: serializePlcDebugSession(session) });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load PLC debug session." });
@@ -7918,7 +8227,7 @@ app.get("/api/ai/plc-debug-sessions/:id", async (req, res) => {
 
 app.post("/api/ai/plc-debug-sessions/:id/watch", async (req, res) => {
   try {
-    const session = getPlcDebugSession(req.params.id);
+    const session = await getPlcDebugSession(req.params.id);
     if (!session) {
       res.status(404).json({ error: "Debug session not found." });
       return;
@@ -7937,6 +8246,7 @@ app.post("/api/ai/plc-debug-sessions/:id/watch", async (req, res) => {
     session.lastTouchedAt = Date.now();
     session.lastRefreshAt = Date.now();
     await refreshPlcDebugSession(session);
+    await upsertPlcDebugSessionInStore(session).catch(() => {});
     res.json({ ok: true, session: serializePlcDebugSession(session) });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to update debug watch list." });
@@ -7946,11 +8256,12 @@ app.post("/api/ai/plc-debug-sessions/:id/watch", async (req, res) => {
 app.delete("/api/ai/plc-debug-sessions/:id", async (req, res) => {
   try {
     const id = String(req.params.id || "").trim();
-    if (!id || !plcDebugSessions.has(id)) {
+    if (!id) {
       res.status(404).json({ error: "Debug session not found." });
       return;
     }
     plcDebugSessions.delete(id);
+    await deletePlcDebugSessionFromStore(id).catch(() => {});
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to delete debug session." });
@@ -8208,6 +8519,82 @@ app.put("/api/ai/code-gen-pro/:plcKey", async (req, res) => {
     res.json({ ok: true, plcKey: row?.plc_key || plcKey, updatedAt: row?.updated_at || null });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to save Code Gen profile." });
+  }
+});
+
+app.get("/api/ai/route-template/:templateKey", async (req, res) => {
+  try {
+    const templateKey = String(req.params?.templateKey || "").trim().toLowerCase();
+    if (!templateKey) {
+      res.status(400).json({ error: "Missing templateKey." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT template_key, route_name, source_filename, template_text, updated_at
+      FROM route_l5x_template
+      WHERE template_key = $1
+      LIMIT 1
+      `,
+      [templateKey]
+    );
+    if (!rows.length) {
+      res.json({ template: null });
+      return;
+    }
+    const row = rows[0] || {};
+    res.json({
+      template: {
+        templateKey: row?.template_key || templateKey,
+        routeName: row?.route_name || "",
+        sourceFileName: row?.source_filename || "",
+        templateText: row?.template_text || "",
+      },
+      updatedAt: row?.updated_at || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load route template." });
+  }
+});
+
+app.put("/api/ai/route-template/:templateKey", async (req, res) => {
+  try {
+    const templateKey = String(req.params?.templateKey || "").trim().toLowerCase();
+    if (!templateKey) {
+      res.status(400).json({ error: "Missing templateKey." });
+      return;
+    }
+    const routeName = String(req.body?.routeName || "").trim();
+    const sourceFileName = String(req.body?.sourceFileName || "").trim();
+    const templateText = String(req.body?.templateText || "");
+    if (!routeName) {
+      res.status(400).json({ error: "Missing routeName." });
+      return;
+    }
+    if (!templateText.trim()) {
+      res.status(400).json({ error: "Missing templateText." });
+      return;
+    }
+    // Persist the full uploaded/template L5X text so UDTs/AOIs remain available
+    // without requiring the source upload again.
+    const normalizedTemplateText = templateText;
+    const { rows } = await pool.query(
+      `
+      INSERT INTO route_l5x_template (template_key, route_name, source_filename, template_text, updated_at)
+      VALUES ($1, $2, $3, $4, now())
+      ON CONFLICT (template_key) DO UPDATE
+      SET route_name = EXCLUDED.route_name,
+          source_filename = EXCLUDED.source_filename,
+          template_text = EXCLUDED.template_text,
+          updated_at = now()
+      RETURNING template_key, updated_at
+      `,
+      [templateKey, routeName, sourceFileName, normalizedTemplateText]
+    );
+    const row = rows[0] || {};
+    res.json({ ok: true, templateKey: row?.template_key || templateKey, updatedAt: row?.updated_at || null });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to save route template." });
   }
 });
 
@@ -8907,6 +9294,31 @@ async function start() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS plc_code_gen_profile_updated_idx
     ON plc_code_gen_profile(updated_at DESC);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS plc_debug_session (
+      id TEXT PRIMARY KEY,
+      session_data JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_touched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS plc_debug_session_touched_idx
+    ON plc_debug_session(last_touched_at DESC);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS route_l5x_template (
+      template_key TEXT PRIMARY KEY,
+      route_name TEXT NOT NULL,
+      source_filename TEXT NOT NULL DEFAULT '',
+      template_text TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS route_l5x_template_updated_idx
+    ON route_l5x_template(updated_at DESC);
   `);
   await pool.query(`
     DO $$
@@ -10030,6 +10442,9 @@ async function start() {
   setInterval(() => {
     void runDatabaseMaintenance();
   }, DB_MAINTENANCE_MS);
+  setInterval(() => {
+    void deleteExpiredPlcDebugSessionsFromStore(PLC_DEBUG_SESSION_TTL_MS);
+  }, Math.max(60_000, Math.floor(PLC_DEBUG_SESSION_POLL_MS * 10)));
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`App server listening on http://localhost:${PORT}`);
