@@ -4843,6 +4843,7 @@ function flushScheduledProjectSave() {
   const [activeDrawerResize, setActiveDrawerResize] = useState("");
   const mainDrawerRef = useRef(null);
   const userDrawerRef = useRef(null);
+  const securityDrawerRef = useRef(null);
   const projectDrawerRef = useRef(null);
   const [theme, setTheme] = useState(() => {
     try {
@@ -11483,6 +11484,27 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setPasswordDraft({ current: "", next: "" });
   }, [showSecurityDrawer]);
 
+  useEffect(() => {
+    function handleGlobalDrawerDoubleClick(event) {
+      const target = event?.target;
+      if (!(target instanceof Node)) return;
+      if (showMainDrawer && !mainDrawerRef.current?.contains(target)) {
+        setShowMainDrawer(false);
+      }
+      if (showUserDrawer && !userDrawerRef.current?.contains(target)) {
+        closeUserDrawerSafely();
+      }
+      if (showSecurityDrawer && !securityDrawerRef.current?.contains(target)) {
+        closeSecurityDrawerSafely();
+      }
+      if (showProjectDrawer && !projectDrawerRef.current?.contains(target)) {
+        closeProjectDrawerSafely();
+      }
+    }
+    document.addEventListener("dblclick", handleGlobalDrawerDoubleClick);
+    return () => document.removeEventListener("dblclick", handleGlobalDrawerDoubleClick);
+  }, [showMainDrawer, showUserDrawer, showSecurityDrawer, showProjectDrawer]);
+
   function switchToScreen(nextScreenId) {
     const committed = commitCurrentScreenState();
     const target = committed.list.find((s) => s.id === nextScreenId) || committed.list[0];
@@ -13278,9 +13300,78 @@ const CONTENT_FIT_HEADROOM = 0.94;
             </div>
           ) : null}
 
+          {!isLiveMode ? (
+            <div
+              style={{
+                marginTop: 8,
+                display: "grid",
+                gap: 4,
+                width: "100%",
+                borderTop: "1px solid var(--border)",
+                paddingTop: 8,
+              }}
+            >
+              <button
+                title="Save Project"
+                disabled={String(projectStatus || "").trim().toLowerCase() === "saving..."}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => saveProjectToDb({ silent: false, teamMerge: true })}
+                style={{
+                  ...dockToolButtonStyle(false),
+                  width: designDockExpanded ? "100%" : topMenuIconButtonStyle.width,
+                  height: topMenuIconButtonStyle.height,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: designDockExpanded ? 8 : 0,
+                  padding: designDockExpanded ? "0 8px" : 0,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  opacity: String(projectStatus || "").trim().toLowerCase() === "saving..." ? 0.6 : 1,
+                  cursor:
+                    String(projectStatus || "").trim().toLowerCase() === "saving..."
+                      ? "not-allowed"
+                      : "pointer",
+                  ...(hasPendingAutoSave
+                    ? {
+                        border: "1px solid #f59e0b",
+                        background:
+                          "linear-gradient(180deg, color-mix(in srgb, #f59e0b 22%, var(--bg-elev) 78%) 0%, color-mix(in srgb, #f59e0b 14%, var(--bg-elev) 86%) 100%)",
+                        color: "#f59e0b",
+                        boxShadow: "0 0 0 1px rgba(245,158,11,0.18), 0 8px 20px rgba(245,158,11,0.16)",
+                      }
+                    : {}),
+                }}
+              >
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M5 4h11l3 3v13H5V4z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                    <path d="M8 4v6h8V4" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                    <path d="M9 20v-6h6v6" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                  </svg>
+                </span>
+                {designDockExpanded ? (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      display: "inline-flex",
+                      alignItems: "center",
+                    }}
+                  >
+                    Save Project
+                  </span>
+                ) : null}
+              </button>
+            </div>
+          ) : null}
+
           <div
             style={{
               marginTop: isLiveMode ? 0 : "auto",
+              marginBottom: 0,
               display: "grid",
               gap: isLiveMode ? 3 : 4,
               width: isLiveMode ? "auto" : "100%",
@@ -13337,19 +13428,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 ),
                 onClick: toggleAppFullscreen,
                 title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
-              },
-              {
-                icon: (
-                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M5 4h11l3 3v13H5V4z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-                    <path d="M8 4v6h8V4" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-                    <path d="M9 20v-6h6v6" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-                  </svg>
-                ),
-                onClick: () => saveProjectToDb({ silent: false, teamMerge: true }),
-                title: "Save Project",
-                disabled: String(projectStatus || "").trim().toLowerCase() === "saving...",
-                pendingAutosave: hasPendingAutoSave,
               },
             ].map((btn) => (
               <button
@@ -13413,43 +13491,32 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   cursor: btn.disabled ? "not-allowed" : "pointer",
                 }}
               >
-                {btn.icon}
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    lineHeight: 1,
+                  }}
+                >
+                  {btn.icon}
+                </span>
                 {!isLiveMode && designDockExpanded ? (
-                  <span style={{ fontSize: 11, fontWeight: 700 }}>{btn.title}</span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      lineHeight: 1,
+                      display: "inline-flex",
+                      alignItems: "center",
+                    }}
+                  >
+                    {btn.title}
+                  </span>
                 ) : null}
               </button>
             ))}
 
-            {/* Hide button (toolbar style, bottom) */}
-            <button
-              title="Hide Zoom"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setShowZoom(false)}
-              style={{
-                ...(isLiveMode ? {} : dockToolButtonStyle(false)),
-                width: isLiveMode ? 26 : designDockExpanded ? "100%" : topMenuIconButtonStyle.width,
-                height: isLiveMode ? 26 : topMenuIconButtonStyle.height,
-                minHeight: isLiveMode ? 26 : undefined,
-                marginTop: isLiveMode ? 0 : 6,
-                borderRadius: isLiveMode ? 8 : undefined,
-                border: isLiveMode ? "1px solid var(--border)" : undefined,
-                background: isLiveMode ? "var(--bg-elev)" : undefined,
-                boxShadow: isLiveMode ? "0 6px 18px rgba(0,0,0,0.10)" : undefined,
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: designDockExpanded ? 8 : 0,
-                padding: designDockExpanded ? "0 8px" : 0,
-                fontSize: isLiveMode ? 11 : 13,
-                fontWeight: 700,
-                lineHeight: 1,
-              }}
-            >
-              X
-              {!isLiveMode && designDockExpanded ? (
-                <span style={{ fontSize: 11, fontWeight: 700 }}>Hide Dock</span>
-              ) : null}
-            </button>
             {/* zoom % */}
             <div
               style={{
@@ -14727,6 +14794,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           }}
         >
           <div
+            ref={securityDrawerRef}
             style={{
               position: "absolute",
               right: 0,
