@@ -1947,6 +1947,7 @@ async function requireAuth(req, res, next) {
         (req.method === "POST" || req.method === "GET")) ||
       (req.path === "/api/ai/plc-svg-suggest" && req.method === "POST") ||
       (req.path === "/api/ai/plc-opc-connect" && req.method === "POST") ||
+      req.path.startsWith("/api/ai/code-gen-pro/") ||
       req.path.startsWith("/api/ai/plc-debug-sessions")
     ) {
       return next();
@@ -2593,6 +2594,7 @@ async function verifySchemaCoverage() {
     opc_status: ["id", "status", "updated_at"],
     project: ["id", "name", "data", "created_at", "updated_at", "updated_by"],
     route: ["id", "route_id", "route_number", "state", "route_color", "project_id", "created_at", "updated_at"],
+    plc_code_gen_profile: ["plc_key", "profile", "updated_at"],
     route_bin_list: [
       "id",
       "name",
@@ -8159,6 +8161,67 @@ async function handlePlcInsights(req, res) {
 app.post("/api/ai/plc-insights", handlePlcInsights);
 app.get("/api/ai/plc-insights", handlePlcInsights);
 
+app.get("/api/ai/code-gen-pro/:plcKey", async (req, res) => {
+  try {
+    const plcKey = String(req.params?.plcKey || "").trim();
+    if (!plcKey) {
+      res.status(400).json({ error: "Missing plcKey." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT plc_key, profile, updated_at
+      FROM plc_code_gen_profile
+      WHERE plc_key = $1
+      LIMIT 1
+      `,
+      [plcKey]
+    );
+    if (!rows.length) {
+      res.json({ profile: null });
+      return;
+    }
+    const row = rows[0] || {};
+    res.json({
+      profile: row?.profile && typeof row.profile === "object" ? row.profile : null,
+      updatedAt: row?.updated_at || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load Code Gen profile." });
+  }
+});
+
+app.put("/api/ai/code-gen-pro/:plcKey", async (req, res) => {
+  try {
+    const plcKey = String(req.params?.plcKey || "").trim();
+    if (!plcKey) {
+      res.status(400).json({ error: "Missing plcKey." });
+      return;
+    }
+    const profileRaw = req.body?.profile;
+    if (!profileRaw || typeof profileRaw !== "object" || Array.isArray(profileRaw)) {
+      res.status(400).json({ error: "Invalid profile payload." });
+      return;
+    }
+    const profile = profileRaw;
+    const { rows } = await pool.query(
+      `
+      INSERT INTO plc_code_gen_profile (plc_key, profile, updated_at)
+      VALUES ($1, $2::jsonb, now())
+      ON CONFLICT (plc_key) DO UPDATE
+      SET profile = EXCLUDED.profile,
+          updated_at = now()
+      RETURNING plc_key, updated_at
+      `,
+      [plcKey, JSON.stringify(profile)]
+    );
+    const row = rows[0] || {};
+    res.json({ ok: true, plcKey: row?.plc_key || plcKey, updatedAt: row?.updated_at || null });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to save Code Gen profile." });
+  }
+});
+
 app.post("/api/ai/plc-svg-suggest", async (req, res) => {
   try {
     const source = req.body && typeof req.body === "object" ? req.body : {};
@@ -8836,6 +8899,25 @@ async function start() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS opc_alarm_state_updated_idx
     ON opc_alarm_state(updated_at DESC);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS plc_code_gen_profile (
+      plc_key TEXT PRIMARY KEY,
+      profile JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE plc_code_gen_profile
+    ADD COLUMN IF NOT EXISTS profile JSONB NOT NULL DEFAULT '{}'::jsonb;
+  `);
+  await pool.query(`
+    ALTER TABLE plc_code_gen_profile
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS plc_code_gen_profile_updated_idx
+    ON plc_code_gen_profile(updated_at DESC);
   `);
   await pool.query(`
     DO $$

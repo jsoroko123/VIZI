@@ -3336,6 +3336,198 @@ export default function CanvasSvg({
     vbWidth + rulerSize + edgeReserve
   );
   const stageH = Math.max(viewportH, vbHeight + rulerSize + edgeReserve);
+  const renderTagBubbleLayer = () => {
+    if (!showTagPaths) return null;
+    return (
+      <g>
+        {shapes.map((s) => {
+          const text = String(s.tagPath || "").trim();
+          if (!text) return null;
+          if (hiddenBubbleSet.has(s.id)) return null;
+          const lines = [text];
+          const yOffset = 0;
+          if (s.type === "text") {
+            const x = Number(s.x ?? 0);
+            const anchorY = Number(s.y ?? 0);
+            return renderTagBubble({
+              key: `tag-${s.id}`,
+              bubbleId: s.id,
+              x,
+              anchorY: anchorY + yOffset,
+              lines,
+              anchor: "start",
+            });
+          }
+          if (s.type === "rect" || s.type === "circle") {
+            const x = Number(s.x ?? 0) + Math.max(0, Number(s.width ?? 0)) / 2;
+            const anchorY = Number(s.y ?? 0) + yOffset;
+            return renderTagBubble({
+              key: `tag-${s.id}`,
+              bubbleId: s.id,
+              x,
+              anchorY,
+              lines,
+              anchor: "middle",
+            });
+          }
+          if (Array.isArray(s.points) && s.type !== "polyline") {
+            const bb = bboxOfPoints(s.points);
+            if (!bb) return null;
+            const x = bb.minX + bb.w / 2;
+            return renderTagBubble({
+              key: `tag-${s.id}`,
+              bubbleId: s.id,
+              x,
+              anchorY: bb.minY + yOffset,
+              lines,
+              anchor: "middle",
+            });
+          }
+          return null;
+        })}
+        {svgOverlays.map((o) => {
+          if (hiddenBubbleSet.has(o.id)) return null;
+          const text = getOverlayGroupLabel(o);
+          const live = getLiveValuesForOverlay(o);
+          const groupLive = getGroupRouteStateForTagPath(o?.tagPath);
+          const lines = [];
+          if (text) lines.push(text);
+          if (live?.routeId || groupLive.routeId) {
+            lines.push(`RouteID: ${live?.routeId || groupLive.routeId}`);
+          }
+          if (live?.state || groupLive.state) {
+            lines.push(`State: ${live?.state || groupLive.state}`);
+          }
+          if (!lines.length) return null;
+          const bb = o?.bbox || overlayLocalBBox(o.id);
+          if (!bb) return null;
+          const sx = overlayScaleX(o);
+          const sy = overlayScaleY(o);
+          const x = o.tx + sx * (bb.x + bb.width / 2);
+          const anchorY = o.ty + sy * bb.y;
+          return renderTagBubble({
+            key: `tag-${o.id}`,
+            bubbleId: o.id,
+            x,
+            anchorY,
+            lines,
+            anchor: "middle",
+          });
+        })}
+      </g>
+    );
+  };
+  const renderOverlayIndicatorLayer = () => (
+    <g>
+      {svgOverlays.map((o) => {
+        const overlayTagPath = String(o?.tagPath || "").trim();
+        const overlayTagWarning = !overlayTagPath
+          ? "SVG not tagged"
+          : !hasKnownOverlayTagPath(overlayTagPath)
+          ? "Bad tag mapping"
+          : "";
+        if (!overlayTagWarning) return null;
+        const bb = o?.bbox || overlayLocalBBox(o.id);
+        if (!bb) return null;
+        const wr = overlayWorldRect(o, bb);
+        const r = 8 * inv;
+        const cx = wr.x + wr.w + 12 * inv;
+        const cy = wr.y + Math.max(10 * inv, r + 1 * inv);
+        return (
+          <g key={`overlay-warning-badge-${o.id}`} pointerEvents="none" aria-hidden="true">
+            <circle
+              cx={cx}
+              cy={cy}
+              r={r}
+              fill="rgba(255,245,245,0.98)"
+              stroke="#ef4444"
+              strokeWidth={1.2 * inv}
+              vectorEffect="non-scaling-stroke"
+            />
+            <text
+              x={cx}
+              y={cy + 0.5 * inv}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fill="#b91c1c"
+              fontSize={10 * inv}
+              fontWeight={900}
+              pointerEvents="none"
+            >
+              !
+            </text>
+            <title>{`${overlayTagWarning}: ${overlayTagPath || "-"}`}</title>
+          </g>
+        );
+      })}
+      {svgOverlays.map((o) => {
+        const overlayModeState = getOverlayModeState(o);
+        if (overlayModeState !== "manual" && overlayModeState !== "maintenance") return null;
+        const bb = o?.bbox || overlayLocalBBox(o.id);
+        if (!bb) return null;
+        const wr = overlayWorldRect(o, bb);
+        const isMaintenance = overlayModeState === "maintenance";
+        const bubbleR = 9 * inv;
+        const bubbleCx = wr.x + wr.w + 12 * inv;
+        const bubbleCy = wr.y + 10 * inv;
+        const anchorX = wr.x + wr.w;
+        const anchorY = wr.y + Math.max(6 * inv, Math.min(wr.h - 6 * inv, 10 * inv));
+        const dx = bubbleCx - anchorX;
+        const dy = bubbleCy - anchorY;
+        const dist = Math.max(1e-6, Math.hypot(dx, dy));
+        const ux = dx / dist;
+        const uy = dy / dist;
+        const lineEndX = bubbleCx - ux * bubbleR;
+        const lineEndY = bubbleCy - uy * bubbleR;
+        return (
+          <g key={`overlay-mode-badge-${o.id}`} pointerEvents="none" aria-hidden="true">
+            <line
+              x1={anchorX}
+              y1={anchorY}
+              x2={lineEndX}
+              y2={lineEndY}
+              stroke={isMaintenance ? "#b45309" : "#7e22ce"}
+              strokeWidth={1.35 * inv}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle
+              cx={bubbleCx}
+              cy={bubbleCy}
+              r={bubbleR}
+              fill={isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)"}
+              stroke={isMaintenance ? "#f59e0b" : "#a855f7"}
+              strokeWidth={1.25 * inv}
+              vectorEffect="non-scaling-stroke"
+            />
+            <g
+              transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.6 * inv}) translate(-12 -12)`}
+              fill="none"
+              stroke={isMaintenance ? "#b45309" : "#7e22ce"}
+              strokeWidth={1.9}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              {isMaintenance ? (
+                <>
+                  <path d="M20 4.5 14.2 10.3" />
+                  <path d="M10.2 14.3 4.2 20.3 2.7 18.8l6-6" />
+                  <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
+                </>
+              ) : (
+                <>
+                  <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
+                  <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
+                  <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
+                  <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
+                </>
+              )}
+            </g>
+          </g>
+        );
+      })}
+    </g>
+  );
 
   return (
     <div
@@ -3405,6 +3597,8 @@ export default function CanvasSvg({
           ref={svgRef}
           tabIndex={0}
           style={{
+            position: "relative",
+            zIndex: 1,
             display: "block",
             background: canvasBackgroundColor || "var(--canvas-bg)",
             outline: "none",
@@ -3877,13 +4071,6 @@ export default function CanvasSvg({
             {svgOverlays.map((o) => {
               const isSel = selectedOverlayIds.includes(o.id);
               const showHandles = singleSelectedOverlayId === o.id;
-              const overlayModeState = getOverlayModeState(o);
-              const overlayTagPath = String(o?.tagPath || "").trim();
-              const overlayTagWarning = !overlayTagPath
-                ? "SVG not tagged"
-                : !hasKnownOverlayTagPath(overlayTagPath)
-                ? "Bad tag mapping"
-                : "";
 
               return (
                 <g
@@ -3992,43 +4179,6 @@ export default function CanvasSvg({
                   {o.widget ? renderWidgetOverlay(o) : null}
                 </g>
 
-                  {overlayTagWarning ? (() => {
-                    const bb = o?.bbox || overlayLocalBBox(o.id);
-                    if (!bb) return null;
-                    const wr = overlayWorldRect(o, bb);
-                    const r = 8 * inv;
-                    const cx = wr.x + wr.w + 12 * inv;
-                    const cy = wr.y + Math.max(10 * inv, r + 1 * inv);
-                    return (
-                      <g pointerEvents="none" aria-hidden="true">
-                        <circle
-                          cx={cx}
-                          cy={cy}
-                          r={r}
-                          fill="rgba(255,245,245,0.98)"
-                          stroke="#ef4444"
-                          strokeWidth={1.2 * inv}
-                          vectorEffect="non-scaling-stroke"
-                        />
-                        <text
-                          x={cx}
-                          y={cy + 0.5 * inv}
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          fill="#b91c1c"
-                          fontSize={10 * inv}
-                          fontWeight={900}
-                          pointerEvents="none"
-                        >
-                          !
-                        </text>
-                        <title>{`${overlayTagWarning}: ${overlayTagPath || "-"}`}</title>
-                      </g>
-                    );
-                  })() : null}
-
-                  {null}
-
                   {isLineMode && (() => {
                     const bb = overlayLocalBBox(o.id);
                     if (!bb) return null;
@@ -4090,72 +4240,6 @@ export default function CanvasSvg({
             {selectedIds?.length > 0 && selectedOverlayIds?.length === 0 && shapeSelectionUI
               ? shapeSelectionUI(z)
               : null}
-            {svgOverlays.map((o) => {
-              const overlayModeState = getOverlayModeState(o);
-              if (overlayModeState !== "manual" && overlayModeState !== "maintenance") return null;
-              const bb = o?.bbox || overlayLocalBBox(o.id);
-              if (!bb) return null;
-              const wr = overlayWorldRect(o, bb);
-              const isMaintenance = overlayModeState === "maintenance";
-              const bubbleR = 9 * inv;
-              const bubbleCx = wr.x + wr.w + 12 * inv;
-              const bubbleCy = wr.y + 10 * inv;
-              const anchorX = wr.x + wr.w;
-              const anchorY = wr.y + Math.max(6 * inv, Math.min(wr.h - 6 * inv, 10 * inv));
-              const dx = bubbleCx - anchorX;
-              const dy = bubbleCy - anchorY;
-              const dist = Math.max(1e-6, Math.hypot(dx, dy));
-              const ux = dx / dist;
-              const uy = dy / dist;
-              const lineEndX = bubbleCx - ux * bubbleR;
-              const lineEndY = bubbleCy - uy * bubbleR;
-              return (
-                <g key={`overlay-mode-badge-${o.id}`} pointerEvents="none" aria-hidden="true">
-                  <line
-                    x1={anchorX}
-                    y1={anchorY}
-                    x2={lineEndX}
-                    y2={lineEndY}
-                    stroke={isMaintenance ? "#b45309" : "#7e22ce"}
-                    strokeWidth={1.35 * inv}
-                    strokeLinecap="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <circle
-                    cx={bubbleCx}
-                    cy={bubbleCy}
-                    r={bubbleR}
-                    fill={isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)"}
-                    stroke={isMaintenance ? "#f59e0b" : "#a855f7"}
-                    strokeWidth={1.25 * inv}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <g
-                    transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.6 * inv}) translate(-12 -12)`}
-                    fill="none"
-                    stroke={isMaintenance ? "#b45309" : "#7e22ce"}
-                    strokeWidth={1.9}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    {isMaintenance ? (
-                      <>
-                        <path d="M20 4.5 14.2 10.3" />
-                        <path d="M10.2 14.3 4.2 20.3 2.7 18.8l6-6" />
-                        <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
-                      </>
-                    ) : (
-                      <>
-                        <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
-                        <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
-                        <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
-                        <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
-                      </>
-                    )}
-                  </g>
-                </g>
-              );
-            })}
 
             {collabCursors.length > 0 && (
               <g pointerEvents="none">
@@ -4192,89 +4276,6 @@ export default function CanvasSvg({
               </g>
             )}
 
-            {showTagPaths && (
-              <g>
-                {(() => {
-                  return shapes.map((s) => {
-                  const text = String(s.tagPath || "").trim();
-                  if (!text) return null;
-                  if (hiddenBubbleSet.has(s.id)) return null;
-                  const lines = [text];
-                  const yOffset = 0;
-                  if (s.type === "text") {
-                    const x = Number(s.x ?? 0);
-                    const anchorY = Number(s.y ?? 0);
-                    return renderTagBubble({
-                      key: `tag-${s.id}`,
-                      bubbleId: s.id,
-                      x,
-                      anchorY: anchorY + yOffset,
-                      lines,
-                      anchor: "start",
-                    });
-                  }
-                  if (s.type === "rect" || s.type === "circle") {
-                    const x = Number(s.x ?? 0) + Math.max(0, Number(s.width ?? 0)) / 2;
-                    const anchorY = Number(s.y ?? 0) + yOffset;
-                    return renderTagBubble({
-                      key: `tag-${s.id}`,
-                      bubbleId: s.id,
-                      x,
-                      anchorY,
-                      lines,
-                      anchor: "middle",
-                    });
-                  }
-                  if (Array.isArray(s.points) && s.type !== "polyline") {
-                    const bb = bboxOfPoints(s.points);
-                    if (!bb) return null;
-                    const x = bb.minX + bb.w / 2;
-                    return renderTagBubble({
-                      key: `tag-${s.id}`,
-                      bubbleId: s.id,
-                      x,
-                      anchorY: bb.minY + yOffset,
-                      lines,
-                      anchor: "middle",
-                    });
-                  }
-                  return null;
-                });
-                })()}
-                {(() => {
-                  return svgOverlays.map((o) => {
-                  if (hiddenBubbleSet.has(o.id)) return null;
-                  const text = getOverlayGroupLabel(o);
-                  const live = getLiveValuesForOverlay(o);
-                  const groupLive = getGroupRouteStateForTagPath(o?.tagPath);
-                  const lines = [];
-                  if (text) lines.push(text);
-                  if (live?.routeId || groupLive.routeId) {
-                    lines.push(`RouteID: ${live?.routeId || groupLive.routeId}`);
-                  }
-                  if (live?.state || groupLive.state) {
-                    lines.push(`State: ${live?.state || groupLive.state}`);
-                  }
-                  if (!lines.length) return null;
-                  const bb = o?.bbox || overlayLocalBBox(o.id);
-                  if (!bb) return null;
-                  const sx = overlayScaleX(o);
-                  const sy = overlayScaleY(o);
-                  const x = o.tx + sx * (bb.x + bb.width / 2);
-                  const anchorY = o.ty + sy * bb.y;
-                  return renderTagBubble({
-                    key: `tag-${o.id}`,
-                    bubbleId: o.id,
-                    x,
-                    anchorY,
-                    lines,
-                    anchor: "middle",
-                  });
-                });
-                })()}
-              </g>
-            )}
-
             {marqueeRect && (
               <rect
                 x={marqueeRect.x}
@@ -4297,6 +4298,7 @@ export default function CanvasSvg({
             inset: 0,
             pointerEvents: "none",
             overflow: "hidden",
+            zIndex: 2,
           }}
         >
           {htmlChartLayers.map((layer) => (
@@ -4319,6 +4321,38 @@ export default function CanvasSvg({
             </div>
           ))}
         </div>
+        <svg
+          width={vbWidth}
+          height={vbHeight}
+          viewBox={vb}
+          preserveAspectRatio="xMinYMin meet"
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+            overflow: "hidden",
+            zIndex: 3,
+          }}
+        >
+          <g transform={`translate(${panX} ${panY}) scale(${z})`}>{renderOverlayIndicatorLayer()}</g>
+        </svg>
+        {showTagPaths ? (
+          <svg
+            width={vbWidth}
+            height={vbHeight}
+            viewBox={vb}
+            preserveAspectRatio="xMinYMin meet"
+            style={{
+              position: "absolute",
+              inset: 0,
+              pointerEvents: onHideTagBubble ? "auto" : "none",
+              overflow: "hidden",
+              zIndex: 4,
+            }}
+          >
+            <g transform={`translate(${panX} ${panY}) scale(${z})`}>{renderTagBubbleLayer()}</g>
+          </svg>
+        ) : null}
       </div>
       </div>
       </div>

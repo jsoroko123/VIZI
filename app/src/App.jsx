@@ -8,6 +8,7 @@ import ViewBoxModal from "./components/ViewBoxModal";
 import TopBarRightControls from "./components/TopBarRightControls";
 import LiveAlarmBar from "./components/live/LiveAlarmBar";
 import LiveEquipmentConnectorLayer from "./components/live/LiveEquipmentConnectorLayer";
+import TeamChatPanel from "./components/app/TeamChatPanel";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -29,6 +30,7 @@ import {
 
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useLiveMenuAccess } from "./hooks/useLiveMenuAccess";
+import { useTeamChat } from "./hooks/useTeamChat";
 import { exportToIgnitionJson, downloadIgnitionJson } from "./utils/ignitionExport";
 import { toastError, toastSuccess } from "./utils/toast";
 import { clearProjectDraft, getProjectDraftStorageKey } from "./utils/projectDraftStorage";
@@ -48,6 +50,49 @@ import {
   readStoredActiveProjectId,
   readStoredProjectMode,
 } from "./utils/projectHelpers";
+import {
+  getViewportZoomKey,
+  getViewportZoomCacheLastKey,
+  normalizeZoomByViewportMap,
+  readViewportZoomCache,
+  resolveZoomForViewportMap,
+  resolveZoomFromViewportCache,
+  writeViewportZoomCache,
+} from "./utils/viewportZoom";
+import {
+  getFolderFromKey,
+  isTruthyFlag,
+  normalizeAlarmOperatorValue,
+  normalizeProjectPlcEntries,
+  normalizeTableDisplayName,
+  normalizeTagValue,
+  tokenizeSvgCatalogText,
+} from "./utils/appDataTransforms";
+import {
+  fetchBatchFirstValues,
+  listActiveAlarms,
+  listAllEquipment,
+  listAllRoutes,
+  listDbTables,
+  listEquipmentByProject,
+  listEquipmentTypes,
+  listRoutesByProject,
+  listTableRecords,
+  listTableRecordsUnscoped,
+  updateTableRow,
+} from "./api/dbApi";
+import { getOpcConfig, getOpcMappingSets, getOpcStatus, getOpcTagMappings, getOpcTemplates, writeOpcValue } from "./api/opcApi";
+import {
+  deleteProjectById,
+  getProjectById,
+  listProjectCursors,
+  listProjects,
+  upsertProjectWithStatus,
+  upsertProjectCursor,
+} from "./api/projectApi";
+import { listSecurityRoles } from "./api/securityApi";
+import { listSvgCatalog, readSvgRaw as readSvgRawApi, saveSvgMeta } from "./api/svgApi";
+import { checkPlcDebugSession } from "./api/aiApi";
 import appLogo from "./assets/Images/logo.png";
 
 const HelpPanel = lazy(() => import("./components/HelpPanel"));
@@ -65,7 +110,6 @@ const SHOW_TAG_PATHS_KEY = "vizi_show_tag_paths";
 const SHOW_RULERS_KEY = "vizi_show_rulers";
 const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
 const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
-const VIEWPORT_ZOOM_CACHE_KEY = "vizi_zoom_by_viewport";
 // (no eager:true)
 
 const SVG_RAW_CACHE_MAX = 96;
@@ -100,287 +144,6 @@ function isSvgMarkup(value) {
   return text.startsWith("<svg") || text.startsWith("<?xml");
 }
 
-
-function normalizeProjectPlcEntries(raw, options = {}) {
-  const includeRawText = options?.includeRawText !== false;
-  const maxRawText =
-    Number.isFinite(Number(options?.maxRawText)) && Number(options.maxRawText) > 0
-      ? Math.floor(Number(options.maxRawText))
-      : null;
-  const list = Array.isArray(raw) ? raw : [];
-  return list
-    .map((item, idx) => {
-      const analysis = item?.analysis && typeof item.analysis === "object" ? item.analysis : null;
-      const rawText = includeRawText ? String(item?.rawText || "") : "";
-      const normalizedRaw = maxRawText == null ? rawText : rawText.slice(0, maxRawText);
-      return {
-        id: String(item?.id || `plc-${idx + 1}`),
-        name: String(item?.name || "").trim(),
-        size: Number.isFinite(Number(item?.size)) ? Number(item.size) : 0,
-        uploadedAt: Number.isFinite(Number(item?.uploadedAt)) ? Number(item.uploadedAt) : Date.now(),
-        debugSessionId: String(item?.debugSessionId || "").trim(),
-        rawText: normalizedRaw,
-        analysis,
-        chatHistory: Array.isArray(item?.chatHistory)
-          ? item.chatHistory
-              .map((msg) => ({
-                role: String(msg?.role || "").toLowerCase() === "assistant" ? "assistant" : "user",
-                content: String(msg?.content || "").slice(0, 8000),
-              }))
-              .filter((msg) => String(msg.content || "").trim())
-              .slice(-80)
-          : [],
-        opcPlan: item?.opcPlan && typeof item.opcPlan === "object" ? item.opcPlan : null,
-      };
-    })
-    .filter((item) => item.name || item.rawText);
-}
-
-function getFolderFromKey(key) {
-  const parts = String(key).split("/");
-  const i = parts.findIndex((p) => p === "SVG_Files" || p === "SVG Files");
-  if (i >= 0) {
-    const rest = parts.slice(i + 1);
-    if (rest.length <= 1) return "Root";
-    return rest.slice(0, -1).join(" / ");
-  }
-  if (parts.length <= 2) return "Root";
-  return parts.slice(0, -1).slice(-1)[0] || "Root";
-}
-
-function tokenizeSvgCatalogText(value) {
-  return Array.from(
-    new Set(
-      String(value || "")
-        .replace(/[_/.-]+/g, " ")
-        .replace(/\.svg$/i, "")
-        .split(/\s+/)
-        .map((x) => x.trim())
-        .filter(Boolean)
-    )
-  );
-}
-
-function normalizeTagValue(value) {
-  return String(value || "")
-    .replace(/\r?\n/g, "")
-    .trim();
-}
-
-function normalizeTableDisplayName(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  return raw
-    .replace(/[_-]+/g, " ")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (m) => m.toUpperCase());
-}
-
-function normalizeAlarmOperatorValue(value) {
-  const op = String(value || "").trim();
-  return ["==", "!=", ">", ">=", "<", "<="].includes(op) ? op : "==";
-}
-
-function normalizeViewportKey(width, height) {
-  const w = Math.max(1, Math.round(Number(width) || 0));
-  const h = Math.max(1, Math.round(Number(height) || 0));
-  return `${w}x${h}`;
-}
-
-function buildViewportZoomKey(screenW, screenH, canvasW, canvasH) {
-  const sw = Math.max(1, Math.round(Number(screenW) || 0));
-  const sh = Math.max(1, Math.round(Number(screenH) || 0));
-  const cw = Math.max(1, Math.round(Number(canvasW) || 0));
-  const ch = Math.max(1, Math.round(Number(canvasH) || 0));
-  return `scr:${sw}x${sh}|svg:${cw}x${ch}`;
-}
-
-function parseViewportZoomKey(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  const modern = raw.match(/^scr:(\d+)x(\d+)\|svg:(\d+)x(\d+)$/i);
-  if (modern) {
-    return {
-      screenW: Number(modern[1]),
-      screenH: Number(modern[2]),
-      canvasW: Number(modern[3]),
-      canvasH: Number(modern[4]),
-      kind: "modern",
-    };
-  }
-  const legacy = raw.match(/^(\d+)x(\d+)$/);
-  if (legacy) {
-    return {
-      screenW: NaN,
-      screenH: NaN,
-      canvasW: Number(legacy[1]),
-      canvasH: Number(legacy[2]),
-      kind: "legacy",
-    };
-  }
-  return null;
-}
-
-function getViewportZoomKey(fallbackRect = null) {
-  if (typeof window !== "undefined") {
-    const screenW =
-      Number(window.screen?.width) > 0
-        ? Number(window.screen.width)
-        : Number(window.innerWidth) || 0;
-    const screenH =
-      Number(window.screen?.height) > 0
-        ? Number(window.screen.height)
-        : Number(window.innerHeight) || 0;
-    const canvasW =
-      Number(fallbackRect?.width) > 0
-        ? Number(fallbackRect.width)
-        : Number(window.innerWidth) || 0;
-    const canvasH =
-      Number(fallbackRect?.height) > 0
-        ? Number(fallbackRect.height)
-        : Number(window.innerHeight) || 0;
-    if (screenW > 0 && screenH > 0 && canvasW > 0 && canvasH > 0) {
-      return buildViewportZoomKey(screenW, screenH, canvasW, canvasH);
-    }
-  }
-  const w = Number(fallbackRect?.width) || 0;
-  const h = Number(fallbackRect?.height) || 0;
-  if (w > 0 && h > 0) return normalizeViewportKey(w, h);
-  return "";
-}
-
-function resolveZoomForViewportMap(mapValue, viewportKey) {
-  const map = normalizeZoomByViewportMap(mapValue);
-  const key = String(viewportKey || "").trim();
-  if (!key) return NaN;
-  const exact = Number(map[key]);
-  if (Number.isFinite(exact)) return exact;
-  const target = parseViewportZoomKey(key);
-  if (!target) return NaN;
-  let bestZoom = NaN;
-  let bestScore = Infinity;
-  for (const [k, zRaw] of Object.entries(map)) {
-    const parsed = parseViewportZoomKey(k);
-    const z = Number(zRaw);
-    if (!parsed || !Number.isFinite(z)) continue;
-    const canvasScore =
-      Math.abs(parsed.canvasW - target.canvasW) + Math.abs(parsed.canvasH - target.canvasH);
-    const screenScore =
-      Number.isFinite(parsed.screenW) &&
-      Number.isFinite(parsed.screenH) &&
-      Number.isFinite(target.screenW) &&
-      Number.isFinite(target.screenH)
-        ? Math.abs(parsed.screenW - target.screenW) + Math.abs(parsed.screenH - target.screenH)
-        : 0;
-    const legacyPenalty =
-      parsed.kind === "legacy" && Number.isFinite(target.screenW) && Number.isFinite(target.screenH)
-        ? 250
-        : 0;
-    const score = canvasScore + screenScore + legacyPenalty;
-    if (score < bestScore) {
-      bestScore = score;
-      bestZoom = z;
-    }
-  }
-  return Number.isFinite(bestZoom) ? bestZoom : NaN;
-}
-
-function normalizeZoomByViewportMap(value) {
-  const src = value && typeof value === "object" ? value : {};
-  const out = {};
-  for (const [rawKey, rawZoom] of Object.entries(src)) {
-    const key = String(rawKey || "").trim();
-    if (!parseViewportZoomKey(key)) continue;
-    const z = Number(rawZoom);
-    if (!Number.isFinite(z) || z <= 0) continue;
-    out[key] = z;
-  }
-  return out;
-}
-
-function readViewportZoomCache() {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(VIEWPORT_ZOOM_CACHE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeViewportZoomCache(nextCache) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(VIEWPORT_ZOOM_CACHE_KEY, JSON.stringify(nextCache || {}));
-  } catch {
-    // ignore storage errors
-  }
-}
-
-function getViewportZoomCacheLastKey(projectId, screenId) {
-  const pid = String(projectId || "").trim();
-  const sid = String(screenId || "").trim();
-  if (!pid || !sid) return "";
-  return `${pid}|${sid}|@last`;
-}
-
-function resolveZoomFromViewportCache(cacheValue, projectId, screenId, viewportKey) {
-  const cache = cacheValue && typeof cacheValue === "object" ? cacheValue : {};
-  const pid = String(projectId || "").trim();
-  const sid = String(screenId || "").trim();
-  const vkey = String(viewportKey || "").trim();
-  if (!sid || !vkey) return NaN;
-  const directKey = pid ? `${pid}|${sid}|${vkey}` : "";
-  const directZoom = directKey ? Number(cache[directKey]) : NaN;
-  if (Number.isFinite(directZoom)) return directZoom;
-  const target = parseViewportZoomKey(vkey);
-  if (!target) return NaN;
-  let bestZoom = NaN;
-  let bestScore = Infinity;
-  for (const [cacheKeyRaw, rawZoom] of Object.entries(cache)) {
-    const cacheKey = String(cacheKeyRaw || "");
-    const parts = cacheKey.split("|");
-    if (parts.length < 3) continue;
-    const keyProjectId = String(parts[0] || "").trim();
-    const keyScreenId = String(parts[1] || "").trim();
-    const keyViewport = parts.slice(2).join("|");
-    if (keyScreenId !== sid) continue;
-    if (pid && keyProjectId && keyProjectId !== pid) continue;
-    const parsed = parseViewportZoomKey(keyViewport);
-    const z = Number(rawZoom);
-    if (!parsed || !Number.isFinite(z)) continue;
-    const canvasScore =
-      Math.abs(parsed.canvasW - target.canvasW) + Math.abs(parsed.canvasH - target.canvasH);
-    const screenScore =
-      Number.isFinite(parsed.screenW) &&
-      Number.isFinite(parsed.screenH) &&
-      Number.isFinite(target.screenW) &&
-      Number.isFinite(target.screenH)
-        ? Math.abs(parsed.screenW - target.screenW) + Math.abs(parsed.screenH - target.screenH)
-        : 0;
-    const legacyPenalty =
-      parsed.kind === "legacy" && Number.isFinite(target.screenW) && Number.isFinite(target.screenH)
-        ? 250
-        : 0;
-    const score = canvasScore + screenScore + legacyPenalty;
-    if (score < bestScore) {
-      bestScore = score;
-      bestZoom = z;
-    }
-  }
-  return Number.isFinite(bestZoom) ? bestZoom : NaN;
-}
-
-function isTruthyFlag(value) {
-  if (value === true) return true;
-  if (value === false || value == null) return false;
-  const raw = String(value).trim().toLowerCase();
-  return raw === "true" || raw === "1" || raw === "yes" || raw === "on";
-}
 
 function coerceAlarmComparable(value) {
   const raw = String(value ?? "").trim();
@@ -856,13 +619,20 @@ export default function App() {
   const [svgETypeOptions, setSvgETypeOptions] = useState([]);
   const [securityRolesForMenu, setSecurityRolesForMenu] = useState([]);
   const [showTeamChat, setShowTeamChat] = useState(false);
-  const [teamChatMessages, setTeamChatMessages] = useState([]);
-  const [teamChatDraft, setTeamChatDraft] = useState("");
-  const [teamChatLoading, setTeamChatLoading] = useState(false);
-  const [teamChatSending, setTeamChatSending] = useState(false);
-  const [teamChatUnreadCount, setTeamChatUnreadCount] = useState(0);
-  const [teamChatLastSeenId, setTeamChatLastSeenId] = useState(0);
-  const teamChatBodyRef = useRef(null);
+  const {
+    teamChatMessages,
+    teamChatDraft,
+    setTeamChatDraft,
+    teamChatLoading,
+    teamChatSending,
+    teamChatUnreadCount,
+    teamChatBodyRef,
+    sendTeamChatMessage,
+  } = useTeamChat({
+    userId: user?.id,
+    isPageVisible,
+    showTeamChat,
+  });
   const [liveActiveAlarmsDb, setLiveActiveAlarmsDb] = useState([]);
   const [liveActiveAlarmsDbLoaded, setLiveActiveAlarmsDbLoaded] = useState(false);
   const [svgCatalogFiles, setSvgCatalogFiles] = useState([]);
@@ -1023,9 +793,7 @@ export default function App() {
           await sleep(retries[i]);
         }
         try {
-          const res = await fetch("/api/db/tables");
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(String(data?.error || "Failed to load DB tables."));
+          const data = await listDbTables();
           if (!alive) return;
           const tables = Array.isArray(data?.tables)
             ? data.tables.map((t) => String(t || "").trim()).filter(Boolean)
@@ -1048,9 +816,8 @@ export default function App() {
     let alive = true;
     async function loadSvgETypeOptions() {
       try {
-        const res = await fetch("/api/db/etype?limit=200");
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !alive) return;
+        const data = await listEquipmentTypes(200);
+        if (!alive) return;
         const rows = Array.isArray(data?.rows) ? data.rows : [];
         const seen = new Set();
         const out = [];
@@ -1075,88 +842,6 @@ export default function App() {
     };
   }, [isPageVisible]);
 
-  async function loadTeamChatMessages({ silent = false } = {}) {
-    if (!silent) setTeamChatLoading(true);
-    try {
-      const res = await fetch("/api/chat/messages");
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Failed to load chat.");
-      const next = Array.isArray(data?.messages) ? data.messages : [];
-      setTeamChatMessages(next);
-      return next;
-    } catch (err) {
-      if (!silent) toastError(err?.message || "Failed to load chat.");
-      return [];
-    } finally {
-      if (!silent) setTeamChatLoading(false);
-    }
-  }
-
-  async function sendTeamChatMessage() {
-    const msg = String(teamChatDraft || "").trim();
-    if (!msg || teamChatSending) return;
-    setTeamChatSending(true);
-    try {
-      const res = await fetch("/api/chat/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Failed to send message.");
-      setTeamChatDraft("");
-      const next = await loadTeamChatMessages({ silent: true });
-      const latestId = next.reduce((maxId, row) => Math.max(maxId, Number(row?.id) || 0), 0);
-      if (latestId > 0) setTeamChatLastSeenId((prev) => Math.max(prev, latestId));
-      setTeamChatUnreadCount(0);
-    } catch (err) {
-      toastError(err?.message || "Failed to send message.");
-    } finally {
-      setTeamChatSending(false);
-    }
-  }
-
-  useEffect(() => {
-    if (!user?.id) return undefined;
-    let cancelled = false;
-    let timer = 0;
-    const pollMs = isPageVisible ? 2500 : 7000;
-    const run = async () => {
-      const next = await loadTeamChatMessages({ silent: true });
-      if (cancelled) return;
-      const latestId = next.reduce((maxId, row) => Math.max(maxId, Number(row?.id) || 0), 0);
-      if (showTeamChat) {
-        if (latestId > 0) setTeamChatLastSeenId((prev) => Math.max(prev, latestId));
-        setTeamChatUnreadCount(0);
-      } else if (latestId > teamChatLastSeenId) {
-        const currentUserId = Number(user?.id || 0);
-        const unread = next.filter((row) => {
-          const rowId = Number(row?.id || 0);
-          if (!(rowId > teamChatLastSeenId)) return false;
-          const authorId = Number(row?.user_id || 0);
-          if (currentUserId > 0 && authorId === currentUserId) return false;
-          return true;
-        }).length;
-        setTeamChatUnreadCount(unread);
-      }
-      timer = window.setTimeout(run, pollMs);
-    };
-    run();
-    return () => {
-      cancelled = true;
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [user?.id, isPageVisible, showTeamChat, teamChatLastSeenId]);
-
-  useEffect(() => {
-    if (!showTeamChat) return;
-    const latestId = teamChatMessages.reduce((maxId, row) => Math.max(maxId, Number(row?.id) || 0), 0);
-    if (latestId > 0) setTeamChatLastSeenId((prev) => Math.max(prev, latestId));
-    setTeamChatUnreadCount(0);
-    const el = teamChatBodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [showTeamChat, teamChatMessages]);
-
   useEffect(() => {
     if (!isLiveMode) {
       setLiveActiveAlarmsDb([]);
@@ -1168,9 +853,7 @@ export default function App() {
     const pollMs = isPageVisible ? 2000 : 6000;
     const fetchActiveAlarms = async () => {
       try {
-        const res = await fetch("/api/alarms?activeOnly=true");
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load alarms.");
+        const data = await listActiveAlarms();
         if (cancelled) return;
         const rows = Array.isArray(data?.active) ? data.active : [];
         setLiveActiveAlarmsDb(
@@ -1208,9 +891,8 @@ export default function App() {
     let alive = true;
     async function loadSvgCatalog() {
       try {
-        const res = await fetch("/api/svg/catalog");
-        const data = await res.json();
-        if (!res.ok || !alive) return;
+        const data = await listSvgCatalog();
+        if (!alive) return;
         const files = Array.isArray(data?.files)
           ? data.files
               .map((f) => ({
@@ -1236,9 +918,8 @@ export default function App() {
     let alive = true;
     async function loadSvgCatalogOnOpen() {
       try {
-        const res = await fetch("/api/svg/catalog");
-        const data = await res.json();
-        if (!res.ok || !alive) return;
+        const data = await listSvgCatalog();
+        if (!alive) return;
         const files = Array.isArray(data?.files)
           ? data.files
               .map((f) => ({
@@ -1373,9 +1054,7 @@ export default function App() {
           if (!alive) return;
         }
         try {
-          const res = await fetch("/api/opc/config");
-          const data = await res.json();
-          if (!res.ok) throw new Error(data?.error || "Failed to load OPC config.");
+          const data = await getOpcConfig();
           if (!alive) return;
           const tags = Array.isArray(data?.tags) ? data.tags : [];
           setOpcTags(tags);
@@ -1391,9 +1070,7 @@ export default function App() {
     }
     async function loadTemplates() {
       try {
-        const res = await fetch("/api/opc/templates");
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load templates.");
+        const data = await getOpcTemplates();
         if (!alive) return;
         setOpcTemplates(data.templates || []);
       } catch {
@@ -1402,9 +1079,7 @@ export default function App() {
     }
     async function loadTagMappings() {
       try {
-        const res = await fetch("/api/opc/tag-mappings");
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load mappings.");
+        const data = await getOpcTagMappings();
         if (!alive) return;
         setOpcTagMappings(data.mappings || []);
       } catch {
@@ -1413,9 +1088,7 @@ export default function App() {
     }
     async function loadMappingSets() {
       try {
-        const res = await fetch("/api/opc/mapping-sets");
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load mapping sets.");
+        const data = await getOpcMappingSets();
         if (!alive) return;
         setOpcMappingSets(data.sets || []);
       } catch {
@@ -1447,9 +1120,7 @@ export default function App() {
       if (!isPageVisible) return;
       if (Date.now() < Number(opcStatusNextAttemptAtRef.current || 0)) return;
       try {
-        const res = await fetch("/api/opc/status");
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load status.");
+        const data = await getOpcStatus();
         if (!alive) return;
         setOpcLiveValues(data.values || {});
         const atMs =
@@ -1495,9 +1166,7 @@ export default function App() {
       await Promise.all(
         sessionIds.map(async (id) => {
           try {
-            const res = await fetch(`/api/ai/plc-debug-sessions/${encodeURIComponent(id)}`, {
-              credentials: "include",
-            });
+            const res = await checkPlcDebugSession(id);
             if (res.status === 404) staleIds.add(id);
           } catch {
             // keepalive is best-effort only
@@ -1555,13 +1224,8 @@ export default function App() {
       }
       let next = {};
       try {
-        const res = await fetch("/api/db/batch-first-values", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ bindings }),
-        });
-        const data = await res.json();
-        if (res.ok && data?.values && typeof data.values === "object") {
+        const data = await fetchBatchFirstValues(bindings);
+        if (data?.values && typeof data.values === "object") {
           next = data.values;
         }
       } catch {
@@ -2441,21 +2105,11 @@ export default function App() {
     try {
       setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: true }));
       setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: "" }));
-      const res = await fetch("/api/opc/write", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tagKey, legacyTagKey, value, uaType }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || "Write failed.");
+      await writeOpcValue({ tagKey, legacyTagKey, value, uaType });
       if (isPulse) {
         window.setTimeout(async () => {
           try {
-            await fetch("/api/opc/write", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ tagKey, legacyTagKey, value: pulseResetValue, uaType }),
-            });
+            await writeOpcValue({ tagKey, legacyTagKey, value: pulseResetValue, uaType });
           } catch {
             // ignore pulse reset errors
           }
@@ -3178,13 +2832,7 @@ export default function App() {
     setLiveBinProductSaveBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: true }));
     setLiveBinProductSaveErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
     try {
-      const res = await fetch(`/api/db/${encodeURIComponent(table)}/${encodeURIComponent(rowId)}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ product_id: value }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || "Failed to assign product.");
+      const data = await updateTableRow(table, rowId, { product_id: value });
       const updatedRow = data?.row && typeof data.row === "object" ? data.row : null;
       if (updatedRow) {
         setProjectBinRows((prev) =>
@@ -3808,6 +3456,8 @@ export default function App() {
       ? mappedZoom
       : Number.isFinite(cachedZoom)
       ? cachedZoom
+      : Number.isFinite(Number(next?.designZoom))
+      ? Number(next.designZoom)
       : Number.isFinite(Number(next?.zoom))
       ? Number(next.zoom)
       : 1;
@@ -3821,7 +3471,11 @@ export default function App() {
     overlaysRef.current = next.svgOverlays;
     vbWRef.current = next.vbW;
     vbHRef.current = next.vbH;
-    panRef.current = next.pan;
+    const resolvedPan =
+      next.designPan && Number.isFinite(next.designPan.x) && Number.isFinite(next.designPan.y)
+        ? { x: next.designPan.x, y: next.designPan.y }
+        : { x: 0, y: 0 };
+    panRef.current = resolvedPan;
     zoomRef.current = resolvedZoom;
     setActiveScreenId(next.id);
     setScreenName(next.name);
@@ -3829,7 +3483,7 @@ export default function App() {
     setSvgOverlays(next.svgOverlays);
     setVbW(next.vbW);
     setVbH(next.vbH);
-    setPan(next.pan);
+    setPan(resolvedPan);
     setZoom(resolvedZoom);
     if (projectId && viewportKey) {
       const nextCache = readViewportZoomCache();
@@ -3839,8 +3493,8 @@ export default function App() {
       writeViewportZoomCache(nextCache);
     }
     const nextScroll =
-      next.scroll && Number.isFinite(next.scroll.x) && Number.isFinite(next.scroll.y)
-        ? { x: next.scroll.x, y: next.scroll.y }
+      next.designScroll && Number.isFinite(next.designScroll.x) && Number.isFinite(next.designScroll.y)
+        ? { x: next.designScroll.x, y: next.designScroll.y }
         : { x: 0, y: 0 };
     canvasViewportScrollRef.current = nextScroll;
     setCanvasViewportScrollTarget(nextScroll);
@@ -4176,9 +3830,7 @@ export default function App() {
     let bootstrappedProject = false;
     async function loadProjects() {
       try {
-        const res = await fetch("/api/projects");
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load projects.");
+        const data = await listProjects();
         if (!alive) return;
         const list = Array.isArray(data.projects) ? data.projects : [];
         setProjects(list);
@@ -4215,6 +3867,7 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let inFlight = false;
 
     const filterRowsForActiveProject = (rows) => {
       const list = Array.isArray(rows) ? rows : [];
@@ -4240,10 +3893,8 @@ export default function App() {
         return;
       }
       try {
-        const pid = encodeURIComponent(normalizeTagValue(activeProjectId));
-        const res = await fetch(`/api/db/route?limit=2000&project_id=${pid}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load routes.");
+        const pid = normalizeTagValue(activeProjectId);
+        const data = await listRoutesByProject(pid, 2000);
         const rows = Array.isArray(data?.rows) ? data.rows : [];
         if (rows.length > 0) {
           if (alive) setProjectRouteRows(filterRowsForActiveProject(rows));
@@ -4251,9 +3902,7 @@ export default function App() {
         }
 
         // Fallback for schemas/endpoints that do not support project_id filtering.
-        const allRes = await fetch("/api/db/route?limit=2000");
-        const allData = await allRes.json();
-        if (!allRes.ok) throw new Error(allData?.error || "Failed to load routes.");
+        const allData = await listAllRoutes(2000);
         const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
         if (alive) setProjectRouteRows(filterRowsForActiveProject(allRows));
       } catch {
@@ -4269,6 +3918,7 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    let inFlight = false;
 
     const filterRowsForActiveProject = (rows) => {
       const list = Array.isArray(rows) ? rows : [];
@@ -4305,9 +3955,7 @@ export default function App() {
       const candidateTables = ["bin"];
       for (const tableName of candidateTables) {
         try {
-          const res = await fetch(`/api/db/${tableName}${query}`);
-          const data = await res.json();
-          if (!res.ok) continue;
+          const data = await listTableRecords(tableName, query);
           const rows = Array.isArray(data?.rows) ? data.rows : [];
           if (rows.length > 0) {
             if (alive) {
@@ -4316,9 +3964,7 @@ export default function App() {
             }
             return;
           }
-          const allRes = await fetch(`/api/db/${tableName}?limit=2000`);
-          const allData = await allRes.json();
-          if (!allRes.ok) continue;
+          const allData = await listTableRecordsUnscoped(tableName, 2000);
           const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
           if (allRows.length > 0) {
             if (alive) {
@@ -4388,9 +4034,7 @@ export default function App() {
       const candidateTables = ["product"];
       for (const tableName of candidateTables) {
         try {
-          const res = await fetch(`/api/db/${tableName}${pidRaw ? scopedQuery : unscopedQuery}`);
-          const data = await res.json();
-          if (!res.ok) continue;
+          const data = await listTableRecords(tableName, pidRaw ? scopedQuery : unscopedQuery);
           const rows = Array.isArray(data?.rows) ? data.rows : [];
           if (rows.length > 0) {
             if (alive) {
@@ -4399,9 +4043,7 @@ export default function App() {
             }
             return;
           }
-          const allRes = await fetch(`/api/db/${tableName}?limit=2000`);
-          const allData = await allRes.json();
-          if (!allRes.ok) continue;
+          const allData = await listTableRecordsUnscoped(tableName, 2000);
           const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
           if (allRows.length > 0) {
             if (alive) {
@@ -4469,19 +4111,15 @@ export default function App() {
         return;
       }
       try {
-        const pid = encodeURIComponent(normalizeTagValue(activeProjectId));
-        const res = await fetch(`/api/db/equipment?limit=2000&project_id=${pid}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load equipment.");
+        const pid = normalizeTagValue(activeProjectId);
+        const data = await listEquipmentByProject(pid, 2000);
         const rows = Array.isArray(data?.rows) ? data.rows : [];
         if (rows.length > 0) {
           if (alive) setProjectEquipmentRows(filterRowsForActiveProject(rows));
           return;
         }
 
-        const allRes = await fetch("/api/db/equipment?limit=2000");
-        const allData = await allRes.json();
-        if (!allRes.ok) throw new Error(allData?.error || "Failed to load equipment.");
+        const allData = await listAllEquipment(2000);
         const allRows = Array.isArray(allData?.rows) ? allData.rows : [];
         if (alive) setProjectEquipmentRows(filterRowsForActiveProject(allRows));
       } catch {
@@ -4563,21 +4201,18 @@ export default function App() {
       if (!trimmedName && projectName !== effectiveName) {
         setProjectName(effectiveName);
       }
-      const res = await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        keepalive,
-        body: JSON.stringify({
+      const { ok, status, data } = await upsertProjectWithStatus(
+        {
           id: activeProjectId || undefined,
           name: effectiveName,
           data: { ...payload, name: effectiveName },
           baseUpdatedAt: ignoreBaseUpdatedAt ? undefined : (activeProjectUpdatedAtRef.current || undefined),
           teamMerge,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        if (res.status === 409 && String(data?.code || "") === "PROJECT_CONFLICT") {
+        },
+        { keepalive }
+      );
+      if (!ok) {
+        if (status === 409 && String(data?.code || "") === "PROJECT_CONFLICT") {
           const remote = data?.project && typeof data.project === "object" ? data.project : null;
           if (remote?.updated_at) {
             const nextUpdatedAt = String(remote.updated_at);
@@ -4645,9 +4280,8 @@ export default function App() {
       projectHydrationReadyRef.current = true;
       savedOk = true;
       if (!keepalive && !skipListReload) {
-        const reload = await fetch("/api/projects");
-        const payloadList = await reload.json();
-        if (reload.ok) setProjects(payloadList.projects || []);
+        const payloadList = await listProjects();
+        setProjects(payloadList.projects || []);
       }
     } catch (err) {
       const message = err?.message || "Save failed.";
@@ -4738,9 +4372,7 @@ function flushScheduledProjectSave() {
       setProjectIdentityReady(false);
       projectHydrationReadyRef.current = false;
       setProjectStatus("");
-      const res = await fetch(`/api/projects/${id}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Load failed.");
+      const data = await getProjectById(id);
       applyProjectPayload(data?.data || {}, { projectId: data?.id || id });
       setProjectName(data?.name || "Untitled");
       setActiveProjectId(data?.id || "");
@@ -4771,9 +4403,7 @@ function flushScheduledProjectSave() {
     if (!id) return;
     try {
       setProjectStatus("");
-      const res = await fetch(`/api/projects/${id}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Delete failed.");
+      await deleteProjectById(id);
       setProjects((prev) => prev.filter((p) => p.id !== id));
       clearProjectDraft(id);
       if (activeProjectId === id) setActiveProjectId("");
@@ -4903,9 +4533,8 @@ function flushScheduledProjectSave() {
       if (!isPageVisible) return;
       if (isInteractingRef.current) return;
       try {
-        const res = await fetch(`/api/projects/${activeProjectId}`);
-        const data = await res.json();
-        if (!res.ok || !alive) return;
+        const data = await getProjectById(activeProjectId);
+        if (!alive) return;
         const remoteUpdatedAt = String(data?.updated_at || "");
         if (!remoteUpdatedAt || remoteUpdatedAt === activeProjectUpdatedAt) return;
         const remoteSig = projectPayloadSignature(data?.data || {});
@@ -5000,9 +4629,8 @@ function flushScheduledProjectSave() {
     async function pollCursors() {
       if (!isPageVisible) return;
       try {
-        const res = await fetch(`/api/projects/${activeProjectId}/cursors`);
-        const data = await res.json();
-        if (!res.ok || !alive) return;
+        const data = await listProjectCursors(activeProjectId);
+        if (!alive) return;
         setProjectCursors(Array.isArray(data?.cursors) ? data.cursors : []);
       } catch {
         // ignore cursor polling failures
@@ -5534,7 +5162,7 @@ function flushScheduledProjectSave() {
     if (!canLeaveSaveDrawerState()) return;
     const next = view || "ai";
     const areaForView =
-      next === "plc"
+      next === "plc" || next === "code-gen-pro"
         ? "plc"
         : next === "opc" || next === "logs" || next === "diagnostics"
         ? "opc"
@@ -5856,9 +5484,8 @@ function flushScheduledProjectSave() {
     let cancelled = false;
     async function loadSecurityRoles() {
       try {
-        const res = await fetch("/api/security/roles");
-        const data = await res.json();
-        if (!res.ok || cancelled) return;
+        const data = await listSecurityRoles();
+        if (cancelled) return;
         const roles = Array.isArray(data?.roles)
           ? data.roles
               .map((r) => ({
@@ -6947,14 +6574,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!o?.sourceKey) return;
     if (String(o.sourceKey).startsWith("__generated__/")) return;
     try {
-      await fetch("/__vizi__/set-svg-meta", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileKey: o.sourceKey,
-          kewidth: w,
-          keheight: h,
-        }),
+      await saveSvgMeta({
+        fileKey: o.sourceKey,
+        kewidth: w,
+        keheight: h,
       });
     } catch {
       // ignore
@@ -7579,9 +7202,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return hit;
     }
     const reqUrl = forceFresh ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}` : url;
-    const res = await fetch(reqUrl, forceFresh ? { cache: "no-store" } : undefined);
-    if (!res.ok) return null;
-    const raw = await res.text();
+    const raw = await readSvgRawApi(reqUrl, forceFresh);
     cacheSvgRawByUrl(url, raw);
     return raw;
   }
@@ -10560,11 +10181,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (now - Number(last.at || 0) < 120 && dx < 0.5 && dy < 0.5) return;
     lastCursorSentRef.current = { at: now, x: Number(point.x), y: Number(point.y) };
     try {
-      await fetch(`/api/projects/${activeProjectId}/cursor`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ x: Number(point.x), y: Number(point.y) }),
-      });
+      await upsertProjectCursor(activeProjectId, { x: Number(point.x), y: Number(point.y) });
     } catch {
       // ignore cursor publish failures
     }
@@ -11830,7 +11447,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!showMainDrawer) return;
     if (
       (drawerView === "database" && !canViewDataPages) ||
-      (drawerView === "plc" && !canViewArea("plc")) ||
+      ((drawerView === "plc" || drawerView === "code-gen-pro") && !canViewArea("plc")) ||
       ((drawerView === "opc" || drawerView === "logs" || drawerView === "diagnostics") &&
         !canViewArea("opc")) ||
       (drawerView === "tags" && !canViewArea("tags")) ||
@@ -14404,7 +14021,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     ? "AI"
                     : drawerView === "reports"
                     ? "Report Designer"
-                    : drawerView === "plc"
+                    : drawerView === "plc" || drawerView === "code-gen-pro"
                     ? "PLC"
                     : drawerView === "server"
                     ? "Server Diagnostics"
@@ -14516,7 +14133,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ height: "100%", overflow: "hidden", padding: drawerContentPadding, boxSizing: "border-box" }}>
                   <HelpPanel inline onClose={() => setShowMainDrawer(false)} />
                 </div>
-              ) : drawerView === "plc" ? (
+              ) : drawerView === "plc" || drawerView === "code-gen-pro" ? (
                 <div style={drawerContentShellStyle}>
                   <PlcAnalyzer
                     plcItems={projectPlcs}
@@ -17444,225 +17061,28 @@ const CONTENT_FIT_HEADROOM = 0.94;
         </div>
       )}
 
-      {showTeamChat ? (
-        <div
-          style={{
-            position: "fixed",
-            top: isLiveMode && isLiveMobile ? TOP_BAR_H + liveAlarmBarOffset : teamChatDesktopTopPx,
-            left: isLiveMode && isLiveMobile ? projectDrawerInsetPx : undefined,
-            right: isLiveMode && isLiveMobile ? 0 : (isLiveMode ? 8 : teamChatDesktopRightPx),
-            bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 8 : 72,
-            width: isLiveMode && isLiveMobile ? "auto" : 360,
-            maxWidth: isLiveMode && isLiveMobile ? "none" : "calc(100vw - 24px)",
-            height: isLiveMode && isLiveMobile ? "auto" : 420,
-            maxHeight: isLiveMode && isLiveMobile ? "none" : "62vh",
-            zIndex: isLiveMode && isLiveMobile ? 221 : 215,
-            border: "1px solid var(--border)",
-            borderRadius: isLiveMode && isLiveMobile ? 0 : 12,
-            background: "var(--bg-elev)",
-            boxShadow: "0 18px 42px rgba(0,0,0,0.34)",
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              height: 42,
-              padding: "0 10px",
-              borderBottom: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              background: "color-mix(in srgb, var(--bg-soft) 78%, var(--bg-elev) 22%)",
-            }}
-          >
-            <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>Team Chat</div>
-            <button
-              onClick={() => setShowTeamChat(false)}
-              style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg-elev)",
-                color: "var(--text)",
-                borderRadius: 8,
-                padding: "4px 8px",
-                fontSize: 11,
-                cursor: "pointer",
-              }}
-            >
-              Close
-            </button>
-          </div>
-          <div
-            ref={teamChatBodyRef}
-            className="vizi-scroll"
-            style={{
-              flex: "1 1 auto",
-              overflowY: "auto",
-              padding: 10,
-              display: "grid",
-              alignContent: "start",
-              gap: 8,
-              background: "var(--bg-soft)",
-            }}
-          >
-            {teamChatLoading ? (
-              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading chat...</div>
-            ) : teamChatMessages.length ? (
-              teamChatMessages.map((row, idx) => {
-                const id = Number(row?.id || 0);
-                const mine = Number(row?.user_id || 0) === Number(user?.id || 0);
-                const at = row?.created_at ? new Date(row.created_at) : null;
-                return (
-                  <div
-                    key={`team-chat-msg-${id || idx}`}
-                    style={{
-                      justifySelf: mine ? "end" : "start",
-                      maxWidth: "88%",
-                      border: "1px solid var(--border)",
-                      borderRadius: 10,
-                      padding: "6px 8px",
-                      background: mine
-                        ? "linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, var(--bg-elev) 78%) 0%, color-mix(in srgb, var(--accent) 14%, var(--bg-elev) 86%) 100%)"
-                        : "var(--bg-elev)",
-                    }}
-                  >
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", marginBottom: 2 }}>
-                      {String(row?.author || "User")}
-                      {at && !Number.isNaN(at.getTime()) ? ` \u2022 ${at.toLocaleString()}` : ""}
-                    </div>
-                    <div style={{ fontSize: 12, lineHeight: 1.35, color: "var(--text)", whiteSpace: "pre-wrap" }}>
-                      {String(row?.message || "")}
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No messages yet.</div>
-            )}
-          </div>
-          <div
-            style={{
-              borderTop: "1px solid var(--border)",
-              background: "var(--bg-elev)",
-              padding: 8,
-              display: "grid",
-              gap: 8,
-            }}
-          >
-            <textarea
-              value={teamChatDraft}
-              onChange={(e) => setTeamChatDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void sendTeamChatMessage();
-                }
-              }}
-              placeholder="Type message..."
-              rows={2}
-              style={{
-                resize: "none",
-                width: "100%",
-                boxSizing: "border-box",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                background: "var(--bg)",
-                color: "var(--text)",
-                padding: "6px 8px",
-                fontSize: 12,
-                outline: "none",
-              }}
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <button
-                onClick={() => void sendTeamChatMessage()}
-                disabled={teamChatSending || !String(teamChatDraft || "").trim()}
-                style={{
-                  border: "1px solid var(--accent)",
-                  background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
-                  color: "var(--accent-text)",
-                  borderRadius: 8,
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: teamChatSending ? "wait" : "pointer",
-                  opacity: teamChatSending || !String(teamChatDraft || "").trim() ? 0.55 : 1,
-                }}
-              >
-                {teamChatSending ? "Sending..." : "Send"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {!(isLiveMode && isLiveMobile) ? (
-        <button
-          title="Team Chat"
-          onClick={() => setShowTeamChat((v) => !v)}
-          style={{
-            position: "fixed",
-            right: isLiveMode ? 8 : 20,
-            bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 10 : 16,
-            width: 44,
-            height: 44,
-            zIndex: 216,
-            borderRadius: 12,
-            padding: 0,
-            lineHeight: 0,
-            border: "1px solid color-mix(in srgb, var(--accent) 36%, var(--border) 64%)",
-            background:
-              "linear-gradient(180deg, color-mix(in srgb, var(--accent) 34%, var(--bg-elev) 66%) 0%, color-mix(in srgb, var(--accent) 20%, var(--bg-elev) 80%) 58%, color-mix(in srgb, var(--accent-strong) 22%, var(--bg-elev) 78%) 100%)",
-            color: "var(--text)",
-            cursor: "pointer",
-            display: "grid",
-            placeItems: "center",
-            boxShadow: showTeamChat
-              ? "0 12px 28px rgba(37, 99, 235, 0.34), inset 0 1px 0 rgba(255,255,255,0.26)"
-              : "0 10px 24px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.18)",
-            outline: showTeamChat ? "2px solid color-mix(in srgb, var(--accent) 42%, transparent)" : "none",
-            outlineOffset: 1,
-            transition: "transform 120ms ease, box-shadow 160ms ease, outline-color 160ms ease",
-          }}
-        >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ display: "block" }}>
-          <path
-            d="M4 7.25C4 5.73 5.23 4.5 6.75 4.5h10.5C18.77 4.5 20 5.73 20 7.25v6.5c0 1.52-1.23 2.75-2.75 2.75h-5.4l-3.55 2.95c-.62.51-1.55.07-1.55-.74V16.5h0c-1.52 0-2.75-1.23-2.75-2.75v-6.5Z"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <circle cx="9" cy="10.6" r="1.1" fill="currentColor" />
-          <circle cx="12" cy="10.6" r="1.1" fill="currentColor" />
-          <circle cx="15" cy="10.6" r="1.1" fill="currentColor" />
-        </svg>
-        {teamChatUnreadCount > 0 ? (
-          <span
-            style={{
-              position: "absolute",
-              top: -4,
-              right: -4,
-              minWidth: 17,
-              height: 17,
-              borderRadius: 999,
-              background: "#ef4444",
-              color: "#fff",
-              fontSize: 9,
-              fontWeight: 800,
-              display: "grid",
-              placeItems: "center",
-              border: "1px solid rgba(255,255,255,0.6)",
-              padding: "0 4px",
-              boxSizing: "border-box",
-            }}
-          >
-            {teamChatUnreadCount > 99 ? "99+" : String(teamChatUnreadCount)}
-          </span>
-        ) : null}
-        </button>
-      ) : null}
+      <TeamChatPanel
+        showTeamChat={showTeamChat}
+        setShowTeamChat={setShowTeamChat}
+        isLiveMode={isLiveMode}
+        isLiveMobile={isLiveMobile}
+        topOffset={TOP_BAR_H + liveAlarmBarOffset}
+        leftOffset={projectDrawerInsetPx}
+        rightOffset={undefined}
+        bottomOffset={72}
+        desktopTopPx={teamChatDesktopTopPx}
+        desktopRightPx={teamChatDesktopRightPx}
+        liveBottomCarouselHeightPx={liveBottomCarouselHeightPx}
+        teamChatBodyRef={teamChatBodyRef}
+        teamChatLoading={teamChatLoading}
+        teamChatMessages={teamChatMessages}
+        teamChatDraft={teamChatDraft}
+        setTeamChatDraft={setTeamChatDraft}
+        teamChatSending={teamChatSending}
+        teamChatUnreadCount={teamChatUnreadCount}
+        onSend={sendTeamChatMessage}
+        currentUserId={user?.id}
+      />
 
       {!showZoom && !isLiveMode && (
         <button
@@ -17692,6 +17112,3 @@ const CONTENT_FIT_HEADROOM = 0.94;
     </div>
   );
 }
-
-
-

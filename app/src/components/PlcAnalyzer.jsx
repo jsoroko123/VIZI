@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toastError, toastInfo, toastSuccess } from "../utils/toast";
 
 function isImportableFieldName(name) {
   return String(name || "").trim().toLowerCase() !== "class";
@@ -436,94 +437,6 @@ function extractAoiLogicBlocks(rawText, fileFormat = "") {
   return out;
 }
 
-function normalizeInterlockTagName(raw) {
-  const value = String(raw || "").trim();
-  if (!value) return "";
-  return value.replace(/\[[^\]]*\]/g, "").replace(/^"|"$/g, "").trim();
-}
-
-function extractInterlockReferences(snippet) {
-  const text = String(snippet || "");
-  if (!text) return [];
-  const ladderKeywords = new Set([
-    "XIC",
-    "XIO",
-    "OTE",
-    "OTL",
-    "OTU",
-    "ONS",
-    "BST",
-    "BND",
-    "NXB",
-    "MOV",
-    "COP",
-    "CPT",
-    "ADD",
-    "SUB",
-    "MUL",
-    "DIV",
-    "GEQ",
-    "GRT",
-    "EQU",
-    "LEQ",
-    "LES",
-    "NEQ",
-    "JSR",
-    "RET",
-    "JMP",
-    "LBL",
-    "TON",
-    "TOF",
-    "RTO",
-    "RES",
-    "CTU",
-    "CTD",
-    "FAL",
-    "FLL",
-    "CLR",
-    "NOP",
-  ]);
-  const decoded = text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-  const extractedSegments = [];
-  const cdataRe = /<!\[CDATA\[([\s\S]*?)\]\]>/gi;
-  let cdata = cdataRe.exec(decoded);
-  while (cdata) {
-    extractedSegments.push(String(cdata[1] || ""));
-    cdata = cdataRe.exec(decoded);
-  }
-  const textTagRe = /<Text\b[^>]*>([\s\S]*?)<\/Text>/gi;
-  let textTag = textTagRe.exec(decoded);
-  while (textTag) {
-    extractedSegments.push(String(textTag[1] || ""));
-    textTag = textTagRe.exec(decoded);
-  }
-  const source = extractedSegments.length ? extractedSegments.join("\n") : decoded;
-
-  const re = /\b(?:[A-Za-z_][A-Za-z0-9_]*:)*[A-Za-z_][A-Za-z0-9_]*(?:\[[0-9]+\])?(?:\.[A-Za-z_][A-Za-z0-9_]*(?:\[[0-9]+\])?)*/g;
-  const out = [];
-  const seen = new Set();
-  let match = re.exec(source);
-  while (match) {
-    const token = String(match[0] || "").trim();
-    const key = token.toUpperCase();
-    if (!ladderKeywords.has(key)) {
-      const normalized = normalizeInterlockTagName(token);
-      const nodeKey = normalized.toLowerCase();
-      if (normalized && !seen.has(nodeKey)) {
-        seen.add(nodeKey);
-        out.push(normalized);
-      }
-    }
-    match = re.exec(source);
-  }
-  return out;
-}
-
 function extractLogicStatements(snippet) {
   const text = String(snippet || "");
   if (!text) return [];
@@ -569,31 +482,177 @@ function extractInstructionCalls(statement) {
   return out;
 }
 
-function scanValueMembersByTagFromRaw(rawText) {
-  const out = new Map();
-  const raw = String(rawText || "");
-  if (!raw || !/<Tag\b/i.test(raw)) return out;
-  const blockRe = /<Tag\b([^>]*)>([\s\S]*?)<\/Tag>/gi;
-  let block = blockRe.exec(raw);
-  while (block) {
-    const attrs = String(block[1] || "");
-    const body = String(block[2] || "");
-    const tagName = normalizeInterlockTagName(extractAttr(attrs, "Name"));
-    const tagKey = String(tagName || "").toLowerCase();
-    if (tagKey) {
-      if (!out.has(tagKey)) out.set(tagKey, new Set());
-      const memberRe = /<DataValueMember\b([^>]*)\/?>/gi;
-      let member = memberRe.exec(body);
-      while (member) {
-        const memberAttrs = String(member[1] || "");
-        const memberName = normalizeInterlockTagName(extractAttr(memberAttrs, "Name"));
-        if (memberName) out.get(tagKey).add(`${tagName}.${memberName}`);
-        member = memberRe.exec(body);
+function parseBasicCsvLine(line) {
+  const text = String(line || "");
+  const out = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '"') {
+      if (inQuotes && text[i + 1] === '"') {
+        cur += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
       }
+      continue;
     }
-    block = blockRe.exec(raw);
+    if (ch === "," && !inQuotes) {
+      out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function extractTagsFromBasicCsv(rawText) {
+  const text = String(rawText || "").replace(/^\uFEFF/, "");
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => String(line || "").trim())
+    .filter(Boolean);
+  if (!lines.length) return [];
+
+  const rows = lines.map((line) => parseBasicCsvLine(line));
+  const first = rows[0] || [];
+  const headerIndex = first.findIndex((cell) => {
+    const key = String(cell || "").trim().toLowerCase();
+    return ["tag", "tagname", "name", "tag_path", "tagpath", "path"].includes(key);
+  });
+  const equipmentIndex = first.findIndex((cell) => {
+    const key = String(cell || "").trim().toLowerCase();
+    return ["equipment", "equipmenttype", "equipment_type", "type"].includes(key);
+  });
+  const hasHeader = headerIndex >= 0;
+  const tagCol = hasHeader ? headerIndex : 0;
+  const equipCol = hasHeader && equipmentIndex >= 0 ? equipmentIndex : -1;
+  const startRow = hasHeader ? 1 : 0;
+
+  const seen = new Set();
+  const out = [];
+  for (let i = startRow; i < rows.length; i += 1) {
+    const row = rows[i] || [];
+    const candidate = normalizeCodeGenTag(row[tagCol] || "");
+    if (!candidate) continue;
+    const key = candidate.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const equipmentType = equipCol >= 0 ? String(row[equipCol] || "").trim() : "";
+    out.push({ tag: candidate, equipmentType });
   }
   return out;
+}
+
+function normalizeCodeGenTag(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/^"|"$/g, "")
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\s+/g, "");
+}
+
+function getInstructionOutputArgIndexes(op, argCount) {
+  if (!argCount) return [];
+  if (op === "OTE" || op === "OTL" || op === "OTU") return [0];
+  if (op === "MOV" || op === "COP" || op === "CPS" || op === "FLL") return argCount >= 2 ? [1] : [];
+  if (op === "ADD" || op === "SUB" || op === "MUL" || op === "DIV" || op === "MOD") {
+    return argCount >= 3 ? [2] : [];
+  }
+  return [];
+}
+
+function _generateCodeGenProArtifacts(blocks, options = {}) {
+  const includeComments = options?.includeComments !== false;
+  const statementRows = [];
+  const instructionCountMap = new Map();
+  const inputTagSet = new Set();
+  const outputTagSet = new Set();
+  const stLines = [];
+
+  (Array.isArray(blocks) ? blocks : []).forEach((block, blockIdx) => {
+    const statements = extractLogicStatements(block?.snippet || "");
+    statements.forEach((statement) => {
+      const calls = extractInstructionCalls(statement);
+      if (!calls.length) return;
+      statementRows.push({
+        blockName: String(block?.name || `Routine ${blockIdx + 1}`),
+        statement,
+        calls,
+      });
+      if (includeComments) {
+        stLines.push(`// ${String(block?.name || `Routine ${blockIdx + 1}`)} | ${String(statement || "").trim()}`);
+      }
+
+      const conditionParts = [];
+      calls.forEach(({ op, args }) => {
+        const opKey = String(op || "").trim().toUpperCase();
+        instructionCountMap.set(opKey, (instructionCountMap.get(opKey) || 0) + 1);
+        const normalizedArgs = (Array.isArray(args) ? args : [])
+          .map((arg) => normalizeCodeGenTag(arg))
+          .filter(Boolean);
+        const outputIdxSet = new Set(getInstructionOutputArgIndexes(opKey, normalizedArgs.length));
+        normalizedArgs.forEach((arg, idx) => {
+          if (outputIdxSet.has(idx)) outputTagSet.add(arg);
+          else inputTagSet.add(arg);
+        });
+
+        if (opKey === "XIC" && normalizedArgs[0]) conditionParts.push(`${normalizedArgs[0]}`);
+        else if (opKey === "XIO" && normalizedArgs[0]) conditionParts.push(`NOT ${normalizedArgs[0]}`);
+        else if (opKey === "EQU" && normalizedArgs.length >= 2) conditionParts.push(`${normalizedArgs[0]} = ${normalizedArgs[1]}`);
+        else if (opKey === "NEQ" && normalizedArgs.length >= 2) conditionParts.push(`${normalizedArgs[0]} <> ${normalizedArgs[1]}`);
+        else if (opKey === "GRT" && normalizedArgs.length >= 2) conditionParts.push(`${normalizedArgs[0]} > ${normalizedArgs[1]}`);
+        else if (opKey === "GEQ" && normalizedArgs.length >= 2) conditionParts.push(`${normalizedArgs[0]} >= ${normalizedArgs[1]}`);
+        else if (opKey === "LES" && normalizedArgs.length >= 2) conditionParts.push(`${normalizedArgs[0]} < ${normalizedArgs[1]}`);
+        else if (opKey === "LEQ" && normalizedArgs.length >= 2) conditionParts.push(`${normalizedArgs[0]} <= ${normalizedArgs[1]}`);
+      });
+
+      const conditionExpr = conditionParts.length ? conditionParts.join(" AND ") : "TRUE";
+      calls.forEach(({ op, args }) => {
+        const opKey = String(op || "").trim().toUpperCase();
+        const normalizedArgs = (Array.isArray(args) ? args : [])
+          .map((arg) => normalizeCodeGenTag(arg))
+          .filter(Boolean);
+        if (opKey === "OTE" && normalizedArgs[0]) stLines.push(`${normalizedArgs[0]} := (${conditionExpr});`);
+        else if (opKey === "OTL" && normalizedArgs[0]) stLines.push(`IF (${conditionExpr}) THEN ${normalizedArgs[0]} := TRUE; END_IF;`);
+        else if (opKey === "OTU" && normalizedArgs[0]) stLines.push(`IF (${conditionExpr}) THEN ${normalizedArgs[0]} := FALSE; END_IF;`);
+        else if (opKey === "MOV" && normalizedArgs.length >= 2) {
+          stLines.push(`IF (${conditionExpr}) THEN ${normalizedArgs[1]} := ${normalizedArgs[0]}; END_IF;`);
+        } else if (opKey === "ADD" && normalizedArgs.length >= 3) {
+          stLines.push(`IF (${conditionExpr}) THEN ${normalizedArgs[2]} := ${normalizedArgs[0]} + ${normalizedArgs[1]}; END_IF;`);
+        } else if (opKey === "SUB" && normalizedArgs.length >= 3) {
+          stLines.push(`IF (${conditionExpr}) THEN ${normalizedArgs[2]} := ${normalizedArgs[0]} - ${normalizedArgs[1]}; END_IF;`);
+        } else if (opKey === "MUL" && normalizedArgs.length >= 3) {
+          stLines.push(`IF (${conditionExpr}) THEN ${normalizedArgs[2]} := ${normalizedArgs[0]} * ${normalizedArgs[1]}; END_IF;`);
+        } else if (opKey === "DIV" && normalizedArgs.length >= 3) {
+          stLines.push(`IF (${conditionExpr}) THEN ${normalizedArgs[2]} := ${normalizedArgs[0]} / ${normalizedArgs[1]}; END_IF;`);
+        }
+      });
+    });
+  });
+
+  const instructionCounts = Array.from(instructionCountMap.entries())
+    .map(([op, count]) => ({ op, count }))
+    .sort((a, b) => b.count - a.count || a.op.localeCompare(b.op));
+  const inputTags = Array.from(inputTagSet).sort((a, b) => a.localeCompare(b));
+  const outputTags = Array.from(outputTagSet).sort((a, b) => a.localeCompare(b));
+  const allTags = Array.from(new Set([...inputTags, ...outputTags])).sort((a, b) => a.localeCompare(b));
+  const declarationLines = allTags.map((tag) => `${tag}: BOOL;`);
+  const ioMapLines = allTags.map((tag) => `${tag},`);
+
+  return {
+    statementRows,
+    instructionCounts,
+    inputTags,
+    outputTags,
+    allTags,
+    stLines,
+    declarationLines,
+    ioMapLines,
+  };
 }
 
 function mapPlcTypeToUaType(value) {
@@ -1122,10 +1181,17 @@ function scanDataTypeTemplates(xmlText, maxTypes = 800, maxFieldsPerType = 2000)
   return Array.from(templateByName.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], onInsertSvg = null }) {
+export default function PlcAnalyzer({
+  plcItems = [],
+  onChange,
+  svgCatalog = [],
+  onInsertSvg = null,
+  initialTab = "overview",
+  allowedTabs = null,
+}) {
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState(String(initialTab || "overview"));
   const [chatByPlc, setChatByPlc] = useState({});
   const [chatPrompt, setChatPrompt] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
@@ -1165,12 +1231,60 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   const [dataTypeExcludedFieldsByPlc, setDataTypeExcludedFieldsByPlc] = useState({});
   const [aoiLogicExpandedByName, setAoiLogicExpandedByName] = useState({});
   const [aoiLogicSearch, setAoiLogicSearch] = useState("");
-  const [interlockSearch, setInterlockSearch] = useState("");
-  const [interlockRoot, setInterlockRoot] = useState("");
-  const [interlockChildTag, setInterlockChildTag] = useState("");
-  const [interlockExpandedByNode, setInterlockExpandedByNode] = useState({});
-  const [interlockDirection, setInterlockDirection] = useState("forward");
+  const [codeGenFormat, setCodeGenFormat] = useState("list");
+  const [codeGenTagSearch, setCodeGenTagSearch] = useState("");
+  const [codeGenTagsByPlc, setCodeGenTagsByPlc] = useState({});
+  const [codeGenNewTagDraft, setCodeGenNewTagDraft] = useState("");
+  const [codeGenNewTagEquipmentDraft, setCodeGenNewTagEquipmentDraft] = useState("");
+  const [codeGenTagMetaByPlc, setCodeGenTagMetaByPlc] = useState({});
+  const [codeGenGroupsByPlc, setCodeGenGroupsByPlc] = useState({});
+  const [codeGenGroupNameDraft, setCodeGenGroupNameDraft] = useState("");
+  const [codeGenGroupParentDraft, setCodeGenGroupParentDraft] = useState("");
+  const [codeGenExpandedGroupsByPlc, setCodeGenExpandedGroupsByPlc] = useState({});
+  const [codeGenDragTag, setCodeGenDragTag] = useState("");
+  const [codeGenPersistReadyByPlc, setCodeGenPersistReadyByPlc] = useState({});
+  const [plcTopTab, setPlcTopTab] = useState(
+    String(initialTab || "").trim() === "code-gen-pro" ? "code-gen-pro" : "plc"
+  );
   const chatScrollRef = useRef(null);
+  const codeGenSaveTimerRef = useRef(null);
+  const codeGenLastSavedSnapshotByPlcRef = useRef({});
+  const codeGenPersistErrorAtRef = useRef(0);
+  const lastPlcInnerTabRef = useRef("overview");
+  const plcTabs = useMemo(
+    () => [
+      { key: "overview", label: "Overview" },
+      { key: "ai", label: "AI" },
+      { key: "aoi-templates", label: "AOI Templates" },
+      { key: "aoi-logic", label: "AOI Logic" },
+      { key: "code-gen-pro", label: "Code Gen Pro" },
+      { key: "datatype-templates", label: "Data Type Templates" },
+    ],
+    []
+  );
+  const allowedPlcTabSet = useMemo(() => {
+    if (!Array.isArray(allowedTabs) || !allowedTabs.length) return null;
+    return new Set(allowedTabs.map((k) => String(k || "").trim()).filter(Boolean));
+  }, [allowedTabs]);
+  const visiblePlcTabs = useMemo(() => {
+    const base = !allowedPlcTabSet
+      ? plcTabs
+      : (() => {
+          const out = plcTabs.filter((tab) => allowedPlcTabSet.has(String(tab.key || "")));
+          return out.length ? out : plcTabs;
+        })();
+    const codeGenTab = base.find((tab) => String(tab?.key || "") === "code-gen-pro");
+    if (String(plcTopTab || "") === "code-gen-pro" && codeGenTab) return [codeGenTab];
+    const nonCodeGen = base.filter((tab) => String(tab?.key || "") !== "code-gen-pro");
+    return nonCodeGen.length ? nonCodeGen : base;
+  }, [allowedPlcTabSet, plcTabs, plcTopTab]);
+  const showTopLevelPlcTabs = useMemo(() => {
+    const hasCodeGen = plcTabs.some((tab) => String(tab?.key || "") === "code-gen-pro");
+    if (!hasCodeGen) return false;
+    if (!allowedPlcTabSet) return true;
+    return allowedPlcTabSet.has("code-gen-pro");
+  }, [allowedPlcTabSet, plcTabs]);
+  const codeGenOnlyView = String(plcTopTab || "") === "code-gen-pro";
 
   const selected = useMemo(() => {
     const list = Array.isArray(plcItems) ? plcItems : [];
@@ -1239,420 +1353,125 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     if (!q) return aoiLogicBlocks;
     return aoiLogicBlocks.filter((b) => String(b?.name || "").toLowerCase().includes(q));
   }, [aoiLogicBlocks, aoiLogicSearch]);
-  const interlockData = useMemo(() => {
-    const valueMembersByTag = scanValueMembersByTagFromRaw(String(selected?.rawText || ""));
-    const controllerTagMap = new Map();
-    const controllerTagTypeMap = new Map();
-    (Array.isArray(analysis?.controllerTags?.tags) ? analysis.controllerTags.tags : []).forEach((tag) => {
-      const normalized = normalizeInterlockTagName(tag?.name || tag?.tagPath || "");
-      const key = normalized.toLowerCase();
-      if (key && !controllerTagMap.has(key)) controllerTagMap.set(key, normalized);
-      if (key && !controllerTagTypeMap.has(key)) {
-        controllerTagTypeMap.set(
-          key,
-          String(tag?.plcType || tag?.type || "").trim()
-        );
-      }
-    });
-
-    const stripFamilyQualifier = (value) =>
-      String(value || "")
-        .replace(/\s*\(\s*FamilyType\s*:?=\s*[^)]+\)\s*$/i, "")
-        .trim();
-    const normalizeTypeKey = (value) =>
-      stripFamilyQualifier(String(value || ""))
-        .trim()
-        .replace(/^"|"$/g, "")
-        .replace(/\s+/g, "")
-        .toLowerCase();
-    const stripArraySuffix = (value) => String(value || "").replace(/\[[^\]]*\]/g, "").trim();
-    const buildTypeNameVariants = (rawName) => {
-      const value = stripFamilyQualifier(String(rawName || "").trim());
-      const variants = new Set([value]);
-      if (value.includes("::")) variants.add(value.split("::").pop() || "");
-      if (value.includes(".")) variants.add(value.split(".").pop() || "");
-      if (value.includes(":")) variants.add(value.split(":").pop() || "");
-      const underscoreParts = value.split("_").filter(Boolean);
-      if (underscoreParts.length >= 2) {
-        for (let i = 1; i < underscoreParts.length; i += 1) {
-          variants.add(underscoreParts.slice(i).join("_"));
-        }
-      }
-      return Array.from(variants).map((v) => String(v || "").trim()).filter(Boolean);
-    };
-    const dataTypeTemplateByName = new Map();
-    dataTypeTemplates.forEach((t) => {
-      const rawName = String(t?.name || "").trim();
-      if (!rawName) return;
-      const score = Array.isArray(t?.fields) ? t.fields.length : 0;
-      const upsert = (k) => {
-        if (!k) return;
-        const existing = dataTypeTemplateByName.get(k);
-        const existingScore = Array.isArray(existing?.fields) ? existing.fields.length : 0;
-        if (!existing || score > existingScore) dataTypeTemplateByName.set(k, t);
-      };
-      buildTypeNameVariants(rawName).forEach((variant) => upsert(normalizeTypeKey(variant)));
-    });
-    const resolveTemplateByType = (typeName) => {
-      const variants = buildTypeNameVariants(stripArraySuffix(typeName));
-      for (const variant of variants) {
-        const direct = dataTypeTemplateByName.get(normalizeTypeKey(variant));
-        if (direct) return direct;
-      }
-      const normalizedVariants = variants
-        .map((v) => normalizeTypeKey(v))
-        .filter((v) => v && v.length >= 2)
-        .sort((a, b) => b.length - a.length);
-      for (const variantKey of normalizedVariants) {
-        for (const [mappedKey, template] of dataTypeTemplateByName.entries()) {
-          if (!mappedKey) continue;
-          if (
-            mappedKey === variantKey ||
-            mappedKey.endsWith(`_${variantKey}`) ||
-            mappedKey.endsWith(`.${variantKey}`) ||
-            mappedKey.endsWith(`:${variantKey}`) ||
-            mappedKey.endsWith(variantKey)
-          ) {
-            return template;
-          }
-        }
-      }
-      return null;
-    };
-
-    const controllerTagKeys = Array.from(controllerTagMap.keys()).sort();
-    const discoveredRefMap = new Map();
-    const resolveRefToControllerTag = (rawRef) => {
-      const base = normalizeInterlockTagName(rawRef).toLowerCase();
-      if (!base) return "";
-      const candidates = new Set([base, base.replace(/:+/g, "."), base.replace(/:/g, ".")]);
-      for (const candidate of candidates) {
-        if (controllerTagMap.has(candidate)) return candidate;
-      }
-      for (const candidate of candidates) {
-        const parts = candidate.split(".").filter(Boolean);
-        if (!parts.length) continue;
-        // If this is a child/member of a known controller tag, keep the member path
-        // so dependencies don't collapse to the same parent tag.
-        for (let i = parts.length - 1; i >= 1; i -= 1) {
-          const prefix = parts.slice(0, i).join(".");
-          if (controllerTagMap.has(prefix)) return candidate;
-        }
-        for (let i = 0; i < parts.length; i += 1) {
-          const suffix = parts.slice(i).join(".");
-          if (controllerTagMap.has(suffix)) return suffix;
-        }
-        for (let i = parts.length - 1; i >= 1; i -= 1) {
-          const prefix = parts.slice(0, i).join(".");
-          if (controllerTagMap.has(prefix)) return prefix;
-        }
-      }
-      return "";
-    };
-    const resolveTopControllerKey = (nodeKey) => {
-      const key = String(nodeKey || "").toLowerCase().trim();
+  const codeGenUserTags = useMemo(
+    () => (Array.isArray(codeGenTagsByPlc?.[chatKey]) ? codeGenTagsByPlc[chatKey] : []),
+    [chatKey, codeGenTagsByPlc]
+  );
+  const codeGenTagMeta = useMemo(
+    () => (codeGenTagMetaByPlc?.[chatKey] && typeof codeGenTagMetaByPlc[chatKey] === "object" ? codeGenTagMetaByPlc[chatKey] : {}),
+    [chatKey, codeGenTagMetaByPlc]
+  );
+  const codeGenOutputText = useMemo(() => {
+    const tags = Array.from(new Set(codeGenUserTags.map((t) => String(t || "").trim()).filter(Boolean))).sort((a, b) =>
+      a.localeCompare(b)
+    );
+    const groups = Array.isArray(codeGenGroupsByPlc?.[chatKey]) ? codeGenGroupsByPlc[chatKey] : [];
+    const groupById = new Map(groups.map((g) => [String(g?.id || ""), g]));
+    const groupPathById = new Map();
+    const resolveGroupPath = (id, path = new Set()) => {
+      const key = String(id || "").trim();
       if (!key) return "";
-      if (controllerTagMap.has(key)) return key;
-      const parts = key.split(".").filter(Boolean);
-      for (let i = parts.length - 1; i >= 1; i -= 1) {
-        const prefix = parts.slice(0, i).join(".");
-        if (controllerTagMap.has(prefix)) return prefix;
-      }
-      // Fallback: treat the root segment as equipment instance even if it is not
-      // explicitly declared as a controller tag.
-      if (parts.length >= 2) return parts[0];
-      return "";
+      if (groupPathById.has(key)) return groupPathById.get(key);
+      if (path.has(key)) return "";
+      const current = groupById.get(key);
+      if (!current) return "";
+      const parentId = String(current?.parentId || "").trim();
+      const nextPath = new Set(path);
+      nextPath.add(key);
+      const parentPath = parentId ? resolveGroupPath(parentId, nextPath) : "";
+      const name = String(current?.name || "").trim() || "Group";
+      const full = parentPath ? `${parentPath}.${name}` : name;
+      groupPathById.set(key, full);
+      return full;
     };
-    const addEdge = (sourceKey, targetKey) => {
-      if (!sourceKey || !targetKey || sourceKey === targetKey) return;
-      ensureNode(sourceKey);
-      ensureNode(targetKey);
-      const set = adjacency.get(sourceKey);
-      if (!set.has(targetKey)) {
-        set.add(targetKey);
-        incoming.set(targetKey, (incoming.get(targetKey) || 0) + 1);
-        reverseAdjacency.get(targetKey).add(sourceKey);
-      }
-
-      // Roll member dependencies up to controller tag roots so selecting the parent tag
-      // still shows member-driven relationships (e.g. Motor.RunFwd).
-      const sourceTop = resolveTopControllerKey(sourceKey);
-      const targetTop = resolveTopControllerKey(targetKey);
-      if (sourceTop && sourceTop !== sourceKey) {
-        const topSet = adjacency.get(sourceTop);
-        if (!topSet.has(targetKey)) {
-          topSet.add(targetKey);
-          incoming.set(targetKey, (incoming.get(targetKey) || 0) + 1);
-          reverseAdjacency.get(targetKey).add(sourceTop);
-        }
-      }
-      if (targetTop && targetTop !== targetKey) {
-        const set2 = adjacency.get(sourceKey);
-        if (!set2.has(targetTop)) {
-          set2.add(targetTop);
-          incoming.set(targetTop, (incoming.get(targetTop) || 0) + 1);
-          reverseAdjacency.get(targetTop).add(sourceKey);
-        }
-      }
-      if (sourceTop && targetTop && sourceTop !== targetTop) {
-        const topSet2 = adjacency.get(sourceTop);
-        if (!topSet2.has(targetTop)) {
-          topSet2.add(targetTop);
-          incoming.set(targetTop, (incoming.get(targetTop) || 0) + 1);
-          reverseAdjacency.get(targetTop).add(sourceTop);
-        }
-      }
-    };
-    const adjacency = new Map();
-    const incoming = new Map();
-    const reverseAdjacency = new Map();
-    const displayNames = new Map(controllerTagMap);
-    const ensureNode = (nameRaw) => {
-      const name = normalizeInterlockTagName(nameRaw);
-      if (!name) return "";
-      const key = name.toLowerCase();
-      if (!adjacency.has(key)) adjacency.set(key, new Set());
-      if (!reverseAdjacency.has(key)) reverseAdjacency.set(key, new Set());
-      if (!incoming.has(key)) incoming.set(key, 0);
-      if (!displayNames.has(key)) displayNames.set(key, name);
-      return key;
-    };
-
-    // Seed graph with all controller tags so every tag is selectable.
-    controllerTagKeys.forEach((k) => ensureNode(displayNames.get(k) || k));
-
-    const contactOps = new Set([
-      "XIC", "XIO", "ONS", "OSR", "OSF", "EQU", "NEQ", "LES", "LEQ", "GRT", "GEQ",
-      "MEQ", "LIM", "CMP", "BST", "NXB", "BND",
-    ]);
-    const outputOps = new Set(["OTE", "OTL", "OTU", "MOV", "COP", "CPS", "FLL", "ADD", "SUB", "MUL", "DIV", "MOD", "CPT", "AND", "OR", "XOR"]);
-
-    const getOutputArgIndexes = (op, argCount) => {
-      if (!argCount) return [];
-      if (op === "OTE" || op === "OTL" || op === "OTU") return [0];
-      if (op === "MOV" || op === "COP" || op === "CPS" || op === "FLL") return argCount >= 2 ? [1] : [];
-      if (op === "ADD" || op === "SUB" || op === "MUL" || op === "DIV" || op === "MOD" || op === "AND" || op === "OR" || op === "XOR") {
-        return argCount >= 3 ? [2] : [];
-      }
-      if (op === "CPT") return argCount >= 1 ? [0] : [];
-      return [];
-    };
-
-    aoiLogicBlocks.forEach((block) => {
-      extractInterlockReferences(block?.snippet || "").forEach((ref) => {
-        const normalized = normalizeInterlockTagName(ref);
-        const key = normalized.toLowerCase();
-        if (key && !discoveredRefMap.has(key)) discoveredRefMap.set(key, normalized);
-      });
-      const statements = extractLogicStatements(block?.snippet || "");
-      statements.forEach((stmt) => {
-        const calls = extractInstructionCalls(stmt);
-        if (!calls.length) return;
-
-        const rungInputs = new Set();
-        const rungOutputs = new Set();
-
-        calls.forEach(({ op, args }) => {
-          if (!Array.isArray(args) || !args.length) return;
-          const outputIdxs = getOutputArgIndexes(op, args.length);
-          const outputIdxSet = new Set(outputIdxs);
-
-          args.forEach((arg, idx) => {
-            const resolved = resolveRefToControllerTag(arg);
-            if (!resolved) return;
-            if (outputIdxSet.has(idx)) {
-              rungOutputs.add(resolved);
-            } else if (contactOps.has(op) || outputOps.has(op) || !op) {
-              rungInputs.add(resolved);
-            }
-          });
-        });
-
-        // Preferred model: output tag depends on input tags.
-        if (rungOutputs.size && rungInputs.size) {
-          rungOutputs.forEach((outKey) => {
-            rungInputs.forEach((inKey) => {
-              addEdge(outKey, inKey);
-            });
-          });
-          return;
-        }
-
-        // Fallback for unusual syntax: co-occurrence links.
-        const refs = extractInterlockReferences(stmt)
-          .map((ref) => resolveRefToControllerTag(ref))
-          .filter(Boolean);
-        const uniqueRefs = Array.from(new Set(refs));
-        uniqueRefs.forEach((sourceKey) => {
-          uniqueRefs.forEach((targetKey) => {
-            addEdge(sourceKey, targetKey);
-          });
-        });
+    const tagGroup = new Map();
+    groups.forEach((group) => {
+      const gid = String(group?.id || "").trim();
+      const gpath = resolveGroupPath(gid);
+      (Array.isArray(group?.tags) ? group.tags : []).forEach((tag) => {
+        const t = String(tag || "").trim();
+        if (!t) return;
+        if (!tagGroup.has(t)) tagGroup.set(t, gpath || "");
       });
     });
 
-    const nodes = Array.from(adjacency.keys()).sort();
-    const linkedNodes = nodes.filter(
-      (k) => (adjacency.get(k)?.size || 0) > 0 || (reverseAdjacency.get(k)?.size || 0) > 0
-    );
-    const roots = linkedNodes.filter((k) => (adjacency.get(k)?.size || 0) > 0 && (incoming.get(k) || 0) === 0);
-    const active = roots.length ? roots : linkedNodes;
-    const discoveredKeys = Array.from(discoveredRefMap.keys());
-    const controllerChildrenMap = new Map();
-    const addChild = (parentKey, childKeyRaw) => {
-      const parent = String(parentKey || "").toLowerCase().trim();
-      const normalizedChild = normalizeInterlockTagName(childKeyRaw);
-      const childKey = String(normalizedChild || "").toLowerCase().trim();
-      if (!parent || !childKey || parent === childKey) return;
-      if (!controllerChildrenMap.has(parent)) controllerChildrenMap.set(parent, new Set());
-      controllerChildrenMap.get(parent).add(childKey);
-      if (!displayNames.has(childKey)) displayNames.set(childKey, normalizedChild);
-    };
-    const expandTemplateChildren = (parentKey, parentDisplayName, typeName, seenPairs = new Set(), depth = 0) => {
-      if (depth > 8) return;
-      const template = resolveTemplateByType(typeName);
-      const fields = Array.isArray(template?.fields) ? template.fields : [];
-      if (!fields.length) return;
-      const baseDisplay = String(parentDisplayName || displayNames.get(parentKey) || parentKey || "").trim();
-      fields.forEach((field) => {
-        const fieldName = String(field?.name || field?.tagPath || "").trim();
-        if (!fieldName || !isImportableFieldName(fieldName)) return;
-        const childDisplay = normalizeInterlockTagName(`${baseDisplay}.${fieldName}`);
-        const childKey = String(childDisplay || "").toLowerCase();
-        if (!childKey) return;
-        addChild(parentKey, childDisplay);
-        const childType = String(field?.plcType || field?.baseType || "").trim();
-        const pairKey = `${childKey}::${normalizeTypeKey(stripArraySuffix(childType))}`;
-        if (!childType || seenPairs.has(pairKey)) return;
-        seenPairs.add(pairKey);
-        expandTemplateChildren(childKey, childDisplay, childType, seenPairs, depth + 1);
+    if (codeGenFormat === "io-map") {
+      const rows = ["Tag,EquipmentType,Group"];
+      tags.forEach((tag) => {
+        const equipmentType = String(codeGenTagMeta?.[tag]?.equipmentType || "").trim();
+        rows.push(`${tag},${equipmentType},${tagGroup.get(tag) || ""}`);
       });
-    };
-    discoveredRefMap.forEach((name, key) => {
-      if (!displayNames.has(key)) displayNames.set(key, name);
+      return rows.join("\n");
+    }
+    const rows = ["Tag,EquipmentType"];
+    tags.forEach((tag) => {
+      const equipmentType = String(codeGenTagMeta?.[tag]?.equipmentType || "").trim();
+      rows.push(`${tag},${equipmentType}`);
     });
-    controllerTagTypeMap.forEach((typeName, parentKey) => {
-      const parentDisplay = String(displayNames.get(parentKey) || controllerTagMap.get(parentKey) || parentKey);
-      if (!displayNames.has(parentKey)) displayNames.set(parentKey, parentDisplay);
-      expandTemplateChildren(parentKey, parentDisplay, typeName);
+    return rows.join("\n");
+  }, [chatKey, codeGenFormat, codeGenGroupsByPlc, codeGenTagMeta, codeGenUserTags]);
+  const codeGenGroups = useMemo(
+    () => (Array.isArray(codeGenGroupsByPlc?.[chatKey]) ? codeGenGroupsByPlc[chatKey] : []),
+    [chatKey, codeGenGroupsByPlc]
+  );
+  const codeGenExpandedSet = useMemo(
+    () => new Set(Array.isArray(codeGenExpandedGroupsByPlc?.[chatKey]) ? codeGenExpandedGroupsByPlc[chatKey] : []),
+    [chatKey, codeGenExpandedGroupsByPlc]
+  );
+  const codeGenAssignedTagSet = useMemo(() => {
+    const set = new Set();
+    codeGenGroups.forEach((group) => {
+      (Array.isArray(group?.tags) ? group.tags : []).forEach((tag) => set.add(String(tag || "")));
     });
-    const valueMemberKeys = [];
-    valueMembersByTag.forEach((memberSet, parentKey) => {
-      const parent = String(parentKey || "").toLowerCase();
-      if (!parent) return;
-      memberSet.forEach((fullName) => {
-        const normalized = normalizeInterlockTagName(fullName);
-        const key = String(normalized || "").toLowerCase();
-        if (!key) return;
-        valueMemberKeys.push(key);
-        addChild(parent, normalized);
-      });
+    return set;
+  }, [codeGenGroups]);
+  const filteredCodeGenTags = useMemo(() => {
+    const q = String(codeGenTagSearch || "").trim().toLowerCase();
+    const src = Array.isArray(codeGenUserTags) ? codeGenUserTags : [];
+    if (!q) return src;
+    return src.filter((tag) => {
+      const name = String(tag || "").toLowerCase();
+      const equipmentType = String(codeGenTagMeta?.[tag]?.equipmentType || "").toLowerCase();
+      return name.includes(q) || equipmentType.includes(q);
     });
-
-    const selectableRoots = Array.from(new Set([...controllerTagKeys, ...nodes, ...discoveredKeys, ...valueMemberKeys])).sort((a, b) =>
-      String(displayNames.get(a) || a).localeCompare(String(displayNames.get(b) || b))
-    );
-    const allKeysForGrouping = Array.from(new Set([...selectableRoots, ...nodes, ...discoveredKeys, ...valueMemberKeys]));
-    allKeysForGrouping.forEach((k) => {
-      const parts = String(k || "").split(".").filter(Boolean);
-      if (parts.length < 2) return;
-      const parent = parts[0].toLowerCase();
-      if (!controllerChildrenMap.has(parent)) controllerChildrenMap.set(parent, new Set());
-      controllerChildrenMap.get(parent).add(k);
-      if (!displayNames.has(parent)) displayNames.set(parent, parts[0]);
+  }, [codeGenTagMeta, codeGenTagSearch, codeGenUserTags]);
+  const codeGenPersistProfile = useMemo(() => {
+    const tags = Array.isArray(codeGenUserTags)
+      ? codeGenUserTags
+          .map((t) => String(t || "").trim())
+          .filter(Boolean)
+      : [];
+    const tagMeta = tags.reduce((acc, tag) => {
+      const equipmentType = String(codeGenTagMeta?.[tag]?.equipmentType || "").trim();
+      if (equipmentType) acc[tag] = { equipmentType };
+      return acc;
+    }, {});
+    const groups = codeGenGroups.map((group) => {
+      const id = String(group?.id || "").trim();
+      const name = String(group?.name || "").trim();
+      const parentId = String(group?.parentId || "").trim();
+      const dbId = String(group?.dbId || "").trim();
+      const row = {
+        id,
+        name,
+        parentId,
+        tags: (Array.isArray(group?.tags) ? group.tags : [])
+          .map((t) => String(t || "").trim())
+          .filter((t) => tags.includes(t)),
+      };
+      if (dbId) row.dbId = dbId;
+      return row;
     });
-
-    const controllerParents = Array.from(
-      new Set([
-        ...controllerTagKeys
-          .filter((k) => !String(k).includes(".")),
-        ...Array.from(controllerChildrenMap.keys()),
-      ])
-    ).sort((a, b) =>
-      String(displayNames.get(a) || a).localeCompare(String(displayNames.get(b) || b))
-    );
-
+    const expandedGroupIds = Array.from(codeGenExpandedSet.values()).map((id) => String(id || "").trim()).filter(Boolean);
     return {
-      adjacency,
-      reverseAdjacency,
-      incoming,
-      nodes,
-      roots: active,
-      controllerRoots: selectableRoots,
-      controllerParents,
-      controllerChildrenMap,
-      allSelectableKeys: allKeysForGrouping,
-      displayNames,
+      format: String(codeGenFormat || "list"),
+      tags,
+      tagMeta,
+      groups,
+      expandedGroupIds,
     };
-  }, [analysis?.controllerTags?.tags, aoiLogicBlocks, dataTypeTemplates, selected?.rawText]);
-
-  const filteredInterlockControllers = useMemo(() => {
-    const q = String(interlockSearch || "").trim().toLowerCase();
-    const base = Array.isArray(interlockData?.controllerParents) ? interlockData.controllerParents : [];
-    if (!q) return base;
-    return base.filter((k) =>
-      String(interlockData?.displayNames?.get(k) || k || "").toLowerCase().includes(q)
-    );
-  }, [interlockData?.controllerParents, interlockData?.displayNames, interlockSearch]);
-
-  useEffect(() => {
-    if (!filteredInterlockControllers.length) {
-      if (interlockRoot) setInterlockRoot("");
-      return;
-    }
-    if (!interlockRoot || !filteredInterlockControllers.includes(interlockRoot)) {
-      setInterlockRoot(filteredInterlockControllers[0]);
-    }
-  }, [filteredInterlockControllers, interlockRoot]);
-
-  const interlockChildOptions = useMemo(() => {
-    if (!interlockRoot) return [];
-    const set = interlockData?.controllerChildrenMap?.get(interlockRoot);
-    let base = set && set.size ? Array.from(set) : [];
-    if (!base.length) {
-      const root = String(interlockRoot || "").toLowerCase().trim();
-      const pool = Array.isArray(interlockData?.allSelectableKeys) ? interlockData.allSelectableKeys : [];
-      // Fallback for scoped/export-specific names:
-      // - direct child: root.xxx
-      // - scoped path contains: .root.xxx
-      // - display name contains the same patterns
-      base = pool.filter((k) => {
-        const key = String(k || "").toLowerCase();
-        if (!key || key === root) return false;
-        if (key.startsWith(`${root}.`)) return true;
-        if (key.includes(`.${root}.`)) return true;
-        const label = String(interlockData?.displayNames?.get(k) || k || "").toLowerCase();
-        if (label.startsWith(`${root}.`)) return true;
-        if (label.includes(`.${root}.`)) return true;
-        return false;
-      });
-    }
-    if (!base.length) return [];
-    return Array.from(new Set(base)).sort((a, b) =>
-      String(interlockData?.displayNames?.get(a) || a).localeCompare(String(interlockData?.displayNames?.get(b) || b))
-    );
-  }, [interlockData?.allSelectableKeys, interlockData?.controllerChildrenMap, interlockData?.displayNames, interlockRoot]);
-
-  useEffect(() => {
-    if (!interlockChildOptions.length) {
-      if (interlockChildTag) setInterlockChildTag("");
-      return;
-    }
-    if (!interlockChildTag || !interlockChildOptions.includes(interlockChildTag)) {
-      setInterlockChildTag(interlockChildOptions[0]);
-    }
-  }, [interlockChildOptions, interlockChildTag]);
-
-  const selectedInterlockNode = interlockChildTag || interlockRoot;
-
-  const selectedInterlockHasChildren = useMemo(() => {
-    if (!selectedInterlockNode) return false;
-    const mapToUse =
-      interlockDirection === "backward"
-        ? interlockData?.reverseAdjacency
-        : interlockData?.adjacency;
-    return (mapToUse?.get(selectedInterlockNode)?.size || 0) > 0;
-  }, [interlockDirection, interlockData?.adjacency, interlockData?.reverseAdjacency, selectedInterlockNode]);
+  }, [codeGenExpandedSet, codeGenFormat, codeGenGroups, codeGenTagMeta, codeGenUserTags]);
+  const codeGenPersistSnapshot = useMemo(() => JSON.stringify(codeGenPersistProfile), [codeGenPersistProfile]);
   const dataTypeTemplateByName = useMemo(() => {
     const stripFamilyQualifier = (value) =>
       String(value || "")
@@ -1759,6 +1578,184 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
   useEffect(() => {
     setExpandedSummaryByKey({});
   }, [selected?.id]);
+  useEffect(() => {
+    if (String(initialTab || "").trim() === "code-gen-pro") setPlcTopTab("code-gen-pro");
+  }, [initialTab]);
+  useEffect(() => {
+    if (String(activeTab || "") !== "code-gen-pro") {
+      lastPlcInnerTabRef.current = String(activeTab || "overview");
+    }
+  }, [activeTab]);
+  useEffect(() => {
+    const top = String(plcTopTab || "").trim();
+    if (top === "code-gen-pro") {
+      if (activeTab !== "code-gen-pro") setActiveTab("code-gen-pro");
+      return;
+    }
+    if (activeTab === "code-gen-pro") {
+      const fallback = String(lastPlcInnerTabRef.current || "overview");
+      setActiveTab(fallback === "code-gen-pro" ? "overview" : fallback);
+    }
+  }, [activeTab, plcTopTab]);
+  useEffect(() => {
+    const current = String(activeTab || "").trim();
+    const available = Array.isArray(visiblePlcTabs) ? visiblePlcTabs : [];
+    if (!available.length) return;
+    if (available.some((tab) => String(tab?.key || "") === current)) return;
+    const preferred = available.some((tab) => String(tab?.key || "") === String(initialTab || "").trim())
+      ? String(initialTab || "").trim()
+      : String(available[0]?.key || "overview");
+    if (preferred && preferred !== current) setActiveTab(preferred);
+  }, [activeTab, initialTab, visiblePlcTabs]);
+  useEffect(() => {
+    const validIds = new Set(codeGenGroups.map((g) => String(g?.id || "").trim()).filter(Boolean));
+    validIds.add("__route__");
+    if (codeGenGroupParentDraft && !validIds.has(String(codeGenGroupParentDraft || "").trim())) {
+      setCodeGenGroupParentDraft("");
+    }
+  }, [codeGenGroups, codeGenGroupParentDraft]);
+  useEffect(() => {
+    const validTagSet = new Set(Array.isArray(codeGenUserTags) ? codeGenUserTags : []);
+    updateCodeGenGroups((curr) => {
+      let changed = false;
+      const next = curr.map((group) => {
+        const base = Array.isArray(group?.tags) ? group.tags.map((x) => String(x || "").trim()).filter(Boolean) : [];
+        const filtered = base.filter((tag) => validTagSet.has(tag));
+        if (filtered.length !== base.length) changed = true;
+        return { ...group, tags: filtered };
+      });
+      return changed ? next : curr;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatKey, codeGenUserTags]);
+  useEffect(() => {
+    const validTagSet = new Set(Array.isArray(codeGenUserTags) ? codeGenUserTags : []);
+    setCodeGenTagMetaByPlc((prev) => {
+      const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      const entries = Object.entries(current).filter(([tag]) => validTagSet.has(tag));
+      if (entries.length === Object.keys(current).length) return prev;
+      return { ...(prev || {}), [chatKey]: Object.fromEntries(entries) };
+    });
+  }, [chatKey, codeGenUserTags]);
+  useEffect(() => {
+    const key = String(chatKey || "").trim();
+    if (!selected?.id || !key || key === "__none__") return;
+    let cancelled = false;
+    setCodeGenPersistReadyByPlc((prev) => ({ ...(prev || {}), [key]: false }));
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/code-gen-pro/${encodeURIComponent(key)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(String(data?.error || "Failed to load Code Gen profile."));
+        const profile = data?.profile && typeof data.profile === "object" ? data.profile : null;
+        const loadedTags = Array.isArray(profile?.tags)
+          ? Array.from(
+              new Set(
+                profile.tags
+                  .map((t) => normalizeCodeGenTag(t))
+                  .filter(Boolean)
+              )
+            ).sort((a, b) => a.localeCompare(b))
+          : [];
+        const loadedTagMetaRaw =
+          profile?.tagMeta && typeof profile.tagMeta === "object" && !Array.isArray(profile.tagMeta)
+            ? profile.tagMeta
+            : {};
+        const loadedTagMeta = loadedTags.reduce((acc, tag) => {
+          const equipmentType = String(loadedTagMetaRaw?.[tag]?.equipmentType || "").trim();
+          if (equipmentType) acc[tag] = { equipmentType };
+          return acc;
+        }, {});
+        const loadedGroups = Array.isArray(profile?.groups)
+          ? profile.groups
+              .map((group, idx) => {
+                const id = String(group?.id || `grp_${idx + 1}`).trim();
+                const name = String(group?.name || "").trim();
+                const parentId = String(group?.parentId || "").trim();
+                const dbId = String(group?.dbId || "").trim();
+                const tags = (Array.isArray(group?.tags) ? group.tags : [])
+                  .map((t) => normalizeCodeGenTag(t))
+                  .filter((t) => loadedTags.includes(t));
+                if (!id || !name) return null;
+                return {
+                  id,
+                  name,
+                  parentId,
+                  tags: Array.from(new Set(tags)),
+                  ...(dbId ? { dbId, dbSyncState: "ok" } : {}),
+                };
+              })
+              .filter(Boolean)
+          : [];
+        const loadedExpanded = Array.isArray(profile?.expandedGroupIds)
+          ? profile.expandedGroupIds
+              .map((id) => String(id || "").trim())
+              .filter(Boolean)
+              .filter((id) => loadedGroups.some((g) => String(g?.id || "") === id))
+          : [];
+        const loadedFormat = String(profile?.format || "list").trim() || "list";
+        if (cancelled) return;
+        setCodeGenTagsByPlc((prev) => ({ ...(prev || {}), [key]: loadedTags }));
+        setCodeGenTagMetaByPlc((prev) => ({ ...(prev || {}), [key]: loadedTagMeta }));
+        setCodeGenGroupsByPlc((prev) => ({ ...(prev || {}), [key]: loadedGroups }));
+        setCodeGenExpandedGroupsByPlc((prev) => ({ ...(prev || {}), [key]: loadedExpanded }));
+        setCodeGenFormat(loadedFormat === "io-map" ? "io-map" : "list");
+        setCodeGenGroupParentDraft("");
+        codeGenLastSavedSnapshotByPlcRef.current[key] = JSON.stringify({
+          format: loadedFormat === "io-map" ? "io-map" : "list",
+          tags: loadedTags,
+          tagMeta: loadedTagMeta,
+          groups: loadedGroups.map((g) => ({
+            id: String(g?.id || ""),
+            name: String(g?.name || ""),
+            parentId: String(g?.parentId || ""),
+            tags: Array.isArray(g?.tags) ? g.tags : [],
+            ...(String(g?.dbId || "").trim() ? { dbId: String(g.dbId) } : {}),
+          })),
+          expandedGroupIds: loadedExpanded,
+        });
+      } catch (err) {
+        if (!cancelled) toastError(String(err?.message || "Failed to load Code Gen profile."));
+      } finally {
+        if (!cancelled) {
+          setCodeGenPersistReadyByPlc((prev) => ({ ...(prev || {}), [key]: true }));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chatKey, selected?.id]);
+  useEffect(() => {
+    const key = String(chatKey || "").trim();
+    if (!selected?.id || !key || key === "__none__") return;
+    if (codeGenPersistReadyByPlc?.[key] !== true) return;
+    const snapshot = String(codeGenPersistSnapshot || "");
+    if (!snapshot) return;
+    if (codeGenLastSavedSnapshotByPlcRef.current?.[key] === snapshot) return;
+    if (codeGenSaveTimerRef.current) clearTimeout(codeGenSaveTimerRef.current);
+    codeGenSaveTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/ai/code-gen-pro/${encodeURIComponent(key)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile: codeGenPersistProfile }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(String(data?.error || "Failed to save Code Gen profile."));
+        codeGenLastSavedSnapshotByPlcRef.current[key] = snapshot;
+      } catch (err) {
+        const now = Date.now();
+        if (now - Number(codeGenPersistErrorAtRef.current || 0) > 5000) {
+          codeGenPersistErrorAtRef.current = now;
+          toastError(String(err?.message || "Failed to save Code Gen profile."));
+        }
+      }
+    }, 700);
+    return () => {
+      if (codeGenSaveTimerRef.current) clearTimeout(codeGenSaveTimerRef.current);
+    };
+  }, [chatKey, codeGenPersistProfile, codeGenPersistReadyByPlc, codeGenPersistSnapshot, selected?.id]);
 
   const fullSectionNamesByKey = useMemo(() => {
     if (!analysis || !selected?.rawText) return {};
@@ -2156,6 +2153,349 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
     const next = (Array.isArray(plcItems) ? plcItems : []).filter((x) => String(x?.id) !== String(id));
     commit(next);
     if (String(selectedId) === String(id)) setSelectedId("");
+  };
+
+  const copyCodeGenOutput = async () => {
+    const text = String(codeGenOutputText || "").trim();
+    if (!text) {
+      toastInfo("Nothing to copy from current output.");
+      return;
+    }
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        toastSuccess(`Copied ${text.length} characters.`);
+        return;
+      }
+    } catch {
+      // fallback below
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "true");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok) toastSuccess(`Copied ${text.length} characters.`);
+      else toastError("Copy failed.");
+    } catch {
+      toastError("Copy failed.");
+    }
+  };
+
+  const updateCodeGenGroups = (updater) => {
+    setCodeGenGroupsByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      const nextRaw = typeof updater === "function" ? updater(current) : current;
+      const next = Array.isArray(nextRaw) ? nextRaw : current;
+      return { ...(prev || {}), [chatKey]: next };
+    });
+  };
+
+  const addCodeGenTag = (raw, equipmentTypeRaw = "") => {
+    const tag = normalizeCodeGenTag(raw);
+    if (!tag) {
+      toastInfo("Enter a tag name.");
+      return;
+    }
+    const equipmentType = String(equipmentTypeRaw || "").trim();
+    let tagAdded = false;
+    setCodeGenTagsByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      if (current.includes(tag)) return prev;
+      tagAdded = true;
+      return { ...(prev || {}), [chatKey]: [...current, tag].sort((a, b) => a.localeCompare(b)) };
+    });
+    if (equipmentType) {
+      setCodeGenTagMetaByPlc((prev) => {
+        const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+        const existing = current?.[tag] && typeof current[tag] === "object" ? current[tag] : {};
+        return {
+          ...(prev || {}),
+          [chatKey]: {
+            ...current,
+            [tag]: { ...existing, equipmentType },
+          },
+        };
+      });
+    }
+    setCodeGenNewTagDraft("");
+    setCodeGenNewTagEquipmentDraft("");
+    if (tagAdded) toastSuccess(`Added tag ${tag}.`);
+    else if (equipmentType) toastSuccess(`Updated equipment type for ${tag}.`);
+    else toastInfo(`Tag ${tag} already exists.`);
+  };
+
+  const removeCodeGenTag = (raw) => {
+    const tag = normalizeCodeGenTag(raw);
+    if (!tag) return;
+    setCodeGenTagsByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      return { ...(prev || {}), [chatKey]: current.filter((t) => String(t || "").trim() !== tag) };
+    });
+    setCodeGenTagMetaByPlc((prev) => {
+      const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      if (!Object.prototype.hasOwnProperty.call(current, tag)) return prev;
+      const nextMeta = { ...current };
+      delete nextMeta[tag];
+      return { ...(prev || {}), [chatKey]: nextMeta };
+    });
+    updateCodeGenGroups((curr) =>
+      curr.map((group) => {
+        const baseTags = Array.isArray(group?.tags) ? group.tags.map((x) => String(x || "").trim()).filter(Boolean) : [];
+        return { ...group, tags: baseTags.filter((x) => x !== tag) };
+      })
+    );
+    toastSuccess(`Removed tag ${tag}.`);
+  };
+
+  const importCodeGenTagsFromCsv = async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = extractTagsFromBasicCsv(text);
+      if (!parsed.length) {
+        toastInfo("No tags found in CSV.");
+        return;
+      }
+      let added = 0;
+      let metaUpdates = 0;
+      setCodeGenTagsByPlc((prev) => {
+        const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+        const set = new Set(current.map((t) => String(t || "").trim().toLowerCase()));
+        const next = [...current];
+        parsed.forEach((row) => {
+          const tag = normalizeCodeGenTag(row?.tag || "");
+          const key = String(tag || "").trim().toLowerCase();
+          if (!key || set.has(key)) return;
+          set.add(key);
+          next.push(tag);
+          added += 1;
+        });
+        return { ...(prev || {}), [chatKey]: next.sort((a, b) => a.localeCompare(b)) };
+      });
+      setCodeGenTagMetaByPlc((prev) => {
+        const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+        const nextMeta = { ...current };
+        parsed.forEach((row) => {
+          const tag = normalizeCodeGenTag(row?.tag || "");
+          const equipmentType = String(row?.equipmentType || "").trim();
+          if (!tag || !equipmentType) return;
+          const existing = nextMeta?.[tag] && typeof nextMeta[tag] === "object" ? nextMeta[tag] : {};
+          if (String(existing?.equipmentType || "").trim() === equipmentType) return;
+          nextMeta[tag] = { ...existing, equipmentType };
+          metaUpdates += 1;
+        });
+        return { ...(prev || {}), [chatKey]: nextMeta };
+      });
+      if (added > 0 && metaUpdates > 0) {
+        toastSuccess(`Imported ${added} tag(s) and ${metaUpdates} equipment type value(s) from CSV.`);
+      } else if (added > 0) {
+        toastSuccess(`Imported ${added} tag(s) from CSV.`);
+      } else if (metaUpdates > 0) {
+        toastSuccess(`Updated equipment type for ${metaUpdates} tag(s) from CSV.`);
+      } else {
+        toastInfo("All CSV tags already exist.");
+      }
+    } catch {
+      toastError("CSV import failed.");
+    } finally {
+      if (event?.target) event.target.value = "";
+    }
+  };
+
+  const updateCodeGenTagEquipment = (tagRaw, equipmentTypeRaw) => {
+    const tag = normalizeCodeGenTag(tagRaw);
+    if (!tag) return;
+    const equipmentType = String(equipmentTypeRaw || "").trim();
+    setCodeGenTagMetaByPlc((prev) => {
+      const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      const existing = current?.[tag] && typeof current[tag] === "object" ? current[tag] : {};
+      if (equipmentType) {
+        return {
+          ...(prev || {}),
+          [chatKey]: {
+            ...current,
+            [tag]: { ...existing, equipmentType },
+          },
+        };
+      }
+      if (!Object.prototype.hasOwnProperty.call(current, tag)) return prev;
+      const nextMeta = { ...current };
+      delete nextMeta[tag];
+      return { ...(prev || {}), [chatKey]: nextMeta };
+    });
+  };
+
+  const toggleCodeGenGroupExpanded = (groupId) => {
+    const id = String(groupId || "").trim();
+    if (!id) return;
+    setCodeGenExpandedGroupsByPlc((prev) => {
+      const current = new Set(Array.isArray(prev?.[chatKey]) ? prev[chatKey] : []);
+      if (current.has(id)) current.delete(id);
+      else current.add(id);
+      return { ...(prev || {}), [chatKey]: Array.from(current) };
+    });
+  };
+
+  const createCodeGenGroup = async () => {
+    const name = String(codeGenGroupNameDraft || "").trim();
+    if (!name) {
+      toastInfo("Enter a group name.");
+      return;
+    }
+    const parentDraft = String(codeGenGroupParentDraft || "").trim();
+    const parentId = parentDraft === "__route__" ? "" : parentDraft;
+    const parentGroup = codeGenGroups.find((g) => String(g?.id || "") === parentId) || null;
+    const nextGroup = {
+      id: `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      parentId: parentId || "",
+      tags: [],
+      dbId: "",
+      dbSyncState: "pending",
+    };
+    updateCodeGenGroups((curr) => [...curr, nextGroup]);
+    setCodeGenExpandedGroupsByPlc((prev) => {
+      const current = new Set(Array.isArray(prev?.[chatKey]) ? prev[chatKey] : []);
+      current.add(nextGroup.id);
+      return { ...(prev || {}), [chatKey]: Array.from(current) };
+    });
+    setCodeGenGroupNameDraft("");
+    toastInfo(`Created group "${name}" locally. Saving to Route DB group...`);
+    try {
+      const dbGroupName = name.slice(0, 50);
+      const payload = {
+        groupname: dbGroupName,
+        grouptype: "Route",
+        enabled: true,
+        sortorder: codeGenGroups.length + 1,
+      };
+      const parentDbIdRaw = parentGroup?.dbId;
+      const parentDbId = Number(parentDbIdRaw);
+      if (Number.isFinite(parentDbId) && parentDbId > 0) {
+        payload.groupid = Math.trunc(parentDbId);
+      }
+      const res = await fetch("/api/db/route_bin_group", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(data?.error || "Failed to create Route DB group."));
+      const row = data?.row && typeof data.row === "object" ? data.row : {};
+      const dbId = Number(row?.id);
+      updateCodeGenGroups((curr) =>
+        curr.map((g) =>
+          String(g?.id || "") === nextGroup.id
+            ? {
+                ...g,
+                dbId: Number.isFinite(dbId) && dbId > 0 ? String(dbId) : "",
+                dbSyncState: "ok",
+              }
+            : g
+        )
+      );
+      toastSuccess(`Created group "${name}" and saved to Route DB.`);
+    } catch (err) {
+      const message = String(err?.message || "Route DB group create failed.");
+      updateCodeGenGroups((curr) =>
+        curr.map((g) =>
+          String(g?.id || "") === nextGroup.id
+            ? { ...g, dbSyncState: "error", dbError: message }
+            : g
+        )
+      );
+      toastError(`Created group "${name}" locally. Database sync failed: ${message}`);
+    }
+  };
+
+  const deleteCodeGenGroup = (groupId) => {
+    const id = String(groupId || "").trim();
+    if (!id) return;
+    updateCodeGenGroups((curr) => {
+      const byParent = new Map();
+      curr.forEach((g) => {
+        const key = String(g?.parentId || "");
+        if (!byParent.has(key)) byParent.set(key, []);
+        byParent.get(key).push(String(g?.id || ""));
+      });
+      const removeSet = new Set([id]);
+      const stack = [id];
+      while (stack.length) {
+        const current = stack.pop();
+        const children = byParent.get(String(current || "")) || [];
+        children.forEach((childId) => {
+          if (!removeSet.has(childId)) {
+            removeSet.add(childId);
+            stack.push(childId);
+          }
+        });
+      }
+      const next = curr.filter((g) => !removeSet.has(String(g?.id || "")));
+      return next;
+    });
+    setCodeGenExpandedGroupsByPlc((prev) => {
+      const current = new Set(Array.isArray(prev?.[chatKey]) ? prev[chatKey] : []);
+      current.delete(id);
+      return { ...(prev || {}), [chatKey]: Array.from(current) };
+    });
+    toastSuccess("Group deleted.");
+  };
+
+  const renameCodeGenGroup = (groupId, nextNameRaw) => {
+    const id = String(groupId || "").trim();
+    const nextName = String(nextNameRaw || "").trim();
+    if (!id || !nextName) return;
+    updateCodeGenGroups((curr) =>
+      curr.map((g) => (String(g?.id || "") === id ? { ...g, name: nextName } : g))
+    );
+  };
+
+  const moveTagToGroup = (tagRaw, targetGroupIdRaw) => {
+    const tag = String(tagRaw || "").trim();
+    const targetGroupId = String(targetGroupIdRaw || "").trim();
+    if (!tag || !targetGroupId) return;
+    updateCodeGenGroups((curr) =>
+      curr.map((g) => {
+        const groupId = String(g?.id || "");
+        const baseTags = Array.isArray(g?.tags) ? g.tags.map((x) => String(x || "").trim()).filter(Boolean) : [];
+        const withoutTag = baseTags.filter((x) => x !== tag);
+        if (groupId !== targetGroupId) return { ...g, tags: withoutTag };
+        return { ...g, tags: Array.from(new Set([...withoutTag, tag])) };
+      })
+    );
+    toastSuccess(`Assigned ${tag} to group.`);
+  };
+
+  const removeTagFromGroup = (tagRaw, groupIdRaw) => {
+    const tag = String(tagRaw || "").trim();
+    const groupId = String(groupIdRaw || "").trim();
+    if (!tag || !groupId) return;
+    updateCodeGenGroups((curr) =>
+      curr.map((g) => {
+        if (String(g?.id || "") !== groupId) return g;
+        const baseTags = Array.isArray(g?.tags) ? g.tags.map((x) => String(x || "").trim()).filter(Boolean) : [];
+        return { ...g, tags: baseTags.filter((x) => x !== tag) };
+      })
+    );
+  };
+
+  const moveTagToUngrouped = (tagRaw) => {
+    const tag = String(tagRaw || "").trim();
+    if (!tag) return;
+    updateCodeGenGroups((curr) =>
+      curr.map((g) => {
+        const baseTags = Array.isArray(g?.tags) ? g.tags.map((x) => String(x || "").trim()).filter(Boolean) : [];
+        return { ...g, tags: baseTags.filter((x) => x !== tag) };
+      })
+    );
+    toastSuccess(`Removed ${tag} from groups.`);
   };
 
   useEffect(() => {
@@ -3780,64 +4120,110 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         alignItems: "start",
       }}
     >
+      {showTopLevelPlcTabs ? (
+        <div
+          className="vizi-scroll"
+          style={{
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
+            overflowX: "auto",
+            borderBottom: "1px solid var(--border)",
+            paddingBottom: 2,
+          }}
+        >
+          {[
+            { key: "plc", label: "PLC" },
+            { key: "code-gen-pro", label: "Code Gen Pro" },
+          ].map((tab) => {
+            const active = String(plcTopTab || "") === tab.key;
+            return (
+              <button
+                key={`plc-top-tab-${tab.key}`}
+                type="button"
+                data-preserve-style="true"
+                onClick={() => setPlcTopTab(tab.key)}
+                style={{
+                  border: "none",
+                  borderBottom: `2px solid ${active ? "var(--accent)" : "transparent"}`,
+                  background: "transparent",
+                  color: active ? "var(--accent)" : "var(--text-muted)",
+                  borderRadius: 0,
+                  minWidth: 0,
+                  height: 30,
+                  padding: "0 10px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  whiteSpace: "nowrap",
+                  boxShadow: "none",
+                  transition: "color 140ms ease, border-color 140ms ease, background-color 140ms ease",
+                }}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
       <div style={{ display: "grid", gap: 2 }}>
-        <div style={{ fontSize: 14, fontWeight: 800 }}>PLC L5X/L5K Analyzer</div>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>{codeGenOnlyView ? "Code Gen Pro" : "PLC L5X/L5K Analyzer"}</div>
         <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          Upload an <code>.l5x</code> or <code>.l5k</code> file to scan controller metadata, tags, programs, routines, modules, and AOIs.
+          {codeGenOnlyView
+            ? "Build Code Gen tags/groups and generate export rows."
+            : "Upload an .l5x or .l5k file to scan controller metadata, tags, programs, routines, modules, and AOIs."}
         </div>
       </div>
 
-      <div
-        className="vizi-scroll"
-        style={{
-          display: "flex",
-          gap: 6,
-          alignItems: "center",
-          overflowX: "auto",
-          borderBottom: "1px solid var(--border)",
-          paddingBottom: 2,
-        }}
-      >
-        {[
-          { key: "overview", label: "Overview" },
-          { key: "ai", label: "AI" },
-          { key: "aoi-templates", label: "AOI Templates" },
-          { key: "aoi-logic", label: "AOI Logic" },
-          { key: "datatype-templates", label: "Data Type Templates" },
-          { key: "interlocks", label: "Interlocks" },
-        ].map((tab) => {
-          const active = activeTab === tab.key;
-          return (
-            <button
-              key={`plc-tab-${tab.key}`}
-              type="button"
-              data-preserve-style="true"
-              onClick={() => setActiveTab(tab.key)}
-              style={{
-                border: "none",
-                borderBottom: `2px solid ${active ? "var(--accent)" : "transparent"}`,
-                background: "transparent",
-                color: active ? "var(--accent)" : "var(--text-muted)",
-                borderRadius: 0,
-                minWidth: 0,
-                height: 30,
-                padding: "0 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                whiteSpace: "nowrap",
-                boxShadow: "none",
-                transition: "color 140ms ease, border-color 140ms ease, background-color 140ms ease",
-              }}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+      {visiblePlcTabs.length > 1 ? (
+        <div
+          className="vizi-scroll"
+          style={{
+            display: "flex",
+            gap: 6,
+            alignItems: "center",
+            overflowX: "auto",
+            borderBottom: "1px solid var(--border)",
+            paddingBottom: 2,
+          }}
+        >
+          {visiblePlcTabs.map((tab) => {
+            const active = activeTab === tab.key;
+            return (
+              <button
+                key={`plc-tab-${tab.key}`}
+                type="button"
+                data-preserve-style="true"
+                onClick={() => setActiveTab(tab.key)}
+                style={{
+                  border: "none",
+                  borderBottom: `2px solid ${active ? "var(--accent)" : "transparent"}`,
+                  background: "transparent",
+                  color: active ? "var(--accent)" : "var(--text-muted)",
+                  borderRadius: 0,
+                  minWidth: 0,
+                  height: 30,
+                  padding: "0 10px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  whiteSpace: "nowrap",
+                  boxShadow: "none",
+                  transition: "color 140ms ease, border-color 140ms ease, background-color 140ms ease",
+                }}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
 
       {activeTab === "overview" ? (
         <>
@@ -4980,7 +5366,7 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
         </>
       ) : null}
 
-      {activeTab === "interlocks" ? (
+      {activeTab === "code-gen-pro" ? (
         <>
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
             Source: <strong style={{ color: "var(--text)" }}>{selected?.name || "No PLC selected"}</strong>
@@ -4989,210 +5375,580 @@ export default function PlcAnalyzer({ plcItems = [], onChange, svgCatalog = [], 
             <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
               Select or upload an L5X/L5K file in Overview first.
             </div>
-          ) : !filteredInterlockControllers.length ? (
-            <div style={{ border: "1px dashed var(--border)", borderRadius: 10, padding: 16, fontSize: 12, color: "var(--text-muted)" }}>
-              No interlock graph could be derived from current logic.
-            </div>
           ) : (
             <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-elev)", overflow: "hidden" }}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "minmax(220px, 1fr) minmax(160px, auto) minmax(260px, 1fr)",
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
                   gap: 8,
-                  alignItems: "center",
                   padding: "8px 10px",
                   borderBottom: "1px solid var(--border)",
+                  background: "var(--bg-soft)",
                 }}
-              >
-                <input
-                  value={interlockSearch}
-                  onChange={(e) => setInterlockSearch(e.target.value)}
-                  placeholder="Search controller tag..."
-                  style={{
-                    border: "1px solid var(--border)",
-                    background: "var(--bg)",
-                    color: "var(--text)",
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    fontSize: 11,
-                  }}
-                />
-                <div style={{ display: "inline-flex", gap: 6, justifySelf: "center" }}>
-                  <button
-                    type="button"
-                    data-preserve-style="true"
-                    onClick={() => setInterlockDirection("forward")}
-                    style={{
-                      border: `1px solid ${interlockDirection === "forward" ? "#2b6cff" : "var(--border)"}`,
-                      background: interlockDirection === "forward" ? "#2b6cff" : "var(--bg-elev)",
-                      color: interlockDirection === "forward" ? "#fff" : "var(--text)",
-                      borderRadius: 999,
-                      padding: "6px 10px",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Forward
-                  </button>
-                  <button
-                    type="button"
-                    data-preserve-style="true"
-                    onClick={() => setInterlockDirection("backward")}
-                    style={{
-                      border: `1px solid ${interlockDirection === "backward" ? "#2b6cff" : "var(--border)"}`,
-                      background: interlockDirection === "backward" ? "#2b6cff" : "var(--bg-elev)",
-                      color: interlockDirection === "backward" ? "#fff" : "var(--text)",
-                      borderRadius: 999,
-                      padding: "6px 10px",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Backward
-                  </button>
-                </div>
-                <select
-                  value={interlockRoot}
-                  onChange={(e) => setInterlockRoot(e.target.value)}
-                  style={{
-                    border: "1px solid var(--border)",
-                    background: "var(--bg)",
-                    color: "var(--text)",
-                    borderRadius: 8,
-                    padding: "6px 10px",
-                    fontSize: 11,
-                  }}
                 >
-                  {filteredInterlockControllers.map((root) => (
-                    <option key={`interlock-root-${root}`} value={root}>
-                      {interlockData.displayNames?.get(root) || root}
-                    </option>
-                  ))}
-                </select>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  User Tags <strong style={{ color: "var(--text)" }}>{codeGenUserTags.length}</strong>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Groups <strong style={{ color: "var(--text)" }}>{codeGenGroups.length}</strong>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Grouped Tags <strong style={{ color: "var(--text)" }}>{codeGenAssignedTagSet.size}</strong>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Ungrouped Tags{" "}
+                  <strong style={{ color: "var(--text)" }}>
+                    {Math.max(codeGenUserTags.length - codeGenAssignedTagSet.size, 0)}
+                  </strong>
+                </div>
               </div>
-              <div style={{ padding: 10, display: "grid", gap: 6 }}>
-                {interlockRoot ? (
-                  <div
+
+              <div style={{ padding: 10, display: "grid", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <select
+                    value={codeGenFormat}
+                    onChange={(e) => setCodeGenFormat(String(e.target.value || "list"))}
                     style={{
                       border: "1px solid var(--border)",
-                      borderRadius: 8,
                       background: "var(--bg)",
-                      padding: 8,
-                      display: "grid",
-                      gap: 6,
-                      maxHeight: 180,
-                      overflow: "auto",
+                      color: "var(--text)",
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      fontSize: 11,
+                      minWidth: 220,
                     }}
                   >
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
-                      Child Tags ({interlockChildOptions.length})
-                    </div>
-                    {interlockChildOptions.length ? (
-                      interlockChildOptions.map((child) => {
-                        const active = interlockChildTag === child;
-                        return (
-                          <button
-                            key={`interlock-child-${child}`}
-                            type="button"
-                            data-preserve-style="true"
-                            onClick={() => setInterlockChildTag(child)}
+                    <option value="list">Tag + Equipment CSV</option>
+                    <option value="io-map">Tag + Equipment + Group CSV</option>
+                  </select>
+                  <button
+                    type="button"
+                    data-preserve-style="true"
+                    onClick={copyCodeGenOutput}
+                    style={{
+                      marginLeft: "auto",
+                      border: "1px solid #2b6cff",
+                      background: "#2b6cff",
+                      color: "#fff",
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Copy Output
+                  </button>
+                </div>
+
+                <div
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    background: "var(--bg)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontWeight: 700 }}>
+                    Tag Organizer
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(220px, 1fr) minmax(320px, 1.2fr)",
+                      gap: 0,
+                      minHeight: 340,
+                    }}
+                  >
+                    <div style={{ borderRight: "1px solid var(--border)", display: "grid", gridTemplateRows: "auto auto 1fr" }}>
+                      <div style={{ padding: 8 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(120px,1fr) auto", gap: 6, marginBottom: 6 }}>
+                          <input
+                            value={codeGenNewTagDraft}
+                            onChange={(e) => setCodeGenNewTagDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key !== "Enter") return;
+                              e.preventDefault();
+                              addCodeGenTag(codeGenNewTagDraft, codeGenNewTagEquipmentDraft);
+                            }}
+                            placeholder="Add tag (e.g. Motor_RunCmd)"
                             style={{
-                              border: `1px solid ${active ? "#2b6cff" : "var(--border)"}`,
-                              background: active ? "color-mix(in srgb, #2b6cff 14%, var(--bg-elev))" : "var(--bg-elev)",
+                              width: "100%",
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
                               color: "var(--text)",
                               borderRadius: 8,
-                              padding: "6px 8px",
-                              textAlign: "left",
+                              padding: "6px 10px",
                               fontSize: 11,
-                              fontWeight: active ? 700 : 600,
-                              cursor: "pointer",
+                              boxSizing: "border-box",
                             }}
-                            title={interlockData.displayNames?.get(child) || child}
-                          >
-                            {interlockData.displayNames?.get(child) || child}
-                          </button>
-                        );
-                      })
-                    ) : (
-                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                        No child tags found for selected controller tag.
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-                {selectedInterlockNode && !selectedInterlockHasChildren ? (
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 0 8px 0" }}>
-                    {interlockDirection === "backward"
-                      ? "No upstream dependencies found for selected controller tag."
-                      : "No downstream dependencies found for selected controller tag."}
-                  </div>
-                ) : null}
-                {(() => {
-                  const renderNode = (nodeKey, depth = 0, path = new Set()) => {
-                    const mapToUse =
-                      interlockDirection === "backward"
-                        ? interlockData.reverseAdjacency
-                        : interlockData.adjacency;
-                    const children = Array.from(mapToUse.get(nodeKey) || []).sort();
-                    const hasChildren = children.length > 0;
-                    const expanded = interlockExpandedByNode[nodeKey] ?? depth < 1;
-                    const isCycle = path.has(nodeKey);
-                    return (
-                      <div key={`${nodeKey}-${depth}`} style={{ marginLeft: depth * 16 }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "20px 1fr auto", gap: 8, alignItems: "center", minHeight: 24 }}>
+                          />
+                          <input
+                            value={codeGenNewTagEquipmentDraft}
+                            onChange={(e) => setCodeGenNewTagEquipmentDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key !== "Enter") return;
+                              e.preventDefault();
+                              addCodeGenTag(codeGenNewTagDraft, codeGenNewTagEquipmentDraft);
+                            }}
+                            placeholder="Equipment type"
+                            style={{
+                              width: "100%",
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 8,
+                              padding: "6px 10px",
+                              fontSize: 11,
+                              boxSizing: "border-box",
+                            }}
+                          />
                           <button
                             type="button"
                             data-preserve-style="true"
-                            onClick={() =>
-                              setInterlockExpandedByNode((prev) => ({ ...prev, [nodeKey]: !expanded }))
-                            }
+                            onClick={() => addCodeGenTag(codeGenNewTagDraft, codeGenNewTagEquipmentDraft)}
+                            style={{
+                              border: "1px solid #2b6cff",
+                              background: "#2b6cff",
+                              color: "#fff",
+                              borderRadius: 8,
+                              padding: "6px 10px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Add
+                          </button>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <label
                             style={{
                               border: "1px solid var(--border)",
                               background: "var(--bg-elev)",
                               color: "var(--text)",
-                              borderRadius: 5,
-                              width: 20,
-                              height: 20,
-                              fontSize: 12,
+                              borderRadius: 8,
+                              padding: "6px 10px",
+                              fontSize: 11,
                               fontWeight: 700,
-                              lineHeight: 1,
-                              padding: 0,
-                              opacity: hasChildren ? 1 : 0.5,
-                              cursor: hasChildren ? "pointer" : "default",
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
                             }}
+                            title="Import tags from CSV"
                           >
-                            {hasChildren ? (expanded ? "−" : "+") : "·"}
-                          </button>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {interlockData.displayNames?.get(nodeKey) || nodeKey}
-                          </div>
-                          <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                            {hasChildren ? `${children.length} linked` : ""}
-                            {isCycle ? " • cycle" : ""}
-                          </div>
+                            Import CSV
+                            <input
+                              type="file"
+                              accept=".csv,text/csv"
+                              onChange={importCodeGenTagsFromCsv}
+                              style={{ display: "none" }}
+                            />
+                          </label>
+                          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                            Columns: `tag`/`name` and optional `equipment`/`type`
+                          </span>
                         </div>
-                        {hasChildren && expanded && !isCycle ? (
-                          <div style={{ display: "grid", gap: 4 }}>
-                            {children.map((child) => {
-                              const nextPath = new Set(path);
-                              nextPath.add(nodeKey);
-                              return renderNode(child, depth + 1, nextPath);
-                            })}
-                          </div>
+                        <input
+                          value={codeGenTagSearch}
+                          onChange={(e) => setCodeGenTagSearch(e.target.value)}
+                          placeholder="Search tags..."
+                          style={{
+                            width: "100%",
+                            border: "1px solid var(--border)",
+                            background: "var(--bg-elev)",
+                            color: "var(--text)",
+                            borderRadius: 8,
+                            padding: "6px 10px",
+                            fontSize: 11,
+                            boxSizing: "border-box",
+                          }}
+                        />
+                      </div>
+                      <div
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const dropped = String(
+                            e.dataTransfer?.getData("text/plain") || codeGenDragTag || ""
+                          ).trim();
+                          if (!dropped) return;
+                          moveTagToUngrouped(dropped);
+                        }}
+                        style={{
+                          margin: "0 8px 8px 8px",
+                          border: "1px dashed var(--border)",
+                          borderRadius: 8,
+                          padding: "6px 8px",
+                          fontSize: 10,
+                          color: "var(--text-muted)",
+                          background: "var(--bg-soft)",
+                        }}
+                        title="Drop here to ungroup a tag"
+                      >
+                        Ungrouped Drop Zone
+                      </div>
+                      <div className="vizi-scroll" style={{ overflow: "auto", padding: "0 8px 8px 8px", display: "grid", gap: 6, alignContent: "start" }}>
+                        {filteredCodeGenTags.map((tag) => {
+                          const grouped = codeGenAssignedTagSet.has(tag);
+                          const equipmentType = String(codeGenTagMeta?.[tag]?.equipmentType || "").trim();
+                          return (
+                            <div
+                              key={`codegen-tag-${tag}`}
+                              draggable
+                              onDragStart={(e) => {
+                                setCodeGenDragTag(tag);
+                                e.dataTransfer?.setData("text/plain", tag);
+                              }}
+                              onDragEnd={() => setCodeGenDragTag("")}
+                              style={{
+                                border: "1px solid var(--border)",
+                                borderRadius: 8,
+                                padding: "6px 8px",
+                                fontSize: 11,
+                                color: "var(--text)",
+                                background: grouped ? "color-mix(in srgb, #2b6cff 10%, var(--bg-elev))" : "var(--bg-elev)",
+                                cursor: "grab",
+                                display: "grid",
+                                gap: 2,
+                              }}
+                              title={tag}
+                            >
+                              <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{tag}</div>
+                              <input
+                                value={equipmentType}
+                                onChange={(e) => updateCodeGenTagEquipment(tag, e.target.value)}
+                                placeholder="Equipment type"
+                                style={{
+                                  width: "100%",
+                                  border: "1px solid var(--border)",
+                                  background: "var(--bg)",
+                                  color: "var(--text)",
+                                  borderRadius: 6,
+                                  padding: "3px 6px",
+                                  fontSize: 10,
+                                  boxSizing: "border-box",
+                                }}
+                              />
+                              <div style={{ fontSize: 10, color: "var(--text-muted)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                <span>{grouped ? "Grouped" : "Ungrouped"}</span>
+                                <button
+                                  type="button"
+                                  data-preserve-style="true"
+                                  onClick={() => removeCodeGenTag(tag)}
+                                  style={{
+                                    border: "none",
+                                    background: "transparent",
+                                    color: "#f04438",
+                                    padding: 0,
+                                    fontSize: 10,
+                                    lineHeight: 1,
+                                    cursor: "pointer",
+                                    fontWeight: 700,
+                                  }}
+                                  title="Delete tag"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {!filteredCodeGenTags.length ? (
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>No tags match search.</div>
                         ) : null}
                       </div>
-                    );
-                  };
-                  return selectedInterlockNode ? renderNode(selectedInterlockNode) : null;
-                })()}
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0 }}>
+                      <div style={{ padding: 8, borderBottom: "1px solid var(--border)", display: "grid", gap: 6 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(120px,1fr) minmax(120px,1fr) auto", gap: 6 }}>
+                          <input
+                            value={codeGenGroupNameDraft}
+                            onChange={(e) => setCodeGenGroupNameDraft(e.target.value)}
+                            placeholder="New group name"
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 8,
+                              padding: "6px 8px",
+                              fontSize: 11,
+                            }}
+                          />
+                          <select
+                            value={codeGenGroupParentDraft}
+                            onChange={(e) => setCodeGenGroupParentDraft(String(e.target.value || ""))}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text)",
+                              borderRadius: 8,
+                              padding: "6px 8px",
+                              fontSize: 11,
+                            }}
+                          >
+                            <option value="">Root Group</option>
+                            <option value="__route__">Route</option>
+                            {codeGenGroups.map((group) => (
+                              <option key={`parent-opt-${group.id}`} value={String(group.id || "")}>
+                                {String(group.name || "Group")}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            data-preserve-style="true"
+                            onClick={createCodeGenGroup}
+                            style={{
+                              border: "1px solid #2b6cff",
+                              background: "#2b6cff",
+                              color: "#fff",
+                              borderRadius: 8,
+                              padding: "6px 10px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Add Group
+                          </button>
+                        </div>
+                        <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                          Drag tags from the left pane and drop onto a group node.
+                        </div>
+                      </div>
+                      <div className="vizi-scroll" style={{ overflow: "auto", padding: 8, display: "grid", gap: 6, alignContent: "start" }}>
+                        {(() => {
+                          const rootGroups = codeGenGroups
+                            .filter((g) => !String(g?.parentId || "").trim())
+                            .sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
+                          const childrenByParent = new Map();
+                          codeGenGroups.forEach((g) => {
+                            const parent = String(g?.parentId || "").trim();
+                            if (!parent) return;
+                            if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+                            childrenByParent.get(parent).push(g);
+                          });
+                          const renderGroupNode = (group, depth = 0, path = new Set()) => {
+                            const id = String(group?.id || "");
+                            if (!id) return null;
+                            const isCycle = path.has(id);
+                            const children = (childrenByParent.get(id) || [])
+                              .slice()
+                              .sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
+                            const hasChildren = children.length > 0;
+                            const expanded = codeGenExpandedSet.has(id);
+                            const tags = (Array.isArray(group?.tags) ? group.tags : [])
+                              .map((x) => String(x || "").trim())
+                              .filter(Boolean)
+                              .sort((a, b) => a.localeCompare(b));
+                            const nextPath = new Set(path);
+                            nextPath.add(id);
+                            return (
+                              <div key={`group-node-${id}`} style={{ marginLeft: depth * 14, display: "grid", gap: 4 }}>
+                                <div
+                                  onDragOver={(e) => e.preventDefault()}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    const dropped = String(
+                                      e.dataTransfer?.getData("text/plain") || codeGenDragTag || ""
+                                    ).trim();
+                                    if (!dropped) return;
+                                    moveTagToGroup(dropped, id);
+                                  }}
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    borderRadius: 8,
+                                    background: "var(--bg-elev)",
+                                    padding: 6,
+                                    display: "grid",
+                                    gap: 6,
+                                  }}
+                                >
+                                  <div style={{ display: "grid", gridTemplateColumns: "20px minmax(0,1fr) auto auto", gap: 6, alignItems: "center" }}>
+                                    <button
+                                      type="button"
+                                      data-preserve-style="true"
+                                      onClick={() => toggleCodeGenGroupExpanded(id)}
+                                      style={{
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg)",
+                                        color: "var(--text)",
+                                        borderRadius: 5,
+                                        width: 20,
+                                        height: 20,
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        lineHeight: 1,
+                                        padding: 0,
+                                        opacity: hasChildren ? 1 : 0.45,
+                                        cursor: hasChildren ? "pointer" : "default",
+                                      }}
+                                    >
+                                      {hasChildren ? (expanded ? "−" : "+") : "·"}
+                                    </button>
+                                    <input
+                                      value={String(group?.name || "")}
+                                      onChange={(e) => renameCodeGenGroup(id, e.target.value)}
+                                      style={{
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg)",
+                                        color: "var(--text)",
+                                        borderRadius: 6,
+                                        padding: "4px 6px",
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        minWidth: 0,
+                                      }}
+                                    />
+                                    <span
+                                      style={{
+                                        fontSize: 10,
+                                        color:
+                                          String(group?.dbSyncState || "") === "ok"
+                                            ? "#12b76a"
+                                            : String(group?.dbSyncState || "") === "error"
+                                              ? "#f04438"
+                                              : "var(--text-muted)",
+                                        fontWeight: 700,
+                                        minWidth: 34,
+                                        textAlign: "center",
+                                      }}
+                                      title={
+                                        String(group?.dbSyncState || "") === "ok"
+                                          ? "Saved to Route DB"
+                                          : String(group?.dbSyncState || "") === "error"
+                                            ? String(group?.dbError || "Route DB sync failed")
+                                            : "Saving to Route DB"
+                                      }
+                                    >
+                                      {String(group?.dbSyncState || "") === "ok"
+                                        ? "DB"
+                                        : String(group?.dbSyncState || "") === "error"
+                                          ? "DB!"
+                                          : "Saving"}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      data-preserve-style="true"
+                                      onClick={() => deleteCodeGenGroup(id)}
+                                      style={{
+                                        border: "1px solid #f04438",
+                                        background: "#f04438",
+                                        color: "#fff",
+                                        borderRadius: 6,
+                                        padding: "4px 6px",
+                                        fontSize: 10,
+                                        fontWeight: 700,
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                    {tags.map((tag) => (
+                                      <div
+                                        key={`group-tag-${id}-${tag}`}
+                                        draggable
+                                        onDragStart={(e) => {
+                                          setCodeGenDragTag(tag);
+                                          e.dataTransfer?.setData("text/plain", tag);
+                                        }}
+                                        onDragEnd={() => setCodeGenDragTag("")}
+                                        style={{
+                                          border: "1px solid #2b6cff",
+                                          background: "color-mix(in srgb, #2b6cff 12%, var(--bg-elev))",
+                                          color: "var(--text)",
+                                          borderRadius: 999,
+                                          padding: "4px 8px",
+                                          fontSize: 10,
+                                          fontWeight: 700,
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          gap: 6,
+                                          cursor: "grab",
+                                        }}
+                                      >
+                                        <span>
+                                          {tag}
+                                          {String(codeGenTagMeta?.[tag]?.equipmentType || "").trim()
+                                            ? ` (${String(codeGenTagMeta?.[tag]?.equipmentType || "").trim()})`
+                                            : ""}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          data-preserve-style="true"
+                                          onClick={() => removeTagFromGroup(tag, id)}
+                                          style={{
+                                            border: "none",
+                                            background: "transparent",
+                                            color: "var(--text-muted)",
+                                            padding: 0,
+                                            fontSize: 10,
+                                            lineHeight: 1,
+                                            cursor: "pointer",
+                                          }}
+                                          title="Remove from group"
+                                        >
+                                          x
+                                        </button>
+                                      </div>
+                                    ))}
+                                    {!tags.length ? (
+                                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Drop tags here</div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                {hasChildren && expanded && !isCycle ? (
+                                  <div style={{ display: "grid", gap: 6 }}>
+                                    {children.map((child) => renderGroupNode(child, depth + 1, nextPath))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          };
+                          return rootGroups.length ? (
+                            rootGroups.map((group) => renderGroupNode(group, 0, new Set()))
+                          ) : (
+                            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                              No groups yet. Create one above and drag tags into it.
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)" }}>
+                  <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 11, fontWeight: 700 }}>
+                    Generated Output
+                  </div>
+                  <pre
+                    style={{
+                      margin: 0,
+                      padding: 10,
+                      fontSize: 11,
+                      lineHeight: 1.45,
+                      color: "var(--text)",
+                      maxHeight: 320,
+                      overflow: "auto",
+                      whiteSpace: "pre",
+                    }}
+                  >
+                    {codeGenOutputText || "// No generated output for this selection."}
+                  </pre>
+                </div>
+
               </div>
             </div>
           )}
         </>
       ) : null}
+
     </div>
   );
 }

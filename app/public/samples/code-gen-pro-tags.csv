@@ -1,0 +1,11 @@
+tag,equipment_type
+FeedPump01_RunCmd,Pump
+FeedPump01_RunFb,Pump
+FeedPump01_Fault,Pump
+BlowerA_StartCmd,Blower
+BlowerA_Status,Blower
+MixTank_LevelPV,Tank
+MixTank_HighLevelAlarm,Tank
+Conveyor1_RunCmd,Conveyor
+Conveyor1_JamAlarm,Conveyor
+DustCollector_DpHigh,Filter

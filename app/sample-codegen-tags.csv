@@ -1,0 +1,15 @@
+tag,equipment_type
+Motor_RunCmd,Motor
+Motor_StopCmd,Motor
+Motor_Reset,Motor
+Pump_1_Start,Pump
+Pump_1_Stop,Pump
+Pump_1_Fault,Pump
+Conveyor_1_Start,Conveyor
+Conveyor_1_Stop,Conveyor
+Conveyor_1_SpeedOk,Conveyor
+Heater_Enable,Heater
+Heater_HighTempAlarm,Heater
+Batch_Start,Batch
+Batch_Abort,Batch
+Batch_Complete,Batch
