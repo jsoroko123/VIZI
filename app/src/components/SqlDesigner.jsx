@@ -240,6 +240,35 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
     String(renameTableTo || "").trim().length > 0 &&
     String(renameTableTo || "").trim() !== String(selectedTable || "").trim();
   const canDeleteTable = !!selectedTable && !editingTableName && !editingAllColumns;
+  const pendingNewColumnDraft = inlineColumnEdits?.[NEW_COLUMN_KEY] || null;
+  const pendingNewColumnName = String(pendingNewColumnDraft?.newName || "").trim();
+  const hasPendingNewColumn = !!(showAddColumnRow && pendingNewColumnName);
+  const isInlineColumnChanged = (name) => {
+    const columnName = String(name || "").trim();
+    if (!columnName) return false;
+    const draft = inlineColumnEdits[columnName];
+    const row = schemaRows.find((r) => String(r?.column_name || "").trim() === columnName);
+    if (!draft || !row) return false;
+    const rowType = String(row?.data_type || "").trim();
+    const rowNullable = String(row?.is_nullable || "").toUpperCase() === "YES";
+    const rowDefault = row?.column_default == null ? "" : String(row.column_default);
+    const rowPrimaryKey = primaryKey === columnName;
+    return (
+      String(draft.newName || "").trim() !== columnName ||
+      String(draft.type || "").trim() !== rowType ||
+      (draft.nullable !== false) !== rowNullable ||
+      String(draft.defaultValue || "").trim() !== rowDefault ||
+      (draft.primaryKey === true) !== rowPrimaryKey
+    );
+  };
+  const hasInlineColumnChanges = useMemo(
+    () =>
+      schemaRows
+        .map((row) => String(row?.column_name || "").trim())
+        .filter(Boolean)
+        .some((name) => isInlineColumnChanged(name)),
+    [schemaRows, inlineColumnEdits, primaryKey]
+  );
 
   async function loadTables() {
     try {
@@ -575,22 +604,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
     const changed = schemaRows
       .map((row) => String(row?.column_name || "").trim())
       .filter(Boolean)
-      .filter((name) => {
-        const draft = inlineColumnEdits[name];
-        const row = schemaRows.find((r) => String(r?.column_name || "").trim() === name);
-        if (!draft || !row) return false;
-        const rowType = String(row?.data_type || "").trim();
-        const rowNullable = String(row?.is_nullable || "").toUpperCase() === "YES";
-        const rowDefault = row?.column_default == null ? "" : String(row.column_default);
-        const rowPrimaryKey = primaryKey === name;
-        return (
-          String(draft.newName || "").trim() !== name ||
-          String(draft.type || "").trim() !== rowType ||
-          (draft.nullable !== false) !== rowNullable ||
-          String(draft.defaultValue || "").trim() !== rowDefault ||
-          (draft.primaryKey === true) !== rowPrimaryKey
-        );
-      });
+      .filter((name) => isInlineColumnChanged(name));
     for (const name of changed) {
       await saveInlineColumn(name);
     }
@@ -790,7 +804,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
           </button>
           <button
             style={
-              selectedTable && (editingTableName || editingAllColumns)
+              selectedTable && (editingTableName || hasInlineColumnChanges || hasPendingNewColumn)
                 ? { ...primaryButtonStyle, ...iconButtonStyle }
                 : { ...primaryButtonStyle, ...iconButtonStyle, ...disabledButtonStyle }
             }
@@ -798,27 +812,42 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
               const renameChanged =
                 String(renameTableTo || "").trim().length > 0 &&
                 String(renameTableTo || "").trim() !== String(selectedTable || "").trim();
-              const saveColumns = editingAllColumns;
-              if (!renameChanged && !saveColumns) return;
+              const saveColumns = hasInlineColumnChanges;
+              const saveNewColumn = hasPendingNewColumn;
+              if (!renameChanged && !saveColumns && !saveNewColumn) return;
               await runAction(
                 async () => {
+                  if (saveNewColumn) await addColumnFromDraft(inlineColumnEdits[NEW_COLUMN_KEY]);
                   if (saveColumns) await saveAllColumnChanges();
+                  await saveHiddenDetailColumns(hiddenDetailColumnsText);
                   if (renameChanged) await renameTable();
                 },
-                renameChanged && saveColumns
+                renameChanged && saveColumns && saveNewColumn
+                  ? "Table, columns, and new column updated."
+                  : renameChanged && saveColumns
                   ? "Table and columns updated."
+                  : renameChanged && saveNewColumn
+                  ? "Table and new column updated."
+                  : saveColumns && saveNewColumn
+                  ? "Columns and new column updated."
                   : renameChanged
                   ? "Table renamed."
+                  : saveNewColumn
+                  ? "New column added."
                   : "Column updates saved."
               );
               setEditingTableName(false);
               setEditingAllColumns(false);
             }}
-            disabled={!selectedTable || (!editingTableName && !editingAllColumns)}
-            title="Save"
-            aria-label="Save"
+            disabled={!selectedTable || (!editingTableName && !hasInlineColumnChanges && !hasPendingNewColumn)}
+            title="Save All"
+            aria-label="Save All"
           >
-            ✓
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={actionIconStyle}>
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <path d="M17 21v-8H7v8" />
+              <path d="M7 3v5h8" />
+            </svg>
           </button>
 <button
             style={canDeleteTable ? { ...dangerButtonStyle, ...iconButtonStyle } : { ...dangerButtonStyle, ...iconButtonStyle, ...disabledButtonStyle }}
@@ -1034,7 +1063,11 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                 title="Create table"
                 aria-label="Create table"
               >
-                ✓
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={actionIconStyle}>
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                  <path d="M17 21v-8H7v8" />
+                  <path d="M7 3v5h8" />
+                </svg>
               </button>
             </div>
           </div>
@@ -1567,10 +1600,6 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
     </div>
   );
 }
-
-
-
-
 
 
 

@@ -55,3 +55,11 @@ export function upsertProjectCursor(id, point) {
     body: JSON.stringify(point || {}),
   });
 }
+
+export function pingUserPresence() {
+  return requestJson("/api/presence/ping", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}

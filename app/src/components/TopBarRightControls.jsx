@@ -54,6 +54,7 @@ export default function TopBarRightControls({
           { key: "reports", label: "Reports", areaKey: "reports" },
           { key: "ai", label: "AI", areaKey: "ai" },
           { key: "security", label: "Security", areaKey: "security" },
+          { key: "logger", label: "Logger", areaKey: "server" },
           { key: "help", label: "Help", areaKey: "help" },
         ]
           .filter((item) => (item.alwaysVisible || !isLiveMode) && canViewArea(item.areaKey))

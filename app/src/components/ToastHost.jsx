@@ -63,38 +63,52 @@ export default function ToastHost() {
     <div
       style={{
         position: "fixed",
-        right: 14,
-        bottom: 14,
+        right: 20,
+        bottom: 22,
         zIndex: 9999,
         display: "grid",
-        gap: 8,
+        gap: 10,
         pointerEvents: "none",
-        maxWidth: "min(420px, calc(100vw - 24px))",
+        maxWidth: "min(500px, calc(100vw - 24px))",
       }}
     >
       {items.map((t) => (
-        <div
-          key={t.id}
-          style={{
-            background: "var(--bg-elev)",
-            color: "var(--text)",
-            border: `1px solid ${
-              t.type === "error" ? "#f04438" : t.type === "success" ? "#12b76a" : "var(--border)"
-            }`,
-            borderLeft: `4px solid ${
-              t.type === "error" ? "#f04438" : t.type === "success" ? "#12b76a" : "#2b6cff"
-            }`,
-            borderRadius: 10,
-            boxShadow: "0 10px 24px rgba(0,0,0,0.22)",
-            padding: "10px 12px",
-            fontSize: 12,
-            lineHeight: 1.35,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-          }}
-        >
-          {t.message}
-        </div>
+        (() => {
+          const isError = t.type === "error";
+          const isSuccess = t.type === "success";
+          const accent = isError ? "#f04438" : isSuccess ? "#12b76a" : "#2b6cff";
+          const bg = isError
+            ? "color-mix(in srgb, #f04438 18%, var(--bg-elev) 82%)"
+            : isSuccess
+            ? "color-mix(in srgb, #12b76a 16%, var(--bg-elev) 84%)"
+            : "color-mix(in srgb, #2b6cff 16%, var(--bg-elev) 84%)";
+          const label = isError ? "Error" : isSuccess ? "Success" : "Notice";
+          return (
+            <div
+              key={t.id}
+              style={{
+                background: bg,
+                color: "var(--text)",
+                border: `1px solid color-mix(in srgb, ${accent} 62%, var(--border) 38%)`,
+                borderLeft: `6px solid ${accent}`,
+                borderRadius: 12,
+                boxShadow: "0 18px 34px rgba(0,0,0,0.32)",
+                padding: "12px 14px",
+                fontSize: 13,
+                lineHeight: 1.45,
+                fontWeight: 600,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              <div style={{ fontSize: 10, letterSpacing: "0.06em", textTransform: "uppercase", opacity: 0.9, marginBottom: 4 }}>
+                {label}
+              </div>
+              {t.message}
+            </div>
+          );
+        })()
       ))}
     </div>
   );

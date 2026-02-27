@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-02-24T17:14:23.299Z",
+  "updatedAt": "2026-02-25T22:35:05.971Z",
   "tables": {
     "bin": {
       "name": "bin",
@@ -232,6 +232,83 @@
         }
       ],
       "updatedAt": "2026-02-24T17:14:23.296Z"
+    },
+    "route": {
+      "name": "route",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false,
+          "defaultSql": "",
+          "primaryKey": true
+        },
+        {
+          "name": "route_number",
+          "type": "text",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "state",
+          "type": "text",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "route_color",
+          "type": "text",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "project_id",
+          "type": "text",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "defaultSql": "now()",
+          "primaryKey": false
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "nullable": false,
+          "defaultSql": "now()",
+          "primaryKey": false
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": false,
+          "defaultSql": "''::text",
+          "primaryKey": false
+        },
+        {
+          "name": "route_id",
+          "type": "text",
+          "nullable": true,
+          "defaultSql": "",
+          "primaryKey": false
+        }
+      ],
+      "updatedAt": "2026-02-25T22:35:05.971Z"
     }
   }
 }

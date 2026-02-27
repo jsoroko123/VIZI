@@ -1,5 +1,5 @@
 ﻿import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { dismissToast, showToast, toastError, toastSuccess } from "../utils/toast";
+import { showToast, toastError, toastSuccess } from "../utils/toast";
 
 const DIAGNOSTICS_UI_MAX_ROWS = 500;
 const RESTART_PENDING_TIMEOUT_MS = 15000;
@@ -160,6 +160,8 @@ function defaultRuntimeConfig() {
     heartbeatEnabled: true,
     heartbeatFailureThreshold: 4,
     heartbeatMs: 8000,
+    reportQueryTimeoutMs: 12000,
+    reportMaxResultRows: 2000,
   };
 }
 
@@ -181,6 +183,20 @@ function normalizeRuntimeConfig(value) {
     ? Math.max(0, Math.min(5, readRetryCountRaw))
     : defaults.readRetryCount;
   const readRetryDelayMs = parseOptionalMs(incoming.readRetryDelayMs) || defaults.readRetryDelayMs;
+  const reportQueryTimeoutMsRaw = Number.parseInt(
+    String(incoming.reportQueryTimeoutMs ?? defaults.reportQueryTimeoutMs),
+    10
+  );
+  const reportQueryTimeoutMs = Number.isFinite(reportQueryTimeoutMsRaw)
+    ? Math.max(1000, Math.min(120000, reportQueryTimeoutMsRaw))
+    : defaults.reportQueryTimeoutMs;
+  const reportMaxResultRowsRaw = Number.parseInt(
+    String(incoming.reportMaxResultRows ?? defaults.reportMaxResultRows),
+    10
+  );
+  const reportMaxResultRows = Number.isFinite(reportMaxResultRowsRaw)
+    ? Math.max(1, Math.min(20000, reportMaxResultRowsRaw))
+    : defaults.reportMaxResultRows;
   return {
     opcConnectionEnabled: incoming.opcConnectionEnabled !== false,
     multiReadEnabled:
@@ -214,6 +230,8 @@ function normalizeRuntimeConfig(value) {
     heartbeatEnabled: incoming.heartbeatEnabled !== false,
     heartbeatFailureThreshold: parseOptionalMs(incoming.heartbeatFailureThreshold) || defaults.heartbeatFailureThreshold,
     heartbeatMs: parseOptionalMs(incoming.heartbeatMs) || defaults.heartbeatMs,
+    reportQueryTimeoutMs,
+    reportMaxResultRows,
   };
 }
 
@@ -408,12 +426,28 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   useEffect(() => {
     if (!restartPending) return;
+    const elapsed = Date.now() - Number(restartStartedAtRef.current || 0);
     if (opcConnected === false) {
       restartSawDisconnectRef.current = true;
+      // Restart request has transitioned to disconnected and remained there:
+      // stop showing "Restarting..." and surface a clear no-connection state.
+      if (elapsed >= 1500) {
+        const toastId = restartToastIdRef.current;
+        if (toastId) {
+          showToast("Restart complete, but OPC has no active connection.", {
+            id: toastId,
+            type: "warn",
+            duration: 5000,
+          });
+          restartToastIdRef.current = "";
+        }
+        restartSawDisconnectRef.current = false;
+        restartStartedAtRef.current = 0;
+        setRestartPending(false);
+      }
       return;
     }
     if (opcConnected !== true) return;
-    const elapsed = Date.now() - Number(restartStartedAtRef.current || 0);
     if (!restartSawDisconnectRef.current && elapsed < 1500) return;
     const toastId = restartToastIdRef.current;
     if (toastId) {
@@ -450,10 +484,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
 
   useEffect(
     () => () => {
-      const toastId = String(restartToastIdRef.current || "").trim();
-      if (toastId) {
-        dismissToast(toastId);
-      }
       restartToastIdRef.current = "";
       restartSawDisconnectRef.current = false;
       restartStartedAtRef.current = 0;
@@ -2187,7 +2217,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       showToast("Restarting OPC server. Waiting for connection...", {
         id: toastId,
         type: "info",
-        duration: 0,
+        duration: RESTART_PENDING_TIMEOUT_MS + 5000,
       });
       restartToastIdRef.current = toastId;
       const res = await fetch("/api/opc/restart", { method: "POST" });
@@ -7375,5 +7405,3 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   </div>
   );
 }
-
-

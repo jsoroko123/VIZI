@@ -4,33 +4,10 @@
    data-name="Bin Small"
    viewBox="0 0 77 202"
    version="1.1"
-   sodipodi:docname="Small Bin.svg"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
    width="77"
    height="202"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="38.119" keheight="100" eType="Small Bin">
-  <sodipodi:namedview
-     id="namedview9"
-     pagecolor="#505050"
-     bordercolor="#eeeeee"
-     borderopacity="1"
-     inkscape:showpageshadow="0"
-     inkscape:pageopacity="0"
-     inkscape:pagecheckerboard="0"
-     inkscape:deskcolor="#505050"
-     showguides="true"
-     inkscape:zoom="3.5268647"
-     inkscape:cx="38.702931"
-     inkscape:cy="96.544673"
-     inkscape:window-width="1920"
-     inkscape:window-height="1017"
-     inkscape:window-x="1912"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="Bin_Small" />
+   xmlns="http://www.w3.org/2000/svg" kewidth="38.119" keheight="100" eType="Small Bin">
+  
   <defs
      id="defs1">
     <style
@@ -49,7 +26,7 @@
       }
 
       .cls-3, .cls-8 {
-        fill: #fff;
+        fill: #ffffff;
       }
 
       .cls-4, .cls-5, .cls-6, .cls-7 {
@@ -141,8 +118,7 @@
   <g
      id="Bin_Level_Low-3"
      data-name="Bin Level Low"
-     transform="translate(-0.375,-55.36501)"
-     inkscape:label="Bin_Level_Middle">
+     transform="translate(-0.375,-55.36501)">
     <rect
        id="Fill-3-6"
        data-name="Fill"
@@ -151,8 +127,7 @@
        y="140.99001"
        width="25"
        height="25"
-       style="fill:#ffffff;stroke-width:0px"
-       inkscape:label="Fill-2" />
+       style="fill:#ffffff;stroke-width:0px" />
     <rect
        id="Outline-3-6"
        data-name="Outline"
@@ -161,16 +136,13 @@
        y="140.99001"
        width="25"
        height="25"
-       style="fill:none;stroke:#7f7f7f;stroke-width:1.25px;stroke-linejoin:round"
-       inkscape:label="Outline-2" />
+       style="fill:none;stroke:#7f7f7f;stroke-width:1.25px;stroke-linejoin:round" />
     <text
        id="HH-2-5"
        data-name="HH"
        class="cls-2"
        transform="translate(33.505391,157.77485)"
-       style="font-weight:700;font-size:12px;font-family:Arial-BoldMT, Arial;letter-spacing:-0.02em;white-space:pre;inline-size:10.4162;display:inline;fill:#231f20"
-       inkscape:label="MM-2"
-       xml:space="preserve"><tspan
+       style="font-weight:700;font-size:12px;font-family:Arial-BoldMT, Arial;letter-spacing:-0.02em;white-space:pre;inline-size:10.4162;display:inline;fill:#231f20"><tspan
          x="0"
          y="0"
          id="tspan2">M</tspan></text>
@@ -290,5 +262,3 @@
        y="145.7"
        id="tspan9">et/Dry</tspan></text>
 </svg>
-
-

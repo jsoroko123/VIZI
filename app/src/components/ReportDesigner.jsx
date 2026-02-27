@@ -1136,10 +1136,10 @@ export default function ReportDesigner({
       : selectedTextKey === "subHeader"
       ? subHeaderText
       : footerText;
+  const selectedDatasetHasColumns =
+    Array.isArray(selectedDataset?.columns) && selectedDataset.columns.length > 0;
   const canAddTableToLayout =
-    Boolean(selectedDataset) &&
-    Array.isArray(selectedDataset?.columns) &&
-    selectedDataset.columns.length > 0;
+    selectedDatasetHasColumns || (Array.isArray(columns) && columns.length > 0);
   const previewPaper = PAPER_SIZES[paperSize] || PAPER_SIZES.letter;
   const pageWidthPx =
     paperOrientation === "landscape"
@@ -1319,25 +1319,30 @@ export default function ReportDesigner({
 
   function addCurrentTableToPreview() {
     const chosenDataset = selectedDataset;
-    if (!chosenDataset) {
-      setError("Select a dataset first.");
-      return;
-    }
-    const sourceColumns = Array.isArray(chosenDataset.columns) ? chosenDataset.columns : [];
-    const sourceRows = Array.isArray(chosenDataset.rows) ? chosenDataset.rows : [];
+    const sourceColumns = Array.isArray(chosenDataset?.columns) && chosenDataset.columns.length
+      ? chosenDataset.columns
+      : Array.isArray(columns)
+      ? columns
+      : [];
+    const sourceRows = Array.isArray(chosenDataset?.rows) ? chosenDataset.rows : Array.isArray(rows) ? rows : [];
     const sourceSummary =
       chosenDataset?.summaryRow && typeof chosenDataset.summaryRow === "object"
         ? chosenDataset.summaryRow
+        : summaryRow && typeof summaryRow === "object"
+        ? summaryRow
         : null;
     if (!sourceColumns.length) {
-      setError("Selected dataset has no columns. Save/refresh the dataset first.");
+      setError("No preview columns found. Run preview first or select a saved dataset.");
       return;
     }
     const id = `tbl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const idx = tableWidgets.length;
-    const sourceSnapshot = chosenDataset?.source;
+    const sourceSnapshot =
+      chosenDataset?.source && typeof chosenDataset.source === "object"
+        ? chosenDataset.source
+        : getCurrentPreviewBody();
     if (!sourceSnapshot || typeof sourceSnapshot !== "object") {
-      setError("Selected dataset is missing source settings. Save or refresh the dataset first.");
+      setError("Current source settings are missing. Configure source and run preview first.");
       return;
     }
     const nextWidgetBase = {
@@ -1857,7 +1862,12 @@ export default function ReportDesigner({
   async function persistCurrentReportLayout(overrides = {}) {
     const reportId = String(activeReportId || "").trim();
     if (!reportId) return;
-    const reportName = String(name || "").trim();
+    const reportFromList =
+      (Array.isArray(reports) ? reports : []).find(
+        (item) => String(item?.id || "") === reportId
+      ) || null;
+    const reportName =
+      String(name || "").trim() || String(reportFromList?.name || "").trim();
     if (!reportName) return;
     let sqlToSave = String(sql || "").trim();
     if (!sqlToSave) {
@@ -3330,7 +3340,7 @@ export default function ReportDesigner({
                   <button
                     onClick={addCurrentTableToPreview}
                     disabled={!canAddTableToLayout}
-                    title={canAddTableToLayout ? "Add selected dataset to layout" : "Select a dataset in Datasets tab first"}
+                    title={canAddTableToLayout ? "Add current preview to layout" : "Run preview first"}
                     style={{
                       border: "1px solid var(--border)",
                       background: "var(--bg-soft)",
@@ -4446,7 +4456,7 @@ export default function ReportDesigner({
                 <button
                   onClick={addCurrentTableToPreview}
                   disabled={!canAddTableToLayout}
-                  title={canAddTableToLayout ? "Add selected dataset as table" : "Select a dataset first"}
+                  title={canAddTableToLayout ? "Add current preview as table" : "Run preview first"}
                   style={{
                     border: "1px solid var(--border)",
                     background: "var(--bg-soft)",

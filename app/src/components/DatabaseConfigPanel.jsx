@@ -48,6 +48,11 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
     sslMode: "",
     applicationName: "",
     poolMax: "10",
+    reportQueryTimeoutMs: "12000",
+    reportMaxResultRows: "2000",
+    reportMaxConcurrentQueries: "3",
+    reportRateWindowMs: "10000",
+    reportRateMaxRequests: "6",
   });
 
   const load = async () => {
@@ -99,6 +104,7 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
     const editable = data?.editable && typeof data.editable === "object" ? data.editable : {};
     const connection = data?.connection && typeof data.connection === "object" ? data.connection : {};
     const pool = data?.pool && typeof data.pool === "object" ? data.pool : {};
+    const sqlGuards = data?.sqlGuards && typeof data.sqlGuards === "object" ? data.sqlGuards : {};
     setForm((prev) => ({
       ...prev,
       protocol: String(editable?.protocol || connection?.protocol || prev.protocol || "postgres"),
@@ -125,6 +131,41 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
           : Number.isFinite(Number(pool?.max))
           ? Number(pool.max)
           : 10
+      ),
+      reportQueryTimeoutMs: String(
+        Number.isFinite(Number(sqlGuards?.reportQueryTimeoutMs))
+          ? Number(sqlGuards.reportQueryTimeoutMs)
+          : Number.isFinite(Number(prev.reportQueryTimeoutMs))
+          ? Number(prev.reportQueryTimeoutMs)
+          : 12000
+      ),
+      reportMaxResultRows: String(
+        Number.isFinite(Number(sqlGuards?.reportMaxResultRows))
+          ? Number(sqlGuards.reportMaxResultRows)
+          : Number.isFinite(Number(prev.reportMaxResultRows))
+          ? Number(prev.reportMaxResultRows)
+          : 2000
+      ),
+      reportMaxConcurrentQueries: String(
+        Number.isFinite(Number(sqlGuards?.reportMaxConcurrentQueries))
+          ? Number(sqlGuards.reportMaxConcurrentQueries)
+          : Number.isFinite(Number(prev.reportMaxConcurrentQueries))
+          ? Number(prev.reportMaxConcurrentQueries)
+          : 3
+      ),
+      reportRateWindowMs: String(
+        Number.isFinite(Number(sqlGuards?.reportRateWindowMs))
+          ? Number(sqlGuards.reportRateWindowMs)
+          : Number.isFinite(Number(prev.reportRateWindowMs))
+          ? Number(prev.reportRateWindowMs)
+          : 10000
+      ),
+      reportRateMaxRequests: String(
+        Number.isFinite(Number(sqlGuards?.reportRateMaxRequests))
+          ? Number(sqlGuards.reportRateMaxRequests)
+          : Number.isFinite(Number(prev.reportRateMaxRequests))
+          ? Number(prev.reportRateMaxRequests)
+          : 6
       ),
     }));
   }, [data]);
@@ -239,6 +280,13 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
             applicationName: form.applicationName,
           },
           poolMax: form.poolMax,
+          sqlGuards: {
+            reportQueryTimeoutMs: form.reportQueryTimeoutMs,
+            reportMaxResultRows: form.reportMaxResultRows,
+            reportMaxConcurrentQueries: form.reportMaxConcurrentQueries,
+            reportRateWindowMs: form.reportRateWindowMs,
+            reportRateMaxRequests: form.reportRateMaxRequests,
+          },
         }),
       });
       const payload = await res.json().catch(() => ({}));
@@ -389,6 +437,89 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
           <div><strong>Status:</strong> {connection?.configured ? "Configured" : "Not configured"}</div>
           <div><strong>SSL:</strong> {connection?.ssl === true ? "Enabled" : "Disabled"}</div>
           <div><strong>Current Pool Max:</strong> {asNumber(pool?.configuredMax ?? pool?.max)}</div>
+        </div>
+      </div>
+      ) : null}
+
+      {showConfig ? (
+      <div style={cardStyle}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>SQL Safety</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+          <label
+            style={{ display: "grid", gap: 6, fontSize: 12 }}
+            title="Maximum time a report/SQL preview query can run before it is canceled by the server. Lower values protect responsiveness; higher values allow heavier queries."
+          >
+            Report Query Timeout (ms)
+            <input
+              value={form.reportQueryTimeoutMs}
+              onChange={(e) => onField("reportQueryTimeoutMs", e.target.value)}
+              style={inputStyle}
+              type="number"
+              min="1000"
+              max="120000"
+              placeholder="12000"
+            />
+          </label>
+          <label
+            style={{ display: "grid", gap: 6, fontSize: 12 }}
+            title="Hard cap on rows returned by report/SQL preview queries. Prevents oversized results from freezing the UI or overloading memory."
+          >
+            Report Max Rows
+            <input
+              value={form.reportMaxResultRows}
+              onChange={(e) => onField("reportMaxResultRows", e.target.value)}
+              style={inputStyle}
+              type="number"
+              min="1"
+              max="20000"
+              placeholder="2000"
+            />
+          </label>
+          <label
+            style={{ display: "grid", gap: 6, fontSize: 12 }}
+            title="Maximum number of report/SQL preview queries allowed to execute at the same time."
+          >
+            Report Max Concurrent Queries
+            <input
+              value={form.reportMaxConcurrentQueries}
+              onChange={(e) => onField("reportMaxConcurrentQueries", e.target.value)}
+              style={inputStyle}
+              type="number"
+              min="1"
+              max="50"
+              placeholder="3"
+            />
+          </label>
+          <label
+            style={{ display: "grid", gap: 6, fontSize: 12 }}
+            title="Sliding time window used for per-user report query rate limiting."
+          >
+            Report Rate Window (ms)
+            <input
+              value={form.reportRateWindowMs}
+              onChange={(e) => onField("reportRateWindowMs", e.target.value)}
+              style={inputStyle}
+              type="number"
+              min="1000"
+              max="300000"
+              placeholder="10000"
+            />
+          </label>
+          <label
+            style={{ display: "grid", gap: 6, fontSize: 12 }}
+            title="Maximum report/SQL preview requests allowed per user within the rate window."
+          >
+            Report Rate Max Requests
+            <input
+              value={form.reportRateMaxRequests}
+              onChange={(e) => onField("reportRateMaxRequests", e.target.value)}
+              style={inputStyle}
+              type="number"
+              min="1"
+              max="200"
+              placeholder="6"
+            />
+          </label>
         </div>
       </div>
       ) : null}

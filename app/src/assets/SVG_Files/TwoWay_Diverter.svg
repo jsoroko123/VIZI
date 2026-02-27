@@ -1,105 +1,46 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
+<?xml version="1.0" encoding="UTF-8"?>
 <svg
-   width="0.046415314in"
-   height="0.030558955in"
-   viewBox="0 0 1.178949 0.77619736"
-   version="1.1"
-   id="svg1"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="TwoWay_Diverter.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="100" keheight="65.838" eType="TwoWay_Diverter">
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="128"
-     inkscape:cx="2.4179687"
-     inkscape:cy="1.2929687"
-     inkscape:window-width="1920"
-     inkscape:window-height="1017"
-     inkscape:window-x="1912"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1"
-     inkscape:clip-to-page="false"
-     showgrid="true">
-    <inkscape:grid
-       id="grid13"
-       units="mm"
-       originx="-5.1439085"
-       originy="-13.714276"
-       spacingx="1"
-       spacingy="1"
-       empcolor="#0099e5"
-       empopacity="0.30196078"
-       color="#0099e5"
-       opacity="0.14901961"
-       empspacing="5"
-       dotted="false"
-       gridanglex="30"
-       gridanglez="30"
-       visible="true" />
-  </sodipodi:namedview>
-  <defs
-     id="defs1">
-    <inkscape:path-effect
-       effect="fillet_chamfer"
-       id="path-effect1"
-       is_visible="true"
-       lpeversion="1"
-       nodesatellites_param="F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1"
-       radius="0"
-       unit="px"
-       method="auto"
-       mode="F"
-       chamfer_steps="1"
-       flexible="false"
-       use_knot_distance="true"
-       apply_no_radius="true"
-       apply_with_radius="true"
-       only_selected="false"
-       hide_knots="false" />
-    <linearGradient
-       id="swatch1"
-       inkscape:swatch="solid">
-      <stop
-         style="stop-color:#ffffff;stop-opacity:1;"
-         offset="0"
-         id="stop1" />
+  width="0.046415314in"
+  height="0.030558955in"
+  viewBox="0 0 1.178949 0.77619736"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="100"
+  keheight="65.838"
+  eType="Diverter"
+>
+  <defs>
+    <linearGradient id="diverterBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e6e8eb" />
+      <stop offset="100%" stop-color="#b8bdc4" />
     </linearGradient>
   </defs>
-  <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
-     id="layer1"
-     transform="translate(-15.876185,-14.786605)">
+
+  <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
     <path
-       id="body"
-       style="fill:#bfbfbf;fill-opacity:1;stroke:#808080;stroke-width:0.04;stroke-linecap:round;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1"
-       d="m 15.896185,14.806605 h 1.138949 v 0.302126 h -0.369486 l 0.241997,0.241998 -0.239778,0.185518 -0.430875,-0.427774 -0.340807,2.58e-4 z"
-       sodipodi:nodetypes="ccccccccc" />
+      id="body"
+      d="M0.02 0.02H1.16V0.32H0.77L1.01 0.56L0.77 0.75L0.34 0.32H0.02Z"
+      fill="url(#diverterBodyFill)"
+      stroke-width="0.04"
+    />
+
     <path
-       id="straightPath"
-       style="fill:#008000;fill-opacity:1;stroke:#808080;stroke-width:0;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-       d="m 15.913725,14.822684 h 1.103869 v 0.267046 c -1.909512,6.77e-4 1.179081,-0.0017 -1.103869,0 z"
-       sodipodi:nodetypes="ccccc" />
+      id="entryPath"
+      d="M0.08 0.10H0.33V0.24H0.08Z"
+      fill="#4c525b"
+      stroke="none"
+    />
     <path
-       id="divertPath"
-       style="fill:#008000;fill-opacity:1;stroke:#808080;stroke-width:0;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-       d="m 15.913755,14.824145 h 0.416817 l 0.314613,0.290433 0.236151,0.230304 -0.215212,0.169691 -0.423285,-0.42364 -0.329084,2.58e-4 z"
-       sodipodi:nodetypes="cccccccc" />
+      id="straightPath"
+      d="M0.33 0.10H1.08V0.24H0.33Z"
+      fill="#ffffff"
+      stroke="none"
+    />
+    <path
+      id="divertPath"
+      d="M0.33 0.10H0.56L0.96 0.52L0.78 0.67L0.40 0.30H0.33Z"
+      fill="#ffffff"
+      stroke="none"
+    />
   </g>
 </svg>
-
-

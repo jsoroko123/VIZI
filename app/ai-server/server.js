@@ -18,6 +18,10 @@ const PORT = Number(process.env.PORT || 5055);
 const DEBUG_ROUTES = process.env.DEBUG_ROUTES === "1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "64mb";
+const OPC_STATUS_STALE_MS = Math.max(
+  3000,
+  Number.parseInt(String(process.env.OPC_STATUS_STALE_MS || "15000"), 10) || 15000
+);
 const OPC_WRITE_BRIDGE_URL = String(process.env.OPC_WRITE_BRIDGE_URL || "http://127.0.0.1:4851").replace(/\/+$/, "");
 const OPC_SERVER_KEY = process.env.OPC_SERVER_KEY || "";
 const AI_SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -65,10 +69,245 @@ const SVG_LIBRARY_DIR_STREAMLINED = path.resolve(
 );
 
 const app = express();
+const SERVER_LOG_LIMIT = Math.max(
+  200,
+  Math.min(10000, Number.parseInt(String(process.env.SERVER_LOG_LIMIT || "3000"), 10) || 3000)
+);
+const SERVER_LOG_DEDUPE_WINDOW_MS = Math.max(
+  0,
+  Math.min(
+    60000,
+    Number.parseInt(String(process.env.SERVER_LOG_DEDUPE_WINDOW_MS || "2000"), 10) || 2000
+  )
+);
+const serverLogs = [];
+let serverLogSeq = 1;
+const CLIENT_LOG_MESSAGE_MAX = Math.max(
+  120,
+  Math.min(8000, Number.parseInt(String(process.env.CLIENT_LOG_MESSAGE_MAX || "1200"), 10) || 1200)
+);
+const CLIENT_LOG_SOURCE_MAX = 80;
+const CLIENT_LOG_META_MAX = 24000;
+
+function serializeLogMeta(meta) {
+  if (meta == null) return {};
+  if (meta instanceof Error) {
+    return {
+      name: String(meta.name || "Error"),
+      message: String(meta.message || ""),
+      stack: String(meta.stack || ""),
+    };
+  }
+  if (typeof meta === "object") {
+    try {
+      return JSON.parse(JSON.stringify(meta));
+    } catch {
+      return { note: "meta_unserializable" };
+    }
+  }
+  return { value: String(meta) };
+}
+
+function appendServerLog(level, message, meta = {}, source = "server") {
+  const serializedMeta = serializeLogMeta(meta);
+  const normalizedLevel = String(level || "info").toLowerCase();
+  const normalizedSource = String(source || "server");
+  const normalizedMessage = String(message || "");
+  const now = Date.now();
+  const signature = (() => {
+    try {
+      return JSON.stringify(serializedMeta);
+    } catch {
+      return "{}";
+    }
+  })();
+  if (SERVER_LOG_DEDUPE_WINDOW_MS > 0 && serverLogs.length) {
+    for (let i = serverLogs.length - 1; i >= 0; i -= 1) {
+      const candidate = serverLogs[i];
+      if (!candidate || typeof candidate !== "object") continue;
+      if (String(candidate.level || "") !== normalizedLevel) continue;
+      if (String(candidate.source || "") !== normalizedSource) continue;
+      if (String(candidate.message || "") !== normalizedMessage) continue;
+      const candidateSig = (() => {
+        try {
+          return JSON.stringify(candidate.meta || {});
+        } catch {
+          return "{}";
+        }
+      })();
+      if (candidateSig !== signature) continue;
+      const previousAt = Number(candidate.at || 0);
+      if (!Number.isFinite(previousAt)) continue;
+      if (now - previousAt > SERVER_LOG_DEDUPE_WINDOW_MS) break;
+      const merged = {
+        ...candidate,
+        at: now,
+        count: Math.max(1, Number(candidate.count || 1)) + 1,
+      };
+      serverLogs.splice(i, 1);
+      serverLogs.push(merged);
+      return merged;
+    }
+  }
+  const entry = {
+    id: serverLogSeq++,
+    at: now,
+    level: normalizedLevel,
+    source: normalizedSource,
+    message: normalizedMessage,
+    meta: serializedMeta,
+    count: 1,
+  };
+  serverLogs.push(entry);
+  if (serverLogs.length > SERVER_LOG_LIMIT) {
+    serverLogs.splice(0, serverLogs.length - SERVER_LOG_LIMIT);
+  }
+  return entry;
+}
+
+function logOpcError(context, err, extra = {}) {
+  const detail = err instanceof Error ? err : new Error(String(err?.message || err || "Unknown OPC error"));
+  appendServerLog(
+    "error",
+    `OPC: ${String(context || "error")}`,
+    {
+      ...extra,
+      error: serializeLogMeta(detail),
+    },
+    "opc"
+  );
+}
+
+const opcConnectionState = {
+  seen: false,
+  connected: null,
+  activeConnections: "",
+};
+
+function getOpcConnectionSummary(status) {
+  const safe = status && typeof status === "object" ? status : {};
+  const explicitConnected = safe.connected === true;
+  const connections =
+    safe.connections && typeof safe.connections === "object" ? safe.connections : {};
+  const activeConnections = Object.entries(connections)
+    .filter(([, value]) => value === true)
+    .map(([name]) => String(name || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const runtimeTargets = Array.isArray(safe?.runtime?.plcTargets) ? safe.runtime.plcTargets : [];
+  const runtimeConnectedTargets = runtimeTargets
+    .filter((row) => row && typeof row === "object" && row.connected === true)
+    .map((row) => String(row?.name || row?.host || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const connected =
+    explicitConnected || activeConnections.length > 0 || runtimeConnectedTargets.length > 0;
+  return {
+    connected,
+    activeConnections,
+    runtimeConnectedTargets,
+  };
+}
+
+function maybeLogOpcConnectionState(status) {
+  const summary = getOpcConnectionSummary(status);
+  const activeKey = JSON.stringify({
+    activeConnections: summary.activeConnections,
+    runtimeConnectedTargets: summary.runtimeConnectedTargets,
+  });
+  const shouldLogDisconnected =
+    !summary.connected &&
+    (!opcConnectionState.seen ||
+      opcConnectionState.connected !== false ||
+      opcConnectionState.activeConnections !== activeKey);
+  const shouldLogConnected =
+    summary.connected &&
+    (!opcConnectionState.seen || opcConnectionState.connected !== true);
+
+  if (shouldLogDisconnected) {
+    appendServerLog(
+      "warn",
+      "OPC: no active connection",
+      {
+        activeConnections: summary.activeConnections,
+        runtimeConnectedTargets: summary.runtimeConnectedTargets,
+      },
+      "opc"
+    );
+  } else if (shouldLogConnected) {
+    appendServerLog(
+      "info",
+      "OPC: connection restored",
+      {
+        activeConnections: summary.activeConnections,
+        runtimeConnectedTargets: summary.runtimeConnectedTargets,
+      },
+      "opc"
+    );
+  }
+
+  opcConnectionState.seen = true;
+  opcConnectionState.connected = summary.connected;
+  opcConnectionState.activeConnections = activeKey;
+}
+
+function truncateString(value, maxLen) {
+  const text = String(value == null ? "" : value);
+  if (!Number.isFinite(maxLen) || maxLen <= 0) return "";
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 1))}\u2026`;
+}
+
+function sanitizeClientLogBody(body = {}) {
+  const levelRaw = String(body?.level || "error").trim().toLowerCase();
+  const level = ["debug", "info", "warn", "error"].includes(levelRaw) ? levelRaw : "error";
+  const message = truncateString(body?.message || "Client log", CLIENT_LOG_MESSAGE_MAX);
+  const source = truncateString(body?.source || "client", CLIENT_LOG_SOURCE_MAX);
+  let meta = {};
+  if (body?.meta !== undefined) {
+    meta = serializeLogMeta(body.meta);
+  } else if (body?.error !== undefined) {
+    meta = serializeLogMeta(body.error);
+  }
+  let metaText = "";
+  try {
+    metaText = JSON.stringify(meta);
+  } catch {
+    metaText = "{\"note\":\"meta_unserializable\"}";
+  }
+  if (metaText.length > CLIENT_LOG_META_MAX) {
+    meta = { note: "meta_truncated", preview: metaText.slice(0, CLIENT_LOG_META_MAX) };
+  }
+  return { level, message, source, meta };
+}
+
+const origConsoleError = console.error.bind(console);
+const origConsoleWarn = console.warn.bind(console);
+console.error = (...args) => {
+  const [head, ...rest] = args;
+  appendServerLog("error", String(head ?? "console.error"), rest.length ? { args: rest } : {});
+  origConsoleError(...args);
+};
+console.warn = (...args) => {
+  const [head, ...rest] = args;
+  appendServerLog("warn", String(head ?? "console.warn"), rest.length ? { args: rest } : {});
+  origConsoleWarn(...args);
+};
+process.on("uncaughtException", (err) => {
+  appendServerLog("error", String(err?.message || "uncaughtException"), err, "process");
+});
+process.on("unhandledRejection", (reason) => {
+  appendServerLog("error", "unhandledRejection", reason, "process");
+});
+
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
 app.use((err, _req, res, next) => {
   if (err?.type === "entity.too.large") {
+    appendServerLog("warn", "Request payload too large", {
+      limit: JSON_BODY_LIMIT,
+      type: String(err?.type || ""),
+    });
     res
       .status(413)
       .json({ error: `Request payload too large. Increase JSON_BODY_LIMIT (current ${JSON_BODY_LIMIT}).` });
@@ -3013,6 +3252,26 @@ function requireAreaEdit(areaKey) {
   };
 }
 
+function requireAreaView(areaKey) {
+  return async (req, res, next) => {
+    try {
+      const userId = Number.parseInt(String(req.user?.id || ""), 10);
+      if (!Number.isFinite(userId) || userId <= 0) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const allowed = await canUserViewArea(userId, areaKey);
+      if (!allowed) {
+        res.status(403).json({ error: "Forbidden" });
+        return;
+      }
+      next();
+    } catch (err) {
+      res.status(500).json({ error: err?.message || "Authorization failed." });
+    }
+  };
+}
+
 let ollamaUnloadTimer = null;
 let ollamaLastUsedAt = 0;
 let ollamaLastModel = String(OPENAI_MODEL || "").trim() || "gpt-5";
@@ -4608,6 +4867,60 @@ async function runDatabaseMaintenance() {
 
 const PROJECT_CURSOR_TTL_MS = 10_000;
 const projectCursorPresence = new Map();
+const USER_PRESENCE_TTL_MS = 15_000;
+const userPresence = new Map();
+const REPORT_QUERY_TIMEOUT_MS = Math.max(
+  1000,
+  Math.min(120000, Number.parseInt(String(process.env.REPORT_QUERY_TIMEOUT_MS || "12000"), 10) || 12000)
+);
+const REPORT_MAX_RESULT_ROWS = Math.max(
+  1,
+  Math.min(20000, Number.parseInt(String(process.env.REPORT_MAX_RESULT_ROWS || "2000"), 10) || 2000)
+);
+const REPORT_MAX_CONCURRENT_QUERIES = Math.max(
+  1,
+  Math.min(50, Number.parseInt(String(process.env.REPORT_MAX_CONCURRENT_QUERIES || "3"), 10) || 3)
+);
+const REPORT_RATE_WINDOW_MS = Math.max(
+  1000,
+  Math.min(300000, Number.parseInt(String(process.env.REPORT_RATE_WINDOW_MS || "10000"), 10) || 10000)
+);
+const REPORT_RATE_MAX_REQUESTS = Math.max(
+  1,
+  Math.min(200, Number.parseInt(String(process.env.REPORT_RATE_MAX_REQUESTS || "6"), 10) || 6)
+);
+let reportActiveQueries = 0;
+const reportRateByUser = new Map();
+
+function clampReportQueryTimeoutMs(value) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return REPORT_QUERY_TIMEOUT_MS;
+  return Math.max(1000, Math.min(120000, parsed));
+}
+
+function clampReportMaxRows(value) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return REPORT_MAX_RESULT_ROWS;
+  return Math.max(1, Math.min(20000, parsed));
+}
+
+function clampReportMaxConcurrentQueries(value) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return REPORT_MAX_CONCURRENT_QUERIES;
+  return Math.max(1, Math.min(50, parsed));
+}
+
+function clampReportRateWindowMs(value) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return REPORT_RATE_WINDOW_MS;
+  return Math.max(1000, Math.min(300000, parsed));
+}
+
+function clampReportRateMaxRequests(value) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return REPORT_RATE_MAX_REQUESTS;
+  return Math.max(1, Math.min(200, parsed));
+}
 
 function cleanupProjectCursors(projectId) {
   const now = Date.now();
@@ -4622,6 +4935,120 @@ function cleanupProjectCursors(projectId) {
   if (!byUser.size) {
     projectCursorPresence.delete(key);
   }
+}
+
+function cleanupUserPresence() {
+  const now = Date.now();
+  for (const [userId, entry] of userPresence.entries()) {
+    if (!entry || now - Number(entry.at || 0) > USER_PRESENCE_TTL_MS) {
+      userPresence.delete(userId);
+    }
+  }
+}
+
+function isStatementTimeoutError(err) {
+  return String(err?.code || "") === "57014" || /statement timeout/i.test(String(err?.message || ""));
+}
+
+function makeReportThrottleError(message, statusCode = 429) {
+  const err = new Error(String(message || "Too many report queries."));
+  err.statusCode = statusCode;
+  err.viziThrottle = true;
+  return err;
+}
+
+function enforceReportRateLimit(userId, options = {}) {
+  const windowMs = clampReportRateWindowMs(options?.rateWindowMs);
+  const maxRequests = clampReportRateMaxRequests(options?.rateMaxRequests);
+  const key = String(userId || "").trim() || "anonymous";
+  const now = Date.now();
+  const prev = Array.isArray(reportRateByUser.get(key)) ? reportRateByUser.get(key) : [];
+  const active = prev.filter((ts) => Number.isFinite(Number(ts)) && now - Number(ts) < windowMs);
+  if (active.length >= maxRequests) {
+    throw makeReportThrottleError(
+      `Too many report queries. Try again in a few seconds (limit ${maxRequests} per ${Math.round(
+        windowMs / 1000
+      )}s).`
+    );
+  }
+  active.push(now);
+  reportRateByUser.set(key, active);
+}
+
+function acquireReportQuerySlot(options = {}) {
+  const maxConcurrent = clampReportMaxConcurrentQueries(options?.maxConcurrentQueries);
+  if (reportActiveQueries >= maxConcurrent) {
+    throw makeReportThrottleError(
+      `Report query queue is full. Wait for active queries to finish (max concurrent ${maxConcurrent}).`
+    );
+  }
+  reportActiveQueries += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    reportActiveQueries = Math.max(0, reportActiveQueries - 1);
+  };
+}
+
+async function runReadOnlyQueryWithGuards(sql, values = [], options = {}) {
+  const timeoutMs = Math.max(
+    1000,
+    Math.min(120000, Number.parseInt(String(options?.timeoutMs || REPORT_QUERY_TIMEOUT_MS), 10) || REPORT_QUERY_TIMEOUT_MS)
+  );
+  const maxRows = Math.max(
+    1,
+    Math.min(20000, Number.parseInt(String(options?.maxRows || REPORT_MAX_RESULT_ROWS), 10) || REPORT_MAX_RESULT_ROWS)
+  );
+  const guardedSql = `SELECT * FROM (${String(sql || "")}) AS __vizi_guard LIMIT ${maxRows}`;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
+    await client.query(`SET LOCAL lock_timeout = ${Math.min(timeoutMs, 5000)}`);
+    const result = await client.query(guardedSql, Array.isArray(values) ? values : []);
+    await client.query("COMMIT");
+    return {
+      result,
+      timeoutMs,
+      maxRows,
+      truncated: Array.isArray(result?.rows) && result.rows.length >= maxRows,
+    };
+  } catch (err) {
+    if (isStatementTimeoutError(err)) {
+      err.viziTimeoutMs = timeoutMs;
+    }
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // ignore rollback failures
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function loadReportSqlGuardSettings() {
+  let timeoutMs = REPORT_QUERY_TIMEOUT_MS;
+  let maxRows = REPORT_MAX_RESULT_ROWS;
+  let maxConcurrentQueries = REPORT_MAX_CONCURRENT_QUERIES;
+  let rateWindowMs = REPORT_RATE_WINDOW_MS;
+  let rateMaxRequests = REPORT_RATE_MAX_REQUESTS;
+  try {
+    const { rows } = await pool.query("SELECT config FROM opc_config WHERE id = 1 LIMIT 1");
+    const runtime = rows?.[0]?.config?.runtime;
+    if (runtime && typeof runtime === "object") {
+      timeoutMs = clampReportQueryTimeoutMs(runtime.reportQueryTimeoutMs);
+      maxRows = clampReportMaxRows(runtime.reportMaxResultRows);
+      maxConcurrentQueries = clampReportMaxConcurrentQueries(runtime.reportMaxConcurrentQueries);
+      rateWindowMs = clampReportRateWindowMs(runtime.reportRateWindowMs);
+      rateMaxRequests = clampReportRateMaxRequests(runtime.reportRateMaxRequests);
+    }
+  } catch {
+    // fall back to env defaults
+  }
+  return { timeoutMs, maxRows, maxConcurrentQueries, rateWindowMs, rateMaxRequests };
 }
 
 function sanitizeReadOnlyQuery(sql) {
@@ -4827,6 +5254,7 @@ app.get("/api/opc/config", async (_req, res) => {
     }
     res.status(404).json({ error: "OPC config not found." });
   } catch (err) {
+    logOpcError("load config", err);
     res.status(500).json({ error: err?.message || "Failed to load OPC config." });
   }
 });
@@ -4902,6 +5330,7 @@ app.post("/api/opc/config", async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err) {
+    logOpcError("save config", err);
     res.status(500).json({ error: err?.message || "Failed to save OPC config." });
   }
 });
@@ -5014,6 +5443,43 @@ app.get("/api/projects/:id/cursors", async (req, res) => {
     res.json({ cursors });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load cursors." });
+  }
+});
+
+app.post("/api/presence/ping", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const username = String(req.user?.username || "").trim() || "User";
+    const displayName = String(req.user?.display_name || "").trim();
+    const avatarUrl = String(req.user?.avatar_url || "").trim();
+    userPresence.set(String(userId), {
+      user_id: userId,
+      username,
+      display_name: displayName,
+      avatar_url: avatarUrl,
+      at: Date.now(),
+    });
+    cleanupUserPresence();
+    const users = Array.from(userPresence.values())
+      .map((entry) => ({
+        user_id: entry.user_id,
+        username: entry.username,
+        display_name: entry.display_name || "",
+        avatar_url: entry.avatar_url || "",
+        at: entry.at,
+      }))
+      .sort((a, b) => {
+        const aName = String(a.display_name || a.username || "").toLowerCase();
+        const bName = String(b.display_name || b.username || "").toLowerCase();
+        return aName.localeCompare(bName);
+      });
+    res.json({ users });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to update user presence." });
   }
 });
 
@@ -5195,6 +5661,7 @@ app.post("/api/opc/restart", (_req, res) => {
     fs.writeFileSync(flagPath, JSON.stringify({ at }, null, 2));
     res.json({ ok: true, message: "Restart Requested...", at });
   } catch (err) {
+    logOpcError("restart request", err);
     res.status(500).json({ error: err?.message || "Failed to request restart." });
   }
 });
@@ -5202,14 +5669,36 @@ app.post("/api/opc/restart", (_req, res) => {
 app.get("/api/opc/status", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT status FROM opc_status WHERE id = 1 LIMIT 1"
+      "SELECT status, updated_at::text AS updated_at FROM opc_status WHERE id = 1 LIMIT 1"
     );
     if (!rows.length || !rows[0]?.status) {
-      res.json({ values: {}, errors: {}, qualities: {}, diagnostics: {}, at: null });
+      const empty = { values: {}, errors: {}, qualities: {}, diagnostics: {}, at: null, connected: false };
+      maybeLogOpcConnectionState(empty);
+      res.json(empty);
       return;
     }
-    res.json(rows[0].status);
+    const baseStatus =
+      rows[0]?.status && typeof rows[0].status === "object" ? rows[0].status : {};
+    const statusAtMs = Number(baseStatus?.at || 0);
+    const dbUpdatedAtMs = parseTimestampMs(rows[0]?.updated_at);
+    const freshnessAt = Math.max(
+      Number.isFinite(statusAtMs) ? statusAtMs : 0,
+      Number.isFinite(dbUpdatedAtMs) ? dbUpdatedAtMs : 0
+    );
+    const staleAgeMs = freshnessAt > 0 ? Math.max(0, Date.now() - freshnessAt) : Number.POSITIVE_INFINITY;
+    const isStale = staleAgeMs > OPC_STATUS_STALE_MS;
+    const effectiveStatus = isStale
+      ? {
+          ...baseStatus,
+          connected: false,
+          stale: true,
+          staleAgeMs,
+        }
+      : baseStatus;
+    maybeLogOpcConnectionState(effectiveStatus);
+    res.json(effectiveStatus);
   } catch (err) {
+    logOpcError("load status", err);
     res.status(500).json({ error: err?.message || "Failed to load OPC status." });
   }
 });
@@ -5485,6 +5974,7 @@ app.get("/api/opc/trends/tags", async (_req, res) => {
       })),
     });
   } catch (err) {
+    logOpcError("load trend tags", err);
     res.status(500).json({ error: err?.message || "Failed to load trend tags." });
   }
 });
@@ -5554,6 +6044,7 @@ app.get("/api/opc/trends", async (req, res) => {
       codec: TREND_CODEC,
     });
   } catch (err) {
+    logOpcError("load trends", err, { tagKey: String(req.query.tagKey || req.query.tag || "") });
     res.status(500).json({ error: err?.message || "Failed to load trend data." });
   }
 });
@@ -5636,6 +6127,7 @@ app.post("/api/opc/status", async (req, res) => {
       diagnostics: mergeWriteDiagnostics(status?.diagnostics, existingStatus?.diagnostics),
       runtime: mergeRuntimeWriteMetrics(status?.runtime, existingStatus?.runtime),
     };
+    maybeLogOpcConnectionState(mergedStatus);
     await pool.query(
       `
       INSERT INTO opc_status (id, status, updated_at)
@@ -5685,6 +6177,7 @@ app.post("/api/opc/status", async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err) {
+    logOpcError("save status", err);
     res.status(500).json({ error: err?.message || "Failed to save OPC status." });
   }
 });
@@ -5760,6 +6253,11 @@ app.post("/api/opc/write", async (req, res) => {
           }),
         });
       } catch (err) {
+        logOpcError("write bridge unavailable", err, {
+          bridgeUrl: OPC_WRITE_BRIDGE_URL,
+          tagKey,
+          legacyTagKey,
+        });
         res.status(502).json({
           error: `OPC write bridge unavailable at ${OPC_WRITE_BRIDGE_URL}: ${err?.message || "request failed"}`,
         });
@@ -5767,6 +6265,11 @@ app.post("/api/opc/write", async (req, res) => {
       }
       if (!bridgeRes.ok) {
         const bridgeData = await bridgeRes.json().catch(() => ({}));
+        logOpcError("write bridge rejected request", new Error(String(bridgeData?.error || "PLC write failed.")), {
+          bridgeStatus: Number(bridgeRes.status) || null,
+          tagKey,
+          legacyTagKey,
+        });
         res.status(bridgeRes.status).json({
           error: bridgeData?.error || "PLC write failed.",
         });
@@ -5902,6 +6405,10 @@ app.post("/api/opc/write", async (req, res) => {
 
     res.json({ ok: true, at, tagKey, value: nextValue });
   } catch (err) {
+    logOpcError("write value", err, {
+      tagKey: String(req.body?.tagKey || ""),
+      legacyTagKey: String(req.body?.legacyTagKey || ""),
+    });
     res.status(500).json({ error: err?.message || "Failed to write OPC value." });
   }
 });
@@ -5913,6 +6420,7 @@ app.get("/api/opc/templates", async (_req, res) => {
     );
     res.json({ templates: rows });
   } catch (err) {
+    logOpcError("load templates", err);
     res.status(500).json({ error: err?.message || "Failed to load templates." });
   }
 });
@@ -5924,6 +6432,7 @@ app.get("/api/opc/tag-mappings", async (_req, res) => {
     );
     res.json({ mappings: rows });
   } catch (err) {
+    logOpcError("load tag mappings", err);
     res.status(500).json({ error: err?.message || "Failed to load tag mappings." });
   }
 });
@@ -5966,6 +6475,7 @@ app.post("/api/opc/tag-mappings", async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err) {
+    logOpcError("save tag mappings", err, { tagKey: String(req.body?.tag_key || "") });
     res.status(500).json({ error: err?.message || "Failed to save tag mappings." });
   }
 });
@@ -5977,6 +6487,7 @@ app.get("/api/opc/mapping-sets", async (_req, res) => {
     );
     res.json({ sets: rows });
   } catch (err) {
+    logOpcError("load mapping sets", err);
     res.status(500).json({ error: err?.message || "Failed to load mapping sets." });
   }
 });
@@ -6022,6 +6533,7 @@ app.post("/api/opc/mapping-sets", async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err) {
+    logOpcError("save mapping set", err, { name: String(req.body?.name || "") });
     res.status(500).json({ error: err?.message || "Failed to save mapping set." });
   }
 });
@@ -6036,6 +6548,7 @@ app.delete("/api/opc/mapping-sets/:name", async (req, res) => {
     await pool.query("DELETE FROM opc_mapping_sets WHERE name = $1", [name]);
     res.json({ ok: true });
   } catch (err) {
+    logOpcError("delete mapping set", err, { name: String(req.params.name || "") });
     res.status(500).json({ error: err?.message || "Failed to delete mapping set." });
   }
 });
@@ -6108,6 +6621,7 @@ app.post("/api/opc/templates", async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err) {
+    logOpcError("save template", err, { name: String(req.body?.name || "") });
     res.status(500).json({ error: err?.message || "Failed to save template." });
   }
 });
@@ -6122,6 +6636,7 @@ app.delete("/api/opc/templates/:name", async (req, res) => {
     await pool.query("DELETE FROM opc_tag_templates WHERE name = $1", [name]);
     res.json({ ok: true });
   } catch (err) {
+    logOpcError("delete template", err, { name: String(req.params.name || "") });
     res.status(500).json({ error: err?.message || "Failed to delete template." });
   }
 });
@@ -6177,6 +6692,30 @@ app.get("/api/db/config", async (_req, res) => {
       idle: Number.isFinite(Number(pool?.idleCount)) ? Number(pool.idleCount) : 0,
       waiting: Number.isFinite(Number(pool?.waitingCount)) ? Number(pool.waitingCount) : 0,
     };
+    let sqlGuards = {
+      reportQueryTimeoutMs: REPORT_QUERY_TIMEOUT_MS,
+      reportMaxResultRows: REPORT_MAX_RESULT_ROWS,
+      reportMaxConcurrentQueries: REPORT_MAX_CONCURRENT_QUERIES,
+      reportRateWindowMs: REPORT_RATE_WINDOW_MS,
+      reportRateMaxRequests: REPORT_RATE_MAX_REQUESTS,
+    };
+    try {
+      const cfgRes = await pool.query("SELECT config FROM opc_config WHERE id = 1 LIMIT 1");
+      const runtime = cfgRes.rows?.[0]?.config?.runtime;
+      if (runtime && typeof runtime === "object") {
+        sqlGuards = {
+          reportQueryTimeoutMs: clampReportQueryTimeoutMs(runtime.reportQueryTimeoutMs),
+          reportMaxResultRows: clampReportMaxRows(runtime.reportMaxResultRows),
+          reportMaxConcurrentQueries: clampReportMaxConcurrentQueries(
+            runtime.reportMaxConcurrentQueries
+          ),
+          reportRateWindowMs: clampReportRateWindowMs(runtime.reportRateWindowMs),
+          reportRateMaxRequests: clampReportRateMaxRequests(runtime.reportRateMaxRequests),
+        };
+      }
+    } catch {
+      // keep defaults if opc_config is unavailable
+    }
 
     const checkedAt = Date.now();
     let connected = false;
@@ -6225,6 +6764,7 @@ app.get("/api/db/config", async (_req, res) => {
       editable,
       versions: versionState,
       pool: poolInfo,
+      sqlGuards,
       health: {
         connected,
         checkedAt,
@@ -6272,6 +6812,23 @@ app.put("/api/db/config", async (req, res) => {
     const port = Number.parseInt(String(nextPortRaw), 10);
     const nextPoolMax = Number.parseInt(String(body.poolMax != null ? body.poolMax : DB_POOL_MAX), 10);
     const password = incoming.password != null ? String(incoming.password) : "";
+    const incomingSqlGuards =
+      body?.sqlGuards && typeof body.sqlGuards === "object" ? body.sqlGuards : {};
+    const nextReportQueryTimeoutMs = clampReportQueryTimeoutMs(
+      incomingSqlGuards?.reportQueryTimeoutMs
+    );
+    const nextReportMaxResultRows = clampReportMaxRows(
+      incomingSqlGuards?.reportMaxResultRows
+    );
+    const nextReportMaxConcurrentQueries = clampReportMaxConcurrentQueries(
+      incomingSqlGuards?.reportMaxConcurrentQueries
+    );
+    const nextReportRateWindowMs = clampReportRateWindowMs(
+      incomingSqlGuards?.reportRateWindowMs
+    );
+    const nextReportRateMaxRequests = clampReportRateMaxRequests(
+      incomingSqlGuards?.reportRateMaxRequests
+    );
 
     if (!host || !database || !user || !Number.isFinite(port) || port <= 0 || port > 65535) {
       res.status(400).json({ error: "Host, port, database, and user are required." });
@@ -6307,7 +6864,43 @@ app.put("/api/db/config", async (req, res) => {
     upsertEnvVar(envPath, "DATABASE_URL", nextUrl.toString());
     upsertEnvVar(envPath, "DB_POOL_MAX", String(nextPoolMax));
 
-    res.json({ ok: true });
+    try {
+      const currentCfg = await pool.query("SELECT config FROM opc_config WHERE id = 1 LIMIT 1");
+      const prevConfig =
+        currentCfg.rows?.[0]?.config && typeof currentCfg.rows[0].config === "object"
+          ? currentCfg.rows[0].config
+          : {};
+      const prevRuntime =
+        prevConfig.runtime && typeof prevConfig.runtime === "object" ? prevConfig.runtime : {};
+      const nextConfig = {
+        ...prevConfig,
+        runtime: {
+          ...prevRuntime,
+          reportQueryTimeoutMs: nextReportQueryTimeoutMs,
+          reportMaxResultRows: nextReportMaxResultRows,
+          reportMaxConcurrentQueries: nextReportMaxConcurrentQueries,
+          reportRateWindowMs: nextReportRateWindowMs,
+          reportRateMaxRequests: nextReportRateMaxRequests,
+        },
+      };
+      await pool.query(
+        "INSERT INTO opc_config (id, config) VALUES (1, $1::jsonb) ON CONFLICT (id) DO UPDATE SET config = EXCLUDED.config, updated_at = now()",
+        [JSON.stringify(nextConfig)]
+      );
+    } catch {
+      // keep DB connection save successful even if runtime guard save fails
+    }
+
+    res.json({
+      ok: true,
+      sqlGuards: {
+        reportQueryTimeoutMs: nextReportQueryTimeoutMs,
+        reportMaxResultRows: nextReportMaxResultRows,
+        reportMaxConcurrentQueries: nextReportMaxConcurrentQueries,
+        reportRateWindowMs: nextReportRateWindowMs,
+        reportRateMaxRequests: nextReportRateMaxRequests,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to save database config." });
   }
@@ -6471,6 +7064,74 @@ app.get("/api/db/diagnostics/postgres", async (_req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load PostgreSQL diagnostics." });
+  }
+});
+
+app.get("/api/logs", requireAreaView("server"), async (req, res) => {
+  try {
+    const limitRaw = Number.parseInt(String(req.query?.limit || "250"), 10);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, limitRaw)) : 250;
+    const levelFilter = String(req.query?.level || "").trim().toLowerCase();
+    const sourceFilter = String(req.query?.source || "").trim().toLowerCase();
+    const search = String(req.query?.q || "").trim().toLowerCase();
+
+    const rows = [...serverLogs]
+      .reverse()
+      .filter((entry) => {
+        if (levelFilter && String(entry?.level || "").toLowerCase() !== levelFilter) return false;
+        if (sourceFilter && !String(entry?.source || "").toLowerCase().includes(sourceFilter)) return false;
+        if (!search) return true;
+        const message = String(entry?.message || "").toLowerCase();
+        const metaText = (() => {
+          try {
+            return JSON.stringify(entry?.meta || {}).toLowerCase();
+          } catch {
+            return "";
+          }
+        })();
+        return message.includes(search) || metaText.includes(search);
+      });
+
+    res.json({
+      rows: rows.slice(0, limit),
+      total: rows.length,
+      limit,
+      serverLogLimit: SERVER_LOG_LIMIT,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load logs." });
+  }
+});
+
+app.post("/api/logs/client", async (req, res) => {
+  try {
+    const userId = Number.parseInt(String(req.user?.id || ""), 10);
+    const userName = String(req.user?.username || "").trim();
+    const payload = sanitizeClientLogBody(req.body || {});
+    const source = userName
+      ? `client:${truncateString(userName, 32)}:${payload.source}`
+      : `client:${payload.source}`;
+    const meta = {
+      ...payload.meta,
+      userId: Number.isFinite(userId) ? userId : null,
+      userName: userName || null,
+      userAgent: truncateString(req.headers["user-agent"] || "", 240),
+      route: truncateString(req.body?.route || "", 240),
+    };
+    appendServerLog(payload.level, payload.message, meta, source);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to record client log." });
+  }
+});
+
+app.delete("/api/logs", requireAreaEdit("server"), async (_req, res) => {
+  try {
+    serverLogs.splice(0, serverLogs.length);
+    appendServerLog("warn", "Logs cleared by user request.", {}, "server");
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to clear logs." });
   }
 });
 
@@ -7667,7 +8328,16 @@ app.post("/api/reports/:id/run", async (req, res) => {
     const positionalValues =
       Array.isArray(req.body?.positional) ? req.body.positional : [];
     const { sql, values } = buildParameterizedReadOnlyQuery(report.sql, filterValues, positionalValues);
-    const result = await pool.query(sql, values);
+    const guard = await loadReportSqlGuardSettings();
+    enforceReportRateLimit(userId, guard);
+    const releaseSlot = acquireReportQuerySlot(guard);
+    let resultPayload = null;
+    try {
+      resultPayload = await runReadOnlyQueryWithGuards(sql, values, guard);
+    } finally {
+      releaseSlot();
+    }
+    const { result, maxRows, timeoutMs, truncated } = resultPayload;
     const columns = (result.fields || []).map((f) => f.name);
     const dataRows = Array.isArray(result.rows) ? result.rows : [];
     const summedColumns = extractSummedOutputColumns(sql, columns);
@@ -7686,9 +8356,23 @@ app.post("/api/reports/:id/run", async (req, res) => {
       columns,
       rows: dataRows,
       rowCount: dataRows.length,
+      truncated,
+      maxRows,
+      timeoutMs,
       summaryRow,
     });
   } catch (err) {
+    if (Number(err?.statusCode) === 429) {
+      res.status(429).json({ error: String(err?.message || "Too many report queries.") });
+      return;
+    }
+    if (isStatementTimeoutError(err)) {
+      const timeoutMs = Number(err?.viziTimeoutMs) || REPORT_QUERY_TIMEOUT_MS;
+      res.status(408).json({
+        error: `Query timed out after ${timeoutMs}ms. Narrow filters or simplify the query.`,
+      });
+      return;
+    }
     if (isMissingPublicRoutinesError(err)) {
       res.status(400).json({
         error:
@@ -7762,7 +8446,16 @@ app.post("/api/reports/preview", async (req, res) => {
       }
       values.push(limit);
       sql += ` LIMIT $${values.length}`;
-      const result = await pool.query(sql, values);
+      const guard = await loadReportSqlGuardSettings();
+      enforceReportRateLimit(userId, guard);
+      const releaseSlot = acquireReportQuerySlot(guard);
+      let resultPayload = null;
+      try {
+        resultPayload = await runReadOnlyQueryWithGuards(sql, values, guard);
+      } finally {
+        releaseSlot();
+      }
+      const { result, maxRows, timeoutMs, truncated } = resultPayload;
       const columns = (result.fields || []).map((f) => f.name);
       const rows = Array.isArray(result.rows) ? result.rows : [];
       const summedColumns = extractSummedOutputColumns(sql, columns);
@@ -7772,6 +8465,9 @@ app.post("/api/reports/preview", async (req, res) => {
         columns,
         rows,
         rowCount: rows.length,
+        truncated,
+        maxRows,
+        timeoutMs,
         expectedFilters: [],
         expectedPositionalParams: 0,
         summaryRow,
@@ -7837,7 +8533,16 @@ app.post("/api/reports/preview", async (req, res) => {
           ? req.body.positional
           : [];
     const { sql, values } = buildParameterizedReadOnlyQuery(sqlTemplate, filterValues, positionalValues);
-    const result = await pool.query(sql, values);
+    const guard = await loadReportSqlGuardSettings();
+    enforceReportRateLimit(userId, guard);
+    const releaseSlot = acquireReportQuerySlot(guard);
+    let resultPayload = null;
+    try {
+      resultPayload = await runReadOnlyQueryWithGuards(sql, values, guard);
+    } finally {
+      releaseSlot();
+    }
+    const { result, maxRows, timeoutMs, truncated } = resultPayload;
     const columns = (result.fields || []).map((f) => f.name);
     const rows = Array.isArray(result.rows) ? result.rows : [];
     const summedColumns = extractSummedOutputColumns(sql, columns);
@@ -7847,11 +8552,25 @@ app.post("/api/reports/preview", async (req, res) => {
       columns,
       rows,
       rowCount: rows.length,
+      truncated,
+      maxRows,
+      timeoutMs,
       expectedFilters,
       expectedPositionalParams,
       summaryRow,
     });
   } catch (err) {
+    if (Number(err?.statusCode) === 429) {
+      res.status(429).json({ error: String(err?.message || "Too many report queries.") });
+      return;
+    }
+    if (isStatementTimeoutError(err)) {
+      const timeoutMs = Number(err?.viziTimeoutMs) || REPORT_QUERY_TIMEOUT_MS;
+      res.status(408).json({
+        error: `Query timed out after ${timeoutMs}ms. Narrow filters or simplify the query.`,
+      });
+      return;
+    }
     if (isMissingPublicRoutinesError(err)) {
       res.status(400).json({
         error:

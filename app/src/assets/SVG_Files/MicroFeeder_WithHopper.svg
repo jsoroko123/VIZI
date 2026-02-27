@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
    width="6.0339093mm"
@@ -7,73 +6,19 @@
    viewBox="0 0 6.033909 12.573488"
    version="1.1"
    id="svg190489"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="MicroFeeder_WithHopper.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="47.989" keheight="100" eType="MicroFeeder_WithHopper">
-  <sodipodi:namedview
-     id="namedview190491"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     showgrid="false"
-     inkscape:zoom="12.500449"
-     inkscape:cx="7.7997198"
-     inkscape:cy="22.199203"
-     inkscape:window-width="1920"
-     inkscape:window-height="1017"
-     inkscape:window-x="1912"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1" />
+   xmlns="http://www.w3.org/2000/svg" kewidth="47.989" keheight="100" eType="MicroFeeder_WithHopper">
+  
   <defs
      id="defs190486">
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect27839"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect3415-7-1-05-5-5-1-8-8-4-8-7-7-4-3"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect3419-7-2-5-2-0-6-1-5-0-3-3-0-9"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect3787-1-1-1-7-8-3-1-4-1-8-1-5-1-3"
-       is_visible="true"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect3067-7-4-0-4-4-8-2-7-6-5-1-8-6-4-4"
-       is_visible="true"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect7822-1"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect7826-3"
-       is_visible="true"
-       lpeversion="0" />
+    
+    
+    
+    
+    
+    
+    
   </defs>
   <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
      id="layer1"
      transform="translate(-72.282935,-33.474421)">
     <rect
@@ -82,28 +27,21 @@
        width="4"
        height="1.1"
        x="74.241844"
-       y="44.87291"
-       inkscape:label="body_screw" />
+       y="44.87291" />
     <path
        id="screw"
        style="fill:none;fill-opacity:1;stroke:#000000;stroke-width:0.12;stroke-dasharray:none;stroke-dashoffset:0"
-       d="m 74.491949,45.677946 0.507123,-0.496144 0.49687,0.497522 0.502399,-0.500791 0.497464,0.497723 0.502181,-0.492071 0.499656,0.496996 0.498014,-0.502523"
-       sodipodi:nodetypes="cccccccc"
-       inkscape:label="screw" />
+       d="m 74.491949,45.677946 0.507123,-0.496144 0.49687,0.497522 0.502399,-0.500791 0.497464,0.497723 0.502181,-0.492071 0.499656,0.496996 0.498014,-0.502523" />
     <path
        d="m 73.721099,42.055602 0.529167,2.798796 h 1.351338 l 0.529167,-2.798796 z"
        style="fill:#cccccc;stroke:#000000;stroke-width:0.15"
-       id="scale"
-       sodipodi:nodetypes="ccccc"
-       inkscape:label="scale" />
+       id="scale" />
     <path
        style="fill:#cccccc;stroke:#000000;stroke-width:0.15"
        d="m 72.357935,33.549421 v 7.962304 h 3.142961 v -7.962304 z"
-       id="path4"
-       inkscape:label="hopper" />
+       id="path4" />
     <g
        id="g12"
-       inkscape:label="insideHopper"
        transform="translate(0.30296261,0.32926421)">
       <path
          d="m 75.186048,38.169534 -1.015959,1.56838 h 1.016476 z"
@@ -112,27 +50,22 @@
       <path
          d="m 73.026475,40.77618 h 1.185457 l -0.592728,-0.962784 z"
          style="fill:#cccccc;stroke:#000000;stroke-width:0.1;stroke-dasharray:none"
-         id="path5"
-         sodipodi:nodetypes="cccc" />
+         id="path5" />
       <path
          d="m 74.091193,40.575342 v 0.200838 h 0.846631 v -0.200838 z"
          style="fill:#cccccc;stroke:#000000;stroke-width:0.1;stroke-dasharray:none"
-         id="path10"
-         sodipodi:nodetypes="ccccc" />
+         id="path10" />
       <path
          d="m 72.319661,40.575342 v 0.200838 h 0.836048 v -0.200838 z"
          style="fill:#cccccc;stroke:#000000;stroke-width:0.1;stroke-dasharray:none"
-         id="path11"
-         sodipodi:nodetypes="ccccc" />
+         id="path11" />
     </g>
     <g
-       id="g13"
-       inkscape:label="insideScale">
+       id="g13">
       <path
          d="m 74.612178,44.48451 0.314419,-0.528136 0.31091,0.528136 z"
          style="fill:none;stroke:#000000;stroke-width:0.1;stroke-dasharray:none"
-         id="path23"
-         sodipodi:nodetypes="cccc" />
+         id="path23" />
       <rect
          style="fill:none;fill-opacity:1;stroke:#000000;stroke-width:0.1;stroke-dasharray:none;stroke-dashoffset:0"
          id="rect24"
@@ -143,15 +76,11 @@
       <path
          style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.1;stroke-dasharray:none"
          d="m 74.317863,43.305677 h 1.217039 -0.592645 v -0.603229 h -0.624394"
-         id="path12"
-         sodipodi:nodetypes="ccccc" />
+         id="path12" />
     </g>
     <path
        style="fill:#cccccc;fill-opacity:1;stroke:#000000;stroke-width:0.15;stroke-dasharray:none"
        d="M 74.918674,41.98187 V 41.584155"
-       id="path13"
-       sodipodi:nodetypes="cc" />
+       id="path13" />
   </g>
 </svg>
-
-

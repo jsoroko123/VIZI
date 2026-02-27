@@ -1,81 +1,23 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
+<?xml version="1.0" encoding="UTF-8"?>
 <svg
-   width="0.083333336in"
-   height="0.020833334in"
-   viewBox="0 0 2.1166668 0.52916665"
-   version="1.1"
-   id="svg1"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="SlideGate.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="100" keheight="25" eType="SlideGate">
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="66.197891"
-     inkscape:cx="3.2856032"
-     inkscape:cy="2.6360356"
-     inkscape:window-width="3440"
-     inkscape:window-height="1351"
-     inkscape:window-x="2391"
-     inkscape:window-y="-9"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1"
-     inkscape:clip-to-page="false"
-     showgrid="true">
-    <inkscape:grid
-       id="grid13"
-       units="mm"
-       originx="-5.2717953"
-       originy="-13.384263"
-       spacingx="1"
-       spacingy="1"
-       empcolor="#0099e5"
-       empopacity="0.30196078"
-       color="#0099e5"
-       opacity="0.14901961"
-       empspacing="5"
-       dotted="false"
-       gridanglex="30"
-       gridanglez="30"
-       visible="true" />
-  </sodipodi:namedview>
-  <defs
-     id="defs1">
-    <linearGradient
-       id="swatch1"
-       inkscape:swatch="solid">
-      <stop
-         style="stop-color:#ffffff;stop-opacity:1;"
-         offset="0"
-         id="stop1" />
+  width="0.083333336in"
+  height="0.020833334in"
+  viewBox="0 0 2.1166668 0.52916665"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="100"
+  keheight="25"
+  eType="SlideGate"
+>
+  <defs>
+    <linearGradient id="frameFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8eaed" />
+      <stop offset="100%" stop-color="#bfc4ca" />
     </linearGradient>
   </defs>
-  <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
-     id="layer1"
-     transform="translate(-16.00407,-14.456591)">
-    <rect
-       style="fill:#ffffff;fill-opacity:1;stroke:#000000;stroke-width:0.0528945;stroke-linecap:round;stroke-dasharray:none"
-       id="rect1"
-       width="2.0637722"
-       height="0.4762722"
-       x="16.030518"
-       y="14.483038"
-       ry="7.2847122e-08" />
+
+  <g stroke="#2d3035" stroke-linecap="round" stroke-linejoin="round">
+    <rect id="rect1" x="0.06" y="0.06" width="1.99" height="0.41" rx="0.05" fill="url(#frameFill)" stroke-width="0.05" />
+    <rect x="0.86" y="0.11" width="0.46" height="0.31" rx="0.02" fill="#8f949c" stroke-width="0.03" />
   </g>
 </svg>
-
-

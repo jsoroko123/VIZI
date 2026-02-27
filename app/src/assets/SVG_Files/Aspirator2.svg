@@ -1,129 +1,51 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
+<?xml version="1.0" encoding="UTF-8"?>
 <svg
-   width="0.39807197in"
-   height="0.7125693in"
-   viewBox="0 0 10.111029 18.09926"
-   version="1.1"
-   id="svg1"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="Aspirator2.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="55.864" keheight="100" eType="Aspirator2">
-  <sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="5.8511222"
-     inkscape:cx="39.906874"
-     inkscape:cy="50.332225"
-     inkscape:window-width="1920"
-     inkscape:window-height="1017"
-     inkscape:window-x="1912"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1"
-     inkscape:clip-to-page="false" />
-  <defs
-     id="defs1">
-    <inkscape:path-effect
-       effect="fillet_chamfer"
-       id="path-effect4"
-       is_visible="true"
-       lpeversion="1"
-       nodesatellites_param="F,0,0,1,0,1.7725819,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,2.4137014,0,1"
-       radius="0"
-       unit="px"
-       method="auto"
-       mode="F"
-       chamfer_steps="1"
-       flexible="false"
-       use_knot_distance="true"
-       apply_no_radius="true"
-       apply_with_radius="true"
-       only_selected="false"
-       hide_knots="false" />
-    <inkscape:path-effect
-       effect="fillet_chamfer"
-       id="path-effect3"
-       is_visible="true"
-       lpeversion="1"
-       nodesatellites_param="F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1"
-       radius="0"
-       unit="px"
-       method="auto"
-       mode="F"
-       chamfer_steps="1"
-       flexible="false"
-       use_knot_distance="true"
-       apply_no_radius="true"
-       apply_with_radius="true"
-       only_selected="false"
-       hide_knots="false" />
-    <inkscape:path-effect
-       effect="fillet_chamfer"
-       id="path-effect2"
-       is_visible="true"
-       lpeversion="1"
-       nodesatellites_param="F,0,0,1,0,0.96380459,0,1 @ F,0,0,1,0,1.3203894,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,1.2130815,0,1"
-       radius="0"
-       unit="px"
-       method="auto"
-       mode="F"
-       chamfer_steps="1"
-       flexible="false"
-       use_knot_distance="true"
-       apply_no_radius="true"
-       apply_with_radius="true"
-       only_selected="false"
-       hide_knots="false" />
-    <inkscape:path-effect
-       effect="fillet_chamfer"
-       id="path-effect1"
-       is_visible="true"
-       lpeversion="1"
-       nodesatellites_param="F,0,0,1,0,1.0021809,0,1 @ F,0,0,1,0,0.86819698,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0.87194763,0,1"
-       radius="0"
-       unit="px"
-       method="auto"
-       mode="F"
-       chamfer_steps="1"
-       flexible="false"
-       use_knot_distance="true"
-       apply_no_radius="true"
-       apply_with_radius="true"
-       only_selected="false"
-       hide_knots="false" />
-    <linearGradient
-       id="swatch1"
-       inkscape:swatch="solid">
-      <stop
-         style="stop-color:#ffffff;stop-opacity:1;"
-         offset="0"
-         id="stop1" />
+  width="0.39807197in"
+  height="0.7125693in"
+  viewBox="0 0 10.111029 18.09926"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="55.864"
+  keheight="100"
+  eType="Aspirator2"
+>
+  <defs>
+    <linearGradient id="asp2BodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="asp2HeadFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dbe0e5" />
+      <stop offset="100%" stop-color="#9ea6b0" />
+    </linearGradient>
+    <linearGradient id="asp2ConeFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d4d9de" />
+      <stop offset="100%" stop-color="#9aa2ac" />
     </linearGradient>
   </defs>
-  <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
-     id="layer1"
-     transform="translate(-9.5230745,-2.6853174)">
+
+  <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.02 0.88H8.26L7.48 2.56H1.38Z" fill="url(#asp2HeadFill)" stroke-width="0.20" />
+    <rect x="0.86" y="1.22" width="0.88" height="0.92" rx="0.12" fill="#c8cdd4" stroke-width="0.14" />
+    <rect x="7.94" y="1.22" width="1.02" height="0.92" rx="0.12" fill="#c8cdd4" stroke-width="0.14" />
+
+    <rect x="1.64" y="2.56" width="5.30" height="8.86" rx="0.34" fill="url(#asp2BodyFill)" stroke-width="0.20" />
+    <path d="M2.02 3.72H6.56" fill="none" stroke="#89909a" stroke-width="0.11" />
+    <path d="M2.02 4.78H6.56" fill="none" stroke="#89909a" stroke-width="0.11" />
+    <path d="M2.02 5.84H6.56" fill="none" stroke="#89909a" stroke-width="0.11" />
+
     <path
-       d="m 25.498969,7.5987073 0,6.0050027 -3.03342,-0.01431 -1.159847,2.570348 -0.04007,4.524829 h 9.910041 L 31.159343,3.991248 A 1.2074621,1.2074621 26.520612 0 0 29.226851,3.0268748 l -2.310426,1.7348891 a 3.5477045,3.5477045 116.54864 0 0 -1.417456,2.8369434 z"
-       style="display:inline;opacity:1;fill:#cccccc;stroke:#000000;stroke-width:0.2;stroke-dasharray:none"
-       id="body"
-       sodipodi:nodetypes="cccccccc"
-       transform="translate(-11.641668)" />
+      id="body"
+      d="M1.76 11.42H6.80L5.96 14.72H3.56L2.54 15.92H2.22L1.76 15.38Z"
+      fill="url(#asp2ConeFill)"
+      stroke-width="0.20"
+    />
+
+    <rect x="2.46" y="15.90" width="3.06" height="0.98" rx="0.16" fill="#c6ccd3" stroke-width="0.14" />
+    <rect x="2.84" y="16.84" width="2.30" height="0.98" rx="0.14" fill="#9ea6b0" stroke-width="0.14" />
+
+    <circle cx="4.30" cy="7.70" r="0.98" fill="#dee2e7" stroke="#8d949d" stroke-width="0.14" />
+    <path d="M4.30 7.02V8.36" fill="none" stroke="#5c636c" stroke-width="0.14" />
+    <path d="M3.62 7.70H4.98" fill="none" stroke="#5c636c" stroke-width="0.14" />
   </g>
 </svg>
-
-

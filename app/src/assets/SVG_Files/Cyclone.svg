@@ -1,87 +1,40 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
-
+<?xml version="1.0" encoding="UTF-8"?>
 <svg
-   width="5.4255261mm"
-   height="11.55mm"
-   viewBox="0 0 5.4255261 11.55"
-   version="1.1"
-   id="svg190489"
-   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
-   sodipodi:docname="Cyclone.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="46.974" keheight="100" eType="Cyclone">
-  <sodipodi:namedview
-     id="namedview190491"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     showgrid="false"
-     inkscape:zoom="12.500449"
-     inkscape:cx="10.639618"
-     inkscape:cy="16.359412"
-     inkscape:window-width="3440"
-     inkscape:window-height="1369"
-     inkscape:window-x="-8"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="layer1" />
-  <defs
-     id="defs190486">
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect27839"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect3415-7-1-05-5-5-1-8-8-4-8-7-7-4-3"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect3419-7-2-5-2-0-6-1-5-0-3-3-0-9"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect3787-1-1-1-7-8-3-1-4-1-8-1-5-1-3"
-       is_visible="true"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect3067-7-4-0-4-4-8-2-7-6-5-1-8-6-4-4"
-       is_visible="true"
-       lpeversion="0" />
-    <inkscape:path-effect
-       is_visible="true"
-       id="path-effect7822-1"
-       effect="spiro"
-       lpeversion="0" />
-    <inkscape:path-effect
-       effect="spiro"
-       id="path-effect7826-3"
-       is_visible="true"
-       lpeversion="0" />
+  width="5.4255261mm"
+  height="11.55mm"
+  viewBox="0 0 5.4255261 11.55"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="46.974"
+  keheight="100"
+  eType="Cyclone"
+>
+  <defs>
+    <linearGradient id="cycloneShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8eaed" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="cycloneConeFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d7dce2" />
+      <stop offset="100%" stop-color="#9ea6b0" />
+    </linearGradient>
   </defs>
-  <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
-     id="layer1"
-     transform="translate(-72.798866,-31.245866)">
+
+  <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="1.72" y="0.12" width="2.00" height="0.52" rx="0.08" fill="#cfd4da" stroke-width="0.12" />
+
     <path
-       id="cyclone"
-       style="fill:#cccccc;stroke:#000000;stroke-width:0.2;stroke-linecap:butt;stroke-dasharray:none"
-       d="m 74.535742,31.345866 v 0.500228 h 2.700094 v -0.500228 z m -1.636876,0.505396 v 1.137398 h 2.130812 -1.183583 l 2.015924,9.727055 2.239656,-10.864453 z"
-       sodipodi:nodetypes="cccccccccccc" />
+      id="cyclone"
+      d="M1.12 0.66H4.30V3.20L3.74 3.84V6.78L2.72 11.20H2.52L1.58 6.78V3.84L1.12 3.20Z"
+      fill="url(#cycloneShellFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M0.18 1.26H1.12V2.36H0.18Z" fill="#c6ccd3" stroke-width="0.12" />
+    <path d="M1.30 1.66H3.98" fill="none" stroke="#8a9099" stroke-width="0.08" />
+
+    <path d="M1.58 3.84H3.74L3.14 6.78H2.10Z" fill="url(#cycloneConeFill)" stroke-width="0.10" />
+    <path d="M2.12 7.46H3.06" fill="none" stroke="#666e78" stroke-width="0.09" />
+    <path d="M2.26 8.10H2.92" fill="none" stroke="#666e78" stroke-width="0.09" />
   </g>
 </svg>
-
-

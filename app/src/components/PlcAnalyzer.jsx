@@ -4071,38 +4071,6 @@ export default function PlcAnalyzer({
     if (String(selectedId) === String(id)) setSelectedId("");
   };
 
-  const copyCodeGenOutput = async () => {
-    const text = String(codeGenOutputText || "").trim();
-    if (!text) {
-      toastInfo("Nothing to copy from current output.");
-      return;
-    }
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        toastSuccess(`Copied ${text.length} characters.`);
-        return;
-      }
-    } catch {
-      // fallback below
-    }
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "true");
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(ta);
-      if (ok) toastSuccess(`Copied ${text.length} characters.`);
-      else toastError("Copy failed.");
-    } catch {
-      toastError("Copy failed.");
-    }
-  };
-
   const exportCodeGenOutput = () => {
     const text = String(codeGenOutputText || "").trim();
     if (!text) {
@@ -7427,23 +7395,6 @@ export default function PlcAnalyzer({
                     <button
                       type="button"
                       data-preserve-style="true"
-                      onClick={copyCodeGenOutput}
-                      style={{
-                        border: "1px solid #2b6cff",
-                        background: "#2b6cff",
-                        color: "#fff",
-                        borderRadius: 8,
-                        padding: "6px 10px",
-                        fontSize: 11,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Copy Output
-                    </button>
-                    <button
-                      type="button"
-                      data-preserve-style="true"
                       onClick={exportCodeGenOutput}
                       style={{
                         border: "1px solid var(--border)",
@@ -7550,7 +7501,7 @@ export default function PlcAnalyzer({
                             Add
                           </button>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
                           <label
                             style={{
                               border: "1px solid var(--border)",
@@ -7563,6 +7514,11 @@ export default function PlcAnalyzer({
                               cursor: "pointer",
                               display: "inline-flex",
                               alignItems: "center",
+                              justifyContent: "center",
+                              minHeight: 30,
+                              whiteSpace: "nowrap",
+                              flexShrink: 0,
+                              lineHeight: 1,
                             }}
                             title="Import tags from CSV"
                           >
@@ -7738,7 +7694,7 @@ export default function PlcAnalyzer({
                               cursor: "pointer",
                             }}
                           >
-                            Add Group
+                            Add
                           </button>
                         </div>
                         <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
@@ -8151,4 +8107,3 @@ export default function PlcAnalyzer({
     </div>
   );
 }
-

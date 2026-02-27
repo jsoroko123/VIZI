@@ -1,0 +1,85 @@
+export function widgetTemplate(widgetKey) {
+  const templates = {
+    lineChart: {
+      name: "Widget-LineChart.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Line Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><line x1="36" y1="42" x2="36" y2="142" stroke="#475569" stroke-width="2"/><polyline points="42,130 92,108 136,118 180,84 232,98 286,60" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    },
+    barChart: {
+      name: "Widget-BarChart.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Bar Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><rect x="58" y="96" width="30" height="46" rx="4" fill="#22c55e"/><rect x="104" y="76" width="30" height="66" rx="4" fill="#38bdf8"/><rect x="150" y="52" width="30" height="90" rx="4" fill="#f59e0b"/><rect x="196" y="88" width="30" height="54" rx="4" fill="#a78bfa"/><rect x="242" y="66" width="30" height="76" rx="4" fill="#fb7185"/></svg>`,
+    },
+    areaChart: {
+      name: "Widget-AreaChart.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Area Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><path d="M42,128 L90,102 L138,114 L186,80 L234,96 L286,70 L286,142 L42,142 Z" fill="#22c55e55" stroke="#22c55e" stroke-width="3"/></svg>`,
+    },
+    gauge: {
+      name: "Widget-Gauge.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 180"><rect x="1" y="1" width="258" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Gauge</text><path d="M46 132a84 84 0 0 1 168 0" fill="none" stroke="#334155" stroke-width="16" stroke-linecap="round"/><path d="M46 132a84 84 0 0 1 126 -72" fill="none" stroke="#22c55e" stroke-width="16" stroke-linecap="round"/><line x1="130" y1="132" x2="192" y2="88" stroke="#e2e8f0" stroke-width="4" stroke-linecap="round"/><circle cx="130" cy="132" r="6" fill="#e2e8f0"/></svg>`,
+    },
+    kpi: {
+      name: "Widget-KPI.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 140"><rect x="1" y="1" width="238" height="138" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">KPI</text><text x="20" y="84" fill="#22c55e" font-size="42" font-family="system-ui" font-weight="700">98.7%</text><text x="20" y="112" fill="#94a3b8" font-size="12" font-family="system-ui">Target: 95%</text></svg>`,
+    },
+    displayBox: {
+      name: "Widget-DisplayBox.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Display Box</text><text x="20" y="92" fill="#22c55e" font-size="40" font-family="system-ui" font-weight="700">123.4</text><text x="214" y="92" fill="#93c5fd" font-size="16" font-family="system-ui" font-weight="700">psi</text><rect x="20" y="122" width="194" height="30" rx="8" fill="#111827" stroke="#334155"/><rect x="222" y="122" width="78" height="30" rx="8" fill="#2b6cff"/><text x="242" y="141" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="700">Write</text></svg>`,
+    },
+    countdownBar: {
+      name: "Widget-CountdownBar.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72"><rect x="12" y="8" width="296" height="14" rx="7" fill="#111827" stroke="#334155"/><rect x="12" y="8" width="168" height="14" rx="7" fill="#2b6cff"/><text x="12" y="40" fill="#94a3b8" font-size="12" font-family="system-ui" font-weight="700">Countdown</text><text x="160" y="20" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">4.0s</text></svg>`,
+    },
+    pushButton: {
+      name: "Widget-PushButton.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 150"><rect x="1" y="1" width="258" height="148" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Push Button</text><rect x="34" y="52" width="192" height="70" rx="12" fill="#1e293b" stroke="#334155"/><rect x="40" y="58" width="180" height="58" rx="10" fill="#2563eb"/><text x="130" y="94" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">PRESS</text></svg>`,
+    },
+    onOffButton: {
+      name: "Widget-OnOffButton.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 160"><rect x="1" y="1" width="278" height="158" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">On/Off Button</text><rect x="34" y="52" width="212" height="74" rx="14" fill="#111827" stroke="#334155"/><rect x="40" y="58" width="98" height="62" rx="10" fill="#16a34a"/><rect x="142" y="58" width="98" height="62" rx="10" fill="#334155"/><text x="89" y="96" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">ON</text><text x="191" y="96" text-anchor="middle" fill="#cbd5e1" font-size="16" font-family="system-ui" font-weight="800">OFF</text></svg>`,
+    },
+    statusTable: {
+      name: "Widget-StatusTable.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 190"><rect x="1" y="1" width="338" height="188" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Status Table</text><rect x="16" y="40" width="308" height="28" rx="6" fill="#1e293b"/><text x="28" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Tag</text><text x="170" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">State</text><text x="252" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Quality</text><rect x="16" y="74" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="108" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="142" width="308" height="30" rx="6" fill="#111827"/></svg>`,
+    },
+  };
+  return templates[widgetKey] || templates.lineChart;
+}
+
+export function defaultWidgetSettings(widgetKey) {
+  const kind = String(widgetKey || "").trim();
+  const base = {
+    kind: kind || "lineChart",
+    title: "",
+    min: 0,
+    max: 100,
+    decimals: 0,
+    unit: "",
+    historyPoints: 40,
+    rowCount: 4,
+    rangeFrom: null,
+    rangeTo: null,
+    windowMinutes: 60,
+    durationPreset: "1h",
+    maxPoints: 500,
+    lineTension: 0.34,
+    showPoints: true,
+    seriesTags: [],
+    axisMode: "auto",
+    barSourceMode: "table",
+    barTable: "",
+    barField: "",
+    barLabelField: "",
+    barQuery: "",
+    barQueryValueField: "",
+    barQueryLabelField: "",
+  };
+  if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
+  if (kind === "kpi") return { ...base, historyPoints: 10 };
+  if (kind === "displayBox") return { ...base, historyPoints: 10 };
+  if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
+  if (kind === "pushButton") return { ...base, historyPoints: 10, decimals: 0 };
+  if (kind === "onOffButton") return { ...base, historyPoints: 10, decimals: 0 };
+  if (kind === "gauge") return { ...base, min: 0, max: 100, historyPoints: 16 };
+  if (kind === "barChart") return { ...base, historyPoints: 20 };
+  if (kind === "areaChart") return { ...base, historyPoints: 40 };
+  return base;
+}

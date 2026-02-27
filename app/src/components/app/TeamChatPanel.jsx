@@ -19,7 +19,10 @@ export default function TeamChatPanel({
   teamChatUnreadCount,
   onSend,
   currentUserId,
+  liveUsers = [],
 }) {
+  const liveCount = Array.isArray(liveUsers) ? liveUsers.length : 0;
+
   return (
     <>
       {showTeamChat ? (
@@ -46,8 +49,8 @@ export default function TeamChatPanel({
         >
           <div
             style={{
-              height: 42,
-              padding: "0 10px",
+              minHeight: 42,
+              padding: "6px 10px",
               borderBottom: "1px solid var(--border)",
               display: "flex",
               alignItems: "center",
@@ -55,7 +58,12 @@ export default function TeamChatPanel({
               background: "color-mix(in srgb, var(--bg-soft) 78%, var(--bg-elev) 22%)",
             }}
           >
-            <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>Team Chat</div>
+            <div style={{ display: "grid", gap: 2 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>Team Chat</div>
+              <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                {liveCount ? `${liveCount} live: ${liveUsers.map((u) => u.username).join(", ")}` : "No live users"}
+              </div>
+            </div>
             <button
               onClick={() => setShowTeamChat(false)}
               style={{
@@ -181,7 +189,7 @@ export default function TeamChatPanel({
           onClick={() => setShowTeamChat((v) => !v)}
           style={{
             position: "fixed",
-            right: isLiveMode ? 8 : 20,
+            right: rightOffset ?? (isLiveMode ? 8 : 20),
             bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 10 : 16,
             width: 44,
             height: 44,

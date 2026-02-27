@@ -69,6 +69,28 @@ import {
   tokenizeSvgCatalogText,
 } from "./utils/appDataTransforms";
 import {
+  MAIN_DRAWER_WIDTH_VIEW_KEYS,
+  evaluateAlarmCondition,
+  getMainDrawerWidthForView,
+  inferETypeFromFileKey,
+  isBinEType,
+  isMotorEType,
+  isOverlayETypeAutoManaged,
+  isRouteIdTagKey,
+  isStateTagKey,
+  isSvgMarkup,
+  normalizeMainDrawerWidthViewKey,
+  normalizeRouteTagKey,
+  normalizeSeriesTagsValue,
+  parseDbTagPath,
+  readFirstInnerSvgText,
+  readStoredDrawerFullscreen,
+  resolveOverlayEType,
+  toDatetimeLocalInput,
+  writeFirstInnerSvgText,
+} from "./utils/appUiHelpers";
+import { defaultWidgetSettings, widgetTemplate } from "./utils/widgetTemplates";
+import {
   fetchBatchFirstValues,
   listActiveAlarms,
   listAllEquipment,
@@ -87,6 +109,7 @@ import {
   getProjectById,
   listProjectCursors,
   listProjects,
+  pingUserPresence,
   upsertProjectWithStatus,
   upsertProjectCursor,
 } from "./api/projectApi";
@@ -103,6 +126,7 @@ const DatabaseConfigPanel = lazy(() => import("./components/DatabaseConfigPanel"
 const SqlDesigner = lazy(() => import("./components/SqlDesigner"));
 const PlcAnalyzer = lazy(() => import("./components/PlcAnalyzer"));
 const ServerDiagnosticsPanel = lazy(() => import("./components/ServerDiagnosticsPanel"));
+const LoggerPanel = lazy(() => import("./components/LoggerPanel"));
 const SecurityManager = lazy(() => import("./components/SecurityManager"));
 const THEME_KEY = "vizi_theme";
 const SHOW_GRID_KEY = "vizi_show_grid";
@@ -110,8 +134,6 @@ const SHOW_TAG_PATHS_KEY = "vizi_show_tag_paths";
 const SHOW_RULERS_KEY = "vizi_show_rulers";
 const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
 const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
-// (no eager:true)
-
 const SVG_RAW_CACHE_MAX = 96;
 const LIVE_ALARM_BAR_H = 34;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
@@ -124,278 +146,6 @@ const SCREEN_SIZE_PRESETS = [
   { value: "3440x1440", label: "UWQHD 3440x1440", w: 3440, h: 1440 },
   { value: "3840x2160", label: "4K 3840x2160", w: 3840, h: 2160 },
 ];
-
-function readStoredDrawerFullscreen(name) {
-  if (typeof window === "undefined") return false;
-  const key = String(name || "").trim().toLowerCase();
-  if (!key) return false;
-  try {
-    const raw = localStorage.getItem(DRAWER_FULLSCREEN_KEY);
-    if (!raw) return false;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed[key] === true : false;
-  } catch {
-    return false;
-  }
-}
-
-function isSvgMarkup(value) {
-  const text = String(value || "").trimStart();
-  return text.startsWith("<svg") || text.startsWith("<?xml");
-}
-
-
-function coerceAlarmComparable(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw) return { raw, lower: "", num: null, bool: null };
-  const lower = raw.toLowerCase();
-  const num = Number(raw);
-  const bool =
-    lower === "true" || lower === "1"
-      ? true
-      : lower === "false" || lower === "0"
-      ? false
-      : null;
-  return { raw, lower, num: Number.isFinite(num) ? num : null, bool };
-}
-
-function evaluateAlarmCondition(liveValue, operator, threshold) {
-  const left = coerceAlarmComparable(liveValue);
-  const right = coerceAlarmComparable(threshold);
-  const op = normalizeAlarmOperatorValue(operator);
-  if (left.raw === "" || right.raw === "") return false;
-  if (op === ">" || op === ">=" || op === "<" || op === "<=") {
-    if (left.num == null || right.num == null) return false;
-    if (op === ">") return left.num > right.num;
-    if (op === ">=") return left.num >= right.num;
-    if (op === "<") return left.num < right.num;
-    return left.num <= right.num;
-  }
-  if (left.num != null && right.num != null) {
-    return op === "==" ? left.num === right.num : left.num !== right.num;
-  }
-  if (left.bool != null && right.bool != null) {
-    return op === "==" ? left.bool === right.bool : left.bool !== right.bool;
-  }
-  return op === "==" ? left.lower === right.lower : left.lower !== right.lower;
-}
-
-
-function normalizeRouteTagKey(value) {
-  return normalizeTagValue(value).replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-}
-
-function inferETypeFromFileKey(fileKey) {
-  const raw = String(fileKey || "").trim();
-  if (!raw) return "";
-  const leaf = raw.split("/").pop() || raw;
-  return leaf.replace(/\.svg$/i, "").trim();
-}
-
-function resolveOverlayEType(overlay) {
-  const explicit = String(overlay?.eType || "").trim();
-  if (explicit) return explicit;
-  return inferETypeFromFileKey(overlay?.sourceKey || overlay?.name || "");
-}
-
-function isMotorEType(value) {
-  const key = normalizeRouteTagKey(value);
-  return key === "motor" || key.startsWith("motor");
-}
-
-function isBinEType(value) {
-  const key = normalizeRouteTagKey(value);
-  return key === "bin" || key.startsWith("bin");
-}
-
-function isOverlayETypeAutoManaged(overlay) {
-  if (!overlay || typeof overlay !== "object") return false;
-  if (overlay.eTypeAuto === false) return false;
-  const sourceKey = String(overlay.sourceKey || "").trim();
-  if (!sourceKey || sourceKey.startsWith("__generated__/")) return false;
-  return true;
-}
-
-function isRouteIdTagKey(value) {
-  const key = normalizeRouteTagKey(value);
-  return (
-    key === "routeid" ||
-    key === "routenumber" ||
-    key === "routeno" ||
-    key === "route"
-  );
-}
-
-function isStateTagKey(value) {
-  const key = normalizeRouteTagKey(value);
-  return (
-    key === "state" ||
-    key === "stcode" ||
-    key === "status" ||
-    key === "stat" ||
-    key === "hmistate"
-  );
-}
-
-function parseDbTagPath(value) {
-  const raw = String(value || "").trim();
-  if (!raw.toLowerCase().startsWith("db:")) return null;
-  const expr = raw.slice(3).trim();
-  const dot = expr.indexOf(".");
-  if (dot <= 0 || dot >= expr.length - 1) return null;
-  const table = expr.slice(0, dot).trim();
-  const field = expr.slice(dot + 1).trim();
-  if (!table || !field) return null;
-  return { table, field };
-}
-
-function readFirstInnerSvgText(inner) {
-  const source = String(inner || "");
-  if (!source.trim()) return null;
-  try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(
-      `<svg xmlns="http://www.w3.org/2000/svg">${source}</svg>`,
-      "image/svg+xml"
-    );
-    if (doc.querySelector("parsererror")) return null;
-    const firstText = doc.querySelector("text");
-    if (!firstText) return null;
-    return String(firstText.textContent ?? "");
-  } catch {
-    return null;
-  }
-}
-
-function writeFirstInnerSvgText(inner, nextText) {
-  const source = String(inner || "");
-  if (!source.trim()) return source;
-  try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(
-      `<svg xmlns="http://www.w3.org/2000/svg">${source}</svg>`,
-      "image/svg+xml"
-    );
-    if (doc.querySelector("parsererror")) return source;
-    const firstText = doc.querySelector("text");
-    if (!firstText) return source;
-    firstText.textContent = String(nextText ?? "");
-    const serializer = new XMLSerializer();
-    const root = doc.documentElement;
-    return Array.from(root.childNodes)
-      .map((node) => serializer.serializeToString(node))
-      .join("");
-  } catch {
-    return source;
-  }
-}
-
-function widgetTemplate(widgetKey) {
-  const templates = {
-    lineChart: {
-      name: "Widget-LineChart.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Line Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><line x1="36" y1="42" x2="36" y2="142" stroke="#475569" stroke-width="2"/><polyline points="42,130 92,108 136,118 180,84 232,98 286,60" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-    },
-    barChart: {
-      name: "Widget-BarChart.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Bar Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><rect x="58" y="96" width="30" height="46" rx="4" fill="#22c55e"/><rect x="104" y="76" width="30" height="66" rx="4" fill="#38bdf8"/><rect x="150" y="52" width="30" height="90" rx="4" fill="#f59e0b"/><rect x="196" y="88" width="30" height="54" rx="4" fill="#a78bfa"/><rect x="242" y="66" width="30" height="76" rx="4" fill="#fb7185"/></svg>`,
-    },
-    areaChart: {
-      name: "Widget-AreaChart.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Area Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><path d="M42,128 L90,102 L138,114 L186,80 L234,96 L286,70 L286,142 L42,142 Z" fill="#22c55e55" stroke="#22c55e" stroke-width="3"/></svg>`,
-    },
-    gauge: {
-      name: "Widget-Gauge.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 180"><rect x="1" y="1" width="258" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Gauge</text><path d="M46 132a84 84 0 0 1 168 0" fill="none" stroke="#334155" stroke-width="16" stroke-linecap="round"/><path d="M46 132a84 84 0 0 1 126 -72" fill="none" stroke="#22c55e" stroke-width="16" stroke-linecap="round"/><line x1="130" y1="132" x2="192" y2="88" stroke="#e2e8f0" stroke-width="4" stroke-linecap="round"/><circle cx="130" cy="132" r="6" fill="#e2e8f0"/></svg>`,
-    },
-    kpi: {
-      name: "Widget-KPI.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 140"><rect x="1" y="1" width="238" height="138" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">KPI</text><text x="20" y="84" fill="#22c55e" font-size="42" font-family="system-ui" font-weight="700">98.7%</text><text x="20" y="112" fill="#94a3b8" font-size="12" font-family="system-ui">Target: 95%</text></svg>`,
-    },
-    displayBox: {
-      name: "Widget-DisplayBox.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Display Box</text><text x="20" y="92" fill="#22c55e" font-size="40" font-family="system-ui" font-weight="700">123.4</text><text x="214" y="92" fill="#93c5fd" font-size="16" font-family="system-ui" font-weight="700">psi</text><rect x="20" y="122" width="194" height="30" rx="8" fill="#111827" stroke="#334155"/><rect x="222" y="122" width="78" height="30" rx="8" fill="#2b6cff"/><text x="242" y="141" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="700">Write</text></svg>`,
-    },
-    countdownBar: {
-      name: "Widget-CountdownBar.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72"><rect x="12" y="8" width="296" height="14" rx="7" fill="#111827" stroke="#334155"/><rect x="12" y="8" width="168" height="14" rx="7" fill="#2b6cff"/><text x="12" y="40" fill="#94a3b8" font-size="12" font-family="system-ui" font-weight="700">Countdown</text><text x="160" y="20" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">4.0s</text></svg>`,
-    },
-    pushButton: {
-      name: "Widget-PushButton.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 150"><rect x="1" y="1" width="258" height="148" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Push Button</text><rect x="34" y="52" width="192" height="70" rx="12" fill="#1e293b" stroke="#334155"/><rect x="40" y="58" width="180" height="58" rx="10" fill="#2563eb"/><text x="130" y="94" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">PRESS</text></svg>`,
-    },
-    onOffButton: {
-      name: "Widget-OnOffButton.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 160"><rect x="1" y="1" width="278" height="158" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">On/Off Button</text><rect x="34" y="52" width="212" height="74" rx="14" fill="#111827" stroke="#334155"/><rect x="40" y="58" width="98" height="62" rx="10" fill="#16a34a"/><rect x="142" y="58" width="98" height="62" rx="10" fill="#334155"/><text x="89" y="96" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">ON</text><text x="191" y="96" text-anchor="middle" fill="#cbd5e1" font-size="16" font-family="system-ui" font-weight="800">OFF</text></svg>`,
-    },
-    statusTable: {
-      name: "Widget-StatusTable.svg",
-      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 190"><rect x="1" y="1" width="338" height="188" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Status Table</text><rect x="16" y="40" width="308" height="28" rx="6" fill="#1e293b"/><text x="28" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Tag</text><text x="170" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">State</text><text x="252" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Quality</text><rect x="16" y="74" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="108" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="142" width="308" height="30" rx="6" fill="#111827"/></svg>`,
-    },
-  };
-  return templates[widgetKey] || templates.lineChart;
-}
-
-function defaultWidgetSettings(widgetKey) {
-  const kind = String(widgetKey || "").trim();
-  const base = {
-    kind: kind || "lineChart",
-    title: "",
-    min: 0,
-    max: 100,
-    decimals: 0,
-    unit: "",
-    historyPoints: 40,
-    rowCount: 4,
-    rangeFrom: null,
-    rangeTo: null,
-    windowMinutes: 60,
-    durationPreset: "1h",
-    maxPoints: 500,
-    lineTension: 0.34,
-    showPoints: true,
-    seriesTags: [],
-    axisMode: "auto",
-    barSourceMode: "table",
-    barTable: "",
-    barField: "",
-    barLabelField: "",
-    barQuery: "",
-    barQueryValueField: "",
-    barQueryLabelField: "",
-  };
-  if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
-  if (kind === "kpi") return { ...base, historyPoints: 10 };
-  if (kind === "displayBox") return { ...base, historyPoints: 10 };
-  if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
-  if (kind === "pushButton") return { ...base, historyPoints: 10, decimals: 0 };
-  if (kind === "onOffButton") return { ...base, historyPoints: 10, decimals: 0 };
-  if (kind === "gauge") return { ...base, min: 0, max: 100, historyPoints: 16 };
-  if (kind === "barChart") return { ...base, historyPoints: 20 };
-  if (kind === "areaChart") return { ...base, historyPoints: 40 };
-  return base;
-}
-
-function normalizeSeriesTagsValue(rawSeries, fallbackTagPath = "") {
-  const tags = (Array.isArray(rawSeries) ? rawSeries : String(rawSeries || "").split(/\r?\n|,/))
-    .map((x) => String(x || "").trim())
-    .filter(Boolean)
-    .filter((v, i, arr) => arr.findIndex((x) => x.toLowerCase() === v.toLowerCase()) === i);
-  if (tags.length) return tags;
-  const primary = String(fallbackTagPath || "").trim();
-  return primary ? [primary] : [];
-}
-
-function toDatetimeLocalInput(value) {
-  const ms = Number(value);
-  if (!Number.isFinite(ms) || ms <= 0) return "";
-  const d = new Date(ms);
-  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 16);
-}
-
-
-
 
 export default function App() {
   const { user, logout, updateProfile, changePassword, refresh } = useAuth();
@@ -583,6 +333,7 @@ export default function App() {
   const [activeProjectUpdatedAt, setActiveProjectUpdatedAt] = useState("");
   const [activeProjectUpdatedBy, setActiveProjectUpdatedBy] = useState("");
   const [projectCursors, setProjectCursors] = useState([]);
+  const [livePresenceUsers, setLivePresenceUsers] = useState([]);
   const [showProjectNameInput, setShowProjectNameInput] = useState(false);
   const [showProjectDrawer, setShowProjectDrawer] = useState(false);
   const [projectMode, setProjectMode] = useState(() => readStoredProjectMode(initialStoredProjectId));
@@ -652,15 +403,21 @@ export default function App() {
   const autoSaveTimerRef = useRef(null);
   const pendingSilentSaveRef = useRef(false);
   const queuedSaveAfterFlightRef = useRef(null); // null | save options
+  const liveDragSyncRef = useRef({ at: 0 });
+  const liveDragSyncTimerRef = useRef(null);
+  const liveDragSyncQueuedRef = useRef(false);
   const uiPreferenceAutosaveReadyRef = useRef(false);
   const projectHydrationReadyRef = useRef(false);
   const opcStatusFailureCountRef = useRef(0);
   const opcStatusNextAttemptAtRef = useRef(0);
+  const lastOpcToastErrorRef = useRef("");
   const autoFitInitRef = useRef(false);
   const zoomHoldTimeoutRef = useRef(null);
   const zoomHoldIntervalRef = useRef(null);
   const isInteractingRef = useRef(false);
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
+  const cursorPublishInFlightRef = useRef(false);
+  const queuedCursorPointRef = useRef(null);
   const projectNameRef = useRef(projectName);
   const showGridRef = useRef(showGrid);
   const showTagPathsRef = useRef(showTagPaths);
@@ -1132,7 +889,16 @@ export default function App() {
         setOpcLiveUpdatedAt(atMs);
         opcStatusFailureCountRef.current = 0;
         opcStatusNextAttemptAtRef.current = 0;
-        setOpcLiveLastError("");
+        const connectedFlag =
+          typeof data?.connected === "boolean" ? data.connected : null;
+        const staleFlag = data?.stale === true;
+        if (connectedFlag === false) {
+          setOpcLiveLastError(
+            staleFlag ? "OPC disconnected (status stale)." : "OPC disconnected."
+          );
+        } else {
+          setOpcLiveLastError("");
+        }
       } catch {
         if (!alive) return;
         const fails = Number(opcStatusFailureCountRef.current || 0) + 1;
@@ -1153,6 +919,17 @@ export default function App() {
       clearInterval(id);
     };
   }, [isPageVisible, isLiveMode]);
+
+  useEffect(() => {
+    const msg = String(opcLiveLastError || "").trim();
+    if (!msg) {
+      lastOpcToastErrorRef.current = "";
+      return;
+    }
+    if (lastOpcToastErrorRef.current === msg) return;
+    lastOpcToastErrorRef.current = msg;
+    toastError(msg);
+  }, [opcLiveLastError]);
 
   useEffect(() => {
     let alive = true;
@@ -4344,9 +4121,36 @@ function flushScheduledProjectSave() {
     autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, delayMs);
   }
 
+  function syncProjectDuringDrag() {
+    if (!activeProjectIdRef.current) return;
+    if (!projectHydrationReadyRef.current) return;
+    liveDragSyncQueuedRef.current = true;
+    if (liveDragSyncTimerRef.current) return;
+    liveDragSyncTimerRef.current = setTimeout(() => {
+      liveDragSyncTimerRef.current = null;
+      if (!liveDragSyncQueuedRef.current) return;
+      liveDragSyncQueuedRef.current = false;
+      if (!activeProjectIdRef.current) return;
+      if (!projectHydrationReadyRef.current) return;
+      if (projectSaveInFlightRef.current) {
+        syncProjectDuringDrag();
+        return;
+      }
+      const now = Date.now();
+      const lastAt = Number(liveDragSyncRef.current?.at || 0);
+      if (now - lastAt < 260) {
+        syncProjectDuringDrag();
+        return;
+      }
+      liveDragSyncRef.current = { at: now };
+      saveProjectToDb({ silent: true, keepalive: true, skipListReload: true, teamMerge: true });
+    }, 40);
+  }
+
   useEffect(
     () => () => {
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      if (liveDragSyncTimerRef.current) clearTimeout(liveDragSyncTimerRef.current);
     },
     []
   );
@@ -4532,6 +4336,7 @@ function flushScheduledProjectSave() {
 
   useEffect(() => {
     if (!activeProjectId) return;
+    if (!projectCursors.length) return;
     let alive = true;
     async function pollProject() {
       if (!isPageVisible) return;
@@ -4540,43 +4345,25 @@ function flushScheduledProjectSave() {
         const data = await getProjectById(activeProjectId);
         if (!alive) return;
         const remoteUpdatedAt = String(data?.updated_at || "");
-        if (!remoteUpdatedAt || remoteUpdatedAt === activeProjectUpdatedAt) return;
+        if (!remoteUpdatedAt || remoteUpdatedAt === activeProjectUpdatedAtRef.current) return;
         const remoteSig = projectPayloadSignature(data?.data || {});
-        const localSig = projectPayloadSignature(getProjectPayload());
-        const localDirty = localSig !== lastProjectSignatureRef.current;
-        if (localDirty) {
-          const by = String(data?.updated_by_username || "").trim();
-          setProjectStatus(
-            by
-              ? `Remote update by ${by} detected; local unsaved edits preserved. Reload to sync.`
-              : "Remote update detected; local unsaved edits preserved. Reload to sync."
-          );
-          activeProjectUpdatedAtRef.current = remoteUpdatedAt;
-          setActiveProjectUpdatedAt(remoteUpdatedAt);
-          setActiveProjectUpdatedBy(by);
-          return;
-        }
-        if (remoteSig && remoteSig !== localSig) {
-          setProjectStatus("Remote differs from local snapshot; reload to sync.");
-          return;
-        }
         applyRemoteProjectPayload(data?.data || {}, { projectId: activeProjectId });
         lastProjectSignatureRef.current = remoteSig;
         activeProjectUpdatedAtRef.current = remoteUpdatedAt;
         setActiveProjectUpdatedAt(remoteUpdatedAt);
         const by = String(data?.updated_by_username || "");
         setActiveProjectUpdatedBy(by);
-        setProjectStatus(by ? `Synced (updated by ${by})` : "Synced");
       } catch {
         // ignore sync failures
       }
     }
-    const id = setInterval(pollProject, isPageVisible ? 8000 : 20000);
+    pollProject();
+    const id = setInterval(pollProject, isPageVisible ? 240 : 1200);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [activeProjectId, activeProjectUpdatedAt, isPageVisible]);
+  }, [activeProjectId, isPageVisible, projectCursors.length]);
 
   useEffect(() => {
     if (!activeProjectId || !isPageVisible) return;
@@ -4627,6 +4414,8 @@ function flushScheduledProjectSave() {
     if (!activeProjectId) {
       setProjectCursors([]);
       lastCursorSentRef.current = { at: 0, x: NaN, y: NaN };
+      cursorPublishInFlightRef.current = false;
+      queuedCursorPointRef.current = null;
       return;
     }
     let alive = true;
@@ -4641,12 +4430,37 @@ function flushScheduledProjectSave() {
       }
     }
     pollCursors();
-    const id = setInterval(pollCursors, isPageVisible ? 5000 : 12000);
+    const hasCollaborators = Array.isArray(projectCursors) && projectCursors.length > 0;
+    const id = setInterval(pollCursors, isPageVisible ? (hasCollaborators ? 120 : 1500) : 5000);
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [activeProjectId, isPageVisible]);
+  }, [activeProjectId, isPageVisible, projectCursors.length]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      setLivePresenceUsers([]);
+      return;
+    }
+    let alive = true;
+    const pollPresence = async () => {
+      if (!isPageVisible) return;
+      try {
+        const data = await pingUserPresence();
+        if (!alive) return;
+        setLivePresenceUsers(Array.isArray(data?.users) ? data.users : []);
+      } catch {
+        // ignore presence polling failures
+      }
+    };
+    pollPresence();
+    const id = setInterval(pollPresence, isPageVisible ? 5000 : 15000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [user?.id, isPageVisible]);
 
   useEffect(() => {
     function isTypingTarget(t) {
@@ -4819,6 +4633,7 @@ function flushScheduledProjectSave() {
     const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
     const defaults = {
       main: { w: Math.min(900, Math.floor(initialVpW * 0.96)) },
+      mainByView: {},
       user: { w: Math.min(620, Math.floor(initialVpW * 0.96)) },
       project: { w: Math.min(360, Math.floor(initialVpW * 0.92)) },
     };
@@ -4828,10 +4643,18 @@ function flushScheduledProjectSave() {
       if (!raw) return defaults;
       const parsed = JSON.parse(raw);
       const mainW = clamp(Number(parsed?.main?.w) || defaults.main.w, 420, Math.max(420, Math.floor(initialVpW * 0.96)));
+      const rawMainByView = parsed?.mainByView && typeof parsed.mainByView === "object" ? parsed.mainByView : {};
+      const mainByView = {};
+      for (const key of MAIN_DRAWER_WIDTH_VIEW_KEYS) {
+        const parsedWidth = Number(rawMainByView?.[key]);
+        if (!Number.isFinite(parsedWidth)) continue;
+        mainByView[key] = clamp(parsedWidth, 420, Math.max(420, Math.floor(initialVpW * 0.96)));
+      }
       const userW = clamp(Number(parsed?.user?.w) || defaults.user.w, 420, Math.max(420, Math.floor(initialVpW * 0.96)));
       const projectW = clamp(Number(parsed?.project?.w) || defaults.project.w, 280, Math.max(280, Math.floor(initialVpW * 0.92)));
       return {
         main: { w: mainW },
+        mainByView,
         user: { w: userW },
         project: { w: projectW },
       };
@@ -4864,6 +4687,31 @@ function flushScheduledProjectSave() {
   const [profileStatus, setProfileStatus] = useState("");
   const [profileError, setProfileError] = useState("");
 
+  function resetAllDrawerSizes() {
+    const vpW = typeof window !== "undefined" ? window.innerWidth : initialVpW;
+    const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+    const maxMain = Math.max(420, Math.floor(vpW * 0.96));
+    const maxProject = Math.max(280, Math.floor(vpW * 0.92));
+    const shared = clamp(Math.floor(vpW * 0.5), 420, Math.min(maxMain, maxProject));
+    setDrawerSizes((prev) => {
+      const previousByView =
+        prev?.mainByView && typeof prev.mainByView === "object" ? prev.mainByView : {};
+      const nextByView = {};
+      for (const key of Object.keys(previousByView)) {
+        nextByView[normalizeMainDrawerWidthViewKey(key)] = shared;
+      }
+      for (const key of MAIN_DRAWER_WIDTH_VIEW_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(nextByView, key)) nextByView[key] = shared;
+      }
+      return {
+        main: { w: shared },
+        mainByView: nextByView,
+        user: { w: shared },
+        project: { w: shared },
+      };
+    });
+  }
+
   useEffect(() => {
     if (!showMainDrawer) return;
     setContextMenu(null);
@@ -4892,6 +4740,8 @@ function flushScheduledProjectSave() {
     const current =
       which === "liveMenu"
         ? { w: liveMenuExpandedWidth }
+        : which === "main"
+        ? { w: getMainDrawerWidthForView(drawerSizes, drawerView) }
         : drawerSizes?.[which] || { w: 0 };
     drawerResizeRef.current = {
       active: which,
@@ -4924,6 +4774,14 @@ function flushScheduledProjectSave() {
         const nextW = clamp(resize.originW + widthDelta, minW, maxW);
         setDrawerSizes((prev) => ({
           ...prev,
+          ...(key === "main"
+            ? {
+                mainByView: {
+                  ...(prev?.mainByView && typeof prev.mainByView === "object" ? prev.mainByView : {}),
+                  [normalizeMainDrawerWidthViewKey(drawerView)]: nextW,
+                },
+              }
+            : {}),
           [key]: { w: nextW },
         }));
       }
@@ -4938,7 +4796,7 @@ function flushScheduledProjectSave() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [TOP_BAR_H]);
+  }, [TOP_BAR_H, drawerView]);
 
   useEffect(() => {
     const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
@@ -4948,6 +4806,14 @@ function flushScheduledProjectSave() {
         main: {
           w: clamp(prev.main.w, 420, Math.max(420, Math.floor(vpW * 0.96))),
         },
+        mainByView: Object.fromEntries(
+          Object.entries(prev?.mainByView && typeof prev.mainByView === "object" ? prev.mainByView : {}).map(
+            ([key, value]) => [
+              normalizeMainDrawerWidthViewKey(key),
+              clamp(Number(value) || prev.main.w, 420, Math.max(420, Math.floor(vpW * 0.96))),
+            ]
+          )
+        ),
         user: {
           w: clamp(prev.user.w, 420, Math.max(420, Math.floor(vpW * 0.96))),
         },
@@ -5132,16 +4998,23 @@ function flushScheduledProjectSave() {
       setHiddenTagBubbleIds([]);
     }
   }, [showTagPaths, hiddenTagBubbleIds.length]);
+  const svgPropertiesStickyOpen =
+    showHUD &&
+    selectedIds.length === 0 &&
+    selectedOverlayIds.length === 1 &&
+    !!svgOverlays.find(
+      (o) => String(o?.id || "") === String(selectedOverlayIds[0] || "") && !o?.widget
+    );
   useEffect(() => {
-    if (importOpen) setShowHUD(false);
-  }, [importOpen]);
+    if (importOpen && !svgPropertiesStickyOpen) setShowHUD(false);
+  }, [importOpen, svgPropertiesStickyOpen]);
   useEffect(() => {
-    if (widgetOpen) setShowHUD(false);
-  }, [widgetOpen]);
+    if (widgetOpen && !svgPropertiesStickyOpen) setShowHUD(false);
+  }, [widgetOpen, svgPropertiesStickyOpen]);
 
   useEffect(() => {
-    if (tool === "polyline") setShowHUD(false);
-  }, [tool]);
+    if (tool === "polyline" && !svgPropertiesStickyOpen) setShowHUD(false);
+  }, [tool, svgPropertiesStickyOpen]);
 
   useEffect(() => {
     function onKeyDown(e) {
@@ -5174,6 +5047,8 @@ function flushScheduledProjectSave() {
         : next === "tags"
         ? "tags"
         : next === "server"
+        ? "server"
+        : next === "logger"
         ? "server"
         : next === "database"
         ? "database"
@@ -6837,7 +6712,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (best && bestDist <= snapRadius) {
         x = best.x;
         y = best.y;
-        return { x, y };
       }
     }
 
@@ -6858,6 +6732,20 @@ const CONTENT_FIT_HEADROOM = 0.94;
       x: Math.max(0, Math.min(maxX, x)),
       y: Math.max(0, Math.min(maxY, y)),
     };
+  }
+
+  function getViewportCenterWorldPoint() {
+    const svg = svgRef.current;
+    if (!svg || typeof svg.getBoundingClientRect !== "function") {
+      return { x: vbW / 2, y: vbH / 2 };
+    }
+    const rect = svg.getBoundingClientRect();
+    const cx = Number(rect?.left) + Number(rect?.width) / 2;
+    const cy = Number(rect?.top) + Number(rect?.height) / 2;
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+      return { x: vbW / 2, y: vbH / 2 };
+    }
+    return svgPoint({ clientX: cx, clientY: cy, altKey: true });
   }
 
   function startTextAt(p) {
@@ -8343,7 +8231,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const srcCx = localVb.x + localVb.w / 2;
     const srcCy = localVb.y + localVb.h / 2;
 
-    const anchor = anchorOverride ?? importAnchor ?? { x: vbW / 2, y: vbH / 2 };
+    const anchor = anchorOverride ?? importAnchor ?? getViewportCenterWorldPoint();
 
     const tx = anchor.x - scale * srcCx;
     const ty = anchor.y - scale * srcCy;
@@ -8400,7 +8288,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return { ok: false, error: `SVG not found: ${selected}` };
     }
     try {
-      await onPickSvg(target.key, lastContextPoint ?? undefined);
+      await onPickSvg(target.key);
       return { ok: true, key: target.key, name: target.name || target.key };
     } catch (err) {
       return { ok: false, error: String(err?.message || "Failed to add SVG.") };
@@ -8569,7 +8457,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   async function onPickWidget(widgetKey, anchorOverride) {
     const tmpl = widgetTemplate(widgetKey);
     const key = addGeneratedSvg(tmpl.name, tmpl.raw);
-    await onPickSvg(key, anchorOverride ?? lastContextPoint ?? undefined, {
+    await onPickSvg(key, anchorOverride, {
       tagPath: "",
       widget: defaultWidgetSettings(widgetKey),
     }, tmpl.raw);
@@ -8701,6 +8589,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     tagPath: "",
     binBindingKey: "",
     eType: "",
+    diverterMode: "straight",
     fill: DEFAULT_FILL,
     stroke: DEFAULT_STROKE,
     strokeWidth: "",
@@ -8746,6 +8635,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         tagPath: "",
         binBindingKey: "",
         eType: "",
+        diverterMode: "straight",
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         strokeWidth: "",
@@ -8834,6 +8724,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           tagPath,
           binBindingKey: String(o.binBindingKey || ""),
           eType: String(o.eType || resolveOverlayEType(o) || ""),
+          diverterMode: String(o.diverterMode || "straight").trim().toLowerCase() === "divert" ? "divert" : "straight",
           fill,
           stroke,
           strokeWidth,
@@ -8892,6 +8783,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           tagPath,
           binBindingKey: "",
           eType: "",
+          diverterMode: "straight",
           fill,
           stroke,
           strokeWidth: "",
@@ -8945,6 +8837,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       tagPath,
       binBindingKey: "",
       eType: "",
+      diverterMode: "straight",
       fill,
       stroke,
       strokeWidth,
@@ -9267,19 +9160,56 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   function applySingleStroke(nextStroke) {
-    if (!isSingle || !singleId) return;
     const c = String(nextStroke || "").trim();
     if (!c) return;
 
-    if (singleKind === "Polyline") {
+    if (isSingle && singleKind === "Polyline" && singleId) {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, stroke: c } : s)));
-    } else if (singleKind === "SVG") {
+      scheduleProjectAutoSave();
+      return;
+    }
+
+    if (isSingle && singleKind === "SVG" && singleId) {
       setSvgOverlays((prev) =>
         prev.map((o) =>
-          o.id === singleId ? { ...o, stroke: c, strokeMode: "force" } : o
+          o.id === singleId
+            ? {
+                ...o,
+                stroke: c,
+                strokeMode: "force",
+                inner: o.widget ? o.inner : updateSvgInnerStroke(o.inner, c),
+              }
+            : o
+        )
+      );
+      scheduleProjectAutoSave();
+      return;
+    }
+
+    const selShape = new Set((selectedIds || []).map((id) => String(id || "")).filter(Boolean));
+    const selOverlay = new Set((selectedOverlayIds || []).map((id) => String(id || "")).filter(Boolean));
+    if (!selShape.size && !selOverlay.size) return;
+
+    if (selShape.size) {
+      setShapes((prev) =>
+        prev.map((s) => (selShape.has(String(s?.id || "")) ? { ...s, stroke: c } : s))
+      );
+    }
+    if (selOverlay.size) {
+      setSvgOverlays((prev) =>
+        prev.map((o) =>
+          selOverlay.has(String(o?.id || ""))
+            ? {
+                ...o,
+                stroke: c,
+                strokeMode: o?.widget ? o?.strokeMode : "force",
+                inner: o?.widget ? o?.inner : updateSvgInnerStroke(o?.inner, c),
+              }
+            : o
         )
       );
     }
+    scheduleProjectAutoSave();
   }
 
   function applySingleFill(nextFill) {
@@ -9321,6 +9251,54 @@ const CONTENT_FIT_HEADROOM = 0.94;
           : o
       )
     );
+    scheduleProjectAutoSave();
+  }
+
+  function bringSelectedOverlaysToFront() {
+    const selIds = (selOverRef.current || selectedOverlayIds || []).map((id) => String(id || "")).filter(Boolean);
+    const sel = new Set(selIds);
+    if (!sel.size) return;
+    const baseList = Array.isArray(overlaysRef.current) && overlaysRef.current.length ? overlaysRef.current : svgOverlays;
+    const orderedSelectedIds = (Array.isArray(baseList) ? baseList : [])
+      .filter((o) => sel.has(String(o?.id || "")))
+      .map((o) => o.id);
+    setSvgOverlays((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      const selected = list.filter((o) => sel.has(String(o?.id || "")));
+      if (!selected.length) return list;
+      const rest = list.filter((o) => !sel.has(String(o?.id || "")));
+      const next = [...rest, ...selected];
+      overlaysRef.current = next;
+      return next;
+    });
+    if (orderedSelectedIds.length) {
+      setSelectedOverlayIds(orderedSelectedIds);
+      selOverRef.current = orderedSelectedIds;
+    }
+    scheduleProjectAutoSave();
+  }
+
+  function sendSelectedOverlaysToBack() {
+    const selIds = (selOverRef.current || selectedOverlayIds || []).map((id) => String(id || "")).filter(Boolean);
+    const sel = new Set(selIds);
+    if (!sel.size) return;
+    const baseList = Array.isArray(overlaysRef.current) && overlaysRef.current.length ? overlaysRef.current : svgOverlays;
+    const orderedSelectedIds = (Array.isArray(baseList) ? baseList : [])
+      .filter((o) => sel.has(String(o?.id || "")))
+      .map((o) => o.id);
+    setSvgOverlays((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      const selected = list.filter((o) => sel.has(String(o?.id || "")));
+      if (!selected.length) return list;
+      const rest = list.filter((o) => !sel.has(String(o?.id || "")));
+      const next = [...selected, ...rest];
+      overlaysRef.current = next;
+      return next;
+    });
+    if (orderedSelectedIds.length) {
+      setSelectedOverlayIds(orderedSelectedIds);
+      selOverRef.current = orderedSelectedIds;
+    }
     scheduleProjectAutoSave();
   }
 
@@ -10048,6 +10026,41 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [tool, drawing, editingId]);
 
+  useEffect(() => {
+    const isTypingTarget = (target) => {
+      if (!target) return false;
+      const tag = String(target.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || target.isContentEditable;
+    };
+
+    const onKeyDown = (e) => {
+      if (isLiveMode) return;
+      if (isTypingTarget(e.target)) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (!Array.isArray(selectedOverlayIds) || !selectedOverlayIds.length) return;
+
+      if (e.key === "PageUp") {
+        e.preventDefault();
+        e.stopPropagation();
+        bringSelectedOverlaysToFront();
+        return;
+      }
+      if (e.key === "PageDown") {
+        e.preventDefault();
+        e.stopPropagation();
+        sendSelectedOverlaysToBack();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [
+    isLiveMode,
+    selectedOverlayIds,
+    bringSelectedOverlaysToFront,
+    sendSelectedOverlaysToBack,
+  ]);
+
 
   function onContextMenu(e) {
     e.preventDefault();
@@ -10100,7 +10113,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     let hitShapeId = null;
     let hitOverlayId = null;
 
-    for (const s of shapesRef.current || []) {
+    const shapeList = Array.isArray(shapesRef.current) ? shapesRef.current : [];
+    for (let i = shapeList.length - 1; i >= 0; i -= 1) {
+      const s = shapeList[i];
       if (s.type === "text") {
         const tb = textBoxFromShape(s);
         if (!tb) continue;
@@ -10130,7 +10145,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
 
     if (!hit) {
-      for (const o of overlaysRef.current || []) {
+      const overlayList = Array.isArray(overlaysRef.current) ? overlaysRef.current : [];
+      for (let i = overlayList.length - 1; i >= 0; i -= 1) {
+        const o = overlayList[i];
         const bb = o.bbox || overlayLocalBBox(o.id);
         if (!bb) continue;
         const wr = overlayWorldRect(o, bb);
@@ -10177,19 +10194,35 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
 
 
-  async function publishProjectCursor(point) {
+  function publishProjectCursor(point) {
     if (!activeProjectId || !point) return;
+    const payload = { x: Number(point.x), y: Number(point.y) };
+    if (!Number.isFinite(payload.x) || !Number.isFinite(payload.y)) return;
     const now = Date.now();
     const last = lastCursorSentRef.current || { at: 0, x: NaN, y: NaN };
-    const dx = Math.abs(Number(point.x) - Number(last.x));
-    const dy = Math.abs(Number(point.y) - Number(last.y));
-    if (now - Number(last.at || 0) < 120 && dx < 0.5 && dy < 0.5) return;
-    lastCursorSentRef.current = { at: now, x: Number(point.x), y: Number(point.y) };
-    try {
-      await upsertProjectCursor(activeProjectId, { x: Number(point.x), y: Number(point.y) });
-    } catch {
-      // ignore cursor publish failures
+    const dx = Math.abs(payload.x - Number(last.x));
+    const dy = Math.abs(payload.y - Number(last.y));
+    if (now - Number(last.at || 0) < 50 && dx < 0.25 && dy < 0.25) return;
+    lastCursorSentRef.current = { at: now, x: payload.x, y: payload.y };
+
+    if (cursorPublishInFlightRef.current) {
+      queuedCursorPointRef.current = payload;
+      return;
     }
+
+    cursorPublishInFlightRef.current = true;
+    (async () => {
+      try {
+        await upsertProjectCursor(activeProjectId, payload);
+      } catch {
+        // ignore cursor publish failures
+      } finally {
+        cursorPublishInFlightRef.current = false;
+        const queued = queuedCursorPointRef.current;
+        queuedCursorPointRef.current = null;
+        if (queued) publishProjectCursor(queued);
+      }
+    })();
   }
 
   function onMouseMoveImmediate(e) {
@@ -10354,6 +10387,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           overlaysRef.current = next;
           return next;
         });
+        syncProjectDuringDrag();
         return;
       }
       const { id, isWidget, anchorLocal, anchorWorld, startDist, origScaleX, origScaleY } = overlayResize;
@@ -10392,6 +10426,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           overlaysRef.current = next;
           return next;
         });
+        syncProjectDuringDrag();
         return;
       }
 
@@ -10416,6 +10451,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         overlaysRef.current = next;
         return next;
       });
+      syncProjectDuringDrag();
       return;
     }
 
@@ -10495,6 +10531,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         shapesRef.current = next;
         return next;
       });
+      syncProjectDuringDrag();
       return;
     }
 
@@ -10512,6 +10549,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         shapesRef.current = next;
         return next;
       });
+      syncProjectDuringDrag();
       return;
     }
 
@@ -10636,7 +10674,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         overlaysRef.current = next;
         return next;
       });
-    }
+      }
+      syncProjectDuringDrag();
       return;
     }
 
@@ -10924,6 +10963,76 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return null;
     }
     return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
+  }
+
+  function applyOverlaySpacing(axis = "x", gapRaw = 0) {
+    const ids = (selOverRef.current || selectedOverlayIds || [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean);
+    if (ids.length < 2) return;
+    const gap = Number(gapRaw);
+    if (!Number.isFinite(gap)) return;
+
+    const items = ids
+      .map((id) => {
+        const o = (overlaysRef.current || []).find((x) => String(x?.id || "") === id);
+        if (!o) return null;
+        const bb = o?.bbox || overlayLocalBBox(o.id);
+        if (!bb) return null;
+        const sx = overlayScaleX(o);
+        const sy = overlayScaleY(o);
+        const left = Number(o.tx || 0) + sx * Number(bb.x || 0);
+        const top = Number(o.ty || 0) + sy * Number(bb.y || 0);
+        return {
+          id: o.id,
+          tx: Number(o.tx || 0),
+          ty: Number(o.ty || 0),
+          bb,
+          sx,
+          sy,
+          left,
+          top,
+          width: Math.max(1, Math.abs(sx * Number(bb.width || 0))),
+          height: Math.max(1, Math.abs(sy * Number(bb.height || 0))),
+        };
+      })
+      .filter(Boolean);
+    if (items.length < 2) return;
+
+    const horizontal = String(axis || "x").toLowerCase() !== "y";
+    const sorted = items.sort((a, b) =>
+      horizontal ? a.left - b.left || a.top - b.top : a.top - b.top || a.left - b.left
+    );
+
+    let cursor = horizontal ? sorted[0].left : sorted[0].top;
+    const nextById = new Map();
+    sorted.forEach((item) => {
+      if (horizontal) {
+        const targetLeft = cursor;
+        nextById.set(item.id, {
+          tx: targetLeft - item.sx * Number(item.bb.x || 0),
+          ty: item.ty,
+        });
+        cursor += item.width + gap;
+      } else {
+        const targetTop = cursor;
+        nextById.set(item.id, {
+          tx: item.tx,
+          ty: targetTop - item.sy * Number(item.bb.y || 0),
+        });
+        cursor += item.height + gap;
+      }
+    });
+
+    pushHistory();
+    setSvgOverlays((prev) =>
+      prev.map((o) => {
+        const next = nextById.get(o.id);
+        if (!next) return o;
+        return { ...o, tx: next.tx, ty: next.ty };
+      })
+    );
+    scheduleProjectAutoSave();
   }
 
   function onOverlayGroupHandleDown(e, corner) {
@@ -11223,6 +11332,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
     background: active ? "var(--selected-bg)" : topMenuIconButtonStyle.background,
     boxShadow: active ? "var(--selected-shadow)" : "none",
   });
+  const contextMenuItemStyle = (color = "var(--text)") => ({
+    padding: "6px 10px",
+    cursor: "pointer",
+    fontSize: 12,
+    lineHeight: 1.2,
+    color,
+  });
   const dockToolButtonStyle = (active = false) => {
     if (!designDockExpanded) return active ? topMenuModeButtonStyle(true) : topMenuIconButtonStyle;
     return {
@@ -11456,7 +11572,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       ((drawerView === "opc" || drawerView === "logs" || drawerView === "diagnostics") &&
         !canViewArea("opc")) ||
       (drawerView === "tags" && !canViewArea("tags")) ||
-      (drawerView === "server" && !canViewArea("server")) ||
+      ((drawerView === "server" || drawerView === "logger") && !canViewArea("server")) ||
       (drawerView === "reports" && !canViewArea("reports")) ||
       (drawerView === "ai" && !canViewArea("ai")) ||
       (drawerView === "help" && !canViewArea("help"))
@@ -11464,6 +11580,87 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setShowMainDrawer(false);
     }
   }, [showMainDrawer, drawerView, canViewDataPages, hasUserPermissions, user]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    let sending = false;
+    let queue = [];
+    const flush = async () => {
+      if (sending || !queue.length) return;
+      sending = true;
+      const batch = queue.slice(0, 4);
+      queue = queue.slice(batch.length);
+      try {
+        await Promise.all(
+          batch.map((entry) =>
+            fetch("/api/logs/client", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify(entry),
+            }).catch(() => null)
+          )
+        );
+      } finally {
+        sending = false;
+        if (queue.length) window.setTimeout(flush, 30);
+      }
+    };
+    const enqueue = (entry) => {
+      queue.push(entry);
+      if (queue.length > 30) queue = queue.slice(queue.length - 30);
+      void flush();
+    };
+    const onError = (event) => {
+      const err = event?.error;
+      enqueue({
+        level: "error",
+        source: "window.error",
+        message: String(err?.message || event?.message || "Unhandled window error"),
+        route: `${window.location.pathname}${window.location.search}`,
+        meta: {
+          stack: String(err?.stack || ""),
+          file: String(event?.filename || ""),
+          line: Number(event?.lineno || 0) || null,
+          column: Number(event?.colno || 0) || null,
+        },
+      });
+    };
+    const onRejection = (event) => {
+      const reason = event?.reason;
+      enqueue({
+        level: "error",
+        source: "window.unhandledrejection",
+        message: String(reason?.message || reason || "Unhandled promise rejection"),
+        route: `${window.location.pathname}${window.location.search}`,
+        meta: {
+          stack: String(reason?.stack || ""),
+          reason: typeof reason === "string" ? reason : undefined,
+        },
+      });
+    };
+    const prevManualLog = window.viziLog;
+    window.viziLog = (level, message, meta = {}) => {
+      enqueue({
+        level: String(level || "info"),
+        source: "window.manual",
+        message: String(message || "Client log"),
+        route: `${window.location.pathname}${window.location.search}`,
+        meta,
+      });
+    };
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
+      if (prevManualLog) {
+        window.viziLog = prevManualLog;
+      } else {
+        delete window.viziLog;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!showUserDrawer) return;
@@ -11761,6 +11958,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const v = String(nextRaw ?? "").trim();
     setSvgOverlays((prev) =>
       prev.map((o) => (o.id === singleId ? { ...o, eType: v, eTypeAuto: false } : o))
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleDiverterMode(nextRaw) {
+    if (!isSingle || !singleId || singleKind !== "SVG") return;
+    const mode = String(nextRaw || "").trim().toLowerCase() === "divert" ? "divert" : "straight";
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.id === singleId ? { ...o, diverterMode: mode } : o))
     );
     scheduleProjectAutoSave();
   }
@@ -12235,12 +12441,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
     isLiveMode && isLiveEquipmentLeftDockMode ? 360 : 0;
   const mainDrawerAppendFromLeft =
     isLiveMode && showMainDrawer && drawerView === "database";
+  const activeMainDrawerWidth = getMainDrawerWidthForView(drawerSizes, drawerView);
   const mainDrawerAppendLeftPx =
     projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx;
   const mainDrawerAppendWidthPx = mainDrawerAppendFromLeft
     ? (mainDrawerFullscreen
         ? Math.max(0, (winW || 0) - mainDrawerAppendLeftPx)
-        : Math.max(0, Math.round(drawerSizes.main.w)))
+        : Math.max(0, Math.round(activeMainDrawerWidth)))
     : 0;
   const canvasLeftInsetBasePx =
     designDockWidthPx +
@@ -12289,6 +12496,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return out;
   }, [liveActiveAlarmsWithOccurred]);
   const liveAlarmMarqueeDurationSec = LIVE_ALARM_MARQUEE_DURATION_SEC;
+  const teamChatLiveUsers = useMemo(() => {
+    const rows = Array.isArray(livePresenceUsers) ? livePresenceUsers : [];
+    const byId = new Map();
+    rows.forEach((entry) => {
+      const userId = String(entry?.user_id || "").trim();
+      const username =
+        String(entry?.display_name || "").trim() ||
+        String(entry?.username || "User").trim() ||
+        "User";
+      const key = userId || username.toLowerCase();
+      if (!key || byId.has(key)) return;
+      byId.set(key, { userId, username });
+    });
+    return Array.from(byId.values()).sort((a, b) => a.username.localeCompare(b.username));
+  }, [livePresenceUsers]);
   const userSettingsDirty = hasUnsavedUserSettingsDraft();
   const projectSettingsDirty = hasUnsavedProjectSettingsDraft();
   const securitySettingsDirty = hasUnsavedSecurityDraft();
@@ -12380,6 +12602,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         isSingle={isSingle}
         singleKind={singleKind}
         selectedIds={selectedIds}
+        selectedOverlayIds={selectedOverlayIds}
         singleOverlayId={singleSelectedOverlayId}
         svgFiles={svgFiles}
         svgTemplateKey={singleSvgTemplateKey}
@@ -12398,10 +12621,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
         applySingleTagPath={applySingleTagPath}
         applySingleBinBinding={applySingleBinBinding}
         applySingleEType={applySingleEType}
+        applySingleDiverterMode={applySingleDiverterMode}
         applySingleFill={applySingleFill}
         applySingleStroke={applySingleStroke}
         applySingleSvgStrokeWidth={applySingleSvgStrokeWidth}
         applySingleFaultSim={applySingleFaultSim}
+        applyOverlaySpacing={applyOverlaySpacing}
+        bringSelectedOverlaysToFront={bringSelectedOverlaysToFront}
+        sendSelectedOverlaysToBack={sendSelectedOverlaysToBack}
         applyBBoxFromHud={applyBBoxFromHud}
         applySingleArrowStart={applySingleArrowStart}
         applySingleArrowEnd={applySingleArrowEnd}
@@ -13420,6 +13647,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 title: "Reset Zoom (100%)",
               },
               {
+                icon: (
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M3 6h18M6 12h12M4 18h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <circle cx="8" cy="6" r="1.5" fill="currentColor" />
+                    <circle cx="14" cy="12" r="1.5" fill="currentColor" />
+                    <circle cx="10" cy="18" r="1.5" fill="currentColor" />
+                  </svg>
+                ),
+                onClick: resetAllDrawerSizes,
+                title: "Reset Drawer Sizes",
+              },
+              {
                 icon: isAppFullscreen ? (
                   <svg width={14} height={14} viewBox="0 0 24 24" fill="none" aria-hidden="true">
                     <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -13556,10 +13795,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
             zIndex: 200,
             background: "var(--bg-elev)",
             border: "1px solid rgba(0,0,0,0.12)",
-            borderRadius: 10,
-            boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
-            padding: isEmptyMenu ? 0 : "6px 0",
-            minWidth: isEmptyMenu ? menuSize.w : 160,
+            borderRadius: 8,
+            boxShadow: "0 8px 18px rgba(0,0,0,0.16)",
+            padding: isEmptyMenu ? 0 : "4px 0",
+            minWidth: isEmptyMenu ? menuSize.w : 150,
             maxHeight: isEmptyMenu ? menuSize.h : undefined,
             overflow: isEmptyMenu ? "hidden" : "visible",
           }}
@@ -13582,7 +13821,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         >
           {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+              style={contextMenuItemStyle()}
               onClick={() => {
                 copySelection();
                 setContextMenu(null);
@@ -13595,7 +13834,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           {contextMenu.mode === "element" &&
             (clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+              style={contextMenuItemStyle()}
               onClick={() => {
                 pasteClipboard();
                 setContextMenu(null);
@@ -13607,7 +13846,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
           {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+              style={contextMenuItemStyle()}
               onClick={() => {
                 handleDuplicate();
                 setContextMenu(null);
@@ -13617,12 +13856,36 @@ const CONTENT_FIT_HEADROOM = 0.94;
             </div>
           )}
 
+          {contextMenu.mode === "element" && selectedOverlayIds.length > 0 && (
+            <div
+              style={contextMenuItemStyle()}
+              onClick={() => {
+                bringSelectedOverlaysToFront();
+                setContextMenu(null);
+              }}
+            >
+              Bring To Front
+            </div>
+          )}
+
+          {contextMenu.mode === "element" && selectedOverlayIds.length > 0 && (
+            <div
+              style={contextMenuItemStyle()}
+              onClick={() => {
+                sendSelectedOverlaysToBack();
+                setContextMenu(null);
+              }}
+            >
+              Send To Back
+            </div>
+          )}
+
           {contextMenu.mode === "element" && selectedIds.length === 1 && (() => {
             const s = shapes.find((x) => x.id === selectedIds[0]);
             return s && (s.type === "polyline" || Array.isArray(s.points));
           })() && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+              style={contextMenuItemStyle()}
               onClick={() => {
                 const id = selectedIds[0];
                 setEditingId(id);
@@ -13636,7 +13899,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
           {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#f04438" }}
+              style={contextMenuItemStyle("#f04438")}
               onClick={() => {
                 deleteSelected();
                 setContextMenu(null);
@@ -13650,10 +13913,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             <>
               <div
                 style={{
-                  padding: "8px 12px",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "var(--text)",
+                  ...contextMenuItemStyle(),
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
@@ -13679,7 +13939,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
               </div>
               {(clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
                 <div
-                  style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                  style={contextMenuItemStyle()}
                   onClick={() => {
                     pasteClipboard();
                     setContextMenu(null);
@@ -13689,7 +13949,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 </div>
               )}
               <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                style={contextMenuItemStyle()}
                 onClick={() => {
                   undo();
                   setContextMenu(null);
@@ -13699,7 +13959,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 Undo
               </div>
               <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                style={contextMenuItemStyle()}
                 onClick={() => {
                   redo();
                   setContextMenu(null);
@@ -13709,17 +13969,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 Redo
               </div>
               <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                style={contextMenuItemStyle()}
                 onClick={() => {
                   setTool("polyline");
                   setContextMenu(null);
                 }}
               >
-                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>ï¼</span>
+                <span style={{ display: "inline-flex", width: 16, justifyContent: "center", marginRight: 8 }}>{"\uFF0F"}</span>
                 Polyline
               </div>
               <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                style={contextMenuItemStyle()}
                 onClick={() => {
                   setTool("rect");
                   setContextMenu(null);
@@ -13729,7 +13989,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 Rectangle
               </div>
               <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                style={contextMenuItemStyle()}
                 onClick={() => {
                   setTool("circle");
                   setContextMenu(null);
@@ -13739,7 +13999,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 Circle
               </div>
               <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                style={contextMenuItemStyle()}
                 onClick={() => {
                   setTool("text");
                   setContextMenu(null);
@@ -13749,7 +14009,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 Text
               </div>
               <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                style={contextMenuItemStyle()}
                 onClick={() => {
                   setTool("select");
                   setContextMenu(null);
@@ -13760,7 +14020,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
               </div>
               
               <div
-                style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+                style={contextMenuItemStyle()}
                 onClick={() => {
                   openWidgetDock();
                   setContextMenu(null);
@@ -13773,7 +14033,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
           {contextMenu.mode === "element" && selectedBBox && !showHUD && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+              style={contextMenuItemStyle()}
               onClick={() => {
                 setPanelCursor({ x: contextMenu.x, y: contextMenu.y });
                 setShowHUD(true);
@@ -13785,7 +14045,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           )}
           {contextMenu.mode === "element" && showHUD && (
             <div
-              style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "var(--text)" }}
+              style={contextMenuItemStyle()}
               onClick={() => {
                 setShowHUD(false);
                 setContextMenu(null);
@@ -13900,8 +14160,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
             maxHeight: subMenuSize.h,
             background: "var(--bg-elev)",
             border: "1px solid rgba(0,0,0,0.12)",
-            borderRadius: 10,
-            boxShadow: "0 10px 24px rgba(0,0,0,0.18)",
+            borderRadius: 8,
+            boxShadow: "0 8px 18px rgba(0,0,0,0.16)",
             overflow: "hidden",
           }}
           onMouseEnter={() => {
@@ -13921,7 +14181,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             e.preventDefault();
           }}
         >
-          <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
+          <div style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
             <div style={{ fontWeight: 800, fontSize: 12, color: "var(--text)" }}>SVG Files</div>
                 <div
                   style={{ marginTop: 6, position: "relative" }}
@@ -14052,7 +14312,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 ? (mainDrawerAppendFromLeft
                     ? `calc(100% - ${mainDrawerAppendLeftPx}px)`
                     : "100%")
-                : `${Math.round(drawerSizes.main.w)}px`,
+                : `${Math.round(activeMainDrawerWidth)}px`,
               background: "var(--bg-soft)",
               boxShadow:
                 mainDrawerFullscreen || mainDrawerAppendFromLeft
@@ -14098,6 +14358,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     ? "PLC"
                     : drawerView === "server"
                     ? "Server Diagnostics"
+                    : drawerView === "logger"
+                    ? "Logger"
                     : drawerView === "database"
                     ? (isLiveMode && databaseDataOnlyMode
                         ? (normalizeTableDisplayName(activeDatabaseTable) || "Data")
@@ -14227,6 +14489,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
               ) : drawerView === "server" ? (
                 <div style={drawerContentShellStyle}>
                   <ServerDiagnosticsPanel embedded />
+                </div>
+              ) : drawerView === "logger" ? (
+                <div style={drawerContentShellStyle}>
+                  <LoggerPanel embedded canEdit={canEditArea("server")} />
                 </div>
               ) : drawerView === "database" ? (
                 <div
@@ -14358,12 +14624,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </div>
                 </div>
               ) : (
-                <iframe
-                  key={`drawer-ai-${theme}`}
-                  title="AI"
-                  src={`/ai?theme=${theme}`}
-                  style={{ width: "100%", height: "100%", border: "none", display: "block" }}
-                />
+                <div style={drawerContentShellStyle}>
+                  <iframe
+                    key={`drawer-ai-${theme}`}
+                    title="AI"
+                    src={`/ai?theme=${theme}`}
+                    style={{ width: "100%", height: "100%", border: "none", display: "block" }}
+                  />
+                </div>
               )}
               </Suspense>
             </div>
@@ -15963,6 +16231,19 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     ),
                   },
                   {
+                    key: "reset-drawers",
+                    title: "Reset Drawer Sizes",
+                    onClick: resetAllDrawerSizes,
+                    icon: (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M3 6h18M6 12h12M4 18h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <circle cx="8" cy="6" r="1.5" fill="currentColor" />
+                        <circle cx="14" cy="12" r="1.5" fill="currentColor" />
+                        <circle cx="10" cy="18" r="1.5" fill="currentColor" />
+                      </svg>
+                    ),
+                  },
+                  {
                     key: "zoom-fullscreen",
                     title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
                     onClick: toggleAppFullscreen,
@@ -16981,7 +17262,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               }}
                               title="Move up"
                             >
-                              ?
+                              {"\u2191"}
                             </button>
                             <button
                               onClick={() => moveLiveMenuItem(group.id, item.id, 1)}
@@ -16998,7 +17279,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               }}
                               title="Move down"
                             >
-                              ?
+                              {"\u2193"}
                             </button>
                             <button
                               onClick={() => deleteLiveMenuItem(group.id, item.id)}
@@ -17013,7 +17294,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               }}
                               title="Delete item"
                             >
-                              Ã—
+                              {"\u2715"}
                             </button>
                             {item?.restricted ? (
                               <div
@@ -17151,7 +17432,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         isLiveMobile={isLiveMobile}
         topOffset={TOP_BAR_H + liveAlarmBarOffset}
         leftOffset={projectDrawerInsetPx}
-        rightOffset={undefined}
+        rightOffset={!isLiveMode && showRulers ? 32 : undefined}
         bottomOffset={72}
         desktopTopPx={teamChatDesktopTopPx}
         desktopRightPx={teamChatDesktopRightPx}
@@ -17165,6 +17446,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         teamChatUnreadCount={teamChatUnreadCount}
         onSend={sendTeamChatMessage}
         currentUserId={user?.id}
+        liveUsers={teamChatLiveUsers}
       />
 
       {!showZoom && !isLiveMode && (

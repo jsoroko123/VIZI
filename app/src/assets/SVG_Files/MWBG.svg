@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
    width="0.13in"
@@ -7,56 +6,12 @@
    viewBox="0 0 3.3019999 6.5277998"
    version="1.1"
    id="svg1"
-   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
-   sodipodi:docname="MWBG.svg"
-   xml:space="preserve"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg" kewidth="50.584" keheight="100" eType="MWBG"><sodipodi:namedview
-     id="namedview1"
-     pagecolor="#ffffff"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0.0"
-     inkscape:pagecheckerboard="true"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     inkscape:zoom="16"
-     inkscape:cx="27.65625"
-     inkscape:cy="4.34375"
-     inkscape:window-width="3440"
-     inkscape:window-height="1369"
-     inkscape:window-x="-8"
-     inkscape:window-y="-8"
-     inkscape:window-maximized="1"
-     inkscape:current-layer="g11619-4-6"
-     inkscape:clip-to-page="false"
-     showgrid="true"><inkscape:grid
-       id="grid13"
-       units="mm"
-       originx="-5.3869777"
-       originy="-13.647026"
-       spacingx="1"
-       spacingy="1"
-       empcolor="#0099e5"
-       empopacity="0.30196078"
-       color="#0099e5"
-       opacity="0.14901961"
-       empspacing="5"
-       dotted="false"
-       gridanglex="30"
-       gridanglez="30"
-       visible="true" /></sodipodi:namedview><defs
+   xmlns="http://www.w3.org/2000/svg" kewidth="50.584" keheight="100" eType="MWBG"><defs
      id="defs1"><linearGradient
-       id="swatch1"
-       inkscape:swatch="solid"><stop
+       id="swatch1"><stop
          style="stop-color:#ffffff;stop-opacity:1;"
          offset="0"
          id="stop1" /></linearGradient></defs><g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
      id="layer1"
      transform="translate(-16.119254,-14.719355)"><g
        id="g11619-4-6"
@@ -75,8 +30,7 @@ state=$'name'.StCode;</desc><g
          transform="translate(2.2539102,3.5797396)"><path
            style="fill:#ffffff;stroke:#808080;stroke-width:0.465022;stroke-miterlimit:3.6;stroke-dasharray:none"
            d="m 1920.3433,295.65316 v 40.84173 l -2.2539,-0.003 v -2.12132 h -16.9707 v 2.12404 h -2.1213 v -40.84173 l 8.6179,-4.5059 v -1.45687 h 4.1101 v 1.45687 z"
-           id="path1"
-           sodipodi:nodetypes="ccccccccccccc" /><rect
+           id="path1" /><rect
            style="fill:#ffffff;stroke:#808080;stroke-width:0.465022;stroke-miterlimit:3.6;stroke-dasharray:none"
            id="rect1"
            width="16.70545"
@@ -155,10 +109,5 @@ state=$'name'.StCode;</desc><g
            transform="scale(-1,1)" /><path
            style="fill:#ffffff;stroke:#808080;stroke-width:0.465022;stroke-miterlimit:3.6;stroke-dasharray:none"
            d="m 1908.1457,304.53982 v 3.44703 h -4.5078 l -2.2539,-1.45841 v -1.98862 z"
-           id="path10"
-           sodipodi:nodetypes="cccccc" /></g></g><g
-       inkscape:groupmode="layer"
-       id="layer2"
-       inkscape:label="Layer 2" /></g></svg>
-
-
+           id="path10" /></g></g><g
+       id="layer2" /></g></svg>

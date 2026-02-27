@@ -99,11 +99,32 @@ export default defineConfig({
     },
   },
   server: {
+    host: true,
+    port: 5173,
+    strictPort: true,
+    hmr: {
+      clientPort: 5173,
+      protocol: "ws",
+    },
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
     proxy: {
       "/api": {
         target: "http://localhost:5055",
         changeOrigin: true,
       },
+    },
+  },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: "./src/test/setup.js",
+    css: true,
+    include: ["src/**/*.{test,spec}.{js,jsx}"],
+    coverage: {
+      reporter: ["text", "html"],
     },
   },
 });

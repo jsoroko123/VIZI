@@ -102,6 +102,10 @@ export default function CanvasSvg({
   const isDarkTheme = String(theme || "").toLowerCase() === "dark";
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
   const [viewportScroll, setViewportScroll] = useState({ x: 0, y: 0 });
+  const [smoothedCollabCursors, setSmoothedCollabCursors] = useState([]);
+  const collabCursorTargetsRef = useRef(new Map());
+  const collabCursorRafRef = useRef(0);
+  const collabCursorLastTsRef = useRef(0);
   const getTextBounds = (shape, options = {}) => {
     if (!shape) return null;
     const minW = Number.isFinite(Number(options.minW)) ? Number(options.minW) : 40;
@@ -2762,6 +2766,74 @@ export default function CanvasSvg({
       })
       .filter(Boolean);
   }, [collaboratorCursors]);
+
+  useEffect(() => {
+    const targets = new Map();
+    collabCursors.forEach((cursor) => {
+      targets.set(String(cursor.userId || ""), cursor);
+    });
+    collabCursorTargetsRef.current = targets;
+
+    setSmoothedCollabCursors((prev) => {
+      const byId = new Map((Array.isArray(prev) ? prev : []).map((c) => [String(c?.userId || ""), c]));
+      return collabCursors.map((target) => {
+        const existing = byId.get(String(target.userId || ""));
+        if (!existing) return { ...target };
+        return { ...target, x: Number(existing.x), y: Number(existing.y) };
+      });
+    });
+  }, [collabCursors]);
+
+  useEffect(() => {
+    const step = (ts) => {
+      const lastTs = Number(collabCursorLastTsRef.current || ts);
+      const dt = Math.max(1, Math.min(48, ts - lastTs));
+      collabCursorLastTsRef.current = ts;
+      const alpha = 1 - Math.pow(0.001, dt / 120);
+      let needsNext = false;
+
+      setSmoothedCollabCursors((prev) => {
+        if (!Array.isArray(prev) || !prev.length) return [];
+        const targets = collabCursorTargetsRef.current || new Map();
+        const next = [];
+
+        for (const cur of prev) {
+          const id = String(cur?.userId || "");
+          const target = targets.get(id);
+          if (!target) continue;
+          const curX = Number(cur?.x) || 0;
+          const curY = Number(cur?.y) || 0;
+          const tx = Number(target?.x) || 0;
+          const ty = Number(target?.y) || 0;
+          const nx = curX + (tx - curX) * alpha;
+          const ny = curY + (ty - curY) * alpha;
+          const snap = Math.abs(tx - nx) + Math.abs(ty - ny) < 0.08;
+          if (!snap) needsNext = true;
+          next.push({ ...target, x: snap ? tx : nx, y: snap ? ty : ny });
+        }
+
+        return next;
+      });
+
+      if (needsNext) {
+        collabCursorRafRef.current = window.requestAnimationFrame(step);
+      } else {
+        collabCursorRafRef.current = 0;
+      }
+    };
+
+    if (!collabCursorRafRef.current && collabCursors.length) {
+      collabCursorLastTsRef.current = 0;
+      collabCursorRafRef.current = window.requestAnimationFrame(step);
+    }
+
+    return () => {
+      if (collabCursorRafRef.current) {
+        window.cancelAnimationFrame(collabCursorRafRef.current);
+        collabCursorRafRef.current = 0;
+      }
+    };
+  }, [collabCursors]);
   const hiddenBubbleSet = useMemo(
     () => new Set(Array.isArray(hiddenTagBubbleIds) ? hiddenTagBubbleIds : []),
     [hiddenTagBubbleIds]
@@ -2830,6 +2902,40 @@ export default function CanvasSvg({
       );
       return `style=${quote}${next}${quote}`;
     });
+    return out;
+  };
+
+  const escapeRegExp = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const setSvgElementVisibleById = (inner, elementId, visible) => {
+    if (!inner || !elementId) return inner;
+    const re = new RegExp(`(<[^>]*\\bid\\s*=\\s*["']${escapeRegExp(elementId)}["'][^>]*>)`, "gi");
+    return String(inner).replace(re, (tag) => {
+      let next = String(tag);
+      const hasDisplayAttr = /\sdisplay\s*=\s*["'][^"']*["']/i.test(next);
+      if (visible) {
+        if (hasDisplayAttr) next = next.replace(/\sdisplay\s*=\s*["'][^"']*["']/gi, "");
+        if (/style\s*=\s*["'][^"']*["']/i.test(next)) {
+          next = next.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (m, q, body) => {
+            const cleaned = String(body || "").replace(/display\s*:\s*none\s*;?/gi, "").trim();
+            if (!cleaned) return "";
+            return `style=${q}${cleaned}${q}`;
+          });
+        }
+        return next;
+      }
+      if (hasDisplayAttr) {
+        return next.replace(/\sdisplay\s*=\s*["'][^"']*["']/gi, ` display="none"`);
+      }
+      return next.replace(/^<([a-zA-Z0-9:_-]+)/, `<$1 display="none"`);
+    });
+  };
+
+  const applyDiverterModeToSvg = (inner, modeRaw) => {
+    const mode = String(modeRaw || "").trim().toLowerCase() === "divert" ? "divert" : "straight";
+    let out = String(inner || "");
+    out = setSvgElementVisibleById(out, "straightPath", mode === "straight");
+    out = setSvgElementVisibleById(out, "divertPath", mode === "divert");
     return out;
   };
 
@@ -4149,6 +4255,9 @@ export default function CanvasSvg({
                       if (shouldReplaceBinProduct) {
                         inner = replaceSvgProductPlaceholder(inner, dynamicBinProductLabel);
                       }
+                      if (overlayEType.includes("diverter")) {
+                        inner = applyDiverterModeToSvg(inner, o?.diverterMode);
+                      }
                       if (isFaultSimulated) {
                         // Fault simulation should only affect fill, not stroke.
                         inner = inner
@@ -4241,9 +4350,9 @@ export default function CanvasSvg({
               ? shapeSelectionUI(z)
               : null}
 
-            {collabCursors.length > 0 && (
+            {smoothedCollabCursors.length > 0 && (
               <g pointerEvents="none">
-                {collabCursors.map((c) => {
+                {smoothedCollabCursors.map((c) => {
                   const label = c.username.length > 24 ? `${c.username.slice(0, 24)}...` : c.username;
                   const labelW = Math.max(44, label.length * 7 + 12);
                   return (

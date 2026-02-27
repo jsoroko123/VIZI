@@ -33,6 +33,7 @@ export default function DataBrowser({
   const [listFields, setListFields] = useState([]);
   const [tableColumnOrder, setTableColumnOrder] = useState([]);
   const [dragColumn, setDragColumn] = useState("");
+  const [dragListField, setDragListField] = useState("");
   const [detailFieldOrder, setDetailFieldOrder] = useState([]);
   const [dragDetailField, setDragDetailField] = useState("");
   const [projects, setProjects] = useState([]);
@@ -57,6 +58,8 @@ export default function DataBrowser({
   const [childRelationErrorByTable, setChildRelationErrorByTable] = useState({});
   const [childRelationActiveTab, setChildRelationActiveTab] = useState("");
   const [detailViewTab, setDetailViewTab] = useState("fields");
+  const [listFieldEditMode, setListFieldEditMode] = useState(false);
+  const [listFieldSavedSignature, setListFieldSavedSignature] = useState("");
   const TABLE_FETCH_BATCH = 200;
   const TABLE_FETCH_MAX = 10000;
 
@@ -75,13 +78,17 @@ export default function DataBrowser({
     return primaryKey ? key === primaryKey : false;
   };
   const getVisibleFields = (rowSample) => {
-    let base = tableColumnOrder.length
-      ? tableColumnOrder
-      : listFields.length
+    const selectedSet = new Set((listFields || []).map((f) => String(f || "").trim()).filter(Boolean));
+    let base = (tableColumnOrder.length ? tableColumnOrder : listFields || []).filter(
+      (f) => selectedSet.has(String(f || "").trim())
+    );
+    if (!base.length) {
+      base = listFields.length
         ? listFields
-      : primaryKey
+        : primaryKey
         ? [primaryKey]
         : Object.keys(rowSample || {}).filter((f) => !isHiddenColumn(f)).slice(0, 2);
+    }
     let visible = base.filter((f) => !isHiddenColumn(f));
     if (!visible.length) {
       const keys = Object.keys(rowSample || {}).filter((f) => !isHiddenColumn(f));
@@ -175,6 +182,35 @@ export default function DataBrowser({
     });
     return out;
   }, [columns, detailFieldOrder]);
+  const listFieldCandidates = useMemo(() => {
+    const available = (columns || [])
+      .map((c) => String(c?.column_name || "").trim())
+      .filter((name) => name && !isHiddenColumn(name));
+    const availableSet = new Set(available);
+    const seen = new Set();
+    const ordered = [];
+    const push = (name) => {
+      const key = String(name || "").trim();
+      if (!key || !availableSet.has(key) || seen.has(key)) return;
+      seen.add(key);
+      ordered.push(key);
+    };
+    (tableColumnOrder || []).forEach(push);
+    available.forEach(push);
+    return ordered;
+  }, [columns, tableColumnOrder, primaryKey]);
+  const buildVisibleListFields = () => {
+    const selectedSet = new Set((listFields || []).map((f) => String(f || "").trim()).filter(Boolean));
+    const baseOrder = (tableColumnOrder.length ? tableColumnOrder : columns.map((c) => c?.column_name))
+      .map((f) => String(f || "").trim())
+      .filter(Boolean);
+    return Array.from(new Set(baseOrder.filter((f) => selectedSet.has(f) && !isHiddenColumn(f))));
+  };
+  const listFieldCurrentSignature = useMemo(
+    () => JSON.stringify(buildVisibleListFields()),
+    [listFields, tableColumnOrder, columns, primaryKey]
+  );
+  const listFieldDirty = listFieldCurrentSignature !== listFieldSavedSignature;
 
   useEffect(() => {
     if (isAlarmTable) setAlarmViewTab("active");
@@ -469,6 +505,7 @@ export default function DataBrowser({
         if (Array.isArray(data.listFields)) {
           setListFields(data.listFields);
           setTableColumnOrder(data.listFields);
+          setListFieldSavedSignature(JSON.stringify(data.listFields));
         }
         if (Array.isArray(data.detailFields)) {
           setDetailFieldOrder(data.detailFields);
@@ -658,6 +695,7 @@ export default function DataBrowser({
       if (Array.isArray(data.listFields)) {
         setListFields(data.listFields);
         setTableColumnOrder(data.listFields);
+        setListFieldSavedSignature(JSON.stringify(data.listFields));
       }
       if (Array.isArray(data.detailFields)) {
         setDetailFieldOrder(data.detailFields);
@@ -853,6 +891,11 @@ export default function DataBrowser({
     // Default to field editing when switching records/tables so columns are never "missing" by default.
     setDetailViewTab("fields");
   }, [currentTable, selectedId, detailId]);
+
+  useEffect(() => {
+    setListFieldEditMode(false);
+    setDragListField("");
+  }, [currentTable]);
 
   async function updateChildRelationLink(relation, rowId, parentValueRaw) {
     const relationKey = getChildRelationTabKey(relation);
@@ -1333,9 +1376,7 @@ export default function DataBrowser({
     setError("");
     setStatus("");
     try {
-      const visibleListFields = (tableColumnOrder.length ? tableColumnOrder : listFields || []).filter(
-        (f) => !isHiddenColumn(f)
-      );
+      const visibleListFields = buildVisibleListFields();
       const res = await fetch(`/api/db/${currentTable}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -1343,9 +1384,31 @@ export default function DataBrowser({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to save list config.");
+      setListFields(visibleListFields);
+      setTableColumnOrder((prev) => {
+        const seen = new Set();
+        const next = [];
+        (visibleListFields || []).forEach((f) => {
+          const key = String(f || "").trim();
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          next.push(key);
+        });
+        (prev || []).forEach((f) => {
+          const key = String(f || "").trim();
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          next.push(key);
+        });
+        return next;
+      });
+      setListFieldSavedSignature(JSON.stringify(visibleListFields));
+      await reloadRows();
       setStatus("List fields saved.");
+      return true;
     } catch (err) {
       setError(err?.message || "Failed to save list config.");
+      return false;
     }
   }
 
@@ -1356,13 +1419,21 @@ export default function DataBrowser({
     try {
       const sourceOrder = Array.isArray(orderOverride) ? orderOverride : detailFieldOrder || [];
       const visibleDetailFields = sourceOrder.filter((f) => !isHiddenColumn(f));
+      const selectedSet = new Set((listFields || []).map((f) => String(f || "").trim()).filter(Boolean));
+      const baseOrder = (tableColumnOrder.length ? tableColumnOrder : columns.map((c) => c?.column_name))
+        .map((f) => String(f || "").trim())
+        .filter(Boolean);
+      const visibleListFields = Array.from(
+        new Set(baseOrder.filter((f) => selectedSet.has(f) && !isHiddenColumn(f)))
+      );
       const res = await fetch(`/api/db/${currentTable}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ list_fields: listFields || [], detail_fields: visibleDetailFields }),
+        body: JSON.stringify({ list_fields: visibleListFields, detail_fields: visibleDetailFields }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to save detail config.");
+      await reloadRows();
       setStatus("Detail fields saved.");
     } catch (err) {
       setError(err?.message || "Failed to save detail config.");
@@ -1926,14 +1997,84 @@ export default function DataBrowser({
                     <div style={{ width: "100%" }} />
                   )}
                   {currentTable && !isAlarmTable ? (
-                    <button
-                      onClick={() => {
-                        navigateData(`/data/${currentTable}/new`);
-                      }}
-                      style={primaryButton}
-                    >
-                      New
-                    </button>
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <button
+                        onClick={() => {
+                          navigateData(`/data/${currentTable}/new`);
+                        }}
+                        title="New row"
+                        aria-label="New row"
+                        style={{
+                          ...iconActionButton,
+                          border: "1px solid var(--accent)",
+                          background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
+                          color: "var(--accent-text)",
+                        }}
+                      >
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path d="M12 5v14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                          <path d="M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                        </svg>
+                      </button>
+                      {columns.length > 0 && !hideListFieldControls ? (
+                        <>
+                          <button
+                            onClick={() => {
+                              if (listFieldEditMode) {
+                                void (async () => {
+                                  if (listFieldDirty) {
+                                    const ok = await saveListFields();
+                                    if (!ok) return;
+                                  }
+                                  setListFieldEditMode(false);
+                                  setDragListField("");
+                                })();
+                              } else {
+                                setListFieldEditMode(true);
+                              }
+                            }}
+                            title={listFieldEditMode ? "Done editing list fields" : "Edit list fields"}
+                            aria-label={listFieldEditMode ? "Done editing list fields" : "Edit list fields"}
+                            style={{ ...iconActionButton }}
+                          >
+                            {listFieldEditMode ? (
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                <path d="M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                              </svg>
+                            ) : (
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <path d="M12 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const ok = await saveListFields();
+                              if (ok) setListFieldEditMode(false);
+                            }}
+                            disabled={!listFieldEditMode || !listFieldDirty}
+                            title="Save list fields and order"
+                            aria-label="Save list fields and order"
+                            style={{
+                              ...iconActionButton,
+                              border: "1px solid var(--accent)",
+                              background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
+                              color: "var(--accent-text)",
+                              opacity: listFieldEditMode && listFieldDirty ? 1 : 0.5,
+                              cursor: listFieldEditMode && listFieldDirty ? "pointer" : "not-allowed",
+                            }}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" stroke="currentColor" strokeWidth="2" />
+                              <path d="M17 21v-8H7v8" stroke="currentColor" strokeWidth="2" />
+                              <path d="M7 3v5h8" stroke="currentColor" strokeWidth="2" />
+                            </svg>
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -1962,12 +2103,36 @@ export default function DataBrowser({
                   {columns.length > 0 && !hideListFieldControls && (
                     <div style={{ marginBottom: 8, ...subtleText }}>
                       List fields:
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-                        {columns.filter((c) => !isHiddenColumn(c.column_name)).map((c) => {
-                          const checked = listFields.includes(c.column_name);
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6, alignItems: "center" }}>
+                        {listFieldCandidates.map((columnName) => {
+                          const checked = listFields.includes(columnName);
                           return (
-                            <label
-                              key={`list-field-${c.column_name}`}
+                            <div
+                              key={`list-field-${columnName}`}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                const source =
+                                  dragListField ||
+                                  String(e.dataTransfer?.getData("text/vizi-list-field") || "").trim();
+                                if (!source || source === columnName) return;
+                                e.dataTransfer.dropEffect = "move";
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                const source =
+                                  dragListField ||
+                                  String(e.dataTransfer?.getData("text/vizi-list-field") || "").trim();
+                                if (!source || source === columnName) return;
+                                const current = listFieldCandidates.slice();
+                                const from = current.indexOf(source);
+                                const to = current.indexOf(columnName);
+                                if (from < 0 || to < 0) return;
+                                const next = [...current];
+                                next.splice(from, 1);
+                                next.splice(to, 0, source);
+                                setTableColumnOrder(next);
+                                setDragListField("");
+                              }}
                               style={{
                                 display: "inline-flex",
                                 alignItems: "center",
@@ -1978,40 +2143,47 @@ export default function DataBrowser({
                                 background: checked
                                   ? "color-mix(in srgb, var(--accent) 16%, var(--bg-elev))"
                                   : "var(--bg-elev)",
-                                cursor: "pointer",
+                                cursor: "default",
                               }}
                             >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={(e) => {
-                                  const next = e.target.checked
-                                    ? [...listFields, c.column_name]
-                                    : listFields.filter((f) => f !== c.column_name);
-                                  setListFields(next);
-                                  if (e.target.checked) {
-                                    setTableColumnOrder((prev) => {
-                                      if (!prev.length) return next;
-                                      if (prev.includes(c.column_name)) return prev;
-                                      return [...prev, c.column_name];
-                                    });
-                                  } else {
-                                    setTableColumnOrder((prev) =>
-                                      prev.length ? prev.filter((f) => f !== c.column_name) : prev
-                                    );
-                                  }
+                              <span
+                                draggable={listFieldEditMode}
+                                onDragStart={(e) => {
+                                  if (!listFieldEditMode) return;
+                                  setDragListField(columnName);
+                                  e.dataTransfer.effectAllowed = "move";
+                                  e.dataTransfer.setData("text/vizi-list-field", columnName);
                                 }}
-                              />
-                              {labelize(c.column_name)}
-                            </label>
+                                onDragEnd={() => setDragListField("")}
+                                title="Drag to reorder"
+                                style={{ cursor: listFieldEditMode ? "grab" : "default", userSelect: "none", opacity: listFieldEditMode ? 0.8 : 0.4 }}
+                              >
+                                :: 
+                              </span>
+                              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={!listFieldEditMode}
+                                  onChange={(e) => {
+                                    const next = e.target.checked
+                                      ? [...listFields, columnName]
+                                      : listFields.filter((f) => f !== columnName);
+                                    setListFields(next);
+                                    if (e.target.checked) {
+                                      setTableColumnOrder((prev) => {
+                                        if (!prev.length) return next;
+                                        if (prev.includes(columnName)) return prev;
+                                        return [...prev, columnName];
+                                      });
+                                    }
+                                  }}
+                                />
+                                {labelize(columnName)}
+                              </label>
+                            </div>
                           );
                         })}
-                        <button
-                          onClick={saveListFields}
-                          style={{ ...primaryButton, padding: "2px 10px", fontSize: 11, marginLeft: 6 }}
-                        >
-                          Save
-                        </button>
                       </div>
                     </div>
                   )}
@@ -2050,18 +2222,21 @@ export default function DataBrowser({
                             {getVisibleFields(displayedRows[0] || {}).map((f) => (
                               <th
                                 key={`head-${f}`}
-                                draggable
+                                draggable={listFieldEditMode}
                                 onDragStart={(e) => {
+                                  if (!listFieldEditMode) return;
                                   setDragColumn(f);
                                   e.dataTransfer.effectAllowed = "move";
                                 }}
                                 onDragEnd={() => setDragColumn("")}
                                 onDragOver={(e) => {
+                                  if (!listFieldEditMode) return;
                                   if (!dragColumn || dragColumn === f) return;
                                   e.preventDefault();
                                   e.dataTransfer.dropEffect = "move";
                                 }}
                                 onDrop={(e) => {
+                                  if (!listFieldEditMode) return;
                                   if (!dragColumn || dragColumn === f) return;
                                   e.preventDefault();
                                   const current = getVisibleFields(displayedRows[0] || {});
@@ -2083,7 +2258,7 @@ export default function DataBrowser({
                                   top: 0,
                                   background: useWhiteBackground ? "#f3f7ff" : "var(--bg-elev)",
                                   zIndex: 1,
-                                  cursor: "grab",
+                                  cursor: listFieldEditMode ? "grab" : "default",
                                   fontWeight: 700,
                                   letterSpacing: "0.02em",
                                 }}

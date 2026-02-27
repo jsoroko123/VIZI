@@ -5,10 +5,12 @@ const closeBtnStyle = {
   border: "1px solid var(--border)",
   background: "var(--bg-elev)",
   borderRadius: 10,
-  padding: "4px 8px",
+  padding: "6px 9px",
   cursor: "pointer",
   lineHeight: 1,
   color: "var(--text)",
+  minHeight: 30,
+  whiteSpace: "nowrap",
 };
 
 // ✅ Shared compact control style (actual height shrink)
@@ -41,6 +43,8 @@ const btnStyle = {
   cursor: "pointer",
   color: "var(--text)",
   boxShadow: "0 6px 18px rgba(0,0,0,0.08)",
+  minHeight: 30,
+  whiteSpace: "nowrap",
 };
 const MIN_PANEL_HEIGHT = 280;
 const MAX_PANEL_HEIGHT = 500;
@@ -232,6 +236,7 @@ export default function PropertiesPanel({
   isSingle,
   singleKind,
   selectedIds,
+  selectedOverlayIds,
   singleOverlayId,
   svgFiles,
   svgTemplateKey,
@@ -250,10 +255,12 @@ export default function PropertiesPanel({
   applySingleTagPath,
   applySingleBinBinding,
   applySingleEType,
+  applySingleDiverterMode,
   applySingleFill,
   applySingleStroke,
   applySingleSvgStrokeWidth,
   applySingleFaultSim,
+  applyOverlaySpacing,
   applyBBoxFromHud,
 
   applySingleArrowStart,
@@ -289,10 +296,12 @@ export default function PropertiesPanel({
   const [userMoved, setUserMoved] = useState(false);
   const [btnPulse, setBtnPulse] = useState({ apply: false, convert: false });
   const [dupDraft, setDupDraft] = useState(String(duplicateOffset ?? 20));
+  const [spacingDraft, setSpacingDraft] = useState("20");
   const [templateNameDraft, setTemplateNameDraft] = useState(svgTemplateName || "");
   const dragRef = useRef({ dragging: false, ox: 0, oy: 0 });
   const panelRef = useRef(null);
   const skipAutoPosRef = useRef(false);
+  const isSvgHud = isSingle && singleKind === "SVG";
   const safeBounds = useMemo(() => {
     const left = Number.isFinite(bounds?.left) ? bounds.left : 8;
     const top = Number.isFinite(bounds?.top) ? bounds.top : 8;
@@ -350,6 +359,7 @@ export default function PropertiesPanel({
     applySingleTagPath,
     applySingleBinBinding,
     applySingleEType,
+    applySingleDiverterMode,
     applySingleFill,
     applySingleStroke,
     applySingleSvgStrokeWidth,
@@ -411,16 +421,17 @@ export default function PropertiesPanel({
   useEffect(() => {
     if (!showHUD) return;
     const onKey = (e) => {
-      if (e.key === "Escape") setShowHUD(false);
+      if (e.key === "Escape" && !isSvgHud) setShowHUD(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showHUD, setShowHUD]);
+  }, [showHUD, setShowHUD, isSvgHud]);
 
   // Click-away closes panel
   useEffect(() => {
     if (!showHUD) return;
     const onPointerDown = (e) => {
+      if (isSvgHud) return;
       const panelEl = panelRef.current;
       const target = e.target;
       if (!panelEl || !target) return;
@@ -429,7 +440,7 @@ export default function PropertiesPanel({
     };
     window.addEventListener("pointerdown", onPointerDown, true);
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
-  }, [showHUD, setShowHUD]);
+  }, [showHUD, setShowHUD, isSvgHud]);
 
   useEffect(() => {
     if (!showHUD) {
@@ -513,12 +524,15 @@ export default function PropertiesPanel({
     };
   }, [docked, safeBounds.bottom, safeBounds.left, safeBounds.right, safeBounds.top]);
 
-  const isSvg = isSingle && singleKind === "SVG";
+  const isSvg = isSvgHud;
   const isWidget = isSingle && singleKind === "Widget";
   const isPoly = isSingle && singleKind === "Polyline";
   const isText = isSingle && singleKind === "Text";
   const isBinSvg = isSvg && String(hudFields?.eType || "").trim().toLowerCase().startsWith("bin");
+  const isDiverterSvg = isSvg && String(hudFields?.eType || "").trim().toLowerCase().includes("diverter");
   const isShapeGroup = !isSingle && (Array.isArray(selectedIds) ? selectedIds.length : 0) > 0;
+  const isOverlayGroup = !isSingle && (Array.isArray(selectedOverlayIds) ? selectedOverlayIds.length : 0) > 0;
+  const isStrokeGroup = !isSingle && (isShapeGroup || isOverlayGroup);
 
   const arrowOptions = [
     { value: "none", label: "None" },
@@ -710,7 +724,11 @@ export default function PropertiesPanel({
     latest.current.setHudFields(next);
     latest.current.applyBBoxFromHud(next, { aspectLocked: bboxAspectLocked });
 
-    if (!isSingle) return;
+    if (!isSingle) {
+      latest.current.applySingleStroke?.(next.stroke);
+      latest.current.applySingleFill?.(next.fill);
+      return;
+    }
 
     // 2) apply ID first
     latest.current.applySingleId?.(next.id);
@@ -723,6 +741,7 @@ export default function PropertiesPanel({
 
       if (isSvg) {
         a.applySingleEType?.(next.eType);
+        a.applySingleDiverterMode?.(next.diverterMode);
         a.applySingleBinBinding?.(next.binBindingKey);
         a.applySingleSvgStrokeWidth?.(next.strokeWidth);
         a.applySingleFaultSim?.(Boolean(next.faultSimulated));
@@ -791,8 +810,9 @@ export default function PropertiesPanel({
       <div
         style={{
           display: "flex",
-          alignItems: "center",
+          alignItems: "flex-start",
           justifyContent: "space-between",
+          gap: 10,
           cursor: docked ? "default" : "move",
         }}
         onMouseDown={(e) => {
@@ -805,11 +825,22 @@ export default function PropertiesPanel({
           setUserMoved(true);
         }}
       >
-        <div style={{ fontWeight: 800 }}>
+        <div style={{ fontWeight: 800, minWidth: 0, paddingTop: 4, flex: "1 1 auto" }}>
           Selected: {selCount === 1 ? singleKind : `Group (${selCount})`}
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div
+          style={{
+            flex: "0 1 72%",
+            display: "flex",
+            gap: 6,
+            rowGap: 6,
+            alignItems: "center",
+            justifyContent: "flex-end",
+            flexWrap: "wrap",
+            minWidth: 0,
+          }}
+        >
           <button
             title="Apply"
             onClick={() => {
@@ -834,7 +865,7 @@ export default function PropertiesPanel({
               setUserMoved(true);
               pulseButton("apply");
               applyAll();
-              setShowHUD(false);
+              if (!isSvgHud) setShowHUD(false);
             }}
             style={{
               ...btnStyle,
@@ -932,6 +963,43 @@ export default function PropertiesPanel({
                   searchable
                   searchPlaceholder="Search eType..."
                 />
+                {isDiverterSvg && (
+                  <>
+                    <div style={labelStyle}>Mode</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {[
+                        { value: "straight", label: "Straight" },
+                        { value: "divert", label: "Divert" },
+                      ].map((opt) => {
+                        const active =
+                          String(hudFields?.diverterMode || "straight").trim().toLowerCase() === opt.value;
+                        return (
+                          <button
+                            key={`diverter-mode-${opt.value}`}
+                            type="button"
+                            onClick={() => {
+                              setHudFields((p) => ({ ...p, diverterMode: opt.value }));
+                              applySingleDiverterMode?.(opt.value);
+                            }}
+                            style={{
+                              ...btnStyle,
+                              minHeight: 26,
+                              padding: "0 10px",
+                              borderRadius: 8,
+                              boxShadow: "none",
+                              background: active ? "var(--selected-bg)" : "var(--bg-elev)",
+                              border: `1px solid ${active ? "var(--selected-border)" : "var(--border)"}`,
+                              color: active ? "var(--selected-text)" : "var(--text)",
+                              fontWeight: active ? 700 : 600,
+                            }}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
                 {isBinSvg && (
                   <SelectRow
                     label="Bin Row"
@@ -1397,16 +1465,14 @@ export default function PropertiesPanel({
             )}
 
             {/* Stroke (SVG + Polyline) */}
-            {(isSvg || isPoly) && (
+            {(isSvg || isPoly || isStrokeGroup) && (
               <Row
                 label="Stroke"
                 type="color"
                 showHex
                 value={hudFields.stroke}
                 onChange={(v) => setHudFields((p) => ({ ...p, stroke: v }))}
-                onBlur={() => {
-                  if (!isSvg) applySingleStroke(hudFields.stroke);
-                }}
+                onBlur={() => applySingleStroke?.(hudFields.stroke)}
                 placeholder="#111111"
               />
             )}
@@ -1544,6 +1610,48 @@ export default function PropertiesPanel({
                 />
               </>
             )}
+            </>
+          )}
+
+          {isOverlayGroup && (
+            <>
+              <Row
+                label="Spacing"
+                type="number"
+                value={spacingDraft}
+                onChange={setSpacingDraft}
+                onBlur={() => {}}
+                placeholder="20"
+              />
+              <div style={labelStyle}>Space</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={() => applyOverlaySpacing?.("x", spacingDraft)}
+                  style={{
+                    ...btnStyle,
+                    minHeight: 26,
+                    padding: "0 10px",
+                    borderRadius: 8,
+                    boxShadow: "none",
+                  }}
+                >
+                  Space X
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyOverlaySpacing?.("y", spacingDraft)}
+                  style={{
+                    ...btnStyle,
+                    minHeight: 26,
+                    padding: "0 10px",
+                    borderRadius: 8,
+                    boxShadow: "none",
+                  }}
+                >
+                  Space Y
+                </button>
+              </div>
             </>
           )}
 
