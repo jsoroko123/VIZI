@@ -33,3 +33,20 @@ From repo root you can run:
   - deletes a saved report
 
 Only `CREATE TABLE` and `CREATE INDEX` statements are allowed to apply.
+
+## Microsoft Login (Optional)
+Microsoft OAuth is already supported by the backend and login page.
+
+1. Create an App Registration in Microsoft Entra ID.
+2. Add a Web redirect URI:
+   - `http://localhost:5055/api/auth/microsoft/callback`
+   - or `https://<your-host>/api/auth/microsoft/callback`
+3. Set these in `ai-server/.env`:
+   - `MS_OAUTH_TENANT` (e.g. `common`, tenant id, or domain)
+   - `MS_OAUTH_CLIENT_ID`
+   - `MS_OAUTH_CLIENT_SECRET`
+   - `MS_OAUTH_REDIRECT_URI` (optional; auto-derived if omitted)
+   - `MS_OAUTH_SCOPES` (default: `openid profile email User.Read`)
+4. Restart `ai-server`.
+
+The login page shows **Sign in with Microsoft** automatically when OAuth is configured.

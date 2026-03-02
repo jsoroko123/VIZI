@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toastError, toastInfo, toastSuccess } from "../utils/toast";
 
 const CODE_GEN_GROUP_TYPES = ["Route", "SubRoute", "Sender", "Receiver", "Bin", "Group", "Equipment"];
+const CODE_GEN_GROUP_SUBTYPES = ["Feed", "Way", "Machine"];
 const CODE_GEN_FORMATS = ["l5x-template", "list", "io-map"];
 const REQUIRED_BATCHCONTROL_TYPES = [
   "BatchControl",
@@ -98,6 +99,47 @@ function collectAutoTagStubsFromRoutineXml(routineXmlBlocks = []) {
     dataType: String(dataType || "DINT"),
     block: `<Tag Name="${name}" Class="Standard" TagType="Base" DataType="${String(dataType || "DINT")}" Constant="false" ExternalAccess="Read/Write" OpcUaAccess="None"/>`,
   }));
+}
+
+function extractAllDataTypeNames(rawText = "") {
+  return Array.from(
+    new Set(
+      Array.from(String(rawText || "").matchAll(/<DataType\b([^>]*)>/gi))
+        .map((m) => String(extractAttr(String(m?.[1] || ""), "Name") || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function buildFallbackObjectTagBlocks(options = {}) {
+  const knownTypeNames = new Set(
+    (Array.isArray(options?.knownTypeNames) ? options.knownTypeNames : [])
+      .map((x) => String(x || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const pickType = (preferred) => {
+    const t = String(preferred || "").trim();
+    if (!t) return "DINT";
+    return knownTypeNames.has(t.toLowerCase()) ? t : "DINT";
+  };
+  const routeNames = Array.isArray(options?.routeNames) ? options.routeNames : [];
+  const subRouteNames = Array.isArray(options?.subRouteNames) ? options.subRouteNames : [];
+  const ioNames = Array.isArray(options?.ioNames) ? options.ioNames : [];
+  const binNames = Array.isArray(options?.binNames) ? options.binNames : [];
+  const blocks = [];
+  const pushTag = (nameRaw, preferredType) => {
+    const name = String(nameRaw || "").trim();
+    if (!name) return;
+    const dataType = pickType(preferredType);
+    blocks.push(
+      `<Tag Name="${name}" Class="Standard" TagType="Base" DataType="${dataType}" Constant="false" ExternalAccess="Read/Write" OpcUaAccess="None"/>`
+    );
+  };
+  routeNames.forEach((name) => pushTag(name, "Route"));
+  subRouteNames.forEach((name) => pushTag(name, "Route"));
+  ioNames.forEach((name) => pushTag(name, "BinControl"));
+  binNames.forEach((name) => pushTag(name, "BatchControl_Bin"));
+  return blocks;
 }
 
 function indentBlock(text, prefix = "    ") {
@@ -2198,16 +2240,33 @@ export default function PlcAnalyzer({
   const [codeGenTagsByPlc, setCodeGenTagsByPlc] = useState({});
   const [codeGenNewTagDraft, setCodeGenNewTagDraft] = useState("");
   const [codeGenNewTagEquipmentDraft, setCodeGenNewTagEquipmentDraft] = useState("");
+  const [codeGenEquipmentTypesByPlc, setCodeGenEquipmentTypesByPlc] = useState({});
   const [codeGenTagMetaByPlc, setCodeGenTagMetaByPlc] = useState({});
   const [codeGenGroupsByPlc, setCodeGenGroupsByPlc] = useState({});
   const [codeGenTemplateRouteIdDraft, setCodeGenTemplateRouteIdDraft] = useState("");
   const [codeGenRouteTemplateTextByPlc, setCodeGenRouteTemplateTextByPlc] = useState({});
   const [codeGenTemplateRouteNameByPlc, setCodeGenTemplateRouteNameByPlc] = useState({});
+  const [codeGenRoutineTemplatesByPlc, setCodeGenRoutineTemplatesByPlc] = useState({});
   const [codeGenGroupNameDraft, setCodeGenGroupNameDraft] = useState("");
   const [codeGenGroupTypeDraft, setCodeGenGroupTypeDraft] = useState("Group");
+  const [codeGenGroupSubTypeDraft, setCodeGenGroupSubTypeDraft] = useState("Feed");
   const [codeGenGroupParentDraft, setCodeGenGroupParentDraft] = useState("");
   const [codeGenSelectedGroupId, setCodeGenSelectedGroupId] = useState("");
+  const [codeGenDetailNameDraft, setCodeGenDetailNameDraft] = useState("");
+  const [codeGenDetailTypeDraft, setCodeGenDetailTypeDraft] = useState("Group");
+  const [codeGenDetailSubTypeDraft, setCodeGenDetailSubTypeDraft] = useState("Feed");
   const [codeGenExpandedGroupsByPlc, setCodeGenExpandedGroupsByPlc] = useState({});
+  const [codeGenExpandedTagsByPlc, setCodeGenExpandedTagsByPlc] = useState({});
+  const [codeGenSelectedTagByPlc, setCodeGenSelectedTagByPlc] = useState({});
+  const [codeGenTagEditByPlc, setCodeGenTagEditByPlc] = useState({});
+  const [codeGenDetailEditByPlc, setCodeGenDetailEditByPlc] = useState({});
+  const [codeGenDragGroupId, setCodeGenDragGroupId] = useState("");
+  const [codeGenGroupDropTargetId, setCodeGenGroupDropTargetId] = useState("");
+  const [codeGenGroupDropParentTargetId, setCodeGenGroupDropParentTargetId] = useState("");
+  const [codeGenTagDropTargetGroupId, setCodeGenTagDropTargetGroupId] = useState("");
+  const [codeGenIoDraftByPlc, setCodeGenIoDraftByPlc] = useState({});
+  const [codeGenIoNameDraftByPlc, setCodeGenIoNameDraftByPlc] = useState({});
+  const [codeGenIoTypeByPlc, setCodeGenIoTypeByPlc] = useState({});
   const [codeGenDragTag, setCodeGenDragTag] = useState("");
   const [codeGenPersistReadyByPlc, setCodeGenPersistReadyByPlc] = useState({});
   const [codeGenReady, setCodeGenReady] = useState(false);
@@ -2218,6 +2277,7 @@ export default function PlcAnalyzer({
   const codeGenSaveTimerRef = useRef(null);
   const codeGenLastSavedSnapshotByPlcRef = useRef({});
   const codeGenPersistErrorAtRef = useRef(0);
+  const codeGenProfileLoadedByPlcRef = useRef({});
   const lastPlcInnerTabRef = useRef("overview");
   const plcTabs = useMemo(
     () => [
@@ -2275,6 +2335,14 @@ export default function PlcAnalyzer({
     if (String(activeTab || "") !== "aoi-templates") return [];
     return scanAoiTemplates(String(selected?.rawText || ""));
   }, [activeTab, selected?.rawText]);
+  const allAoiEquipmentTypeNames = useMemo(
+    () =>
+      scanAoiTemplates(String(selected?.rawText || ""))
+        .map((t) => String(t?.name || "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b)),
+    [selected?.rawText]
+  );
   const dataTypeTemplates = useMemo(() => {
     if (String(activeTab || "") !== "datatype-templates") return [];
     return scanDataTypeTemplates(String(selected?.rawText || ""));
@@ -2324,6 +2392,13 @@ export default function PlcAnalyzer({
     () => (codeGenTagMetaByPlc?.[chatKey] && typeof codeGenTagMetaByPlc[chatKey] === "object" ? codeGenTagMetaByPlc[chatKey] : {}),
     [chatKey, codeGenTagMetaByPlc]
   );
+  const codeGenEquipmentTypeOptions = useMemo(
+    () =>
+      Array.from(
+        new Set((Array.isArray(codeGenEquipmentTypesByPlc?.[chatKey]) ? codeGenEquipmentTypesByPlc[chatKey] : []).map((v) => String(v || "").trim()).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b)),
+    [chatKey, codeGenEquipmentTypesByPlc]
+  );
   const codeGenRouteTemplateText = useMemo(
     () => String(codeGenRouteTemplateTextByPlc?.[chatKey] || ""),
     [chatKey, codeGenRouteTemplateTextByPlc]
@@ -2331,6 +2406,13 @@ export default function PlcAnalyzer({
   const codeGenTemplateRouteName = useMemo(
     () => String(codeGenTemplateRouteNameByPlc?.[chatKey] || ""),
     [chatKey, codeGenTemplateRouteNameByPlc]
+  );
+  const codeGenRoutineTemplates = useMemo(
+    () =>
+      codeGenRoutineTemplatesByPlc?.[chatKey] && typeof codeGenRoutineTemplatesByPlc[chatKey] === "object"
+        ? codeGenRoutineTemplatesByPlc[chatKey]
+        : {},
+    [chatKey, codeGenRoutineTemplatesByPlc]
   );
   const codeGenOutputText = useMemo(() => {
     if (String(activeTab || "") !== "code-gen-pro" || !codeGenReady) return "";
@@ -2544,22 +2626,43 @@ export default function PlcAnalyzer({
         const rllContent = rungBlocks.length
           ? ["            <RLLContent>", rungBlocks.join("\n"), "            </RLLContent>"].join("\n")
           : "            <RLLContent/>";
-        const sourceText = /<RSLogix5000Content\b/i.test(String(selected?.rawText || ""))
-          ? String(selected?.rawText || "")
-          : String(codeGenRouteTemplateText || "");
+        const selectedSourceText = String(selected?.rawText || "");
+        const persistedRoutineTemplates =
+          codeGenRoutineTemplates && typeof codeGenRoutineTemplates === "object"
+            ? codeGenRoutineTemplates
+            : {};
+        const allTemplateSources = (() => {
+          const seen = new Set();
+          const out = [];
+          const pushIfL5x = (raw) => {
+            const text = String(raw || "");
+            if (!/<RSLogix5000Content\b/i.test(text)) return;
+            const key = text.slice(0, 8192);
+            if (seen.has(key)) return;
+            seen.add(key);
+            out.push(text);
+          };
+          pushIfL5x(selectedSourceText);
+          (Array.isArray(plcItems) ? plcItems : []).forEach((item) => pushIfL5x(item?.rawText));
+          pushIfL5x(String(codeGenRouteTemplateText || ""));
+          return out;
+        })();
+        const sourceText = String(allTemplateSources[0] || "");
         const sourceIsMainRoutineExport =
           /TargetType\s*=\s*"Routine"/i.test(sourceText) && /TargetName\s*=\s*"Main"/i.test(sourceText);
         const preferredMainProgramNames = ["KE_MainProgram", "MainProgram"];
         const findProgramBodyByName = (programName) => {
           const wanted = String(programName || "").trim().toLowerCase();
           if (!wanted) return "";
-          const re = /<Program\b([^>]*)>([\s\S]*?)<\/Program>/gi;
-          let m = re.exec(sourceText);
-          while (m) {
-            const attrs = String(m[1] || "");
-            const name = String(extractAttr(attrs, "Name") || "").trim().toLowerCase();
-            if (name === wanted) return String(m[2] || "");
-            m = re.exec(sourceText);
+          for (const src of allTemplateSources) {
+            const re = /<Program\b([^>]*)>([\s\S]*?)<\/Program>/gi;
+            let m = re.exec(src);
+            while (m) {
+              const attrs = String(m[1] || "");
+              const name = String(extractAttr(attrs, "Name") || "").trim().toLowerCase();
+              if (name === wanted) return String(m[2] || "");
+              m = re.exec(src);
+            }
           }
           return "";
         };
@@ -2590,6 +2693,19 @@ export default function PlcAnalyzer({
           }
           return out;
         };
+        const findRoutineExportSourceByName = (routineName) => {
+          const wanted = String(routineName || "").trim().toLowerCase();
+          if (!wanted) return "";
+          for (const src of allTemplateSources) {
+            if (!/TargetType\s*=\s*"Routine"/i.test(src)) continue;
+            const targetName = String((src.match(/TargetName\s*=\s*"([^"]+)"/i) || [])[1] || "")
+              .trim()
+              .toLowerCase();
+            if (!targetName) continue;
+            if (targetName === wanted) return src;
+          }
+          return "";
+        };
         const getRoutineTemplateByName = (routineName) => {
           // For main-program routines, force source from the real main program first
           // so we don't accidentally copy same-named routines from other programs (ex: bins).
@@ -2597,6 +2713,13 @@ export default function PlcAnalyzer({
             ["main", "alarmreset", "generalalarms", "scalecoms", "io_mapping", "ios_mapping", "io_mappingho", "io_mappingww", "hoscalecoms", "wwscalecoms"]
           );
           const wanted = String(routineName || "").trim().toLowerCase();
+          const persisted = String(persistedRoutineTemplates?.[wanted] || "").trim();
+          if (persisted) return persisted;
+          const directRoutineSource = findRoutineExportSourceByName(routineName);
+          if (directRoutineSource) {
+            const direct = getRoutineTemplateFromText(directRoutineSource, routineName);
+            if (direct) return direct;
+          }
           if (mainProgramRoutineNames.has(wanted)) {
             if (sourceIsMainRoutineExport && wanted === "main") {
               const mainOnly = getRoutineTemplateFromText(sourceText, "Main");
@@ -2632,30 +2755,210 @@ export default function PlcAnalyzer({
               if (scored.length && scored[0].score > 0) return scored[0].block;
             }
           }
-          return getRoutineTemplateFromText(sourceText, routineName);
+          for (const src of allTemplateSources) {
+            const found = getRoutineTemplateFromText(src, routineName);
+            if (found) return found;
+          }
+          return "";
         };
         const makeEmptyRoutine = (name) =>
           [`          <Routine Name="${name}" Type="RLL">`, "            <RLLContent/>", "          </Routine>"].join("\n");
-        const allowedRouteNames = new Set(
-          routeExec
-            .map((row) => String(row?.routeName || "").trim())
-            .filter(Boolean)
-            .map((name) => name.toLowerCase())
+        const makeExactMainProgramMainRoutine = () =>
+          [
+            '          <Routine Name="Main" Type="RLL">',
+            "            <RLLContent>",
+            '              <Rung Number="0" Type="N">',
+            "                <Comment><![CDATA[PLC",
+            "           IP Address xxx.xxx.xxx.xxx",
+            "           Subnet Mask xxx.xxx.xxx.xxx",
+            "           Default Gateway xxx.xxx.xxx.xxx]]></Comment>",
+            "                <Text><![CDATA[NOP();]]></Text>",
+            "              </Rung>",
+            '              <Rung Number="1" Type="N">',
+            "                <Text><![CDATA[XIC(S:FS)ONS(FirstScanCtl)RES(FirstScanTimer);]]></Text>",
+            "              </Rung>",
+            '              <Rung Number="2" Type="N">',
+            "                <Text><![CDATA[GSV(Task,MainTask,LastScanTime,LastScanTime)[XIC(S:FS) ,XIC(FirstScanTimer.TT) ]TON(FirstScanTimer,?,?)OTE(FirstPass);]]></Text>",
+            "              </Rung>",
+            '              <Rung Number="3" Type="N">',
+            "                <Text><![CDATA[AFI()OTL(Global_SimulationMode);]]></Text>",
+            "              </Rung>",
+            '              <Rung Number="4" Type="N">',
+            "                <Text><![CDATA[XIC(Global_Pulse500ms)ONS(Global_Ons001)OTE(Global_Tick1sec);]]></Text>",
+            "              </Rung>",
+            '              <Rung Number="5" Type="N">',
+            "                <Text><![CDATA[XIO(Global_SimulationMode)JSR(IO_Mapping,0);]]></Text>",
+            "              </Rung>",
+            '              <Rung Number="6" Type="N">',
+            "                <Text><![CDATA[JSR(AlarmReset,0)JSR(GeneralAlarms,0);]]></Text>",
+            "              </Rung>",
+            '              <Rung Number="7" Type="N">',
+            "                <Text><![CDATA[JSR(ScaleComs,0);]]></Text>",
+            "              </Rung>",
+            "            </RLLContent>",
+            "          </Routine>",
+          ].join("\n");
+        const routeRootSet = (() => {
+          const roots = new Set();
+          const addRoot = (value) => {
+            const token = String(value || "").trim();
+            if (!token) return;
+            const match = token.match(/^(Route[0-9]+)/i);
+            if (!match) return;
+            roots.add(String(match[1] || "").toLowerCase());
+          };
+          routeObjectNames.forEach((name) => addRoot(name));
+          subRouteObjectNames.forEach((name) => addRoot(name));
+          binControlObjectNames.forEach((name) => addRoot(name));
+          binObjectNames.forEach((name) => addRoot(name));
+          groups.forEach((g) => addRoot(String(g?.name || "")));
+          return roots;
+        })();
+        const explicitDynamicRoots = Array.from(
+          new Set([
+            ...subRouteObjectNames,
+            ...binControlObjectNames,
+            ...binObjectNames,
+          ]
+            .map((name) => String(name || "").trim().toLowerCase())
+            .filter(Boolean))
         );
-        const pruneRoutineByAllowedRoutes = (routineXml) => {
+        const dynamicObjectRoots = Array.from(new Set([...Array.from(routeRootSet), ...explicitDynamicRoots]));
+        const ioNamesByRoute = (() => {
+          const out = new Map();
+          binControlObjectNames.forEach((fullName) => {
+            const text = String(fullName || "").trim();
+            if (!text) return;
+            const m = text.match(/^(Route[0-9]+)_(.+)$/i);
+            if (!m) return;
+            const routeName = String(m[1] || "").trim();
+            const ioName = String(m[2] || "").trim();
+            if (!routeName || !ioName) return;
+            if (!out.has(routeName.toLowerCase())) out.set(routeName.toLowerCase(), []);
+            out.get(routeName.toLowerCase()).push(ioName);
+          });
+          return out;
+        })();
+        const matchesAllowedRoot = (value) => {
+          const token = String(value || "").trim().toLowerCase();
+          if (!token) return false;
+          // Exact route root is allowed (ex: Route1).
+          if (routeRootSet.has(token)) return true;
+          // Route-prefixed generic tags are allowed only for known generic members.
+          const routeRootMatch = token.match(/^(route[0-9]+)_(.+)$/i);
+          if (routeRootMatch) {
+            const root = String(routeRootMatch[1] || "").toLowerCase();
+            const suffix = String(routeRootMatch[2] || "").toLowerCase();
+            if (
+              routeRootSet.has(root) &&
+              (
+                suffix === "data" ||
+                suffix === "group_mgr" ||
+                suffix === "tool" ||
+                /^\d+(?:_.+)?$/i.test(suffix) ||
+                /^(snd|send|rcv|rec|recv)\d*(?:_.+)?$/i.test(suffix)
+              )
+            ) {
+              return true;
+            }
+          }
+          // SubRoute / Sender / Receiver / Bin trees must explicitly exist in tree.
+          return explicitDynamicRoots.some((root) => token === root || token.startsWith(`${root}_`));
+        };
+        const pruneRoutineByAllowedDynamicObjects = (routineXml) => {
           let out = String(routineXml || "");
-          if (!out || !allowedRouteNames.size) return out;
+          if (!out || !dynamicObjectRoots.length) return out;
+          const extractRouteRefs = (text) =>
+            Array.from(String(text || "").matchAll(/\bRoute[0-9]+(?:\[[^\]]+\])?(?:_[A-Za-z0-9]+)*\b/gi)).map((m) =>
+              String(m[0] || "").trim()
+            );
           out = out.replace(/<Text\b[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/Text>/gi, (full, cdata) => {
             const src = String(cdata || "");
             const parts = src.split(";");
-            const kept = parts.filter((segment) => {
+            const expanded = [];
+            parts.forEach((segment) => {
               const text = String(segment || "");
-              const routeRefs = Array.from(text.matchAll(/\bRoute\d+(?:_\d+)?\b/gi)).map((m) => String(m[0] || ""));
-              if (!routeRefs.length) return true;
-              return routeRefs.every((name) => allowedRouteNames.has(String(name || "").toLowerCase()));
+              const routeLikeRefs = extractRouteRefs(text);
+              if (!routeLikeRefs.length) {
+                expanded.push(text);
+                return;
+              }
+              const templateRouteRoots = Array.from(
+                new Set(
+                  routeLikeRefs
+                    .map((name) => {
+                      const m = String(name || "").replace(/\[[^\]]+\]/g, "").match(/^(Route[0-9]+)/i);
+                      return m ? String(m[1] || "") : "";
+                    })
+                    .filter(Boolean)
+                )
+              );
+              // If the segment is based on a single template route root (ex: Route1_*),
+              // clone it for every Route in tree and keep only valid object references.
+              if (templateRouteRoots.length === 1 && routeObjectNames.length) {
+                const root = templateRouteRoots[0];
+                const templateIoNames = Array.from(
+                  new Set(
+                    routeLikeRefs
+                      .map((name) => {
+                        const normalized = String(name || "").replace(/\[[^\]]+\]/g, "");
+                        const m = normalized.match(new RegExp(`^${root}_(.+)$`, "i"));
+                        if (!m) return "";
+                        const token = String(m[1] || "").trim();
+                        if (!/^snd/i.test(token) && !/^rcv/i.test(token)) return "";
+                        return token;
+                      })
+                      .filter(Boolean)
+                  )
+                );
+                routeObjectNames.forEach((routeName) => {
+                  const routeText = text.replace(new RegExp(`\\b${root}\\b`, "gi"), String(routeName || ""));
+                  const ioTokens = ioNamesByRoute.get(String(routeName || "").toLowerCase()) || [];
+                  if (templateIoNames.length && ioTokens.length) {
+                    let ioExpanded = [routeText];
+                    templateIoNames.forEach((templateIo) => {
+                      const nextIoExpanded = [];
+                      ioExpanded.forEach((variant) => {
+                        const needle = `${String(routeName || "")}_${templateIo}`;
+                        ioTokens.forEach((ioToken) => {
+                          const replaced = String(variant || "").replace(
+                            new RegExp(`\\b${needle}\\b`, "gi"),
+                            `${String(routeName || "")}_${String(ioToken || "")}`
+                          );
+                          nextIoExpanded.push(replaced);
+                        });
+                      });
+                      ioExpanded = nextIoExpanded.length ? nextIoExpanded : ioExpanded;
+                    });
+                    ioExpanded.forEach((next) => {
+                      const nextRefs = extractRouteRefs(next);
+                      if (nextRefs.length && nextRefs.every((name) => matchesAllowedRoot(name))) {
+                        expanded.push(next);
+                      }
+                    });
+                    return;
+                  }
+                  const nextRefs = extractRouteRefs(routeText);
+                  if (nextRefs.length && nextRefs.every((name) => matchesAllowedRoot(name))) {
+                    expanded.push(routeText);
+                  }
+                });
+                return;
+              }
+              if (routeLikeRefs.every((name) => matchesAllowedRoot(name))) {
+                expanded.push(text);
+              }
             });
-            return `<Text><![CDATA[${kept.join(";")}]]></Text>`;
+            const dedup = Array.from(new Set(expanded.map((s) => String(s || ""))));
+            return `<Text><![CDATA[${dedup.join(";")}]]></Text>`;
           });
+          // Final hard filter: drop any rung that still references route tokens not present in current tree.
+          out = out.replace(/<Rung\b[^>]*>[\s\S]*?<\/Rung>/gi, (rungBlock) => {
+            const refs = extractRouteRefs(rungBlock);
+            if (!refs.length) return rungBlock;
+            return refs.every((name) => matchesAllowedRoot(name)) ? rungBlock : "";
+          });
+          out = out.replace(/\n{3,}/g, "\n\n");
           return out;
         };
         const getRoutineTemplateByCandidates = (routineNames = []) => {
@@ -2675,8 +2978,9 @@ export default function PlcAnalyzer({
             out = out.split(sourceTagName).join(targetTagName);
             out = out.split(String(sourceTagName).toLowerCase()).join(String(targetTagName).toLowerCase());
           }
-          if (String(targetRoutineName || "").trim().toLowerCase() === "alarmreset") {
-            out = pruneRoutineByAllowedRoutes(out);
+          const targetLower = String(targetRoutineName || "").trim().toLowerCase();
+          if (targetLower === "alarmreset" || targetLower === "generalalarms") {
+            out = pruneRoutineByAllowedDynamicObjects(out);
           }
           return indentBlock(out, "          ");
         };
@@ -2738,6 +3042,14 @@ export default function PlcAnalyzer({
           const key = targetName.toLowerCase();
           if (legacySeen.has(key)) return;
           legacySeen.add(key);
+          if (key === "main") {
+            legacyRoutineBlocks.push(makeExactMainProgramMainRoutine());
+            return;
+          }
+          if (key === "io_mapping" || key === "scalecoms") {
+            legacyRoutineBlocks.push(makeEmptyRoutine(targetName));
+            return;
+          }
           const match = getRoutineTemplateByCandidates(spec?.sourceCandidates);
           if (match?.sourceName) {
             legacyRoutineBlocks.push(materializeRoutine(match.sourceName, targetName));
@@ -2934,6 +3246,34 @@ export default function PlcAnalyzer({
             if (!key || byName.has(key)) return;
             byName.set(key, block);
           });
+          const knownTypeNames = [
+            ...extractAllDataTypeNames(String(templateRawText || "")),
+            ...scopedRouteTypes
+              .map((block) => {
+                const head = String(block || "").match(/<DataType\b([^>]*)>/i);
+                return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+              })
+              .filter(Boolean),
+            ...extractAllAoiXmlBlocks(String(templateRawText || ""))
+              .map((block) => {
+                const head = String(block || "").match(/<AddOnInstructionDefinition\b([^>]*)>/i);
+                return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+              })
+              .filter(Boolean),
+          ];
+          buildFallbackObjectTagBlocks({
+            routeNames: routeObjectNames,
+            subRouteNames: subRouteObjectNames,
+            ioNames: binControlObjectNames,
+            binNames: binObjectNames,
+            knownTypeNames,
+          }).forEach((block) => {
+            const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+            const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+            const key = name.toLowerCase();
+            if (!key || byName.has(key)) return;
+            byName.set(key, block);
+          });
           return Array.from(byName.values());
         })();
         const requiredTypeNamesFromTags = extractTagDataTypeNames(tagBlocksWithAutoStubs);
@@ -3096,6 +3436,28 @@ export default function PlcAnalyzer({
           if (!key || byName.has(key)) return;
           byName.set(key, block);
         });
+        const knownTypeNames = [
+          ...extractAllDataTypeNames(String(templateRawText || "")),
+          ...extractAllAoiXmlBlocks(String(templateRawText || ""))
+            .map((block) => {
+              const head = String(block || "").match(/<AddOnInstructionDefinition\b([^>]*)>/i);
+              return head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+            })
+            .filter(Boolean),
+        ];
+        buildFallbackObjectTagBlocks({
+          routeNames: routeObjectNames,
+          subRouteNames: subRouteObjectNames,
+          ioNames: binControlObjectNames,
+          binNames: binObjectNames,
+          knownTypeNames,
+        }).forEach((block) => {
+          const head = String(block || "").match(/<Tag\b([^>]*)\/?>/i);
+          const name = head ? String(extractAttr(String(head[1] || ""), "Name") || "").trim() : "";
+          const key = name.toLowerCase();
+          if (!key || byName.has(key)) return;
+          byName.set(key, block);
+        });
         return Array.from(byName.values());
       })();
       const dataTypeDedup = new Map();
@@ -3203,6 +3565,7 @@ export default function PlcAnalyzer({
     chatKey,
     codeGenFormat,
     codeGenGroupsByPlc,
+    codeGenRoutineTemplates,
     codeGenRouteTemplateText,
     codeGenTagMeta,
     codeGenTemplateRouteIdDraft,
@@ -3215,6 +3578,20 @@ export default function PlcAnalyzer({
     () => (Array.isArray(codeGenGroupsByPlc?.[chatKey]) ? codeGenGroupsByPlc[chatKey] : []),
     [chatKey, codeGenGroupsByPlc]
   );
+  const codeGenExpandedTags = useMemo(
+    () => new Set(Array.isArray(codeGenExpandedTagsByPlc?.[chatKey]) ? codeGenExpandedTagsByPlc[chatKey] : []),
+    [chatKey, codeGenExpandedTagsByPlc]
+  );
+  const codeGenSelectedTag = useMemo(
+    () => String(codeGenSelectedTagByPlc?.[chatKey] || "").trim(),
+    [chatKey, codeGenSelectedTagByPlc]
+  );
+  const codeGenDetailEditMode = useMemo(() => codeGenDetailEditByPlc?.[chatKey] === true, [chatKey, codeGenDetailEditByPlc]);
+  const codeGenTreeLoading = useMemo(() => {
+    const key = String(chatKey || "").trim();
+    if (!selected?.id || !key || key === "__none__") return false;
+    return codeGenPersistReadyByPlc?.[key] !== true;
+  }, [chatKey, selected?.id, codeGenPersistReadyByPlc]);
   const codeGenExpandedSet = useMemo(
     () => new Set(Array.isArray(codeGenExpandedGroupsByPlc?.[chatKey]) ? codeGenExpandedGroupsByPlc[chatKey] : []),
     [chatKey, codeGenExpandedGroupsByPlc]
@@ -3244,7 +3621,43 @@ export default function PlcAnalyzer({
       : [];
     const tagMeta = tags.reduce((acc, tag) => {
       const equipmentType = String(codeGenTagMeta?.[tag]?.equipmentType || "").trim();
-      if (equipmentType) acc[tag] = { equipmentType };
+      const normalizeDefs = (value, fallback = []) =>
+        Array.from(
+          new Set(
+            [
+              ...(Array.isArray(value) ? value : []),
+              ...fallback.map((addr) => ({ address: addr })),
+            ]
+              .map((entry) => {
+                if (typeof entry === "string") return { name: "", address: String(entry || "").trim() };
+                const name = String(entry?.name || "").trim();
+                const address = String(entry?.address || entry?.value || "").trim();
+                if (!address) return "";
+                return `${name}|||${address}`;
+              })
+              .filter(Boolean)
+          )
+        )
+          .map((key) => {
+            const [name = "", address = ""] = String(key || "").split("|||");
+            return { name, address };
+          })
+          .filter((entry) => String(entry?.address || "").trim());
+      const inputDefs = normalizeDefs(
+        codeGenTagMeta?.[tag]?.inputDefs,
+        (Array.isArray(codeGenTagMeta?.[tag]?.inputs) ? codeGenTagMeta[tag].inputs : []).map((v) => String(v || "").trim()).filter(Boolean)
+      );
+      const outputDefs = normalizeDefs(
+        codeGenTagMeta?.[tag]?.outputDefs,
+        (Array.isArray(codeGenTagMeta?.[tag]?.outputs) ? codeGenTagMeta[tag].outputs : []).map((v) => String(v || "").trim()).filter(Boolean)
+      );
+      if (equipmentType || inputDefs.length || outputDefs.length) {
+        acc[tag] = {
+          ...(equipmentType ? { equipmentType } : {}),
+          ...(inputDefs.length ? { inputDefs } : {}),
+          ...(outputDefs.length ? { outputDefs } : {}),
+        };
+      }
       return acc;
     }, {});
     const groups = codeGenGroups.map((group) => {
@@ -3253,11 +3666,13 @@ export default function PlcAnalyzer({
       const parentId = String(group?.parentId || "").trim();
       const dbId = String(group?.dbId || "").trim();
       const groupType = normalizeCodeGenGroupType(group?.groupType);
+      const groupSubType = String(group?.groupSubType || "").trim();
       const row = {
         id,
         name,
         parentId,
         groupType,
+        ...(groupSubType ? { groupSubType } : {}),
         tags: (Array.isArray(group?.tags) ? group.tags : [])
           .map((t) => String(t || "").trim())
           .filter((t) => tags.includes(t)),
@@ -3266,17 +3681,23 @@ export default function PlcAnalyzer({
       return row;
     });
     const expandedGroupIds = Array.from(codeGenExpandedSet.values()).map((id) => String(id || "").trim()).filter(Boolean);
+    const equipmentTypes = Array.from(
+      new Set((Array.isArray(codeGenEquipmentTypesByPlc?.[chatKey]) ? codeGenEquipmentTypesByPlc[chatKey] : []).map((v) => String(v || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
     return {
       format: normalizeCodeGenFormat(codeGenFormat),
       tags,
       tagMeta,
       groups,
       expandedGroupIds,
+      equipmentTypes,
       l5xTemplateText: String(codeGenRouteTemplateText || ""),
       templateRouteId: String(codeGenTemplateRouteIdDraft || ""),
       templateRouteName: String(codeGenTemplateRouteName || ""),
     };
   }, [
+    chatKey,
+    codeGenEquipmentTypesByPlc,
     codeGenExpandedSet,
     codeGenFormat,
     codeGenGroups,
@@ -3440,12 +3861,65 @@ export default function PlcAnalyzer({
     }
   }, [codeGenGroupParentDraft, codeGenGroups, codeGenSelectedGroupId]);
   useEffect(() => {
+    const selected =
+      codeGenGroups.find((g) => String(g?.id || "").trim() === String(codeGenSelectedGroupId || "").trim()) || null;
+    if (!selected) {
+      setCodeGenDetailNameDraft("");
+      setCodeGenDetailTypeDraft("Group");
+      setCodeGenDetailSubTypeDraft("Feed");
+      return;
+    }
+    setCodeGenDetailNameDraft(String(selected?.name || ""));
+    setCodeGenDetailTypeDraft(normalizeCodeGenGroupType(selected?.groupType));
+    setCodeGenDetailSubTypeDraft(String(selected?.groupSubType || "Feed"));
+    setCodeGenDetailEditByPlc((prev) => ({ ...(prev || {}), [chatKey]: false }));
+  }, [chatKey, codeGenGroups, codeGenSelectedGroupId]);
+  useEffect(() => {
     if (String(activeTab || "") !== "code-gen-pro" || !codeGenReady) return;
     const key = String(chatKey || "").trim();
     const raw = String(selected?.rawText || "");
     if (!key || key === "__none__" || !raw.trim()) return;
     const timer = setTimeout(() => {
       const isL5xXml = /<RSLogix5000Content\b/i.test(raw);
+      const extractRoutineTemplateMap = (text, routineNames = []) => {
+        const source = String(text || "");
+        if (!source) return {};
+        const wanted = new Set(
+          (Array.isArray(routineNames) ? routineNames : [])
+            .map((name) => String(name || "").trim().toLowerCase())
+            .filter(Boolean)
+        );
+        if (!wanted.size) return {};
+        const out = {};
+        const re = /<Routine\b([^>]*)>([\s\S]*?)<\/Routine>/gi;
+        let match = re.exec(source);
+        while (match) {
+          const attrs = String(match[1] || "");
+          const body = String(match[2] || "");
+          const nameMatch = attrs.match(/\bName="([^"]+)"/i);
+          const name = String(nameMatch?.[1] || "").trim();
+          const keyName = name.toLowerCase();
+          if (name && wanted.has(keyName) && !out[keyName]) {
+            out[keyName] = `<Routine ${attrs.trim()}>\n${body.trim()}\n</Routine>`;
+          }
+          match = re.exec(source);
+        }
+        return out;
+      };
+      const routineTemplateNames = [
+        "Main",
+        "AlarmReset",
+        "GeneralAlarms",
+        "ScaleComs",
+        "IO_Mapping",
+        "IO_MappingHO",
+        "IO_MappingWW",
+        "HOScaleComs",
+        "WWScaleComs",
+      ];
+      const extractedRoutineTemplates = isL5xXml
+        ? extractRoutineTemplateMap(raw, routineTemplateNames)
+        : {};
       const routeMatches = Array.from(new Set((raw.match(/\bRoute\d+\b/g) || []).map((v) => String(v || "").trim()))).filter(Boolean);
       const inferredRouteName = routeMatches.find((v) => String(v).toLowerCase() === "route1") || routeMatches[0] || "";
       const routeIdMatch =
@@ -3459,6 +3933,15 @@ export default function PlcAnalyzer({
         .join(inferredRouteId ? "{{ROUTE_ID}}" : inferredRouteId);
       if (isL5xXml) {
         setCodeGenRouteTemplateTextByPlc((prev) => ({ ...(prev || {}), [key]: tokenized }));
+        if (Object.keys(extractedRoutineTemplates).length) {
+          setCodeGenRoutineTemplatesByPlc((prev) => ({
+            ...(prev || {}),
+            [key]: {
+              ...((prev && prev[key] && typeof prev[key] === "object" ? prev[key] : {})),
+              ...extractedRoutineTemplates,
+            },
+          }));
+        }
       }
       if (inferredRouteName) {
         setCodeGenTemplateRouteNameByPlc((prev) => ({ ...(prev || {}), [key]: inferredRouteName }));
@@ -3475,6 +3958,25 @@ export default function PlcAnalyzer({
             templateText: tokenized,
           }),
         }).catch(() => {});
+      }
+      if (isL5xXml && Object.keys(extractedRoutineTemplates).length) {
+        Object.entries(extractedRoutineTemplates).forEach(([routineKey, routineXml]) => {
+          const routineName = String(routineKey || "").trim();
+          const xml = String(routineXml || "");
+          if (!routineName || !xml) return;
+          fetch(
+            `/api/ai/routine-template/${encodeURIComponent(key)}/${encodeURIComponent(routineName)}`,
+            {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                routineName,
+                sourceFileName: String(selected?.name || ""),
+                routineXml: xml,
+              }),
+            }
+          ).catch(() => {});
+        });
       }
     }, 0);
     return () => clearTimeout(timer);
@@ -3528,6 +4030,39 @@ export default function PlcAnalyzer({
     };
   }, [chatKey, codeGenGroupsByPlc, codeGenRouteTemplateTextByPlc]);
   useEffect(() => {
+    const key = String(chatKey || "").trim();
+    if (!key || key === "__none__") return;
+    const existing =
+      codeGenRoutineTemplatesByPlc?.[key] && typeof codeGenRoutineTemplatesByPlc[key] === "object"
+        ? codeGenRoutineTemplatesByPlc[key]
+        : {};
+    if (Object.keys(existing).length) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/ai/routine-templates/${encodeURIComponent(key)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || cancelled) return;
+        const templates = Array.isArray(data?.templates) ? data.templates : [];
+        if (!templates.length) return;
+        const next = templates.reduce((acc, row) => {
+          const routineKey = String(row?.routineKey || row?.routineName || "").trim().toLowerCase();
+          const routineXml = String(row?.routineXml || "").trim();
+          if (!routineKey || !routineXml) return acc;
+          acc[routineKey] = routineXml;
+          return acc;
+        }, {});
+        if (!Object.keys(next).length || cancelled) return;
+        setCodeGenRoutineTemplatesByPlc((prev) => ({ ...(prev || {}), [key]: next }));
+      } catch {
+        // best effort
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chatKey, codeGenRoutineTemplatesByPlc]);
+  useEffect(() => {
     const validTagSet = new Set(Array.isArray(codeGenUserTags) ? codeGenUserTags : []);
     setCodeGenTagMetaByPlc((prev) => {
       const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
@@ -3535,10 +4070,47 @@ export default function PlcAnalyzer({
       if (entries.length === Object.keys(current).length) return prev;
       return { ...(prev || {}), [chatKey]: Object.fromEntries(entries) };
     });
+    setCodeGenExpandedTagsByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      const next = current.filter((tag) => validTagSet.has(String(tag || "")));
+      if (next.length === current.length) return prev;
+      return { ...(prev || {}), [chatKey]: next };
+    });
+    setCodeGenSelectedTagByPlc((prev) => {
+      const current = String(prev?.[chatKey] || "").trim();
+      if (!current || validTagSet.has(current)) return prev;
+      return { ...(prev || {}), [chatKey]: "" };
+    });
+    setCodeGenTagEditByPlc((prev) => {
+      const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      const nextByPlc = Object.fromEntries(
+        Object.entries(byPlc).filter(([tag]) => validTagSet.has(String(tag || "").trim()))
+      );
+      if (Object.keys(nextByPlc).length === Object.keys(byPlc).length) return prev;
+      return { ...(prev || {}), [chatKey]: nextByPlc };
+    });
   }, [chatKey, codeGenUserTags]);
   useEffect(() => {
     const key = String(chatKey || "").trim();
     if (!selected?.id || !key || key === "__none__") return;
+    const scanned = Array.from(
+      new Set(allAoiEquipmentTypeNames.map((v) => String(v || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
+    if (!scanned.length) return;
+    setCodeGenEquipmentTypesByPlc((prev) => {
+      const current = Array.isArray(prev?.[key]) ? prev[key] : [];
+      const merged = Array.from(new Set([...current, ...scanned])).sort((a, b) => a.localeCompare(b));
+      if (merged.length === current.length && merged.every((v, i) => v === current[i])) return prev;
+      return { ...(prev || {}), [key]: merged };
+    });
+  }, [allAoiEquipmentTypeNames, chatKey, selected?.id]);
+  useEffect(() => {
+    const key = String(chatKey || "").trim();
+    if (!selected?.id || !key || key === "__none__") return;
+    if (codeGenProfileLoadedByPlcRef.current?.[key]) {
+      setCodeGenPersistReadyByPlc((prev) => ({ ...(prev || {}), [key]: true }));
+      return;
+    }
     let cancelled = false;
     setCodeGenPersistReadyByPlc((prev) => ({ ...(prev || {}), [key]: false }));
     (async () => {
@@ -3547,6 +4119,7 @@ export default function PlcAnalyzer({
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(String(data?.error || "Failed to load Code Gen profile."));
         const profile = data?.profile && typeof data.profile === "object" ? data.profile : null;
+        const hasProfile = !!profile;
         const loadedTags = Array.isArray(profile?.tags)
           ? Array.from(
               new Set(
@@ -3562,7 +4135,46 @@ export default function PlcAnalyzer({
             : {};
         const loadedTagMeta = loadedTags.reduce((acc, tag) => {
           const equipmentType = String(loadedTagMetaRaw?.[tag]?.equipmentType || "").trim();
-          if (equipmentType) acc[tag] = { equipmentType };
+          const normalizeDefs = (defs, legacyArray, legacySingle) =>
+            Array.from(
+              new Set(
+                [
+                  ...(Array.isArray(defs) ? defs : []),
+                  ...(Array.isArray(legacyArray) ? legacyArray : []).map((address) => ({ address })),
+                  ...(String(legacySingle || "").trim() ? [{ address: String(legacySingle || "").trim() }] : []),
+                ]
+                  .map((entry) => {
+                    if (typeof entry === "string") return `${""}|||${String(entry || "").trim()}`;
+                    const name = String(entry?.name || "").trim();
+                    const address = String(entry?.address || entry?.value || "").trim();
+                    if (!address) return "";
+                    return `${name}|||${address}`;
+                  })
+                  .filter(Boolean)
+              )
+            )
+              .map((key) => {
+                const [name = "", address = ""] = String(key || "").split("|||");
+                return { name, address };
+              })
+              .filter((entry) => String(entry?.address || "").trim());
+          const inputDefs = normalizeDefs(
+            loadedTagMetaRaw?.[tag]?.inputDefs,
+            loadedTagMetaRaw?.[tag]?.inputs,
+            loadedTagMetaRaw?.[tag]?.plcInputAddress
+          );
+          const outputDefs = normalizeDefs(
+            loadedTagMetaRaw?.[tag]?.outputDefs,
+            loadedTagMetaRaw?.[tag]?.outputs,
+            loadedTagMetaRaw?.[tag]?.plcOutputAddress
+          );
+          if (equipmentType || inputDefs.length || outputDefs.length) {
+            acc[tag] = {
+              ...(equipmentType ? { equipmentType } : {}),
+              ...(inputDefs.length ? { inputDefs } : {}),
+              ...(outputDefs.length ? { outputDefs } : {}),
+            };
+          }
           return acc;
         }, {});
         const loadedGroups = Array.isArray(profile?.groups)
@@ -3573,6 +4185,7 @@ export default function PlcAnalyzer({
                 const parentId = String(group?.parentId || "").trim();
                 const dbId = String(group?.dbId || "").trim();
                 const groupType = normalizeCodeGenGroupType(group?.groupType || group?.grouptype);
+                const groupSubType = String(group?.groupSubType || group?.groupsubtype || "").trim();
                 const tags = (Array.isArray(group?.tags) ? group.tags : [])
                   .map((t) => normalizeCodeGenTag(t))
                   .filter((t) => loadedTags.includes(t));
@@ -3582,6 +4195,7 @@ export default function PlcAnalyzer({
                   name,
                   parentId,
                   groupType,
+                  ...(groupSubType ? { groupSubType } : {}),
                   tags: Array.from(new Set(tags)),
                   ...(dbId ? { dbId, dbSyncState: "ok" } : {}),
                 };
@@ -3594,11 +4208,23 @@ export default function PlcAnalyzer({
               .filter(Boolean)
               .filter((id) => loadedGroups.some((g) => String(g?.id || "") === id))
           : [];
+        const loadedEquipmentTypes = Array.from(
+          new Set(
+            (
+              Array.isArray(profile?.equipmentTypes) && profile?.equipmentTypes.length
+                ? profile.equipmentTypes
+                : allAoiEquipmentTypeNames
+            )
+              .map((v) => String(v || "").trim())
+              .filter(Boolean)
+          )
+        ).sort((a, b) => a.localeCompare(b));
         const loadedFormatRaw = normalizeCodeGenFormat(profile?.format);
         const loadedFormat = loadedFormatRaw === "list" ? "l5x-template" : loadedFormatRaw;
         if (cancelled) return;
         setCodeGenTagsByPlc((prev) => ({ ...(prev || {}), [key]: loadedTags }));
         setCodeGenTagMetaByPlc((prev) => ({ ...(prev || {}), [key]: loadedTagMeta }));
+        setCodeGenEquipmentTypesByPlc((prev) => ({ ...(prev || {}), [key]: loadedEquipmentTypes }));
         setCodeGenGroupsByPlc((prev) => ({ ...(prev || {}), [key]: loadedGroups }));
         setCodeGenExpandedGroupsByPlc((prev) => ({ ...(prev || {}), [key]: loadedExpanded }));
         setCodeGenFormat(loadedFormat);
@@ -3613,23 +4239,30 @@ export default function PlcAnalyzer({
         setCodeGenTemplateRouteIdDraft(String(profile?.templateRouteId || ""));
         setCodeGenGroupTypeDraft("Group");
         setCodeGenGroupParentDraft("");
-        codeGenLastSavedSnapshotByPlcRef.current[key] = JSON.stringify({
-          format: loadedFormat,
-          tags: loadedTags,
-          tagMeta: loadedTagMeta,
-          groups: loadedGroups.map((g) => ({
-            id: String(g?.id || ""),
-            name: String(g?.name || ""),
-            parentId: String(g?.parentId || ""),
-            groupType: normalizeCodeGenGroupType(g?.groupType),
-            tags: Array.isArray(g?.tags) ? g.tags : [],
-            ...(String(g?.dbId || "").trim() ? { dbId: String(g.dbId) } : {}),
-          })),
-          expandedGroupIds: loadedExpanded,
-          l5xTemplateText: String(profile?.l5xTemplateText || ""),
-          templateRouteId: String(profile?.templateRouteId || ""),
-          templateRouteName: String(profile?.templateRouteName || ""),
-        });
+        if (hasProfile) {
+          codeGenLastSavedSnapshotByPlcRef.current[key] = JSON.stringify({
+            format: loadedFormat,
+            tags: loadedTags,
+            tagMeta: loadedTagMeta,
+            groups: loadedGroups.map((g) => ({
+              id: String(g?.id || ""),
+              name: String(g?.name || ""),
+              parentId: String(g?.parentId || ""),
+              groupType: normalizeCodeGenGroupType(g?.groupType),
+              ...(String(g?.groupSubType || "").trim() ? { groupSubType: String(g.groupSubType).trim() } : {}),
+              tags: Array.isArray(g?.tags) ? g.tags : [],
+              ...(String(g?.dbId || "").trim() ? { dbId: String(g.dbId) } : {}),
+            })),
+            expandedGroupIds: loadedExpanded,
+            equipmentTypes: loadedEquipmentTypes,
+            l5xTemplateText: String(profile?.l5xTemplateText || ""),
+            templateRouteId: String(profile?.templateRouteId || ""),
+            templateRouteName: String(profile?.templateRouteName || ""),
+          });
+        } else {
+          delete codeGenLastSavedSnapshotByPlcRef.current[key];
+        }
+        codeGenProfileLoadedByPlcRef.current[key] = true;
       } catch (err) {
         if (!cancelled) toastError(String(err?.message || "Failed to load Code Gen profile."));
       } finally {
@@ -3641,7 +4274,7 @@ export default function PlcAnalyzer({
     return () => {
       cancelled = true;
     };
-  }, [chatKey, selected?.id]);
+  }, [allAoiEquipmentTypeNames, chatKey, selected?.id]);
   useEffect(() => {
     const key = String(chatKey || "").trim();
     if (!selected?.id || !key || key === "__none__") return;
@@ -4125,6 +4758,11 @@ export default function PlcAnalyzer({
       return { ...(prev || {}), [chatKey]: [...current, tag].sort((a, b) => a.localeCompare(b)) };
     });
     if (equipmentType) {
+      setCodeGenEquipmentTypesByPlc((prev) => {
+        const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+        if (current.includes(equipmentType)) return prev;
+        return { ...(prev || {}), [chatKey]: [...current, equipmentType].sort((a, b) => a.localeCompare(b)) };
+      });
       setCodeGenTagMetaByPlc((prev) => {
         const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
         const existing = current?.[tag] && typeof current[tag] === "object" ? current[tag] : {};
@@ -4142,6 +4780,18 @@ export default function PlcAnalyzer({
     if (tagAdded) toastSuccess(`Added tag ${tag}.`);
     else if (equipmentType) toastSuccess(`Updated equipment type for ${tag}.`);
     else toastInfo(`Tag ${tag} already exists.`);
+  };
+
+  const removeCodeGenEquipmentTypeOption = (raw) => {
+    const type = String(raw || "").trim();
+    if (!type) return;
+    setCodeGenEquipmentTypesByPlc((prev) => {
+      const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+      if (!current.includes(type)) return prev;
+      return { ...(prev || {}), [chatKey]: current.filter((x) => String(x || "").trim() !== type) };
+    });
+    if (String(codeGenNewTagEquipmentDraft || "").trim() === type) setCodeGenNewTagEquipmentDraft("");
+    toastSuccess(`Removed equipment type ${type}.`);
   };
 
   const removeCodeGenTag = (raw) => {
@@ -4179,6 +4829,7 @@ export default function PlcAnalyzer({
       }
       let added = 0;
       let metaUpdates = 0;
+      const importedEquipmentTypes = new Set();
       setCodeGenTagsByPlc((prev) => {
         const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
         const set = new Set(current.map((t) => String(t || "").trim().toLowerCase()));
@@ -4200,6 +4851,7 @@ export default function PlcAnalyzer({
           const tag = normalizeCodeGenTag(row?.tag || "");
           const equipmentType = String(row?.equipmentType || "").trim();
           if (!tag || !equipmentType) return;
+          importedEquipmentTypes.add(equipmentType);
           const existing = nextMeta?.[tag] && typeof nextMeta[tag] === "object" ? nextMeta[tag] : {};
           if (String(existing?.equipmentType || "").trim() === equipmentType) return;
           nextMeta[tag] = { ...existing, equipmentType };
@@ -4207,6 +4859,15 @@ export default function PlcAnalyzer({
         });
         return { ...(prev || {}), [chatKey]: nextMeta };
       });
+      if (importedEquipmentTypes.size) {
+        setCodeGenEquipmentTypesByPlc((prev) => {
+          const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+          const merged = Array.from(new Set([...current, ...Array.from(importedEquipmentTypes)])).sort((a, b) =>
+            String(a || "").localeCompare(String(b || ""))
+          );
+          return { ...(prev || {}), [chatKey]: merged };
+        });
+      }
       if (added > 0 && metaUpdates > 0) {
         toastSuccess(`Imported ${added} tag(s) and ${metaUpdates} equipment type value(s) from CSV.`);
       } else if (added > 0) {
@@ -4223,26 +4884,162 @@ export default function PlcAnalyzer({
     }
   };
 
-  const updateCodeGenTagEquipment = (tagRaw, equipmentTypeRaw) => {
+  const updateCodeGenTagMetaField = (tagRaw, field, rawValue) => {
     const tag = normalizeCodeGenTag(tagRaw);
-    if (!tag) return;
-    const equipmentType = String(equipmentTypeRaw || "").trim();
+    const key = String(field || "").trim();
+    if (!tag || !key) return;
+    const value = String(rawValue || "").trim();
     setCodeGenTagMetaByPlc((prev) => {
       const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
       const existing = current?.[tag] && typeof current[tag] === "object" ? current[tag] : {};
-      if (equipmentType) {
+      if (value) {
         return {
           ...(prev || {}),
           [chatKey]: {
             ...current,
-            [tag]: { ...existing, equipmentType },
+            [tag]: { ...existing, [key]: value },
           },
         };
       }
-      if (!Object.prototype.hasOwnProperty.call(current, tag)) return prev;
+      if (!Object.prototype.hasOwnProperty.call(existing, key)) return prev;
+      const nextEntry = { ...existing };
+      delete nextEntry[key];
       const nextMeta = { ...current };
-      delete nextMeta[tag];
+      if (!Object.keys(nextEntry).length) delete nextMeta[tag];
+      else nextMeta[tag] = nextEntry;
       return { ...(prev || {}), [chatKey]: nextMeta };
+    });
+    setCodeGenExpandedTagsByPlc((prev) => {
+      const current = new Set(Array.isArray(prev?.[chatKey]) ? prev[chatKey] : []);
+      if (!current.has(tag)) return prev;
+      current.delete(tag);
+      return { ...(prev || {}), [chatKey]: Array.from(current) };
+    });
+    setCodeGenIoDraftByPlc((prev) => {
+      const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      if (!Object.prototype.hasOwnProperty.call(byPlc, tag)) return prev;
+      const nextByPlc = { ...byPlc };
+      delete nextByPlc[tag];
+      return { ...(prev || {}), [chatKey]: nextByPlc };
+    });
+    setCodeGenIoNameDraftByPlc((prev) => {
+      const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      if (!Object.prototype.hasOwnProperty.call(byPlc, tag)) return prev;
+      const nextByPlc = { ...byPlc };
+      delete nextByPlc[tag];
+      return { ...(prev || {}), [chatKey]: nextByPlc };
+    });
+    setCodeGenIoTypeByPlc((prev) => {
+      const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      if (!Object.prototype.hasOwnProperty.call(byPlc, tag)) return prev;
+      const nextByPlc = { ...byPlc };
+      delete nextByPlc[tag];
+      return { ...(prev || {}), [chatKey]: nextByPlc };
+    });
+  };
+
+  const upsertCodeGenTagMetaList = (tagRaw, field, updater) => {
+    const tag = normalizeCodeGenTag(tagRaw);
+    const key = String(field || "").trim();
+    if (!tag || !key) return;
+    setCodeGenTagMetaByPlc((prev) => {
+      const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      const existing = current?.[tag] && typeof current[tag] === "object" ? current[tag] : {};
+      const base = Array.isArray(existing?.[key]) ? existing[key] : [];
+      const nextListRaw = typeof updater === "function" ? updater(base) : base;
+      const nextList = Array.from(new Set((Array.isArray(nextListRaw) ? nextListRaw : []).map((v) => String(v || "").trim()).filter(Boolean)));
+      const nextEntry = { ...existing };
+      if (nextList.length) nextEntry[key] = nextList;
+      else delete nextEntry[key];
+      if (!Object.keys(nextEntry).length) {
+        if (!Object.prototype.hasOwnProperty.call(current, tag)) return prev;
+        const nextMeta = { ...current };
+        delete nextMeta[tag];
+        return { ...(prev || {}), [chatKey]: nextMeta };
+      }
+      return { ...(prev || {}), [chatKey]: { ...current, [tag]: nextEntry } };
+    });
+  };
+
+  const upsertCodeGenTagMetaIoDefs = (tagRaw, field, updater) => {
+    const tag = normalizeCodeGenTag(tagRaw);
+    const key = String(field || "").trim();
+    if (!tag || !key) return;
+    setCodeGenTagMetaByPlc((prev) => {
+      const current = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+      const existing = current?.[tag] && typeof current[tag] === "object" ? current[tag] : {};
+      const base = Array.isArray(existing?.[key]) ? existing[key] : [];
+      const nextRaw = typeof updater === "function" ? updater(base) : base;
+      const next = Array.from(
+        new Set(
+          (Array.isArray(nextRaw) ? nextRaw : [])
+            .map((entry) => {
+              const name = String(entry?.name || "").trim();
+              const address = String(entry?.address || "").trim();
+              if (!address) return "";
+              return `${name}|||${address}`;
+            })
+            .filter(Boolean)
+        )
+      )
+        .map((row) => {
+          const [name = "", address = ""] = String(row || "").split("|||");
+          return { name, address };
+        })
+        .filter((entry) => String(entry?.address || "").trim());
+      const nextEntry = { ...existing };
+      if (next.length) nextEntry[key] = next;
+      else delete nextEntry[key];
+      if (!Object.keys(nextEntry).length) {
+        if (!Object.prototype.hasOwnProperty.call(current, tag)) return prev;
+        const nextMeta = { ...current };
+        delete nextMeta[tag];
+        return { ...(prev || {}), [chatKey]: nextMeta };
+      }
+      return { ...(prev || {}), [chatKey]: { ...current, [tag]: nextEntry } };
+    });
+  };
+
+  const addCodeGenTagIoValue = (tagRaw, field, valueRaw, nameRaw = "") => {
+    const address = String(valueRaw || "").trim();
+    const name = String(nameRaw || "").trim();
+    if (!address) return;
+    upsertCodeGenTagMetaIoDefs(tagRaw, field, (base) => [...base, { name, address }]);
+  };
+
+  const removeCodeGenTagIoValue = (tagRaw, field, valueRaw, nameRaw = "") => {
+    const address = String(valueRaw || "").trim();
+    const name = String(nameRaw || "").trim();
+    if (!address) return;
+    upsertCodeGenTagMetaIoDefs(tagRaw, field, (base) =>
+      base.filter((entry) => {
+        const entryAddress = String(entry?.address || "").trim();
+        const entryName = String(entry?.name || "").trim();
+        return !(entryAddress === address && entryName === name);
+      })
+    );
+  };
+
+  const updateCodeGenTagEquipment = (tagRaw, equipmentTypeRaw) => {
+    const equipmentType = String(equipmentTypeRaw || "").trim();
+    if (equipmentType) {
+      setCodeGenEquipmentTypesByPlc((prev) => {
+        const current = Array.isArray(prev?.[chatKey]) ? prev[chatKey] : [];
+        if (current.includes(equipmentType)) return prev;
+        return { ...(prev || {}), [chatKey]: [...current, equipmentType].sort((a, b) => a.localeCompare(b)) };
+      });
+    }
+    updateCodeGenTagMetaField(tagRaw, "equipmentType", equipmentType);
+  };
+
+  const toggleCodeGenTagExpanded = (tagRaw) => {
+    const tag = normalizeCodeGenTag(tagRaw);
+    if (!tag) return;
+    setCodeGenExpandedTagsByPlc((prev) => {
+      const current = new Set(Array.isArray(prev?.[chatKey]) ? prev[chatKey] : []);
+      if (current.has(tag)) current.delete(tag);
+      else current.add(tag);
+      return { ...(prev || {}), [chatKey]: Array.from(current) };
     });
   };
 
@@ -4264,13 +5061,45 @@ export default function PlcAnalyzer({
       return;
     }
     const groupType = normalizeCodeGenGroupType(codeGenGroupTypeDraft);
+    const groupSubType = groupType === "Group" ? String(codeGenGroupSubTypeDraft || "Feed").trim() : "";
     const parentId = String(codeGenGroupParentDraft || "").trim();
     const parentGroup = codeGenGroups.find((g) => String(g?.id || "") === parentId) || null;
+    const parentType = normalizeCodeGenGroupType(parentGroup?.groupType).toLowerCase();
+    const findRouteAncestorId = (startParentId) => {
+      const byId = new Map(codeGenGroups.map((g) => [String(g?.id || "").trim(), g]));
+      let cursorId = String(startParentId || "").trim();
+      let guard = 0;
+      while (cursorId && guard < 200) {
+        const cursor = byId.get(cursorId);
+        if (!cursor) break;
+        if (String(cursor?.groupType || "").trim().toLowerCase() === "route") return cursorId;
+        cursorId = String(cursor?.parentId || "").trim();
+        guard += 1;
+      }
+      return "";
+    };
+    const draftType = String(groupType || "").trim().toLowerCase();
+    if (draftType === "route" && parentId) {
+      toastInfo("Route can only be added at the top level.");
+      return;
+    }
+    if (draftType === "subroute" || draftType === "sender" || draftType === "receiver" || draftType === "group") {
+      if (parentType !== "route") {
+        toastInfo("SubRoute, Sender, Receiver, and Group can only be added under Route.");
+        return;
+      }
+    } else if (draftType !== "route") {
+      if (!parentId || !findRouteAncestorId(parentId)) {
+        toastInfo("Only Route objects can exist at the top level.");
+        return;
+      }
+    }
     const nextGroup = {
       id: `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       name,
       parentId,
       groupType,
+      ...(groupSubType ? { groupSubType } : {}),
       tags: [],
       dbId: "",
       dbSyncState: "pending",
@@ -4287,7 +5116,7 @@ export default function PlcAnalyzer({
       const dbGroupName = name.slice(0, 50);
       const payload = {
         groupname: dbGroupName,
-        grouptype: groupType,
+        grouptype: groupType === "Group" ? groupSubType || "Feed" : groupType,
         enabled: true,
         sortorder: codeGenGroups.length + 1,
       };
@@ -4377,14 +5206,53 @@ export default function PlcAnalyzer({
     if (!id) return;
     const nextType = normalizeCodeGenGroupType(nextTypeRaw);
     updateCodeGenGroups((curr) =>
-      curr.map((g) => (String(g?.id || "") === id ? { ...g, groupType: nextType } : g))
+      curr.map((g) =>
+        String(g?.id || "") === id
+          ? {
+              ...g,
+              groupType: nextType,
+              ...(nextType === "Group" ? {} : { groupSubType: "" }),
+            }
+          : g
+      )
     );
+  };
+
+  const saveCodeGenSelectedGroupDetails = () => {
+    const id = String(codeGenSelectedGroupId || "").trim();
+    if (!id) return;
+    const nextName = String(codeGenDetailNameDraft || "").trim();
+    if (!nextName) {
+      toastInfo("Group name is required.");
+      return;
+    }
+    renameCodeGenGroup(id, nextName);
+    setCodeGenGroupType(id, codeGenDetailTypeDraft);
+    updateCodeGenGroups((curr) =>
+      curr.map((g) =>
+        String(g?.id || "") === id
+          ? {
+              ...g,
+              groupSubType:
+                normalizeCodeGenGroupType(codeGenDetailTypeDraft) === "Group"
+                  ? String(codeGenDetailSubTypeDraft || "Feed").trim()
+                  : "",
+            }
+          : g
+      )
+    );
+    toastSuccess("Group details saved.");
   };
 
   const moveTagToGroup = (tagRaw, targetGroupIdRaw) => {
     const tag = String(tagRaw || "").trim();
     const targetGroupId = String(targetGroupIdRaw || "").trim();
     if (!tag || !targetGroupId) return;
+    const target = codeGenGroups.find((g) => String(g?.id || "") === targetGroupId) || null;
+    if (!target || normalizeCodeGenGroupType(target?.groupType) !== "Group") {
+      toastInfo("Tags can only be dropped on Group objects.");
+      return;
+    }
     updateCodeGenGroups((curr) =>
       curr.map((g) => {
         const groupId = String(g?.id || "");
@@ -4395,6 +5263,121 @@ export default function PlcAnalyzer({
       })
     );
     toastSuccess(`Assigned ${tag} to group.`);
+  };
+
+  const reorderCodeGenGroup = (dragGroupIdRaw, targetGroupIdRaw) => {
+    const dragGroupId = String(dragGroupIdRaw || "").trim();
+    const targetGroupId = String(targetGroupIdRaw || "").trim();
+    if (!dragGroupId || !targetGroupId || dragGroupId === targetGroupId) return;
+    updateCodeGenGroups((curr) => {
+      const dragIndex = curr.findIndex((g) => String(g?.id || "") === dragGroupId);
+      const targetIndex = curr.findIndex((g) => String(g?.id || "") === targetGroupId);
+      if (dragIndex < 0 || targetIndex < 0) return curr;
+      const dragGroup = curr[dragIndex];
+      const targetGroup = curr[targetIndex];
+      const targetParentId = String(targetGroup?.parentId || "").trim();
+      const byId = new Map(curr.map((g) => [String(g?.id || "").trim(), g]));
+      const dragType = normalizeCodeGenGroupType(dragGroup?.groupType).toLowerCase();
+      const findRouteAncestorId = (startParentId) => {
+        let cursorId = String(startParentId || "").trim();
+        let guard = 0;
+        while (cursorId && guard < 200) {
+          const cursor = byId.get(cursorId);
+          if (!cursor) break;
+          if (String(cursor?.groupType || "").trim().toLowerCase() === "route") return cursorId;
+          cursorId = String(cursor?.parentId || "").trim();
+          guard += 1;
+        }
+        return "";
+      };
+      const targetParent = targetParentId ? byId.get(targetParentId) || null : null;
+      const targetParentType = normalizeCodeGenGroupType(targetParent?.groupType).toLowerCase();
+      if (dragType === "subroute" || dragType === "sender" || dragType === "receiver" || dragType === "group") {
+        if (targetParentType !== "route") {
+          toastInfo("SubRoute, Sender, Receiver, and Group can only be moved under Route.");
+          return curr;
+        }
+      }
+      if (String(dragGroup?.groupType || "").trim().toLowerCase() !== "route") {
+        const routeAncestorId = findRouteAncestorId(targetParentId);
+        if (!routeAncestorId) {
+          toastInfo("Only Route objects can exist at the top level.");
+          return curr;
+        }
+      }
+      let cursorId = targetParentId;
+      let guard = 0;
+      while (cursorId && guard < 200) {
+        if (cursorId === dragGroupId) return curr;
+        const cursor = byId.get(cursorId);
+        cursorId = String(cursor?.parentId || "").trim();
+        guard += 1;
+      }
+      const withParent = curr.map((g) =>
+        String(g?.id || "") === dragGroupId ? { ...g, parentId: targetParentId } : g
+      );
+      const currentIndex = withParent.findIndex((g) => String(g?.id || "") === dragGroupId);
+      const [moved] = withParent.splice(currentIndex, 1);
+      const targetIndexAfterRemove = withParent.findIndex((g) => String(g?.id || "") === targetGroupId);
+      if (targetIndexAfterRemove < 0) return curr;
+      withParent.splice(targetIndexAfterRemove, 0, moved);
+      return withParent;
+    });
+  };
+
+  const reorderCodeGenGroupToParentEnd = (dragGroupIdRaw, parentIdRaw) => {
+    const dragGroupId = String(dragGroupIdRaw || "").trim();
+    const parentId = String(parentIdRaw || "").trim();
+    if (!dragGroupId) return;
+    updateCodeGenGroups((curr) => {
+      const dragIndex = curr.findIndex((g) => String(g?.id || "") === dragGroupId);
+      if (dragIndex < 0) return curr;
+      const dragGroup = curr[dragIndex];
+      const byId = new Map(curr.map((g) => [String(g?.id || "").trim(), g]));
+      const dragType = normalizeCodeGenGroupType(dragGroup?.groupType).toLowerCase();
+      const findRouteAncestorId = (startParentId) => {
+        let cursorId = String(startParentId || "").trim();
+        let guard = 0;
+        while (cursorId && guard < 200) {
+          const cursor = byId.get(cursorId);
+          if (!cursor) break;
+          if (String(cursor?.groupType || "").trim().toLowerCase() === "route") return cursorId;
+          cursorId = String(cursor?.parentId || "").trim();
+          guard += 1;
+        }
+        return "";
+      };
+      const parentGroup = parentId ? byId.get(parentId) || null : null;
+      const parentType = normalizeCodeGenGroupType(parentGroup?.groupType).toLowerCase();
+      if (dragType === "subroute" || dragType === "sender" || dragType === "receiver" || dragType === "group") {
+        if (parentType !== "route") {
+          toastInfo("SubRoute, Sender, Receiver, and Group can only be moved under Route.");
+          return curr;
+        }
+      }
+      if (String(dragGroup?.groupType || "").trim().toLowerCase() !== "route") {
+        const routeAncestorId = findRouteAncestorId(parentId);
+        if (!routeAncestorId) {
+          toastInfo("Only Route objects can exist at the top level.");
+          return curr;
+        }
+      }
+      let cursorId = parentId;
+      let guard = 0;
+      while (cursorId && guard < 200) {
+        if (cursorId === dragGroupId) return curr;
+        const cursor = byId.get(cursorId);
+        cursorId = String(cursor?.parentId || "").trim();
+        guard += 1;
+      }
+      const withParent = curr.map((g) =>
+        String(g?.id || "") === dragGroupId ? { ...g, parentId } : g
+      );
+      const currentIndex = withParent.findIndex((g) => String(g?.id || "") === dragGroupId);
+      const [moved] = withParent.splice(currentIndex, 1);
+      withParent.push(moved);
+      return withParent;
+    });
   };
 
   const removeTagFromGroup = (tagRaw, groupIdRaw) => {
@@ -7442,7 +8425,7 @@ export default function PlcAnalyzer({
                   >
                     <div style={{ borderRight: "1px solid var(--border)", display: "grid", gridTemplateRows: "auto auto 1fr" }}>
                       <div style={{ padding: 8 }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(120px,1fr) auto", gap: 6, marginBottom: 6 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(150px,1fr) auto auto", gap: 6, marginBottom: 6 }}>
                           <input
                             value={codeGenNewTagDraft}
                             onChange={(e) => setCodeGenNewTagDraft(e.target.value)}
@@ -7451,7 +8434,7 @@ export default function PlcAnalyzer({
                               e.preventDefault();
                               addCodeGenTag(codeGenNewTagDraft, codeGenNewTagEquipmentDraft);
                             }}
-                            placeholder="Add tag (e.g. Motor_RunCmd)"
+                            placeholder="Add tag"
                             style={{
                               width: "100%",
                               border: "1px solid var(--border)",
@@ -7463,7 +8446,7 @@ export default function PlcAnalyzer({
                               boxSizing: "border-box",
                             }}
                           />
-                          <input
+                          <select
                             value={codeGenNewTagEquipmentDraft}
                             onChange={(e) => setCodeGenNewTagEquipmentDraft(e.target.value)}
                             onKeyDown={(e) => {
@@ -7471,7 +8454,6 @@ export default function PlcAnalyzer({
                               e.preventDefault();
                               addCodeGenTag(codeGenNewTagDraft, codeGenNewTagEquipmentDraft);
                             }}
-                            placeholder="Equipment type"
                             style={{
                               width: "100%",
                               border: "1px solid var(--border)",
@@ -7482,7 +8464,32 @@ export default function PlcAnalyzer({
                               fontSize: 11,
                               boxSizing: "border-box",
                             }}
-                          />
+                          >
+                            <option value="">Equipment type</option>
+                            {codeGenEquipmentTypeOptions.map((type) => (
+                              <option key={`codegen-equip-option-${type}`} value={type}>
+                                {type}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            data-preserve-style="true"
+                            onClick={() => removeCodeGenEquipmentTypeOption(codeGenNewTagEquipmentDraft)}
+                            style={{
+                              border: "1px solid var(--border)",
+                              background: "var(--bg-elev)",
+                              color: "var(--text-muted)",
+                              borderRadius: 8,
+                              padding: "6px 10px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                            }}
+                            title="Remove selected equipment type"
+                          >
+                            Remove Type
+                          </button>
                           <button
                             type="button"
                             data-preserve-style="true"
@@ -7550,92 +8557,518 @@ export default function PlcAnalyzer({
                           }}
                         />
                       </div>
-                      <div
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          const dropped = String(
-                            e.dataTransfer?.getData("text/plain") || codeGenDragTag || ""
-                          ).trim();
-                          if (!dropped) return;
-                          moveTagToUngrouped(dropped);
-                        }}
-                        style={{
-                          margin: "0 8px 8px 8px",
-                          border: "1px dashed var(--border)",
-                          borderRadius: 8,
-                          padding: "6px 8px",
-                          fontSize: 10,
-                          color: "var(--text-muted)",
-                          background: "var(--bg-soft)",
-                        }}
-                        title="Drop here to ungroup a tag"
-                      >
-                        Ungrouped Drop Zone
-                      </div>
                       <div className="vizi-scroll" style={{ overflow: "auto", padding: "0 8px 8px 8px", display: "grid", gap: 6, alignContent: "start" }}>
                         {filteredCodeGenTags.map((tag) => {
                           const grouped = codeGenAssignedTagSet.has(tag);
                           const equipmentType = String(codeGenTagMeta?.[tag]?.equipmentType || "").trim();
+                          const inputItems = Array.from(
+                            new Set(
+                              [
+                                ...(Array.isArray(codeGenTagMeta?.[tag]?.inputDefs) ? codeGenTagMeta[tag].inputDefs : []),
+                                ...(Array.isArray(codeGenTagMeta?.[tag]?.inputs) ? codeGenTagMeta[tag].inputs.map((address) => ({ address })) : []),
+                                ...(String(codeGenTagMeta?.[tag]?.plcInputAddress || "").trim()
+                                  ? [{ address: String(codeGenTagMeta?.[tag]?.plcInputAddress || "").trim() }]
+                                  : []),
+                              ]
+                                .map((entry) => {
+                                  const name = String(entry?.name || "").trim();
+                                  const address = String(entry?.address || "").trim();
+                                  if (!address) return "";
+                                  return `${name}|||${address}`;
+                                })
+                                .filter(Boolean)
+                            )
+                          ).map((row) => {
+                            const [name = "", address = ""] = String(row || "").split("|||");
+                            return { name, address };
+                          });
+                          const outputItems = Array.from(
+                            new Set(
+                              [
+                                ...(Array.isArray(codeGenTagMeta?.[tag]?.outputDefs) ? codeGenTagMeta[tag].outputDefs : []),
+                                ...(Array.isArray(codeGenTagMeta?.[tag]?.outputs) ? codeGenTagMeta[tag].outputs.map((address) => ({ address })) : []),
+                                ...(String(codeGenTagMeta?.[tag]?.plcOutputAddress || "").trim()
+                                  ? [{ address: String(codeGenTagMeta?.[tag]?.plcOutputAddress || "").trim() }]
+                                  : []),
+                              ]
+                                .map((entry) => {
+                                  const name = String(entry?.name || "").trim();
+                                  const address = String(entry?.address || "").trim();
+                                  if (!address) return "";
+                                  return `${name}|||${address}`;
+                                })
+                                .filter(Boolean)
+                            )
+                          ).map((row) => {
+                            const [name = "", address = ""] = String(row || "").split("|||");
+                            return { name, address };
+                          });
+                          const ioDraft = String(codeGenIoDraftByPlc?.[chatKey]?.[tag] || "");
+                          const ioNameDraft = String(codeGenIoNameDraftByPlc?.[chatKey]?.[tag] || "");
+                          const ioType = String(codeGenIoTypeByPlc?.[chatKey]?.[tag] || "Input");
+                          const ioItems = [
+                            ...inputItems.map((entry) => ({
+                              type: "Input",
+                              name: String(entry?.name || ""),
+                              address: String(entry?.address || ""),
+                            })),
+                            ...outputItems.map((entry) => ({
+                              type: "Output",
+                              name: String(entry?.name || ""),
+                              address: String(entry?.address || ""),
+                            })),
+                          ].sort((a, b) => {
+                            const byType = String(a?.type || "").localeCompare(String(b?.type || ""));
+                            if (byType !== 0) return byType;
+                            const byName = String(a?.name || "").localeCompare(String(b?.name || ""));
+                            if (byName !== 0) return byName;
+                            return String(a?.address || "").localeCompare(String(b?.address || ""));
+                          });
+                          const expanded = codeGenExpandedTags.has(tag);
+                          const tagEditMode = codeGenTagEditByPlc?.[chatKey]?.[tag] === true;
+                          const selectedTag = String(codeGenSelectedTag || "") === tag;
                           return (
                             <div
                               key={`codegen-tag-${tag}`}
                               draggable
+                              onClick={() =>
+                                setCodeGenSelectedTagByPlc((prev) => ({ ...(prev || {}), [chatKey]: tag }))
+                              }
                               onDragStart={(e) => {
                                 setCodeGenDragTag(tag);
+                                e.dataTransfer?.setData("application/x-vizi-tag", tag);
                                 e.dataTransfer?.setData("text/plain", tag);
                               }}
-                              onDragEnd={() => setCodeGenDragTag("")}
+                              onDragEnd={() => {
+                                setCodeGenDragTag("");
+                                setCodeGenTagDropTargetGroupId("");
+                              }}
                               style={{
-                                border: "1px solid var(--border)",
+                                border: selectedTag ? "1px solid #2b6cff" : "1px solid var(--border)",
                                 borderRadius: 8,
-                                padding: "6px 8px",
-                                fontSize: 11,
+                                padding: 4,
+                                fontSize: 10,
                                 color: "var(--text)",
                                 background: grouped ? "color-mix(in srgb, #2b6cff 10%, var(--bg-elev))" : "var(--bg-elev)",
                                 cursor: "grab",
                                 display: "grid",
-                                gap: 2,
+                                gap: 4,
+                                userSelect: "none",
                               }}
                               title={tag}
                             >
-                              <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{tag}</div>
-                              <input
-                                value={equipmentType}
-                                onChange={(e) => updateCodeGenTagEquipment(tag, e.target.value)}
-                                placeholder="Equipment type"
-                                style={{
-                                  width: "100%",
-                                  border: "1px solid var(--border)",
-                                  background: "var(--bg)",
-                                  color: "var(--text)",
-                                  borderRadius: 6,
-                                  padding: "3px 6px",
-                                  fontSize: 10,
-                                  boxSizing: "border-box",
-                                }}
-                              />
-                              <div style={{ fontSize: 10, color: "var(--text-muted)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                                <span>{grouped ? "Grouped" : "Ungrouped"}</span>
+                              <div style={{ display: "grid", gridTemplateColumns: "22px minmax(120px,1fr) minmax(80px,auto) auto", gap: 5, alignItems: "center" }}>
+                                <button
+                                  type="button"
+                                  data-preserve-style="true"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    toggleCodeGenTagExpanded(tag);
+                                  }}
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    borderRadius: 5,
+                                    width: 22,
+                                    height: 22,
+                                    display: "grid",
+                                    placeItems: "center",
+                                    fontWeight: 700,
+                                    fontSize: 12,
+                                    lineHeight: "20px",
+                                    background: "var(--bg)",
+                                    opacity: grouped ? 1 : 0.7,
+                                    cursor: "pointer",
+                                    padding: 0,
+                                  }}
+                                  title={expanded ? `Hide ${tag} properties` : `Show ${tag} properties`}
+                                >
+                                  {expanded ? "-" : "+"}
+                                </button>
+                                <div
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: "var(--bg)",
+                                    color: "var(--text)",
+                                    borderRadius: 6,
+                                    height: 18,
+                                    padding: "0 6px",
+                                    lineHeight: "16px",
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    minWidth: 0,
+                                    display: "flex",
+                                    alignItems: "center",
+                                  }}
+                                  title={tag}
+                                >
+                                  {tag}
+                                </div>
+                                <div
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: "var(--bg)",
+                                    color: equipmentType ? "var(--text)" : "var(--text-muted)",
+                                    borderRadius: 6,
+                                    height: 18,
+                                    padding: "0 6px",
+                                    lineHeight: "16px",
+                                    fontSize: 9,
+                                    fontWeight: 700,
+                                    minWidth: 0,
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                  title={equipmentType || "No equipment type"}
+                                >
+                                  {equipmentType || "Type"}
+                                </div>
                                 <button
                                   type="button"
                                   data-preserve-style="true"
                                   onClick={() => removeCodeGenTag(tag)}
                                   style={{
-                                    border: "none",
-                                    background: "transparent",
-                                    color: "#f04438",
+                                    border: "1px solid #f04438",
+                                    background: "#f04438",
+                                    color: "#fff",
+                                    borderRadius: 6,
+                                    width: 18,
+                                    height: 18,
                                     padding: 0,
+                                    display: "grid",
+                                    placeItems: "center",
                                     fontSize: 10,
-                                    lineHeight: 1,
-                                    cursor: "pointer",
                                     fontWeight: 700,
+                                    cursor: "pointer",
                                   }}
                                   title="Delete tag"
+                                  aria-label="Delete tag"
                                 >
-                                  Delete
+                                  x
                                 </button>
                               </div>
+                              {expanded ? (
+                                <div
+                                  style={{
+                                    borderTop: "1px solid var(--border)",
+                                    marginTop: 2,
+                                    paddingTop: 4,
+                                    display: "grid",
+                                    gridTemplateColumns: "1fr 1fr",
+                                    gap: 4,
+                                  }}
+                                >
+                                  <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", gap: 4 }}>
+                                    <button
+                                      type="button"
+                                      data-preserve-style="true"
+                                      onClick={() =>
+                                        setCodeGenTagEditByPlc((prev) => {
+                                          const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+                                          return { ...(prev || {}), [chatKey]: { ...byPlc, [tag]: true } };
+                                        })
+                                      }
+                                      style={{
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg)",
+                                        color: "var(--text-muted)",
+                                        borderRadius: 6,
+                                        width: 18,
+                                        height: 18,
+                                        padding: 0,
+                                        display: "grid",
+                                        placeItems: "center",
+                                        fontSize: 10,
+                                        fontWeight: 700,
+                                        cursor: "pointer",
+                                      }}
+                                      title="Edit"
+                                    >
+                                      ✎
+                                    </button>
+                                    <button
+                                      type="button"
+                                      data-preserve-style="true"
+                                      onClick={() => {
+                                        setCodeGenTagEditByPlc((prev) => {
+                                          const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+                                          return { ...(prev || {}), [chatKey]: { ...byPlc, [tag]: false } };
+                                        });
+                                        toastSuccess("Tag details saved.");
+                                      }}
+                                      style={{
+                                        border: "1px solid #2b6cff",
+                                        background: "#2b6cff",
+                                        color: "#fff",
+                                        borderRadius: 6,
+                                        width: 18,
+                                        height: 18,
+                                        padding: 0,
+                                        display: "grid",
+                                        placeItems: "center",
+                                        fontSize: 10,
+                                        fontWeight: 700,
+                                        cursor: "pointer",
+                                      }}
+                                      title="Save"
+                                    >
+                                      ✓
+                                    </button>
+                                  </div>
+                                  <input
+                                    value={tag}
+                                    readOnly
+                                    style={{
+                                      border: "1px solid var(--border)",
+                                      background: "var(--bg)",
+                                      color: "var(--text-muted)",
+                                      borderRadius: 6,
+                                      height: 18,
+                                      padding: "0 6px",
+                                      lineHeight: "16px",
+                                      fontSize: 9,
+                                      minWidth: 0,
+                                    }}
+                                  />
+                                  <select
+                                    value={equipmentType}
+                                    onChange={(e) => updateCodeGenTagEquipment(tag, e.target.value)}
+                                    disabled={!tagEditMode}
+                                    style={{
+                                      border: "1px solid var(--border)",
+                                      background: "var(--bg)",
+                                      color: "var(--text)",
+                                      borderRadius: 6,
+                                      height: 18,
+                                      padding: "0 6px",
+                                      lineHeight: "16px",
+                                      fontSize: 9,
+                                      minWidth: 0,
+                                    }}
+                                  >
+                                    <option value="">Equipment type</option>
+                                    {codeGenEquipmentTypeOptions.map((type) => (
+                                      <option key={`codegen-tag-equip-${tag}-${type}`} value={type}>
+                                        {type}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <div
+                                    style={{
+                                      gridColumn: "1 / -1",
+                                      fontSize: 9,
+                                      color: "var(--text-muted)",
+                                      fontWeight: 700,
+                                      paddingTop: 2,
+                                    }}
+                                  >
+                                    I/O
+                                  </div>
+                                  <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "90px minmax(0,1fr) minmax(0,1fr) auto", gap: 4, minWidth: 0 }}>
+                                    <select
+                                      value={ioType}
+                                      onChange={(e) => {
+                                        const value = String(e.target.value || "Input");
+                                        setCodeGenIoTypeByPlc((prev) => {
+                                          const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+                                          return { ...(prev || {}), [chatKey]: { ...byPlc, [tag]: value } };
+                                        });
+                                      }}
+                                      disabled={!tagEditMode}
+                                      style={{
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg)",
+                                        color: "var(--text)",
+                                        borderRadius: 6,
+                                        height: 18,
+                                        padding: "0 6px",
+                                        lineHeight: "16px",
+                                        fontSize: 9,
+                                        minWidth: 0,
+                                      }}
+                                    >
+                                      <option value="Input">Input</option>
+                                      <option value="Output">Output</option>
+                                    </select>
+                                    <input
+                                      value={ioNameDraft}
+                                      onChange={(e) => {
+                                        const value = String(e.target.value || "");
+                                        setCodeGenIoNameDraftByPlc((prev) => {
+                                          const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+                                          return { ...(prev || {}), [chatKey]: { ...byPlc, [tag]: value } };
+                                        });
+                                      }}
+                                      disabled={!tagEditMode}
+                                      placeholder={`${ioType} name`}
+                                      style={{
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg)",
+                                        color: "var(--text)",
+                                        borderRadius: 6,
+                                        height: 18,
+                                        padding: "0 6px",
+                                        lineHeight: "16px",
+                                        fontSize: 9,
+                                        minWidth: 0,
+                                      }}
+                                    />
+                                    <input
+                                      value={ioDraft}
+                                      onChange={(e) => {
+                                        const value = String(e.target.value || "");
+                                        setCodeGenIoDraftByPlc((prev) => {
+                                          const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+                                          return { ...(prev || {}), [chatKey]: { ...byPlc, [tag]: value } };
+                                        });
+                                      }}
+                                      disabled={!tagEditMode}
+                                      placeholder={`${ioType} address`}
+                                      style={{
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg)",
+                                        color: "var(--text)",
+                                        borderRadius: 6,
+                                        height: 18,
+                                        padding: "0 6px",
+                                        lineHeight: "16px",
+                                        fontSize: 9,
+                                        minWidth: 0,
+                                      }}
+                                    />
+                                    <button
+                                      type="button"
+                                      data-preserve-style="true"
+                                      onClick={() => {
+                                        addCodeGenTagIoValue(tag, ioType === "Output" ? "outputDefs" : "inputDefs", ioDraft, ioNameDraft);
+                                        setCodeGenIoDraftByPlc((prev) => {
+                                          const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+                                          return { ...(prev || {}), [chatKey]: { ...byPlc, [tag]: "" } };
+                                        });
+                                        setCodeGenIoNameDraftByPlc((prev) => {
+                                          const byPlc = prev?.[chatKey] && typeof prev[chatKey] === "object" ? prev[chatKey] : {};
+                                          return { ...(prev || {}), [chatKey]: { ...byPlc, [tag]: "" } };
+                                        });
+                                      }}
+                                      disabled={!tagEditMode}
+                                      style={{
+                                        border: "1px solid #2b6cff",
+                                        background: "#2b6cff",
+                                        color: "#fff",
+                                        borderRadius: 6,
+                                        height: 18,
+                                        padding: "0 6px",
+                                        fontSize: 9,
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      Add
+                                    </button>
+                                  </div>
+                                  <div style={{ gridColumn: "1 / -1", display: "grid", gap: 4 }}>
+                                    {ioItems.length ? (
+                                      ioItems.map((item) => {
+                                        const type = String(item?.type || "Input");
+                                        const name = String(item?.name || "");
+                                        const address = String(item?.address || "");
+                                        return (
+                                            <div
+                                              key={`tag-io-${tag}-${type}-${name}-${address}`}
+                                              style={{
+                                                display: "grid",
+                                                gridTemplateColumns: "60px minmax(0,1fr) minmax(0,1fr) auto",
+                                                gap: 4,
+                                                alignItems: "center",
+                                              }}
+                                            >
+                                              <div
+                                                style={{
+                                                  border: "1px solid var(--border)",
+                                                  background: "var(--bg)",
+                                                color: "var(--text-muted)",
+                                                borderRadius: 6,
+                                                height: 18,
+                                                padding: "0 6px",
+                                                lineHeight: "16px",
+                                                fontSize: 9,
+                                                fontWeight: 700,
+                                              }}
+                                            >
+                                              {type}
+                                            </div>
+                                            <div
+                                              style={{
+                                                border: "1px solid var(--border)",
+                                                background: "var(--bg)",
+                                                color: "var(--text)",
+                                                borderRadius: 6,
+                                                height: 18,
+                                                padding: "0 6px",
+                                                lineHeight: "16px",
+                                                fontSize: 9,
+                                                minWidth: 0,
+                                                whiteSpace: "nowrap",
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                                }}
+                                              title={String(item?.name || "")}
+                                              >
+                                              {String(item?.name || "") || "-"}
+                                            </div>
+                                            <div
+                                              style={{
+                                                border: "1px solid var(--border)",
+                                                background: "var(--bg)",
+                                                color: "var(--text)",
+                                                borderRadius: 6,
+                                                height: 18,
+                                                padding: "0 6px",
+                                                lineHeight: "16px",
+                                                fontSize: 9,
+                                                minWidth: 0,
+                                                whiteSpace: "nowrap",
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                              }}
+                                              title={String(item?.address || "")}
+                                            >
+                                              {String(item?.address || "")}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              data-preserve-style="true"
+                                              onClick={() =>
+                                                removeCodeGenTagIoValue(
+                                                  tag,
+                                                  type === "Output" ? "outputDefs" : "inputDefs",
+                                                  String(item?.address || ""),
+                                                  String(item?.name || "")
+                                                )
+                                              }
+                                              disabled={!tagEditMode}
+                                              style={{
+                                                border: "1px solid var(--border)",
+                                                background: "var(--bg)",
+                                                color: "var(--text-muted)",
+                                                borderRadius: 6,
+                                                height: 18,
+                                                padding: "0 6px",
+                                                fontSize: 9,
+                                                cursor: "pointer",
+                                              }}
+                                            >
+                                              Remove
+                                            </button>
+                                          </div>
+                                        );
+                                      })
+                                    ) : (
+                                      <div style={{ fontSize: 9, color: "var(--text-muted)" }}>No IO entries</div>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : null}
                             </div>
                           );
                         })}
@@ -7647,11 +9080,11 @@ export default function PlcAnalyzer({
 
                     <div style={{ borderRight: "1px solid var(--border)", display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0 }}>
                       <div style={{ padding: 8, borderBottom: "1px solid var(--border)", display: "grid", gap: 6 }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "minmax(120px,1fr) minmax(120px,1fr) auto", gap: 6 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: codeGenGroupTypeDraft === "Group" ? "minmax(120px,1fr) minmax(120px,1fr) minmax(120px,1fr) auto" : "minmax(120px,1fr) minmax(120px,1fr) auto", gap: 6 }}>
                           <input
                             value={codeGenGroupNameDraft}
                             onChange={(e) => setCodeGenGroupNameDraft(e.target.value)}
-                            placeholder="New group name"
+                            placeholder="New Object Name"
                             style={{
                               border: "1px solid var(--border)",
                               background: "var(--bg-elev)",
@@ -7679,6 +9112,26 @@ export default function PlcAnalyzer({
                               </option>
                             ))}
                           </select>
+                          {codeGenGroupTypeDraft === "Group" ? (
+                            <select
+                              value={codeGenGroupSubTypeDraft}
+                              onChange={(e) => setCodeGenGroupSubTypeDraft(String(e.target.value || "Feed"))}
+                              style={{
+                                border: "1px solid var(--border)",
+                                background: "var(--bg-elev)",
+                                color: "var(--text)",
+                                borderRadius: 8,
+                                padding: "6px 8px",
+                                fontSize: 11,
+                              }}
+                            >
+                              {CODE_GEN_GROUP_SUBTYPES.map((subType) => (
+                                <option key={`group-subtype-opt-${subType}`} value={subType}>
+                                  {subType}
+                                </option>
+                              ))}
+                            </select>
+                          ) : null}
                           <button
                             type="button"
                             data-preserve-style="true"
@@ -7708,6 +9161,13 @@ export default function PlcAnalyzer({
                           - click any group row below to nest under it.
                         </div>
                         <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Drag tags from the left pane and drop onto a group node.</div>
+                        <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                          {String(codeGenDragTag || "").trim()
+                            ? "Mode: Adding tag to group (drop highlight on groups only)."
+                            : String(codeGenDragGroupId || "").trim()
+                              ? "Mode: Reordering rows (no highlight)."
+                              : "Mode: Click + drag object rows to reorder."}
+                        </div>
                       </div>
                       <div
                         style={{
@@ -7719,22 +9179,110 @@ export default function PlcAnalyzer({
                         }}
                       >
                         <div className="vizi-scroll" style={{ overflow: "auto", display: "grid", gap: 6, alignContent: "start" }}>
-                          {(() => {
-                          const groupTreeSort = (a, b) => {
-                            const typeRank = (row) => {
-                              const t = String(row?.groupType || "").trim().toLowerCase();
-                              if (t === "subroute") return 0;
-                              if (t === "sender") return 1;
-                              if (t === "receiver") return 2;
-                              return 3;
-                            };
-                            const byType = typeRank(a) - typeRank(b);
-                            if (byType !== 0) return byType;
-                            return String(a?.name || "").localeCompare(String(b?.name || ""));
-                          };
+                          {codeGenTreeLoading ? (
+                            <div
+                              style={{
+                                border: "1px solid var(--border)",
+                                borderRadius: 8,
+                                padding: 4,
+                                fontSize: 10,
+                                color: "var(--text-muted)",
+                                background: "color-mix(in srgb, rgba(148,163,184,0.06) 100%, var(--bg-elev))",
+                              }}
+                            >
+                              <div style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) minmax(100px,auto) auto", gap: 5, alignItems: "center" }}>
+                                <span
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    borderRadius: 5,
+                                    width: 18,
+                                    height: 18,
+                                    display: "grid",
+                                    placeItems: "center",
+                                    fontWeight: 700,
+                                    lineHeight: 1,
+                                    background: "var(--bg)",
+                                    opacity: 0.8,
+                                  }}
+                                >
+                                  ·
+                                </span>
+                                <span
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: "var(--bg)",
+                                    color: "var(--text-muted)",
+                                    borderRadius: 6,
+                                    height: 18,
+                                    padding: "0 6px",
+                                    lineHeight: "16px",
+                                    overflow: "hidden",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  Loading tree...
+                                </span>
+                                <span
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: "var(--bg)",
+                                    color: "var(--text-muted)",
+                                    borderRadius: 6,
+                                    height: 18,
+                                    padding: "0 6px",
+                                    lineHeight: "16px",
+                                  }}
+                                >
+                                  Group
+                                </span>
+                                <span
+                                  style={{
+                                    border: "1px solid #f04438",
+                                    color: "#f04438",
+                                    borderRadius: 6,
+                                    width: 18,
+                                    height: 18,
+                                    display: "grid",
+                                    placeItems: "center",
+                                    fontWeight: 700,
+                                  }}
+                                >
+                                  ×
+                                </span>
+                              </div>
+                            </div>
+                          ) : (() => {
                           const rootGroups = codeGenGroups
-                            .filter((g) => !String(g?.parentId || "").trim())
-                            .sort(groupTreeSort);
+                            .filter((g) => !String(g?.parentId || "").trim());
+                          const byGroupId = new Map(
+                            codeGenGroups.map((g) => [String(g?.id || "").trim(), g])
+                          );
+                          const canDropGroupOnParent = (dragGroupIdRaw, parentIdRaw) => {
+                            const dragGroupId = String(dragGroupIdRaw || "").trim();
+                            const parentId = String(parentIdRaw || "").trim();
+                            if (!dragGroupId) return false;
+                            const dragGroup = byGroupId.get(dragGroupId) || null;
+                            if (!dragGroup) return false;
+                            const dragType = normalizeCodeGenGroupType(dragGroup?.groupType).toLowerCase();
+                            if (dragType === "route") return !parentId;
+                            const parentGroup = parentId ? byGroupId.get(parentId) || null : null;
+                            const parentType = normalizeCodeGenGroupType(parentGroup?.groupType).toLowerCase();
+                            if (dragType === "subroute" || dragType === "sender" || dragType === "receiver" || dragType === "group") {
+                              return parentType === "route";
+                            }
+                            // Other non-route types must still remain under some route.
+                            if (!parentId) return false;
+                            let cursorId = parentId;
+                            let guard = 0;
+                            while (cursorId && guard < 200) {
+                              const cursor = byGroupId.get(cursorId);
+                              if (!cursor) break;
+                              if (normalizeCodeGenGroupType(cursor?.groupType).toLowerCase() === "route") return true;
+                              cursorId = String(cursor?.parentId || "").trim();
+                              guard += 1;
+                            }
+                            return false;
+                          };
                           const childrenByParent = new Map();
                           codeGenGroups.forEach((g) => {
                             const parent = String(g?.parentId || "").trim();
@@ -7745,6 +9293,16 @@ export default function PlcAnalyzer({
                           const renderGroupNode = (group, depth = 0, path = new Set()) => {
                             const id = String(group?.id || "");
                             if (!id) return null;
+                            const isDropAllowed = normalizeCodeGenGroupType(group?.groupType) === "Group";
+                            const isSelected = String(codeGenSelectedGroupId || "") === id;
+                            const dragGroupId = String(codeGenDragGroupId || "").trim();
+                            const targetParentId = String(group?.parentId || "").trim();
+                            const canDropBeforeThisRow = !!dragGroupId && canDropGroupOnParent(dragGroupId, targetParentId);
+                            const canDropIntoThisRow = !!dragGroupId && canDropGroupOnParent(dragGroupId, id);
+                            const isGroupDropHover =
+                              canDropBeforeThisRow && String(codeGenGroupDropTargetId || "") === id;
+                            const isGroupParentDropHover =
+                              canDropIntoThisRow && String(codeGenGroupDropParentTargetId || "") === id;
                             const typeKey = String(group?.groupType || "").trim().toLowerCase();
                             const typeTint = (() => {
                               if (typeKey === "route") return "rgba(43,108,255,0.10)";
@@ -7756,7 +9314,7 @@ export default function PlcAnalyzer({
                               return "rgba(148,163,184,0.06)";
                             })();
                             const isCycle = path.has(id);
-                            const children = (childrenByParent.get(id) || []).slice().sort(groupTreeSort);
+                            const children = childrenByParent.get(id) || [];
                             const hasChildren = children.length > 0;
                             const expanded = codeGenExpandedSet.has(id);
                             const tags = (Array.isArray(group?.tags) ? group.tags : [])
@@ -7768,32 +9326,125 @@ export default function PlcAnalyzer({
                             return (
                               <div key={`group-node-${id}`} style={{ marginLeft: depth * 12, display: "grid", gap: 3 }}>
                                 <div
+                                  draggable
                                   onClick={() => {
                                     setCodeGenGroupParentDraft(id);
                                     setCodeGenSelectedGroupId(id);
                                   }}
-                                  onDragOver={(e) => e.preventDefault()}
+                                  onDragStart={(e) => {
+                                    setCodeGenDragGroupId(id);
+                                    e.dataTransfer?.setData("application/x-vizi-group", id);
+                                    e.dataTransfer?.setData("text/plain", id);
+                                  }}
+                                  onDragEnd={() => {
+                                    setCodeGenDragGroupId("");
+                                    setCodeGenGroupDropTargetId("");
+                                    setCodeGenGroupDropParentTargetId("");
+                                    setCodeGenTagDropTargetGroupId("");
+                                  }}
+                                  onDragOver={(e) => {
+                                    const dragGroup = String(e.dataTransfer?.getData("application/x-vizi-group") || codeGenDragGroupId || "").trim();
+                                    const dragTag = String(e.dataTransfer?.getData("application/x-vizi-tag") || codeGenDragTag || "").trim();
+                                    if (!dragGroup && (!isDropAllowed || !dragTag)) return;
+                                    if (dragGroup) {
+                                      if (canDropGroupOnParent(dragGroup, id)) {
+                                        e.preventDefault();
+                                        if (String(codeGenGroupDropParentTargetId || "") !== id) setCodeGenGroupDropParentTargetId(id);
+                                        if (String(codeGenGroupDropTargetId || "") === id) setCodeGenGroupDropTargetId("");
+                                      } else if (canDropGroupOnParent(dragGroup, targetParentId)) {
+                                        e.preventDefault();
+                                        if (String(codeGenGroupDropParentTargetId || "") === id) setCodeGenGroupDropParentTargetId("");
+                                        if (String(codeGenGroupDropTargetId || "") !== id) setCodeGenGroupDropTargetId(id);
+                                      } else {
+                                        if (String(codeGenGroupDropParentTargetId || "") === id) setCodeGenGroupDropParentTargetId("");
+                                        setCodeGenGroupDropTargetId("");
+                                      }
+                                    }
+                                    if (!dragGroup && isDropAllowed && dragTag) {
+                                      e.preventDefault();
+                                      if (String(codeGenTagDropTargetGroupId || "") !== id) {
+                                        setCodeGenTagDropTargetGroupId(id);
+                                      }
+                                    }
+                                  }}
+                                  onDragEnter={(e) => {
+                                    const dragTag = String(e.dataTransfer?.getData("application/x-vizi-tag") || codeGenDragTag || "").trim();
+                                    if (!isDropAllowed || !dragTag) return;
+                                    e.preventDefault();
+                                    if (String(codeGenTagDropTargetGroupId || "") !== id) setCodeGenTagDropTargetGroupId(id);
+                                  }}
                                   onDrop={(e) => {
                                     e.preventDefault();
+                                    setCodeGenGroupDropTargetId("");
+                                    setCodeGenGroupDropParentTargetId("");
+                                    setCodeGenTagDropTargetGroupId("");
+                                    const droppedGroup = String(
+                                      e.dataTransfer?.getData("application/x-vizi-group") || codeGenDragGroupId || ""
+                                    ).trim();
+                                    if (droppedGroup) {
+                                      if (canDropGroupOnParent(droppedGroup, id)) {
+                                        reorderCodeGenGroupToParentEnd(droppedGroup, id);
+                                        setCodeGenDragGroupId("");
+                                        return;
+                                      }
+                                      if (!canDropGroupOnParent(droppedGroup, targetParentId)) {
+                                        setCodeGenDragGroupId("");
+                                        return;
+                                      }
+                                      reorderCodeGenGroup(droppedGroup, id);
+                                      setCodeGenDragGroupId("");
+                                      return;
+                                    }
                                     const dropped = String(
-                                      e.dataTransfer?.getData("text/plain") || codeGenDragTag || ""
+                                      e.dataTransfer?.getData("application/x-vizi-tag") ||
+                                      e.dataTransfer?.getData("text/plain") ||
+                                      codeGenDragTag ||
+                                      ""
                                     ).trim();
                                     if (!dropped) return;
                                     moveTagToGroup(dropped, id);
                                   }}
                                   style={{
-                                    border: "1px solid var(--border)",
+                                    border:
+                                      String(codeGenTagDropTargetGroupId || "") === id
+                                        ? "1px solid #2b6cff"
+                                        : isGroupParentDropHover
+                                          ? "2px dashed #2b6cff"
+                                        : isSelected
+                                          ? "1px solid #2b6cff"
+                                        : "1px solid var(--border)",
                                     borderRadius: 8,
                                     background:
-                                      String(codeGenGroupParentDraft || "") === id
-                                        ? `color-mix(in srgb, ${typeTint} 160%, var(--bg-elev))`
+                                      String(codeGenTagDropTargetGroupId || "") === id
+                                        ? `color-mix(in srgb, #2b6cff 10%, color-mix(in srgb, ${typeTint} 100%, var(--bg-elev)))`
+                                        : isGroupParentDropHover
+                                          ? `color-mix(in srgb, #2b6cff 10%, color-mix(in srgb, ${typeTint} 100%, var(--bg-elev)))`
                                         : `color-mix(in srgb, ${typeTint} 100%, var(--bg-elev))`,
                                     padding: 4,
+                                    marginTop: isGroupDropHover ? 8 : 0,
+                                    marginBottom: isGroupDropHover ? 8 : 0,
                                     display: "grid",
-                                    gap: 4,
-                                    cursor: "pointer",
+                                    gap: 2,
+                                    cursor: String(codeGenDragGroupId || "") === id ? "grabbing" : "grab",
+                                    position: "relative",
+                                    boxShadow: isGroupParentDropHover
+                                      ? "0 0 0 2px color-mix(in srgb, #2b6cff 28%, transparent), 0 0 12px color-mix(in srgb, #2b6cff 35%, transparent)"
+                                      : "none",
+                                    transition: "box-shadow 120ms ease, border-color 120ms ease",
                                   }}
                                 >
+                                  {isGroupDropHover ? (
+                                    <div
+                                      style={{
+                                        position: "absolute",
+                                        left: 6,
+                                        right: 6,
+                                        top: -7,
+                                        borderTop: "2px dashed #2b6cff",
+                                        pointerEvents: "none",
+                                      }}
+                                    />
+                                  ) : null}
                                   <div style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) minmax(100px,auto) auto", gap: 5, alignItems: "center" }}>
                                     <button
                                       type="button"
@@ -7816,9 +9467,7 @@ export default function PlcAnalyzer({
                                     >
                                       {hasChildren ? (expanded ? "−" : "+") : "·"}
                                     </button>
-                                    <input
-                                      value={String(group?.name || "")}
-                                      onChange={(e) => renameCodeGenGroup(id, e.target.value)}
+                                    <div
                                       style={{
                                         border: "1px solid var(--border)",
                                         background: "var(--bg)",
@@ -7830,11 +9479,14 @@ export default function PlcAnalyzer({
                                         fontSize: 10,
                                         fontWeight: 700,
                                         minWidth: 0,
+                                        display: "flex",
+                                        alignItems: "center",
                                       }}
-                                    />
-                                    <select
-                                      value={normalizeCodeGenGroupType(group?.groupType)}
-                                      onChange={(e) => setCodeGenGroupType(id, e.target.value)}
+                                      title={String(group?.name || "")}
+                                    >
+                                      {String(group?.name || "")}
+                                    </div>
+                                    <div
                                       style={{
                                         border: "1px solid var(--border)",
                                         background: "var(--bg)",
@@ -7845,15 +9497,15 @@ export default function PlcAnalyzer({
                                         lineHeight: "16px",
                                         fontSize: 9,
                                         fontWeight: 700,
+                                        display: "flex",
+                                        alignItems: "center",
                                       }}
                                       title="Group type"
                                     >
-                                      {CODE_GEN_GROUP_TYPES.map((groupType) => (
-                                        <option key={`group-node-type-${id}-${groupType}`} value={groupType}>
-                                          {groupType}
-                                        </option>
-                                      ))}
-                                    </select>
+                                      {normalizeCodeGenGroupType(group?.groupType) === "Group" && String(group?.groupSubType || "").trim()
+                                        ? String(group?.groupSubType || "").trim()
+                                        : normalizeCodeGenGroupType(group?.groupType)}
+                                    </div>
                                     <button
                                       type="button"
                                       data-preserve-style="true"
@@ -7878,67 +9530,197 @@ export default function PlcAnalyzer({
                                       ×
                                     </button>
                                   </div>
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                                    {tags.map((tag) => (
-                                      <div
-                                        key={`group-tag-${id}-${tag}`}
-                                        draggable
-                                        onDragStart={(e) => {
-                                          setCodeGenDragTag(tag);
-                                          e.dataTransfer?.setData("text/plain", tag);
-                                        }}
-                                        onDragEnd={() => setCodeGenDragTag("")}
-                                        style={{
-                                          border: "1px solid #2b6cff",
-                                          background: "color-mix(in srgb, #2b6cff 12%, var(--bg-elev))",
-                                          color: "var(--text)",
-                                          borderRadius: 999,
-                                          padding: "3px 7px",
-                                          fontSize: 9,
-                                          fontWeight: 700,
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          gap: 6,
-                                          cursor: "grab",
-                                        }}
-                                      >
-                                        <span>
-                                          {tag}
-                                          {String(codeGenTagMeta?.[tag]?.equipmentType || "").trim()
-                                            ? ` (${String(codeGenTagMeta?.[tag]?.equipmentType || "").trim()})`
-                                            : ""}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          data-preserve-style="true"
-                                          onClick={() => removeTagFromGroup(tag, id)}
-                                          style={{
-                                            border: "none",
-                                            background: "transparent",
-                                            color: "var(--text-muted)",
-                                            padding: 0,
-                                            fontSize: 10,
-                                            lineHeight: 1,
-                                            cursor: "pointer",
+                                  {tags.length ? (
+                                    <div style={{ display: "grid", gap: 4 }}>
+                                      {tags.map((tag) => (
+                                        <div
+                                          key={`group-tag-${id}-${tag}`}
+                                          draggable
+                                          onDragStart={(e) => {
+                                            setCodeGenDragTag(tag);
+                                            e.dataTransfer?.setData("application/x-vizi-tag", tag);
+                                            e.dataTransfer?.setData("text/plain", tag);
                                           }}
-                                          title="Remove from group"
+                                          onDragEnd={() => setCodeGenDragTag("")}
+                                          style={{
+                                            border: "1px solid var(--border)",
+                                            background: "var(--bg)",
+                                            color: "var(--text)",
+                                            borderRadius: 6,
+                                            padding: 3,
+                                            fontSize: 10,
+                                            fontWeight: 700,
+                                            display: "grid",
+                                            gridTemplateColumns: "18px minmax(0,1fr) minmax(80px,auto) auto",
+                                            alignItems: "center",
+                                            gap: 5,
+                                            cursor: "grab",
+                                          }}
                                         >
-                                          x
-                                        </button>
-                                      </div>
-                                    ))}
-                                  </div>
+                                          <div
+                                            style={{
+                                              border: "1px solid var(--border)",
+                                              background: "var(--bg-elev)",
+                                              color: "var(--text-muted)",
+                                              borderRadius: 5,
+                                              width: 18,
+                                              height: 18,
+                                              display: "grid",
+                                              placeItems: "center",
+                                              fontSize: 9,
+                                              lineHeight: 1,
+                                            }}
+                                          >
+                                            •
+                                          </div>
+                                          <div
+                                            style={{
+                                              border: "1px solid var(--border)",
+                                              background: "var(--bg-elev)",
+                                              color: "var(--text)",
+                                              borderRadius: 6,
+                                              height: 18,
+                                              padding: "0 6px",
+                                              lineHeight: "16px",
+                                              fontSize: 10,
+                                              fontWeight: 700,
+                                              minWidth: 0,
+                                              whiteSpace: "nowrap",
+                                              overflow: "hidden",
+                                              textOverflow: "ellipsis",
+                                            }}
+                                            title={tag}
+                                          >
+                                            {tag}
+                                          </div>
+                                          <div
+                                            style={{
+                                              border: "1px solid var(--border)",
+                                              background: "var(--bg-elev)",
+                                              color: "var(--text-muted)",
+                                              borderRadius: 6,
+                                              height: 18,
+                                              padding: "0 6px",
+                                              lineHeight: "16px",
+                                              fontSize: 9,
+                                              fontWeight: 700,
+                                              display: "flex",
+                                              alignItems: "center",
+                                            }}
+                                          >
+                                            Tag
+                                          </div>
+                                          <button
+                                            type="button"
+                                            data-preserve-style="true"
+                                            onClick={() => removeTagFromGroup(tag, id)}
+                                            style={{
+                                              border: "none",
+                                              background: "transparent",
+                                              color: "var(--text-muted)",
+                                              padding: 0,
+                                              fontSize: 10,
+                                              lineHeight: 1,
+                                              cursor: "pointer",
+                                            }}
+                                            title="Remove from group"
+                                          >
+                                            x
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : null}
                                 </div>
                                 {hasChildren && expanded && !isCycle ? (
                                   <div style={{ display: "grid", gap: 6 }}>
                                     {children.map((child) => renderGroupNode(child, depth + 1, nextPath))}
+                                    {String(codeGenDragGroupId || "").trim() && canDropGroupOnParent(codeGenDragGroupId, id) ? (
+                                      <div
+                                        onDragOver={(e) => {
+                                          const dragGroup = String(
+                                            e.dataTransfer?.getData("application/x-vizi-group") || codeGenDragGroupId || ""
+                                          ).trim();
+                                          if (!dragGroup || !canDropGroupOnParent(dragGroup, id)) return;
+                                          e.preventDefault();
+                                          setCodeGenGroupDropTargetId(`end:${id}`);
+                                        }}
+                                        onDragLeave={() => {
+                                          if (String(codeGenGroupDropTargetId || "") === `end:${id}`) setCodeGenGroupDropTargetId("");
+                                        }}
+                                        onDrop={(e) => {
+                                          e.preventDefault();
+                                          setCodeGenGroupDropTargetId("");
+                                          setCodeGenGroupDropParentTargetId("");
+                                          const droppedGroup = String(
+                                            e.dataTransfer?.getData("application/x-vizi-group") || codeGenDragGroupId || ""
+                                          ).trim();
+                                          if (!droppedGroup) return;
+                                          reorderCodeGenGroupToParentEnd(droppedGroup, id);
+                                          setCodeGenDragGroupId("");
+                                        }}
+                                        style={{
+                                          marginLeft: (depth + 1) * 12,
+                                          height: String(codeGenGroupDropTargetId || "") === `end:${id}` ? 16 : 10,
+                                          borderRadius: 6,
+                                          border:
+                                            String(codeGenGroupDropTargetId || "") === `end:${id}`
+                                              ? "1px dashed #2b6cff"
+                                              : "1px dashed color-mix(in srgb, var(--border) 70%, transparent)",
+                                          background:
+                                            String(codeGenGroupDropTargetId || "") === `end:${id}`
+                                              ? "color-mix(in srgb, #2b6cff 10%, transparent)"
+                                              : "transparent",
+                                        }}
+                                      />
+                                    ) : null}
                                   </div>
                                 ) : null}
                               </div>
                             );
                           };
                           return rootGroups.length ? (
-                            rootGroups.map((group) => renderGroupNode(group, 0, new Set()))
+                            <>
+                              {rootGroups.map((group) => renderGroupNode(group, 0, new Set()))}
+                              {String(codeGenDragGroupId || "").trim() && canDropGroupOnParent(codeGenDragGroupId, "") ? (
+                                <div
+                                  onDragOver={(e) => {
+                                    const dragGroup = String(
+                                      e.dataTransfer?.getData("application/x-vizi-group") || codeGenDragGroupId || ""
+                                    ).trim();
+                                    if (!dragGroup || !canDropGroupOnParent(dragGroup, "")) return;
+                                    e.preventDefault();
+                                    setCodeGenGroupDropTargetId("end:root");
+                                  }}
+                                  onDragLeave={() => {
+                                    if (String(codeGenGroupDropTargetId || "") === "end:root") setCodeGenGroupDropTargetId("");
+                                  }}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    setCodeGenGroupDropTargetId("");
+                                    setCodeGenGroupDropParentTargetId("");
+                                    const droppedGroup = String(
+                                      e.dataTransfer?.getData("application/x-vizi-group") || codeGenDragGroupId || ""
+                                    ).trim();
+                                    if (!droppedGroup) return;
+                                    reorderCodeGenGroupToParentEnd(droppedGroup, "");
+                                    setCodeGenDragGroupId("");
+                                  }}
+                                  style={{
+                                    height: String(codeGenGroupDropTargetId || "") === "end:root" ? 16 : 10,
+                                    borderRadius: 6,
+                                    border:
+                                      String(codeGenGroupDropTargetId || "") === "end:root"
+                                        ? "1px dashed #2b6cff"
+                                        : "1px dashed color-mix(in srgb, var(--border) 70%, transparent)",
+                                    background:
+                                      String(codeGenGroupDropTargetId || "") === "end:root"
+                                        ? "color-mix(in srgb, #2b6cff 10%, transparent)"
+                                        : "transparent",
+                                  }}
+                                />
+                              ) : null}
+                            </>
                           ) : (
                             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                               No groups yet. Create one above and drag tags into it.
@@ -8062,8 +9844,124 @@ export default function PlcAnalyzer({
                           const keyStyle = { color: "var(--text-muted)", fontWeight: 700 };
                           return (
                             <>
-                              <div style={rowStyle}><div style={keyStyle}>Name</div><div style={{ color: "var(--text)", fontWeight: 700 }}>{String(selectedGroup?.name || "")}</div></div>
-                              <div style={rowStyle}><div style={keyStyle}>Type</div><div style={{ color: "var(--text)" }}>{normalizeCodeGenGroupType(selectedGroup?.groupType)}</div></div>
+                              <div style={rowStyle}>
+                                <div style={keyStyle}>Name</div>
+                                <input
+                                  value={codeGenDetailNameDraft}
+                                  onChange={(e) => setCodeGenDetailNameDraft(e.target.value)}
+                                  disabled={!codeGenDetailEditMode}
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: "var(--bg)",
+                                    color: "var(--text)",
+                                    borderRadius: 6,
+                                    height: 22,
+                                    padding: "0 8px",
+                                    fontSize: 11,
+                                    minWidth: 0,
+                                  }}
+                                />
+                              </div>
+                              <div style={rowStyle}>
+                                <div style={keyStyle}>Type</div>
+                                <select
+                                  value={codeGenDetailTypeDraft}
+                                  onChange={(e) => setCodeGenDetailTypeDraft(normalizeCodeGenGroupType(e.target.value))}
+                                  disabled={!codeGenDetailEditMode}
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: "var(--bg)",
+                                    color: "var(--text)",
+                                    borderRadius: 6,
+                                    height: 22,
+                                    padding: "0 8px",
+                                    fontSize: 11,
+                                    minWidth: 0,
+                                  }}
+                                >
+                                  {CODE_GEN_GROUP_TYPES.map((groupType) => (
+                                    <option key={`detail-group-type-${selectedId}-${groupType}`} value={groupType}>
+                                      {groupType}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              {normalizeCodeGenGroupType(codeGenDetailTypeDraft) === "Group" ? (
+                                <div style={rowStyle}>
+                                  <div style={keyStyle}>Group Type</div>
+                                  <select
+                                    value={codeGenDetailSubTypeDraft}
+                                    onChange={(e) => setCodeGenDetailSubTypeDraft(String(e.target.value || "Feed"))}
+                                    disabled={!codeGenDetailEditMode}
+                                    style={{
+                                      border: "1px solid var(--border)",
+                                      background: "var(--bg)",
+                                      color: "var(--text)",
+                                      borderRadius: 6,
+                                      height: 22,
+                                      padding: "0 8px",
+                                      fontSize: 11,
+                                      minWidth: 0,
+                                    }}
+                                  >
+                                    {CODE_GEN_GROUP_SUBTYPES.map((subType) => (
+                                      <option key={`detail-group-subtype-${selectedId}-${subType}`} value={subType}>
+                                        {subType}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              ) : null}
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: 4 }}>
+                                <button
+                                  type="button"
+                                  data-preserve-style="true"
+                                  onClick={() => setCodeGenDetailEditByPlc((prev) => ({ ...(prev || {}), [chatKey]: true }))}
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: "var(--bg)",
+                                    color: "var(--text-muted)",
+                                    borderRadius: 6,
+                                    width: 22,
+                                    height: 22,
+                                    padding: 0,
+                                    display: "grid",
+                                    placeItems: "center",
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                  }}
+                                  title="Edit"
+                                >
+                                  ✎
+                                </button>
+                                <button
+                                  type="button"
+                                  data-preserve-style="true"
+                                  onClick={() => {
+                                    saveCodeGenSelectedGroupDetails();
+                                    setCodeGenDetailEditByPlc((prev) => ({ ...(prev || {}), [chatKey]: false }));
+                                  }}
+                                  disabled={!codeGenDetailEditMode}
+                                  style={{
+                                    border: "1px solid #2b6cff",
+                                    background: "#2b6cff",
+                                    color: "#fff",
+                                    borderRadius: 6,
+                                    width: 22,
+                                    height: 22,
+                                    padding: 0,
+                                    display: "grid",
+                                    placeItems: "center",
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                  }}
+                                  title="Save"
+                                >
+                                  ✓
+                                </button>
+                              </div>
                               <div style={rowStyle}><div style={keyStyle}>Parent</div><div style={{ color: "var(--text)" }}>{parent ? String(parent?.name || "") : "Main"}</div></div>
                               <div style={rowStyle}><div style={keyStyle}>Path</div><div style={{ color: "var(--text)" }}>{fullPath || "-"}</div></div>
                               <div style={rowStyle}><div style={keyStyle}>Children</div><div style={{ color: "var(--text)" }}>{childrenCount}</div></div>

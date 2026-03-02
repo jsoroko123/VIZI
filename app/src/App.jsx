@@ -15156,6 +15156,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   padding: 14,
                   display: "grid",
                   gap: 10,
+                  alignContent: "start",
                   boxShadow: "0 8px 16px rgba(0,0,0,0.16)",
                 }}
               >

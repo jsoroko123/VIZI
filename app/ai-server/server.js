@@ -542,11 +542,14 @@ const SESSION_COOKIE = "vizi_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MS_OAUTH_STATE_COOKIE = "vizi_ms_oauth_state";
 const MS_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-const MS_OAUTH_TENANT = String(process.env.MS_OAUTH_TENANT || "common").trim() || "common";
-const MS_OAUTH_CLIENT_ID = String(process.env.MS_OAUTH_CLIENT_ID || "").trim();
-const MS_OAUTH_CLIENT_SECRET = String(process.env.MS_OAUTH_CLIENT_SECRET || "");
-const MS_OAUTH_REDIRECT_URI = String(process.env.MS_OAUTH_REDIRECT_URI || "").trim();
-const MS_OAUTH_SCOPES = String(process.env.MS_OAUTH_SCOPES || "openid profile email User.Read")
+let MS_OAUTH_ENABLED = !["0", "false", "no", "off"].includes(
+  String(process.env.MS_OAUTH_ENABLED || "1").trim().toLowerCase()
+);
+let MS_OAUTH_TENANT = String(process.env.MS_OAUTH_TENANT || "common").trim() || "common";
+let MS_OAUTH_CLIENT_ID = String(process.env.MS_OAUTH_CLIENT_ID || "").trim();
+let MS_OAUTH_CLIENT_SECRET = String(process.env.MS_OAUTH_CLIENT_SECRET || "");
+let MS_OAUTH_REDIRECT_URI = String(process.env.MS_OAUTH_REDIRECT_URI || "").trim();
+let MS_OAUTH_SCOPES = String(process.env.MS_OAUTH_SCOPES || "openid profile email User.Read")
   .trim()
   .replace(/\s+/g, " ");
 const SECURITY_AREA_KEYS = [
@@ -2181,7 +2184,7 @@ function getMicrosoftRedirectUri(req) {
 }
 
 function isMicrosoftAuthConfigured() {
-  return !!(MS_OAUTH_CLIENT_ID && MS_OAUTH_CLIENT_SECRET);
+  return !!(MS_OAUTH_ENABLED && MS_OAUTH_CLIENT_ID && MS_OAUTH_CLIENT_SECRET);
 }
 
 function setSessionCookie(res, token, ttlMs = SESSION_TTL_MS) {
@@ -3551,6 +3554,76 @@ app.get("/api/auth/providers", async (_req, res) => {
       },
     },
   });
+});
+
+app.get("/api/server/settings/auth", requireAreaView("server"), async (_req, res) => {
+  res.json({
+    microsoft: {
+      enabled: Boolean(MS_OAUTH_ENABLED),
+      configured: isMicrosoftAuthConfigured(),
+      tenant: String(MS_OAUTH_TENANT || "common"),
+      clientId: String(MS_OAUTH_CLIENT_ID || ""),
+      hasClientSecret: Boolean(String(MS_OAUTH_CLIENT_SECRET || "").trim()),
+      redirectUri: String(MS_OAUTH_REDIRECT_URI || ""),
+      scopes: String(MS_OAUTH_SCOPES || "openid profile email User.Read"),
+    },
+  });
+});
+
+app.post("/api/server/settings/auth", requireAreaEdit("server"), async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const microsoft = body?.microsoft && typeof body.microsoft === "object" ? body.microsoft : {};
+    const enabledRaw = microsoft?.enabled ?? MS_OAUTH_ENABLED;
+    const nextEnabled = !["0", "false", "no", "off"].includes(
+      String(enabledRaw).trim().toLowerCase()
+    );
+    const nextTenant = String(microsoft?.tenant ?? MS_OAUTH_TENANT ?? "common").trim() || "common";
+    const nextClientId = String(microsoft?.clientId ?? MS_OAUTH_CLIENT_ID ?? "").trim();
+    const nextRedirectUri = String(microsoft?.redirectUri ?? MS_OAUTH_REDIRECT_URI ?? "").trim();
+    const nextScopes =
+      String(microsoft?.scopes ?? MS_OAUTH_SCOPES ?? "openid profile email User.Read")
+        .trim()
+        .replace(/\s+/g, " ") || "openid profile email User.Read";
+    const postedSecret = String(microsoft?.clientSecret ?? "").trim();
+    const nextClientSecret = postedSecret ? postedSecret : String(MS_OAUTH_CLIENT_SECRET || "");
+
+    const envPath = path.resolve(__dirname, ".env");
+    upsertEnvVar(envPath, "MS_OAUTH_ENABLED", nextEnabled ? "1" : "0");
+    upsertEnvVar(envPath, "MS_OAUTH_TENANT", nextTenant);
+    upsertEnvVar(envPath, "MS_OAUTH_CLIENT_ID", nextClientId);
+    if (postedSecret) upsertEnvVar(envPath, "MS_OAUTH_CLIENT_SECRET", nextClientSecret);
+    upsertEnvVar(envPath, "MS_OAUTH_REDIRECT_URI", nextRedirectUri);
+    upsertEnvVar(envPath, "MS_OAUTH_SCOPES", nextScopes);
+
+    MS_OAUTH_ENABLED = nextEnabled;
+    MS_OAUTH_TENANT = nextTenant;
+    MS_OAUTH_CLIENT_ID = nextClientId;
+    if (postedSecret) MS_OAUTH_CLIENT_SECRET = nextClientSecret;
+    MS_OAUTH_REDIRECT_URI = nextRedirectUri;
+    MS_OAUTH_SCOPES = nextScopes;
+    process.env.MS_OAUTH_ENABLED = nextEnabled ? "1" : "0";
+    process.env.MS_OAUTH_TENANT = nextTenant;
+    process.env.MS_OAUTH_CLIENT_ID = nextClientId;
+    if (postedSecret) process.env.MS_OAUTH_CLIENT_SECRET = nextClientSecret;
+    process.env.MS_OAUTH_REDIRECT_URI = nextRedirectUri;
+    process.env.MS_OAUTH_SCOPES = nextScopes;
+
+    res.json({
+      ok: true,
+      microsoft: {
+        enabled: Boolean(MS_OAUTH_ENABLED),
+        configured: isMicrosoftAuthConfigured(),
+        tenant: String(MS_OAUTH_TENANT || "common"),
+        clientId: String(MS_OAUTH_CLIENT_ID || ""),
+        hasClientSecret: Boolean(String(MS_OAUTH_CLIENT_SECRET || "").trim()),
+        redirectUri: String(MS_OAUTH_REDIRECT_URI || ""),
+        scopes: String(MS_OAUTH_SCOPES || "openid profile email User.Read"),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to save auth settings." });
+  }
 });
 
 app.get("/api/auth/microsoft/start", async (req, res) => {
@@ -9317,6 +9390,125 @@ app.put("/api/ai/route-template/:templateKey", async (req, res) => {
   }
 });
 
+app.get("/api/ai/routine-templates/:plcKey", async (req, res) => {
+  try {
+    const plcKey = String(req.params?.plcKey || "").trim();
+    if (!plcKey) {
+      res.status(400).json({ error: "Missing plcKey." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT plc_key, routine_key, routine_name, source_filename, routine_xml, updated_at
+      FROM plc_l5x_routine_template
+      WHERE plc_key = $1
+      ORDER BY routine_key ASC
+      `,
+      [plcKey]
+    );
+    const templates = rows.map((row) => ({
+      plcKey: row?.plc_key || plcKey,
+      routineKey: row?.routine_key || "",
+      routineName: row?.routine_name || "",
+      sourceFileName: row?.source_filename || "",
+      routineXml: row?.routine_xml || "",
+      updatedAt: row?.updated_at || null,
+    }));
+    res.json({ templates });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load routine templates." });
+  }
+});
+
+app.get("/api/ai/routine-template/:plcKey/:routineName", async (req, res) => {
+  try {
+    const plcKey = String(req.params?.plcKey || "").trim();
+    const routineName = String(req.params?.routineName || "").trim();
+    const routineKey = routineName.toLowerCase();
+    if (!plcKey) {
+      res.status(400).json({ error: "Missing plcKey." });
+      return;
+    }
+    if (!routineName) {
+      res.status(400).json({ error: "Missing routineName." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      SELECT plc_key, routine_key, routine_name, source_filename, routine_xml, updated_at
+      FROM plc_l5x_routine_template
+      WHERE plc_key = $1 AND routine_key = $2
+      LIMIT 1
+      `,
+      [plcKey, routineKey]
+    );
+    if (!rows.length) {
+      res.json({ template: null });
+      return;
+    }
+    const row = rows[0] || {};
+    res.json({
+      template: {
+        plcKey: row?.plc_key || plcKey,
+        routineKey: row?.routine_key || routineKey,
+        routineName: row?.routine_name || routineName,
+        sourceFileName: row?.source_filename || "",
+        routineXml: row?.routine_xml || "",
+      },
+      updatedAt: row?.updated_at || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load routine template." });
+  }
+});
+
+app.put("/api/ai/routine-template/:plcKey/:routineName", async (req, res) => {
+  try {
+    const plcKey = String(req.params?.plcKey || "").trim();
+    const routeRoutineName = String(req.params?.routineName || "").trim();
+    const bodyRoutineName = String(req.body?.routineName || "").trim();
+    const routineName = bodyRoutineName || routeRoutineName;
+    const routineKey = routineName.toLowerCase();
+    const sourceFileName = String(req.body?.sourceFileName || "").trim();
+    const routineXml = String(req.body?.routineXml || "");
+    if (!plcKey) {
+      res.status(400).json({ error: "Missing plcKey." });
+      return;
+    }
+    if (!routineName) {
+      res.status(400).json({ error: "Missing routineName." });
+      return;
+    }
+    if (!routineXml.trim()) {
+      res.status(400).json({ error: "Missing routineXml." });
+      return;
+    }
+    const { rows } = await pool.query(
+      `
+      INSERT INTO plc_l5x_routine_template (plc_key, routine_key, routine_name, source_filename, routine_xml, updated_at)
+      VALUES ($1, $2, $3, $4, $5, now())
+      ON CONFLICT (plc_key, routine_key) DO UPDATE
+      SET routine_name = EXCLUDED.routine_name,
+          source_filename = EXCLUDED.source_filename,
+          routine_xml = EXCLUDED.routine_xml,
+          updated_at = now()
+      RETURNING plc_key, routine_key, routine_name, updated_at
+      `,
+      [plcKey, routineKey, routineName, sourceFileName, routineXml]
+    );
+    const row = rows[0] || {};
+    res.json({
+      ok: true,
+      plcKey: row?.plc_key || plcKey,
+      routineKey: row?.routine_key || routineKey,
+      routineName: row?.routine_name || routineName,
+      updatedAt: row?.updated_at || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to save routine template." });
+  }
+});
+
 app.post("/api/ai/plc-svg-suggest", async (req, res) => {
   try {
     const source = req.body && typeof req.body === "object" ? req.body : {};
@@ -10038,6 +10230,21 @@ async function start() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS route_l5x_template_updated_idx
     ON route_l5x_template(updated_at DESC);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS plc_l5x_routine_template (
+      plc_key TEXT NOT NULL,
+      routine_key TEXT NOT NULL,
+      routine_name TEXT NOT NULL,
+      source_filename TEXT NOT NULL DEFAULT '',
+      routine_xml TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (plc_key, routine_key)
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS plc_l5x_routine_template_plc_updated_idx
+    ON plc_l5x_routine_template(plc_key, updated_at DESC);
   `);
   await pool.query(`
     DO $$

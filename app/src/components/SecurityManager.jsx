@@ -264,9 +264,17 @@ export default function SecurityManager({ canManage, currentUserId }) {
   };
 
   return (
-    <div style={{ width: "100%", display: "grid", gap: 10 }}>
+    <div style={{ width: "100%", display: "grid", gap: 10, alignContent: "start", alignItems: "start" }}>
       <div style={{ fontWeight: 800, fontSize: 15 }}>Access Control</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 10 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))",
+          gap: 10,
+          alignItems: "start",
+          alignContent: "start",
+        }}
+      >
         <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 12, background: "var(--bg-elev)", display: "grid", gap: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>Roles</div>

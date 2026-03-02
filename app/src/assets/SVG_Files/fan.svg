@@ -11,38 +11,30 @@
 >
   <defs>
     <linearGradient id="fanShellFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e8eaed" />
-      <stop offset="100%" stop-color="#b8bdc4" />
+      <stop offset="0%" stop-color="#e2e5e9" />
+      <stop offset="100%" stop-color="#c3c8cf" />
     </linearGradient>
     <linearGradient id="fanHubFill" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#d5dae0" />
-      <stop offset="100%" stop-color="#9098a2" />
+      <stop offset="0%" stop-color="#c7ced6" />
+      <stop offset="100%" stop-color="#8b95a1" />
     </linearGradient>
   </defs>
 
-  <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
-    <circle
-      id="body"
-      cx="1.9554995"
-      cy="1.955442"
-      r="1.78"
-      fill="url(#fanShellFill)"
-      stroke-width="0.16"
-    />
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="1.9554995" cy="1.955442" r="1.74" fill="url(#fanShellFill)" stroke="#8b8f95" stroke-width="0.16" />
+    <circle cx="1.9554995" cy="1.955442" r="0.88" fill="none" stroke="#8b8f95" stroke-width="0.10" />
 
-    <circle cx="1.9554995" cy="1.955442" r="0.90" fill="none" stroke="#8a9099" stroke-width="0.10" />
-
-    <g id="groupBlade" fill="#656d77" stroke="none">
-      <path d="M1.96 1.18C2.34 1.22 2.60 1.48 2.64 1.86C2.32 1.88 2.06 1.72 1.88 1.50Z" />
-      <path d="M1.20 2.02C1.24 1.64 1.50 1.38 1.88 1.34C1.90 1.66 1.74 1.92 1.52 2.10Z" />
-      <path d="M2.00 2.72C1.62 2.68 1.36 2.42 1.32 2.04C1.64 2.02 1.90 2.18 2.08 2.40Z" />
+    <g fill="#717b87" stroke="none">
+      <path d="M1.955 1.955 L2.025 1.235 C2.355 1.335 2.585 1.575 2.675 1.905 Z" />
+      <path d="M1.955 1.955 L1.297 2.259 C1.165 1.941 1.205 1.611 1.403 1.331 Z" />
+      <path d="M1.955 1.955 L2.542 2.382 C2.321 2.646 2.006 2.760 1.666 2.705 Z" />
     </g>
 
-    <g id="InsideLines" fill="none" stroke="#5d6570" stroke-width="0.12">
-      <path d="M1.28 1.96H2.62" />
-      <path d="M1.95 1.30V2.62" />
+    <g fill="none" stroke="#8b8f95" stroke-width="0.11">
+      <path d="M1.30 1.955H2.61" />
+      <path d="M1.955 1.30V2.61" />
     </g>
 
-    <circle cx="1.9554995" cy="1.955442" r="0.20" fill="url(#fanHubFill)" stroke-width="0.10" />
+    <circle cx="1.9554995" cy="1.955442" r="0.20" fill="url(#fanHubFill)" stroke="#8b8f95" stroke-width="0.08" />
   </g>
 </svg>

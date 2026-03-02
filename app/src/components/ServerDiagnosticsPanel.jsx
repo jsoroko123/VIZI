@@ -45,10 +45,21 @@ function asPct(value, fallback = "--") {
 }
 
 export default function ServerDiagnosticsPanel({ embedded = false }) {
+  const [activeTab, setActiveTab] = useState("diagnostics");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [serviceBusyAction, setServiceBusyAction] = useState("");
   const [serviceActionMessage, setServiceActionMessage] = useState("");
+  const [authSaveBusy, setAuthSaveBusy] = useState(false);
+  const [authSaveMessage, setAuthSaveMessage] = useState("");
+  const [authDraft, setAuthDraft] = useState({
+    enabled: true,
+    tenant: "common",
+    clientId: "",
+    clientSecret: "",
+    redirectUri: "",
+    scopes: "openid profile email User.Read",
+  });
   const [updatedAt, setUpdatedAt] = useState(0);
   const [payload, setPayload] = useState({
     health: null,
@@ -57,6 +68,7 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     dbConfig: null,
     pgDiag: null,
     appDiag: null,
+    authSettings: null,
   });
 
   const load = async () => {
@@ -65,18 +77,24 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     const fetchJson = async (url) => {
       const res = await fetch(url, { credentials: "include" });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(String(data?.error || `Failed to load ${url}`));
+      if (!res.ok) {
+        const err = new Error(String(data?.error || `Failed to load ${url}`));
+        err.status = Number(res.status || 0);
+        err.url = url;
+        throw err;
+      }
       return data;
     };
 
     try {
-      const [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes, appDiagRes] = await Promise.allSettled([
+      const [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes, appDiagRes, authSettingsRes] = await Promise.allSettled([
         fetchJson("/api/health"),
         fetchJson("/api/opc/status"),
         fetchJson("/api/opc/config"),
         fetchJson("/api/db/config"),
         fetchJson("/api/db/diagnostics/postgres"),
         fetchJson("/api/diagnostics/app"),
+        fetchJson("/api/server/settings/auth"),
       ]);
 
       const next = {
@@ -86,13 +104,21 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
         dbConfig: dbConfigRes.status === "fulfilled" ? dbConfigRes.value : null,
         pgDiag: pgDiagRes.status === "fulfilled" ? pgDiagRes.value : null,
         appDiag: appDiagRes.status === "fulfilled" ? appDiagRes.value : null,
+        authSettings: authSettingsRes.status === "fulfilled" ? authSettingsRes.value : null,
       };
 
       setPayload(next);
       setUpdatedAt(Date.now());
 
-      const errors = [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes, appDiagRes]
+      const errors = [healthRes, opcStatusRes, opcConfigRes, dbConfigRes, pgDiagRes, appDiagRes, authSettingsRes]
         .filter((r) => r.status === "rejected")
+        .filter((r) => {
+          const reason = r.reason || {};
+          const status = Number(reason?.status || 0);
+          const url = String(reason?.url || "");
+          if (url === "/api/server/settings/auth" && (status === 401 || status === 403)) return false;
+          return true;
+        })
         .map((r) => String(r.reason?.message || "Request failed"));
       if (errors.length) setError(errors[0]);
     } catch (err) {
@@ -133,6 +159,53 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     const id = setInterval(() => void load(), 5000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    const src = payload?.authSettings?.microsoft && typeof payload.authSettings.microsoft === "object"
+      ? payload.authSettings.microsoft
+      : null;
+    if (!src) return;
+    setAuthDraft((prev) => ({
+      ...prev,
+      enabled: Boolean(src.enabled),
+      tenant: String(src.tenant || "common"),
+      clientId: String(src.clientId || ""),
+      clientSecret: "",
+      redirectUri: String(src.redirectUri || ""),
+      scopes: String(src.scopes || "openid profile email User.Read"),
+    }));
+  }, [payload?.authSettings]);
+
+  const saveAuthSettings = async () => {
+    setAuthSaveBusy(true);
+    setAuthSaveMessage("");
+    try {
+      const res = await fetch("/api/server/settings/auth", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          microsoft: {
+            enabled: Boolean(authDraft.enabled),
+            tenant: String(authDraft.tenant || "common").trim() || "common",
+            clientId: String(authDraft.clientId || "").trim(),
+            clientSecret: String(authDraft.clientSecret || "").trim(),
+            redirectUri: String(authDraft.redirectUri || "").trim(),
+            scopes: String(authDraft.scopes || "openid profile email User.Read").trim() || "openid profile email User.Read",
+          },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(data?.error || "Failed to save server auth settings."));
+      setAuthSaveMessage("Server auth settings saved.");
+      await load();
+      setAuthDraft((prev) => ({ ...prev, clientSecret: "" }));
+    } catch (err) {
+      setAuthSaveMessage(String(err?.message || "Failed to save server auth settings."));
+    } finally {
+      setAuthSaveBusy(false);
+    }
+  };
 
   const summary = useMemo(() => {
     const health = payload.health && typeof payload.health === "object" ? payload.health : {};
@@ -295,6 +368,24 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
     gap: 8,
   };
+  const tabButtonStyle = (active) => ({
+    border: "none",
+    borderBottom: `2px solid ${active ? "var(--accent)" : "transparent"}`,
+    background: "transparent",
+    color: active ? "var(--accent)" : "var(--text-muted)",
+    borderRadius: 0,
+    minWidth: 0,
+    height: 30,
+    padding: "0 10px",
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    boxShadow: "none",
+    transition: "color 140ms ease, border-color 140ms ease, background-color 140ms ease",
+  });
   const kvStyle = { fontSize: 12, color: "var(--text)" };
   const kvSubStyle = { fontSize: 12, color: "var(--text-muted)" };
 
@@ -337,6 +428,111 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
           {loading ? "Loading..." : "Refresh"}
         </button>
       </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          padding: "2px 2px 10px",
+          borderBottom: "1px solid var(--border)",
+          marginBottom: 2,
+        }}
+      >
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => setActiveTab("diagnostics")}
+            style={tabButtonStyle(activeTab === "diagnostics")}
+          >
+            Diagnostics
+          </button>
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => setActiveTab("settings")}
+            style={tabButtonStyle(activeTab === "settings")}
+          >
+            Settings
+          </button>
+      </div>
+
+      {activeTab === "settings" ? (
+        <div style={panelStyle}>
+          <div style={sectionTitleStyle}>Microsoft Login</div>
+          <div style={{ display: "grid", gridTemplateColumns: "180px minmax(0,1fr)", gap: 8, alignItems: "center" }}>
+            <div style={kvStyle}>Enabled</div>
+            <input
+              type="checkbox"
+              checked={Boolean(authDraft.enabled)}
+              onChange={(e) => setAuthDraft((prev) => ({ ...prev, enabled: e.target.checked }))}
+            />
+            <div style={kvStyle}>Tenant</div>
+            <input
+              value={authDraft.tenant}
+              onChange={(e) => setAuthDraft((prev) => ({ ...prev, tenant: e.target.value }))}
+              style={{ border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", borderRadius: 8, padding: "6px 8px", fontSize: 12 }}
+            />
+            <div style={kvStyle}>Client ID</div>
+            <input
+              value={authDraft.clientId}
+              onChange={(e) => setAuthDraft((prev) => ({ ...prev, clientId: e.target.value }))}
+              style={{ border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", borderRadius: 8, padding: "6px 8px", fontSize: 12 }}
+            />
+            <div style={kvStyle}>Client Secret</div>
+            <input
+              type="password"
+              value={authDraft.clientSecret}
+              onChange={(e) => setAuthDraft((prev) => ({ ...prev, clientSecret: e.target.value }))}
+              placeholder="Leave blank to keep current"
+              style={{ border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", borderRadius: 8, padding: "6px 8px", fontSize: 12 }}
+            />
+            <div style={kvStyle}>Redirect URI</div>
+            <input
+              value={authDraft.redirectUri}
+              onChange={(e) => setAuthDraft((prev) => ({ ...prev, redirectUri: e.target.value }))}
+              placeholder="Auto if blank"
+              style={{ border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", borderRadius: 8, padding: "6px 8px", fontSize: 12 }}
+            />
+            <div style={kvStyle}>Scopes</div>
+            <input
+              value={authDraft.scopes}
+              onChange={(e) => setAuthDraft((prev) => ({ ...prev, scopes: e.target.value }))}
+              style={{ border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", borderRadius: 8, padding: "6px 8px", fontSize: 12 }}
+            />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ ...kvSubStyle, fontSize: 11 }}>
+              Changes save to server settings (`ai-server/.env`) and apply immediately.
+            </div>
+            <button
+              type="button"
+              data-preserve-style="true"
+              onClick={() => void saveAuthSettings()}
+              disabled={authSaveBusy}
+              style={{
+                border: "1px solid #2b6cff",
+                background: authSaveBusy ? "var(--bg-soft)" : "#2b6cff",
+                color: authSaveBusy ? "var(--text-muted)" : "#fff",
+                borderRadius: 8,
+                padding: "6px 10px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: authSaveBusy ? "not-allowed" : "pointer",
+              }}
+            >
+              {authSaveBusy ? "Saving..." : "Save Settings"}
+            </button>
+          </div>
+          {authSaveMessage ? (
+            <div style={{ fontSize: 12, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-soft)", padding: "6px 8px" }}>
+              {authSaveMessage}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {activeTab === "diagnostics" ? (
+        <>
 
       {error ? <div style={{ ...cardStyle("#f04438"), color: "#b42318" }}>{error}</div> : null}
 
@@ -521,6 +717,8 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
           <div style={kvStyle}><strong>Waiting Locks:</strong> {asCount(summary.lockWaiting)}</div>
         </div>
       </div>
+      </>
+      ) : null}
     </div>
   );
 }

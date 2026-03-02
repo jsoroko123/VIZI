@@ -5,9 +5,8 @@ import { toastError } from "../utils/toast";
 import appLogo from "../assets/Images/logo.png";
 
 export default function Login() {
-  const { user, login, register } = useAuth();
+  const { user, login } = useAuth();
   const navigate = useNavigate();
-  const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -86,9 +85,6 @@ export default function Login() {
     setError("");
     setBusy(true);
     try {
-      if (mode === "register") {
-        await register(username, password);
-      }
       await login(username, password);
       navigate("/");
     } catch (err) {
@@ -206,23 +202,8 @@ export default function Login() {
               }}
             />
             <div style={{ fontSize: 12, color: "#475467", marginTop: 4 }}>
-              {mode === "login" ? "Sign in to continue." : "Create your first user."}
+              Sign in to continue.
             </div>
-          </div>
-          <div
-            style={{
-              padding: "5px 9px",
-              borderRadius: 999,
-              fontSize: 10,
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              background: "rgba(30, 64, 175, 0.1)",
-              color: "#1e40af",
-              border: "1px solid rgba(30, 64, 175, 0.18)",
-            }}
-          >
-            {mode === "login" ? "Login" : "Create"}
           </div>
         </div>
         <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
@@ -250,7 +231,7 @@ export default function Login() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              autoComplete="current-password"
               style={{
                 border: "1px solid rgba(15, 23, 42, 0.18)",
                 borderRadius: 12,
@@ -277,10 +258,10 @@ export default function Login() {
               boxShadow: "0 12px 24px rgba(15, 23, 42, 0.28)",
             }}
           >
-            {busy ? "Working..." : mode === "login" ? "Sign In" : "Create Account"}
+            {busy ? "Working..." : "Sign In"}
           </button>
         </form>
-        {mode === "login" && microsoftEnabled ? (
+        {microsoftEnabled ? (
           <button
             type="button"
             onClick={() => {
@@ -301,20 +282,6 @@ export default function Login() {
             Sign in with Microsoft
           </button>
         ) : null}
-        <button
-          onClick={() => setMode((m) => (m === "login" ? "register" : "login"))}
-          style={{
-            marginTop: 12,
-            border: "none",
-            background: "transparent",
-            color: "#1d4ed8",
-            fontSize: 12,
-            cursor: "pointer",
-            fontWeight: 600,
-          }}
-        >
-          {mode === "login" ? "Need a user? Create one." : "Have a user? Sign in."}
-        </button>
       </div>
     </div>
   );
