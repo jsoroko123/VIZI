@@ -124,6 +124,7 @@ const DataBrowser = lazy(() => import("./components/DataBrowser"));
 const DatasetBuilder = lazy(() => import("./components/DatasetBuilder"));
 const DatabaseConfigPanel = lazy(() => import("./components/DatabaseConfigPanel"));
 const SqlDesigner = lazy(() => import("./components/SqlDesigner"));
+const AutomationRulesPanel = lazy(() => import("./components/AutomationRulesPanel"));
 const PlcAnalyzer = lazy(() => import("./components/PlcAnalyzer"));
 const ServerDiagnosticsPanel = lazy(() => import("./components/ServerDiagnosticsPanel"));
 const LoggerPanel = lazy(() => import("./components/LoggerPanel"));
@@ -162,6 +163,7 @@ export default function App() {
   // Multi-selection
   const [selectedIds, setSelectedIds] = useState([]); // polyline ids
   const [selectedOverlayIds, setSelectedOverlayIds] = useState([]); // overlay ids
+  const [selectionMode, setSelectionMode] = useState("all"); // "all" | "svg" | "polyline"
 
   // drawing = { mode:"draw-poly"|"draw-rect"|"draw-circle", id, start?:{x,y} }
   const [drawing, setDrawing] = useState(null);
@@ -2886,6 +2888,19 @@ export default function App() {
     });
     return out;
   }, [svgOverlays, projectBinRows, productNameById]);
+  const binNameLabelByOverlayId = useMemo(() => {
+    const out = {};
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      const eType = String(resolveOverlayEType(overlay) || "").trim();
+      if (!isBinEType(eType)) return;
+      const row = findProjectBinRowForOverlay(overlay);
+      const name = String(getProjectBinName(row) || "").trim();
+      if (name) out[id] = name;
+    });
+    return out;
+  }, [svgOverlays, projectBinRows]);
   const svgBinBindingOptions = useMemo(() => {
     const options = [{ value: "", label: "Auto-match (Tag Path/Name)" }];
     const seen = new Set();
@@ -3056,6 +3071,33 @@ export default function App() {
   useEffect(() => { overlaysRef.current = svgOverlays; }, [svgOverlays]);
   useEffect(() => { selPolyRef.current = selectedIds; }, [selectedIds]);
   useEffect(() => { selOverRef.current = selectedOverlayIds; }, [selectedOverlayIds]);
+  useEffect(() => {
+    if (selectionMode === "svg" && selectedIds.length) {
+      setSelectedIds([]);
+      return;
+    }
+    if (selectionMode === "polyline" && selectedOverlayIds.length) {
+      setSelectedOverlayIds([]);
+    }
+  }, [selectionMode, selectedIds, selectedOverlayIds]);
+  useEffect(() => {
+    setSvgOverlays((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      let changed = false;
+      const next = list.map((o) => {
+        if (!isConveyorScrewOverlay(o)) return o;
+        const sx = overlayScaleX(o);
+        const sy = overlayScaleY(o);
+        if (Math.abs(sx - sy) < 1e-6) return o;
+        changed = true;
+        const uniform = Math.max(sx, sy, 0.05);
+        return { ...o, scale: uniform, scaleX: uniform, scaleY: uniform };
+      });
+      if (!changed) return prev;
+      overlaysRef.current = next;
+      return next;
+    });
+  }, [svgOverlays]);
   useEffect(() => { duplicateOffsetRef.current = Number(duplicateOffset) || 0; }, [duplicateOffset]);
   useEffect(() => {
     if (!selectedSegment) return;
@@ -4628,30 +4670,40 @@ function flushScheduledProjectSave() {
     w: typeof window !== "undefined" ? window.innerWidth : 1400,
     h: typeof window !== "undefined" ? window.innerHeight : 900,
   });
+  const getDrawerWidthBounds = (vpW) => {
+    const width = Math.max(320, Number(vpW) || 0);
+    const mobile = width <= 900;
+    const mainMin = mobile ? 280 : 420;
+    const projectMin = mobile ? 220 : 280;
+    const maxMain = Math.max(mainMin, Math.floor(width * 0.96));
+    const maxProject = Math.max(projectMin, Math.floor(width * 0.92));
+    return { mainMin, projectMin, maxMain, maxProject };
+  };
   const { w: initialVpW } = getViewportSize();
   const [drawerSizes, setDrawerSizes] = useState(() => {
     const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+    const bounds = getDrawerWidthBounds(initialVpW);
     const defaults = {
-      main: { w: Math.min(900, Math.floor(initialVpW * 0.96)) },
+      main: { w: Math.min(900, bounds.maxMain) },
       mainByView: {},
-      user: { w: Math.min(620, Math.floor(initialVpW * 0.96)) },
-      project: { w: Math.min(360, Math.floor(initialVpW * 0.92)) },
+      user: { w: Math.min(620, bounds.maxMain) },
+      project: { w: Math.min(360, bounds.maxProject) },
     };
     if (typeof window === "undefined") return defaults;
     try {
       const raw = localStorage.getItem(DRAWER_SIZES_KEY);
       if (!raw) return defaults;
       const parsed = JSON.parse(raw);
-      const mainW = clamp(Number(parsed?.main?.w) || defaults.main.w, 420, Math.max(420, Math.floor(initialVpW * 0.96)));
+      const mainW = clamp(Number(parsed?.main?.w) || defaults.main.w, bounds.mainMin, bounds.maxMain);
       const rawMainByView = parsed?.mainByView && typeof parsed.mainByView === "object" ? parsed.mainByView : {};
       const mainByView = {};
       for (const key of MAIN_DRAWER_WIDTH_VIEW_KEYS) {
         const parsedWidth = Number(rawMainByView?.[key]);
         if (!Number.isFinite(parsedWidth)) continue;
-        mainByView[key] = clamp(parsedWidth, 420, Math.max(420, Math.floor(initialVpW * 0.96)));
+        mainByView[key] = clamp(parsedWidth, bounds.mainMin, bounds.maxMain);
       }
-      const userW = clamp(Number(parsed?.user?.w) || defaults.user.w, 420, Math.max(420, Math.floor(initialVpW * 0.96)));
-      const projectW = clamp(Number(parsed?.project?.w) || defaults.project.w, 280, Math.max(280, Math.floor(initialVpW * 0.92)));
+      const userW = clamp(Number(parsed?.user?.w) || defaults.user.w, bounds.mainMin, bounds.maxMain);
+      const projectW = clamp(Number(parsed?.project?.w) || defaults.project.w, bounds.projectMin, bounds.maxProject);
       return {
         main: { w: mainW },
         mainByView,
@@ -4690,9 +4742,8 @@ function flushScheduledProjectSave() {
   function resetAllDrawerSizes() {
     const vpW = typeof window !== "undefined" ? window.innerWidth : initialVpW;
     const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
-    const maxMain = Math.max(420, Math.floor(vpW * 0.96));
-    const maxProject = Math.max(280, Math.floor(vpW * 0.92));
-    const shared = clamp(Math.floor(vpW * 0.5), 420, Math.min(maxMain, maxProject));
+    const bounds = getDrawerWidthBounds(vpW);
+    const shared = clamp(Math.floor(vpW * 0.5), bounds.mainMin, Math.min(bounds.maxMain, bounds.maxProject));
     setDrawerSizes((prev) => {
       const previousByView =
         prev?.mainByView && typeof prev.mainByView === "object" ? prev.mainByView : {};
@@ -4760,6 +4811,7 @@ function flushScheduledProjectSave() {
       if (resize?.active) {
         const key = resize.active;
         const vpW = window.innerWidth;
+        const bounds = getDrawerWidthBounds(vpW);
         const dx = e.clientX - resize.startX;
         if (key === "liveMenu") {
           const minW = LIVE_MENU_EXPANDED_WIDTH_MIN;
@@ -4768,8 +4820,8 @@ function flushScheduledProjectSave() {
           setLiveMenuExpandedWidth(nextW);
           return;
         }
-        const minW = key === "project" ? 280 : 420;
-        const maxW = Math.max(minW, Math.floor(vpW * (key === "project" ? 0.92 : 0.96)));
+        const minW = key === "project" ? bounds.projectMin : bounds.mainMin;
+        const maxW = key === "project" ? bounds.maxProject : bounds.maxMain;
         const widthDelta = key === "project" ? dx : -dx;
         const nextW = clamp(resize.originW + widthDelta, minW, maxW);
         setDrawerSizes((prev) => ({
@@ -4802,23 +4854,24 @@ function flushScheduledProjectSave() {
     const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
     const onResize = () => {
       const vpW = window.innerWidth;
+      const bounds = getDrawerWidthBounds(vpW);
       setDrawerSizes((prev) => ({
         main: {
-          w: clamp(prev.main.w, 420, Math.max(420, Math.floor(vpW * 0.96))),
+          w: clamp(prev.main.w, bounds.mainMin, bounds.maxMain),
         },
         mainByView: Object.fromEntries(
           Object.entries(prev?.mainByView && typeof prev.mainByView === "object" ? prev.mainByView : {}).map(
             ([key, value]) => [
               normalizeMainDrawerWidthViewKey(key),
-              clamp(Number(value) || prev.main.w, 420, Math.max(420, Math.floor(vpW * 0.96))),
+              clamp(Number(value) || prev.main.w, bounds.mainMin, bounds.maxMain),
             ]
           )
         ),
         user: {
-          w: clamp(prev.user.w, 420, Math.max(420, Math.floor(vpW * 0.96))),
+          w: clamp(prev.user.w, bounds.mainMin, bounds.maxMain),
         },
         project: {
-          w: clamp(prev.project.w, 280, Math.max(280, Math.floor(vpW * 0.92))),
+          w: clamp(prev.project.w, bounds.projectMin, bounds.maxProject),
         },
       }));
       setLiveMenuExpandedWidth((prev) =>
@@ -6631,9 +6684,29 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setSelectedOverlayIds([]);
   }
 
+  function isShapeSelectableByMode(shape) {
+    if (!shape || typeof shape !== "object") return false;
+    if (selectionMode === "all") return true;
+    if (selectionMode === "svg") return false;
+    return String(shape?.type || "").trim().toLowerCase() === "polyline" || Array.isArray(shape?.points);
+  }
+
+  function isShapeIdSelectableByMode(id) {
+    const shape = (shapesRef.current || []).find((s) => s?.id === id);
+    return isShapeSelectableByMode(shape);
+  }
+
+  function areOverlaysSelectableByMode() {
+    return selectionMode !== "polyline";
+  }
+
   function selectAll() {
-    const allShapeIds = (shapesRef.current || []).map((s) => s.id);
-    const allOverlayIds = (overlaysRef.current || []).map((o) => o.id);
+    const allShapeIds = (shapesRef.current || [])
+      .filter((s) => isShapeSelectableByMode(s))
+      .map((s) => s.id);
+    const allOverlayIds = areOverlaysSelectableByMode()
+      ? (overlaysRef.current || []).map((o) => o.id)
+      : [];
     setSelectedIds(allShapeIds);
     setSelectedOverlayIds(allOverlayIds);
     setTool("select");
@@ -6739,7 +6812,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!svg || typeof svg.getBoundingClientRect !== "function") {
       return { x: vbW / 2, y: vbH / 2 };
     }
-    const rect = svg.getBoundingClientRect();
+    const viewportRect = svg.closest?.(".vizi-scroll")?.getBoundingClientRect?.() || null;
+    const rect = viewportRect || svg.getBoundingClientRect();
     const cx = Number(rect?.left) + Number(rect?.width) / 2;
     const cy = Number(rect?.top) + Number(rect?.height) / 2;
     if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
@@ -6849,6 +6923,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (Number.isFinite(sy) && sy > 0) return sy;
     const s = Number(o?.scale);
     return Number.isFinite(s) && s > 0 ? s : 1;
+  }
+
+  function isConveyorScrewOverlay(overlay) {
+    const raw = String(resolveOverlayEType(overlay) || overlay?.eType || "").trim().toLowerCase();
+    if (!raw) return false;
+    const compact = raw.replace(/[^a-z0-9]/g, "");
+    return compact.includes("conveyorscrew") || (compact.includes("conveyor") && compact.includes("screw"));
   }
 
   function overlayWorldRect(o, bb) {
@@ -7860,6 +7941,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function onShapeMouseDown(e, id) {
     if (tool !== "select") return;
+    if (!isShapeIdSelectableByMode(id)) return;
     e.stopPropagation();
 
     if (editingId === id) {
@@ -7890,6 +7972,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function onShapeDoubleClick(e, id) {
     if (tool !== "select") return;
+    if (!isShapeIdSelectableByMode(id)) return;
     e.stopPropagation();
     e.preventDefault();
     const p = svgPoint(e);
@@ -8023,6 +8106,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   // ---------- Overlay selection / move / resize ----------
   function onOverlayMouseDown(e, id) {
     if (tool !== "select") return;
+    if (!areOverlaysSelectableByMode()) return;
     if (Number(e?.detail || 0) > 1) return; // let double-click open properties in Move mode
     const target = e.target;
     const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
@@ -8068,6 +8152,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   function onOverlayDoubleClick(e, id) {
+    if (!areOverlaysSelectableByMode()) return;
     e.stopPropagation();
     e.preventDefault();
     setSelectedOverlayIds([id]);
@@ -8080,6 +8165,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function onOverlayHandleDown(e, id, corner) {
     if (tool !== "select") return;
+    if (!areOverlaysSelectableByMode()) return;
     e.stopPropagation();
     e.preventDefault();
 
@@ -8231,7 +8317,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const srcCx = localVb.x + localVb.w / 2;
     const srcCy = localVb.y + localVb.h / 2;
 
-    const anchor = anchorOverride ?? importAnchor ?? getViewportCenterWorldPoint();
+    // While picking from the left import dock, default to center unless an explicit anchor was provided.
+    const anchor = anchorOverride ?? (importOpen ? null : importAnchor) ?? getViewportCenterWorldPoint();
 
     const tx = anchor.x - scale * srcCx;
     const ty = anchor.y - scale * srcCy;
@@ -8625,6 +8712,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     widgetTimerPreTag: "",
     widgetTimerAccTag: "",
     faultSimulated: false,
+    screwAnimate: true,
+    screwSpeed: "1.2",
   });
 
 
@@ -8671,6 +8760,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         widgetTimerPreTag: "",
         widgetTimerAccTag: "",
         faultSimulated: false,
+        screwAnimate: true,
+        screwSpeed: "1.2",
       });
       return;
     }
@@ -8760,6 +8851,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetTimerPreTag: String(w.timerPreTag || ""),
           widgetTimerAccTag: String(w.timerAccTag || ""),
           faultSimulated: Boolean(o.faultSimulated),
+          screwAnimate: o.screwAnimate !== false,
+          screwSpeed: String(
+            Number.isFinite(Number(o.screwSpeed)) && Number(o.screwSpeed) > 0
+              ? Number(o.screwSpeed)
+              : 1.2
+          ),
           widgetBarSourceMode: barSourceMode,
           widgetBarTable: String(w.barTable || parsedDb?.table || ""),
           widgetBarField: String(w.barField || parsedDb?.field || ""),
@@ -8819,6 +8916,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetTimerPreTag: "",
           widgetTimerAccTag: "",
           faultSimulated: false,
+          screwAnimate: true,
+          screwSpeed: "1.2",
           widgetBarSourceMode: "table",
           widgetBarTable: "",
           widgetBarField: "",
@@ -8873,6 +8972,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
       widgetTimerPreTag: "",
       widgetTimerAccTag: "",
       faultSimulated: false,
+      screwAnimate: true,
+      screwSpeed: "1.2",
       widgetBarSourceMode: "table",
       widgetBarTable: "",
       widgetBarField: "",
@@ -8922,6 +9023,25 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const enabled = Boolean(nextValue);
     setSvgOverlays((prev) =>
       prev.map((o) => (o.id === singleId ? { ...o, faultSimulated: enabled } : o))
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleScrewAnimate(nextValue) {
+    if (!isSingle || singleKind !== "SVG" || !singleId) return;
+    const enabled = Boolean(nextValue);
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.id === singleId ? { ...o, screwAnimate: enabled } : o))
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleScrewSpeed(nextRaw) {
+    if (!isSingle || singleKind !== "SVG" || !singleId) return;
+    const raw = Number.parseFloat(String(nextRaw || "").trim());
+    const speed = Number.isFinite(raw) ? Math.max(0.2, Math.min(10, raw)) : 1.2;
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.id === singleId ? { ...o, screwSpeed: speed } : o))
     );
     scheduleProjectAutoSave();
   }
@@ -9315,6 +9435,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const id = selectedOverlayIds[0];
       const o = svgOverlays.find((x) => x.id === id);
       if (!o) return;
+      const isConveyorScrew = isConveyorScrewOverlay(o);
 
       // use your key-based bbox first (this is {width: 25, height: 25} for your files)
       const bb = o.bbox || overlayLocalBBox(id);
@@ -9326,7 +9447,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       let nextScaleX = overlayScaleX(o);
       let nextScaleY = overlayScaleY(o);
 
-      if (aspectLocked) {
+      if (aspectLocked || isConveyorScrew) {
         let nextScale = nextScaleX;
         if (W != null && bb.width > 0) nextScale = W / bb.width;
         if (W == null && H != null && bb.height > 0) nextScale = H / bb.height;
@@ -9437,8 +9558,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
           const newTx = base.x + (o.tx - base.x) * sx + dx;
           const newTy = base.y + (o.ty - base.y) * sy + dy;
-          const newScaleX = Math.max(0.05, overlayScaleX(o) * sx);
-          const newScaleY = Math.max(0.05, overlayScaleY(o) * sy);
+          const isConveyorScrew = isConveyorScrewOverlay(o);
+          const baseScaleX = overlayScaleX(o);
+          const baseScaleY = overlayScaleY(o);
+          const uniformRatio = Math.min(Math.abs(sx), Math.abs(sy));
+          const uniformScale = Math.max(0.05, Math.max(baseScaleX, baseScaleY) * uniformRatio);
+          const newScaleX = isConveyorScrew ? uniformScale : Math.max(0.05, baseScaleX * sx);
+          const newScaleY = isConveyorScrew ? uniformScale : Math.max(0.05, baseScaleY * sy);
 
           return { ...o, tx: newTx, ty: newTy, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY };
         })
@@ -10065,6 +10191,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function onContextMenu(e) {
     e.preventDefault();
     e.stopPropagation();
+    if (selectionMode === "svg") {
+      setSelectedIds([]);
+    } else if (selectionMode === "polyline") {
+      setSelectedOverlayIds([]);
+    }
 
     // ? While drawing: right-click removes the last SAVED segment (2 entries back)
     if (tool === "polyline" && drawing?.mode === "draw-poly") {
@@ -10116,6 +10247,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const shapeList = Array.isArray(shapesRef.current) ? shapesRef.current : [];
     for (let i = shapeList.length - 1; i >= 0; i -= 1) {
       const s = shapeList[i];
+      if (!isShapeSelectableByMode(s)) continue;
       if (s.type === "text") {
         const tb = textBoxFromShape(s);
         if (!tb) continue;
@@ -10146,18 +10278,20 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (!hit) {
       const overlayList = Array.isArray(overlaysRef.current) ? overlaysRef.current : [];
-      for (let i = overlayList.length - 1; i >= 0; i -= 1) {
-        const o = overlayList[i];
-        const bb = o.bbox || overlayLocalBBox(o.id);
-        if (!bb) continue;
-        const wr = overlayWorldRect(o, bb);
-        const r = {
-          x: wr.x,
-          y: wr.y,
-          w: wr.w,
-          h: wr.h,
-        };
-        if (pointInRect(p, r)) { hit = true; hitOverlayId = o.id; break; }
+      if (areOverlaysSelectableByMode()) {
+        for (let i = overlayList.length - 1; i >= 0; i -= 1) {
+          const o = overlayList[i];
+          const bb = o.bbox || overlayLocalBBox(o.id);
+          if (!bb) continue;
+          const wr = overlayWorldRect(o, bb);
+          const r = {
+            x: wr.x,
+            y: wr.y,
+            w: wr.w,
+            h: wr.h,
+          };
+          if (pointInRect(p, r)) { hit = true; hitOverlayId = o.id; break; }
+        }
       }
     }
 
@@ -10375,8 +10509,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
           const next = prev.map((o) => {
             const rec = byId.get(String(o.id));
             if (!rec) return o;
-            const sx = Math.max(0.05, Number(rec.sx || 1) * ratio);
-            const sy = Math.max(0.05, Number(rec.sy || 1) * ratio);
+            const isConveyorScrew = isConveyorScrewOverlay(o);
+            const sxBase = Math.max(0.05, Number(rec.sx || 1) * ratio);
+            const syBase = Math.max(0.05, Number(rec.sy || 1) * ratio);
+            const uniform = Math.max(0.05, Math.max(Number(rec.sx || 1), Number(rec.sy || 1)) * ratio);
+            const sx = isConveyorScrew ? uniform : sxBase;
+            const sy = isConveyorScrew ? uniform : syBase;
             const txRaw = anchorWorld.x + (Number(rec.tx || 0) - anchorWorld.x) * ratio;
             const tyRaw = anchorWorld.y + (Number(rec.ty || 0) - anchorWorld.y) * ratio;
             const bb = o?.bbox || overlayLocalBBox(o.id);
@@ -10432,8 +10570,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
       const d = Math.max(1, distance(p, anchorWorld));
       const ratio = d / startDist;
-      const newScaleX = Math.max(0.05, origScaleX * ratio);
-      const newScaleY = Math.max(0.05, origScaleY * ratio);
+      const isConveyorScrew = isConveyorScrewOverlay(o);
+      const uniformScale = Math.max(0.05, Math.max(origScaleX, origScaleY) * ratio);
+      const newScaleX = isConveyorScrew ? uniformScale : Math.max(0.05, origScaleX * ratio);
+      const newScaleY = isConveyorScrew ? uniformScale : Math.max(0.05, origScaleY * ratio);
 
       const newTxRaw = anchorWorld.x - newScaleX * anchorLocal.x;
       const newTyRaw = anchorWorld.y - newScaleY * anchorLocal.y;
@@ -10751,6 +10891,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       // ? Shapes (polylines + text + rect) in rect
       const hitShapeIds = shapes
         .filter((s) => {
+          if (!isShapeSelectableByMode(s)) return false;
           // Polyline bbox
           if (s.type === "polyline" && Array.isArray(s.points)) {
             const bb = bboxOfPoints(s.points);
@@ -10789,6 +10930,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       // ? Overlays in rect
       const hitOvers = svgOverlays
         .filter((o) => {
+          if (!areOverlaysSelectableByMode()) return false;
           const bb = overlayLocalBBox(o.id);
           if (!bb) return false;
           const worldRect = overlayWorldRect(o, bb);
@@ -11276,6 +11418,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const menuSize = isEmptyMenu ? { w: 210, h: 260 } : { w: 190, h: 240 };
   const winW = typeof window !== "undefined" ? window.innerWidth : 0;
   const winH = typeof window !== "undefined" ? window.innerHeight : 0;
+  const isMobileViewport = winW > 0 && winW <= 900;
   const isLiveMobile = isLiveMode && winW > 0 && winW <= 900;
   const showLiveIdentityChips = !isLiveMode || winW > 900;
   const menuLeft = contextMenu
@@ -11364,13 +11507,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
       transition: "background-color 140ms ease, border-color 140ms ease, color 140ms ease",
     };
   };
+  const drawerHeaderButtonSize = isMobileViewport ? 40 : 34;
   const drawerHeaderButtonStyle = {
     border: "1px solid var(--border)",
     background: "var(--bg-elev)",
     color: "var(--text)",
     borderRadius: 10,
-    width: 34,
-    height: 34,
+    width: drawerHeaderButtonSize,
+    height: drawerHeaderButtonSize,
     padding: 0,
     cursor: "pointer",
     fontSize: 14,
@@ -11378,12 +11522,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
     display: "grid",
     placeItems: "center",
   };
-  const drawerTextSize = 13;
+  const drawerTextSize = isMobileViewport ? 14 : 13;
   const drawerLineHeight = 1.35;
-  const drawerTitleSize = 15;
-  const drawerSubtitleSize = 11;
-  const rightDrawerHeaderPadding = "12px 14px";
-  const rightDrawerBodyPadding = 14;
+  const drawerTitleSize = isMobileViewport ? 16 : 15;
+  const drawerSubtitleSize = isMobileViewport ? 12 : 11;
+  const rightDrawerHeaderPadding = isMobileViewport ? "10px 10px" : "12px 14px";
+  const rightDrawerBodyPadding = isMobileViewport ? 10 : 14;
   const drawerContentPadding = rightDrawerBodyPadding;
   const drawerContentShellStyle = {
     height: "100%",
@@ -11398,9 +11542,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     color: active ? "var(--accent)" : "var(--text-muted)",
     borderRadius: 0,
     minWidth: 0,
-    height: 30,
-    padding: "0 10px",
-    fontSize: 11,
+    height: isMobileViewport ? 36 : 30,
+    padding: isMobileViewport ? "0 12px" : "0 10px",
+    fontSize: isMobileViewport ? 12 : 11,
     fontWeight: 700,
     cursor: "pointer",
     display: "inline-flex",
@@ -12308,8 +12452,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
         ? screens.find((s) => String(s?.id || "") === String(item?.screenId || "")) || null
         : null);
     const { routeName } = getRouteContextForScreenId(targetScreen?.id || item?.screenId);
+    const explicitLabel = String(item?.label || "").trim();
+    if (explicitLabel) return explicitLabel;
+    const screenNameLabel = String(targetScreen?.name || "").trim();
+    if (screenNameLabel) return screenNameLabel;
     if (routeName) return routeName;
-    return String(item?.label || "").trim() || String(targetScreen?.name || "Screen");
+    return "Screen";
   }
 
   function activateLiveMenuItem(item) {
@@ -12424,9 +12572,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
     : 0;
   const liveMenuLayoutInsetPx = isLiveMode ? (isLiveMobile ? 0 : liveMenuRailWidthPx) : 0;
   const designDockWidthPx = !isLiveMode && showZoom ? (designDockExpanded ? 228 : 44) : 0;
-  const svgImportDockWidthPx = !isLiveMode && importOpen ? 320 : 0;
-  const widgetDockWidthPx = !isLiveMode && widgetOpen ? 320 : 0;
-  const propertiesDockWidthPx = !isLiveMode && showHUD ? 360 : 0;
+  const sideDockWidthPx = isMobileViewport
+    ? Math.min(320, Math.max(250, Math.floor((winW || 0) * 0.86)))
+    : 320;
+  const svgImportDockWidthPx = !isLiveMode && importOpen ? sideDockWidthPx : 0;
+  const widgetDockWidthPx = !isLiveMode && widgetOpen ? sideDockWidthPx : 0;
+  const propertiesDockWidthPx = !isLiveMode && showHUD
+    ? (isMobileViewport ? Math.min(340, Math.max(250, Math.floor((winW || 0) * 0.88))) : 360)
+    : 0;
   const leftToolPanelWidthPx = Math.max(svgImportDockWidthPx, widgetDockWidthPx);
   const leftToolDockOffsetPx = designDockWidthPx + propertiesDockWidthPx;
   const projectDrawerLeftOffsetPx = projectDrawerFullscreen
@@ -12457,7 +12610,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     liveMenuLayoutInsetPx +
     liveEquipmentDrawerWidthPx +
     mainDrawerAppendWidthPx;
-  const canvasLeftInsetPx = canvasLeftInsetBasePx + liveCanvasMenuGapPx;
+  const canvasLeftInsetPx = isMobileViewport && !isLiveMode
+    ? Math.min(canvasLeftInsetBasePx + liveCanvasMenuGapPx, Math.max(0, (winW || 0) - 96))
+    : canvasLeftInsetBasePx + liveCanvasMenuGapPx;
   const liveAlarmBarOffset = isLiveMode ? LIVE_ALARM_BAR_H : 0;
   const leftDrawerTopPx = TOP_BAR_H + (isLiveMode ? liveAlarmBarOffset : 0);
   const designRulerInsetPx = !isLiveMode && showRulers ? RULER_SIZE + 8 : 8;
@@ -12755,6 +12910,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         opcTags={opcTags}
         widgetDbValues={widgetDbValues}
         binProductLabelByOverlayId={binProductLabelByOverlayId}
+        binNameLabelByOverlayId={binNameLabelByOverlayId}
         onWidgetDurationPresetChange={onWidgetDurationPresetChange}
         hiddenTagBubbleIds={hiddenTagBubbleIds}
         onHideTagBubble={(id) =>
@@ -13434,6 +13590,59 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 </svg>
                 {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Move</span> : null}
               </button>
+              {designDockExpanded ? (
+                <label
+                  title="Selection filter"
+                  style={{
+                    display: "grid",
+                    gap: 4,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: "var(--text-muted)",
+                    padding: "0 4px",
+                  }}
+                >
+                  <span style={{ letterSpacing: "0.04em", textTransform: "uppercase" }}>Selection</span>
+                  <select
+                    value={selectionMode}
+                    onChange={(e) => {
+                      const nextMode = String(e.target.value || "all");
+                      setSelectionMode(nextMode);
+                      clearSelection();
+                    }}
+                    style={{
+                      width: "100%",
+                      border: "1px solid var(--border)",
+                      background: "var(--bg-elev)",
+                      color: "var(--text)",
+                      borderRadius: 8,
+                      padding: "6px 8px",
+                      height: 30,
+                      fontSize: 11,
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    <option value="all">All objects</option>
+                    <option value="svg">SVG only</option>
+                    <option value="polyline">Polylines only</option>
+                  </select>
+                </label>
+              ) : (
+                <button
+                  className="top-menu-btn"
+                  title={`Selection Filter: ${selectionMode === "svg" ? "SVG only" : selectionMode === "polyline" ? "Polylines only" : "All objects"}`}
+                  style={dockToolButtonStyle(selectionMode !== "all")}
+                  onClick={() => {
+                    const nextMode = selectionMode === "all" ? "svg" : selectionMode === "svg" ? "polyline" : "all";
+                    setSelectionMode(nextMode);
+                    clearSelection();
+                  }}
+                >
+                  <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                    <path d="M5 6h14M5 12h14M5 18h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
               <button
                 className="top-menu-btn"
                 title="Polyline"
@@ -14300,27 +14509,31 @@ const CONTENT_FIT_HEADROOM = 0.94;
             ref={mainDrawerRef}
             style={{
               position: "absolute",
-              right: mainDrawerFullscreen || mainDrawerAppendFromLeft ? undefined : 0,
-              left: mainDrawerFullscreen
+              right: isMobileViewport || mainDrawerFullscreen || mainDrawerAppendFromLeft ? undefined : 0,
+              left: isMobileViewport
+                ? (mainDrawerAppendFromLeft ? mainDrawerAppendLeftPx : 0)
+                : mainDrawerFullscreen
                 ? (mainDrawerAppendFromLeft ? mainDrawerAppendLeftPx : 0)
                 : mainDrawerAppendFromLeft
                 ? mainDrawerAppendLeftPx
                 : undefined,
               top: 0,
               height: "100%",
-              width: mainDrawerFullscreen
+              width: isMobileViewport
+                ? (mainDrawerAppendFromLeft ? `calc(100% - ${mainDrawerAppendLeftPx}px)` : "100%")
+                : mainDrawerFullscreen
                 ? (mainDrawerAppendFromLeft
                     ? `calc(100% - ${mainDrawerAppendLeftPx}px)`
                     : "100%")
                 : `${Math.round(activeMainDrawerWidth)}px`,
               background: "var(--bg-soft)",
               boxShadow:
-                mainDrawerFullscreen || mainDrawerAppendFromLeft
+                isMobileViewport || mainDrawerFullscreen || mainDrawerAppendFromLeft
                   ? "none"
                   : "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
-              borderLeft: mainDrawerFullscreen || mainDrawerAppendFromLeft ? "none" : "1px solid var(--border)",
+              borderLeft: isMobileViewport || mainDrawerFullscreen || mainDrawerAppendFromLeft ? "none" : "1px solid var(--border)",
               borderRight: mainDrawerAppendFromLeft ? "1px solid var(--border)" : "none",
               color: "var(--text)",
               fontSize: drawerTextSize,
@@ -14364,6 +14577,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     ? (isLiveMode && databaseDataOnlyMode
                         ? (normalizeTableDisplayName(activeDatabaseTable) || "Data")
                         : "Database")
+                    : drawerView === "automation"
+                    ? "Automation"
                     : drawerView === "tags"
                     ? "Tags"
                   : drawerView === "logs"
@@ -14448,7 +14663,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </div>
                 }
               >
-              {drawerView === "tags" ? (
+              {drawerView === "automation" ? (
+                <div style={drawerContentShellStyle}>
+                  <AutomationRulesPanel embedded activeProjectId={activeProjectId} />
+                </div>
+              ) : drawerView === "tags" ? (
                 <div style={drawerContentShellStyle}>
                   <OpcConfig embedded mode="tags" />
                 </div>
@@ -14684,15 +14903,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
             style={{
               position: "absolute",
               right: 0,
-              left: userDrawerFullscreen ? 0 : undefined,
+              left: isMobileViewport || userDrawerFullscreen ? 0 : undefined,
               top: 0,
               height: "100%",
-              width: userDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.user.w)}px`,
+              width: isMobileViewport || userDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.user.w)}px`,
               background: "var(--bg-soft)",
-              boxShadow: "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
+              boxShadow: isMobileViewport ? "none" : "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
-              borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
+              borderLeft: isMobileViewport || userDrawerFullscreen ? "none" : "1px solid var(--border)",
               color: "var(--text)",
               fontSize: drawerTextSize,
               lineHeight: drawerLineHeight,
@@ -15081,15 +15300,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
             style={{
               position: "absolute",
               right: 0,
-              left: userDrawerFullscreen ? 0 : undefined,
+              left: isMobileViewport || userDrawerFullscreen ? 0 : undefined,
               top: 0,
               height: "100%",
-              width: userDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.user.w)}px`,
+              width: isMobileViewport || userDrawerFullscreen ? "100%" : `${Math.round(drawerSizes.user.w)}px`,
               background: "var(--bg-soft)",
-              boxShadow: "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
+              boxShadow: isMobileViewport ? "none" : "-24px 0 48px rgba(0,0,0,0.34), -8px 0 20px rgba(0,0,0,0.18)",
               display: "flex",
               flexDirection: "column",
-              borderLeft: userDrawerFullscreen ? "none" : "1px solid var(--border)",
+              borderLeft: isMobileViewport || userDrawerFullscreen ? "none" : "1px solid var(--border)",
               color: "var(--text)",
               fontSize: drawerTextSize,
               lineHeight: drawerLineHeight,
@@ -16373,14 +16592,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
           style={{
             position: "fixed",
             top: leftDrawerTopPx,
-            left: projectDrawerLeftOffsetPx,
-            right: projectDrawerFullscreen ? 0 : undefined,
+            left: isMobileViewport ? 0 : projectDrawerLeftOffsetPx,
+            right: isMobileViewport || projectDrawerFullscreen ? 0 : undefined,
             bottom: 0,
-            width: projectDrawerFullscreen ? "auto" : `${Math.round(drawerSizes.project.w)}px`,
+            width: isMobileViewport || projectDrawerFullscreen ? "auto" : `${Math.round(drawerSizes.project.w)}px`,
             zIndex: 220,
-            borderRight: projectDrawerFullscreen ? "none" : "1px solid var(--border)",
+            borderRight: isMobileViewport || projectDrawerFullscreen ? "none" : "1px solid var(--border)",
             background: "var(--bg-soft)",
-            boxShadow: "24px 0 48px rgba(0,0,0,0.34), 8px 0 20px rgba(0,0,0,0.18)",
+            boxShadow: isMobileViewport ? "none" : "24px 0 48px rgba(0,0,0,0.34), 8px 0 20px rgba(0,0,0,0.18)",
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",

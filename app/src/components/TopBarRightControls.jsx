@@ -51,6 +51,7 @@ export default function TopBarRightControls({
           { key: "server", label: "Server", areaKey: "server" },
           { key: "tags", label: "Tag", areaKey: "tags" },
           { key: "database", label: "Database", areaKey: "database" },
+          { key: "automation", label: "Automation", areaKey: "tags" },
           { key: "reports", label: "Reports", areaKey: "reports" },
           { key: "ai", label: "AI", areaKey: "ai" },
           { key: "security", label: "Security", areaKey: "security" },

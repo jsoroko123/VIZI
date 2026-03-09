@@ -8,14 +8,14 @@
    id="svg1"
    xmlns="http://www.w3.org/2000/svg" kewidth="56.383" keheight="100" eType="FilterBinTop">
   
-  <defs
-     id="defs1">
-    <linearGradient
-       id="swatch1">
-      <stop
-         style="stop-color:#ffffff;stop-opacity:1;"
-         offset="0"
-         id="stop1" />
+  <defs id="defs1">
+    <linearGradient id="steelFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e4e5e7" />
+      <stop offset="100%" stop-color="#c1c4c8" />
+    </linearGradient>
+    <linearGradient id="steelDark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#d3d5d8" />
+      <stop offset="100%" stop-color="#8f949c" />
     </linearGradient>
   </defs>
   <g
@@ -23,7 +23,7 @@
      transform="translate(-15.994686,-14.431972)">
     <path
        id="body"
-       style="fill:none;stroke:#000000;stroke-width:0.06;stroke-dasharray:none"
+       style="fill:url(#steelFill);stroke:#2c2e32;stroke-width:0.2;stroke-dasharray:none"
        d="m 16.024686,14.461972 v 0.366422 h 0.847686 v -0.366422 z m 0.001,0.367456 v 1.184113 h 0.847653 v -1.184113 z" />
     <text
        style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:0.352778px;font-family:SansSerif;-inkscape-font-specification:'SansSerif, Normal';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;fill:#000000;stroke:#000000;stroke-width:0.005;stroke-dasharray:none"
@@ -36,7 +36,7 @@
          y="15.382879">FC</tspan></text>
     <path
        d="m 16.166493,15.03968 v 0.427477 h 0.563855 V 15.03968 Z"
-       style="fill:none;fill-opacity:1;stroke:#000000;stroke-width:0.04;stroke-dasharray:none;stroke-opacity:1"
+       style="fill:url(#steelDark);fill-opacity:1;stroke:#2c2e32;stroke-width:0.14;stroke-dasharray:none;stroke-opacity:1"
        id="path1" />
   </g>
 </svg>

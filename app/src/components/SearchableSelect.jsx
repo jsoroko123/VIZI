@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 function normalizeOptions(options) {
   return (Array.isArray(options) ? options : [])
@@ -22,6 +23,7 @@ export default function SearchableSelect({
   options = [],
   placeholder = "Search...",
   disabled = false,
+  allowCustom = false,
   style = {},
   title = "",
   ariaLabel = "",
@@ -55,7 +57,21 @@ export default function SearchableSelect({
     const match = normalized.find((opt) => String(opt.value) === v) || null;
     setQuery(match?.label || "");
     setOpen(false);
-    onChange?.(v);
+    if (typeof onChange === "function") {
+      flushSync(() => {
+        onChange(v);
+      });
+    }
+  };
+
+  const commitCustomValue = () => {
+    if (!allowCustom) return;
+    const raw = String(query || "").trim();
+    if (!raw) return;
+    const exact = normalized.find(
+      (opt) => String(opt.value).toLowerCase() === raw.toLowerCase() || String(opt.label).toLowerCase() === raw.toLowerCase()
+    );
+    pickValue(exact?.value || raw);
   };
 
   useEffect(() => {
@@ -64,12 +80,29 @@ export default function SearchableSelect({
       const root = rootRef.current;
       const target = event?.target;
       if (root && target instanceof Node && root.contains(target)) return;
+      if (allowCustom && String(query || "").trim()) {
+        commitCustomValue();
+        return;
+      }
       setOpen(false);
       setQuery(selected?.label || "");
     };
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [open, selected]);
+  }, [allowCustom, open, query, selected]);
+
+  useEffect(() => {
+    const onCommitAll = () => {
+      if (allowCustom && String(query || "").trim()) {
+        commitCustomValue();
+        return;
+      }
+      setOpen(false);
+      setQuery(selected?.label || "");
+    };
+    window.addEventListener("vizi:commit-searchable-selects", onCommitAll);
+    return () => window.removeEventListener("vizi:commit-searchable-selects", onCommitAll);
+  }, [allowCustom, query, selected]);
 
   return (
     <div
@@ -109,9 +142,19 @@ export default function SearchableSelect({
           }}
           onBlur={() => {
             window.setTimeout(() => {
+              if (allowCustom && String(query || "").trim()) {
+                commitCustomValue();
+                return;
+              }
               setOpen(false);
               setQuery(selected?.label || "");
             }, 120);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && allowCustom) {
+              e.preventDefault();
+              commitCustomValue();
+            }
           }}
           style={{
             width: "100%",

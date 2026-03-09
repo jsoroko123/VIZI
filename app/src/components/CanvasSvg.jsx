@@ -80,6 +80,7 @@ export default function CanvasSvg({
   opcTags,
   widgetDbValues,
   binProductLabelByOverlayId,
+  binNameLabelByOverlayId,
   onWidgetDurationPresetChange,
   hiddenTagBubbleIds,
   onHideTagBubble,
@@ -124,10 +125,11 @@ export default function CanvasSvg({
       h,
     };
   };
-  const replaceSvgProductPlaceholder = (innerSvg, productLabel) => {
+  const replaceSvgTextPlaceholders = (innerSvg, labels = {}) => {
     const source = String(innerSvg || "");
-    const label = String(productLabel || "").trim();
-    if (!source.trim() || !label) return source;
+    const productLabel = String(labels?.product || "").trim();
+    const binNoLabel = String(labels?.binNo || "").trim();
+    if (!source.trim() || (!productLabel && !binNoLabel)) return source;
     try {
       const parser = new DOMParser();
       const doc = parser.parseFromString(
@@ -140,8 +142,19 @@ export default function CanvasSvg({
       nodes.forEach((node) => {
         const current = String(node?.textContent || "").trim();
         if (!current) return;
-        if (/^product$/i.test(current) || /^\{\{?\s*product\s*\}?\}$/i.test(current)) {
-          node.textContent = label;
+        if (
+          productLabel &&
+          (/^product$/i.test(current) || /^\{\{?\s*product\s*\}?\}$/i.test(current))
+        ) {
+          node.textContent = productLabel;
+          replaced += 1;
+          return;
+        }
+        if (
+          binNoLabel &&
+          (/^bin\s*no$/i.test(current) || /^\{\{?\s*bin\s*no\s*\}?\}$/i.test(current))
+        ) {
+          node.textContent = binNoLabel;
           replaced += 1;
         }
       });
@@ -3387,9 +3400,10 @@ export default function CanvasSvg({
           x1={x}
           y1={top + h}
           x2={x}
-          y2={anchorY - 2}
+          y2={anchorY}
           stroke="#0f172a"
-          strokeWidth={1 * inv}
+          strokeWidth={1.2 * inv}
+          strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
         />
         <rect
@@ -3466,7 +3480,7 @@ export default function CanvasSvg({
           }
           if (s.type === "rect" || s.type === "circle") {
             const x = Number(s.x ?? 0) + Math.max(0, Number(s.width ?? 0)) / 2;
-            const anchorY = Number(s.y ?? 0) + yOffset;
+            const anchorY = Number(s.y ?? 0) + Math.max(0, Number(s.height ?? 0)) / 2 + yOffset;
             return renderTagBubble({
               key: `tag-${s.id}`,
               bubbleId: s.id,
@@ -3510,7 +3524,7 @@ export default function CanvasSvg({
           const sx = overlayScaleX(o);
           const sy = overlayScaleY(o);
           const x = o.tx + sx * (bb.x + bb.width / 2);
-          const anchorY = o.ty + sy * bb.y;
+          const anchorY = o.ty + sy * (bb.y + bb.height / 2);
           return renderTagBubble({
             key: `tag-${o.id}`,
             bubbleId: o.id,
@@ -3539,8 +3553,27 @@ export default function CanvasSvg({
         const r = 8 * inv;
         const cx = wr.x + wr.w + 12 * inv;
         const cy = wr.y + Math.max(10 * inv, r + 1 * inv);
+        const anchorX = wr.x + wr.w;
+        const anchorY = wr.y + Math.max(r, Math.min(wr.h - r, 10 * inv));
+        const dx = cx - anchorX;
+        const dy = cy - anchorY;
+        const dist = Math.max(1e-6, Math.hypot(dx, dy));
+        const ux = dx / dist;
+        const uy = dy / dist;
+        const lineEndX = cx - ux * r;
+        const lineEndY = cy - uy * r;
         return (
           <g key={`overlay-warning-badge-${o.id}`} pointerEvents="none" aria-hidden="true">
+            <line
+              x1={anchorX}
+              y1={anchorY}
+              x2={lineEndX}
+              y2={lineEndY}
+              stroke="#ef4444"
+              strokeWidth={1.15 * inv}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
             <circle
               cx={cx}
               cy={cy}
@@ -4230,12 +4263,19 @@ export default function CanvasSvg({
                       const dynamicBinProductLabel = String(
                         binProductLabelByOverlayId?.[String(o?.id || "")] || ""
                       ).trim();
-                      const shouldReplaceBinProduct =
-                        !!dynamicBinProductLabel &&
-                        (overlayEType === "bin" || overlayEType.startsWith("bin"));
+                      const dynamicBinNameLabel = String(
+                        binNameLabelByOverlayId?.[String(o?.id || "")] || ""
+                      ).trim();
+                      const shouldReplaceBinText =
+                        (overlayEType === "bin" || overlayEType.startsWith("bin")) &&
+                        (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
                       const tagFill = getTagColor(o.tagPath);
                       const routeStroke = getRouteStrokeColorForOverlay(o);
                       const isFaultSimulated = Boolean(o.faultSimulated);
+                      const compactEType = overlayEType.replace(/[^a-z0-9]/g, "");
+                      const isConveyorScrew =
+                        compactEType.includes("conveyorscrew") ||
+                        (compactEType.includes("conveyor") && compactEType.includes("screw"));
                       const faultColor = "#ff3b30";
                       if (tagFill) {
                         const key = String(o.tagPath || o.id || "");
@@ -4252,8 +4292,11 @@ export default function CanvasSvg({
                         : useForcedStroke
                         ? overrideSvgStrokeOnly(o.inner)
                         : o.inner;
-                      if (shouldReplaceBinProduct) {
-                        inner = replaceSvgProductPlaceholder(inner, dynamicBinProductLabel);
+                      if (shouldReplaceBinText) {
+                        inner = replaceSvgTextPlaceholders(inner, {
+                          product: dynamicBinProductLabel,
+                          binNo: dynamicBinNameLabel,
+                        });
                       }
                       if (overlayEType.includes("diverter")) {
                         inner = applyDiverterModeToSvg(inner, o?.diverterMode);
@@ -4269,7 +4312,11 @@ export default function CanvasSvg({
                       }
                       return (
                         <g
-                          className={isFaultSimulated ? "vizi-svg-fault-flash" : undefined}
+                          className={[
+                            isFaultSimulated ? "vizi-svg-fault-flash" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ") || undefined}
                           style={{
                             fill: isFaultSimulated
                               ? faultColor
@@ -4281,8 +4328,9 @@ export default function CanvasSvg({
                                 : undefined,
                             pointerEvents: "visiblePainted",
                           }}
-                          dangerouslySetInnerHTML={{ __html: inner }}
-                        />
+                        >
+                          <g dangerouslySetInnerHTML={{ __html: inner }} />
+                        </g>
                       );
                     })()}
                   {o.widget ? renderWidgetOverlay(o) : null}

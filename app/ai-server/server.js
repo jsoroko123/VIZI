@@ -651,6 +651,17 @@ const PLC_DEBUG_MAX_WATCH_TAGS = 120;
 const PLC_DEBUG_MAX_SNAPSHOT_TAGS = 80;
 const plcDebugSessions = new Map();
 let plcDebugRefreshBusy = false;
+const AUTOMATION_RULE_CACHE_MS = Math.max(
+  1000,
+  Number.parseInt(String(process.env.AUTOMATION_RULE_CACHE_MS || "2000"), 10) || 2000
+);
+const AUTOMATION_DB_POLL_MS = Math.max(
+  1000,
+  Number.parseInt(String(process.env.AUTOMATION_DB_POLL_MS || "5000"), 10) || 5000
+);
+let automationRuleCacheAt = 0;
+let automationRuleCacheRows = [];
+let automationDbPollInFlight = false;
 
 function normalizeDebugToken(value) {
   return String(value || "").trim().toLowerCase();
@@ -2187,6 +2198,240 @@ function isMicrosoftAuthConfigured() {
   return !!(MS_OAUTH_ENABLED && MS_OAUTH_CLIENT_ID && MS_OAUTH_CLIENT_SECRET);
 }
 
+function normalizeAutomationTagKey(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function escapeAutomationRegex(text) {
+  return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchAutomationTagPattern(patternValue, eventTagValue) {
+  const pattern = String(patternValue || "").trim();
+  const eventTag = String(eventTagValue || "").trim();
+  if (!pattern || !eventTag) return { matched: false, base: "", captures: [] };
+  if (!pattern.includes("*")) {
+    return normalizeAutomationTagKey(pattern) === normalizeAutomationTagKey(eventTag)
+      ? { matched: true, base: "", captures: [] }
+      : { matched: false, base: "", captures: [] };
+  }
+  const regexText = `^${escapeAutomationRegex(pattern).replace(/\\\*/g, "(.+?)")}$`;
+  const match = eventTag.match(new RegExp(regexText, "i"));
+  if (!match) return { matched: false, base: "", captures: [] };
+  const captures = match.slice(1).map((part) => String(part || ""));
+  return {
+    matched: true,
+    base: String(captures[0] || ""),
+    captures,
+  };
+}
+
+function parseAutomationJson(rawValue, fallback) {
+  if (rawValue == null || rawValue === "") return fallback;
+  if (typeof rawValue === "object") return rawValue;
+  try {
+    return JSON.parse(String(rawValue));
+  } catch {
+    return fallback;
+  }
+}
+
+function automationValuesEqual(left, right) {
+  if (left === right) return true;
+  const leftNum = toFiniteNumber(left);
+  const rightNum = toFiniteNumber(right);
+  if (leftNum != null && rightNum != null) return leftNum === rightNum;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function automationNumericDelta(left, right) {
+  const leftNum = toFiniteNumber(left);
+  const rightNum = toFiniteNumber(right);
+  if (leftNum == null || rightNum == null) return null;
+  return rightNum - leftNum;
+}
+
+function isAutomationTruthy(value) {
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  if (typeof value === "number") return value !== 0;
+  const text = String(value).trim().toLowerCase();
+  if (!text) return false;
+  return text === "true" || text === "1" || text === "yes" || text === "on";
+}
+
+function evaluateAutomationOperator(left, operator, right) {
+  const op = String(operator || "==").trim();
+  if (op === "equals") return evaluateAutomationOperator(left, "==", right);
+  if (op === "not_equals") return evaluateAutomationOperator(left, "!=", right);
+  if (op === "contains" || op === "not_contains" || op === "starts_with" || op === "ends_with") {
+    const leftText = String(left ?? "").trim().toLowerCase();
+    const rightText = String(right ?? "").trim().toLowerCase();
+    if (op === "contains") return leftText.includes(rightText);
+    if (op === "not_contains") return !leftText.includes(rightText);
+    if (op === "starts_with") return leftText.startsWith(rightText);
+    return leftText.endsWith(rightText);
+  }
+  if (op === "changed") return !automationValuesEqual(left, right);
+  if (op === "truthy") return isAutomationTruthy(left);
+  if (op === "falsy") return !isAutomationTruthy(left);
+  const leftNum = toFiniteNumber(left);
+  const rightNum = toFiniteNumber(right);
+  if (leftNum != null && rightNum != null) {
+    if (op === "==") return leftNum === rightNum;
+    if (op === "!=") return leftNum !== rightNum;
+    if (op === ">") return leftNum > rightNum;
+    if (op === ">=") return leftNum >= rightNum;
+    if (op === "<") return leftNum < rightNum;
+    if (op === "<=") return leftNum <= rightNum;
+  }
+  const leftText = String(left ?? "").trim().toLowerCase();
+  const rightText = String(right ?? "").trim().toLowerCase();
+  if (op === "==") return leftText === rightText;
+  if (op === "!=") return leftText !== rightText;
+  return false;
+}
+
+function extractAutomationRouteId(tagKey) {
+  const raw = String(tagKey || "").trim();
+  if (!raw) return "";
+  const first = raw.split(".")[0] || "";
+  const match = String(first).match(/^(route\d+)/i);
+  return match ? String(match[1] || "") : "";
+}
+
+async function ruleScopeMatches(rule, event) {
+  const routeScope = String(rule?.scopeRouteId || "").trim();
+  const projectScope = String(rule?.scopeProjectId || "").trim();
+  if (!routeScope && !projectScope) return true;
+  const eventRouteId =
+    extractAutomationRouteId(event?.tagKey) ||
+    String(event?.row?.route_id || event?.row?.routeId || "").trim();
+  if (routeScope && String(routeScope).toLowerCase() !== String(eventRouteId).toLowerCase()) return false;
+  if (!projectScope) return true;
+  if (!eventRouteId) return false;
+  const { rows } = await pool.query(
+    `
+    SELECT 1
+    FROM route
+    WHERE lower(route_id) = lower($1) AND project_id = $2
+    LIMIT 1
+    `,
+    [eventRouteId, projectScope]
+  );
+  return rows.length > 0;
+}
+
+function applyAutomationTemplate(value, context) {
+  if (Array.isArray(value)) return value.map((entry) => applyAutomationTemplate(entry, context));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, applyAutomationTemplate(entry, context)])
+    );
+  }
+  if (typeof value !== "string") return value;
+  return value.replace(/\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g, (_m, key) => {
+    const resolved = String(key || "").split(".").reduce((acc, part) => {
+      if (acc == null || typeof acc !== "object") return undefined;
+      return acc[part];
+    }, context);
+    if (resolved == null) return "";
+    if (typeof resolved === "object") return JSON.stringify(resolved);
+    return String(resolved);
+  });
+}
+
+function buildAutomationValueContext(event) {
+  const captures = Array.isArray(event?.captures) ? event.captures : [];
+  const delta = automationNumericDelta(event?.previousValue, event?.nextValue);
+  return {
+    trigger_type: String(event?.triggerType || "tag"),
+    tag: String(event?.tagKey || ""),
+    trigger_tag: String(event?.tagKey || ""),
+    base: String(event?.base || ""),
+    base_tag: String(event?.base || ""),
+    wildcard_1: String(captures[0] || ""),
+    wildcard_2: String(captures[1] || ""),
+    wildcard_3: String(captures[2] || ""),
+    value: event?.nextValue ?? "",
+    current_value: event?.nextValue ?? "",
+    previous_value: event?.previousValue ?? "",
+    prev_value: event?.previousValue ?? "",
+    delta: delta ?? "",
+    counter_delta: delta ?? "",
+    quality: String(event?.quality || ""),
+    db_value: event?.nextValue ?? "",
+    db_previous_value: event?.previousValue ?? "",
+    row: event?.row && typeof event.row === "object" ? event.row : {},
+    db_row: event?.row && typeof event.row === "object" ? event.row : {},
+    now_ms: String(event?.at || Date.now()),
+    now_iso: new Date(Number(event?.at || Date.now())).toISOString(),
+  };
+}
+
+async function loadCurrentOpcStatus() {
+  const { rows } = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+  return rows[0]?.status && typeof rows[0].status === "object" ? rows[0].status : {};
+}
+
+function getAutomationContextValue(context, pathValue) {
+  const path = String(pathValue || "").trim();
+  if (!path) return undefined;
+  return path.split(".").reduce((acc, part) => {
+    if (acc == null || typeof acc !== "object") return undefined;
+    return acc[part];
+  }, context);
+}
+
+async function loadEnabledAutomationRules(force = false) {
+  const now = Date.now();
+  if (!force && now - automationRuleCacheAt < AUTOMATION_RULE_CACHE_MS) return automationRuleCacheRows;
+  const { rows } = await pool.query(
+    `
+    SELECT *
+    FROM automation_rule
+    WHERE enabled = true
+    ORDER BY id
+    `
+  );
+  automationRuleCacheRows = Array.isArray(rows) ? rows : [];
+  automationRuleCacheAt = now;
+  return automationRuleCacheRows;
+}
+
+async function logAutomationRuleRun({
+  ruleId,
+  ruleName,
+  triggerTag,
+  previousValue,
+  currentValue,
+  status = "ok",
+  message = "",
+  actionResults = [],
+}) {
+  try {
+    await pool.query(
+      `
+      INSERT INTO automation_rule_run
+      (rule_id, rule_name, trigger_tag, previous_value, current_value, status, message, action_results)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+      `,
+      [
+        ruleId == null ? null : Number(ruleId),
+        String(ruleName || ""),
+        String(triggerTag || ""),
+        previousValue == null ? null : JSON.stringify(previousValue),
+        currentValue == null ? null : JSON.stringify(currentValue),
+        String(status || "ok"),
+        String(message || ""),
+        JSON.stringify(Array.isArray(actionResults) ? actionResults : []),
+      ]
+    );
+  } catch {
+    // logging is best effort
+  }
+}
+
 function setSessionCookie(res, token, ttlMs = SESSION_TTL_MS) {
   res.setHeader(
     "Set-Cookie",
@@ -3211,6 +3456,11 @@ function normalizeLegacyTableName(value) {
   if (table === "tbl_routebingroup") return "route_bin_group";
   if (table === "tbl_routebinlist") return "route_bin_list";
   return table;
+}
+
+function invalidateAutomationRuleCache() {
+  automationRuleCacheAt = 0;
+  automationRuleCacheRows = [];
 }
 
 const OLLAMA_IDLE_UNLOAD_MS = Math.max(
@@ -6183,6 +6433,918 @@ function mergeRuntimeWriteMetrics(incomingRuntime, existingRuntime) {
   return { ...incoming };
 }
 
+async function performOpcWrite({
+  tagKey,
+  legacyTagKey = "",
+  value,
+  uaType = "",
+  applyInverseScale = true,
+}) {
+  const writeStartedAt = Date.now();
+  const primaryTagKey = String(tagKey || "").trim();
+  const legacyKey = String(legacyTagKey || "").trim();
+  const normalizedUaType = String(uaType || "").trim().toLowerCase();
+  if (!primaryTagKey) throw new Error("tagKey required.");
+
+  let nextValue = value;
+  if (typeof nextValue === "string") {
+    const raw = nextValue.trim();
+    if (normalizedUaType === "boolean") {
+      const lower = raw.toLowerCase();
+      if (lower === "true" || lower === "1" || lower === "on") nextValue = true;
+      else if (lower === "false" || lower === "0" || lower === "off") nextValue = false;
+      else nextValue = raw;
+    } else if (
+      normalizedUaType === "int16" ||
+      normalizedUaType === "int32" ||
+      normalizedUaType === "int64" ||
+      normalizedUaType === "uint16" ||
+      normalizedUaType === "uint32" ||
+      normalizedUaType === "uint64" ||
+      normalizedUaType === "float" ||
+      normalizedUaType === "double"
+    ) {
+      const n = Number(raw);
+      nextValue = Number.isFinite(n) ? n : raw;
+    } else {
+      nextValue = raw;
+    }
+  }
+
+  if (applyInverseScale) {
+    const scale = await getOpcTagScaleByKeys(primaryTagKey, legacyKey);
+    if (Number.isFinite(Number(scale)) && Number(scale) !== 0 && Number(scale) !== 1) {
+      const n = Number(nextValue);
+      if (Number.isFinite(n)) {
+        const unscaled = n / Number(scale);
+        const isIntType =
+          normalizedUaType === "int16" ||
+          normalizedUaType === "int32" ||
+          normalizedUaType === "int64" ||
+          normalizedUaType === "uint16" ||
+          normalizedUaType === "uint32" ||
+          normalizedUaType === "uint64";
+        nextValue = isIntType ? Math.round(unscaled) : unscaled;
+      }
+    }
+  }
+
+  {
+    const headers = { "content-type": "application/json" };
+    if (OPC_SERVER_KEY) headers["x-opc-key"] = OPC_SERVER_KEY;
+    let bridgeRes;
+    try {
+      bridgeRes = await fetch(`${OPC_WRITE_BRIDGE_URL}/internal/write`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          tagKey: primaryTagKey,
+          legacyTagKey: legacyKey,
+          value: nextValue,
+          uaType: normalizedUaType,
+        }),
+      });
+    } catch (err) {
+      logOpcError("write bridge unavailable", err, {
+        bridgeUrl: OPC_WRITE_BRIDGE_URL,
+        tagKey: primaryTagKey,
+        legacyTagKey: legacyKey,
+      });
+      throw new Error(`OPC write bridge unavailable at ${OPC_WRITE_BRIDGE_URL}: ${err?.message || "request failed"}`);
+    }
+    if (!bridgeRes.ok) {
+      const bridgeData = await bridgeRes.json().catch(() => ({}));
+      logOpcError("write bridge rejected request", new Error(String(bridgeData?.error || "PLC write failed.")), {
+        bridgeStatus: Number(bridgeRes.status) || null,
+        tagKey: primaryTagKey,
+        legacyTagKey: legacyKey,
+      });
+      throw new Error(String(bridgeData?.error || "PLC write failed."));
+    }
+    const bridgeData = await bridgeRes.json().catch(() => ({}));
+    if (Object.prototype.hasOwnProperty.call(bridgeData || {}, "value")) {
+      nextValue = bridgeData.value;
+    }
+  }
+
+  const current = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+  const baseStatus = current.rows[0]?.status && typeof current.rows[0].status === "object"
+    ? current.rows[0].status
+    : {};
+  const at = Date.now();
+  const nextStatus = {
+    ...baseStatus,
+    at,
+    values: { ...(baseStatus?.values || {}), [primaryTagKey]: nextValue },
+    qualities: { ...(baseStatus?.qualities || {}), [primaryTagKey]: "Good" },
+    diagnostics: { ...(baseStatus?.diagnostics || {}) },
+    runtime: {
+      ...(baseStatus?.runtime && typeof baseStatus.runtime === "object" ? baseStatus.runtime : {}),
+    },
+  };
+  if (legacyKey && legacyKey !== primaryTagKey) {
+    nextStatus.values[legacyKey] = nextValue;
+    nextStatus.qualities[legacyKey] = "Good";
+  }
+  const writeDurationMs = Math.max(0, Date.now() - writeStartedAt);
+  const applyWriteDiag = (key) => {
+    const prev =
+      nextStatus?.diagnostics?.[key] && typeof nextStatus.diagnostics[key] === "object"
+        ? nextStatus.diagnostics[key]
+        : {};
+    const writeCount = Math.max(0, Number.parseInt(String(prev?.writeCount || 0), 10) || 0) + 1;
+    const writeDurationTotalMs =
+      Math.max(0, Number.parseInt(String(prev?.writeDurationTotalMs || 0), 10) || 0) +
+      writeDurationMs;
+    const maxWriteDurationMs = Math.max(
+      Math.max(0, Number.parseInt(String(prev?.maxWriteDurationMs || 0), 10) || 0),
+      writeDurationMs
+    );
+    nextStatus.diagnostics[key] = {
+      ...prev,
+      lastReadAt: at,
+      lastSuccessAt: at,
+      lastErrorAt: null,
+      lastErrorMessage: "",
+      errorStreak: 0,
+      writeCount,
+      writeDurationTotalMs,
+      lastWriteAt: at,
+      lastWriteDurationMs: writeDurationMs,
+      avgWriteDurationMs: Math.round(writeDurationTotalMs / Math.max(1, writeCount)),
+      maxWriteDurationMs,
+    };
+  };
+  if (nextStatus?.diagnostics?.[primaryTagKey] && typeof nextStatus.diagnostics[primaryTagKey] === "object") {
+    applyWriteDiag(primaryTagKey);
+  } else {
+    nextStatus.diagnostics[primaryTagKey] = {};
+    applyWriteDiag(primaryTagKey);
+  }
+  if (
+    legacyKey &&
+    legacyKey !== primaryTagKey &&
+    nextStatus?.diagnostics?.[legacyKey] &&
+    typeof nextStatus.diagnostics[legacyKey] === "object"
+  ) {
+    applyWriteDiag(legacyKey);
+  } else if (legacyKey && legacyKey !== primaryTagKey) {
+    nextStatus.diagnostics[legacyKey] = {};
+    applyWriteDiag(legacyKey);
+  }
+
+  const prevWriteMetrics =
+    nextStatus?.runtime?.writeMetrics && typeof nextStatus.runtime.writeMetrics === "object"
+      ? nextStatus.runtime.writeMetrics
+      : {};
+  const runtimeWriteCount =
+    Math.max(0, Number.parseInt(String(prevWriteMetrics?.count || 0), 10) || 0) + 1;
+  const runtimeWriteTotalMs =
+    Math.max(0, Number.parseInt(String(prevWriteMetrics?.totalMs || 0), 10) || 0) +
+    writeDurationMs;
+  nextStatus.runtime.writeMetrics = {
+    count: runtimeWriteCount,
+    totalMs: runtimeWriteTotalMs,
+    avgMs: Math.round(runtimeWriteTotalMs / Math.max(1, runtimeWriteCount)),
+    maxMs: Math.max(
+      Math.max(0, Number.parseInt(String(prevWriteMetrics?.maxMs || 0), 10) || 0),
+      writeDurationMs
+    ),
+    lastMs: writeDurationMs,
+    lastAt: at,
+  };
+
+  if (nextStatus?.diagnostics?.[primaryTagKey] && typeof nextStatus.diagnostics[primaryTagKey] === "object") {
+    nextStatus.diagnostics[primaryTagKey] = {
+      ...nextStatus.diagnostics[primaryTagKey],
+      lastReadAt: at,
+    };
+  }
+  if (legacyKey && legacyKey !== primaryTagKey && nextStatus?.diagnostics?.[legacyKey]) {
+    nextStatus.diagnostics[legacyKey] = {
+      ...nextStatus.diagnostics[legacyKey],
+      lastReadAt: at,
+    };
+  }
+
+  await pool.query(
+    `
+    INSERT INTO opc_status (id, status, updated_at)
+    VALUES (1, $1::jsonb, now())
+    ON CONFLICT (id)
+    DO UPDATE SET status = EXCLUDED.status, updated_at = now()
+    `,
+    [JSON.stringify(nextStatus)]
+  );
+
+  const n = toFiniteNumber(nextValue);
+  if (n != null) {
+    const trendConfigMap = await loadTrendTagConfigMap();
+    const cfg = trendConfigMap instanceof Map ? trendConfigMap.get(primaryTagKey) : null;
+    const mode = cfg?.trendMode || "value";
+    appendTrendSample(primaryTagKey, at, n, {
+      mode,
+      forceMs: cfg?.trendSampleMs || OPC_TREND_FORCE_SAMPLE_MS,
+    });
+    await flushTrendBuffersIfNeeded(at);
+  }
+
+  return { ok: true, at, tagKey: primaryTagKey, value: nextValue };
+}
+
+function normalizeAutomationRuleRow(row) {
+  const triggerTag = String(row?.trigger_tag || "").trim();
+  const triggerSourceRaw = String(row?.trigger_source || "tag").trim().toLowerCase();
+  const triggerSource = triggerSourceRaw === "db" ? "db" : "tag";
+  const triggerModeRaw = String(row?.trigger_mode || "change").trim().toLowerCase();
+  const triggerMode = ["change", "rising", "falling", "counter_change", "counter_increase", "counter_decrease"].includes(triggerModeRaw)
+    ? triggerModeRaw
+    : "change";
+  const conditions = parseAutomationJson(row?.conditions_json, []);
+  const actionsRaw = parseAutomationJson(row?.actions_json, []);
+  const actions = Array.isArray(actionsRaw) ? actionsRaw : actionsRaw && typeof actionsRaw === "object" ? [actionsRaw] : [];
+  return {
+    id: Number(row?.id || 0) || 0,
+    name: String(row?.name || ""),
+    enabled: row?.enabled === true,
+    projectId: String(row?.project_id || ""),
+    scopeProjectId: String(row?.scope_project_id || ""),
+    scopeRouteId: String(row?.scope_route_id || ""),
+    triggerSource,
+    triggerTag,
+    triggerTagKey: normalizeAutomationTagKey(triggerTag),
+    triggerMode,
+    triggerTable: String(row?.trigger_table || "").trim(),
+    triggerColumn: String(row?.trigger_column || "").trim(),
+    triggerWhereJson: parseAutomationJson(row?.trigger_where_json, {}),
+    triggerOrderBy: String(row?.trigger_order_by || "").trim(),
+    triggerOrderDir: String(row?.trigger_order_dir || "asc").trim().toLowerCase() === "desc" ? "desc" : "asc",
+    conditions: Array.isArray(conditions) ? conditions : [],
+    actions,
+    cooldownMs: Math.max(0, Number.parseInt(String(row?.cooldown_ms || 0), 10) || 0),
+    lastFiredAt: row?.last_fired_at ? new Date(row.last_fired_at).getTime() : 0,
+    lastSeenValue: row?.last_seen_value == null ? null : parseAutomationJson(row.last_seen_value, row.last_seen_value),
+  };
+}
+
+function ruleMatchesAutomationEvent(rule, event) {
+  if (!rule?.enabled || rule?.triggerSource !== "tag" || !rule?.triggerTagKey) return false;
+  const matched = matchAutomationTagPattern(rule?.triggerTag || "", event?.tagKey || "");
+  if (!matched?.matched) return false;
+  event.base = String(matched?.base || "");
+  event.captures = Array.isArray(matched?.captures) ? matched.captures : [];
+  const delta = automationNumericDelta(event?.previousValue, event?.nextValue);
+  if (rule.triggerMode === "rising") return !isAutomationTruthy(event?.previousValue) && isAutomationTruthy(event?.nextValue);
+  if (rule.triggerMode === "falling") return isAutomationTruthy(event?.previousValue) && !isAutomationTruthy(event?.nextValue);
+  if (rule.triggerMode === "counter_change") return delta != null && delta !== 0;
+  if (rule.triggerMode === "counter_increase") return delta != null && delta > 0;
+  if (rule.triggerMode === "counter_decrease") return delta != null && delta < 0;
+  return !automationValuesEqual(event?.previousValue, event?.nextValue);
+}
+
+function evaluateAutomationConditionList(conditions, mergedStatus, event, extraContext = {}) {
+  const values = mergedStatus?.values && typeof mergedStatus.values === "object" ? mergedStatus.values : {};
+  const eventValueContext = {
+    ...buildAutomationValueContext(event),
+    ...extraContext,
+  };
+  for (const condition of Array.isArray(conditions) ? conditions : []) {
+    if (!condition || typeof condition !== "object") continue;
+    const tag = String(condition?.tag || condition?.tagKey || "").trim();
+    const operator = String(condition?.op || condition?.operator || "==").trim();
+    const expectedRaw = Object.prototype.hasOwnProperty.call(condition || {}, "value") ? condition.value : "";
+    const expected = applyAutomationTemplate(expectedRaw, eventValueContext);
+    if (!tag) {
+      if (!evaluateAutomationOperator(event?.nextValue, operator, expected)) return false;
+      continue;
+    }
+    const actualFromContext = getAutomationContextValue(eventValueContext, tag);
+    const actual = actualFromContext !== undefined ? actualFromContext : values[tag];
+    if (!evaluateAutomationOperator(actual, operator, expected)) return false;
+  }
+  return true;
+}
+
+function evaluateAutomationConditions(rule, mergedStatus, event) {
+  return evaluateAutomationConditionList(rule?.conditions, mergedStatus, event, {});
+}
+
+async function executeAutomationAction(action, event, mergedStatus, actionContext = {}) {
+  const type = String(action?.type || "").trim().toLowerCase();
+  const context = {
+    ...buildAutomationValueContext(event),
+    ...actionContext,
+    project_id: String(action?.project_id || event?.projectId || ""),
+  };
+  if (type === "db.insert") {
+    const table = String(action?.table || "").trim();
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) throw new Error("Invalid db.insert table.");
+    const rawValues = parseAutomationJson(action?.values, action?.values && typeof action.values === "object" ? action.values : {});
+    const values = applyAutomationTemplate(rawValues, context);
+    const payload = values && typeof values === "object" && !Array.isArray(values) ? values : {};
+    const keys = Object.keys(payload);
+    let row = null;
+    if (!keys.length) {
+      const result = await pool.query(`INSERT INTO ${safeIdent(table)} DEFAULT VALUES RETURNING *`);
+      row = result.rows[0] || null;
+    } else {
+      const cols = keys.map((k) => safeIdent(k)).join(", ");
+      const vals = keys.map((_, i) => `$${i + 1}`).join(", ");
+      const result = await pool.query(
+        `INSERT INTO ${safeIdent(table)} (${cols}) VALUES (${vals}) RETURNING *`,
+        keys.map((k) => payload[k])
+      );
+      row = result.rows[0] || null;
+    }
+    return { type, table, row, contextPatch: {} };
+  }
+  if (type === "db.update") {
+    const table = String(action?.table || "").trim();
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) throw new Error("Invalid db.update table.");
+    const whereRaw = parseAutomationJson(action?.where, action?.where && typeof action.where === "object" ? action.where : {});
+    const valuesRaw = parseAutomationJson(action?.values, action?.values && typeof action.values === "object" ? action.values : {});
+    const whereMap = whereRaw && typeof whereRaw === "object" && !Array.isArray(whereRaw) ? whereRaw : {};
+    const valuesMap = valuesRaw && typeof valuesRaw === "object" && !Array.isArray(valuesRaw) ? valuesRaw : {};
+    const valueEntries = Object.entries(valuesMap).filter(([key]) => /^[a-zA-Z0-9_]+$/.test(String(key || "").trim()));
+    if (!valueEntries.length) throw new Error("db.update requires values.");
+    const params = [];
+    const sets = valueEntries.map(([key, rawVal]) => {
+      params.push(applyAutomationTemplate(rawVal, context));
+      return `${safeIdent(key)} = $${params.length}`;
+    });
+    const whereClauses = [];
+    Object.entries(whereMap).forEach(([key, rawVal]) => {
+      if (!/^[a-zA-Z0-9_]+$/.test(String(key || "").trim())) return;
+      const value = applyAutomationTemplate(rawVal, context);
+      if (value == null || value === "") whereClauses.push(`${safeIdent(key)} IS NULL`);
+      else {
+        params.push(value);
+        whereClauses.push(`${safeIdent(key)} = $${params.length}`);
+      }
+    });
+    if (!whereClauses.length) throw new Error("db.update requires where.");
+    const sql = `UPDATE ${safeIdent(table)} SET ${sets.join(", ")} WHERE ${whereClauses.join(" AND ")} RETURNING *`;
+    const { rows } = await pool.query(sql, params);
+    return { type, table, count: rows.length, rows, contextPatch: {} };
+  }
+  if (type === "tag.write") {
+    const writeTag = String(applyAutomationTemplate(String(action?.tag || action?.tagKey || ""), context) || "").trim();
+    if (!writeTag) throw new Error("tag.write requires tag.");
+    const writeValue = applyAutomationTemplate(action?.value, context);
+    const result = await performOpcWrite({
+      tagKey: writeTag,
+      legacyTagKey: String(applyAutomationTemplate(String(action?.legacyTagKey || ""), context) || "").trim(),
+      value: writeValue,
+      uaType: String(action?.uaType || ""),
+      applyInverseScale: action?.applyInverseScale !== false,
+    });
+    return { type, tag: writeTag, value: result?.value, contextPatch: {} };
+  }
+  if (type === "tag.read") {
+    const readTag = String(
+      applyAutomationTemplate(String(action?.tag || action?.tagKey || event?.tag || ""), context) || ""
+    ).trim();
+    if (!readTag) throw new Error("tag.read requires tag.");
+    const values =
+      mergedStatus?.values && typeof mergedStatus.values === "object" ? mergedStatus.values : {};
+    const diagnostics =
+      mergedStatus?.diagnostics && typeof mergedStatus.diagnostics === "object" ? mergedStatus.diagnostics : {};
+    const hasValue = Object.prototype.hasOwnProperty.call(values, readTag);
+    if (!hasValue) throw new Error(`Tag ${readTag} not found in OPC status cache.`);
+    const value = values[readTag];
+    const meta = diagnostics?.[readTag] && typeof diagnostics[readTag] === "object" ? diagnostics[readTag] : {};
+    const saveAs = String(action?.saveAs || "tagValue").trim() || "tagValue";
+    return {
+      type,
+      tag: readTag,
+      value,
+      meta,
+      contextPatch: {
+        [saveAs]: value,
+        [`${saveAs}Meta`]: meta,
+        [`${saveAs}Tag`]: readTag,
+      },
+    };
+  }
+  if (type === "webhook") {
+    const url = String(applyAutomationTemplate(String(action?.url || ""), context) || "").trim();
+    if (!url) throw new Error("webhook requires url.");
+    const method = String(action?.method || "POST").trim().toUpperCase();
+    const headersRaw = parseAutomationJson(action?.headers, action?.headers && typeof action.headers === "object" ? action.headers : {});
+    const headers = headersRaw && typeof headersRaw === "object" && !Array.isArray(headersRaw)
+      ? applyAutomationTemplate(headersRaw, context)
+      : {};
+    const bodyRaw = Object.prototype.hasOwnProperty.call(action || {}, "body") ? action.body : null;
+    const bodyValue = bodyRaw == null ? null : applyAutomationTemplate(bodyRaw, context);
+    const fetchOptions = {
+      method,
+      headers: headers && typeof headers === "object" ? headers : {},
+    };
+    if (bodyValue != null && method !== "GET") {
+      fetchOptions.body =
+        typeof bodyValue === "string" ? bodyValue : JSON.stringify(bodyValue);
+      if (!fetchOptions.headers["content-type"] && !fetchOptions.headers["Content-Type"]) {
+        fetchOptions.headers["content-type"] = "application/json";
+      }
+    }
+    const response = await fetch(url, fetchOptions);
+    const text = await response.text().catch(() => "");
+    if (!response.ok) throw new Error(`Webhook failed (${response.status}): ${text || response.statusText || "request failed"}`);
+    return { type, url, status: response.status, body: text.slice(0, 1000), contextPatch: {} };
+  }
+  if (type === "delay") {
+    const msValue = applyAutomationTemplate(action?.ms, context);
+    const ms = Math.max(0, Math.min(60_000, Number.parseInt(String(msValue || 0), 10) || 0));
+    if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+    return { type, ms, contextPatch: {} };
+  }
+  if (type === "db.select") {
+    const table = String(action?.table || "").trim();
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) throw new Error("Invalid db.select table.");
+    const columnsRaw = Array.isArray(action?.columns) ? action.columns : [];
+    const columns = columnsRaw
+      .map((col) => String(col || "").trim())
+      .filter((col) => /^[a-zA-Z0-9_]+$/.test(col));
+    const whereRaw = parseAutomationJson(action?.where, action?.where && typeof action.where === "object" ? action.where : {});
+    const whereMap = whereRaw && typeof whereRaw === "object" && !Array.isArray(whereRaw) ? whereRaw : {};
+    const whereClauses = [];
+    const params = [];
+    Object.entries(whereMap).forEach(([key, rawVal]) => {
+      if (!/^[a-zA-Z0-9_]+$/.test(String(key || "").trim())) return;
+      const value = applyAutomationTemplate(rawVal, context);
+      if (value == null || value === "") {
+        whereClauses.push(`${safeIdent(key)} IS NULL`);
+      } else {
+        params.push(value);
+        whereClauses.push(`${safeIdent(key)} = $${params.length}`);
+      }
+    });
+    const orderBy = String(action?.orderBy || "").trim();
+    const orderDir = String(action?.orderDir || "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
+    const orderSql = /^[a-zA-Z0-9_]+$/.test(orderBy) ? ` ORDER BY ${safeIdent(orderBy)} ${orderDir}` : "";
+    const limitRaw = Number.parseInt(String(action?.limit || 0), 10);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
+    params.push(limit);
+    const selectCols = columns.length ? columns.map((col) => safeIdent(col)).join(", ") : "*";
+    const sql = `SELECT ${selectCols} FROM ${safeIdent(table)}${
+      whereClauses.length ? ` WHERE ${whereClauses.join(" AND ")}` : ""
+    }${orderSql} LIMIT $${params.length}`;
+    const { rows } = await pool.query(sql, params);
+    const saveAs = String(action?.saveAs || "rows").trim() || "rows";
+    return { type, table, count: rows.length, rows, contextPatch: { [saveAs]: rows } };
+  }
+  if (type === "dataset.select") {
+    const reportId = String(applyAutomationTemplate(String(action?.reportId || action?.report_id || ""), context) || "").trim();
+    const datasetId = String(applyAutomationTemplate(String(action?.datasetId || action?.dataset_id || ""), context) || "").trim();
+    if (!reportId || !datasetId) throw new Error("dataset.select requires reportId and datasetId.");
+    const { rows: reportRows } = await pool.query(
+      `SELECT id, layout_json FROM ai_reports WHERE id = $1 LIMIT 1`,
+      [reportId]
+    );
+    if (!reportRows.length) throw new Error(`Report ${reportId} not found.`);
+    const layout = reportRows[0]?.layout_json && typeof reportRows[0].layout_json === "object"
+      ? reportRows[0].layout_json
+      : {};
+    const datasets = Array.isArray(layout?.datasets) ? layout.datasets : [];
+    const dataset = datasets.find((row) => String(row?.id || "").trim() === datasetId) || null;
+    if (!dataset?.source || typeof dataset.source !== "object") {
+      throw new Error(`Dataset ${datasetId} not found in report ${reportId}.`);
+    }
+    const result = await executeReportPreviewInternal(dataset.source, { userKey: "automation" });
+    const saveAs = String(action?.saveAs || "rows").trim() || "rows";
+    return {
+      type,
+      reportId,
+      datasetId,
+      count: Array.isArray(result?.rows) ? result.rows.length : 0,
+      rows: Array.isArray(result?.rows) ? result.rows : [],
+      columns: Array.isArray(result?.columns) ? result.columns : [],
+      contextPatch: {
+        [saveAs]: Array.isArray(result?.rows) ? result.rows : [],
+        [`${saveAs}Columns`]: Array.isArray(result?.columns) ? result.columns : [],
+      },
+    };
+  }
+  if (type === "for_each") {
+    const sourcePath = String(action?.source || action?.from || "").trim();
+    if (!sourcePath) throw new Error("for_each requires source.");
+    const rows = getAutomationContextValue(context, sourcePath);
+    const list = Array.isArray(rows) ? rows : [];
+    const nestedActions = Array.isArray(action?.actions) ? action.actions : [];
+    const nestedResults = [];
+    for (let index = 0; index < list.length; index += 1) {
+      const item = list[index];
+      const iterationContext = { ...actionContext, item, index };
+      const executed = await executeAutomationActionList(nestedActions, event, mergedStatus, iterationContext);
+      nestedResults.push(...(Array.isArray(executed?.actionResults) ? executed.actionResults : []));
+    }
+    return { type, source: sourcePath, iterations: list.length, nestedResults, contextPatch: {} };
+  }
+  throw new Error(`Unsupported automation action: ${type || "unknown"}`);
+}
+
+async function executeAutomationActionList(actions, event, mergedStatus, initialContext = {}) {
+  let actionContext = { ...initialContext };
+  const actionResults = [];
+  for (const action of Array.isArray(actions) ? actions : []) {
+    const when = Array.isArray(action?.when) ? action.when : [];
+    if (when.length && !evaluateAutomationConditionList(when, mergedStatus, event, actionContext)) {
+      actionResults.push({
+        type: String(action?.type || "").trim().toLowerCase(),
+        skipped: true,
+        reason: "conditions_not_met",
+        contextPatch: {},
+      });
+      continue;
+    }
+    const result = await executeAutomationAction(action, event, mergedStatus, actionContext);
+    actionResults.push(result);
+    if (result?.contextPatch && typeof result.contextPatch === "object") {
+      actionContext = { ...actionContext, ...result.contextPatch };
+    }
+  }
+  return { actionResults, actionContext };
+}
+
+async function runAutomationRulesForStatusChange(existingStatus, mergedStatus) {
+  const prevValues =
+    existingStatus?.values && typeof existingStatus.values === "object" ? existingStatus.values : {};
+  const nextValues =
+    mergedStatus?.values && typeof mergedStatus.values === "object" ? mergedStatus.values : {};
+  const nextQualities =
+    mergedStatus?.qualities && typeof mergedStatus.qualities === "object" ? mergedStatus.qualities : {};
+  const changedKeys = new Set([
+    ...Object.keys(prevValues || {}),
+    ...Object.keys(nextValues || {}),
+  ]);
+  if (!changedKeys.size) return;
+  const rawRules = await loadEnabledAutomationRules();
+  const rules = rawRules.map(normalizeAutomationRuleRow).filter((rule) => rule.enabled && rule.actions.length);
+  if (!rules.length) return;
+
+  for (const key of changedKeys) {
+    const previousValue = prevValues[key];
+    const nextValue = nextValues[key];
+    if (automationValuesEqual(previousValue, nextValue)) continue;
+    const event = {
+      tagKey: String(key || ""),
+      previousValue,
+      nextValue,
+      quality: nextQualities[key],
+      at: Number(mergedStatus?.at || Date.now()),
+    };
+    const matchingRules = rules.filter((rule) => ruleMatchesAutomationEvent(rule, event));
+    for (const rule of matchingRules) {
+      if (!(await ruleScopeMatches(rule, event))) continue;
+      if (rule.cooldownMs > 0 && rule.lastFiredAt > 0 && Date.now() - rule.lastFiredAt < rule.cooldownMs) {
+        continue;
+      }
+      if (!evaluateAutomationConditions(rule, mergedStatus, event)) continue;
+      const actionResults = [];
+      try {
+        await pool.query(
+          `UPDATE automation_rule SET last_fired_at = now(), updated_at = now() WHERE id = $1`,
+          [rule.id]
+        );
+        const executed = await executeAutomationActionList(rule.actions, event, mergedStatus, {});
+        actionResults.push(...(Array.isArray(executed?.actionResults) ? executed.actionResults : []));
+        await logAutomationRuleRun({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          triggerTag: event.tagKey,
+          previousValue,
+          currentValue: nextValue,
+          status: "ok",
+          actionResults,
+        });
+      } catch (err) {
+        await pool.query(
+          `UPDATE automation_rule SET updated_at = now() WHERE id = $1`,
+          [rule.id]
+        ).catch(() => {});
+        await logAutomationRuleRun({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          triggerTag: event.tagKey,
+          previousValue,
+          currentValue: nextValue,
+          status: "error",
+          message: String(err?.message || "Automation rule execution failed."),
+          actionResults,
+        });
+      }
+    }
+  }
+}
+
+async function readAutomationDbTriggerValue(rule) {
+  const table = String(rule?.triggerTable || "").trim();
+  const column = String(rule?.triggerColumn || "").trim();
+  if (!/^[a-zA-Z0-9_]+$/.test(table)) throw new Error("DB trigger requires a valid trigger_table.");
+  if (!/^[a-zA-Z0-9_]+$/.test(column)) throw new Error("DB trigger requires a valid trigger_column.");
+  const whereMap =
+    rule?.triggerWhereJson && typeof rule.triggerWhereJson === "object" && !Array.isArray(rule.triggerWhereJson)
+      ? rule.triggerWhereJson
+      : {};
+  const whereClauses = [];
+  const params = [];
+  Object.entries(whereMap).forEach(([key, rawVal]) => {
+    if (!/^[a-zA-Z0-9_]+$/.test(String(key || "").trim())) return;
+    if (rawVal == null || rawVal === "") {
+      whereClauses.push(`${safeIdent(key)} IS NULL`);
+    } else {
+      params.push(rawVal);
+      whereClauses.push(`${safeIdent(key)} = $${params.length}`);
+    }
+  });
+  const orderBy = String(rule?.triggerOrderBy || "").trim();
+  const orderDir = String(rule?.triggerOrderDir || "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
+  const orderSql = /^[a-zA-Z0-9_]+$/.test(orderBy) ? ` ORDER BY ${safeIdent(orderBy)} ${orderDir}` : "";
+  const sql = `SELECT * FROM ${safeIdent(table)}${
+    whereClauses.length ? ` WHERE ${whereClauses.join(" AND ")}` : ""
+  }${orderSql} LIMIT 1`;
+  const { rows } = await pool.query(sql, params);
+  const row = rows[0] && typeof rows[0] === "object" ? rows[0] : null;
+  return {
+    row,
+    value: row ? row[column] : null,
+    triggerKey: `db:${table}.${column}`,
+  };
+}
+
+async function runAutomationRulesForDbTriggers() {
+  if (automationDbPollInFlight) return;
+  automationDbPollInFlight = true;
+  try {
+    const rawRules = await loadEnabledAutomationRules();
+    const rules = rawRules
+      .map(normalizeAutomationRuleRow)
+      .filter((rule) => rule.enabled && rule.triggerSource === "db" && rule.actions.length);
+    if (!rules.length) return;
+    const mergedStatus = await loadCurrentOpcStatus();
+    for (const rule of rules) {
+      let readResult = null;
+      try {
+        readResult = await readAutomationDbTriggerValue(rule);
+      } catch (err) {
+        await logAutomationRuleRun({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          triggerTag: `db:${rule.triggerTable || ""}.${rule.triggerColumn || ""}`,
+          previousValue: rule.lastSeenValue,
+          currentValue: null,
+          status: "error",
+          message: String(err?.message || "Failed to evaluate DB automation trigger."),
+          actionResults: [],
+        });
+        continue;
+      }
+      const previousValue = rule.lastSeenValue;
+      const nextValue = readResult?.value ?? null;
+      const event = {
+        triggerType: "db",
+        tagKey: readResult?.triggerKey || `db:${rule.triggerTable || ""}.${rule.triggerColumn || ""}`,
+        previousValue,
+        nextValue,
+        quality: "db",
+        row: readResult?.row || null,
+        at: Date.now(),
+      };
+      const firstObservation = previousValue == null && !rule.lastFiredAt;
+      try {
+        await pool.query(
+          `UPDATE automation_rule SET last_seen_value = $2, updated_at = now() WHERE id = $1`,
+          [rule.id, nextValue == null ? null : JSON.stringify(nextValue)]
+        );
+      } catch {
+        // best effort
+      }
+      if (firstObservation) continue;
+      if (rule.cooldownMs > 0 && rule.lastFiredAt > 0 && Date.now() - rule.lastFiredAt < rule.cooldownMs) {
+        continue;
+      }
+      const matchesMode =
+        rule.triggerMode === "rising"
+          ? !isAutomationTruthy(previousValue) && isAutomationTruthy(nextValue)
+          : rule.triggerMode === "falling"
+            ? isAutomationTruthy(previousValue) && !isAutomationTruthy(nextValue)
+            : rule.triggerMode === "counter_change"
+              ? (() => {
+                  const delta = automationNumericDelta(previousValue, nextValue);
+                  return delta != null && delta !== 0;
+                })()
+              : rule.triggerMode === "counter_increase"
+                ? (() => {
+                    const delta = automationNumericDelta(previousValue, nextValue);
+                    return delta != null && delta > 0;
+                  })()
+                : rule.triggerMode === "counter_decrease"
+                  ? (() => {
+                      const delta = automationNumericDelta(previousValue, nextValue);
+                      return delta != null && delta < 0;
+                    })()
+            : !automationValuesEqual(previousValue, nextValue);
+      if (!matchesMode) continue;
+      if (!(await ruleScopeMatches(rule, event))) continue;
+      if (!evaluateAutomationConditions(rule, mergedStatus, event)) continue;
+      const actionResults = [];
+      try {
+        await pool.query(
+          `UPDATE automation_rule SET last_fired_at = now(), updated_at = now() WHERE id = $1`,
+          [rule.id]
+        );
+        const executed = await executeAutomationActionList(rule.actions, event, mergedStatus, {});
+        actionResults.push(...(Array.isArray(executed?.actionResults) ? executed.actionResults : []));
+        await logAutomationRuleRun({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          triggerTag: event.tagKey,
+          previousValue,
+          currentValue: nextValue,
+          status: "ok",
+          actionResults,
+        });
+      } catch (err) {
+        await logAutomationRuleRun({
+          ruleId: rule.id,
+          ruleName: rule.name,
+          triggerTag: event.tagKey,
+          previousValue,
+          currentValue: nextValue,
+          status: "error",
+          message: String(err?.message || "Automation rule execution failed."),
+          actionResults,
+        });
+      }
+    }
+  } finally {
+    automationDbPollInFlight = false;
+  }
+}
+
+async function executeReportPreviewInternal(body = {}, options = {}) {
+  const mode = String(body?.mode || "sql").trim().toLowerCase();
+  const userKey = String(options?.userKey || options?.userId || "anonymous").trim() || "anonymous";
+  let sqlTemplate = String(body?.sql || "").trim();
+  if (mode === "table") {
+    const table = String(body?.table || "").trim();
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error("Valid table is required.");
+    }
+    const selectedColumns = Array.isArray(body?.selectedColumns)
+      ? body.selectedColumns
+          .map((c) => String(c || "").trim())
+          .filter((c) => /^[a-zA-Z0-9_]+$/.test(c))
+      : [];
+    const groupByColumns = Array.isArray(body?.groupByColumns)
+      ? Array.from(
+          new Set(
+            body.groupByColumns
+              .map((c) => String(c || "").trim())
+              .filter((c) => /^[a-zA-Z0-9_]+$/.test(c))
+          )
+        )
+      : [];
+    const limit = Math.min(1000, Math.max(1, Number(body?.limit) || 100));
+    const selectCols = selectedColumns.length
+      ? selectedColumns.map((c) => safeIdent(c)).join(", ")
+      : "*";
+    const allowedOps = new Set(["=", "!=", ">", ">=", "<", "<=", "like", "ilike"]);
+    const rawTableFilters = Array.isArray(body?.tableFilters) ? body.tableFilters : [];
+    const where = [];
+    const values = [];
+    for (const f of rawTableFilters) {
+      const column = String(f?.column || "").trim();
+      if (!/^[a-zA-Z0-9_]+$/.test(column)) continue;
+      const op = String(f?.operator || "=").trim().toLowerCase();
+      if (op === "is_null") {
+        where.push(`${safeIdent(column)} IS NULL`);
+        continue;
+      }
+      if (op === "is_not_null") {
+        where.push(`${safeIdent(column)} IS NOT NULL`);
+        continue;
+      }
+      if (!allowedOps.has(op)) continue;
+      const raw = f?.value;
+      if (raw == null || String(raw).trim() === "") continue;
+      values.push(raw);
+      where.push(`${safeIdent(column)} ${op.toUpperCase()} $${values.length}`);
+    }
+    let sql = `SELECT ${selectCols} FROM ${safeIdent(table)}`;
+    if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
+    if (groupByColumns.length) {
+      sql += ` GROUP BY ${groupByColumns.map((c) => safeIdent(c)).join(", ")}`;
+    }
+    values.push(limit);
+    sql += ` LIMIT $${values.length}`;
+    const guard = await loadReportSqlGuardSettings();
+    enforceReportRateLimit(userKey, guard);
+    const releaseSlot = acquireReportQuerySlot(guard);
+    let resultPayload = null;
+    try {
+      resultPayload = await runReadOnlyQueryWithGuards(sql, values, guard);
+    } finally {
+      releaseSlot();
+    }
+    const { result, maxRows, timeoutMs, truncated } = resultPayload;
+    const columns = (result.fields || []).map((f) => f.name);
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+    const summedColumns = extractSummedOutputColumns(sql, columns);
+    const summaryRow = summedColumns.length ? buildSummaryRow(rows, columns, summedColumns) : null;
+    return {
+      sql,
+      columns,
+      rows,
+      rowCount: rows.length,
+      truncated,
+      maxRows,
+      timeoutMs,
+      expectedFilters: [],
+      expectedPositionalParams: 0,
+      summaryRow,
+    };
+  }
+  if (mode === "routine") {
+    const routineOid = String(body?.routineOid || "").trim();
+    if (!routineOid || !/^\d+$/.test(routineOid)) {
+      throw new Error("Routine selection required.");
+    }
+    const meta = await pool.query(
+      `
+      SELECT
+        p.oid::text AS oid,
+        n.nspname AS schema_name,
+        p.proname AS routine_name,
+        p.prokind AS routine_kind,
+        p.proretset AS returns_set
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE p.oid = $1::oid
+      LIMIT 1
+      `,
+      [routineOid]
+    );
+    if (!meta.rows.length) throw new Error("Routine not found.");
+    const routine = meta.rows[0];
+    if (String(routine.routine_kind || "") === "p") {
+      throw new Error("Procedures are not supported for preview. Use a set-returning function.");
+    }
+    const args = Array.isArray(body?.routineArgs) ? body.routineArgs : [];
+    const placeholders = args.map((_v, i) => `$${i + 1}`).join(", ");
+    const fnIdent = safeQualifiedIdent(routine.schema_name, routine.routine_name);
+    if (Boolean(routine.returns_set)) {
+      sqlTemplate = `SELECT * FROM ${fnIdent}(${placeholders}) LIMIT 100`;
+    } else {
+      sqlTemplate = `SELECT ${fnIdent}(${placeholders}) AS result LIMIT 1`;
+    }
+  }
+  if (!sqlTemplate) {
+    throw new Error("Report SQL required.");
+  }
+  const expectedFilters = extractReportFilterNames(sqlTemplate);
+  const expectedPositionalParams = extractPositionalParamCount(sqlTemplate);
+  const filterValues =
+    body?.filters && typeof body.filters === "object" && !Array.isArray(body.filters)
+      ? body.filters
+      : {};
+  const positionalValues =
+    mode === "routine"
+      ? Array.isArray(body?.routineArgs)
+        ? body.routineArgs
+        : []
+      : Array.isArray(body?.positional)
+        ? body.positional
+        : [];
+  const { sql, values } = buildParameterizedReadOnlyQuery(sqlTemplate, filterValues, positionalValues);
+  const guard = await loadReportSqlGuardSettings();
+  enforceReportRateLimit(userKey, guard);
+  const releaseSlot = acquireReportQuerySlot(guard);
+  let resultPayload = null;
+  try {
+    resultPayload = await runReadOnlyQueryWithGuards(sql, values, guard);
+  } finally {
+    releaseSlot();
+  }
+  const { result, maxRows, timeoutMs, truncated } = resultPayload;
+  const columns = (result.fields || []).map((f) => f.name);
+  const rows = Array.isArray(result.rows) ? result.rows : [];
+  const summedColumns = extractSummedOutputColumns(sql, columns);
+  const summaryRow = summedColumns.length ? buildSummaryRow(rows, columns, summedColumns) : null;
+  return {
+    sql,
+    columns,
+    rows,
+    rowCount: rows.length,
+    truncated,
+    maxRows,
+    timeoutMs,
+    expectedFilters,
+    expectedPositionalParams,
+    summaryRow,
+  };
+}
+
 app.post("/api/opc/status", async (req, res) => {
   try {
     const status = req.body;
@@ -6210,6 +7372,11 @@ app.post("/api/opc/status", async (req, res) => {
       `,
       [JSON.stringify(mergedStatus)]
     );
+    try {
+      await runAutomationRulesForStatusChange(existingStatus, mergedStatus);
+    } catch (err) {
+      appendServerLog("error", "automation rule execution failed", { error: err?.message || String(err) }, "automation");
+    }
     const at = normalizeTrendTimestamp(mergedStatus?.at);
     const values =
       mergedStatus?.values && typeof mergedStatus.values === "object" ? mergedStatus.values : {};
@@ -6257,226 +7424,14 @@ app.post("/api/opc/status", async (req, res) => {
 
 app.post("/api/opc/write", async (req, res) => {
   try {
-    const writeStartedAt = Date.now();
-    const tagKey = String(req.body?.tagKey || "").trim();
-    const legacyTagKey = String(req.body?.legacyTagKey || "").trim();
-    const uaType = String(req.body?.uaType || "").trim().toLowerCase();
-    const applyInverseScale = req.body?.applyInverseScale !== false;
-    if (!tagKey) {
-      res.status(400).json({ error: "tagKey required." });
-      return;
-    }
-    let nextValue = req.body?.value;
-    if (typeof nextValue === "string") {
-      const raw = nextValue.trim();
-      if (uaType === "boolean") {
-        const lower = raw.toLowerCase();
-        if (lower === "true" || lower === "1" || lower === "on") nextValue = true;
-        else if (lower === "false" || lower === "0" || lower === "off") nextValue = false;
-        else nextValue = raw;
-      } else if (
-        uaType === "int16" ||
-        uaType === "int32" ||
-        uaType === "int64" ||
-        uaType === "uint16" ||
-        uaType === "uint32" ||
-        uaType === "uint64" ||
-        uaType === "float" ||
-        uaType === "double"
-      ) {
-        const n = Number(raw);
-        nextValue = Number.isFinite(n) ? n : raw;
-      } else {
-        nextValue = raw;
-      }
-    }
-
-    if (applyInverseScale) {
-      const scale = await getOpcTagScaleByKeys(tagKey, legacyTagKey);
-      if (Number.isFinite(Number(scale)) && Number(scale) !== 0 && Number(scale) !== 1) {
-        const n = Number(nextValue);
-        if (Number.isFinite(n)) {
-          const unscaled = n / Number(scale);
-          const isIntType =
-            uaType === "int16" ||
-            uaType === "int32" ||
-            uaType === "int64" ||
-            uaType === "uint16" ||
-            uaType === "uint32" ||
-            uaType === "uint64";
-          nextValue = isIntType ? Math.round(unscaled) : unscaled;
-        }
-      }
-    }
-
-    // Forward writes to opc-server so PLC values actually change.
-    {
-      const headers = { "content-type": "application/json" };
-      if (OPC_SERVER_KEY) headers["x-opc-key"] = OPC_SERVER_KEY;
-      let bridgeRes;
-      try {
-        bridgeRes = await fetch(`${OPC_WRITE_BRIDGE_URL}/internal/write`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            tagKey,
-            legacyTagKey,
-            value: nextValue,
-            uaType,
-          }),
-        });
-      } catch (err) {
-        logOpcError("write bridge unavailable", err, {
-          bridgeUrl: OPC_WRITE_BRIDGE_URL,
-          tagKey,
-          legacyTagKey,
-        });
-        res.status(502).json({
-          error: `OPC write bridge unavailable at ${OPC_WRITE_BRIDGE_URL}: ${err?.message || "request failed"}`,
-        });
-        return;
-      }
-      if (!bridgeRes.ok) {
-        const bridgeData = await bridgeRes.json().catch(() => ({}));
-        logOpcError("write bridge rejected request", new Error(String(bridgeData?.error || "PLC write failed.")), {
-          bridgeStatus: Number(bridgeRes.status) || null,
-          tagKey,
-          legacyTagKey,
-        });
-        res.status(bridgeRes.status).json({
-          error: bridgeData?.error || "PLC write failed.",
-        });
-        return;
-      }
-      const bridgeData = await bridgeRes.json().catch(() => ({}));
-      if (Object.prototype.hasOwnProperty.call(bridgeData || {}, "value")) {
-        nextValue = bridgeData.value;
-      }
-    }
-
-    const current = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
-    const baseStatus = current.rows[0]?.status && typeof current.rows[0].status === "object"
-      ? current.rows[0].status
-      : {};
-    const at = Date.now();
-    const nextStatus = {
-      ...baseStatus,
-      at,
-      values: { ...(baseStatus?.values || {}), [tagKey]: nextValue },
-      qualities: { ...(baseStatus?.qualities || {}), [tagKey]: "Good" },
-      diagnostics: { ...(baseStatus?.diagnostics || {}) },
-      runtime: {
-        ...(baseStatus?.runtime && typeof baseStatus.runtime === "object" ? baseStatus.runtime : {}),
-      },
-    };
-    if (legacyTagKey && legacyTagKey !== tagKey) {
-      nextStatus.values[legacyTagKey] = nextValue;
-      nextStatus.qualities[legacyTagKey] = "Good";
-    }
-    const writeDurationMs = Math.max(0, Date.now() - writeStartedAt);
-    const applyWriteDiag = (key) => {
-      const prev =
-        nextStatus?.diagnostics?.[key] && typeof nextStatus.diagnostics[key] === "object"
-          ? nextStatus.diagnostics[key]
-          : {};
-      const writeCount = Math.max(0, Number.parseInt(String(prev?.writeCount || 0), 10) || 0) + 1;
-      const writeDurationTotalMs =
-        Math.max(0, Number.parseInt(String(prev?.writeDurationTotalMs || 0), 10) || 0) +
-        writeDurationMs;
-      const maxWriteDurationMs = Math.max(
-        Math.max(0, Number.parseInt(String(prev?.maxWriteDurationMs || 0), 10) || 0),
-        writeDurationMs
-      );
-      nextStatus.diagnostics[key] = {
-        ...prev,
-        lastReadAt: at,
-        lastSuccessAt: at,
-        lastErrorAt: null,
-        lastErrorMessage: "",
-        errorStreak: 0,
-        writeCount,
-        writeDurationTotalMs,
-        lastWriteAt: at,
-        lastWriteDurationMs: writeDurationMs,
-        avgWriteDurationMs: Math.round(writeDurationTotalMs / Math.max(1, writeCount)),
-        maxWriteDurationMs,
-      };
-    };
-    if (nextStatus?.diagnostics?.[tagKey] && typeof nextStatus.diagnostics[tagKey] === "object") {
-      applyWriteDiag(tagKey);
-    } else {
-      nextStatus.diagnostics[tagKey] = {};
-      applyWriteDiag(tagKey);
-    }
-    if (
-      legacyTagKey &&
-      legacyTagKey !== tagKey &&
-      nextStatus?.diagnostics?.[legacyTagKey] &&
-      typeof nextStatus.diagnostics[legacyTagKey] === "object"
-    ) {
-      applyWriteDiag(legacyTagKey);
-    } else if (legacyTagKey && legacyTagKey !== tagKey) {
-      nextStatus.diagnostics[legacyTagKey] = {};
-      applyWriteDiag(legacyTagKey);
-    }
-
-    const prevWriteMetrics =
-      nextStatus?.runtime?.writeMetrics && typeof nextStatus.runtime.writeMetrics === "object"
-        ? nextStatus.runtime.writeMetrics
-        : {};
-    const runtimeWriteCount =
-      Math.max(0, Number.parseInt(String(prevWriteMetrics?.count || 0), 10) || 0) + 1;
-    const runtimeWriteTotalMs =
-      Math.max(0, Number.parseInt(String(prevWriteMetrics?.totalMs || 0), 10) || 0) +
-      writeDurationMs;
-    nextStatus.runtime.writeMetrics = {
-      count: runtimeWriteCount,
-      totalMs: runtimeWriteTotalMs,
-      avgMs: Math.round(runtimeWriteTotalMs / Math.max(1, runtimeWriteCount)),
-      maxMs: Math.max(
-        Math.max(0, Number.parseInt(String(prevWriteMetrics?.maxMs || 0), 10) || 0),
-        writeDurationMs
-      ),
-      lastMs: writeDurationMs,
-      lastAt: at,
-    };
-
-    if (nextStatus?.diagnostics?.[tagKey] && typeof nextStatus.diagnostics[tagKey] === "object") {
-      nextStatus.diagnostics[tagKey] = {
-        ...nextStatus.diagnostics[tagKey],
-        lastReadAt: at,
-      };
-    }
-    if (legacyTagKey && legacyTagKey !== tagKey && nextStatus?.diagnostics?.[legacyTagKey]) {
-      nextStatus.diagnostics[legacyTagKey] = {
-        ...nextStatus.diagnostics[legacyTagKey],
-        lastReadAt: at,
-      };
-    }
-
-    await pool.query(
-      `
-      INSERT INTO opc_status (id, status, updated_at)
-      VALUES (1, $1::jsonb, now())
-      ON CONFLICT (id)
-      DO UPDATE SET status = EXCLUDED.status, updated_at = now()
-      `,
-      [JSON.stringify(nextStatus)]
-    );
-
-    const n = toFiniteNumber(nextValue);
-    if (n != null) {
-      const trendConfigMap = await loadTrendTagConfigMap();
-      const cfg = trendConfigMap instanceof Map ? trendConfigMap.get(tagKey) : null;
-      const mode = cfg?.trendMode || "value";
-      appendTrendSample(tagKey, at, n, {
-        mode,
-        forceMs: cfg?.trendSampleMs || OPC_TREND_FORCE_SAMPLE_MS,
-      });
-      await flushTrendBuffersIfNeeded(at);
-    }
-
-    res.json({ ok: true, at, tagKey, value: nextValue });
+    const result = await performOpcWrite({
+      tagKey: req.body?.tagKey,
+      legacyTagKey: req.body?.legacyTagKey,
+      value: req.body?.value,
+      uaType: req.body?.uaType,
+      applyInverseScale: req.body?.applyInverseScale !== false,
+    });
+    res.json(result);
   } catch (err) {
     logOpcError("write value", err, {
       tagKey: String(req.body?.tagKey || ""),
@@ -8056,7 +9011,12 @@ app.get("/api/db/:table/meta", async (req, res) => {
       const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 100));
       const offset = Math.max(0, Number(req.query.offset) || 0);
       const pk = await getPrimaryKey(table);
-      const order = pk ? `ORDER BY ${safeIdent(pk)}` : "";
+      const order =
+        table === "automation_rule"
+          ? "ORDER BY updated_at DESC, id DESC"
+          : pk
+            ? `ORDER BY ${safeIdent(pk)}`
+            : "";
       const projectId =
         table === "route" && req.query.project_id ? String(req.query.project_id) : "";
       const where = projectId ? "WHERE project_id = $3" : "";
@@ -8175,6 +9135,7 @@ app.post("/api/db/:table", async (req, res) => {
       params = keys.map((k) => body[k]);
     }
     const { rows } = await pool.query(sql, params);
+    if (table === "automation_rule") invalidateAutomationRuleCache();
     res.json({ row: rows[0] || null });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Insert failed." });
@@ -8261,6 +9222,7 @@ app.put("/api/db/:table/:id", async (req, res) => {
       keys.length + 1
     } RETURNING *`;
     const { rows } = await pool.query(sql, [...keys.map((k) => body[k]), id]);
+    if (table === "automation_rule") invalidateAutomationRuleCache();
     res.json({ row: rows[0] || null });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Update failed." });
@@ -8283,6 +9245,7 @@ app.delete("/api/db/:table/:id", async (req, res) => {
     }
     const sql = `DELETE FROM ${safeIdent(table)} WHERE ${safeIdent(pk)} = $1`;
     await pool.query(sql, [id]);
+    if (table === "automation_rule") invalidateAutomationRuleCache();
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Delete failed." });
@@ -8464,174 +9427,8 @@ app.post("/api/reports/preview", async (req, res) => {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    const mode = String(req.body?.mode || "sql").trim().toLowerCase();
-    let sqlTemplate = String(req.body?.sql || "").trim();
-    if (mode === "table") {
-      const table = String(req.body?.table || "").trim();
-      if (!/^[a-zA-Z0-9_]+$/.test(table)) {
-        res.status(400).json({ error: "Valid table is required." });
-        return;
-      }
-      const selectedColumns = Array.isArray(req.body?.selectedColumns)
-        ? req.body.selectedColumns
-            .map((c) => String(c || "").trim())
-            .filter((c) => /^[a-zA-Z0-9_]+$/.test(c))
-        : [];
-      const groupByColumns = Array.isArray(req.body?.groupByColumns)
-        ? Array.from(
-            new Set(
-              req.body.groupByColumns
-                .map((c) => String(c || "").trim())
-                .filter((c) => /^[a-zA-Z0-9_]+$/.test(c))
-            )
-          )
-        : [];
-      const limit = Math.min(1000, Math.max(1, Number(req.body?.limit) || 100));
-      const selectCols = selectedColumns.length
-        ? selectedColumns.map((c) => safeIdent(c)).join(", ")
-        : "*";
-      const allowedOps = new Set(["=", "!=", ">", ">=", "<", "<=", "like", "ilike"]);
-      const rawTableFilters = Array.isArray(req.body?.tableFilters) ? req.body.tableFilters : [];
-      const where = [];
-      const values = [];
-      for (const f of rawTableFilters) {
-        const column = String(f?.column || "").trim();
-        if (!/^[a-zA-Z0-9_]+$/.test(column)) continue;
-        const op = String(f?.operator || "=").trim().toLowerCase();
-        if (op === "is_null") {
-          where.push(`${safeIdent(column)} IS NULL`);
-          continue;
-        }
-        if (op === "is_not_null") {
-          where.push(`${safeIdent(column)} IS NOT NULL`);
-          continue;
-        }
-        if (!allowedOps.has(op)) continue;
-        const raw = f?.value;
-        if (raw == null || String(raw).trim() === "") continue;
-        values.push(raw);
-        where.push(`${safeIdent(column)} ${op.toUpperCase()} $${values.length}`);
-      }
-      let sql = `SELECT ${selectCols} FROM ${safeIdent(table)}`;
-      if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
-      if (groupByColumns.length) {
-        sql += ` GROUP BY ${groupByColumns.map((c) => safeIdent(c)).join(", ")}`;
-      }
-      values.push(limit);
-      sql += ` LIMIT $${values.length}`;
-      const guard = await loadReportSqlGuardSettings();
-      enforceReportRateLimit(userId, guard);
-      const releaseSlot = acquireReportQuerySlot(guard);
-      let resultPayload = null;
-      try {
-        resultPayload = await runReadOnlyQueryWithGuards(sql, values, guard);
-      } finally {
-        releaseSlot();
-      }
-      const { result, maxRows, timeoutMs, truncated } = resultPayload;
-      const columns = (result.fields || []).map((f) => f.name);
-      const rows = Array.isArray(result.rows) ? result.rows : [];
-      const summedColumns = extractSummedOutputColumns(sql, columns);
-      const summaryRow = summedColumns.length ? buildSummaryRow(rows, columns, summedColumns) : null;
-      res.json({
-        sql,
-        columns,
-        rows,
-        rowCount: rows.length,
-        truncated,
-        maxRows,
-        timeoutMs,
-        expectedFilters: [],
-        expectedPositionalParams: 0,
-        summaryRow,
-      });
-      return;
-    } else if (mode === "routine") {
-      const routineOid = String(req.body?.routineOid || "").trim();
-      if (!routineOid || !/^\d+$/.test(routineOid)) {
-        res.status(400).json({ error: "Routine selection required." });
-        return;
-      }
-      const meta = await pool.query(
-        `
-        SELECT
-          p.oid::text AS oid,
-          n.nspname AS schema_name,
-          p.proname AS routine_name,
-          p.prokind AS routine_kind,
-          p.proretset AS returns_set
-        FROM pg_proc p
-        JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE p.oid = $1::oid
-        LIMIT 1
-        `,
-        [routineOid]
-      );
-      if (!meta.rows.length) {
-        res.status(404).json({ error: "Routine not found." });
-        return;
-      }
-      const routine = meta.rows[0];
-      if (String(routine.routine_kind || "") === "p") {
-        res.status(400).json({
-          error: "Procedures are not supported for preview. Use a set-returning function.",
-        });
-        return;
-      }
-      const args = Array.isArray(req.body?.routineArgs) ? req.body.routineArgs : [];
-      const placeholders = args.map((_v, i) => `$${i + 1}`).join(", ");
-      const fnIdent = safeQualifiedIdent(routine.schema_name, routine.routine_name);
-      if (Boolean(routine.returns_set)) {
-        sqlTemplate = `SELECT * FROM ${fnIdent}(${placeholders}) LIMIT 100`;
-      } else {
-        sqlTemplate = `SELECT ${fnIdent}(${placeholders}) AS result LIMIT 1`;
-      }
-    }
-    if (!sqlTemplate) {
-      res.status(400).json({ error: "Report SQL required." });
-      return;
-    }
-    const expectedFilters = extractReportFilterNames(sqlTemplate);
-    const expectedPositionalParams = extractPositionalParamCount(sqlTemplate);
-    const filterValues =
-      req.body?.filters && typeof req.body.filters === "object" && !Array.isArray(req.body.filters)
-        ? req.body.filters
-        : {};
-    const positionalValues =
-      mode === "routine"
-        ? Array.isArray(req.body?.routineArgs)
-          ? req.body.routineArgs
-          : []
-        : Array.isArray(req.body?.positional)
-          ? req.body.positional
-          : [];
-    const { sql, values } = buildParameterizedReadOnlyQuery(sqlTemplate, filterValues, positionalValues);
-    const guard = await loadReportSqlGuardSettings();
-    enforceReportRateLimit(userId, guard);
-    const releaseSlot = acquireReportQuerySlot(guard);
-    let resultPayload = null;
-    try {
-      resultPayload = await runReadOnlyQueryWithGuards(sql, values, guard);
-    } finally {
-      releaseSlot();
-    }
-    const { result, maxRows, timeoutMs, truncated } = resultPayload;
-    const columns = (result.fields || []).map((f) => f.name);
-    const rows = Array.isArray(result.rows) ? result.rows : [];
-    const summedColumns = extractSummedOutputColumns(sql, columns);
-    const summaryRow = summedColumns.length ? buildSummaryRow(rows, columns, summedColumns) : null;
-    res.json({
-      sql,
-      columns,
-      rows,
-      rowCount: rows.length,
-      truncated,
-      maxRows,
-      timeoutMs,
-      expectedFilters,
-      expectedPositionalParams,
-      summaryRow,
-    });
+    const data = await executeReportPreviewInternal(req.body || {}, { userId });
+    res.json(data);
   } catch (err) {
     if (Number(err?.statusCode) === 429) {
       res.status(429).json({ error: String(err?.message || "Too many report queries.") });
@@ -10388,6 +11185,167 @@ async function start() {
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS automation_rule (
+      id BIGSERIAL PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      project_id TEXT,
+      trigger_source TEXT NOT NULL DEFAULT 'tag',
+      trigger_tag TEXT NOT NULL DEFAULT '',
+      trigger_mode TEXT NOT NULL DEFAULT 'change',
+      trigger_table TEXT NOT NULL DEFAULT '',
+      trigger_column TEXT NOT NULL DEFAULT '',
+      trigger_where_json TEXT NOT NULL DEFAULT '{}',
+      trigger_order_by TEXT NOT NULL DEFAULT '',
+      trigger_order_dir TEXT NOT NULL DEFAULT 'asc',
+      conditions_json TEXT NOT NULL DEFAULT '[]',
+      actions_json TEXT NOT NULL DEFAULT '[]',
+      cooldown_ms INTEGER NOT NULL DEFAULT 0,
+      last_seen_value TEXT,
+      last_fired_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS project_id TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS trigger_source TEXT NOT NULL DEFAULT 'tag';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS scope_project_id TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS scope_route_id TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS trigger_tag TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS trigger_mode TEXT NOT NULL DEFAULT 'change';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS trigger_table TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS trigger_column TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS trigger_where_json TEXT NOT NULL DEFAULT '{}';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS trigger_order_by TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS trigger_order_dir TEXT NOT NULL DEFAULT 'asc';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS conditions_json TEXT NOT NULL DEFAULT '[]';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS actions_json TEXT NOT NULL DEFAULT '[]';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS cooldown_ms INTEGER NOT NULL DEFAULT 0;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS last_seen_value TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS last_fired_at TIMESTAMPTZ;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS automation_rule_enabled_trigger_idx
+    ON automation_rule(enabled, trigger_tag);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS automation_rule_run (
+      id BIGSERIAL PRIMARY KEY,
+      rule_id BIGINT,
+      rule_name TEXT NOT NULL DEFAULT '',
+      trigger_tag TEXT NOT NULL DEFAULT '',
+      previous_value TEXT,
+      current_value TEXT,
+      status TEXT NOT NULL DEFAULT 'ok',
+      message TEXT NOT NULL DEFAULT '',
+      action_results JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS rule_id BIGINT;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS rule_name TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS trigger_tag TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS previous_value TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS current_value TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ok';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS message TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS action_results JSONB NOT NULL DEFAULT '[]'::jsonb;
+  `);
+  await pool.query(`
+    ALTER TABLE automation_rule_run
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS automation_rule_run_rule_created_idx
+    ON automation_rule_run(rule_id, created_at DESC);
+  `);
+  await pool.query(`
     DO $$
     BEGIN
       IF EXISTS (
@@ -11355,6 +12313,28 @@ async function start() {
     ALTER TABLE opc_tag_templates
     ADD COLUMN IF NOT EXISTS group_name TEXT;
   `);
+  await pool.query(`
+    INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
+    VALUES (
+      'automation_rule',
+      '["name","enabled","trigger_source","scope_project_id","scope_route_id","trigger_tag","trigger_table","trigger_column","trigger_mode","cooldown_ms","last_fired_at"]'::jsonb,
+      '["id","name","enabled","project_id","trigger_source","scope_project_id","scope_route_id","trigger_tag","trigger_table","trigger_column","trigger_where_json","trigger_order_by","trigger_order_dir","trigger_mode","conditions_json","actions_json","cooldown_ms","last_seen_value","last_fired_at","created_at","updated_at"]'::jsonb
+    )
+    ON CONFLICT (table_name) DO UPDATE
+    SET list_fields = EXCLUDED.list_fields,
+        detail_fields = EXCLUDED.detail_fields;
+  `);
+  await pool.query(`
+    INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
+    VALUES (
+      'automation_rule_run',
+      '["rule_name","trigger_tag","status","created_at"]'::jsonb,
+      '["id","rule_id","rule_name","trigger_tag","previous_value","current_value","status","message","action_results","created_at"]'::jsonb
+    )
+    ON CONFLICT (table_name) DO UPDATE
+    SET list_fields = EXCLUDED.list_fields,
+        detail_fields = EXCLUDED.detail_fields;
+  `);
   await verifySchemaCoverage();
   setTimeout(() => {
     void runProjectVersionMaintenance();
@@ -11368,6 +12348,9 @@ async function start() {
   setInterval(() => {
     void runDatabaseMaintenance();
   }, DB_MAINTENANCE_MS);
+  setInterval(() => {
+    void runAutomationRulesForDbTriggers();
+  }, AUTOMATION_DB_POLL_MS);
   setInterval(() => {
     void deleteExpiredPlcDebugSessionsFromStore(PLC_DEBUG_SESSION_TTL_MS);
   }, Math.max(60_000, Math.floor(PLC_DEBUG_SESSION_POLL_MS * 10)));
