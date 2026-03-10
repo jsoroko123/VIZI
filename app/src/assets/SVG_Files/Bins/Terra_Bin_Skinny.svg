@@ -118,12 +118,12 @@
     <text
       id="Product_Type"
       x="18.25465"
-      y="14.178081"
+      y="14.378081"
       dominant-baseline="start"
       text-anchor="start"
       style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:0.529167px;font-family:Arial;-inkscape-font-specification:'Arial Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;writing-mode:vertical-lr;text-orientation:upright;text-anchor:start;fill:#2b2d31;stroke:none"
     >
-      <tspan id="tspan37" x="18.25465" y="14.178081">Product</tspan>
+      <tspan id="tspan37" x="18.25465" y="14.378081">Product</tspan>
     </text>
 
     <g id="Level" transform="matrix(0.99122423,0,0,1.2084452,0.15524492,-3.9421802)">

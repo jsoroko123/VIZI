@@ -330,6 +330,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [editTemplate, setEditTemplate] = useState("");
   const [templateOriginalName, setTemplateOriginalName] = useState("");
   const [templateEditing, setTemplateEditing] = useState(true);
+  const [newTemplateUdtMemberName, setNewTemplateUdtMemberName] = useState("");
+  const [newTemplateUdtMemberType, setNewTemplateUdtMemberType] = useState("");
   const [tagMappings, setTagMappings] = useState([]);
   const [manualTagMappings, setManualTagMappings] = useState([{ field: "State Text", state: "", color: "#000000" }]);
   const [mappingSets, setMappingSets] = useState([]);
@@ -342,6 +344,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [templateFieldTreeExpanded, setTemplateFieldTreeExpanded] = useState({});
   const [, startTemplateFieldTransition] = useTransition();
   const [templateFieldEditingKey, setTemplateFieldEditingKey] = useState("");
+  const [templateFieldSelectedPaths, setTemplateFieldSelectedPaths] = useState({});
   const [applyTopic, setApplyTopic] = useState("");
   const [applyPrefix, setApplyPrefix] = useState("");
   const [applyMappingSet, setApplyMappingSet] = useState("");
@@ -703,6 +706,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               samplingInterval: "",
               topic: "",
               enabled: true,
+              muted: false,
               mappingSet: "",
               scale: 1,
               decimals: 0,
@@ -724,6 +728,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             samplingInterval: f?.samplingInterval ?? "",
             topic: f?.topic || "",
             enabled: f?.enabled !== false,
+            muted: f?.muted === true,
             showPopupTagValue: f?.showPopupTagValue !== false,
             mappingSet: String(f?.mappingSet || ""),
             scale: Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1,
@@ -745,6 +750,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             samplingInterval: "",
             topic: "",
             enabled: true,
+            muted: false,
             showPopupTagValue: true,
             mappingSet: "",
             scale: 1,
@@ -1105,9 +1111,16 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       return name.includes(q) || parent.includes(q);
     });
   }, [templates, applyTemplateSearch]);
+  const availableNestedUdtTemplates = useMemo(() => {
+    const current = String(templateName || editTemplate || "").trim();
+    return (templates || []).filter((t) => String(t?.name || "").trim() && String(t?.name || "").trim() !== current);
+  }, [templates, templateName, editTemplate]);
+  const templateEditorActive =
+    mode !== "logs" && mode !== "diagnostics" && String(tagSectionTab || "").trim().toLowerCase() === "templates";
   const deferredTemplateFieldRows = useDeferredValue(templateFieldRows);
 
   const editorResolvedRows = useMemo(() => {
+    if (!templateEditorActive) return [];
     const currentName = String(templateName || editTemplate || "").trim();
     const rowsForExpansion = (Array.isArray(deferredTemplateFieldRows) ? deferredTemplateFieldRows : []).map((row) => ({
       ...(row && typeof row === "object" ? row : {}),
@@ -1119,6 +1132,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       arraySpec: String(row?.arraySpec || "").trim(),
       uaType: String(row?.uaType || "").trim(),
       topic: String(row?.topic || "").trim(),
+      muted: row?.muted === true,
       mappingSet: String(row?.mappingSet || "").trim(),
     }));
     const hasDraftRows =
@@ -1128,14 +1142,17 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         const p = String(r?.tagPath || "").trim();
         return n || p;
       });
-    if (hasDraftRows) {
-      // Fast-path: when DB/template rows are already present, use them directly.
-      // Avoid expensive recursive expansion on every editor render.
-      return rowsForExpansion;
-    }
     if (!currentName) return [];
-    return resolveTemplateFields(currentName);
-  }, [templateName, editTemplate, deferredTemplateFieldRows, templateMap]);
+    const expanded = expandTemplateFieldsForTagCreation(
+      currentName,
+      hasDraftRows ? rowsForExpansion : null
+    ).fields;
+    return Array.isArray(expanded) && expanded.length
+      ? expanded
+      : hasDraftRows
+        ? rowsForExpansion
+        : resolveTemplateFields(currentName);
+  }, [templateEditorActive, templateName, editTemplate, deferredTemplateFieldRows, templateMap]);
 
 
   const editorResolvedOnlyRows = useMemo(() => {
@@ -1245,6 +1262,81 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         .map((child) => ({ ...child, children: toArray(child) }));
     return toArray(root);
   }, [templateFieldTreePaths]);
+
+  const templateFieldOwnership = useMemo(() => {
+    const exactOwnedPaths = new Set(Array.from(templateFieldRowsByPath.keys()));
+    const paths = Array.isArray(templateFieldTreePaths) ? templateFieldTreePaths : [];
+    const resolvedEntries = Array.from(editorResolvedRowsByPath.entries());
+    const ownerByPath = new Map();
+    const descendantOwnedByPath = new Map();
+    for (const path of paths) {
+      const exactOwned = exactOwnedPaths.has(path);
+      let hasOwnedDescendants = false;
+      let ownerTemplateName = String(editorResolvedRowsByPath.get(path)?.ownerTemplateName || "").trim();
+      if (!ownerTemplateName) {
+        for (const [candidatePath, candidateRow] of resolvedEntries) {
+          if (!candidatePath || candidatePath === path) continue;
+          if (candidatePath.startsWith(`${path}.`) || candidatePath.startsWith(`${path}[`)) {
+            hasOwnedDescendants = hasOwnedDescendants || exactOwnedPaths.has(candidatePath);
+            if (!ownerTemplateName) {
+              ownerTemplateName = String(candidateRow?.ownerTemplateName || "").trim();
+            }
+            if (hasOwnedDescendants && ownerTemplateName) break;
+          }
+        }
+      } else {
+        for (const ownedPath of exactOwnedPaths) {
+          if (ownedPath && ownedPath !== path && (ownedPath.startsWith(`${path}.`) || ownedPath.startsWith(`${path}[`))) {
+            hasOwnedDescendants = true;
+            break;
+          }
+        }
+      }
+      ownerByPath.set(path, ownerTemplateName);
+      descendantOwnedByPath.set(path, hasOwnedDescendants);
+    }
+    return { exactOwnedPaths, ownerByPath, descendantOwnedByPath };
+  }, [templateFieldRowsByPath, templateFieldTreePaths, editorResolvedRowsByPath]);
+
+  const selectedTemplateFieldPaths = useMemo(
+    () =>
+      Object.entries(templateFieldSelectedPaths || {})
+        .filter(([, checked]) => checked === true)
+        .map(([path]) => String(path || "").trim())
+        .filter(Boolean),
+    [templateFieldSelectedPaths]
+  );
+
+  const selectableTemplateFieldPaths = useMemo(
+    () =>
+      Array.from(templateFieldOwnership?.exactOwnedPaths || [])
+        .map((path) => String(path || "").trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })),
+    [templateFieldOwnership]
+  );
+
+  const bulkDeleteTemplateFieldPaths = useCallback((paths) => {
+    const targets = Array.from(new Set((Array.isArray(paths) ? paths : []).map((p) => String(p || "").trim()).filter(Boolean)));
+    if (!targets.length) return;
+    setTemplateFieldRows((prev) => {
+      const rows = Array.isArray(prev) ? prev : [];
+      return rows.filter((row) => {
+        const rowPath = String(row?.tagPath || row?.name || "").trim();
+        if (!rowPath) return false;
+        return !targets.some((target) => rowPath === target || rowPath.startsWith(`${target}.`) || rowPath.startsWith(`${target}[`));
+      });
+    });
+    setTemplateFieldSelectedPaths((prev) => {
+      const next = { ...(prev || {}) };
+      Object.keys(next).forEach((key) => {
+        if (targets.some((target) => key === target || key.startsWith(`${target}.`) || key.startsWith(`${target}[`))) {
+          delete next[key];
+        }
+      });
+      return next;
+    });
+  }, []);
 
 
   useEffect(() => {
@@ -1456,6 +1548,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               samplingInterval: "",
               topic: "",
               enabled: true,
+              muted: false,
+              showPopupTagValue: true,
               mappingSet: "",
               scale: 1,
               decimals: 0,
@@ -1491,6 +1585,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             samplingInterval: samplingVal,
             topic: topicVal,
             enabled: enabledVal,
+            muted: f?.muted === true,
+            showPopupTagValue: f?.showPopupTagValue !== false,
             mappingSet: mappingSetVal,
             scale: scaleVal,
             decimals: decimalsVal,
@@ -1780,6 +1876,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         ...field,
         name: leafName || leafPath,
         tagPath: leafPath || leafName,
+        ownerTemplateName: String(field?.ownerTemplateName || templateName || "").trim(),
       });
     };
 
@@ -1841,6 +1938,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               ...field,
               name: `${rawName || rawPath}${suffix}`,
               tagPath: `${baseSegment}${suffix}`,
+              ownerTemplateName: String(contextTemplateName || templateName || "").trim(),
             });
           }
         }
@@ -2276,6 +2374,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
             : Number(row.samplingInterval),
         topic: String(row?.topic || "").trim(),
         enabled: row?.enabled !== false,
+        muted: row?.muted === true,
         showPopupTagValue: row?.showPopupTagValue !== false,
         mappingSet: String(row?.mappingSet || "").trim(),
         scale: Number.isFinite(Number(row?.scale)) ? Number(row.scale) : 1,
@@ -2346,6 +2445,47 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     } catch (err) {
       setError(err?.message || "Delete failed.");
     }
+  }
+
+  function addNestedTemplateField() {
+    const memberName = String(newTemplateUdtMemberName || "").trim();
+    const memberType = String(newTemplateUdtMemberType || "").trim();
+    if (!memberName) {
+      setError("UDT member name is required.");
+      return;
+    }
+    if (!memberType) {
+      setError("Select a UDT type to add.");
+      return;
+    }
+    setError("");
+    setTemplateFieldRows((prev) => [
+      ...(Array.isArray(prev) ? prev : []),
+      {
+        name: memberName,
+        tagPath: memberName,
+        plcType: memberType,
+        baseType: memberType,
+        isArray: false,
+        arraySpec: "",
+        usage: "Member",
+        uaType: "String",
+        pollMs: "",
+        samplingInterval: "",
+        topic: "",
+        enabled: true,
+        muted: false,
+        showPopupTagValue: true,
+        mappingSet: "",
+        scale: 1,
+        decimals: 0,
+        alarmEnabled: false,
+        alarmOperator: "==",
+        alarmValue: "",
+      },
+    ]);
+    setNewTemplateUdtMemberName("");
+    setNewTemplateUdtMemberType("");
   }
 
   function applyTemplateToTags() {
@@ -2425,6 +2565,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           ? ""
           : Number(f.samplingInterval);
       const fieldEnabled = f?.enabled !== false;
+      const fieldMuted = f?.muted === true;
       const fieldScale = Number.isFinite(Number(f?.scale)) ? Number(f.scale) : 1;
       const fieldDecimals = Number.isFinite(Number(f?.decimals)) ? Number(f.decimals) : 0;
       return {
@@ -2437,6 +2578,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         pollMs: fieldPollMs,
         samplingInterval: fieldSampling,
         enabled: fieldEnabled,
+        muted: fieldMuted,
         showPopupTagValue: f?.showPopupTagValue !== false,
         mappingSet: fieldMappingSet || String(applyMappingSet || "").trim(),
         scale: fieldScale,
@@ -4227,7 +4369,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             ) : null}
                                             {showTagColumn("quality") ? (
                                               <td style={{ padding: "8px 16px 8px 10px", color: "var(--text)" }}>
-                                                {String(getLiveValueForTag(liveQualities, tagObj) || (tagObj.muted ? "Muted" : "Unknown"))}
+                                                {String(tagObj.muted === true ? "Muted" : getLiveValueForTag(liveQualities, tagObj) || "Unknown")}
                                               </td>
                                             ) : null}
                                             {showTagColumn("liveValue")
@@ -4730,7 +4872,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           </div>
         ) : activeTagTab === "templates" ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
-            <div style={sectionCardStyle}>
+            <div style={{ ...sectionCardStyle, display: "flex", flexDirection: "column", minHeight: 0 }}>
               <div style={{ fontWeight: 600, marginBottom: 8 }}>Create / Edit UDT</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, marginBottom: 12, alignItems: "end" }}>
                 <label style={{ display: "grid", gap: 8, fontSize: 12 }}>
@@ -4767,9 +4909,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   Edit Existing
                   <select
                     value={editTemplate}
-                    onChange={(e) => {
+                  onChange={(e) => {
                       const next = e.target.value;
                       setEditTemplate(next);
+                      setNewTemplateUdtMemberName("");
+                      setNewTemplateUdtMemberType("");
                       if (!next) {
                         setTemplateOriginalName("");
                         setTemplateName("");
@@ -4810,6 +4954,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       setTemplateOriginalName("");
                       setTemplateName("");
                       setTemplateParent("");
+                      setNewTemplateUdtMemberName("");
+                      setNewTemplateUdtMemberType("");
                       setTemplateFieldRows([{
                         name: "",
                         tagPath: "",
@@ -4841,6 +4987,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       setTemplateOriginalName("");
                       setTemplateName("");
                       setTemplateParent("");
+                      setNewTemplateUdtMemberName("");
+                      setNewTemplateUdtMemberType("");
                       setTemplateFieldRows([{
                         name: "",
                         tagPath: "",
@@ -4911,7 +5059,62 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               >
                 {templateFieldTreeContent}
               </div>
-              <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(160px, 1fr) minmax(180px, 1fr) auto",
+                  gap: 10,
+                  marginTop: 12,
+                  alignItems: "end",
+                }}
+              >
+                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                  UDT Member Name
+                  <input
+                    value={newTemplateUdtMemberName}
+                    onChange={(e) => setNewTemplateUdtMemberName(e.target.value)}
+                    placeholder="e.g. HMI_Read"
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
+                    disabled={!templateEditing}
+                  />
+                </label>
+                <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+                  UDT Type
+                  <select
+                    value={newTemplateUdtMemberType}
+                    onChange={(e) => setNewTemplateUdtMemberType(e.target.value)}
+                    style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
+                    disabled={!templateEditing}
+                  >
+                    <option value="">Select UDT</option>
+                    {availableNestedUdtTemplates.map((t) => (
+                      <option key={`nested-udt-${t.name}`} value={t.name}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  onClick={addNestedTemplateField}
+                  style={{ ...drawerButtonStyle, border: "1px solid #2b6cff", background: "#2b6cff", color: "white", borderRadius: 8, padding: "6px 10px", height: 36 }}
+                  disabled={!templateEditing}
+                >
+                  Add UDT Member
+                </button>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  marginTop: 12,
+                  position: "sticky",
+                  bottom: 0,
+                  paddingTop: 10,
+                  background:
+                    "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 0%, transparent 100%) 0%, var(--bg-elev) 28%)",
+                  zIndex: 1,
+                }}
+              >
                 <button
                   onClick={() =>
                     setTemplateFieldRows((prev) => [
@@ -4967,6 +5170,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     setTemplateOriginalName("");
                     setTemplateName("");
                     setTemplateParent("");
+                    setNewTemplateUdtMemberName("");
+                    setNewTemplateUdtMemberType("");
                     setTemplateFieldRows([{
                       name: "",
                       tagPath: "",
@@ -5427,6 +5632,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         samplingInterval: fallbackRow?.samplingInterval ?? "",
         topic: String(fallbackRow?.topic || "").trim(),
         enabled: fallbackRow?.enabled !== false,
+        muted: fallbackRow?.muted === true,
         showPopupTagValue: fallbackRow?.showPopupTagValue !== false,
         mappingSet: String(fallbackRow?.mappingSet || "").trim(),
         scale: Number.isFinite(Number(fallbackRow?.scale)) ? Number(fallbackRow.scale) : 1,
@@ -5503,6 +5709,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     return (
       <div style={{ display: "grid", gap: 4 }}>
         {(Array.isArray(nodes) ? nodes : []).map((node) => {
+          const currentEditorTemplateName = String(templateName || editTemplate || "").trim();
           const fieldPath = String(node?.fullPath || "").trim();
           const fieldName = String(node?.name || "").trim();
           const rowEntry = templateFieldRowsByPath.get(fieldPath);
@@ -5518,6 +5725,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           const row = rowEntry?.row || resolvedRow || fallbackRow;
           const rowIdx = Number.isFinite(rowEntry?.idx) ? rowEntry.idx : -1;
           const isDirectRow = rowIdx >= 0;
+          const hasOwnedExactPath = templateFieldOwnership.exactOwnedPaths.has(fieldPath);
+          const hasOwnedDescendants = templateFieldOwnership.descendantOwnedByPath.get(fieldPath) === true;
+          const canDeleteGroup = isDirectRow || hasOwnedExactPath;
+          const canDeleteField = isDirectRow || hasOwnedExactPath;
+          const canSelectForDelete = canDeleteField || hasOwnedDescendants;
+          const ownerTemplateName = String(
+            row?.ownerTemplateName ||
+            resolvedRow?.ownerTemplateName ||
+            templateFieldOwnership.ownerByPath.get(fieldPath) ||
+            ""
+          ).trim();
+          const canGoToOwnerTemplate =
+            !!ownerTemplateName && ownerTemplateName !== currentEditorTemplateName;
           const hasNestedChildren = Array.isArray(node?.children) && node.children.length > 0;
           const nodeKey = `template-tree:${fieldPath || fieldName}`;
           const expanded = templateFieldTreeExpanded[nodeKey] ?? false;
@@ -5532,12 +5752,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           const isPrimitiveType = templateFieldPrimitiveTypeSet.has(plcTypeBase);
           const hasNested = hasNestedChildren && !isPrimitiveType;
           const isArray = String(row?.arraySpec || "").trim().length > 0 || /\[[^\]]+\]/.test(fieldName);
+          const selectedForDelete = templateFieldSelectedPaths[fieldPath] === true;
           return (
             <div key={`tmpl-tree-${nodeKey}`} style={{ marginLeft: Math.max(0, depth * 12), padding: "2px 0" }}>
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "20px 18px minmax(0,1fr) auto",
+                  gridTemplateColumns: "20px 18px 18px minmax(0,1fr) auto",
                   gap: 8,
                   alignItems: "center",
                   minHeight: 28,
@@ -5563,6 +5784,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 >
                   {expanded ? "âˆ’" : "+"}
                 </button>
+                <input
+                  type="checkbox"
+                  checked={selectedForDelete}
+                  onChange={(e) =>
+                    setTemplateFieldSelectedPaths((prev) => ({
+                      ...(prev || {}),
+                      [fieldPath]: e.target.checked,
+                    }))
+                  }
+                  style={{ width: 14, height: 14 }}
+                  disabled={!templateEditing || !canSelectForDelete}
+                  title={!canSelectForDelete ? "Inherited from parent template" : "Select for bulk delete"}
+                />
                 <input
                   type="checkbox"
                   checked={row?.enabled !== false}
@@ -5612,6 +5846,44 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     />
                   </label>
                   <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "end", gap: 8 }}>
+                    {ownerTemplateName ? (
+                      <span
+                        style={{
+                          marginRight: "auto",
+                          alignSelf: "center",
+                          fontSize: 12,
+                          color: "var(--text-muted)",
+                          fontWeight: 600,
+                        }}
+                        title="Template that owns this nested node"
+                      >
+                        Owner UDT: {ownerTemplateName}
+                      </span>
+                    ) : null}
+                    {canGoToOwnerTemplate ? (
+                      <button
+                        type="button"
+                        data-preserve-style="true"
+                        onClick={() => {
+                          setTemplateFieldEditingKey("");
+                          setEditTemplate(ownerTemplateName);
+                        }}
+                        style={{
+                          border: "1px solid var(--border)",
+                          background: "var(--bg-elev)",
+                          color: "var(--text)",
+                          borderRadius: 6,
+                          padding: "5px 10px",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          lineHeight: 1.2,
+                          cursor: "pointer",
+                        }}
+                        title="Open the template that owns this nested node"
+                      >
+                        Go To Owner UDT
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       data-preserve-style="true"
@@ -5644,8 +5916,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       data-preserve-style="true"
                       onClick={() => {
                         if (!isDirectRow) {
-                          setError("This field group is inherited from a parent template. Edit the parent template to delete it.");
-                          return;
+                          if (!canDeleteGroup) {
+                            setError("This field group is inherited from a parent template. Edit the parent template to delete it.");
+                            return;
+                          }
                         }
                         removeTemplateFieldRow(rowIdx, row, fieldPath, true);
                       }}
@@ -5660,8 +5934,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         lineHeight: 1.2,
                         cursor: templateEditing ? "pointer" : "default",
                       }}
-                      disabled={!templateEditing || !isDirectRow}
-                      title={!isDirectRow ? "Inherited from parent template" : "Delete group"}
+                      disabled={!templateEditing || !canDeleteGroup}
+                      title={!canDeleteGroup ? "Inherited from parent template" : "Delete group"}
                     >
                       Delete Group
                     </button>
@@ -5749,6 +6023,18 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       style={{ border: "1px solid var(--border)", borderRadius: 6, padding: "5px 7px", fontSize: 12 }}
                       disabled={!templateEditing || !activeRowEditing}
                     />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
+                    Muted
+                    <span style={{ minHeight: 30, display: "inline-flex", alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={row?.muted === true}
+                        onChange={(e) => updateTemplateFieldRow(rowIdx, "muted", e.target.checked, row, fieldPath)}
+                        style={{ width: 14, height: 14 }}
+                        disabled={!templateEditing || !activeRowEditing}
+                      />
+                    </span>
                   </label>
                   <label style={{ display: "grid", gap: 4, fontSize: 11 }}>
                     Enabled
@@ -5853,6 +6139,44 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     />
                   </label>
                   <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "end", gap: 8, gridColumn: "1 / -1" }}>
+                    {ownerTemplateName ? (
+                      <span
+                        style={{
+                          marginRight: "auto",
+                          alignSelf: "center",
+                          fontSize: 12,
+                          color: "var(--text-muted)",
+                          fontWeight: 600,
+                        }}
+                        title="Template that owns this nested node"
+                      >
+                        Owner UDT: {ownerTemplateName}
+                      </span>
+                    ) : null}
+                    {canGoToOwnerTemplate ? (
+                      <button
+                        type="button"
+                        data-preserve-style="true"
+                        onClick={() => {
+                          setTemplateFieldEditingKey("");
+                          setEditTemplate(ownerTemplateName);
+                        }}
+                        style={{
+                          border: "1px solid var(--border)",
+                          background: "var(--bg-elev)",
+                          color: "var(--text)",
+                          borderRadius: 6,
+                          padding: "5px 10px",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          lineHeight: 1.2,
+                          cursor: "pointer",
+                        }}
+                        title="Open the template that owns this nested node"
+                      >
+                        Go To Owner UDT
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       data-preserve-style="true"
@@ -5885,8 +6209,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       data-preserve-style="true"
                       onClick={() => {
                         if (!isDirectRow) {
-                          setError("This field is inherited from a parent template. Edit the parent template to delete it.");
-                          return;
+                          if (!canDeleteField) {
+                            setError("This field is inherited from a parent template. Edit the parent template to delete it.");
+                            return;
+                          }
                         }
                         removeTemplateFieldRow(rowIdx, row, fieldPath, false);
                       }}
@@ -5901,8 +6227,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                         lineHeight: 1.2,
                         cursor: templateEditing ? "pointer" : "default",
                       }}
-                      disabled={!templateEditing || !isDirectRow}
-                      title={!isDirectRow ? "Inherited from parent template" : "Delete field"}
+                      disabled={!templateEditing || !canDeleteField}
+                      title={!canDeleteField ? "Inherited from parent template" : "Delete field"}
                     >
                       Delete Field
                     </button>
@@ -5921,9 +6247,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     );
   }, [
     editorResolvedRowsByPath,
+    editTemplate,
     mappingSets,
+    templateName,
     templateEditing,
     templateFieldEditingKey,
+    templateFieldOwnership,
+    templateFieldSelectedPaths,
     templateFieldRowsByPath,
     templateFieldTreeExpanded,
     templateFieldPrimitiveTypeSet,
@@ -5932,11 +6262,86 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   ]);
 
   const templateFieldTreeContent = useMemo(() => {
-    if (!templateFieldRows.length) {
+    if (!templateFieldRows.length && !editorResolvedRows.length) {
       return <div style={{ padding: "8px", color: "var(--text-muted)", fontSize: 12 }}>No fields yet.</div>;
     }
-    return renderTemplateFieldTreeRows(templateFieldTree, 0);
-  }, [templateFieldRows.length, templateFieldTree, renderTemplateFieldTreeRows]);
+    return (
+      <div style={{ display: "grid", gap: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>
+            {selectedTemplateFieldPaths.length ? `${selectedTemplateFieldPaths.length} selected` : "Select fields or groups to bulk delete"}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              data-preserve-style="true"
+              onClick={() =>
+                setTemplateFieldSelectedPaths(
+                  Object.fromEntries(selectableTemplateFieldPaths.map((path) => [path, true]))
+                )
+              }
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 6,
+                padding: "5px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+              disabled={!templateEditing || !selectableTemplateFieldPaths.length}
+            >
+              Select All
+            </button>
+            <button
+              type="button"
+              data-preserve-style="true"
+              onClick={() => setTemplateFieldSelectedPaths({})}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 6,
+                padding: "5px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+              disabled={!selectedTemplateFieldPaths.length}
+            >
+              Clear Selection
+            </button>
+            <button
+              type="button"
+              data-preserve-style="true"
+              onClick={() => bulkDeleteTemplateFieldPaths(selectedTemplateFieldPaths)}
+              style={{
+                border: "1px solid #f04438",
+                background: "#f04438",
+                color: "#fff",
+                borderRadius: 6,
+                padding: "5px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+              disabled={!templateEditing || !selectedTemplateFieldPaths.length}
+            >
+              Delete Selected
+            </button>
+          </div>
+        </div>
+        {renderTemplateFieldTreeRows(templateFieldTree, 0)}
+      </div>
+    );
+  }, [
+    bulkDeleteTemplateFieldPaths,
+    templateEditing,
+    selectedTemplateFieldPaths,
+    selectableTemplateFieldPaths,
+    templateFieldRows.length,
+    editorResolvedRows.length,
+    templateFieldTree,
+    renderTemplateFieldTreeRows,
+  ]);
 
   function addTagFromToolbar() {
     const topicKey =

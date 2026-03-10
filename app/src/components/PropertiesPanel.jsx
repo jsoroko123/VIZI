@@ -427,21 +427,6 @@ export default function PropertiesPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [showHUD, setShowHUD, isSvgHud]);
 
-  // Click-away closes panel
-  useEffect(() => {
-    if (!showHUD) return;
-    const onPointerDown = (e) => {
-      if (isSvgHud) return;
-      const panelEl = panelRef.current;
-      const target = e.target;
-      if (!panelEl || !target) return;
-      if (panelEl.contains(target)) return;
-      setShowHUD(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown, true);
-    return () => window.removeEventListener("pointerdown", onPointerDown, true);
-  }, [showHUD, setShowHUD, isSvgHud]);
-
   useEffect(() => {
     if (!showHUD) {
       setUserMoved(false);
@@ -926,25 +911,31 @@ export default function PropertiesPanel({
                 placeholder="Element ID"
               />
 
-            <SelectRow
-              label="Tag Path"
-              value={hudFields.tagPath}
-              onChange={(v) => {
-                setHudFields((p) => ({ ...p, tagPath: v }));
-                applySingleTagPath(v);
-              }}
-              onBlur={() => {}}
-              options={isSvg ? svgBindingOptions : tagOptions}
-              searchable
-              searchPlaceholder={isSvg ? "Search tag groups..." : "Search tags or db binding..."}
-            />
+            {(!isSvg || !isBinSvg) && (
+              <SelectRow
+                label="Tag Path"
+                value={hudFields.tagPath}
+                onChange={(v) => {
+                  setHudFields((p) => ({ ...p, tagPath: v }));
+                  applySingleTagPath(v);
+                }}
+                onBlur={() => {}}
+                options={isSvg ? svgBindingOptions : tagOptions}
+                searchable
+                searchPlaceholder={isSvg ? "Search tag groups..." : "Search tags or db binding..."}
+              />
+            )}
             {isWidget ? (
               <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
                 Use tag path for OPC binding or `db:table.column` for database binding.
               </div>
-            ) : isSvg ? (
+            ) : isSvg && !isBinSvg ? (
               <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
                 SVGs use tag-group bindings like `Topic.GroupName`.
+              </div>
+              ) : isBinSvg ? (
+              <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+                Bin SVGs are database-driven. Use Bin Row binding, not Tag Path.
               </div>
               ) : null}
 

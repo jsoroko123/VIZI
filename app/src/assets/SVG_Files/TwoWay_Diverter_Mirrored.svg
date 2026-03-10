@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="0.046415314in"
+   height="0.030558955in"
+   viewBox="0 0 1.178949 0.77619736"
+   version="1.1"
+   kewidth="100"
+   keheight="65.838"
+   eType="Diverter"
+   xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="diverterBodyFillMirrored" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e6e8eb" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <clipPath id="diverterBodyClipMirrored">
+      <path d="M0.02 0.02H1.16V0.32H0.77L1.01 0.56L0.77 0.75L0.34 0.32H0.02Z" />
+    </clipPath>
+  </defs>
+  <g transform="translate(1.178949 0) scale(-1 1)">
+    <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
+      <path
+         id="body"
+         d="M0.02 0.02H1.16V0.32H0.77L1.01 0.56L0.77 0.75L0.34 0.32H0.02Z"
+         fill="url(#diverterBodyFillMirrored)"
+         stroke-width="0.04" />
+      <g clip-path="url(#diverterBodyClipMirrored)" stroke="none">
+        <path id="entryPath" d="M0.08 0.10H0.33V0.24H0.08Z" fill="#ffffff" />
+        <path id="straightPath" d="M0.26 0.10H1.08V0.24H0.26Z" fill="#ffffff" />
+        <path
+           id="divertPath"
+           d="m 0.08,0.1 0.38500163,0.002067 0.43527832,0.44167642 -0.11687177,0.0972347 -0.3952783,-0.40030762 -0.30399577,-0.003101 z"
+           fill="#ffffff" />
+      </g>
+    </g>
+  </g>
+</svg>

@@ -6,7 +6,7 @@ import { listProjects } from "../api/projectApi";
 import { listRoutesByProject, listAllRoutes } from "../api/dbApi";
 import SearchableSelect from "./SearchableSelect";
 
-const TRIGGER_SOURCE_OPTIONS = ["tag", "db"];
+const TRIGGER_SOURCE_OPTIONS = ["tag", "udt", "db"];
 const TRIGGER_MODE_OPTIONS = ["change", "rising", "falling", "counter_change", "counter_increase", "counter_decrease"];
 const CONDITION_OPERATOR_OPTIONS = [
   "equals",
@@ -29,7 +29,9 @@ const ACTION_TYPE_OPTIONS = [
   "db.select",
   "dataset.select",
   "tag.read",
+  "tag.read_many",
   "tag.write",
+  "group",
   "webhook",
   "delay",
   "for_each",
@@ -39,9 +41,14 @@ function makeCondition() {
   return { tag: "", op: "equals", value: "" };
 }
 
+function makeConditionGroup() {
+  return { kind: "group", logic: "and", conditions: [makeCondition()] };
+}
+
 function makeAction(type = "db.insert") {
   return {
     type,
+    when_logic: "and",
     when: [],
     table: "",
     values: {},
@@ -53,6 +60,7 @@ function makeAction(type = "db.insert") {
     reportId: "",
     datasetId: "",
     tag: "",
+    tags: {},
     value: "",
     uaType: "",
     url: "",
@@ -71,7 +79,7 @@ function makeRule(projectId = "") {
     name: "",
     enabled: true,
     project_id: projectId,
-    scope_project_id: projectId,
+    scope_project_id: "",
     scope_route_id: "",
     trigger_source: "tag",
     trigger_tag: "",
@@ -81,6 +89,7 @@ function makeRule(projectId = "") {
     trigger_where: {},
     trigger_order_by: "",
     trigger_order_dir: "asc",
+    conditions_logic: "and",
     conditions: [],
     actions: [],
     cooldown_ms: 0,
@@ -106,7 +115,7 @@ function normalizeRuleRow(row, defaultProjectId = "") {
     name: String(row?.name || ""),
     enabled: row?.enabled !== false,
     project_id: String(row?.project_id || defaultProjectId || ""),
-    scope_project_id: String(row?.scope_project_id || defaultProjectId || ""),
+    scope_project_id: String(row?.scope_project_id || ""),
     scope_route_id: String(row?.scope_route_id || ""),
     trigger_source: String(row?.trigger_source || "tag"),
     trigger_tag: String(row?.trigger_tag || ""),
@@ -116,6 +125,7 @@ function normalizeRuleRow(row, defaultProjectId = "") {
     trigger_where: parseJsonText(row?.trigger_where_json, {}),
     trigger_order_by: String(row?.trigger_order_by || ""),
     trigger_order_dir: String(row?.trigger_order_dir || "asc"),
+    conditions_logic: String(row?.conditions_logic || "and").trim().toLowerCase() === "or" ? "or" : "and",
     conditions: Array.isArray(parseJsonText(row?.conditions_json, [])) ? parseJsonText(row?.conditions_json, []) : [],
     actions: Array.isArray(parseJsonText(row?.actions_json, [])) ? parseJsonText(row?.actions_json, []) : [],
     cooldown_ms: Number.parseInt(String(row?.cooldown_ms || 0), 10) || 0,
@@ -126,12 +136,21 @@ function normalizeRuleRow(row, defaultProjectId = "") {
 }
 
 function cloneCondition(condition) {
+  if (String(condition?.kind || "").trim().toLowerCase() === "group") {
+    return {
+      ...(condition || {}),
+      kind: "group",
+      logic: String(condition?.logic || "and").trim().toLowerCase() === "or" ? "or" : "and",
+      conditions: Array.isArray(condition?.conditions) ? condition.conditions.map(cloneCondition) : [],
+    };
+  }
   return { ...(condition || {}) };
 }
 
 function cloneAction(action) {
   return {
     ...(action || {}),
+    when_logic: String(action?.when_logic || "and").trim().toLowerCase() === "or" ? "or" : "and",
     when: Array.isArray(action?.when) ? action.when.map(cloneCondition) : [],
     values: action?.values && typeof action.values === "object" && !Array.isArray(action.values) ? { ...action.values } : {},
     where: action?.where && typeof action.where === "object" && !Array.isArray(action.where) ? { ...action.where } : {},
@@ -148,7 +167,7 @@ function cloneRuleDraft(rule, defaultProjectId = "") {
           name: String(rule?.name || ""),
           enabled: rule?.enabled !== false,
           project_id: String(rule?.project_id || defaultProjectId || ""),
-          scope_project_id: String(rule?.scope_project_id || defaultProjectId || ""),
+          scope_project_id: String(rule?.scope_project_id || ""),
           scope_route_id: String(rule?.scope_route_id || ""),
           trigger_source: String(rule?.trigger_source || "tag"),
           trigger_tag: String(rule?.trigger_tag || ""),
@@ -161,6 +180,7 @@ function cloneRuleDraft(rule, defaultProjectId = "") {
               : {},
           trigger_order_by: String(rule?.trigger_order_by || ""),
           trigger_order_dir: String(rule?.trigger_order_dir || "asc"),
+          conditions_logic: String(rule?.conditions_logic || "and").trim().toLowerCase() === "or" ? "or" : "and",
           conditions: Array.isArray(rule?.conditions) ? rule.conditions : [],
           actions: Array.isArray(rule?.actions) ? rule.actions : [],
           cooldown_ms: Number.parseInt(String(rule?.cooldown_ms || 0), 10) || 0,
@@ -195,6 +215,7 @@ function serializeRuleDraft(rule) {
     trigger_where_json: JSON.stringify(rule?.trigger_where && typeof rule.trigger_where === "object" ? rule.trigger_where : {}),
     trigger_order_by: String(rule?.trigger_order_by || "").trim(),
     trigger_order_dir: String(rule?.trigger_order_dir || "asc").trim() || "asc",
+    conditions_logic: String(rule?.conditions_logic || "and").trim().toLowerCase() === "or" ? "or" : "and",
     conditions_json: JSON.stringify(Array.isArray(rule?.conditions) ? rule.conditions : []),
     actions_json: JSON.stringify(Array.isArray(rule?.actions) ? rule.actions : []),
     cooldown_ms: Math.max(0, Number.parseInt(String(rule?.cooldown_ms || 0), 10) || 0),
@@ -204,6 +225,48 @@ function serializeRuleDraft(rule) {
 function formatDateTime(value) {
   const t = Date.parse(String(value || ""));
   return Number.isFinite(t) ? new Date(t).toLocaleString() : "";
+}
+
+function summarizeActionResult(result) {
+  const type = String(result?.type || "").trim();
+  if (!type) return "";
+  if (type === "tag.read") {
+    return `${type}: ${String(result?.tag || "")} = ${String(result?.value ?? "")}`;
+  }
+  if (type === "tag.read_many") {
+    const values = result?.values && typeof result.values === "object" && !Array.isArray(result.values) ? result.values : {};
+    const tags = result?.tags && typeof result.tags === "object" && !Array.isArray(result.tags) ? result.tags : {};
+    const parts = Object.entries(values).map(([key, value]) => {
+      const tag = String(tags?.[key] || "").trim();
+      return tag ? `${key}=${String(value ?? "")} [${tag}]` : `${key}=${String(value ?? "")}`;
+    });
+    return `${type}: ${parts.join(", ")}`;
+  }
+  if (type === "db.insert" && String(result?.table || "") === "automation_rule_run") {
+    const row = result?.row && typeof result.row === "object" ? result.row : {};
+    const triggerTag = String(row?.trigger_tag || "").trim();
+    const currentValue = row?.current_value == null ? "" : String(row.current_value);
+    return triggerTag ? `${type}: ${triggerTag} = ${currentValue}` : `${type}: automation_rule_run`;
+  }
+  if (type === "tag.write") {
+    return `${type}: ${String(result?.tag || "")} = ${String(result?.value ?? "")}`;
+  }
+  if (type === "db.insert") {
+    return `${type}: ${String(result?.table || "")}`;
+  }
+  if (type === "db.select") {
+    return `${type}: ${String(result?.table || "")} (${Number(result?.count || 0)} rows)`;
+  }
+  if (type === "group") {
+    return `${type}: ${Array.isArray(result?.nestedResults) ? result.nestedResults.length : 0} nested actions`;
+  }
+  if (type === "for_each") {
+    return `${type}: ${Number(result?.iterations || 0)} iterations`;
+  }
+  if (result?.skipped) {
+    return `${type}: skipped`;
+  }
+  return type;
 }
 
 function normalizeDbDataType(value) {
@@ -312,6 +375,67 @@ function KeyValueEditor({
 }
 
 function ConditionEditor({ condition, onChange, onRemove, tagOptions = [] }) {
+  if (String(condition?.kind || "").trim().toLowerCase() === "group") {
+    const nested = Array.isArray(condition?.conditions) ? condition.conditions : [];
+    return (
+      <div style={{ ...cardStyle, display: "grid", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "120px auto auto", gap: 6, alignItems: "center" }}>
+          <select
+            value={String(condition?.logic || "and")}
+            onChange={(e) => onChange((current) => ({ ...(current || {}), kind: "group", logic: e.target.value }))}
+            title="Group logic. Conditions inside this group are combined with and/or."
+            style={inputStyle}
+          >
+            <option value="and">and</option>
+            <option value="or">or</option>
+          </select>
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => onChange((current) => ({ ...(current || {}), conditions: [...nested, makeCondition()] }))}
+            style={secondaryButtonStyle}
+            title="Add a condition inside this group."
+          >
+            Add Condition
+          </button>
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => onChange((current) => ({ ...(current || {}), conditions: [...nested, makeConditionGroup()] }))}
+            style={secondaryButtonStyle}
+            title="Add a nested condition group."
+          >
+            Add Group
+          </button>
+        </div>
+        {nested.map((nestedCondition, idx) => (
+          <div key={`condition-group-${idx}`} style={{ marginLeft: 16 }}>
+            <ConditionEditor
+              condition={nestedCondition}
+              tagOptions={tagOptions}
+              onChange={(next) =>
+                onChange((current) => ({
+                  ...(current || {}),
+                  conditions: (Array.isArray(current?.conditions) ? current.conditions : []).map((row, rowIdx) =>
+                    rowIdx === idx ? (typeof next === "function" ? next(row) : next) : row
+                  ),
+                }))
+              }
+              onRemove={() =>
+                onChange((current) => ({
+                  ...(current || {}),
+                  conditions: (Array.isArray(current?.conditions) ? current.conditions : []).filter((_, rowIdx) => rowIdx !== idx),
+                }))
+              }
+            />
+          </div>
+        ))}
+        <div>
+          <button type="button" data-preserve-style="true" onClick={onRemove} style={dangerButtonStyle} title="Delete this condition group.">Delete Group</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div style={cardStyle}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 150px minmax(0,1fr) auto", gap: 6, alignItems: "center" }}>
@@ -338,6 +462,52 @@ function ConditionEditor({ condition, onChange, onRemove, tagOptions = [] }) {
         />
         <button type="button" data-preserve-style="true" onClick={onRemove} style={dangerButtonStyle} title="Delete this condition.">Delete</button>
       </div>
+    </div>
+  );
+}
+
+function MultiTagReadEditor({ value, onChange, tagOptions = [] }) {
+  const entries = useMemo(() => Object.entries(value && typeof value === "object" && !Array.isArray(value) ? value : {}), [value]);
+  const rows = [...entries, ["", ""]];
+  const setEntry = (idx, field, nextValue) => {
+    const nextRows = rows.map(([alias, tag], rowIdx) => {
+      if (rowIdx !== idx) return [alias, tag];
+      return field === "alias" ? [nextValue, tag] : [alias, nextValue];
+    });
+    const nextObject = {};
+    nextRows.forEach(([alias, tag]) => {
+      const key = String(alias || "").trim();
+      const val = String(tag || "").trim();
+      if (!key || !val) return;
+      nextObject[key] = val;
+    });
+    onChange(nextObject);
+  };
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }} title="Alias to tag mappings for multi-tag reads.">
+        Tags
+      </div>
+      {rows.map(([alias, tag], idx) => (
+        <div key={`multi-tag-read-${idx}`} style={{ display: "grid", gridTemplateColumns: "220px minmax(0,1fr)", gap: 6 }}>
+          <input
+            value={String(alias || "")}
+            onChange={(e) => setEntry(idx, "alias", e.target.value)}
+            placeholder="Alias"
+            title="Alias used later as a key under Save As."
+            style={inputStyle}
+          />
+          <SearchableSelect
+            value={String(tag || "")}
+            onChange={(nextTag) => setEntry(idx, "tag", nextTag)}
+            options={tagOptions}
+            placeholder="Tag"
+            allowCustom
+            title="Tag to read into this alias."
+            style={searchableInputStyle}
+          />
+        </div>
+      ))}
     </div>
   );
 }
@@ -403,16 +573,38 @@ function ActionEditor({ action, onChange, onRemove, reports = [], tagOptions = [
 
         <div style={{ display: "grid", gap: 6 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }} title="Optional conditions for this action. If they do not match, this action is skipped.">Run When</div>
-            <button
-              type="button"
-              data-preserve-style="true"
-              onClick={() => update({ when: [...(Array.isArray(action?.when) ? action.when : []), makeCondition()] })}
-              style={secondaryButtonStyle}
-              title="Add a condition that must pass before this action runs."
-            >
-              Add Condition
-            </button>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }} title="Optional conditions for this action. If they do not match, this action is skipped.">Run When</div>
+              <select
+                value={String(action?.when_logic || "and")}
+                onChange={(e) => update({ when_logic: e.target.value })}
+                title="How top-level Run When conditions are combined."
+                style={{ ...inputStyle, width: 90 }}
+              >
+                <option value="and">and</option>
+                <option value="or">or</option>
+              </select>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                type="button"
+                data-preserve-style="true"
+                onClick={() => update({ when: [...(Array.isArray(action?.when) ? action.when : []), makeCondition()] })}
+                style={secondaryButtonStyle}
+                title="Add a condition that must pass before this action runs."
+              >
+                Add Condition
+              </button>
+              <button
+                type="button"
+                data-preserve-style="true"
+                onClick={() => update({ when: [...(Array.isArray(action?.when) ? action.when : []), makeConditionGroup()] })}
+                style={secondaryButtonStyle}
+                title="Add a condition group for this action."
+              >
+                Add Group
+              </button>
+            </div>
           </div>
           {(Array.isArray(action?.when) ? action.when : []).map((condition, idx) => (
             <ConditionEditor
@@ -532,6 +724,23 @@ function ActionEditor({ action, onChange, onRemove, reports = [], tagOptions = [
           </div>
         ) : null}
 
+        {nextType === "tag.read_many" ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <MultiTagReadEditor
+              value={action?.tags || {}}
+              onChange={(tags) => update({ tags })}
+              tagOptions={tagOptions}
+            />
+            <input
+              value={String(action?.saveAs || "reads")}
+              onChange={(e) => update({ saveAs: e.target.value })}
+              placeholder="Save As"
+              title="Context key for the object of multi-tag read values."
+              style={inputStyle}
+            />
+          </div>
+        ) : null}
+
         {nextType === "tag.write" ? (
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 140px", gap: 6 }}>
             <SearchableSelect
@@ -598,6 +807,40 @@ function ActionEditor({ action, onChange, onRemove, reports = [], tagOptions = [
                 onClick={() => update({ actions: [...nestedActions, makeAction("tag.write")] })}
                 style={secondaryButtonStyle}
                 title="Add an action inside this loop."
+              >
+                Add Nested Action
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {nextType === "group" ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Grouped actions run sequentially top-to-bottom when this action's conditions pass.
+            </div>
+            <div style={{ display: "grid", gap: 6 }}>
+              {nestedActions.map((nestedAction, idx) => (
+                <ActionEditor
+                  key={`group-action-${depth}-${idx}`}
+                  action={nestedAction}
+                  reports={reports}
+                  tagOptions={tagOptions}
+                  dbSchema={dbSchema}
+                  depth={depth + 1}
+                  onChange={(next) => {
+                    const actions = nestedActions.map((row, rowIdx) => (rowIdx === idx ? (typeof next === "function" ? next(row) : next) : row));
+                    update({ actions });
+                  }}
+                  onRemove={() => update({ actions: nestedActions.filter((_, rowIdx) => rowIdx !== idx) })}
+                />
+              ))}
+              <button
+                type="button"
+                data-preserve-style="true"
+                onClick={() => update({ actions: [...nestedActions, makeAction("tag.write")] })}
+                style={secondaryButtonStyle}
+                title="Add an action inside this group."
               >
                 Add Nested Action
               </button>
@@ -764,27 +1007,6 @@ export default function AutomationRulesPanel({ embedded = false, activeProjectId
     [reports]
   );
   const triggerTagOptions = tagOptions;
-  const conditionTagOptions = useMemo(() => {
-    if (String(draft.trigger_source || "tag") !== "db") return tagOptions;
-    const rowOptions = [
-      { value: "row.route_id", label: "row.route_id" },
-      { value: "row.id", label: "row.id" },
-      { value: "row.state", label: "row.state" },
-      { value: "db_row.route_id", label: "db_row.route_id" },
-      { value: "db_row.id", label: "db_row.id" },
-      { value: "db_row.state", label: "db_row.state" },
-    ];
-    const merged = [...rowOptions, ...tagOptions];
-    const deduped = [];
-    const seen = new Set();
-    merged.forEach((option) => {
-      const value = String(option?.value || "");
-      if (!value || seen.has(value)) return;
-      seen.add(value);
-      deduped.push(option);
-    });
-    return deduped;
-  }, [draft.trigger_source, tagOptions]);
   const projectOptions = useMemo(
     () => (Array.isArray(projects) ? projects.map((project) => ({ value: String(project?.id || ""), label: String(project?.name || project?.id || "") })) : []),
     [projects]
@@ -823,7 +1045,7 @@ export default function AutomationRulesPanel({ embedded = false, activeProjectId
         const wildcard = memberPath ? `*.${memberPath}` : "*";
         return {
           value: fullKey,
-          label: memberPath ? `${memberPath} (${groupName || fullKey})` : fullKey,
+          label: memberPath || fullKey,
           fullKey,
           memberPath,
           wildcard,
@@ -836,6 +1058,58 @@ export default function AutomationRulesPanel({ embedded = false, activeProjectId
     () => reusableTagRows.map((row) => ({ value: row.value, label: row.label })),
     [reusableTagRows]
   );
+  const genericMemberOptions = useMemo(() => {
+    const wantedType = String(triggerBuilderType || "").trim().toLowerCase();
+    const seen = new Set();
+    return (Array.isArray(opcConfigTags) ? opcConfigTags : [])
+      .filter((tag) => {
+        if (!wantedType) return true;
+        return String(tag?.plcType || tag?.dataType || "").trim().toLowerCase() === wantedType;
+      })
+      .map((tag) => {
+        const tagPath = String(tag?.tagPath || tag?.name || "").trim();
+        const groupName = String(tag?.groupName || "").trim();
+        let memberPath = tagPath;
+        if (groupName && tagPath.toLowerCase().startsWith(`${groupName.toLowerCase()}.`)) {
+          memberPath = String(tagPath.slice(groupName.length + 1) || "").trim();
+        } else {
+          const parts = tagPath.split(".");
+          memberPath = parts.length > 1 ? parts.slice(1).join(".") : tagPath;
+        }
+        return memberPath;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
+      .filter((memberPath) => {
+        const key = String(memberPath || "").toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((memberPath) => ({ value: `{{base}}.${memberPath}`, label: memberPath }));
+  }, [opcConfigTags, triggerBuilderType]);
+  const conditionTagOptions = useMemo(() => {
+    if (String(draft.trigger_source || "tag") === "udt") return genericMemberOptions;
+    if (String(draft.trigger_source || "tag") !== "db") return tagOptions;
+    const rowOptions = [
+      { value: "row.route_id", label: "row.route_id" },
+      { value: "row.id", label: "row.id" },
+      { value: "row.state", label: "row.state" },
+      { value: "db_row.route_id", label: "db_row.route_id" },
+      { value: "db_row.id", label: "db_row.id" },
+      { value: "db_row.state", label: "db_row.state" },
+    ];
+    const merged = [...rowOptions, ...tagOptions];
+    const deduped = [];
+    const seen = new Set();
+    merged.forEach((option) => {
+      const value = String(option?.value || "");
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      deduped.push(option);
+    });
+    return deduped;
+  }, [draft.trigger_source, tagOptions, genericMemberOptions]);
   const selectedReusableTagRow = useMemo(
     () => reusableTagRows.find((row) => String(row.fullKey) === String(triggerBuilderTag || "")) || null,
     [reusableTagRows, triggerBuilderTag]
@@ -1006,6 +1280,9 @@ export default function AutomationRulesPanel({ embedded = false, activeProjectId
           <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
             Previous action value: set <code>Save As</code> on an action, then use <code>{'{{yourSaveAsKey}}'}</code> in the next action or set the condition source to <code>yourSaveAsKey</code>.
           </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+            Multi-tag reads: use <code>tag.read_many</code> with aliases, then reference values like <code>{'{{reads.alias}}'}</code>.
+          </div>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8 }}>
@@ -1079,77 +1356,93 @@ export default function AutomationRulesPanel({ embedded = false, activeProjectId
               dataTypeByKey={triggerDataTypeByColumn}
             />
           </>
-        ) : (
-          <div style={{ display: "grid", gap: 8 }}>
+        ) : String(draft.trigger_source || "tag") === "udt" ? (
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) auto", gap: 8, alignItems: "center" }}>
+            <SearchableSelect
+              value={String(triggerBuilderType || "")}
+              onChange={(value) => {
+                setTriggerBuilderType(value);
+                setTriggerBuilderTag("");
+              }}
+              options={reusableTypeOptions}
+              placeholder="PLC Type / UDT"
+              allowCustom
+              title="Select the PLC type/UDT family from OPC config."
+              style={searchableInputStyle}
+            />
+            <SearchableSelect
+              value={String(triggerBuilderTag || "")}
+              onChange={(value) => setTriggerBuilderTag(value)}
+              options={reusableTagOptions}
+              placeholder="Sample Tag / Member"
+              allowCustom={false}
+              title="Select a sample tag member from the chosen type."
+              style={searchableInputStyle}
+            />
             <SearchableSelect
               value={String(draft.trigger_tag || "")}
               onChange={(trigger_tag) => setDraft((prev) => ({ ...prev, trigger_tag }))}
               options={triggerTagOptions}
-              placeholder="Trigger Tag"
+              placeholder="Wildcard Trigger"
               allowCustom
-              title="Tag that starts this rule."
+              title="Wildcard trigger generated from the selected type and sample tag. You can still edit it directly."
               style={searchableInputStyle}
             />
-            <div style={{ ...cardStyle, display: "grid", gap: 8 }} title="Build a reusable wildcard trigger from OPC type metadata and a sample tag.">
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>Use UDT / Type</div>
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) auto", gap: 8, alignItems: "center" }}>
-                <SearchableSelect
-                  value={String(triggerBuilderType || "")}
-                  onChange={(value) => {
-                    setTriggerBuilderType(value);
-                    setTriggerBuilderTag("");
-                  }}
-                  options={reusableTypeOptions}
-                  placeholder="PLC Type / UDT"
-                  allowCustom
-                  title="Select the PLC type/UDT family from OPC config."
-                  style={searchableInputStyle}
-                />
-                <SearchableSelect
-                  value={String(triggerBuilderTag || "")}
-                  onChange={(value) => setTriggerBuilderTag(value)}
-                  options={reusableTagOptions}
-                  placeholder="Sample Tag / Member"
-                  allowCustom={false}
-                  title="Select a sample tag member from the chosen type."
-                  style={searchableInputStyle}
-                />
-                <button
-                  type="button"
-                  data-preserve-style="true"
-                  onClick={() => {
-                    if (!selectedReusableTagRow?.wildcard) return;
-                    setDraft((prev) => {
-                      const next = { ...prev, trigger_tag: selectedReusableTagRow.wildcard };
-                      const isCounterMember = /counter/i.test(String(selectedReusableTagRow?.memberPath || ""));
-                      if (!isCounterMember && /^counter_/.test(String(prev?.trigger_mode || ""))) {
-                        next.trigger_mode = "change";
-                      }
-                      return next;
-                    });
-                  }}
-                  style={secondaryButtonStyle}
-                  disabled={!selectedReusableTagRow?.wildcard}
-                  title="Apply the wildcard trigger generated from the selected type and sample tag."
-                >
-                  Use
-                </button>
-              </div>
-              {selectedReusableTagRow?.wildcard ? (
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  Wildcard trigger: <code>{selectedReusableTagRow.wildcard}</code>
-                </div>
-              ) : null}
-            </div>
+            <button
+              type="button"
+              data-preserve-style="true"
+              onClick={() => {
+                if (!selectedReusableTagRow?.wildcard) return;
+                setDraft((prev) => {
+                  const next = { ...prev, trigger_tag: selectedReusableTagRow.wildcard };
+                  const isCounterMember = /counter/i.test(String(selectedReusableTagRow?.memberPath || ""));
+                  if (!isCounterMember && /^counter_/.test(String(prev?.trigger_mode || ""))) {
+                    next.trigger_mode = "change";
+                  }
+                  return next;
+                });
+              }}
+              style={secondaryButtonStyle}
+              disabled={!selectedReusableTagRow?.wildcard}
+              title="Apply the wildcard trigger generated from the selected type and sample tag."
+            >
+              Use
+            </button>
           </div>
+        ) : (
+          <SearchableSelect
+            value={String(draft.trigger_tag || "")}
+            onChange={(trigger_tag) => setDraft((prev) => ({ ...prev, trigger_tag }))}
+            options={triggerTagOptions}
+            placeholder="Trigger Tag"
+            allowCustom
+            title="Tag that starts this rule."
+            style={searchableInputStyle}
+          />
         )}
 
         <div style={{ display: "grid", gap: 8 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontWeight: 700 }} title="Rule-level conditions. These are checked before any actions run.">Conditions</div>
-            <button type="button" data-preserve-style="true" onClick={() => setDraft((prev) => ({ ...prev, conditions: [...(Array.isArray(prev.conditions) ? prev.conditions : []), makeCondition()] }))} style={secondaryButtonStyle} title="Add a rule-level condition.">
-              Add Condition
-            </button>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <div style={{ fontWeight: 700 }} title="Rule-level conditions. These are checked before any actions run.">Conditions</div>
+              <select
+                value={String(draft.conditions_logic || "and")}
+                onChange={(e) => setDraft((prev) => ({ ...prev, conditions_logic: e.target.value }))}
+                title="How top-level rule conditions are combined."
+                style={{ ...inputStyle, width: 90 }}
+              >
+                <option value="and">and</option>
+                <option value="or">or</option>
+              </select>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button type="button" data-preserve-style="true" onClick={() => setDraft((prev) => ({ ...prev, conditions: [...(Array.isArray(prev.conditions) ? prev.conditions : []), makeCondition()] }))} style={secondaryButtonStyle} title="Add a rule-level condition.">
+                Add Condition
+              </button>
+              <button type="button" data-preserve-style="true" onClick={() => setDraft((prev) => ({ ...prev, conditions: [...(Array.isArray(prev.conditions) ? prev.conditions : []), makeConditionGroup()] }))} style={secondaryButtonStyle} title="Add a rule-level condition group.">
+                Add Group
+              </button>
+            </div>
           </div>
           {(Array.isArray(draft.conditions) ? draft.conditions : []).map((condition, idx) => (
             <ConditionEditor
@@ -1170,7 +1463,7 @@ export default function AutomationRulesPanel({ embedded = false, activeProjectId
             </button>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }} title="Actions can pass values forward using Save As.">
-            Use <code>Save As</code> on `tag.read`, `db.select`, or `dataset.select`, then reference that key in later actions or conditions.
+            Use <code>Save As</code> on `tag.read`, `tag.read_many`, `db.select`, or `dataset.select`, then reference that key in later actions or conditions.
           </div>
           {(Array.isArray(draft.actions) ? draft.actions : []).map((action, idx) => (
             <ActionEditor
@@ -1196,6 +1489,19 @@ export default function AutomationRulesPanel({ embedded = false, activeProjectId
               </div>
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>{String(run?.trigger_tag || "")}</div>
               {String(run?.message || "").trim() ? <div style={{ fontSize: 11, marginTop: 4 }}>{String(run.message)}</div> : null}
+              {Array.isArray(run?.action_results) && run.action_results.length ? (
+                <div style={{ display: "grid", gap: 4, marginTop: 6 }}>
+                  {run.action_results.map((result, idx) => {
+                    const summary = summarizeActionResult(result);
+                    if (!summary) return null;
+                    return (
+                      <div key={`run-result-${run.id}-${idx}`} style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        {summary}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>

@@ -327,6 +327,9 @@ export default function App() {
   const [liveBinProductDraftByOverlay, setLiveBinProductDraftByOverlay] = useState({});
   const [liveBinProductSaveBusyByOverlay, setLiveBinProductSaveBusyByOverlay] = useState({});
   const [liveBinProductSaveErrorByOverlay, setLiveBinProductSaveErrorByOverlay] = useState({});
+  const [liveBinLevelDraftByOverlay, setLiveBinLevelDraftByOverlay] = useState({});
+  const [liveBinLevelSaveBusyByOverlay, setLiveBinLevelSaveBusyByOverlay] = useState({});
+  const [liveBinLevelSaveErrorByOverlay, setLiveBinLevelSaveErrorByOverlay] = useState({});
   const [projectStatus, setProjectStatus] = useState("");
   const [projectIdentityReady, setProjectIdentityReady] = useState(() => !initialStoredProjectId);
   const [lastProjectSaveAt, setLastProjectSaveAt] = useState("");
@@ -2317,6 +2320,370 @@ export default function App() {
       </div>
     );
   };
+  const renderLiveDiverterControls = (overlay, compact = false) => {
+    const overlayId = String(overlay?.id || "").trim();
+    if (!overlayId) return null;
+    const eType = String(resolveOverlayEType(overlay) || "").trim().toLowerCase();
+    if (!eType.includes("diverter")) return null;
+    const writeStateKeyFor = (action) =>
+      `${overlayId}::${normalizeRouteTagKey(String(action || "command"))}`;
+    const isActionBusy = (action) => liveEquipmentWriteBusyByOverlay?.[writeStateKeyFor(action)] === true;
+    const resetBusy = isActionBusy("Fault Reset");
+    const autoBusy = isActionBusy("Automatic");
+    const manualBusy = isActionBusy("Manual");
+    const maintenanceBusy = isActionBusy("Maintenance");
+    const straightBusy = isActionBusy("Straight");
+    const divertBusy = isActionBusy("Divert");
+    const writeError = [
+      "Fault Reset",
+      "Automatic",
+      "Manual",
+      "Maintenance",
+      "Straight",
+      "Divert",
+    ]
+      .map((action) => String(liveEquipmentWriteErrorByOverlay?.[writeStateKeyFor(action)] || "").trim())
+      .find(Boolean) || "";
+    const normalizeCommandPathKey = (path) =>
+      String(path || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    const isHmiControlPath = (path) => normalizeCommandPathKey(path).endsWith("hmicontrol");
+    const modeStatusPath = resolveMotorCommandTagPath(
+      overlay,
+      ["Mode_Status", "ModeStatus", "Control_Status", "ControlStatus", "i_ModeStatus", "o_ModeStatus", "StsMode", "HMI_ModeStatus"],
+      { strict: true }
+    );
+    const hmiStatePath = resolveMotorCommandTagPath(
+      overlay,
+      ["HMI_State", "HMIState", "i_HMIState", "o_HMIState", "State"],
+      { strict: true }
+    );
+    const manualStatePath = resolveMotorCommandTagPath(
+      overlay,
+      ["i_ManualMode", "o_ManualMode", "ManualMode", "StsManual", "ManualActive"],
+      { strict: true }
+    );
+    const autoStatePath = resolveMotorCommandTagPath(
+      overlay,
+      ["i_AutoMode", "o_AutoMode", "AutoMode", "StsAuto", "AutoActive"],
+      { strict: true }
+    );
+    const maintenanceStatePath = resolveMotorCommandTagPath(
+      overlay,
+      ["i_MaintenanceMode", "o_MaintenanceMode", "MaintenanceMode", "MaintMode", "StsMaint", "MaintActive"],
+      { strict: true }
+    );
+    const anchorPaths = [modeStatusPath, hmiStatePath, manualStatePath, autoStatePath, maintenanceStatePath].filter(Boolean);
+    const rawHmiControlPath = resolveMotorCommandTagPath(
+      overlay,
+      ["HMI_Control", "hmi_control", "HMIControl", "hmiControl", "hmicontrol"],
+      { strict: true, anchorPaths }
+    );
+    const hmiControlPath = String(rawHmiControlPath || "").trim();
+    const usesHmiControl = isHmiControlPath(hmiControlPath);
+    const resetPath =
+      resolveMotorCommandTagPath(
+        overlay,
+        ["i_FaultReset", "FaultReset", "CmdFaultReset", "i_CmdFaultReset", "HMI_EquipmentReset"],
+        { strict: true, anchorPaths: [...anchorPaths, hmiControlPath].filter(Boolean) }
+      ) || hmiControlPath;
+    const autoPath = hmiControlPath;
+    const manualPath = hmiControlPath;
+    const maintenancePath = hmiControlPath;
+    const straightPath = hmiControlPath;
+    const divertPath = hmiControlPath;
+    const autoWriteValue = usesHmiControl ? 2 : 1;
+    const manualWriteValue = usesHmiControl ? 4 : 1;
+    const maintenanceWriteValue = usesHmiControl ? 8 : 1;
+    const straightWriteValue = usesHmiControl ? 16 : 1;
+    const divertWriteValue = usesHmiControl ? 32 : 1;
+    const resetWriteValue =
+      usesHmiControl && normalizeCommandPathKey(resetPath) === normalizeCommandPathKey(hmiControlPath)
+        ? 2048
+        : 1;
+    const commandWriteOptions = { pulse: true, pulseResetValue: 0 };
+    const triggerDiverterCommand = (actionLabel, path, value, options = {}) =>
+      writeLiveEquipmentTag(overlay, path, value, {
+        ...(options || {}),
+        actionLabel,
+        writeStateKey: writeStateKeyFor(actionLabel),
+      });
+    const readLiveRaw = (path) => {
+      const resolved = findLiveTagPathMatch([path]);
+      if (!resolved) return null;
+      return opcLiveValues?.[resolved];
+    };
+    const readLiveBool = (path) => {
+      const raw = readLiveRaw(path);
+      if (raw == null || raw === "") return null;
+      if (typeof raw === "boolean") return raw;
+      if (Number.isFinite(Number(raw))) return Number(raw) !== 0;
+      const text = String(raw || "").trim().toLowerCase();
+      if (!text) return null;
+      if (["true", "on", "yes"].includes(text)) return true;
+      if (["false", "off", "no"].includes(text)) return false;
+      return null;
+    };
+    const modeStatusRaw = readLiveRaw(modeStatusPath);
+    const hmiStateRaw = readLiveRaw(hmiStatePath);
+    const parsedModeFromStatus = (() => {
+      if (modeStatusRaw == null || modeStatusRaw === "") return "";
+      const text = String(modeStatusRaw || "").trim();
+      const lower = text.toLowerCase();
+      if (lower.includes("manual")) return "manual";
+      if (lower.includes("auto")) return "auto";
+      if (lower.includes("maint")) return "maintenance";
+      const num = Number(text);
+      if (Number.isFinite(num)) {
+        if (num === 2) return "auto";
+        if (num === 4) return "manual";
+        if (num === 8) return "maintenance";
+      }
+      return "";
+    })();
+    const modeStatusLabel = (() => {
+      if (parsedModeFromStatus === "manual") return "Manual";
+      if (parsedModeFromStatus === "auto") return "Auto";
+      if (parsedModeFromStatus === "maintenance") return "Maintenance";
+      return String(modeStatusRaw || "").trim() || "";
+    })();
+    const manualActive = readLiveBool(manualStatePath);
+    const autoActive = readLiveBool(autoStatePath);
+    const maintenanceActive = readLiveBool(maintenanceStatePath);
+    const activeMode =
+      maintenanceActive === true
+        ? "maintenance"
+        : manualActive === true
+          ? "manual"
+          : autoActive === true
+            ? "auto"
+            : parsedModeFromStatus === "manual" ||
+                parsedModeFromStatus === "auto" ||
+                parsedModeFromStatus === "maintenance"
+              ? parsedModeFromStatus
+              : "";
+    const hmiStateCode = (() => {
+      const text = String(hmiStateRaw ?? "").trim();
+      if (!text) return NaN;
+      const num = Number(text);
+      if (Number.isFinite(num)) return num;
+      return NaN;
+    })();
+    const positionLabel =
+      hmiStateCode === 1
+        ? "Straight"
+        : hmiStateCode === 2
+          ? "Divert"
+          : hmiStateCode === 4
+            ? "No Position"
+            : hmiStateCode === 8
+              ? "Moving Straight"
+              : hmiStateCode === 16
+                ? "Moving Divert"
+                : hmiStateCode === 32
+                  ? "Fault"
+                  : String(hmiStateRaw || "").trim() || "-";
+    const autoDisabled = autoBusy || activeMode === "auto" || !autoPath;
+    const manualDisabled = manualBusy || activeMode === "manual" || !manualPath;
+    const maintenanceDisabled = maintenanceBusy || activeMode === "maintenance" || !maintenancePath;
+    const modeBlocksPositionCommands = activeMode === "auto";
+    const straightDisabled = straightBusy || modeBlocksPositionCommands || !straightPath;
+    const divertDisabled = divertBusy || modeBlocksPositionCommands || !divertPath;
+    const resetDisabled = resetBusy || !resetPath;
+    const iconCommon = {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      lineHeight: 1,
+    };
+    const autoIcon = (
+      <span style={iconCommon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={compact ? 13 : 15} height={compact ? 13 : 15} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 12a8 8 0 0 1-14 5.3" />
+          <path d="M4 12a8 8 0 0 1 14-5.3" />
+          <path d="M6 18H3.5v-2.5" />
+          <path d="M18 6h2.5v2.5" />
+        </svg>
+      </span>
+    );
+    const manualIcon = (
+      <span style={iconCommon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={compact ? 13 : 15} height={compact ? 13 : 15} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
+          <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
+          <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
+          <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
+        </svg>
+      </span>
+    );
+    const maintenanceIcon = (
+      <span style={iconCommon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={compact ? 13 : 15} height={compact ? 13 : 15} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 3.5 14.2 10.3" />
+          <path d="M10.2 14.3 3.5 21l-1.5-1.5 6.8-6.8" />
+          <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
+        </svg>
+      </span>
+    );
+    const straightIcon = (
+      <span style={iconCommon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={compact ? 11 : 13} height={compact ? 11 : 13} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 12h13" />
+          <path d="m13 8 4 4-4 4" />
+        </svg>
+      </span>
+    );
+    const divertIcon = (
+      <span style={iconCommon} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width={compact ? 11 : 13} height={compact ? 11 : 13} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 12h6" />
+          <path d="M10 12 18 18" />
+          <path d="m15 18 3 0 0-3" />
+        </svg>
+      </span>
+    );
+    const buttonStyle = {
+      border: "1px solid color-mix(in srgb, var(--border) 86%, #2b6cff 14%)",
+      background: "color-mix(in srgb, var(--bg) 92%, #1d4ed8 8%)",
+      color: "var(--text)",
+      borderRadius: 6,
+      fontSize: compact ? 9 : 10,
+      fontWeight: 700,
+      height: compact ? 26 : 30,
+      padding: compact ? "0 6px" : "0 8px",
+      cursor: "pointer",
+      opacity: 1,
+      transition: "transform 90ms ease, filter 120ms ease, border-color 120ms ease",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 4,
+      width: "100%",
+      minWidth: 0,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      lineHeight: 1.1,
+    };
+    const disabledButtonStyle = {
+      border: "1px solid color-mix(in srgb, var(--border) 94%, #94a3b8 6%)",
+      background: "color-mix(in srgb, var(--bg) 98%, #64748b 2%)",
+      color: "color-mix(in srgb, var(--text-muted) 88%, var(--text) 12%)",
+      cursor: "not-allowed",
+      opacity: 0.62,
+      filter: "saturate(0.45)",
+      boxShadow: "none",
+      transform: "none",
+    };
+    const withDisabledStyle = (isDisabled) => (isDisabled ? { ...buttonStyle, ...disabledButtonStyle } : buttonStyle);
+    return (
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 5 }}>
+        <div style={{ fontSize: compact ? 10 : 11, fontWeight: 700, color: "var(--text)" }}>Diverter Controls</div>
+        <div style={{ fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
+          UDT: TwoWay_DiscreteV2
+        </div>
+        <div style={{ fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
+          Status: {modeStatusLabel || (activeMode === "manual" ? "Manual" : activeMode === "auto" ? "Auto" : activeMode === "maintenance" ? "Maintenance" : "-")}
+        </div>
+        <div style={{ fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
+          HMI State: {positionLabel}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 4 }}>
+          <button
+            type="button"
+            style={withDisabledStyle(straightDisabled)}
+            disabled={straightDisabled}
+            onClick={() => void triggerDiverterCommand("Straight", straightPath, straightWriteValue, commandWriteOptions)}
+            title={
+              modeBlocksPositionCommands
+                ? "disabled while in Auto mode"
+                : straightPath || "HMI_Control tag not found"
+            }
+          >
+            {straightIcon}
+            <span>Straight</span>
+          </button>
+          <button
+            type="button"
+            style={withDisabledStyle(divertDisabled)}
+            disabled={divertDisabled}
+            onClick={() => void triggerDiverterCommand("Divert", divertPath, divertWriteValue, commandWriteOptions)}
+            title={
+              modeBlocksPositionCommands
+                ? "disabled while in Auto mode"
+                : divertPath || "HMI_Control tag not found"
+            }
+          >
+            {divertIcon}
+            <span>Divert</span>
+          </button>
+          <button
+            type="button"
+            style={
+              resetDisabled
+                ? withDisabledStyle(true)
+                : {
+                    ...buttonStyle,
+                    border: "1px solid color-mix(in srgb, #f59e0b 78%, var(--border) 22%)",
+                    background: "linear-gradient(180deg, #f59e0b 0%, #ea580c 100%)",
+                    color: "#fff7ed",
+                    textShadow: "0 1px 1px rgba(0,0,0,0.22)",
+                  }
+            }
+            disabled={resetDisabled}
+            onClick={() => void triggerDiverterCommand("Fault Reset", resetPath, resetWriteValue, commandWriteOptions)}
+            title={resetPath || "Fault reset tag not found"}
+          >
+            <span style={iconCommon} aria-hidden="true">
+              <svg viewBox="0 0 24 24" width={compact ? 10 : 12} height={compact ? 10 : 12} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3.5 21 19H3L12 3.5Z" />
+                <path d="M12 9v5.2" />
+                <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none" />
+              </svg>
+            </span>
+            <span>Fault Reset</span>
+          </button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 4 }}>
+          <button
+            type="button"
+            style={withDisabledStyle(autoDisabled)}
+            disabled={autoDisabled}
+            onClick={() => void triggerDiverterCommand("Automatic", autoPath, autoWriteValue, commandWriteOptions)}
+            title={!autoPath ? "HMI_Control tag not found" : activeMode === "auto" ? "Already in Auto mode" : autoPath}
+          >
+            {autoIcon}
+            <span>Auto</span>
+          </button>
+          <button
+            type="button"
+            style={withDisabledStyle(manualDisabled)}
+            disabled={manualDisabled}
+            onClick={() => void triggerDiverterCommand("Manual", manualPath, manualWriteValue, commandWriteOptions)}
+            title={!manualPath ? "HMI_Control tag not found" : activeMode === "manual" ? "Already in Manual mode" : manualPath}
+          >
+            {manualIcon}
+            <span>Manual</span>
+          </button>
+          <button
+            type="button"
+            style={withDisabledStyle(maintenanceDisabled)}
+            disabled={maintenanceDisabled}
+            onClick={() => void triggerDiverterCommand("Maintenance", maintenancePath, maintenanceWriteValue, commandWriteOptions)}
+            title={!maintenancePath ? "HMI_Control tag not found" : activeMode === "maintenance" ? "Already in Maintenance mode" : maintenancePath}
+          >
+            {maintenanceIcon}
+            <span>Maint</span>
+          </button>
+        </div>
+        {writeError ? (
+          <div style={{ fontSize: compact ? 9 : 10, color: "var(--danger)" }}>{writeError}</div>
+        ) : null}
+      </div>
+    );
+  };
   const buildLiveEquipmentDetails = (overlay) => {
     if (!overlay) return [];
     const path = String(overlay.tagPath || "").trim();
@@ -2331,7 +2698,10 @@ export default function App() {
       seenKeys.add(lk);
       rows.push({ key: label, value: value == null || value === "" ? "-" : String(value) });
     };
-    if (eType) rows.push({ key: "UDT", value: eType });
+    if (eType) {
+      const rawEType = String(eType || "").trim().toLowerCase();
+      rows.push({ key: "UDT", value: rawEType.includes("diverter") ? "TwoWay_DiscreteV2" : eType });
+    }
     const popupTagValueEnabled = (() => {
       if (!path) return true;
       const target = normalizeTagValue(path).toLowerCase();
@@ -2532,6 +2902,30 @@ export default function App() {
     normalizeTagValue(row?.bin_name ?? row?.binName ?? row?.name ?? row?.Name ?? "");
   const getProjectBinPath = (row) =>
     normalizeTagValue(row?.tag_path ?? row?.tagPath ?? row?.svg_tag_path ?? row?.svgTagPath ?? row?.path ?? row?.Path ?? "");
+  const getProjectBinLevelFieldName = (row) => {
+    if (!row || typeof row !== "object") return "";
+    const candidates = [
+      "level",
+      "Level",
+      "current_level",
+      "currentLevel",
+      "qty",
+      "quantity",
+      "Quantity",
+    ];
+    for (const key of candidates) {
+      if (Object.prototype.hasOwnProperty.call(row, key)) return key;
+    }
+    return "level";
+  };
+  const getProjectBinLevelValue = (row) => {
+    if (!row || typeof row !== "object") return null;
+    const key = getProjectBinLevelFieldName(row);
+    const raw = row?.[key];
+    if (raw == null || String(raw).trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
   const getProjectBinBindingCandidates = (raw) => {
     const text = String(raw || "").trim();
     if (!text) return [];
@@ -2633,6 +3027,51 @@ export default function App() {
       toastError(msg);
     } finally {
       setLiveBinProductSaveBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: false }));
+    }
+  };
+  const saveBinLevelChange = async (overlay, row, mode, draftRaw) => {
+    const overlayId = String(overlay?.id || "").trim();
+    const rowId = getProjectBinRowId(row) || getBinRowIdFromBindingKey(overlay?.binBindingKey);
+    const table = String(projectBinTableName || "bin").trim();
+    const levelField = getProjectBinLevelFieldName(row);
+    const currentLevel = getProjectBinLevelValue(row) ?? 0;
+    const draftText = String(draftRaw || "").trim();
+    const parsed = Number(draftText);
+    if (!overlayId || !rowId || !table || !levelField) return;
+    if (!Number.isFinite(parsed)) {
+      const msg = "Enter a numeric level value.";
+      setLiveBinLevelSaveErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: msg }));
+      return;
+    }
+    const nextValue = String(mode || "").trim().toLowerCase() === "register" ? currentLevel + parsed : parsed;
+    setLiveBinLevelSaveBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: true }));
+    setLiveBinLevelSaveErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+    try {
+      const data = await updateTableRow(table, rowId, { [levelField]: nextValue });
+      const updatedRow = data?.row && typeof data.row === "object" ? data.row : null;
+      if (updatedRow) {
+        setProjectBinRows((prev) =>
+          (Array.isArray(prev) ? prev : []).map((r) => {
+            const id = getProjectBinRowId(r);
+            return id && id === rowId ? { ...r, ...updatedRow } : r;
+          })
+        );
+      } else {
+        setProjectBinRows((prev) =>
+          (Array.isArray(prev) ? prev : []).map((r) => {
+            const id = getProjectBinRowId(r);
+            return id && id === rowId ? { ...r, [levelField]: nextValue } : r;
+          })
+        );
+      }
+      setLiveBinLevelDraftByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+      toastSuccess(String(mode || "").trim().toLowerCase() === "register" ? "Bin level registered." : "Bin level updated.");
+    } catch (err) {
+      const msg = String(err?.message || "Failed to update bin level.");
+      setLiveBinLevelSaveErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: msg }));
+      toastError(msg);
+    } finally {
+      setLiveBinLevelSaveBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: false }));
     }
   };
   const findProjectBinRowForOverlay = (overlay) => {
@@ -2771,6 +3210,10 @@ export default function App() {
     const draftProductId = String(liveBinProductDraftByOverlay?.[overlayId] ?? currentProductId ?? "").trim();
     const saveBusy = liveBinProductSaveBusyByOverlay?.[overlayId] === true;
     const saveError = String(liveBinProductSaveErrorByOverlay?.[overlayId] || "").trim();
+    const currentLevelNumber = getProjectBinLevelValue(row);
+    const levelDraft = String(liveBinLevelDraftByOverlay?.[overlayId] ?? "").trim();
+    const levelBusy = liveBinLevelSaveBusyByOverlay?.[overlayId] === true;
+    const levelError = String(liveBinLevelSaveErrorByOverlay?.[overlayId] || "").trim();
     const fallbackRowId = getBinRowIdFromBindingKey(overlay?.binBindingKey);
     const canSave = !!(getProjectBinRowId(row) || fallbackRowId);
     return (
@@ -2863,6 +3306,77 @@ export default function App() {
             <div style={{ fontSize: compact ? 9 : 10, color: "var(--danger)" }}>{saveError}</div>
           ) : null}
         </div>
+        <div style={{ display: "grid", gap: 6, marginTop: compact ? 6 : 8 }}>
+          <div style={{ fontSize: compact ? 10 : 11, color: "var(--text-muted)" }}>Level</div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              type="number"
+              value={levelDraft}
+              onChange={(e) => {
+                const value = String(e.target.value || "");
+                setLiveBinLevelDraftByOverlay((prev) => ({ ...(prev || {}), [overlayId]: value }));
+              }}
+              placeholder={currentLevelNumber != null ? String(currentLevelNumber) : "0"}
+              style={{
+                flex: "1 1 110px",
+                minWidth: compact ? 72 : 90,
+                height: compact ? 24 : 26,
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 7,
+                padding: "0 8px",
+                fontSize: compact ? 10 : 11,
+              }}
+              disabled={levelBusy}
+            />
+            <button
+              type="button"
+              onClick={() => saveBinLevelChange(overlay, row || (fallbackRowId ? { id: fallbackRowId, tbl_index: fallbackRowId } : null), "register", levelDraft)}
+              disabled={!canSave || levelBusy}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--bg-soft)",
+                color: "var(--text)",
+                borderRadius: 7,
+                height: compact ? 24 : 26,
+                minWidth: compact ? 62 : 72,
+                padding: compact ? "0 8px" : "0 10px",
+                fontSize: compact ? 10 : 11,
+                fontWeight: 700,
+                cursor: !canSave || levelBusy ? "not-allowed" : "pointer",
+                opacity: !canSave || levelBusy ? 0.7 : 1,
+              }}
+              title="Add this value to current level"
+            >
+              Register
+            </button>
+            <button
+              type="button"
+              onClick={() => saveBinLevelChange(overlay, row || (fallbackRowId ? { id: fallbackRowId, tbl_index: fallbackRowId } : null), "set", levelDraft)}
+              disabled={!canSave || levelBusy}
+              style={{
+                border: "1px solid var(--border)",
+                background: "var(--accent)",
+                color: "var(--accent-text)",
+                borderRadius: 7,
+                height: compact ? 24 : 26,
+                minWidth: compact ? 68 : 80,
+                padding: compact ? "0 8px" : "0 10px",
+                fontSize: compact ? 10 : 11,
+                fontWeight: 700,
+                cursor: !canSave || levelBusy ? "not-allowed" : "pointer",
+                opacity: !canSave || levelBusy ? 0.7 : 1,
+              }}
+              title="Set exact level"
+            >
+              Set Level
+            </button>
+          </div>
+          {levelError ? (
+            <div style={{ fontSize: compact ? 9 : 10, color: "var(--danger)" }}>{levelError}</div>
+          ) : null}
+        </div>
       </div>
     );
   };
@@ -2898,6 +3412,42 @@ export default function App() {
       const row = findProjectBinRowForOverlay(overlay);
       const name = String(getProjectBinName(row) || "").trim();
       if (name) out[id] = name;
+    });
+    return out;
+  }, [svgOverlays, projectBinRows]);
+  const binLevelRatioByOverlayId = useMemo(() => {
+    const out = {};
+    const readCapacityValue = (row) => {
+      if (!row || typeof row !== "object") return null;
+      const candidates = [
+        "capacity",
+        "Capacity",
+        "max_capacity",
+        "maxCapacity",
+        "max_qty",
+        "maxQty",
+      ];
+      for (const key of candidates) {
+        if (!Object.prototype.hasOwnProperty.call(row, key)) continue;
+        const raw = row?.[key];
+        if (raw == null || String(raw).trim() === "") continue;
+        const n = Number(raw);
+        if (Number.isFinite(n)) return n;
+      }
+      return null;
+    };
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      const row = findProjectBinRowForOverlay(overlay);
+      if (!row) return;
+      const level = getProjectBinLevelValue(row);
+      const capacity = readCapacityValue(row);
+      if (!Number.isFinite(level) || !Number.isFinite(capacity) || capacity <= 0) {
+        out[id] = 0;
+        return;
+      }
+      out[id] = Math.max(0, Math.min(1, level / capacity));
     });
     return out;
   }, [svgOverlays, projectBinRows]);
@@ -4724,6 +5274,7 @@ function flushScheduledProjectSave() {
   const userDrawerRef = useRef(null);
   const securityDrawerRef = useRef(null);
   const projectDrawerRef = useRef(null);
+  const liveEquipmentDrawerRef = useRef(null);
   const [theme, setTheme] = useState(() => {
     try {
       const stored = localStorage.getItem(THEME_KEY);
@@ -6683,6 +7234,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setSelectedIds([]);
     setSelectedOverlayIds([]);
   }
+
+  const preserveSvgSelectionWhileHudOpen =
+    showHUD &&
+    selectedIds.length === 0 &&
+    selectedOverlayIds.length === 1 &&
+    !!svgOverlays.find(
+      (o) => String(o?.id || "") === String(selectedOverlayIds[0] || "") && !o?.widget
+    );
 
   function isShapeSelectableByMode(shape) {
     if (!shape || typeof shape !== "object") return false;
@@ -9807,12 +10366,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
       return changed ? next : map;
     });
-    if (String(liveEquipmentDrawerOverlayId || "").trim()) {
-      const drawerOverlay = (svgOverlays || []).find(
-        (o) => String(o?.id || "") === String(liveEquipmentDrawerOverlayId || "")
-      );
-      if (drawerOverlay?.widget) setLiveEquipmentDrawerOverlayId("");
-    }
   }, [svgOverlays, liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId, MAX_LIVE_EQUIPMENT_POPUPS]);
 
   function closeLiveEquipmentCard(id) {
@@ -10030,10 +10583,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (!isLiveMode) return;
       if (!liveEquipmentOverlayIds.length && !String(liveEquipmentDrawerOverlayId || "").trim()) return;
       e.preventDefault();
-      if (String(liveEquipmentDrawerOverlayId || "").trim()) {
-        setLiveEquipmentDrawerOverlayId("");
-        return;
-      }
       setLiveEquipmentOverlayIds((prev) => {
         const list = Array.isArray(prev) ? prev : [];
         if (!list.length) return list;
@@ -10879,7 +11428,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (hadCanvasPanDrag) {
       setCanvasPanDrag(null);
       if (!didCanvasPanMove) {
-        clearSelection();
+        if (!preserveSvgSelectionWhileHudOpen) clearSelection();
       } else {
         scheduleProjectAutoSave(120);
       }
@@ -10947,7 +11496,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         setSelectedIds(hitShapeIds);
         setSelectedOverlayIds(hitOvers);
       } else {
-        clearSelection();
+        if (!preserveSvgSelectionWhileHudOpen) clearSelection();
       }
 
       setMarquee(null);
@@ -11845,10 +12394,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (showProjectDrawer && !projectDrawerRef.current?.contains(target)) {
         closeProjectDrawerSafely();
       }
+      if (
+        String(liveEquipmentDrawerOverlayId || "").trim() &&
+        !liveEquipmentDrawerRef.current?.contains(target)
+      ) {
+        setLiveEquipmentDrawerOverlayId("");
+      }
     }
     document.addEventListener("dblclick", handleGlobalDrawerDoubleClick);
     return () => document.removeEventListener("dblclick", handleGlobalDrawerDoubleClick);
-  }, [showMainDrawer, showUserDrawer, showSecurityDrawer, showProjectDrawer]);
+  }, [
+    showMainDrawer,
+    showUserDrawer,
+    showSecurityDrawer,
+    showProjectDrawer,
+    liveEquipmentDrawerOverlayId,
+  ]);
 
   function switchToScreen(nextScreenId) {
     const committed = commitCurrentScreenState();
@@ -12911,6 +13472,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         widgetDbValues={widgetDbValues}
         binProductLabelByOverlayId={binProductLabelByOverlayId}
         binNameLabelByOverlayId={binNameLabelByOverlayId}
+        binLevelRatioByOverlayId={binLevelRatioByOverlayId}
         onWidgetDurationPresetChange={onWidgetDurationPresetChange}
         hiddenTagBubbleIds={hiddenTagBubbleIds}
         onHideTagBubble={(id) =>
@@ -12921,6 +13483,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
       {isLiveMode && isLiveEquipmentLeftDockMode && liveEquipmentDrawerEntries.length ? (
         <div
+          ref={liveEquipmentDrawerRef}
           style={{
             position: "fixed",
             left: projectDrawerInsetPx + liveMenuLayoutInsetPx + 8,
@@ -13050,6 +13613,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   )}
                 </div>
                 {renderLiveMotorControls(overlay, false)}
+                {renderLiveDiverterControls(overlay, false)}
                 {renderLiveBinDetails(overlay, false)}
               </div>
             ))}
@@ -13209,6 +13773,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   )}
                 </div>
                 {renderLiveMotorControls(overlay, true)}
+                {renderLiveDiverterControls(overlay, true)}
                 {renderLiveBinDetails(overlay, true)}
                     </div>
                   ))}
@@ -13355,6 +13920,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   )}
                 </div>
                 {renderLiveMotorControls(overlay, true)}
+                {renderLiveDiverterControls(overlay, true)}
                 {renderLiveBinDetails(overlay, true)}
               </div>
             );
