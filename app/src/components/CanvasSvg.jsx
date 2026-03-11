@@ -2834,6 +2834,35 @@ export default function CanvasSvg({
     return "";
   };
 
+  const getDiverterBranchAtWorldPointByConnector = (overlay, pt, bb, threshold = 24) => {
+    if (!overlay || !pt || !bb) return "";
+    const sx = overlayScaleX(overlay);
+    const sy = overlayScaleY(overlay);
+    const bx = Number(bb?.x) || 0;
+    const by = Number(bb?.y) || 0;
+    const bw = Math.max(0.0001, Number(bb?.width) || 1);
+    const bh = Math.max(0.0001, Number(bb?.height) || 1);
+    const tx = Number(overlay?.tx || 0);
+    const ty = Number(overlay?.ty || 0);
+    const px = Number(pt?.x || 0);
+    const py = Number(pt?.y || 0);
+    const connectors = [
+      { branch: "entry", x: tx + sx * (bx + bw * 0.12), y: ty + sy * (by + bh * 0.25) },
+      { branch: "straight", x: tx + sx * (bx + bw * 0.92), y: ty + sy * (by + bh * 0.18) },
+      { branch: "divert", x: tx + sx * (bx + bw * 0.82), y: ty + sy * (by + bh * 0.78) },
+    ];
+    let best = "";
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const c of connectors) {
+      const d = Math.hypot(px - c.x, py - c.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = c.branch;
+      }
+    }
+    return bestDist <= threshold ? best : "";
+  };
+
   const userColor = (value) => {
     const raw = String(value || "");
     let hash = 0;
@@ -3032,16 +3061,16 @@ export default function CanvasSvg({
     );
   };
 
-  const applyDiverterFlowColorToSvg = (inner, color) => {
+  const applyDiverterFlowColorToSvg = (inner, color, modeRaw) => {
     if (!inner) return inner;
     let out = String(inner || "");
+    const mode = String(modeRaw || "").trim().toLowerCase() === "divert" ? "divert" : "straight";
     ["entryPath", "straightPath", "divertPath"].forEach((id) => {
       out = recolorSvgElementFillOnlyById(out, id, "#ffffff");
     });
     if (!color) return out;
-    ["entryPath", "straightPath", "divertPath"].forEach((id) => {
-      out = recolorSvgElementFillOnlyById(out, id, color);
-    });
+    out = recolorSvgElementFillOnlyById(out, "entryPath", color);
+    out = recolorSvgElementFillOnlyById(out, mode === "divert" ? "divertPath" : "straightPath", color);
     return out;
   };
 
@@ -3143,7 +3172,8 @@ export default function CanvasSvg({
     for (const s of shapes) {
       if (s?.type !== "polyline" || !Array.isArray(s.points) || s.points.length < 2) continue;
       const endpoints = [s.points[0], s.points[s.points.length - 1]].filter(Boolean);
-      for (const pt of endpoints) {
+      for (let idx = 0; idx < endpoints.length; idx += 1) {
+        const pt = endpoints[idx];
         const dist = distancePointToRect(pt, wr);
         if (dist > threshold || dist >= bestDistance) continue;
         const sx = overlayScaleX(overlay);
@@ -3152,7 +3182,23 @@ export default function CanvasSvg({
         const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
         const branch = getDiverterBranchAtLocalPoint(localX, localY, bb);
         if (branch !== "entry") continue;
-        const c = normalizeActiveLineColor(getTagColor(s?.tagPath) || s?.stroke);
+        const oppositePt = idx === 0 ? s.points[s.points.length - 1] : s.points[0];
+        const upstreamActiveColor = normalizeActiveLineColor(
+          (oppositePt
+            ? getOverlayColorAtPoint(oppositePt, {
+                ...options,
+                excludeOverlayId: overlay?.id,
+              }) || getOverlayColorNearPoint(oppositePt, 28, {
+                ...options,
+                excludeOverlayId: overlay?.id,
+              })
+            : "")
+        );
+        const c = normalizeActiveLineColor(
+          upstreamActiveColor ||
+          getTagColor(s?.tagPath) ||
+          s?.stroke
+        );
         if (!c) continue;
         bestDistance = dist;
         bestColor = c;
@@ -3265,6 +3311,50 @@ export default function CanvasSvg({
     return bestColor;
   };
 
+  const getActiveDiverterOutputColorAtPoint = (pt, options = {}) => {
+    if (!pt || !Array.isArray(svgOverlays) || !svgOverlays.length) return "";
+    let bestColor = "";
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const o of svgOverlays) {
+      const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
+      if (!overlayEType.includes("diverter")) continue;
+      const bb = overlayLocalBBox(o.id);
+      if (!bb) continue;
+      const wr = overlayWorldRect(o, bb);
+      const dist = distancePointToRect(pt, wr);
+      if (dist > 28 || dist >= bestDistance) continue;
+
+      const incomingEntryColor = normalizeActiveLineColor(
+        getDirectEntryActiveColorForDiverter(o, {
+          ...options,
+          excludeOverlayId: String(o?.id || ""),
+        })
+      );
+      if (!incomingEntryColor) continue;
+
+      const sx = overlayScaleX(o);
+      const sy = overlayScaleY(o);
+      const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(0.0001, sx);
+      const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(0.0001, sy);
+      const branch =
+        getDiverterBranchAtLocalPoint(localX, localY, bb) ||
+        getDiverterBranchAtWorldPointByConnector(o, pt, bb, 26);
+      const activeBranch = getOverlayDiverterState(o) || String(o?.diverterMode || "").trim().toLowerCase();
+      if (!(branch && branch !== "entry" && activeBranch && branch === activeBranch)) continue;
+
+      const color = normalizeActiveLineColor(
+        incomingEntryColor ||
+        getTagColor(o?.tagPath) ||
+        getRouteColorForOverlay(o) ||
+        getRouteStrokeColorForOverlay(o)
+      );
+      if (!color) continue;
+      bestDistance = dist;
+      bestColor = color;
+    }
+    return bestColor;
+  };
+
   const distancePointToRect = (pt, rect) => {
     if (!pt || !rect) return Number.POSITIVE_INFINITY;
     const rx = Number(rect.x) || 0;
@@ -3286,10 +3376,12 @@ export default function CanvasSvg({
     const explicitStroke = normalizeActiveLineColor(shape?.stroke);
     if (explicitStroke) return explicitStroke;
     const startPoint = shape.points[0];
-    const endPoint = shape.points[shape.points.length - 1];
     const touchColor = normalizeActiveLineColor(
-      (startPoint ? getOverlayColorAtPoint(startPoint, options) || getOverlayColorNearPoint(startPoint, 28, options) : "") ||
-      (endPoint ? getOverlayColorAtPoint(endPoint, options) || getOverlayColorNearPoint(endPoint, 28, options) : "")
+      startPoint
+        ? getActiveDiverterOutputColorAtPoint(startPoint, options) ||
+          getOverlayColorAtPoint(startPoint, options) ||
+          getOverlayColorNearPoint(startPoint, 28, options)
+        : ""
     );
     if (touchColor) return touchColor;
     return includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "";
@@ -5014,11 +5106,8 @@ export default function CanvasSvg({
               );
               const startPoint =
                 Array.isArray(s.points) && s.points.length ? s.points[0] : null;
-              const endPoint =
-                Array.isArray(s.points) && s.points.length ? s.points[s.points.length - 1] : null;
               const touchColor = normalizeActiveLineColor(
-                (startPoint ? getOverlayColorAtPoint(startPoint) : "") ||
-                (endPoint ? getOverlayColorAtPoint(endPoint) : "")
+                (startPoint ? getOverlayColorAtPoint(startPoint) : "")
               );
               const splitCarrySegments = getPolylineSplitCarrySegments(s);
               const hasSplitCarry = Array.isArray(splitCarrySegments) && splitCarrySegments.length > 0;
@@ -5028,6 +5117,7 @@ export default function CanvasSvg({
               const activeDynamicColor = normalizeActiveLineColor(dynamicColor);
               const activeStrokeColor =
                 resolvedPolylineStroke || touchColor || activeDynamicColor || splitCarryColor;
+              const renderSplitCarry = !activeStrokeColor && Array.isArray(splitCarrySegments) && splitCarrySegments.length > 0;
 
               return (
                 <g key={s.id}>
@@ -5111,7 +5201,7 @@ export default function CanvasSvg({
                     pointerEvents="auto"
                     style={{ cursor: polyCursor }}
                   />
-                  {!isSelected && Array.isArray(splitCarrySegments) && splitCarrySegments.length ? (
+                  {!isSelected && renderSplitCarry ? (
                     <>
                       {splitCarrySegments.map((segment, idx) => (
                         (() => {
@@ -5258,6 +5348,9 @@ export default function CanvasSvg({
                             String(routeStroke || "").trim() ||
                             connectedPolylineColor ||
                             "";
+                      const liveDiverterMode = overlayEType.includes("diverter")
+                        ? (getOverlayDiverterState(o) || o?.diverterMode)
+                        : "";
                       const isFaultSimulated = Boolean(o.faultSimulated);
                       const compactEType = overlayEType.replace(/[^a-z0-9]/g, "");
                       const isConveyorScrew =
@@ -5292,8 +5385,7 @@ export default function CanvasSvg({
                         inner = applyTerraBinSkinnyLevelToSvg(inner, binLevelRatio);
                       }
                       if (overlayEType.includes("diverter")) {
-                        const liveDiverterMode = getOverlayDiverterState(o);
-                        inner = applyDiverterModeToSvg(inner, liveDiverterMode || o?.diverterMode);
+                        inner = applyDiverterModeToSvg(inner, liveDiverterMode);
                       }
                       if (isFaultSimulated) {
                         // Fault simulation should only affect fill, not stroke.
@@ -5305,7 +5397,7 @@ export default function CanvasSvg({
                         inner = forceSvgStrokeColor(inner, themeStrokeDefault);
                       }
                       if (overlayEType.includes("diverter")) {
-                        inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor);
+                        inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode);
                       }
                       return (
                         <g
