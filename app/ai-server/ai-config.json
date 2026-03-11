@@ -6,7 +6,7 @@
       "id": "default-openai",
       "name": "Ollama",
       "provider": "ollama",
-      "model": "llama3.1",
+      "model": "mesora-flour-mill",
       "baseUrl": "http://localhost:11434/v1",
       "apiKey": "ollama",
       "ollamaNativeUrl": "",

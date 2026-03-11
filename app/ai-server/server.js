@@ -72,6 +72,118 @@ const SVG_LIBRARY_DIR_STREAMLINED = path.resolve(
   "assets",
   "SVG_Files_Streamlined"
 );
+const FLOUR_MILL_KNOWLEDGE_PATH = path.resolve(AI_SERVER_DIR, "knowledge", "flour-mill.md");
+
+let flourMillKnowledgeCache = "";
+let flourMillKnowledgeMtimeMs = 0;
+function getFlourMillKnowledge() {
+  try {
+    if (!fs.existsSync(FLOUR_MILL_KNOWLEDGE_PATH)) return "";
+    const stat = fs.statSync(FLOUR_MILL_KNOWLEDGE_PATH);
+    const mtimeMs = Number(stat?.mtimeMs || 0);
+    if (!flourMillKnowledgeCache || mtimeMs !== flourMillKnowledgeMtimeMs) {
+      flourMillKnowledgeCache = String(fs.readFileSync(FLOUR_MILL_KNOWLEDGE_PATH, "utf8") || "").trim();
+      flourMillKnowledgeMtimeMs = mtimeMs;
+    }
+    return flourMillKnowledgeCache;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeChatAiAction(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const source = input;
+  const sourcePayload =
+    source?.payload && typeof source.payload === "object" && !Array.isArray(source.payload)
+      ? source.payload
+      : source;
+  const rawType = String(source?.type || sourcePayload?.type || "").trim().toLowerCase();
+  const inferredType = rawType || (Array.isArray(sourcePayload?.items) ? "add_svg_layout" : "");
+  if (inferredType !== "add_svg_layout") return null;
+  const rawItems = Array.isArray(sourcePayload?.items) ? sourcePayload.items : [];
+  const items = rawItems
+    .slice(0, 120)
+    .map((row) => {
+      const entry = row && typeof row === "object" && !Array.isArray(row) ? row : {};
+      const svgKey = String(
+        entry.svgKey || entry.svgName || entry.svg || entry.template || entry.key || ""
+      ).trim();
+      const label = String(entry.label || entry.name || "").trim();
+      const tagPath = String(entry.tagPath || entry.tag || "").trim();
+      const x = Number(entry.x);
+      const y = Number(entry.y);
+      const width = Number(entry.width || entry.w || 0);
+      return {
+        svgKey,
+        label,
+        tagPath,
+        x: Number.isFinite(x) ? x : null,
+        y: Number.isFinite(y) ? y : null,
+        width: Number.isFinite(width) && width > 0 ? width : null,
+      };
+    })
+    .filter((item) => item.svgKey);
+  if (!items.length) return null;
+  const rawLayout =
+    sourcePayload?.layout && typeof sourcePayload.layout === "object" && !Array.isArray(sourcePayload.layout)
+      ? sourcePayload.layout
+      : {};
+  const layout = {
+    mode: String(rawLayout.mode || "grid").trim().toLowerCase() || "grid",
+    columns: Number(rawLayout.columns),
+    cellW: Number(rawLayout.cellW || rawLayout.targetW || 0),
+    cellH: Number(rawLayout.cellH || 0),
+    gapX: Number(rawLayout.gapX || 0),
+    gapY: Number(rawLayout.gapY || 0),
+    startX: Number(rawLayout.startX),
+    startY: Number(rawLayout.startY),
+  };
+  return {
+    type: "add_svg_layout",
+    payload: { items, layout },
+  };
+}
+
+function extractChatAiAction(rawText = "") {
+  const text = String(rawText || "");
+  let action = null;
+  let cleaned = text;
+
+  const parseCandidate = (jsonLike) => {
+    try {
+      const parsed = JSON.parse(String(jsonLike || "").trim());
+      return normalizeChatAiAction(parsed);
+    } catch {
+      return null;
+    }
+  };
+
+  const markerMatch = cleaned.match(/(^|\n)\s*MESORA_ACTION\s*[:=]\s*(\{.*\})\s*$/m);
+  if (markerMatch?.[2]) {
+    const parsed = parseCandidate(markerMatch[2]);
+    if (parsed) {
+      action = parsed;
+      cleaned = cleaned.replace(markerMatch[0], "\n");
+    }
+  }
+
+  if (!action) {
+    const fencedMatch = cleaned.match(/```mesora_action\s*([\s\S]*?)```/i);
+    if (fencedMatch?.[1]) {
+      const parsed = parseCandidate(fencedMatch[1]);
+      if (parsed) {
+        action = parsed;
+        cleaned = cleaned.replace(fencedMatch[0], "\n");
+      }
+    }
+  }
+
+  return {
+    message: String(cleaned || "").trim(),
+    action,
+  };
+}
 
 const app = express();
 const SERVER_LOG_LIMIT = Math.max(
@@ -5579,6 +5691,90 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/weather/current", async (req, res) => {
+  try {
+    const locationRaw = String(req.query?.location || "").trim();
+    const unitRaw = String(req.query?.unit || "F").trim().toUpperCase();
+    const location = locationRaw || "Chicago, IL";
+    const unitLabel = unitRaw === "C" ? "C" : "F";
+    const tempUnit = unitLabel === "C" ? "celsius" : "fahrenheit";
+
+    const directCoords = (() => {
+      const m = String(location || "").match(
+        /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/
+      );
+      if (!m) return null;
+      const latN = Number(m[1]);
+      const lonN = Number(m[2]);
+      if (!Number.isFinite(latN) || !Number.isFinite(lonN)) return null;
+      return { latitude: latN, longitude: lonN, name: `${latN.toFixed(4)}, ${lonN.toFixed(4)}` };
+    })();
+
+    const tryGeocode = async (name) => {
+      const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
+        name
+      )}&count=5&language=en&format=json`;
+      const geoRes = await fetch(geoUrl);
+      if (!geoRes.ok) return null;
+      const geoData = await geoRes.json().catch(() => null);
+      const results = Array.isArray(geoData?.results) ? geoData.results : [];
+      if (!results.length) return null;
+      const preferred = results.find((r) => String(r?.country_code || "").trim().toUpperCase() === "US") || results[0];
+      return preferred || null;
+    };
+
+    let row = directCoords;
+    if (!row) {
+      row = await tryGeocode(location);
+    }
+    if (!row) {
+      const hasCountryHint = /\b(usa|u\.s\.a|united states|us)\b/i.test(location);
+      if (!hasCountryHint) {
+        row = await tryGeocode(`${location}, United States`);
+      }
+    }
+
+    const lat = Number(row?.latitude);
+    const lon = Number(row?.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return res.status(404).json({ error: "Weather location not found." });
+    }
+
+    const weatherUrl =
+      `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(
+        lat
+      )}&longitude=${encodeURIComponent(lon)}` +
+      `&current=temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m&temperature_unit=${tempUnit}&wind_speed_unit=mph`;
+    const weatherRes = await fetch(weatherUrl);
+    if (!weatherRes.ok) {
+      return res.status(502).json({ error: "Weather data request failed." });
+    }
+    const weatherData = await weatherRes.json().catch(() => null);
+    const cur = weatherData?.current || {};
+    const payload = {
+      location:
+        [
+          String(row?.name || "").trim(),
+          String(row?.admin1 || "").trim(),
+          String(row?.country_code || row?.country || "").trim(),
+        ]
+          .filter(Boolean)
+          .join(", ") || location,
+      temp: Number.isFinite(Number(cur?.temperature_2m)) ? Number(cur.temperature_2m) : null,
+      humidity: Number.isFinite(Number(cur?.relative_humidity_2m))
+        ? Number(cur.relative_humidity_2m)
+        : null,
+      windMph: Number.isFinite(Number(cur?.wind_speed_10m)) ? Number(cur.wind_speed_10m) : null,
+      weatherCode: Number.isFinite(Number(cur?.weather_code)) ? Number(cur.weather_code) : null,
+      unit: unitLabel,
+      fetchedAt: Date.now(),
+    };
+    return res.json(payload);
+  } catch (err) {
+    return res.status(500).json({ error: err?.message || "Weather fetch failed." });
+  }
+});
+
 app.get("/api/opc/config", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -6213,6 +6409,112 @@ app.get("/api/chat/messages", async (_req, res) => {
   }
 });
 
+let mesoraAiUserIdCache = 0;
+async function ensureMesoraAiUserId() {
+  if (Number.isFinite(Number(mesoraAiUserIdCache)) && Number(mesoraAiUserIdCache) > 0) {
+    return Number(mesoraAiUserIdCache);
+  }
+  const username = "mesora_ai";
+  const displayName = "Mesora AI";
+  const existing = await pool.query(
+    "SELECT id FROM users WHERE username = $1 LIMIT 1",
+    [username]
+  );
+  if (existing.rows?.length) {
+    const id = Number(existing.rows[0]?.id || 0);
+    if (id > 0) {
+      mesoraAiUserIdCache = id;
+      return id;
+    }
+  }
+  const secret = crypto.randomBytes(24).toString("hex");
+  const { hash, salt } = await createPasswordHash(secret);
+  const created = await pool.query(
+    `
+    INSERT INTO users (username, password_hash, password_salt, display_name, disabled)
+    VALUES ($1, $2, $3, $4, true)
+    ON CONFLICT (username) DO UPDATE SET
+      display_name = EXCLUDED.display_name
+    RETURNING id
+    `,
+    [username, hash, salt, displayName]
+  );
+  const id = Number(created.rows?.[0]?.id || 0);
+  if (!id) throw new Error("Failed to ensure Mesora AI user.");
+  mesoraAiUserIdCache = id;
+  return id;
+}
+
+async function getChatOllamaReply({ prompt = "", history = [], chatMode = "design" } = {}) {
+  const cleanedPrompt = String(prompt || "").trim();
+  if (!cleanedPrompt) throw new Error("AI prompt is required.");
+  const runtime = getActiveAiRuntime();
+  if (!runtime?.ollamaNativeBaseUrl) {
+    throw new Error("Ollama is not configured. Set active AI agent to Ollama in AI Config.");
+  }
+  const flourMillKnowledge = getFlourMillKnowledge();
+  const safeHistory = (Array.isArray(history) ? history : [])
+    .slice(-14)
+    .map((item) => {
+      const role = String(item?.role || "").trim().toLowerCase();
+      if (role !== "user" && role !== "assistant") return null;
+      const content = String(item?.content || "").slice(0, 2000).trim();
+      if (!content) return null;
+      return { role, content };
+    })
+    .filter(Boolean);
+  const mode = String(chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
+  const systemLive = [
+    "You are Mesora AI in LIVE mode for flour mill operations.",
+    "Prioritize concise, actionable answers for operators and controls technicians.",
+    "Use flour milling best practices and safety-first guidance.",
+    "If information is missing, list exactly what tags, alarms, or states are needed.",
+    "Do not emit canvas placement actions in live mode.",
+  ].join(" ");
+  const systemDesign = [
+    "You are Mesora AI in DESIGN mode for HMI/canvas editing and project setup.",
+    "Prioritize concise, actionable build guidance for screens, SVGs, layout, tags, and bindings.",
+    "If the user asks to add/place/layout SVG equipment on the canvas, include ONE action line at the end:",
+    "MESORA_ACTION={\"type\":\"add_svg_layout\",\"payload\":{\"items\":[{\"svgKey\":\"<svg name>\",\"label\":\"<optional>\",\"tagPath\":\"<optional>\",\"x\":<optional>,\"y\":<optional>,\"width\":<optional>}],\"layout\":{\"mode\":\"grid\",\"columns\":<optional>,\"startX\":<optional>,\"startY\":<optional>,\"cellW\":<optional>,\"cellH\":<optional>,\"gapX\":<optional>,\"gapY\":<optional>}}}",
+    "Only emit MESORA_ACTION for canvas SVG placement requests.",
+  ].join(" ");
+  const system = mode === "live" ? systemLive : systemDesign;
+  const promptInput = [
+    { role: "system", content: system },
+    ...(flourMillKnowledge
+      ? [{ role: "system", content: `Flour Mill Domain Knowledge:\n${flourMillKnowledge}` }]
+      : []),
+    ...safeHistory,
+    { role: "user", content: cleanedPrompt },
+  ];
+
+  markOllamaModelUsed(runtime, runtime.model);
+  const resp = await fetch(`${runtime.ollamaNativeBaseUrl}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: runtime.model,
+      prompt: promptInput
+        .map((m) => `${String(m.role || "user").toUpperCase()}: ${String(m.content || "")}`)
+        .join("\n\n"),
+      stream: false,
+    }),
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`Ollama error: ${resp.status}${errText ? ` ${errText}` : ""}`);
+  }
+  const data = await resp.json().catch(() => ({}));
+  const answer = String(data?.response || "").trim();
+  if (!answer) throw new Error("Ollama returned an empty response.");
+  const parsed = extractChatAiAction(answer);
+  const message = String(parsed?.message || "").trim();
+  return {
+    message: (message || answer).slice(0, 4000),
+    action: parsed?.action || null,
+  };
+}
+
 app.post("/api/chat/messages", async (req, res) => {
   try {
     const authUser = req.user || (await getUserFromRequest(req));
@@ -6220,7 +6522,7 @@ app.post("/api/chat/messages", async (req, res) => {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    const message = String(req.body?.message || "").trim();
+    const message = String(req.body?.message || req.body?.content || "").trim();
     if (!message) {
       res.status(400).json({ error: "Message is required." });
       return;
@@ -6242,12 +6544,52 @@ app.post("/api/chat/messages", async (req, res) => {
       res.status(500).json({ error: "Failed to create message." });
       return;
     }
-    res.status(201).json({
-      message: {
-        ...row,
-        author: String(authUser.display_name || authUser.username || `User ${authUser.id}`),
-      },
-    });
+    const postedMessage = {
+      ...row,
+      author: String(authUser.display_name || authUser.username || `User ${authUser.id}`),
+    };
+
+    const askAi = req.body?.askAi === true;
+    if (!askAi) {
+      res.status(201).json({ message: postedMessage });
+      return;
+    }
+
+    const aiPromptRaw = String(req.body?.aiPrompt || "").trim();
+    const normalizedPrompt = aiPromptRaw || message.replace(/^\/ai\b\s*/i, "").trim() || message;
+    const history = Array.isArray(req.body?.history) ? req.body.history : [];
+
+    let aiMessage = null;
+    let aiError = "";
+    try {
+      const chatModeRaw = String(req.body?.chatMode || "").trim().toLowerCase();
+      const chatMode = chatModeRaw === "live" ? "live" : "design";
+      const aiReply = await getChatOllamaReply({ prompt: normalizedPrompt, history, chatMode });
+      const answer = String(aiReply?.message || "").trim();
+      const aiUserId = await ensureMesoraAiUserId();
+      const aiInsert = await pool.query(
+        `
+        INSERT INTO support_chat_messages (user_id, message)
+        VALUES ($1, $2)
+        RETURNING id, user_id, message, created_at
+        `,
+        [aiUserId, answer]
+      );
+      const aiRow = aiInsert.rows?.[0] || null;
+      if (aiRow) {
+        aiMessage = {
+          ...aiRow,
+          author: "Mesora AI",
+        };
+      }
+      const aiAction = normalizeChatAiAction(aiReply?.action || null);
+      res.status(201).json({ message: postedMessage, aiMessage, aiError, aiAction });
+      return;
+    } catch (err) {
+      aiError = String(err?.message || "Failed to generate AI reply.");
+    }
+
+    res.status(201).json({ message: postedMessage, aiMessage, aiError, aiAction: null });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to send chat message." });
   }
@@ -10119,9 +10461,11 @@ async function handlePlcInsights(req, res) {
         : "L5X XML excerpt: not provided",
       formatPlcDebugContext(debugSnapshot),
     ].join("\n\n");
+    const flourMillKnowledge = getFlourMillKnowledge();
 
     const system = [
       "You are a PLC analysis assistant focused on Rockwell/Studio5000 L5X exports.",
+      "You are also a flour-mill process assistant and should answer with flour-milling domain best practices when relevant.",
       "Use only the provided PLC context and conversation.",
       "Do not invent tags, routines, or modules that are not in context.",
       "If data is missing, say exactly what is missing.",
@@ -10132,6 +10476,14 @@ async function handlePlcInsights(req, res) {
 
     const input = [
       { role: "system", content: system },
+      ...(flourMillKnowledge
+        ? [
+            {
+              role: "system",
+              content: `Flour Mill Domain Knowledge:\n${flourMillKnowledge}`,
+            },
+          ]
+        : []),
       { role: "system", content: plcContext },
       ...safeHistory,
       { role: "user", content: prompt },

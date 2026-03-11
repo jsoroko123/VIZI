@@ -400,6 +400,10 @@ export default function App() {
     userId: user?.id,
     isPageVisible,
     showTeamChat,
+    onAiAction: handleTeamChatAiAction,
+    canAskAi: true,
+    canApplyAiAction: !isLiveMode,
+    chatMode: isLiveMode ? "live" : "design",
   });
   const [liveActiveAlarmsDb, setLiveActiveAlarmsDb] = useState([]);
   const [liveActiveAlarmsDbLoaded, setLiveActiveAlarmsDbLoaded] = useState(false);
@@ -9140,6 +9144,118 @@ const CONTENT_FIT_HEADROOM = 0.94;
     };
   }
 
+  async function applyAiSvgLayoutPlan(payload) {
+    const source = payload && typeof payload === "object" ? payload : {};
+    const incomingItems = Array.isArray(source.items) ? source.items : [];
+    if (!incomingItems.length) {
+      throw new Error("No SVG items were provided.");
+    }
+    const layout = source.layout && typeof source.layout === "object" ? source.layout : {};
+    const normalizedItems = incomingItems
+      .map((row, idx) => {
+        const entry = row && typeof row === "object" ? row : {};
+        const rawSvg = String(
+          entry.svgKey || entry.svgName || entry.svg || entry.template || entry.key || entry.name || ""
+        ).trim();
+        const svgChoice = resolveSvgSelection(rawSvg);
+        if (!svgChoice) return null;
+        const label = String(entry.label || entry.title || `SVG ${idx + 1}`).trim() || `SVG ${idx + 1}`;
+        const tagPath = normalizeTagValue(entry.tagPath || entry.tag || "");
+        const x = Number(entry.x);
+        const y = Number(entry.y);
+        const width = Number(entry.width || entry.w || 0);
+        return {
+          svgKey: svgChoice.key,
+          label,
+          tagPath,
+          x: Number.isFinite(x) ? x : null,
+          y: Number.isFinite(y) ? y : null,
+          width: Number.isFinite(width) && width > 0 ? width : null,
+        };
+      })
+      .filter(Boolean);
+
+    if (!normalizedItems.length) {
+      throw new Error("No valid SVG names matched the library.");
+    }
+
+    const count = normalizedItems.length;
+    const defaultCellW = Math.max(50, Number(layout.cellW) || Number(layout.targetW) || 120);
+    const defaultCellH = Math.max(40, Number(layout.cellH) || Math.round(defaultCellW * 0.92));
+    const gapX = Math.max(0, Number(layout.gapX) || 24);
+    const gapY = Math.max(0, Number(layout.gapY) || 24);
+    const hasAbsolute = normalizedItems.some(
+      (item) => Number.isFinite(item?.x) && Number.isFinite(item?.y)
+    );
+    const columns = Math.max(
+      1,
+      Math.min(
+        count,
+        Number.isFinite(Number(layout.columns))
+          ? Math.floor(Number(layout.columns))
+          : Math.ceil(Math.sqrt(count))
+      )
+    );
+    const rows = Math.max(1, Math.ceil(count / columns));
+    const totalW = columns * defaultCellW + Math.max(0, columns - 1) * gapX;
+    const totalH = rows * defaultCellH + Math.max(0, rows - 1) * gapY;
+    const startX = Number.isFinite(Number(layout.startX))
+      ? Number(layout.startX)
+      : Math.max(8, Math.round((vbW - totalW) / 2));
+    const startY = Number.isFinite(Number(layout.startY))
+      ? Number(layout.startY)
+      : Math.max(8, Math.round((vbH - totalH) / 2));
+
+    const overlays = (
+      await Promise.all(
+        normalizedItems.map(async (item, idx) => {
+          const col = idx % columns;
+          const row = Math.floor(idx / columns);
+          const center = hasAbsolute && Number.isFinite(item.x) && Number.isFinite(item.y)
+            ? { x: Number(item.x), y: Number(item.y) }
+            : {
+                x: startX + col * (defaultCellW + gapX) + defaultCellW / 2,
+                y: startY + row * (defaultCellH + gapY) + defaultCellH / 2,
+              };
+          const targetWidth = Math.max(50, Number(item.width || defaultCellW));
+          const overlay = await buildOverlayFromKey(item.svgKey, center, targetWidth);
+          return {
+            ...overlay,
+            name: item.label || overlay.name,
+            tagPath: item.tagPath || overlay.tagPath || "",
+          };
+        })
+      )
+    ).filter(Boolean);
+
+    if (!overlays.length) {
+      throw new Error("No overlays could be created.");
+    }
+
+    pushHistory();
+    setSvgOverlays((prev) => [...prev, ...overlays]);
+    setSelectedIds([]);
+    setSelectedOverlayIds(overlays.map((o) => o.id));
+    setTool("select");
+    setDrawing(null);
+    setShowHUD(false);
+    scheduleProjectAutoSave();
+    return { count: overlays.length };
+  }
+
+  async function handleTeamChatAiAction(aiAction) {
+    const action = aiAction && typeof aiAction === "object" ? aiAction : null;
+    if (!action) return { ok: false, skipped: true };
+    const type = String(action.type || "").trim().toLowerCase();
+    const payload =
+      action.payload && typeof action.payload === "object" ? action.payload : action;
+    if (type === "add_svg_layout") {
+      const result = await applyAiSvgLayoutPlan(payload);
+      return { ok: true, type, result };
+    }
+    return { ok: false, skipped: true, type };
+  }
+
   async function applyAiTagSvgBatchPlan(payload) {
     const source = payload && typeof payload === "object" ? payload : {};
     const incomingTags = Array.isArray(source.tags) ? source.tags : [];
@@ -9434,6 +9550,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     textAlign: "start",
     widgetKind: "",
     widgetTitle: "",
+    widgetLocation: "",
     widgetMin: "0",
     widgetMax: "100",
     widgetDecimals: "0",
@@ -9482,6 +9599,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         textAlign: "start",
         widgetKind: "",
         widgetTitle: "",
+        widgetLocation: "",
         widgetMin: "0",
         widgetMax: "100",
         widgetDecimals: "0",
@@ -9573,6 +9691,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           textAlign: "start",
           widgetKind: String(w.kind || ""),
           widgetTitle: String(w.title || ""),
+          widgetLocation: String(w.location || ""),
           widgetMin: String(Number.isFinite(Number(w.min)) ? Number(w.min) : 0),
           widgetMax: String(Number.isFinite(Number(w.max)) ? Number(w.max) : 100),
           widgetDecimals: String(Number.isFinite(Number(w.decimals)) ? Number(w.decimals) : 0),
@@ -9638,6 +9757,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           textAlign: String(t.anchor ?? "start"),
           widgetKind: "",
           widgetTitle: "",
+          widgetLocation: "",
           widgetMin: "0",
           widgetMax: "100",
           widgetDecimals: "0",
@@ -9694,6 +9814,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       textAlign: "start",
       widgetKind: "",
       widgetTitle: "",
+      widgetLocation: "",
       widgetMin: "0",
       widgetMax: "100",
       widgetDecimals: "0",
@@ -9968,6 +10089,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!isSingle || singleKind !== "Widget" || !singleId) return;
     const source = next && typeof next === "object" ? next : {};
     const title = String(source.widgetTitle ?? "").trim();
+    const location = String(source.widgetLocation ?? "").trim();
     const unit = String(source.widgetUnit ?? "").trim();
     const min = Number(source.widgetMin);
     const max = Number(source.widgetMax);
@@ -10069,6 +10191,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widget: {
             ...current,
             title,
+            location,
             unit,
             min: Number.isFinite(min) ? min : Number(current.min ?? 0) || 0,
             max: Number.isFinite(max) ? max : Number(current.max ?? 100) || 100,
@@ -14106,8 +14229,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
           <div className="vizi-scroll" style={{ overflow: "auto", padding: "10px", display: "grid", gap: 10, alignContent: "start" }}>
             {liveEquipmentDrawerEntries.map(({ overlay, details }) => {
               const overlayId = String(overlay?.id || "");
-              const liveDataCollapsed =
-                liveEquipmentLiveDataCollapsedByOverlay[overlayId] !== false;
               return (
               <div
                 key={`live-equipment-drawer-card-${overlay.id}`}
@@ -14158,35 +14279,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: liveDataCollapsed ? 0 : 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
-                    <button
-                      onClick={() =>
-                        setLiveEquipmentLiveDataCollapsedByOverlay((prev) => ({
-                          ...(prev || {}),
-                          [overlayId]: !liveDataCollapsed,
-                        }))
-                      }
-                      style={{
-                        border: "1px solid var(--border)",
-                        background: "var(--bg-elev)",
-                        borderRadius: 6,
-                        minWidth: 22,
-                        height: 20,
-                        padding: "0 6px",
-                        cursor: "pointer",
-                        color: "var(--text)",
-                        fontSize: 11,
-                        fontWeight: 700,
-                        lineHeight: 1,
-                      }}
-                      title={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
-                      aria-label={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
-                    >
-                      {liveDataCollapsed ? "+" : "-"}
-                    </button>
                   </div>
-                  {!liveDataCollapsed && (Array.isArray(details) && details.length ? (
+                  {Array.isArray(details) && details.length ? (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 10, rowGap: 4, alignContent: "start", alignItems: "center", fontSize: 11 }}>
                       {details.map((row, idx) => (
                         <Fragment key={`live-equipment-drawer-row-${overlay?.id}-${idx}`}>
@@ -14199,7 +14295,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                       No live values found for this equipment.
                     </div>
-                  ))}
+                  )}
                 </div>
                 {renderLiveMotorControls(overlay, false)}
                 {renderLiveDiverterControls(overlay, false)}
@@ -14261,9 +14357,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   onScroll={onLiveEquipmentDockScroll}
                 >
                   {lane.entries.map(({ overlay, details }) => {
-                    const overlayId = String(overlay?.id || "");
-                    const liveDataCollapsed =
-                      liveEquipmentLiveDataCollapsedByOverlay[overlayId] !== false;
                     return (
                     <div
                       key={`live-equipment-card-${overlay.id}`}
@@ -14276,8 +14369,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                       style={{
                         scrollSnapAlign: "start",
                         flex: "0 0 min(300px, 68vw)",
-                        maxHeight: "34vh",
-                        overflow: "hidden",
+                        maxHeight: "none",
+                        overflow: "visible",
                         borderRadius: 10,
                         border: "1px solid var(--border)",
                         background: "var(--bg-elev)",
@@ -14310,35 +14403,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <button
                       onMouseDown={(e) => e.stopPropagation()}
-                      onClick={() => setLiveEquipmentDrawerOverlayId(String(overlay.id || ""))}
-                      style={{
-                        border: "1px solid var(--border)",
-                        background: "var(--bg)",
-                        borderRadius: 7,
-                        cursor: "pointer",
-                        color: "var(--text)",
-                        fontSize: 11,
-                        width: 26,
-                        height: 24,
-                        display: "grid",
-                        placeItems: "center",
-                        padding: 0,
-                      }}
-                      title="Expand to left drawer"
-                      aria-label="Expand to left drawer"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path
-                          d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </button>
-                    <button
-                      onMouseDown={(e) => e.stopPropagation()}
                       onClick={() => closeLiveEquipmentCard(overlay.id)}
                       style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, width: 26, height: 24, display: "grid", placeItems: "center", padding: 0, cursor: "pointer", color: "var(--text)", fontSize: 11 }}
                       aria-label="Close equipment info"
@@ -14351,38 +14415,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
-                <div style={{ minHeight: 0, overflow: "auto", display: "grid", gap: 6, alignContent: "start" }} className="vizi-scroll">
+                <div style={{ minHeight: 0, overflow: "visible", display: "grid", gap: 6, alignContent: "start" }}>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: liveDataCollapsed ? 0 : 5 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
                     <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
-                    <button
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={() =>
-                        setLiveEquipmentLiveDataCollapsedByOverlay((prev) => ({
-                          ...(prev || {}),
-                          [overlayId]: !liveDataCollapsed,
-                        }))
-                      }
-                      style={{
-                        border: "1px solid var(--border)",
-                        background: "var(--bg)",
-                        borderRadius: 6,
-                        minWidth: 20,
-                        height: 18,
-                        padding: "0 5px",
-                        cursor: "pointer",
-                        color: "var(--text)",
-                        fontSize: 10,
-                        fontWeight: 700,
-                        lineHeight: 1,
-                      }}
-                      title={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
-                      aria-label={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
-                    >
-                      {liveDataCollapsed ? "+" : "-"}
-                    </button>
                   </div>
-                  {!liveDataCollapsed && (details.length ? (
+                  {details.length ? (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 8, rowGap: 3, alignContent: "start", alignItems: "center", fontSize: 10 }}>
                       {details.map((row, idx) => (
                         <Fragment key={`live-equipment-row-${overlay.id}-${idx}`}>
@@ -14393,7 +14431,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     </div>
                   ) : (
                     <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
-                  ))}
+                  )}
                 </div>
                 </div>
                 <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
@@ -14411,8 +14449,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
           {liveEquipmentFloatingEntries.map(({ overlay, details }) => {
             const id = String(overlay?.id || "");
             const pos = liveEquipmentFloatingById[id];
-            const liveDataCollapsed =
-              liveEquipmentLiveDataCollapsedByOverlay[id] !== false;
             if (!id || !pos) return null;
             return (
               <div
@@ -14427,8 +14463,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   left: Number(pos.x) || 0,
                   top: Number(pos.y) || TOP_BAR_H + liveAlarmBarOffset + 10,
                   width: "min(300px, 68vw)",
-                  maxHeight: "34vh",
-                  overflow: "hidden",
+                  maxHeight: "none",
+                  overflow: "visible",
                   borderRadius: 10,
                   border: "1px solid var(--border)",
                   background: "var(--bg-elev)",
@@ -14492,35 +14528,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     </button>
                     <button
                       onMouseDown={(e) => e.stopPropagation()}
-                      onClick={() => setLiveEquipmentDrawerOverlayId(id)}
-                      style={{
-                        border: "1px solid var(--border)",
-                        background: "var(--bg)",
-                        borderRadius: 7,
-                        cursor: "pointer",
-                        color: "var(--text)",
-                        fontSize: 11,
-                        width: 26,
-                        height: 24,
-                        display: "grid",
-                        placeItems: "center",
-                        padding: 0,
-                      }}
-                      title="Expand to left drawer"
-                      aria-label="Expand to left drawer"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path
-                          d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </button>
-                    <button
-                      onMouseDown={(e) => e.stopPropagation()}
                       onClick={() => closeLiveEquipmentCard(id)}
                       style={{ border: "1px solid var(--border)", background: "var(--bg)", borderRadius: 7, width: 26, height: 24, display: "grid", placeItems: "center", padding: 0, cursor: "pointer", color: "var(--text)", fontSize: 11 }}
                       aria-label="Close equipment info"
@@ -14533,38 +14540,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
-                <div style={{ minHeight: 0, overflow: "auto", display: "grid", gap: 6, alignContent: "start" }} className="vizi-scroll">
+                <div style={{ minHeight: 0, overflow: "visible", display: "grid", gap: 6, alignContent: "start" }}>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: liveDataCollapsed ? 0 : 5 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
                     <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
-                    <button
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={() =>
-                        setLiveEquipmentLiveDataCollapsedByOverlay((prev) => ({
-                          ...(prev || {}),
-                          [id]: !liveDataCollapsed,
-                        }))
-                      }
-                      style={{
-                        border: "1px solid var(--border)",
-                        background: "var(--bg)",
-                        borderRadius: 6,
-                        minWidth: 20,
-                        height: 18,
-                        padding: "0 5px",
-                        cursor: "pointer",
-                        color: "var(--text)",
-                        fontSize: 10,
-                        fontWeight: 700,
-                        lineHeight: 1,
-                      }}
-                      title={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
-                      aria-label={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
-                    >
-                      {liveDataCollapsed ? "+" : "-"}
-                    </button>
                   </div>
-                  {!liveDataCollapsed && (details.length ? (
+                  {details.length ? (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 8, rowGap: 3, alignContent: "start", alignItems: "center", fontSize: 10 }}>
                       {details.map((row, idx) => (
                         <Fragment key={`live-equipment-floating-row-${overlay.id}-${idx}`}>
@@ -14575,7 +14556,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     </div>
                   ) : (
                     <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
-                  ))}
+                  )}
                 </div>
                 </div>
                 <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
@@ -17201,8 +17182,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
-            transition: "width 180ms ease, left 180ms ease",
-            animation: "drawer-slide-in-left 220ms ease-out",
+            transition: "width 280ms cubic-bezier(0.22, 1, 0.36, 1), left 280ms cubic-bezier(0.22, 1, 0.36, 1)",
+            animation: "drawer-slide-in-left 280ms cubic-bezier(0.22, 1, 0.36, 1)",
           }}
         >
           {null}
@@ -18774,18 +18755,25 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 background: "color-mix(in srgb, var(--bg-elev) 97%, #0b1220 3%)",
               }}
             >
-              {taskbarScreenGroups.map((group, groupIndex) => (
+              {taskbarScreenGroups.map((group, groupIndex) => {
+                const groupTint = [
+                  "#3b82f6",
+                  "#14b8a6",
+                  "#f59e0b",
+                  "#22c55e",
+                  "#f43f5e",
+                  "#06b6d4",
+                ][groupIndex % 6];
+                return (
                 <div
                   key={`taskbar-group-${group.groupName}-${groupIndex}`}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
                     gap: 8,
-                    borderLeft:
-                      groupIndex === 0
-                        ? "none"
-                        : "1px solid color-mix(in srgb, var(--border) 76%, transparent)",
-                    paddingLeft: groupIndex === 0 ? 0 : 10,
+                    padding: "5px 8px",
+                    borderRadius: 9,
+                    background: `color-mix(in srgb, var(--bg) 93%, ${groupTint} 7%)`,
                   }}
                 >
                   <span
@@ -18843,7 +18831,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     );
                   })}
                 </div>
-              ))}
+              );
+              })}
             </div>
           </div>
           <div
@@ -19024,6 +19013,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         showTeamChat={showTeamChat}
         setShowTeamChat={setShowTeamChat}
         isLiveMode={isLiveMode}
+        canAskAi={true}
         isLiveMobile={isLiveMobile}
         topOffset={TOP_BAR_H + liveAlarmBarOffset}
         leftOffset={projectDrawerInsetPx}

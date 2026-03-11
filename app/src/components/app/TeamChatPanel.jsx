@@ -2,6 +2,7 @@ export default function TeamChatPanel({
   showTeamChat,
   setShowTeamChat,
   isLiveMode,
+  canAskAi = false,
   isLiveMobile,
   topOffset,
   leftOffset,
@@ -151,7 +152,13 @@ export default function TeamChatPanel({
                   void onSend();
                 }
               }}
-              placeholder="Type message..."
+              placeholder={
+                canAskAi
+                  ? isLiveMode
+                    ? "Ask milling ops... (use /ai)"
+                    : "Ask design/build questions... (use /ai)"
+                  : "Type message..."
+              }
               rows={2}
               style={{
                 resize: "none",
@@ -167,6 +174,27 @@ export default function TeamChatPanel({
               }}
             />
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              {canAskAi ? (
+                <button
+                  onClick={() => void onSend({ askAi: true })}
+                  disabled={teamChatSending || !String(teamChatDraft || "").trim()}
+                  style={{
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    borderRadius: 8,
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: teamChatSending ? "wait" : "pointer",
+                    opacity: teamChatSending || !String(teamChatDraft || "").trim() ? 0.55 : 1,
+                    marginRight: 6,
+                  }}
+                  title="Ask Mesora AI using Ollama"
+                >
+                  Ask AI
+                </button>
+              ) : null}
               <button
                 onClick={() => void onSend()}
                 disabled={teamChatSending || !String(teamChatDraft || "").trim()}

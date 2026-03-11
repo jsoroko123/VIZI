@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { listChatMessages, postChatMessage } from "../api/chatApi";
+import { listChatMessages, postChatMessageWithAi } from "../api/chatApi";
 import { toastError } from "../utils/toast";
 
-export function useTeamChat({ userId, isPageVisible, showTeamChat }) {
+export function useTeamChat({
+  userId,
+  isPageVisible,
+  showTeamChat,
+  onAiAction,
+  canAskAi = true,
+  canApplyAiAction = true,
+  chatMode = "design",
+}) {
   const [teamChatMessages, setTeamChatMessages] = useState([]);
   const [teamChatDraft, setTeamChatDraft] = useState("");
   const [teamChatLoading, setTeamChatLoading] = useState(false);
@@ -10,6 +18,11 @@ export function useTeamChat({ userId, isPageVisible, showTeamChat }) {
   const [teamChatUnreadCount, setTeamChatUnreadCount] = useState(0);
   const [teamChatLastSeenId, setTeamChatLastSeenId] = useState(0);
   const teamChatBodyRef = useRef(null);
+  const isNearBottom = (el, threshold = 40) => {
+    if (!el) return true;
+    const distance = Number(el.scrollHeight || 0) - Number(el.scrollTop || 0) - Number(el.clientHeight || 0);
+    return distance <= threshold;
+  };
 
   const loadTeamChatMessages = async ({ silent = false } = {}) => {
     if (!silent) setTeamChatLoading(true);
@@ -26,17 +39,55 @@ export function useTeamChat({ userId, isPageVisible, showTeamChat }) {
     }
   };
 
-  const sendTeamChatMessage = async () => {
+  const toAiHistory = (rows) =>
+    (Array.isArray(rows) ? rows : [])
+      .slice(-16)
+      .map((row) => {
+        const author = String(row?.author || "").trim().toLowerCase();
+        const role = author === "mesora ai" ? "assistant" : "user";
+        const content = String(row?.message || "").trim();
+        if (!content) return null;
+        return { role, content };
+      })
+      .filter(Boolean);
+
+  const sendTeamChatMessage = async (options = {}) => {
     const msg = String(teamChatDraft || "").trim();
     if (!msg || teamChatSending) return;
+    const forceAi = options?.askAi === true;
+    const aiCommand = /^\/ai\b/i.test(msg);
+    const askAi = canAskAi && (forceAi || aiCommand);
+    const aiPrompt = askAi
+      ? String(msg.replace(/^\/ai\b/i, "").trim() || msg).trim()
+      : "";
     setTeamChatSending(true);
     try {
-      await postChatMessage(msg);
+      const history = toAiHistory(teamChatMessages);
+      const data = await postChatMessageWithAi(msg, {
+        askAi,
+        aiPrompt,
+        history,
+        chatMode,
+      });
+      if (askAi && canApplyAiAction && data?.aiAction && typeof onAiAction === "function") {
+        try {
+          await onAiAction(data.aiAction);
+        } catch (err) {
+          toastError(err?.message || "Failed to apply AI canvas action.");
+        }
+      }
+      if (askAi && String(data?.aiError || "").trim()) {
+        toastError(String(data.aiError));
+      }
       setTeamChatDraft("");
       const next = await loadTeamChatMessages({ silent: true });
       const latestId = next.reduce((maxId, row) => Math.max(maxId, Number(row?.id) || 0), 0);
       if (latestId > 0) setTeamChatLastSeenId((prev) => Math.max(prev, latestId));
       setTeamChatUnreadCount(0);
+      window.requestAnimationFrame(() => {
+        const el = teamChatBodyRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
     } catch (err) {
       toastError(err?.message || "Failed to send message.");
     } finally {
@@ -82,8 +133,17 @@ export function useTeamChat({ userId, isPageVisible, showTeamChat }) {
     if (latestId > 0) setTeamChatLastSeenId((prev) => Math.max(prev, latestId));
     setTeamChatUnreadCount(0);
     const el = teamChatBodyRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (isNearBottom(el)) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [showTeamChat, teamChatMessages]);
+
+  useEffect(() => {
+    if (!showTeamChat) return;
+    const el = teamChatBodyRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [showTeamChat]);
 
   return {
     teamChatMessages,

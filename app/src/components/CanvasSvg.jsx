@@ -391,9 +391,31 @@ export default function CanvasSvg({
   const [widgetWriteBusyByOverlay, setWidgetWriteBusyByOverlay] = useState({});
   const [widgetWriteErrorByOverlay, setWidgetWriteErrorByOverlay] = useState({});
   const [widgetPressByOverlay, setWidgetPressByOverlay] = useState({});
+  const [weatherByOverlayId, setWeatherByOverlayId] = useState({});
   const widgetPulseTimersRef = useRef(new Map());
+  const weatherCacheRef = useRef(new Map());
   const trendLiveKeyListRef = useRef([]);
   const trendTagCandidateCacheRef = useRef(new Map());
+
+  const decodeWeatherCode = (codeRaw) => {
+    const code = Number(codeRaw);
+    if (!Number.isFinite(code)) return "";
+    if (code === 0) return "Clear";
+    if (code === 1) return "Mostly Clear";
+    if (code === 2) return "Partly Cloudy";
+    if (code === 3) return "Overcast";
+    if (code === 45 || code === 48) return "Fog";
+    if (code === 51 || code === 53 || code === 55) return "Drizzle";
+    if (code === 56 || code === 57) return "Freezing Drizzle";
+    if (code === 61 || code === 63 || code === 65) return "Rain";
+    if (code === 66 || code === 67) return "Freezing Rain";
+    if (code === 71 || code === 73 || code === 75 || code === 77) return "Snow";
+    if (code === 80 || code === 81 || code === 82) return "Rain Showers";
+    if (code === 85 || code === 86) return "Snow Showers";
+    if (code === 95) return "Thunderstorm";
+    if (code === 96 || code === 99) return "Thunderstorm Hail";
+    return "Unknown";
+  };
 
   const setWidgetPressed = (overlayId, pressed) => {
     const key = String(overlayId || "").trim();
@@ -1047,6 +1069,127 @@ export default function CanvasSvg({
     };
   }, [svgOverlays, liveClickable]);
 
+  useEffect(() => {
+    let alive = true;
+    const weatherOverlays = (Array.isArray(svgOverlays) ? svgOverlays : []).filter((o) => {
+      const kind = String(o?.widget?.kind || "").trim().toLowerCase();
+      return kind === "weather";
+    });
+    if (!weatherOverlays.length) {
+      setWeatherByOverlayId({});
+      return () => {
+        alive = false;
+      };
+    }
+
+    const applyCached = () => {
+      const next = {};
+      weatherOverlays.forEach((overlay) => {
+        const overlayId = String(overlay?.id || "").trim();
+        if (!overlayId) return;
+        const title = String(overlay?.widget?.title || "").trim();
+        const location = String(overlay?.widget?.location || title || "").trim();
+        if (!location) return;
+        const unitRaw = String(overlay?.widget?.unit || "F").trim().toUpperCase();
+        const unit = unitRaw === "C" ? "C" : "F";
+        const cacheKey = `${location.toLowerCase()}|${unit}`;
+        const cached = weatherCacheRef.current.get(cacheKey);
+        if (cached && Number.isFinite(Number(cached.expiresAt)) && cached.expiresAt > Date.now()) {
+          next[overlayId] = cached.payload;
+        }
+      });
+      if (Object.keys(next).length) {
+        setWeatherByOverlayId((prev) => ({ ...prev, ...next }));
+      }
+    };
+    applyCached();
+
+    const fetchOne = async (overlay) => {
+      const overlayId = String(overlay?.id || "").trim();
+      if (!overlayId) return;
+      const title = String(overlay?.widget?.title || "").trim();
+      const locationRaw = String(overlay?.widget?.location || title || "Chicago, IL").trim();
+      const unitRaw = String(overlay?.widget?.unit || "F").trim().toUpperCase();
+      const unit = unitRaw === "C" ? "celsius" : "fahrenheit";
+      const unitLabel = unitRaw === "C" ? "C" : "F";
+      const cacheKey = `${locationRaw.toLowerCase()}|${unitLabel}`;
+      const cached = weatherCacheRef.current.get(cacheKey);
+      if (cached && Number.isFinite(Number(cached.expiresAt)) && cached.expiresAt > Date.now()) {
+        if (alive) {
+          setWeatherByOverlayId((prev) => ({ ...prev, [overlayId]: cached.payload }));
+        }
+        return;
+      }
+      try {
+        const apiUrl = `/api/weather/current?location=${encodeURIComponent(locationRaw)}&unit=${encodeURIComponent(unitLabel)}`;
+        const weatherRes = await fetch(apiUrl);
+        if (!weatherRes.ok) {
+          const errData = await weatherRes.json().catch(() => null);
+          if (alive) {
+            setWeatherByOverlayId((prev) => ({
+              ...prev,
+              [overlayId]: {
+                location: locationRaw,
+                temp: null,
+                humidity: null,
+                windMph: null,
+                condition: String(errData?.error || "Weather unavailable"),
+                unit: unitLabel,
+                fetchedAt: Date.now(),
+              },
+            }));
+          }
+          return;
+        }
+        const cur = await weatherRes.json().catch(() => null);
+        const temp = Number(cur?.temperature_2m);
+        const humidity = Number(cur?.relative_humidity_2m);
+        const windMph = Number(cur?.wind_speed_10m);
+        const payload = {
+          location: String(cur?.location || locationRaw).trim() || locationRaw,
+          temp: Number.isFinite(Number(cur?.temp)) ? Number(cur.temp) : Number.isFinite(temp) ? temp : null,
+          humidity: Number.isFinite(Number(cur?.humidity)) ? Number(cur.humidity) : Number.isFinite(humidity) ? humidity : null,
+          windMph: Number.isFinite(Number(cur?.windMph)) ? Number(cur.windMph) : Number.isFinite(windMph) ? windMph : null,
+          condition: decodeWeatherCode(cur?.weatherCode ?? cur?.weather_code),
+          unit: String(cur?.unit || unitLabel).trim() || unitLabel,
+          fetchedAt: Number.isFinite(Number(cur?.fetchedAt)) ? Number(cur.fetchedAt) : Date.now(),
+        };
+        weatherCacheRef.current.set(cacheKey, {
+          payload,
+          expiresAt: Date.now() + 5 * 60 * 1000,
+        });
+        if (!alive) return;
+        setWeatherByOverlayId((prev) => ({ ...prev, [overlayId]: payload }));
+      } catch {
+        if (!alive) return;
+        setWeatherByOverlayId((prev) => ({
+          ...prev,
+          [overlayId]: {
+            location: locationRaw,
+            temp: null,
+            humidity: null,
+            windMph: null,
+            condition: "Weather unavailable",
+            unit: unitLabel,
+            fetchedAt: Date.now(),
+          },
+        }));
+      }
+    };
+
+    weatherOverlays.forEach((overlay) => {
+      fetchOne(overlay);
+    });
+    const id = setInterval(
+      () => weatherOverlays.forEach((overlay) => fetchOne(overlay)),
+      typeof document !== "undefined" && document.hidden ? 300000 : 120000
+    );
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [svgOverlays]);
+
   const renderWidgetOverlay = (overlay) => {
     if (!overlay?.widget) return null;
     const kind = String(overlay?.widget?.kind || "").trim();
@@ -1369,6 +1512,66 @@ export default function CanvasSvg({
           {!dense ? (
             <text x={x + w - pad} y={y + h - 10} fill={subdued} fontSize={scaledFont(9, 7, 16)} fontFamily="system-ui" textAnchor="end">
               {maxCfg.toFixed(decimals)}
+            </text>
+          ) : null}
+        </g>
+      );
+    }
+
+    if (kind === "weather") {
+      const weatherLive = weatherByOverlayId?.[overlayId] || null;
+      const tempValue = Number.isFinite(Number(weatherLive?.temp)) ? Number(weatherLive.temp) : displayN;
+      const displayTemp =
+        tempValue != null
+          ? Number(tempValue).toFixed(Math.max(0, Number.isFinite(decimals) ? decimals : 0))
+          : rawVal !== ""
+          ? String(rawVal)
+          : "--";
+      const unitText = String(weatherLive?.unit || unit || "F").trim() || "F";
+      const conditionText = String(weatherLive?.condition || cfg?.condition || cfg?.subtitle || "Partly Cloudy").trim() || "Partly Cloudy";
+      const locationText = String(weatherLive?.location || cfg?.location || title || "Local").trim() || "Local";
+      const humidityText = Number.isFinite(Number(weatherLive?.humidity))
+        ? `Humidity ${Math.round(Number(weatherLive.humidity))}%`
+        : "";
+      const windText = Number.isFinite(Number(weatherLive?.windMph))
+        ? `Wind ${Math.round(Number(weatherLive.windMph))} mph`
+        : "";
+      const cloudColor = isDarkTheme ? "#cbd5e1" : "#94a3b8";
+      const sunColor = "#fbbf24";
+      return (
+        <g pointerEvents="none">
+          <rect x={x + 1} y={y + 1} width={w - 2} height={h - 2} rx={12} fill={isDarkTheme ? "#0f172a" : "#f8fafc"} stroke="var(--border)" />
+          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
+            {locationText}
+          </text>
+          <circle cx={x + pad + 40} cy={y + headH + 42} r={20} fill={sunColor} />
+          <path
+            d={`M ${x + pad + 66} ${y + headH + 66}
+                h ${Math.max(70, w * 0.42)}
+                a 18 18 0 0 0 0 -36
+                a 24 24 0 0 0 -44 -8
+                a 16 16 0 0 0 -26 14
+                a 14 14 0 0 0 -16 30 z`}
+            fill={cloudColor}
+            opacity={0.95}
+          />
+          <text x={x + pad} y={y + h - 30} fill={valueColor} fontSize={scaledFont(30, 16, 42)} fontFamily="system-ui" fontWeight={800}>
+            {displayTemp}
+          </text>
+          <text x={x + pad + 72} y={y + h - 34} fill={accent} fontSize={scaledFont(14, 10, 24)} fontFamily="system-ui" fontWeight={700}>
+            {unitText}
+          </text>
+          <text x={x + pad} y={y + h - 10} fill={subdued} fontSize={scaledFont(11, 9, 18)} fontFamily="system-ui" fontWeight={600}>
+            {conditionText}
+          </text>
+          {humidityText ? (
+            <text x={x + w - pad} y={y + h - 24} fill={subdued} fontSize={scaledFont(10, 8, 16)} fontFamily="system-ui" textAnchor="end">
+              {humidityText}
+            </text>
+          ) : null}
+          {windText ? (
+            <text x={x + w - pad} y={y + h - 10} fill={subdued} fontSize={scaledFont(10, 8, 16)} fontFamily="system-ui" textAnchor="end">
+              {windText}
             </text>
           ) : null}
         </g>
@@ -3225,17 +3428,54 @@ export default function CanvasSvg({
           getDiverterBranchAtLocalPoint(localX, localY, bb);
         if (branch !== "entry") continue;
         const oppositePt = idx === 0 ? s.points[s.points.length - 1] : s.points[0];
-        const upstreamActiveColor = normalizeActiveLineColor(
-          (oppositePt
-            ? getOverlayColorAtPoint(oppositePt, {
-              ...options,
-              excludeOverlayId: overlay?.id,
-              }) || getOverlayColorNearPoint(oppositePt, 42, {
-                ...options,
-                excludeOverlayId: overlay?.id,
-              })
-            : "")
-        );
+        let upstreamActiveColor = "";
+        if (oppositePt && Array.isArray(svgOverlays) && svgOverlays.length) {
+          let bestUpstreamDist = Number.POSITIVE_INFINITY;
+          for (const sourceOverlay of svgOverlays) {
+            const sourceId = String(sourceOverlay?.id || "");
+            if (sourceId && sourceId === String(overlay?.id || "")) continue;
+            const sourceType = String(sourceOverlay?.eType || sourceOverlay?.name || "")
+              .trim()
+              .toLowerCase();
+            const sourceBb = overlayLocalBBox(sourceOverlay.id);
+            if (!sourceBb) continue;
+            const sourceWr = overlayWorldRect(sourceOverlay, sourceBb);
+            const sourceDist = distancePointToRect(oppositePt, sourceWr);
+            if (sourceDist > 42 || sourceDist >= bestUpstreamDist) continue;
+            let sourceColor = "";
+            if (sourceType.includes("diverter")) {
+              // Allow diverter->diverter chains by propagating only from the active output branch.
+              const sourceIncoming = normalizeActiveLineColor(
+                getDirectEntryActiveColorForDiverter(sourceOverlay, {
+                  excludedOverlayIds: [...excludedOverlayIds, sourceId],
+                })
+              );
+              if (!sourceIncoming) continue;
+              const outputBranch =
+                getDiverterOutputBranchAtWorldPoint(sourceOverlay, oppositePt, sourceBb, 42) ||
+                (() => {
+                  const sx2 = overlayScaleX(sourceOverlay);
+                  const sy2 = overlayScaleY(sourceOverlay);
+                  const lx = (Number(oppositePt?.x) - Number(sourceOverlay?.tx || 0)) / Math.max(0.0001, sx2);
+                  const ly = (Number(oppositePt?.y) - Number(sourceOverlay?.ty || 0)) / Math.max(0.0001, sy2);
+                  const localBranch = getDiverterBranchAtLocalPoint(lx, ly, sourceBb);
+                  return localBranch === "straight" || localBranch === "divert" ? localBranch : "";
+                })();
+              const activeBranch = getEffectiveDiverterState(sourceOverlay);
+              if (!(outputBranch && activeBranch && outputBranch === activeBranch)) continue;
+              sourceColor = sourceIncoming;
+            } else {
+              sourceColor = normalizeActiveLineColor(
+                getRouteColorForOverlay(sourceOverlay) ||
+                getTagColor(sourceOverlay?.tagPath) ||
+                getRouteStrokeColorForOverlay(sourceOverlay)
+              );
+            }
+            if (!sourceColor) continue;
+            bestUpstreamDist = sourceDist;
+            upstreamActiveColor = sourceColor;
+          }
+        }
         const c = normalizeActiveLineColor(
           upstreamActiveColor ||
           getTagColor(s?.tagPath) ||
@@ -3503,6 +3743,7 @@ export default function CanvasSvg({
   const getPolylineDisplayedColor = (shape, options = {}) => {
     if (shape?.type !== "polyline" || !Array.isArray(shape.points) || !shape.points.length) return "";
     const includeThemeDefault = options?.includeThemeDefault !== false;
+    const activeOnly = options?.includeThemeDefault === false;
     const startPoint = shape.points[0];
     const endPoint = shape.points[shape.points.length - 1];
     const startOutputMatch = getDiverterOutputMatchAtPoint(startPoint, options);
@@ -3516,10 +3757,12 @@ export default function CanvasSvg({
       startPoint ? getLiveStartActivationColor(startPoint, options) : ""
     );
     if (touchColor) return touchColor;
-    const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
-    if (dynamicColor) return dynamicColor;
-    const explicitStroke = normalizeActiveLineColor(shape?.stroke);
-    if (explicitStroke) return explicitStroke;
+    if (!activeOnly) {
+      const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
+      if (dynamicColor) return dynamicColor;
+      const explicitStroke = normalizeActiveLineColor(shape?.stroke);
+      if (explicitStroke) return explicitStroke;
+    }
     return includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "";
   };
 
@@ -4831,7 +5074,8 @@ export default function CanvasSvg({
         right: 0,
         bottom: 0,
         userSelect: "none",
-        transition: "left 180ms ease",
+        transition: "left 280ms cubic-bezier(0.22, 1, 0.36, 1)",
+        willChange: "left",
       }}
     >
       <div

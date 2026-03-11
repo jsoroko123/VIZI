@@ -50,3 +50,27 @@ Microsoft OAuth is already supported by the backend and login page.
 4. Restart `ai-server`.
 
 The login page shows **Sign in with Microsoft** automatically when OAuth is configured.
+
+## Ollama Flour-Mill Model
+Build a custom Ollama model with embedded flour-milling knowledge:
+
+1. Ensure Ollama is running and base model is available (default: `llama3.1`).
+2. Run from `ai-server/`:
+   - `npm run ollama:build:flour`
+3. This creates model `mesora-flour-mill` and writes:
+   - `ollama/Modelfile.flour-mill`
+
+Optional env overrides:
+- `OLLAMA_BASE_MODEL` (default `llama3.1`)
+- `OLLAMA_TARGET_MODEL` (default `mesora-flour-mill`)
+
+Then set AI Config active agent model to `mesora-flour-mill`.
+
+## Team Chat Canvas SVG Actions (Ollama)
+Mesora chat can now emit a structured SVG placement action for the canvas.
+
+- Ask in Team Chat with AI enabled, for example:
+  - `Add 6 diverters across the top in 3 columns`
+  - `Place two blowers at x 200 y 180 and x 420 y 180`
+- The model returns a hidden action payload (`add_svg_layout`) and the app places SVGs automatically.
+- SVG names must match library names/keys in `/api/svg/catalog`.

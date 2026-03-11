@@ -558,6 +558,7 @@ export default function PropertiesPanel({
   const textFillVal = hudFields?.fill ?? "#808080"; // ✅ text uses fill
   const widgetKindVal = String(hudFields?.widgetKind || "");
   const widgetTitleVal = String(hudFields?.widgetTitle || "");
+  const widgetLocationVal = String(hudFields?.widgetLocation || "");
   const widgetMinVal = String(hudFields?.widgetMin ?? "0");
   const widgetMaxVal = String(hudFields?.widgetMax ?? "100");
   const widgetDecimalsVal = String(hudFields?.widgetDecimals ?? "0");
@@ -1062,6 +1063,15 @@ export default function PropertiesPanel({
                   onBlur={() => applySingleWidgetSettings?.(hudFields)}
                   placeholder="Optional title"
                 />
+                {widgetKindVal === "weather" && (
+                  <Row
+                    label="Location"
+                    value={widgetLocationVal}
+                    onChange={(v) => setHudFields((p) => ({ ...p, widgetLocation: v }))}
+                    onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                    placeholder="City, ST (e.g. Chicago, IL)"
+                  />
+                )}
                 {(widgetKindVal === "gauge" || widgetKindVal === "kpi" || widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart") && (
                   <>
                     {isTrendChartKind ? (
