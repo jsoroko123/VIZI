@@ -21,6 +21,30 @@ function levelColor(level) {
   return "var(--text-muted)";
 }
 
+function tryParseJson(value) {
+  if (value == null) return null;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text) return null;
+  if (!(text.startsWith("{") || text.startsWith("["))) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function formatJsonBlock(value) {
+  const parsed = tryParseJson(value);
+  if (!parsed) return "";
+  try {
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return "";
+  }
+}
+
 export default function LoggerPanel({ embedded = false, canEdit = false }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -241,6 +265,11 @@ export default function LoggerPanel({ embedded = false, canEdit = false }) {
         {hasRows ? (
           <div style={{ display: "grid" }}>
             {list.map((row, idx) => (
+              (() => {
+                const messageText = String(row?.message || "");
+                const formattedMessageJson = formatJsonBlock(messageText);
+                const formattedMetaJson = formatJsonBlock(row?.meta);
+                return (
               <div
                 key={String(row?.id || `log-${idx}`)}
                 style={{
@@ -258,25 +287,47 @@ export default function LoggerPanel({ embedded = false, canEdit = false }) {
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{String(row?.source || "server")}</span>
                 </div>
                 <div style={{ color: "var(--text)", fontWeight: 600, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                  {String(row?.message || "")}
+                  {messageText}
                 </div>
+                {formattedMessageJson ? (
+                  <pre
+                    style={{
+                      margin: 0,
+                      padding: 8,
+                      borderRadius: 8,
+                      background: "color-mix(in srgb, var(--bg-soft) 90%, transparent)",
+                      border: "1px solid var(--border)",
+                      color: "var(--text)",
+                      fontSize: 11,
+                      lineHeight: 1.4,
+                      overflow: "auto",
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                    }}
+                  >
+                    {formattedMessageJson}
+                  </pre>
+                ) : null}
                 {row?.meta && Object.keys(row.meta || {}).length ? (
                   <pre
                     style={{
                       margin: 0,
                       padding: 8,
                       borderRadius: 8,
-                      background: "color-mix(in srgb, var(--bg-soft) 88%, transparent)",
+                      background: "color-mix(in srgb, var(--bg-soft) 90%, transparent)",
                       border: "1px solid var(--border)",
-                      color: "var(--text-muted)",
+                      color: "var(--text)",
                       fontSize: 11,
+                      lineHeight: 1.4,
                       overflow: "auto",
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
                     }}
                   >
-                    {JSON.stringify(row.meta, null, 2)}
+                    {formattedMetaJson || String(row?.meta || "")}
                   </pre>
                 ) : null}
               </div>
+                );
+              })()
             ))}
           </div>
         ) : (

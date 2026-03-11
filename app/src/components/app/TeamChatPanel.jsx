@@ -22,6 +22,12 @@ export default function TeamChatPanel({
   liveUsers = [],
 }) {
   const liveCount = Array.isArray(liveUsers) ? liveUsers.length : 0;
+  const resolvedRight = isLiveMode && isLiveMobile
+    ? 0
+    : (rightOffset ?? (isLiveMode ? 8 : (desktopRightPx ?? 20)));
+  const resolvedBottom = isLiveMode && isLiveMobile
+    ? liveBottomCarouselHeightPx + 8
+    : (Number(bottomOffset) > 0 ? Number(bottomOffset) : 16);
 
   return (
     <>
@@ -29,10 +35,10 @@ export default function TeamChatPanel({
         <div
           style={{
             position: "fixed",
-            top: isLiveMode && isLiveMobile ? topOffset : desktopTopPx,
+            top: isLiveMode && isLiveMobile ? topOffset : undefined,
             left: isLiveMode && isLiveMobile ? leftOffset : undefined,
-            right: isLiveMode && isLiveMobile ? 0 : rightOffset ?? (isLiveMode ? 8 : desktopRightPx),
-            bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 8 : bottomOffset,
+            right: resolvedRight,
+            bottom: resolvedBottom,
             width: isLiveMode && isLiveMobile ? "auto" : 360,
             maxWidth: isLiveMode && isLiveMobile ? "none" : "calc(100vw - 24px)",
             height: isLiveMode && isLiveMobile ? "auto" : 420,
@@ -183,14 +189,14 @@ export default function TeamChatPanel({
         </div>
       ) : null}
 
-      {!(isLiveMode && isLiveMobile) ? (
+      {!(isLiveMode && isLiveMobile) && !showTeamChat ? (
         <button
           title="Team Chat"
           onClick={() => setShowTeamChat((v) => !v)}
           style={{
             position: "fixed",
-            right: rightOffset ?? (isLiveMode ? 8 : 20),
-            bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 10 : 16,
+            right: resolvedRight,
+            bottom: resolvedBottom,
             width: 44,
             height: 44,
             zIndex: 216,

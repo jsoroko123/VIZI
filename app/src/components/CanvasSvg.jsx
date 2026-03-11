@@ -3124,6 +3124,44 @@ export default function CanvasSvg({
     };
   };
 
+  const getDirectEntryActiveColorForDiverter = (overlay, options = {}) => {
+    if (!overlay || !Array.isArray(shapes) || !shapes.length) return "";
+    const bb = overlay?.bbox || overlayLocalBBox?.(overlay.id);
+    if (!bb) return "";
+    const wr = overlayWorldRect(overlay, bb);
+    const threshold = 28;
+    const excludedOverlayIds = new Set(
+      [
+        options?.excludeOverlayId,
+        ...(Array.isArray(options?.excludedOverlayIds) ? options.excludedOverlayIds : []),
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    );
+    let bestColor = "";
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const s of shapes) {
+      if (s?.type !== "polyline" || !Array.isArray(s.points) || s.points.length < 2) continue;
+      const endpoints = [s.points[0], s.points[s.points.length - 1]].filter(Boolean);
+      for (const pt of endpoints) {
+        const dist = distancePointToRect(pt, wr);
+        if (dist > threshold || dist >= bestDistance) continue;
+        const sx = overlayScaleX(overlay);
+        const sy = overlayScaleY(overlay);
+        const localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
+        const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
+        const branch = getDiverterBranchAtLocalPoint(localX, localY, bb);
+        if (branch !== "entry") continue;
+        const c = normalizeActiveLineColor(getTagColor(s?.tagPath) || s?.stroke);
+        if (!c) continue;
+        bestDistance = dist;
+        bestColor = c;
+      }
+    }
+    if (!bestColor && excludedOverlayIds.size) return "";
+    return bestColor;
+  };
+
   const getOverlayColorAtPoint = (pt, options = {}) => {
     if (!pt || !svgOverlays?.length) return "";
     const excludedOverlayIds = new Set(
@@ -3138,14 +3176,19 @@ export default function CanvasSvg({
       const overlayId = String(o?.id || "").trim();
       if (overlayId && excludedOverlayIds.has(overlayId)) continue;
       const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
+      const entryColor = overlayEType.includes("diverter")
+        ? getDirectEntryActiveColorForDiverter(o, {
+            excludedOverlayIds: [...excludedOverlayIds, overlayId],
+          })
+        : "";
+      const incomingEntryColor = normalizeActiveLineColor(entryColor);
       const color =
         getRouteColorForOverlay(o) ||
         getTagColor(o.tagPath) ||
         (overlayEType.includes("diverter")
-          ? getPolylineStrokeColorNearOverlay(o, "entry", {
-              excludedOverlayIds: [...excludedOverlayIds, overlayId],
-            })
+          ? entryColor
           : "");
+      if (overlayEType.includes("diverter") && !incomingEntryColor) continue;
       if (!color) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
@@ -3193,14 +3236,19 @@ export default function CanvasSvg({
       const dist = distancePointToRect(pt, wr);
       if (dist > threshold || dist >= bestDistance) continue;
       const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
+      const entryColor = overlayEType.includes("diverter")
+        ? getDirectEntryActiveColorForDiverter(o, {
+            excludedOverlayIds: [...excludedOverlayIds, overlayId],
+          })
+        : "";
+      const incomingEntryColor = normalizeActiveLineColor(entryColor);
       const color =
         getRouteColorForOverlay(o) ||
         getTagColor(o.tagPath) ||
         (overlayEType.includes("diverter")
-          ? getPolylineStrokeColorNearOverlay(o, "entry", {
-              excludedOverlayIds: [...excludedOverlayIds, overlayId],
-            })
+          ? entryColor
           : "");
+      if (overlayEType.includes("diverter") && !incomingEntryColor) continue;
       if (!color) continue;
       if (overlayEType.includes("diverter")) {
         const sx = overlayScaleX(o);
@@ -5193,14 +5241,23 @@ export default function CanvasSvg({
                         (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
                       const tagFill = normalizeActiveLineColor(getTagColor(o.tagPath));
                       const routeStroke = normalizeActiveLineColor(getRouteStrokeColorForOverlay(o));
+                      const diverterIncomingColor = overlayEType.includes("diverter")
+                        ? normalizeActiveLineColor(
+                            getDirectEntryActiveColorForDiverter(o, {
+                              excludedOverlayIds: [String(o?.id || "")],
+                            })
+                          )
+                        : "";
                       const connectedPolylineColor = overlayEType.includes("diverter")
-                        ? normalizeActiveLineColor(getPolylineStrokeColorNearOverlay(o))
+                        ? diverterIncomingColor
                         : "";
                       const diverterFlowColor =
-                        String(tagFill || "").trim() ||
-                        String(routeStroke || "").trim() ||
-                        connectedPolylineColor ||
-                        "";
+                        overlayEType.includes("diverter") && !diverterIncomingColor
+                          ? ""
+                          : String(tagFill || "").trim() ||
+                            String(routeStroke || "").trim() ||
+                            connectedPolylineColor ||
+                            "";
                       const isFaultSimulated = Boolean(o.faultSimulated);
                       const compactEType = overlayEType.replace(/[^a-z0-9]/g, "");
                       const isConveyorScrew =

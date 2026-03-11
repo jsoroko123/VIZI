@@ -118,8 +118,8 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // ✅ POLYLINE TOOL: Ctrl/Cmd + P
-      if (mod && key === "p") {
+      // ✅ POLYLINE TOOL: Ctrl/Cmd + P or Ctrl/Cmd + L
+      if (mod && (key === "p" || key === "l")) {
         e.preventDefault();
         e.stopPropagation();
         if (drawing) cancelPolyline?.();
@@ -169,3 +169,5 @@ export function useKeyboardShortcuts({
     deleteSelected,
   ]);
 }
+
+

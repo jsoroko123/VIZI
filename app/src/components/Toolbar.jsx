@@ -74,12 +74,6 @@ const Icons = {
       <rect x="5" y="6" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="2" />
     </svg>
   ),
-  junction: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
-      <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="2" fill="white" />
-      <path d="M12 2v5M12 17v5M2 12h5M17 12h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  ),
   text: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
       <path
@@ -428,18 +422,6 @@ export default function Toolbar({
             }}
           >
             {Icons.rect}
-          </IconButton>
-          <IconButton
-            title="Junction Node"
-            active={tool === "junction"}
-            onClick={() => {
-              setTool("junction");
-              setDrawing?.(null);
-              exitEditMode?.();
-              setSelectedOverlayIds?.([]);
-            }}
-          >
-            {Icons.junction}
           </IconButton>
           <IconButton
             title="Text (click to place)"

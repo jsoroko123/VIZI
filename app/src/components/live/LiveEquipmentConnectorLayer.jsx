@@ -9,32 +9,28 @@ function buildConnectorPath(line) {
 
   const deltaX = toX - fromX;
   const deltaY = toY - fromY;
-  const verticalDir = deltaY >= 0 ? 1 : -1;
-  const trunkOffset = Math.max(26, Math.min(140, Math.abs(deltaY) * 0.45));
-  const trunkY = fromY + trunkOffset * verticalDir;
-  const approachInset = Math.max(28, Math.min(120, Math.abs(deltaX) * 0.18));
-  const approachX = toX - Math.sign(deltaX || 1) * approachInset;
-
-  if (Math.abs(deltaX) < 8) {
-    return {
-      d: `M ${fromX} ${fromY} L ${toX} ${toY}`,
-      length: Math.abs(deltaY),
-    };
-  }
+  const absDx = Math.abs(deltaX);
+  const absDy = Math.abs(deltaY);
+  const midX = fromX + deltaX * 0.52;
+  const midY = fromY + deltaY * 0.54;
+  const c1x = fromX + deltaX * Math.min(0.22, 24 / Math.max(24, absDx));
+  const c1y = fromY + deltaY * 0.18 + Math.sign(deltaY || 1) * Math.min(34, absDy * 0.2);
+  const c2x = fromX + deltaX * 0.36;
+  const c2y = fromY + deltaY * 0.62;
+  const c3x = fromX + deltaX * 0.68;
+  const c3y = fromY + deltaY * 0.82;
+  const c4x = toX - deltaX * Math.min(0.2, 22 / Math.max(22, absDx));
+  const c4y = toY - deltaY * 0.16;
+  const straightLen = Math.hypot(deltaX, deltaY);
 
   return {
     d: [
       `M ${fromX} ${fromY}`,
-      `L ${fromX} ${trunkY}`,
-      `L ${approachX} ${trunkY}`,
-      `L ${approachX} ${toY}`,
-      `L ${toX} ${toY}`,
+      `C ${c1x} ${c1y}, ${c2x} ${c2y}, ${midX} ${midY}`,
+      `C ${c3x} ${c3y}, ${c4x} ${c4y}, ${toX} ${toY}`,
     ].join(" "),
-    length:
-      Math.abs(trunkY - fromY) +
-      Math.abs(approachX - fromX) +
-      Math.abs(toY - trunkY) +
-      Math.abs(toX - approachX),
+    // Approximation for dash animation timing.
+    length: Math.max(24, straightLen * 1.18),
   };
 }
 

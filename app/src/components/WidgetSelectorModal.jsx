@@ -5,6 +5,7 @@ const WIDGETS = [
   { key: "barChart", name: "Bar Chart", group: "Graphs", desc: "Category comparison bars." },
   { key: "areaChart", name: "Area Chart", group: "Graphs", desc: "Filled trend graph." },
   { key: "gauge", name: "Gauge", group: "Indicators", desc: "Dial style value." },
+  { key: "weather", name: "Weather", group: "Indicators", desc: "Current weather card." },
   { key: "kpi", name: "KPI Card", group: "Indicators", desc: "Large single metric." },
   { key: "displayBox", name: "Display Box", group: "Indicators", desc: "Live tag read/write with units." },
   { key: "countdownBar", name: "Countdown Bar", group: "Indicators", desc: "PLC timer PRE/ACC countdown progress." },

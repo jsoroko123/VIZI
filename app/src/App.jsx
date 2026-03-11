@@ -139,6 +139,9 @@ const SVG_RAW_CACHE_MAX = 96;
 const LIVE_ALARM_BAR_H = 34;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
 const LIVE_EQUIPMENT_Z_BASE = 12000;
+const POLYLINE_OVERLAY_SNAP_RADIUS_PX = 7;
+const POLYLINE_CONNECTION_SNAP_THRESHOLD = 10;
+const POLYLINE_ENDPOINT_SNAP_THRESHOLD = 9;
 const SCREEN_SIZE_PRESETS = [
   { value: "1280x720", label: "HD 1280x720", w: 1280, h: 720 },
   { value: "1600x900", label: "HD+ 1600x900", w: 1600, h: 900 },
@@ -151,7 +154,7 @@ const SCREEN_SIZE_PRESETS = [
 export default function App() {
   const { user, logout, updateProfile, changePassword, refresh } = useAuth();
   const initialStoredProjectId = readStoredActiveProjectId();
-  const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle" | "junction"
+  const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle"
   useEffect(() => {
     // Warm-load PLC/Code Gen chunk so opening drawer feels instant.
     import("./components/PlcAnalyzer").catch(() => {});
@@ -195,6 +198,7 @@ export default function App() {
   const duplicateOffsetRef = useRef(20);
   const mouseMoveRafRef = useRef(0);
   const pendingMouseMoveRef = useRef(null);
+  const dragPointerSmoothingRef = useRef({ mode: "", x: NaN, y: NaN });
   const [polyHandleMenu, setPolyHandleMenu] = useState(null);
 
   // SVG overlays (imported files): { id, name, inner, tx, ty, scale, fill, stroke, tagPath }
@@ -238,6 +242,7 @@ export default function App() {
   const [liveEquipmentDockSideById, setLiveEquipmentDockSideById] = useState({});
   const [liveEquipmentFloatingById, setLiveEquipmentFloatingById] = useState({});
   const [liveEquipmentConnectFxById, setLiveEquipmentConnectFxById] = useState({});
+  const [liveEquipmentLiveDataCollapsedByOverlay, setLiveEquipmentLiveDataCollapsedByOverlay] = useState({});
   const MAX_LIVE_EQUIPMENT_POPUPS = 120;
   const prevLiveEquipmentOverlayIdsRef = useRef([]);
   const liveEquipmentConnectFxTimersRef = useRef(new Map());
@@ -422,6 +427,7 @@ export default function App() {
   const autoFitInitRef = useRef(false);
   const zoomHoldTimeoutRef = useRef(null);
   const zoomHoldIntervalRef = useRef(null);
+  const rememberedButtonZoomRef = useRef(1);
   const isInteractingRef = useRef(false);
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
   const cursorPublishInFlightRef = useRef(false);
@@ -5082,6 +5088,7 @@ function flushScheduledProjectSave() {
     }
 
     function onKeyDown(e) {
+      if (isLiveMode) return;
       if (isTypingTarget(e.target)) return;
       const key = (e.key || "").toLowerCase();
       const isMac = navigator.platform.toLowerCase().includes("mac");
@@ -5099,7 +5106,7 @@ function flushScheduledProjectSave() {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
+  }, [isLiveMode]);
 
   useEffect(() => {
     function onDown() {
@@ -5152,6 +5159,7 @@ function flushScheduledProjectSave() {
     }
 
     function onKeyDown(e) {
+      if (isLiveMode) return;
       if (isTypingTarget(e.target)) return;
 
       const isMac = navigator.platform.toLowerCase().includes("mac");
@@ -5185,7 +5193,7 @@ function flushScheduledProjectSave() {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
+  }, [isLiveMode]);
 
 
   useEffect(() => {
@@ -5196,6 +5204,7 @@ function flushScheduledProjectSave() {
     }
 
     function onKeyDown(e) {
+      if (isLiveMode) return;
       if (isTypingTarget(e.target)) return;
 
       const key = (e.key || "").toLowerCase();
@@ -5211,12 +5220,13 @@ function flushScheduledProjectSave() {
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
+  }, [isLiveMode]);
 
 
 
   // Floating panel visibility
   const TOP_BAR_H = 56;
+  const TASKBAR_H = 52;
   const RULER_SIZE = 24;
   const [zoomPos, setZoomPos] = useState({
     x: 16,
@@ -5234,6 +5244,8 @@ function flushScheduledProjectSave() {
   const [showMainDrawer, setShowMainDrawer] = useState(false);
   const [drawerView, setDrawerView] = useState("ai");
   const [databaseTab, setDatabaseTab] = useState("data");
+  const [showLiveMenuDrawer, setShowLiveMenuDrawer] = useState(false);
+  const [showTaskbarZoomTools, setShowTaskbarZoomTools] = useState(false);
   const [showUserDrawer, setShowUserDrawer] = useState(false);
   const [showSecurityDrawer, setShowSecurityDrawer] = useState(false);
   const getViewportSize = () => ({
@@ -5294,6 +5306,8 @@ function flushScheduledProjectSave() {
   const userDrawerRef = useRef(null);
   const securityDrawerRef = useRef(null);
   const projectDrawerRef = useRef(null);
+  const liveMenuDrawerRef = useRef(null);
+  const taskbarMenuBtnRef = useRef(null);
   const liveEquipmentDrawerRef = useRef(null);
   const [theme, setTheme] = useState(() => {
     try {
@@ -5496,54 +5510,17 @@ function flushScheduledProjectSave() {
       };
     };
 
-    const keepViewportCenterStable = () => {
+    const refreshViewportSize = () => {
       const el = svgRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
       const nextW = Math.max(1, Number(rect.width) || 0);
       const nextH = Math.max(1, Number(rect.height) || 0);
-      const prevW = Math.max(1, Number(canvasViewportSizeRef.current?.w) || nextW);
-      const prevH = Math.max(1, Number(canvasViewportSizeRef.current?.h) || nextH);
-      const z = Math.max(0.0001, Number(zoomRef.current) || 1);
-      const activeId = String(activeScreenIdRef.current || "");
-      const prevViewportKey = getViewportZoomKey({ width: prevW, height: prevH });
-      const nextViewportKey = getViewportZoomKey({ width: nextW, height: nextH });
-      const activeScreen =
-        (Array.isArray(screensRef.current) ? screensRef.current : []).find(
-          (s) => String(s?.id || "") === activeId
-        ) || null;
-      const zoomByViewport = normalizeZoomByViewportMap(activeScreen?.zoomByViewport);
-      zoomByViewport[prevViewportKey] = z;
-      const exactNextZoom = Number(zoomByViewport[nextViewportKey]);
-      const targetZoom = Math.max(0.0001, Number.isFinite(exactNextZoom) ? exactNextZoom : z);
-      zoomByViewport[nextViewportKey] = targetZoom;
-      const p = panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
-        ? panRef.current
-        : { x: 0, y: 0 };
-      const worldCx = (prevW / 2 - p.x) / z;
-      const worldCy = (prevH / 2 - p.y) / z;
-      const nextPan = {
-        x: nextW / 2 - worldCx * targetZoom,
-        y: nextH / 2 - worldCy * targetZoom,
-      };
       canvasViewportSizeRef.current = { w: nextW, h: nextH };
-      if (activeId) {
-        setScreens((prev) =>
-          (Array.isArray(prev) ? prev : []).map((screen) =>
-            String(screen?.id || "") === activeId
-              ? { ...screen, zoomByViewport, zoom: targetZoom, pan: nextPan }
-              : screen
-          )
-        );
-      }
-      zoomRef.current = targetZoom;
-      panRef.current = nextPan;
-      setZoom(targetZoom);
-      setPan(nextPan);
     };
 
     captureInitialSize();
-    const onResize = () => window.requestAnimationFrame(keepViewportCenterStable);
+    const onResize = () => window.requestAnimationFrame(refreshViewportSize);
     window.addEventListener("resize", onResize);
     document.addEventListener("fullscreenchange", onResize);
     document.addEventListener("webkitfullscreenchange", onResize);
@@ -6503,6 +6480,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function zoomIn() {
     setZoom((z) => {
       const next = nudgeZoomPercent(z, ZOOM_STEP_PERCENT);
+      rememberedButtonZoomRef.current = next;
       setPan((p) => clampPanToViewport(p, next));
       return next;
     });
@@ -6510,12 +6488,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function zoomOut() {
     setZoom((z) => {
       const next = nudgeZoomPercent(z, -ZOOM_STEP_PERCENT);
+      rememberedButtonZoomRef.current = next;
       setPan((p) => clampPanToViewport(p, next));
       return next;
     });
   }
-  function resetZoomToActual100() {
-    const nextZoom = 1;
+  function resetZoomToSavedButtonLevel(forceActual100 = false) {
+    const remembered = Number(rememberedButtonZoomRef.current);
+    const nextZoom = forceActual100
+      ? 1
+      : clampZoom(Number.isFinite(remembered) && remembered > 0 ? remembered : Number(zoomRef.current) || 1);
     const nextPan = { x: 0, y: 0 };
     const nextScroll = { x: 0, y: 0 };
     setZoom(nextZoom);
@@ -6543,7 +6525,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
   }
   function zoomReset() {
-    resetZoomToActual100();
+    resetZoomToSavedButtonLevel(false);
+    scheduleProjectAutoSave(80);
+  }
+  function zoomResetTo100() {
+    rememberedButtonZoomRef.current = 1;
+    resetZoomToSavedButtonLevel(true);
     scheduleProjectAutoSave(80);
   }
 
@@ -7320,7 +7307,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     let y = (p.y - (pan?.y || 0)) / (zoom || 1);
 
     if (tool === "polyline" && !evt.altKey) {
-      const snapRadius = 18 / (zoom || 1);
+      const snapRadius = POLYLINE_OVERLAY_SNAP_RADIUS_PX / (zoom || 1);
       let best = null;
       let bestDist = Infinity;
       for (const o of svgOverlays) {
@@ -8446,9 +8433,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
 
   // ---------- Polyline drawing/editing ----------
-  function startPolylineAt(p) {
+  function startPolylineAt(p, options = {}) {
     pushHistory();
-    const startPoint = snapPointToNearestPolylineEndpoint(p, 24);
+    const disableSnap = options?.disableSnap === true;
+    const startPoint = disableSnap
+      ? { x: Number(p?.x) || 0, y: Number(p?.y) || 0 }
+      : snapPointToNearestPolylineConnection(
+          snapPointToNearestPolylineEndpoint(p, POLYLINE_ENDPOINT_SNAP_THRESHOLD),
+          POLYLINE_CONNECTION_SNAP_THRESHOLD
+        );
     const id = uid();
     const poly = {
       id,
@@ -8470,10 +8463,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
-  function addPolylinePoint(p) {
+  function addPolylinePoint(p, options = {}) {
     pushHistory();
     if (!drawing || drawing.mode !== "draw-poly") return;
     const id = drawing.id;
+    const disableSnap = options?.disableSnap === true;
 
     setShapes((prev) =>
       prev.map((s) => {
@@ -8483,10 +8477,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const lastFixed = fixed[fixed.length - 1];
         const firstFixed = fixed[0];
         const SNAP_DIST = 12;
-        let nextP = snapPointToNearestPolylineEndpoint(p, 24, {
-          excludeShapeId: id,
-          excludeIndexes: [0, fixed.length],
-        });
+        let nextP = { x: Number(p?.x) || 0, y: Number(p?.y) || 0 };
+        if (!disableSnap) {
+          nextP = snapPointToNearestPolylineConnection(nextP, POLYLINE_CONNECTION_SNAP_THRESHOLD);
+          nextP = snapPointToNearestPolylineEndpoint(nextP, POLYLINE_ENDPOINT_SNAP_THRESHOLD, {
+            excludeShapeId: id,
+            excludeIndexes: [0, fixed.length],
+          });
+        }
         if (firstFixed && distance(p, firstFixed) <= SNAP_DIST) {
           nextP = { x: firstFixed.x, y: firstFixed.y };
         }
@@ -8705,7 +8703,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
-    const p = svgPoint(e);
+    const p =
+      tool === "circle" && e.altKey
+        ? svgPoint(e, { clampToCanvas: false })
+        : svgPoint(e);
     beginDragAll(p, selectedIds, selectedOverlayIds);
   }
 
@@ -9944,34 +9945,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return { dx: 0, dy: 0 };
   }
 
-  function startJunctionAt(p) {
-    pushHistory();
-    const snapped = snapPointToNearestPolylineConnection(p, 24);
-    const id = uid();
-    const size = 18;
-    const junction = {
-      id,
-      type: "circle",
-      junctionNode: true,
-      x: (Number(snapped?.x) || 0) - size / 2,
-      y: (Number(snapped?.y) || 0) - size / 2,
-      width: size,
-      height: size,
-      stroke: "#2b6cff",
-      strokeWidth: 2,
-      fill: "#ffffff",
-      lineStyle: "solid",
-      tagPath: "",
-    };
-    setShapes((prev) => [...prev, junction]);
-    setSelectedIds([id]);
-    setSelectedOverlayIds([]);
-    setEditingId(null);
-    setDrawing(null);
-    setShowHUD(false);
-    scheduleProjectAutoSave();
-  }
-
   function applySingleScrewAnimate(nextValue) {
     if (!isSingle || singleKind !== "SVG" || !singleId) return;
     const enabled = Boolean(nextValue);
@@ -10998,8 +10971,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         }
       }
 
-      if (!drawing) startPolylineAt(p2);
-      else addPolylinePoint(p2);
+      if (!drawing) startPolylineAt(p2, { disableSnap: !!e.altKey });
+      else addPolylinePoint(p2, { disableSnap: !!e.altKey });
       return;
     }
 
@@ -11015,11 +10988,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (tool === "circle") {
       startCircleAt(p);
-      return;
-    }
-
-    if (tool === "junction") {
-      startJunctionAt(p);
       return;
     }
 
@@ -11310,6 +11278,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   function onMouseMoveImmediate(e) {
+    const smoothDragPointer = (rawPoint, mode) => {
+      const rawX = Number(rawPoint?.x);
+      const rawY = Number(rawPoint?.y);
+      if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) return rawPoint;
+      const prev = dragPointerSmoothingRef.current || { mode: "", x: NaN, y: NaN };
+      if (String(prev.mode || "") !== String(mode || "") || !Number.isFinite(prev.x) || !Number.isFinite(prev.y)) {
+        dragPointerSmoothingRef.current = { mode, x: rawX, y: rawY };
+        return { x: rawX, y: rawY };
+      }
+      const alpha = 0.58;
+      const sx = Number(prev.x) + (rawX - Number(prev.x)) * alpha;
+      const sy = Number(prev.y) + (rawY - Number(prev.y)) * alpha;
+      dragPointerSmoothingRef.current = { mode, x: sx, y: sy };
+      return { x: sx, y: sy };
+    };
+
     const maybeAutoPanDuringDrag = (evt) => {
       const el = svgRef.current;
       if (!el) return false;
@@ -11376,6 +11360,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     let p =
       drawing?.mode === "draw-poly"
         ? svgPoint(e, { snapToGrid: true })
+        : drawing?.mode === "draw-circle" && e.altKey
+        ? svgPoint(e, { snapToGrid: false, clampToCanvas: false })
         : svgPoint(e, { snapToGrid: false });
     publishProjectCursor(p);
     if (marquee) {
@@ -11419,10 +11405,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
             nextP = constrainHV(last, nextP);
           }
 
-          const endpointSnap = getNearestPolylineEndpointSnap(nextP, 24, {
-            excludeShapeId: id,
-            excludeIndexes: [0, pts.length - 1],
-          });
+          const endpointSnap = e.altKey
+            ? { snapped: false, point: nextP }
+            : getNearestPolylineEndpointSnap(
+                snapPointToNearestPolylineConnection(nextP, POLYLINE_CONNECTION_SNAP_THRESHOLD),
+                POLYLINE_ENDPOINT_SNAP_THRESHOLD,
+                {
+                  excludeShapeId: id,
+                  excludeIndexes: [0, pts.length - 1],
+                }
+              );
           nextP = endpointSnap.point;
 
           const first = fixed[0];
@@ -11454,6 +11446,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (maybeAutoPanDuringDrag(e)) {
         p = drawing?.mode === "draw-poly" ? svgPoint(e, { snapToGrid: true }) : svgPoint(e, { snapToGrid: false });
       }
+      p = smoothDragPointer(p, overlayResize?.kind === "group" ? "overlay-resize-group" : "overlay-resize");
       if (overlayResize?.kind === "group") {
         const anchorWorld = overlayResize.anchorWorld || { x: 0, y: 0 };
         const startDist = Math.max(1, Number(overlayResize.startDist || 1));
@@ -11555,7 +11548,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (maybeAutoPanDuringDrag(e)) {
         // Recompute pointer after viewport moved.
       }
-      const pointer = svgPoint(e, { clampToCanvas: false });
+      const pointer = smoothDragPointer(svgPoint(e, { clampToCanvas: false }), "shape-resize");
       const anchor = shapeResize.anchor || { x: 0, y: 0 };
       let nextX = Math.min(anchor.x, pointer.x);
       let nextY = Math.min(anchor.y, pointer.y);
@@ -11635,11 +11628,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (maybeAutoPanDuringDrag(e)) {
         p = drawing?.mode === "draw-poly" ? svgPoint(e, { snapToGrid: true }) : svgPoint(e, { snapToGrid: false });
       }
+      p = smoothDragPointer(p, "drag-handle");
       const draggedShape = shapesRef.current.find((s) => s.id === dragHandle.id);
       const draggedPointCount = Array.isArray(draggedShape?.points) ? draggedShape.points.length : 0;
       const isEndpoint = dragHandle.index === 0 || dragHandle.index === draggedPointCount - 1;
       const snappedPoint = isEndpoint
-        ? snapPointToNearestPolylineEndpoint(p, 24, {
+        ? snapPointToNearestPolylineEndpoint(p, POLYLINE_ENDPOINT_SNAP_THRESHOLD, {
             excludeShapeId: dragHandle.id,
             excludeIndexes: [dragHandle.index],
           })
@@ -11660,7 +11654,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (dragAll) {
       maybeAutoPanDuringDrag(e);
-      const pointer = svgPoint(e, { clampToCanvas: false });
+      const pointer = smoothDragPointer(svgPoint(e, { clampToCanvas: false }), "drag-all");
       const dx = pointer.x - dragAll.startWorld.x;
       const dy = pointer.y - dragAll.startWorld.y;
       const maxX = Math.max(0, Number(vbW) || 0);
@@ -11674,7 +11668,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const draggedPolylinePayloads = (Array.isArray(dragAll.shapes) ? dragAll.shapes : []).filter(
         (item) => item?.kind === "poly" && Array.isArray(item?.origPoints)
       );
-      const polylineSnapOffset = getSnapOffsetForMovedPolylineEndpoints(draggedPolylinePayloads, dx, dy, 24);
+      const polylineSnapOffset = getSnapOffsetForMovedPolylineEndpoints(
+        draggedPolylinePayloads,
+        dx,
+        dy,
+        POLYLINE_ENDPOINT_SNAP_THRESHOLD
+      );
 
       if (dragShapeById.size) {
         setShapes((prev) => {
@@ -11811,9 +11810,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const sy = Number(drawing.start?.y ?? p.y);
       const dx = p.x - sx;
       const dy = p.y - sy;
-      const r = Math.max(Math.abs(dx), Math.abs(dy));
-      const x = sx + (dx < 0 ? -r : 0);
-      const y = sy + (dy < 0 ? -r : 0);
+      // Draw circles from center for more precise placement.
+      const r = Math.hypot(dx, dy);
+      const x = sx - r;
+      const y = sy - r;
       const width = r * 2;
       const height = r * 2;
       setShapes((prev) => {
@@ -11845,6 +11845,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   function onMouseUp() {
+    dragPointerSmoothingRef.current = { mode: "", x: NaN, y: NaN };
     const hadDragHandle = !!dragHandle;
     const hadCanvasPanDrag = !!canvasPanDrag;
     const didCanvasPanMove = Boolean(canvasPanDrag?.moved);
@@ -12396,6 +12397,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const winH = typeof window !== "undefined" ? window.innerHeight : 0;
   const isMobileViewport = winW > 0 && winW <= 900;
   const isLiveMobile = isLiveMode && winW > 0 && winW <= 900;
+  const showDesktopTaskbar = isLiveMode && !isLiveMobile;
   const showLiveIdentityChips = !isLiveMode || winW > 900;
   const menuLeft = contextMenu
     ? Math.min(Math.max(12, contextMenu.x), Math.max(12, winW - menuSize.w - 12))
@@ -12565,15 +12567,28 @@ const CONTENT_FIT_HEADROOM = 0.94;
         .filter((group) => group.items.length > 0),
     [liveMenuGroupsForRender]
   );
+  const leftMenuGroupsVisible = useMemo(
+    () =>
+      liveMenuGroupsVisible
+        .map((group) => ({
+          ...group,
+          items: (Array.isArray(group?.items) ? group.items : []).filter((item) => {
+            const t = String(item?.type || "").trim().toLowerCase();
+            return t === "data" || t === "reports";
+          }),
+        }))
+        .filter((group) => group.items.length > 0),
+    [liveMenuGroupsVisible]
+  );
   const liveMenuMobileItems = useMemo(
     () =>
-      liveMenuGroupsVisible.flatMap((group) =>
+      leftMenuGroupsVisible.flatMap((group) =>
         (Array.isArray(group?.items) ? group.items : []).map((item) => ({
           groupName: String(group?.name || "Group"),
           item,
         }))
       ),
-    [liveMenuGroupsVisible]
+    [leftMenuGroupsVisible]
   );
   const activeDatabaseTable = useMemo(() => {
     const raw = String(databaseEmbeddedPath || "").trim();
@@ -12613,7 +12628,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const activeMenuLabel = useMemo(() => {
     const fallback = activeScreen?.name || screenName || "None";
     if (!isLiveMode) return fallback;
-    for (const group of liveMenuGroupsVisible) {
+    for (const group of leftMenuGroupsVisible) {
       const items = Array.isArray(group?.items) ? group.items : [];
       for (const item of items) {
         const isData = item?.type === "data";
@@ -12639,7 +12654,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     activeScreenId,
     drawerView,
     isLiveMode,
-    liveMenuGroupsVisible,
+    leftMenuGroupsVisible,
     resolveLiveMenuItemLabel,
     screenName,
     screens,
@@ -12659,6 +12674,38 @@ const CONTENT_FIT_HEADROOM = 0.94;
     out.sort((a, b) => a.label.localeCompare(b.label));
     return out;
   }, [routeInfoById]);
+  const taskbarScreenGroupNameById = useMemo(() => {
+    const map = new Map();
+    for (const group of Array.isArray(liveMenuGroupsForRender) ? liveMenuGroupsForRender : []) {
+      const groupName = String(group?.name || "").trim() || "Group";
+      for (const item of Array.isArray(group?.items) ? group.items : []) {
+        const t = String(item?.type || "").trim().toLowerCase();
+        if (t !== "screen") continue;
+        const screenId = String(item?.screenId || "").trim();
+        if (!screenId || map.has(screenId)) continue;
+        map.set(screenId, groupName);
+      }
+    }
+    return map;
+  }, [liveMenuGroupsForRender]);
+  const taskbarScreenGroups = useMemo(() => {
+    const byGroup = new Map();
+    for (const screen of Array.isArray(screens) ? screens : []) {
+      const id = String(screen?.id || "").trim();
+      if (!id) continue;
+      const groupName = String(taskbarScreenGroupNameById.get(id) || "Ungrouped");
+      if (!byGroup.has(groupName)) byGroup.set(groupName, []);
+      byGroup.get(groupName).push(screen);
+    }
+    return Array.from(byGroup.entries()).map(([groupName, items]) => ({ groupName, items }));
+  }, [screens, taskbarScreenGroupNameById]);
+  const taskbarButtonWidthCh = useMemo(() => {
+    const labels = (Array.isArray(screens) ? screens : []).map((screen, index) =>
+      String(screen?.name || "").trim() || `Screen ${index + 1}`
+    );
+    const longest = labels.reduce((m, x) => Math.max(m, String(x || "").length), 0);
+    return Math.max(10, Math.min(26, longest + 2));
+  }, [screens]);
   const opcLiveValueCount = useMemo(
     () => Object.keys(opcLiveValues || {}).length,
     [opcLiveValues]
@@ -12678,11 +12725,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }, [opcLiveUpdatedAt, opcLiveValues]);
 
   useEffect(() => {
-    const valid = new Set(liveMenuGroupsVisible.map((group) => String(group.id || "")));
+    const valid = new Set(leftMenuGroupsVisible.map((group) => String(group.id || "")));
     setCollapsedLiveGroupIds((prev) =>
       (Array.isArray(prev) ? prev : []).filter((id) => valid.has(String(id || "")))
     );
-  }, [liveMenuGroupsVisible]);
+  }, [leftMenuGroupsVisible]);
 
   useEffect(() => {
     if (!showMainDrawer) return;
@@ -12896,6 +12943,26 @@ const CONTENT_FIT_HEADROOM = 0.94;
     showProjectDrawer,
     liveEquipmentDrawerOverlayId,
   ]);
+
+  useEffect(() => {
+    if (!isLiveMode || !showLiveMenuDrawer) return undefined;
+    function onDocMouseDown(event) {
+      const target = event?.target;
+      if (!(target instanceof Node)) return;
+      if (liveMenuDrawerRef.current?.contains(target)) return;
+      if (taskbarMenuBtnRef.current?.contains(target)) return;
+      setShowLiveMenuDrawer(false);
+    }
+    function onDocKeyDown(event) {
+      if (event?.key === "Escape") setShowLiveMenuDrawer(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onDocKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onDocKeyDown);
+    };
+  }, [isLiveMode, showLiveMenuDrawer]);
 
   function switchToScreen(nextScreenId) {
     const committed = commitCurrentScreenState();
@@ -13597,7 +13664,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     theme === "dark" ? projectCanvasBackground.dark : projectCanvasBackground.light;
   const projectDrawerInsetPx = showProjectDrawer && !projectDrawerFullscreen ? Math.round(drawerSizes.project.w) : 0;
   const projectDrawerInset = `${projectDrawerInsetPx}px`;
-  const liveMenuIsExpanded = !liveMenuCollapsed;
+  const liveMenuIsExpanded = true;
   const liveMenuExpandedWidthClamped = Math.max(
     LIVE_MENU_EXPANDED_WIDTH_MIN,
     Math.min(
@@ -13613,9 +13680,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
       ? Math.min(220, Math.max(176, Math.floor(winW * 0.62)))
       : liveMenuExpandedWidthClamped
     : 0;
-  const liveMenuCollapsedWidthPx = isLiveMode ? (isLiveMobile ? 54 : 50) : 0;
+  const liveMenuCollapsedWidthPx = 0;
   const liveMenuRailWidthPx = isLiveMode
-    ? (isLiveMobile ? 0 : liveMenuIsExpanded ? liveMenuExpandedWidthPx : liveMenuCollapsedWidthPx)
+    ? (isLiveMobile ? 0 : showLiveMenuDrawer ? liveMenuExpandedWidthPx : 0)
     : 0;
   const liveMenuLayoutInsetPx = isLiveMode ? (isLiveMobile ? 0 : liveMenuRailWidthPx) : 0;
   const designDockWidthPx = !isLiveMode && showZoom ? (designDockExpanded ? 228 : 44) : 0;
@@ -13739,6 +13806,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
   useEffect(() => {
     if (liveMenuIsExpanded) setLiveMenuHoverItemId("");
   }, [liveMenuIsExpanded]);
+
+  useEffect(() => {
+    if (!isLiveMode) setShowLiveMenuDrawer(false);
+  }, [isLiveMode]);
 
   useEffect(() => {
     const activeIds = new Set((liveActiveAlarms || []).map((a) => String(a?.id || "")).filter(Boolean));
@@ -13890,6 +13961,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         canvasBackgroundColor={activeCanvasBackgroundColor}
         viewportTopOffset={TOP_BAR_H + liveAlarmBarOffset}
         viewportLeftOffset={canvasLeftInsetPx}
+        viewportBottomOffset={showDesktopTaskbar ? TASKBAR_H : 0}
         viewportScrollTarget={canvasViewportScrollTarget}
         onViewportScroll={(next) => {
           const x = Number(next?.x);
@@ -14032,7 +14104,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
             </div>
           </div>
           <div className="vizi-scroll" style={{ overflow: "auto", padding: "10px", display: "grid", gap: 10, alignContent: "start" }}>
-            {liveEquipmentDrawerEntries.map(({ overlay, details }) => (
+            {liveEquipmentDrawerEntries.map(({ overlay, details }) => {
+              const overlayId = String(overlay?.id || "");
+              const liveDataCollapsed =
+                liveEquipmentLiveDataCollapsedByOverlay[overlayId] !== false;
+              return (
               <div
                 key={`live-equipment-drawer-card-${overlay.id}`}
                 style={{
@@ -14082,8 +14158,35 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6, color: "var(--text)" }}>Live Data</div>
-                  {Array.isArray(details) && details.length ? (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: liveDataCollapsed ? 0 : 6 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
+                    <button
+                      onClick={() =>
+                        setLiveEquipmentLiveDataCollapsedByOverlay((prev) => ({
+                          ...(prev || {}),
+                          [overlayId]: !liveDataCollapsed,
+                        }))
+                      }
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        borderRadius: 6,
+                        minWidth: 22,
+                        height: 20,
+                        padding: "0 6px",
+                        cursor: "pointer",
+                        color: "var(--text)",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        lineHeight: 1,
+                      }}
+                      title={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
+                      aria-label={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
+                    >
+                      {liveDataCollapsed ? "+" : "-"}
+                    </button>
+                  </div>
+                  {!liveDataCollapsed && (Array.isArray(details) && details.length ? (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 10, rowGap: 4, alignContent: "start", alignItems: "center", fontSize: 11 }}>
                       {details.map((row, idx) => (
                         <Fragment key={`live-equipment-drawer-row-${overlay?.id}-${idx}`}>
@@ -14096,13 +14199,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                       No live values found for this equipment.
                     </div>
-                  )}
+                  ))}
                 </div>
                 {renderLiveMotorControls(overlay, false)}
                 {renderLiveDiverterControls(overlay, false)}
                 {renderLiveBinDetails(overlay, false)}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ) : null}
@@ -14156,7 +14260,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   }}
                   onScroll={onLiveEquipmentDockScroll}
                 >
-                  {lane.entries.map(({ overlay, details }) => (
+                  {lane.entries.map(({ overlay, details }) => {
+                    const overlayId = String(overlay?.id || "");
+                    const liveDataCollapsed =
+                      liveEquipmentLiveDataCollapsedByOverlay[overlayId] !== false;
+                    return (
                     <div
                       key={`live-equipment-card-${overlay.id}`}
                       ref={(node) => {
@@ -14169,15 +14277,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         scrollSnapAlign: "start",
                         flex: "0 0 min(300px, 68vw)",
                         maxHeight: "34vh",
-                        overflow: "auto",
+                        overflow: "hidden",
                         borderRadius: 10,
                         border: "1px solid var(--border)",
                         background: "var(--bg-elev)",
                         boxShadow: "0 12px 26px rgba(0,0,0,0.28)",
                         padding: 9,
-                        display: "grid",
+                        display: "flex",
+                        flexDirection: "column",
                         gap: 6,
-                        alignContent: "start",
                         pointerEvents: "auto",
                       }}
                       className="vizi-scroll"
@@ -14243,9 +14351,38 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
+                <div style={{ minHeight: 0, overflow: "auto", display: "grid", gap: 6, alignContent: "start" }} className="vizi-scroll">
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, color: "var(--text)" }}>Live Data</div>
-                  {details.length ? (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: liveDataCollapsed ? 0 : 5 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
+                    <button
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() =>
+                        setLiveEquipmentLiveDataCollapsedByOverlay((prev) => ({
+                          ...(prev || {}),
+                          [overlayId]: !liveDataCollapsed,
+                        }))
+                      }
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        borderRadius: 6,
+                        minWidth: 20,
+                        height: 18,
+                        padding: "0 5px",
+                        cursor: "pointer",
+                        color: "var(--text)",
+                        fontSize: 10,
+                        fontWeight: 700,
+                        lineHeight: 1,
+                      }}
+                      title={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
+                      aria-label={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
+                    >
+                      {liveDataCollapsed ? "+" : "-"}
+                    </button>
+                  </div>
+                  {!liveDataCollapsed && (details.length ? (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 8, rowGap: 3, alignContent: "start", alignItems: "center", fontSize: 10 }}>
                       {details.map((row, idx) => (
                         <Fragment key={`live-equipment-row-${overlay.id}-${idx}`}>
@@ -14256,13 +14393,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     </div>
                   ) : (
                     <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
-                  )}
+                  ))}
                 </div>
+                </div>
+                <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
                 {renderLiveMotorControls(overlay, true)}
                 {renderLiveDiverterControls(overlay, true)}
                 {renderLiveBinDetails(overlay, true)}
+                </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ) : null
@@ -14270,6 +14411,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
           {liveEquipmentFloatingEntries.map(({ overlay, details }) => {
             const id = String(overlay?.id || "");
             const pos = liveEquipmentFloatingById[id];
+            const liveDataCollapsed =
+              liveEquipmentLiveDataCollapsedByOverlay[id] !== false;
             if (!id || !pos) return null;
             return (
               <div
@@ -14285,15 +14428,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   top: Number(pos.y) || TOP_BAR_H + liveAlarmBarOffset + 10,
                   width: "min(300px, 68vw)",
                   maxHeight: "34vh",
-                  overflow: "auto",
+                  overflow: "hidden",
                   borderRadius: 10,
                   border: "1px solid var(--border)",
                   background: "var(--bg-elev)",
                   boxShadow: "0 12px 26px rgba(0,0,0,0.28)",
                   padding: 9,
-                  display: "grid",
+                  display: "flex",
+                  flexDirection: "column",
                   gap: 6,
-                  alignContent: "start",
                   zIndex: LIVE_EQUIPMENT_Z_BASE + 100 + Number(liveEquipmentZById?.[id] || 0),
                   pointerEvents: "auto",
                 }}
@@ -14390,9 +14533,38 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
+                <div style={{ minHeight: 0, overflow: "auto", display: "grid", gap: 6, alignContent: "start" }} className="vizi-scroll">
                 <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 5, color: "var(--text)" }}>Live Data</div>
-                  {details.length ? (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: liveDataCollapsed ? 0 : 5 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
+                    <button
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() =>
+                        setLiveEquipmentLiveDataCollapsedByOverlay((prev) => ({
+                          ...(prev || {}),
+                          [id]: !liveDataCollapsed,
+                        }))
+                      }
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        borderRadius: 6,
+                        minWidth: 20,
+                        height: 18,
+                        padding: "0 5px",
+                        cursor: "pointer",
+                        color: "var(--text)",
+                        fontSize: 10,
+                        fontWeight: 700,
+                        lineHeight: 1,
+                      }}
+                      title={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
+                      aria-label={liveDataCollapsed ? "Expand Live Data" : "Collapse Live Data"}
+                    >
+                      {liveDataCollapsed ? "+" : "-"}
+                    </button>
+                  </div>
+                  {!liveDataCollapsed && (details.length ? (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 8, rowGap: 3, alignContent: "start", alignItems: "center", fontSize: 10 }}>
                       {details.map((row, idx) => (
                         <Fragment key={`live-equipment-floating-row-${overlay.id}-${idx}`}>
@@ -14403,11 +14575,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     </div>
                   ) : (
                     <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
-                  )}
+                  ))}
                 </div>
+                </div>
+                <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
                 {renderLiveMotorControls(overlay, true)}
                 {renderLiveDiverterControls(overlay, true)}
                 {renderLiveBinDetails(overlay, true)}
+                </div>
               </div>
             );
           })}
@@ -14749,23 +14924,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
               </button>
               <button
                 className="top-menu-btn"
-                title="Junction Node"
-                style={dockToolButtonStyle(tool === "junction")}
-                onClick={() => {
-                  setTool("junction");
-                  setDrawing(null);
-                  exitEditMode();
-                  setSelectedOverlayIds([]);
-                }}
-              >
-                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="2" fill="white" />
-                  <path d="M12 2v5M12 17v5M2 12h5M17 12h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                </svg>
-                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Junction</span> : null}
-              </button>
-              <button
-                className="top-menu-btn"
                 title="Text"
                 style={dockToolButtonStyle(tool === "text")}
                 onClick={() => {
@@ -14922,7 +15080,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </svg>
                 ),
                 onClick: zoomReset,
-                title: "Reset Zoom (100%)",
+                onDoubleClick: zoomResetTo100,
+                title: "Reset View (dbl-click = 100%)",
               },
               {
                 icon: (
@@ -14979,6 +15138,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
                     btn.holdAction();
+                  }
+                }}
+                onDoubleClick={(e) => {
+                  if (typeof btn.onDoubleClick === "function") {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    btn.onDoubleClick();
                   }
                 }}
                 onClick={btn.holdAction ? undefined : btn.onClick}
@@ -16795,7 +16961,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         liveAlarmMarqueeDurationSec={liveAlarmMarqueeDurationSec}
         liveAlarmMarqueeItems={liveAlarmMarqueeItems}
         onOpenAlarms={() => {
-          setLiveMenuCollapsed(false);
+          setShowLiveMenuDrawer(true);
           openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath });
         }}
       />
@@ -17016,8 +17182,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
         </div>
       ) : null}
 
-      {isLiveMode ? (
+      {isLiveMode && showLiveMenuDrawer ? (
         <div
+          ref={liveMenuDrawerRef}
           style={{
             position: "fixed",
             left: isLiveMode ? 0 : projectDrawerInsetPx,
@@ -17049,15 +17216,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
               gap: 4,
             }}
           >
-            {null}
-	            <button
-	              onClick={() => setLiveMenuCollapsed((v) => !v)}
-	              title={liveMenuCollapsed ? "Expand menu" : "Collapse menu"}
-	              aria-label={liveMenuCollapsed ? "Expand live menu" : "Collapse live menu"}
-		              style={{
-	                width: isLiveMobile ? 32 : 28,
-	                height: isLiveMobile ? 32 : 28,
-	                borderRadius: 8,
+            <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>Menu</div>
+            <button
+              onClick={() => setShowLiveMenuDrawer(false)}
+              title="Close menu"
+              aria-label="Close menu"
+              style={{
+                width: isLiveMobile ? 32 : 28,
+                height: isLiveMobile ? 32 : 28,
+                borderRadius: 8,
                 border: "none",
                 background: "transparent",
                 color: "var(--text)",
@@ -17066,21 +17233,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 cursor: "pointer",
                 flex: "0 0 auto",
                 padding: 0,
+                fontSize: 16,
+                fontWeight: 800,
+                lineHeight: 1,
               }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path
-                  d={liveMenuCollapsed ? "M9 6l6 6-6 6" : "M15 6l-6 6 6 6"}
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{
-                    animation: liveMenuCollapsed ? "live-menu-arrow-pulse 1s ease-in-out infinite" : "none",
-                    transition: "transform 180ms ease",
-                  }}
-                />
-              </svg>
+              ×
             </button>
           </div>
           <div
@@ -17095,8 +17253,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
             }}
             className="vizi-scroll"
           >
-            {liveMenuGroupsVisible.some((group) => Array.isArray(group.items) && group.items.length) ? (
-              liveMenuGroupsVisible.map((group, groupIndex) => {
+            {leftMenuGroupsVisible.some((group) => Array.isArray(group.items) && group.items.length) ? (
+              leftMenuGroupsVisible.map((group, groupIndex) => {
                 const groupCollapsed = collapsedLiveGroupIds.includes(String(group.id || ""));
                 const groupItemCount = Array.isArray(group.items) ? group.items.length : 0;
                 return (
@@ -17462,195 +17620,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
               </div>
             )}
           </div>
-          {showZoom ? (
-            <div
-              style={{
-                borderTop: "1px solid var(--border)",
-                padding: liveMenuIsExpanded ? "6px 8px" : "6px",
-                display: "grid",
-                gap: 6,
-                background: "color-mix(in srgb, var(--bg-elev) 94%, #0b1c36 6%)",
-              }}
-            >
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: liveMenuIsExpanded ? "repeat(3, minmax(0, 1fr))" : "1fr",
-                  gap: 6,
-                  justifyItems: "center",
-                }}
-              >
-                {[
-                  {
-                    key: "zoom-in",
-                    title: "Zoom In",
-                    onClick: zoomIn,
-                    holdAction: zoomIn,
-                    icon: (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
-                        <path d="M11 8v6M8 11h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                        <path d="M16 16l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                      </svg>
-                    ),
-                  },
-                  {
-                    key: "zoom-out",
-                    title: "Zoom Out",
-                    onClick: zoomOut,
-                    holdAction: zoomOut,
-                    icon: (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
-                        <path d="M8 11h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                        <path d="M16 16l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                      </svg>
-                    ),
-                  },
-                  {
-                    key: "zoom-reset",
-                    title: "Reset Zoom (100%)",
-                    onClick: zoomReset,
-                    icon: (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path d="M6 8a7 7 0 1 1-1 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                        <path d="M6 4v4h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    ),
-                  },
-                  {
-                    key: "reset-drawers",
-                    title: "Reset Drawer Sizes",
-                    onClick: resetAllDrawerSizes,
-                    icon: (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path d="M3 6h18M6 12h12M4 18h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                        <circle cx="8" cy="6" r="1.5" fill="currentColor" />
-                        <circle cx="14" cy="12" r="1.5" fill="currentColor" />
-                        <circle cx="10" cy="18" r="1.5" fill="currentColor" />
-                      </svg>
-                    ),
-                  },
-                  {
-                    key: "zoom-fullscreen",
-                    title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
-                    onClick: toggleAppFullscreen,
-                    icon: isAppFullscreen ? (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                      </svg>
-                    ) : (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                        <path d="M8 8h8v8H8z" stroke="currentColor" strokeWidth="2" />
-                      </svg>
-                    ),
-                  },
-                  {
-                    key: "zoom-hide",
-                    title: "Hide Zoom",
-                    onClick: () => setShowZoom(false),
-                    icon: (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-                      </svg>
-                    ),
-                  },
-                ].map((btn) => (
-                  <button
-                    key={btn.key}
-                    type="button"
-                    title={btn.title}
-                    disabled={Boolean(btn.disabled)}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => {
-                      if (btn.disabled) return;
-                      if (btn.holdAction) {
-                        startZoomHold(btn.holdAction, e);
-                        return;
-                      }
-                      e.stopPropagation();
-                    }}
-                    onPointerUp={() => {
-                      if (btn.holdAction) stopZoomHold();
-                    }}
-                    onPointerCancel={() => {
-                      if (btn.holdAction) stopZoomHold();
-                    }}
-                    onPointerLeave={() => {
-                      if (btn.holdAction) stopZoomHold();
-                    }}
-                    onClick={btn.holdAction ? undefined : btn.onClick}
-                    style={{
-                      width: 28,
-                      height: 28,
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--bg-elev)",
-                      color: "var(--text)",
-                      boxShadow: "0 4px 12px rgba(0,0,0,0.14)",
-                      display: "grid",
-                      placeItems: "center",
-                      lineHeight: 0,
-                      padding: 0,
-                      cursor: btn.disabled ? "not-allowed" : "pointer",
-                      opacity: btn.disabled ? 0.58 : 1,
-                    }}
-                  >
-                    <span style={{ display: "grid", placeItems: "center", width: 14, height: 14 }}>{btn.icon}</span>
-                  </button>
-                ))}
-              </div>
-              {liveMenuIsExpanded ? (
-                <div
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    color: "var(--text-muted)",
-                    textAlign: "center",
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                >
-                  Zoom {Math.round((zoom || 1) * 100)}%
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div
-              style={{
-                borderTop: "1px solid var(--border)",
-                padding: liveMenuIsExpanded ? "6px 8px" : "6px 4px",
-                display: "grid",
-                justifyItems: "center",
-                background: "color-mix(in srgb, var(--bg-elev) 94%, #0b1c36 6%)",
-              }}
-            >
-              <button
-                type="button"
-                title="Show zoom controls"
-                onClick={() => setShowZoom(true)}
-                style={{
-                  width: liveMenuIsExpanded ? 30 : 24,
-                  height: liveMenuIsExpanded ? 30 : 24,
-                  borderRadius: liveMenuIsExpanded ? 9 : 8,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
-                  color: "var(--text)",
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.14)",
-                  display: "grid",
-                  placeItems: "center",
-                  lineHeight: 0,
-                  padding: 0,
-                  cursor: "pointer",
-                }}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
-                  <path d="M20 20l-4.2-4.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-          )}
         </div>
       ) : null}
 
@@ -18713,6 +18682,344 @@ const CONTENT_FIT_HEADROOM = 0.94;
         </div>
       )}
 
+      {showDesktopTaskbar ? (
+        <div
+          style={{
+            position: "fixed",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: TASKBAR_H,
+            zIndex: 240,
+            borderTop: "1px solid color-mix(in srgb, var(--border) 86%, #111827 14%)",
+            background:
+              "linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, #0f172a 6%) 0%, color-mix(in srgb, var(--bg) 90%, #020617 10%) 100%)",
+            boxShadow: "0 -8px 24px rgba(0,0,0,0.22)",
+            display: "grid",
+            gridTemplateColumns: "auto 1fr auto",
+            alignItems: "center",
+            gap: 12,
+            padding: "0 10px",
+            boxSizing: "border-box",
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            ref={taskbarMenuBtnRef}
+            type="button"
+            onClick={() => {
+              if (isLiveMode) {
+                setShowLiveMenuDrawer((v) => !v);
+                return;
+              }
+              if (showProjectDrawer) {
+                closeProjectDrawerSafely();
+                return;
+              }
+              if (!canLeaveSaveDrawerState()) return;
+              setShowProjectDrawer(true);
+            }}
+            style={{
+              height: 36,
+              width: 44,
+              borderRadius: 9,
+              border: "1px solid var(--border)",
+              background:
+                ((isLiveMode && showLiveMenuDrawer) || (!isLiveMode && showProjectDrawer))
+                  ? "var(--selected-bg)"
+                  : "var(--bg-elev)",
+              color:
+                ((isLiveMode && showLiveMenuDrawer) || (!isLiveMode && showProjectDrawer))
+                  ? "var(--selected-text)"
+                  : "var(--text)",
+              fontSize: 13,
+              fontWeight: 800,
+              padding: 0,
+              cursor: "pointer",
+              boxShadow:
+                ((isLiveMode && showLiveMenuDrawer) || (!isLiveMode && showProjectDrawer))
+                  ? "var(--selected-shadow)"
+                  : "none",
+              display: "grid",
+              placeItems: "center",
+            }}
+            title="Open left menu"
+            aria-label="Open left menu"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+            </svg>
+          </button>
+          <div
+            className="vizi-scroll"
+            style={{
+              minWidth: 0,
+              overflowX: "auto",
+              overflowY: "hidden",
+              paddingBottom: 1,
+              display: "flex",
+              justifyContent: "center",
+            }}
+          >
+            <div
+              style={{
+                width: "max-content",
+                maxWidth: "100%",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "6px 8px",
+                border: "1px solid color-mix(in srgb, var(--border) 90%, #1f2937 10%)",
+                borderRadius: 10,
+                background: "color-mix(in srgb, var(--bg-elev) 97%, #0b1220 3%)",
+              }}
+            >
+              {taskbarScreenGroups.map((group, groupIndex) => (
+                <div
+                  key={`taskbar-group-${group.groupName}-${groupIndex}`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    borderLeft:
+                      groupIndex === 0
+                        ? "none"
+                        : "1px solid color-mix(in srgb, var(--border) 76%, transparent)",
+                    paddingLeft: groupIndex === 0 ? 0 : 10,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 800,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                      color: "var(--text-muted)",
+                      lineHeight: 1,
+                      maxWidth: 120,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      paddingLeft: 2,
+                    }}
+                  >
+                    {group.groupName}
+                  </span>
+                  {(Array.isArray(group.items) ? group.items : []).map((screen, index) => {
+                    const id = String(screen?.id || "");
+                    const label = String(screen?.name || "").trim() || `Screen ${index + 1}`;
+                    const active = id === String(activeScreenId || "");
+                    return (
+                      <button
+                        key={`taskbar-screen-${group.groupName}-${id || index}`}
+                        type="button"
+                        onClick={() => {
+                          if (!id || active) return;
+                          switchToScreen(id);
+                        }}
+                        style={{
+                          height: 28,
+                          width: `${taskbarButtonWidthCh}ch`,
+                          borderRadius: 7,
+                          border: `1px solid ${active ? "color-mix(in srgb, var(--accent) 60%, var(--border) 40%)" : "color-mix(in srgb, var(--border) 90%, #1f2937 10%)"}`,
+                          background: active
+                            ? "color-mix(in srgb, var(--bg) 85%, var(--accent) 15%)"
+                            : "color-mix(in srgb, var(--bg) 98%, #0b1220 2%)",
+                          color: active ? "var(--text)" : "var(--text)",
+                          fontSize: 11,
+                          fontWeight: active ? 700 : 600,
+                          padding: "0 10px",
+                          cursor: active ? "default" : "pointer",
+                          boxShadow: active ? "0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent) inset" : "none",
+                          textAlign: "center",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                        title={`${group.groupName} - ${label}`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifySelf: "end",
+              gap: 8,
+              minWidth: 0,
+            }}
+          >
+            {showTaskbarZoomTools ? (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 6px",
+                  borderRadius: 10,
+                  border: "1px solid color-mix(in srgb, var(--border) 88%, #1f2937 12%)",
+                  background: "color-mix(in srgb, var(--bg-elev) 96%, #0b1220 4%)",
+                }}
+              >
+                {[
+                  {
+                    key: "zoom-out",
+                    title: "Zoom Out",
+                    onClick: zoomOut,
+                    holdAction: zoomOut,
+                    icon: (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                        <path d="M8 11h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M16 16l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    ),
+                  },
+                  {
+                    key: "zoom-in",
+                    title: "Zoom In",
+                    onClick: zoomIn,
+                    holdAction: zoomIn,
+                    icon: (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+                        <path d="M11 8v6M8 11h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M16 16l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    ),
+                  },
+                  {
+                    key: "zoom-reset",
+                    title: "Reset View (dbl-click = 100%)",
+                    onClick: zoomReset,
+                    onDoubleClick: zoomResetTo100,
+                    icon: (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M6 8a7 7 0 1 1-1 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M6 4v4h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ),
+                  },
+                  {
+                    key: "zoom-fullscreen",
+                    title: isAppFullscreen ? "Exit Full Screen" : "Full Screen",
+                    onClick: toggleAppFullscreen,
+                    icon: isAppFullscreen ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M8 8h8v8H8z" stroke="currentColor" strokeWidth="2" />
+                      </svg>
+                    ),
+                  },
+                ].map((btn) => (
+                  <button
+                    key={btn.key}
+                    type="button"
+                    title={btn.title}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => {
+                      if (btn.holdAction) {
+                        startZoomHold(btn.holdAction, e);
+                        return;
+                      }
+                      e.stopPropagation();
+                    }}
+                    onPointerUp={() => {
+                      if (btn.holdAction) stopZoomHold();
+                    }}
+                    onPointerCancel={() => {
+                      if (btn.holdAction) stopZoomHold();
+                    }}
+                    onPointerLeave={() => {
+                      if (btn.holdAction) stopZoomHold();
+                    }}
+                    onDoubleClick={(e) => {
+                      if (typeof btn.onDoubleClick === "function") {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        btn.onDoubleClick();
+                      }
+                    }}
+                    onClick={btn.holdAction ? undefined : btn.onClick}
+                    style={{
+                      width: 30,
+                      height: 30,
+                      borderRadius: 8,
+                      border: "1px solid color-mix(in srgb, var(--border) 88%, #1f2937 12%)",
+                      background: "color-mix(in srgb, var(--bg) 96%, #0b1220 4%)",
+                      color: "var(--text)",
+                      boxShadow: "0 4px 10px rgba(0,0,0,0.14)",
+                      display: "grid",
+                      placeItems: "center",
+                      lineHeight: 0,
+                      padding: 0,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ display: "grid", placeItems: "center", width: 14, height: 14 }}>{btn.icon}</span>
+                  </button>
+                ))}
+                <div
+                  style={{
+                    marginLeft: 2,
+                    minWidth: 44,
+                    textAlign: "center",
+                    fontSize: 11,
+                    fontWeight: 800,
+                    fontVariantNumeric: "tabular-nums",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  {Math.round((zoom || 1) * 100)}%
+                </div>
+              </div>
+            ) : null}
+            <button
+              type="button"
+              title={showTaskbarZoomTools ? "Collapse zoom tools" : "Expand zoom tools"}
+              aria-label={showTaskbarZoomTools ? "Collapse zoom tools" : "Expand zoom tools"}
+              onClick={() => setShowTaskbarZoomTools((v) => !v)}
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 8,
+                border: "1px solid color-mix(in srgb, var(--border) 88%, #1f2937 12%)",
+                background: showTaskbarZoomTools
+                  ? "color-mix(in srgb, var(--selected-bg) 85%, var(--bg-elev) 15%)"
+                  : "color-mix(in srgb, var(--bg-elev) 96%, #0b1220 4%)",
+                color: showTaskbarZoomTools ? "var(--selected-text)" : "var(--text)",
+                boxShadow: showTaskbarZoomTools ? "var(--selected-shadow)" : "0 4px 10px rgba(0,0,0,0.14)",
+                display: "grid",
+                placeItems: "center",
+                lineHeight: 0,
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d={showTaskbarZoomTools ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6"}
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <TeamChatPanel
         showTeamChat={showTeamChat}
         setShowTeamChat={setShowTeamChat}
@@ -18721,7 +19028,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         topOffset={TOP_BAR_H + liveAlarmBarOffset}
         leftOffset={projectDrawerInsetPx}
         rightOffset={!isLiveMode && showRulers ? 32 : undefined}
-        bottomOffset={72}
+        bottomOffset={showDesktopTaskbar ? TASKBAR_H + 20 : (isLiveMode ? 72 : 16)}
         desktopTopPx={teamChatDesktopTopPx}
         desktopRightPx={teamChatDesktopRightPx}
         liveBottomCarouselHeightPx={liveBottomCarouselHeightPx}
@@ -18745,7 +19052,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
             position: "fixed",
             left: isLiveMode ? undefined : Math.max(zoomPos.x, 8),
             right: isLiveMode ? (isLiveMobile ? 68 : 72) : undefined,
-            bottom: isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 10 : 16,
+            bottom: showDesktopTaskbar
+              ? TASKBAR_H + 12
+              : (isLiveMode && isLiveMobile ? liveBottomCarouselHeightPx + 10 : 16),
             zIndex: 92,
             padding: isLiveMode ? "4px 8px" : "6px 10px",
             borderRadius: 8,
@@ -18765,6 +19074,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     </div>
   );
 }
+
+
 
 
 

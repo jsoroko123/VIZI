@@ -16,6 +16,10 @@ export function widgetTemplate(widgetKey) {
       name: "Widget-Gauge.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 180"><rect x="1" y="1" width="258" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Gauge</text><path d="M46 132a84 84 0 0 1 168 0" fill="none" stroke="#334155" stroke-width="16" stroke-linecap="round"/><path d="M46 132a84 84 0 0 1 126 -72" fill="none" stroke="#22c55e" stroke-width="16" stroke-linecap="round"/><line x1="130" y1="132" x2="192" y2="88" stroke="#e2e8f0" stroke-width="4" stroke-linecap="round"/><circle cx="130" cy="132" r="6" fill="#e2e8f0"/></svg>`,
     },
+    weather: {
+      name: "Widget-Weather.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Weather</text><circle cx="66" cy="84" r="22" fill="#fbbf24"/><path d="M112 108h118a22 22 0 0 0 0-44 29 29 0 0 0-55-10 24 24 0 0 0-36 20 18 18 0 0 0-27 34z" fill="#cbd5e1"/><text x="20" y="150" fill="#e2e8f0" font-size="32" font-family="system-ui" font-weight="800">72</text><text x="86" y="150" fill="#93c5fd" font-size="14" font-family="system-ui" font-weight="700">F</text><text x="132" y="150" fill="#94a3b8" font-size="12" font-family="system-ui">Partly Cloudy</text></svg>`,
+    },
     kpi: {
       name: "Widget-KPI.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 140"><rect x="1" y="1" width="238" height="138" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">KPI</text><text x="20" y="84" fill="#22c55e" font-size="42" font-family="system-ui" font-weight="700">98.7%</text><text x="20" y="112" fill="#94a3b8" font-size="12" font-family="system-ui">Target: 95%</text></svg>`,
@@ -75,6 +79,7 @@ export function defaultWidgetSettings(widgetKey) {
   if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
   if (kind === "kpi") return { ...base, historyPoints: 10 };
   if (kind === "displayBox") return { ...base, historyPoints: 10 };
+  if (kind === "weather") return { ...base, historyPoints: 10, decimals: 1, unit: "F" };
   if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
   if (kind === "pushButton") return { ...base, historyPoints: 10, decimals: 0 };
   if (kind === "onOffButton") return { ...base, historyPoints: 10, decimals: 0 };
