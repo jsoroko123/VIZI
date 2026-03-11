@@ -132,9 +132,9 @@ function CancelXIcon({ size = 14 }) {
 function defaultRuntimeConfig() {
   return {
     opcConnectionEnabled: true,
-    multiReadEnabled: false,
-    multiReadBatchSize: 8,
-    maxReadsPerTick: 150,
+    multiReadEnabled: true,
+    multiReadBatchSize: 20,
+    maxReadsPerTick: 500,
     mqttEnabled: false,
     mqttBrokerUrl: "mqtt://localhost:1883",
     mqttClientId: "",
@@ -144,22 +144,22 @@ function defaultRuntimeConfig() {
     mqttWriteTopic: "mesora/opc/write",
     mqttQos: 0,
     mqttRetain: false,
-    readTimeoutMs: 7000,
-    readRetryCount: 3,
-    readRetryDelayMs: 250,
-    plcConnectTimeoutMs: 20000,
-    plcReceiveTimeoutMs: 60000,
+    readTimeoutMs: 4000,
+    readRetryCount: 2,
+    readRetryDelayMs: 100,
+    plcConnectTimeoutMs: 5000,
+    plcReceiveTimeoutMs: 15000,
     errorBackoffEnabled: true,
     errorBackoffBaseMs: 1000,
     errorBackoffMaxMs: 15000,
     errorBackoffThreshold: 3,
     pollJitterMs: 0,
     deadbandDefault: "",
-    reconnectDelayMs: 2000,
+    reconnectDelayMs: 1500,
     reconnectMaxAttempts: "",
-    heartbeatEnabled: true,
+    heartbeatEnabled: false,
     heartbeatFailureThreshold: 4,
-    heartbeatMs: 8000,
+    heartbeatMs: 5000,
     reportQueryTimeoutMs: 12000,
     reportMaxResultRows: 2000,
   };
@@ -282,6 +282,8 @@ function parseCsv(text) {
 }
 
 export default function OpcConfig({ embedded = false, mode = "full", onDrawerViewChange = null }) {
+  const initialSectionTab =
+    String(mode || "").trim().toLowerCase() === "diagnostics" ? "diagnostics" : "opcua";
   const [config, setConfig] = useState({
     plc: { host: "", slot: 0 },
     plcs: [],
@@ -389,7 +391,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     enabled: true,
   });
   const [showPlcForm, setShowPlcForm] = useState(false);
-  const [opcConfigSectionTab, setOpcConfigSectionTab] = useState("opcua");
+  const [opcConfigSectionTab, setOpcConfigSectionTab] = useState(initialSectionTab);
   const [opcUaEditing, setOpcUaEditing] = useState(false);
   const [manualPlc, setManualPlc] = useState({
     name: "",
@@ -416,6 +418,18 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const restartToastIdRef = useRef("");
   const restartStartedAtRef = useRef(0);
   const restartSawDisconnectRef = useRef(false);
+
+  useEffect(() => {
+    const normalizedMode = String(mode || "").trim().toLowerCase();
+    if (normalizedMode === "diagnostics") {
+      setOpcConfigSectionTab("diagnostics");
+      return;
+    }
+    if (normalizedMode === "logs" && opcConfigSectionTab === "diagnostics") {
+      setOpcConfigSectionTab("opcua");
+    }
+  }, [mode]);
+
   useEffect(() => {
     const msg = String(status || "").trim();
     if (!msg) return;
@@ -2780,6 +2794,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const opc = serverDiagnostics?.opc && typeof serverDiagnostics.opc === "object" ? serverDiagnostics.opc : {};
     const runtime = opc?.runtime && typeof opc.runtime === "object" ? opc.runtime : {};
     const plcTargets = Array.isArray(runtime?.plcTargets) ? runtime.plcTargets : [];
+    const deferredReadsByPlc = runtime?.deferredReadsByPlc && typeof runtime.deferredReadsByPlc === "object" ? runtime.deferredReadsByPlc : {};
+    const heartbeatFailureStreakByPlc = runtime?.heartbeatFailureStreakByPlc && typeof runtime.heartbeatFailureStreakByPlc === "object" ? runtime.heartbeatFailureStreakByPlc : {};
+    const connectFailureStreakByPlc = runtime?.connectFailureStreakByPlc && typeof runtime.connectFailureStreakByPlc === "object" ? runtime.connectFailureStreakByPlc : {};
+    const transportFailureStreakByPlc = runtime?.transportFailureStreakByPlc && typeof runtime.transportFailureStreakByPlc === "object" ? runtime.transportFailureStreakByPlc : {};
+    const lastPollAtByPlc = runtime?.lastPollAtByPlc && typeof runtime.lastPollAtByPlc === "object" ? runtime.lastPollAtByPlc : {};
+    const timeoutFailureWindowByPlc = runtime?.timeoutFailureWindowByPlc && typeof runtime.timeoutFailureWindowByPlc === "object" ? runtime.timeoutFailureWindowByPlc : {};
+    const issueLog = Array.isArray(runtime?.issueLog) ? runtime.issueLog : [];
+    const recentIssues = issueLog.slice(0, 8);
     const formatNum = (value) => (Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : "--");
     const formatBytes = (value) => {
       const n = Number(value);
@@ -2827,24 +2849,84 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <div><strong>MQTT:</strong> {runtime?.mqttEnabled ? (runtime?.mqttConnected ? "Connected" : "Enabled") : "Off"}</div>
           <div><strong>Read Timeout:</strong> {Number.isFinite(Number(runtime?.readTimeoutMs)) ? `${Math.round(Number(runtime.readTimeoutMs))} ms` : "--"}</div>
           <div><strong>Retry:</strong> {formatNum(runtime?.readRetryCount)} @ {Number.isFinite(Number(runtime?.readRetryDelayMs)) ? `${Math.round(Number(runtime.readRetryDelayMs))}ms` : "--"}</div>
+          <div><strong>Connect Timeout:</strong> {Number.isFinite(Number(runtime?.plcConnectTimeoutMs)) ? `${Math.round(Number(runtime.plcConnectTimeoutMs))} ms` : "--"}</div>
+          <div><strong>Receive Timeout:</strong> {Number.isFinite(Number(runtime?.plcReceiveTimeoutMs)) ? `${Math.round(Number(runtime.plcReceiveTimeoutMs))} ms` : "--"}</div>
+          <div><strong>Reconnect Delay:</strong> {Number.isFinite(Number(runtime?.reconnectDelayMs)) ? `${Math.round(Number(runtime.reconnectDelayMs))} ms` : "--"}</div>
+          <div><strong>Heartbeat:</strong> {runtime?.heartbeatEnabled === false ? "Off" : (Number.isFinite(Number(runtime?.heartbeatMs)) ? `${Math.round(Number(runtime.heartbeatMs))} ms` : "--")}</div>
+          <div><strong>Issue Count:</strong> {formatNum(runtime?.issueCount)}</div>
+          <div><strong>MQTT Error:</strong> {String(runtime?.mqttLastError || "").trim() || "--"}</div>
         </div>
         <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
           <strong>Quality Counts:</strong> {qualitySummary}
         </div>
-        <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
-          <strong>Active PLC Targets:</strong>{" "}
-          {plcTargets.length
-            ? plcTargets
-                .map((t) => {
-                  const name = String(t?.name || "").trim() || "(unnamed)";
+        {plcTargets.length ? (
+          <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ padding: "8px 10px", fontSize: 12, fontWeight: 700, background: "var(--bg-soft)" }}>PLC Health</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "var(--bg-soft)" }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>PLC</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Target</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Status</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Last Poll</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Deferred</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Connect</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Transport</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Heartbeat</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Timeout Window</th>
+                </tr>
+              </thead>
+              <tbody>
+                {plcTargets.map((t, idx) => {
+                  const name = String(t?.name || "").trim() || `(PLC ${idx + 1})`;
                   const host = String(t?.host || "").trim() || "--";
                   const slot = Number.isFinite(Number(t?.slot)) ? Math.round(Number(t.slot)) : 0;
-                  const connected = t?.connected === true ? "connected" : "disconnected";
-                  return `${name} ${host}/slot${slot} (${connected})`;
-                })
-                .join(" | ")
-            : "--"}
-        </div>
+                  const lastPollAt = Number(lastPollAtByPlc?.[name] || 0);
+                  const timeoutWindow = timeoutFailureWindowByPlc?.[name];
+                  const timeoutCount = Number(timeoutWindow?.count || 0);
+                  return (
+                    <tr key={`plc-health-${name}`} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={{ padding: "6px 8px" }}>{name}</td>
+                      <td style={{ padding: "6px 8px", color: "var(--text-muted)" }}>{host}/slot{slot}</td>
+                      <td style={{ padding: "6px 8px", color: t?.connected === true ? "#067647" : "#b42318" }}>
+                        {t?.connected === true ? "Connected" : "Disconnected"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>{lastPollAt > 0 ? new Date(lastPollAt).toLocaleTimeString() : "--"}</td>
+                      <td style={{ padding: "6px 8px" }}>{formatNum(deferredReadsByPlc?.[name] || 0)}</td>
+                      <td style={{ padding: "6px 8px" }}>{formatNum(connectFailureStreakByPlc?.[name] || 0)}</td>
+                      <td style={{ padding: "6px 8px" }}>{formatNum(transportFailureStreakByPlc?.[name] || 0)}</td>
+                      <td style={{ padding: "6px 8px" }}>{formatNum(heartbeatFailureStreakByPlc?.[name] || 0)}</td>
+                      <td style={{ padding: "6px 8px" }}>{timeoutCount > 0 ? formatNum(timeoutCount) : "--"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+        {recentIssues.length ? (
+          <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ padding: "8px 10px", fontSize: 12, fontWeight: 700, background: "var(--bg-soft)" }}>Recent OPC Issues</div>
+            <div style={{ maxHeight: 180, overflow: "auto" }}>
+              {recentIssues.map((issue, idx) => {
+                const at = Number(issue?.at || 0);
+                const severity = String(issue?.severity || "error").trim().toLowerCase();
+                const color = severity === "info" ? "var(--text-muted)" : severity === "warn" ? "#b54708" : "#b42318";
+                const scope = [String(issue?.plcName || "").trim(), String(issue?.tagKey || "").trim()].filter(Boolean).join(" ");
+                return (
+                  <div key={`opc-issue-${issue?.id || idx}`} style={{ padding: "8px 10px", borderTop: idx ? "1px solid var(--border)" : "none", fontSize: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                      <div style={{ color, fontWeight: 700 }}>{String(issue?.kind || severity || "issue")}</div>
+                      <div style={{ color: "var(--text-muted)" }}>{at > 0 ? new Date(at).toLocaleTimeString() : "--"}</div>
+                    </div>
+                    <div style={{ marginTop: 2 }}>{String(issue?.message || "").trim() || "--"}</div>
+                    {scope ? <div style={{ marginTop: 2, color: "var(--text-muted)" }}>{scope}</div> : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         {String(db?.error || "").trim() ? (
           <div style={{ marginTop: 6, fontSize: 12, color: "#b42318" }}>
             <strong>DB Error:</strong> {String(db.error)}
@@ -6956,14 +7038,17 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     ...p,
                     runtime: {
                       ...normalizeRuntimeConfig(p.runtime),
-                      multiReadEnabled: false,
-                      multiReadBatchSize: 8,
-                      maxReadsPerTick: 150,
-                      readTimeoutMs: 7000,
-                      readRetryCount: 3,
-                      readRetryDelayMs: 250,
-                      heartbeatEnabled: true,
-                      heartbeatMs: 8000,
+                      multiReadEnabled: true,
+                      multiReadBatchSize: 20,
+                      maxReadsPerTick: 500,
+                      readTimeoutMs: 4000,
+                      readRetryCount: 2,
+                      readRetryDelayMs: 100,
+                      plcConnectTimeoutMs: 5000,
+                      plcReceiveTimeoutMs: 15000,
+                      reconnectDelayMs: 1500,
+                      heartbeatEnabled: false,
+                      heartbeatMs: 5000,
                     },
                   }))
                 }
@@ -6986,6 +7071,9 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       readTimeoutMs: 3500,
                       readRetryCount: 1,
                       readRetryDelayMs: 60,
+                      plcConnectTimeoutMs: 5000,
+                      plcReceiveTimeoutMs: 15000,
+                      reconnectDelayMs: 1500,
                       heartbeatEnabled: false,
                     },
                   }))
@@ -7003,14 +7091,17 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     ...p,
                     runtime: {
                       ...normalizeRuntimeConfig(p.runtime),
-                      multiReadEnabled: false,
-                      multiReadBatchSize: 8,
-                      maxReadsPerTick: 120,
-                      readTimeoutMs: 7000,
-                      readRetryCount: 3,
-                      readRetryDelayMs: 250,
-                      heartbeatEnabled: true,
-                      heartbeatMs: 8000,
+                      multiReadEnabled: true,
+                      multiReadBatchSize: 12,
+                      maxReadsPerTick: 250,
+                      readTimeoutMs: 5000,
+                      readRetryCount: 2,
+                      readRetryDelayMs: 150,
+                      plcConnectTimeoutMs: 7000,
+                      plcReceiveTimeoutMs: 20000,
+                      reconnectDelayMs: 2000,
+                      heartbeatEnabled: false,
+                      heartbeatMs: 5000,
                     },
                   }))
                 }

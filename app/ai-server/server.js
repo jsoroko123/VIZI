@@ -25,6 +25,10 @@ const OPC_STATUS_STALE_MS = Math.max(
 );
 const OPC_WRITE_BRIDGE_URL = String(process.env.OPC_WRITE_BRIDGE_URL || "http://127.0.0.1:4851").replace(/\/+$/, "");
 const OPC_SERVER_KEY = process.env.OPC_SERVER_KEY || "";
+const OPC_BRIDGE_STATUS_TIMEOUT_MS = Math.max(
+  250,
+  Number.parseInt(String(process.env.OPC_BRIDGE_STATUS_TIMEOUT_MS || "1200"), 10) || 1200
+);
 const AI_SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_APP_ROOT = path.resolve(AI_SERVER_DIR, "..");
 
@@ -2197,6 +2201,27 @@ function getMicrosoftRedirectUri(req) {
 
 function isMicrosoftAuthConfigured() {
   return !!(MS_OAUTH_ENABLED && MS_OAUTH_CLIENT_ID && MS_OAUTH_CLIENT_SECRET);
+}
+
+async function loadBridgeStatusSnapshot() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), OPC_BRIDGE_STATUS_TIMEOUT_MS);
+  try {
+    const headers = {};
+    if (OPC_SERVER_KEY) headers["x-opc-key"] = OPC_SERVER_KEY;
+    const res = await fetch(`${OPC_WRITE_BRIDGE_URL}/internal/status`, {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`Bridge status request failed (${res.status})`);
+    }
+    const data = await res.json().catch(() => ({}));
+    return data && typeof data === "object" ? data : {};
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function normalizeAutomationTagKey(value) {
@@ -6011,14 +6036,57 @@ app.get("/api/opc/status", async (_req, res) => {
     );
     const staleAgeMs = freshnessAt > 0 ? Math.max(0, Date.now() - freshnessAt) : Number.POSITIVE_INFINITY;
     const isStale = staleAgeMs > OPC_STATUS_STALE_MS;
-    const effectiveStatus = isStale
-      ? {
+    let effectiveStatus = baseStatus;
+    if (isStale) {
+      try {
+        const bridgeStatus = await loadBridgeStatusSnapshot();
+        const bridgeConnections =
+          bridgeStatus?.connections && typeof bridgeStatus.connections === "object"
+            ? bridgeStatus.connections
+            : {};
+        const bridgeConnectedFlag =
+          typeof bridgeStatus?.connected === "boolean"
+            ? bridgeStatus.connected
+            : Object.values(bridgeConnections).some((value) => value === true);
+        if (bridgeConnectedFlag) {
+          effectiveStatus = {
+            ...baseStatus,
+            connected: true,
+            stale: false,
+            staleAgeMs,
+            bridgeFallback: true,
+            bridgeLastPollAt: bridgeStatus?.lastPollAt || null,
+            connections:
+              Object.keys(bridgeConnections).length > 0
+                ? bridgeConnections
+                : baseStatus?.connections,
+            runtime:
+              bridgeStatus?.runtime && typeof bridgeStatus.runtime === "object"
+                ? {
+                    ...(baseStatus?.runtime && typeof baseStatus.runtime === "object"
+                      ? baseStatus.runtime
+                      : {}),
+                    ...bridgeStatus.runtime,
+                  }
+                : baseStatus?.runtime,
+          };
+        } else {
+          effectiveStatus = {
+            ...baseStatus,
+            connected: false,
+            stale: true,
+            staleAgeMs,
+          };
+        }
+      } catch {
+        effectiveStatus = {
           ...baseStatus,
           connected: false,
           stale: true,
           staleAgeMs,
-        }
-      : baseStatus;
+        };
+      }
+    }
     maybeLogOpcConnectionState(effectiveStatus);
     res.json(effectiveStatus);
   } catch (err) {
@@ -9189,10 +9257,33 @@ app.put("/api/db/:table/config", async (req, res) => {
 app.post("/api/db/:table", async (req, res) => {
   try {
     const table = normalizeLegacyTableName(req.params.table);
-    const body = req.body || {};
+    const body = { ...(req.body || {}) };
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
       res.status(400).json({ error: "Invalid table name." });
       return;
+    }
+    // Coerce nullable product foreign keys for formula tables to avoid hard FK failures on stale IDs.
+    if (
+      (table === "formula_header" && Object.prototype.hasOwnProperty.call(body, "finished_product_id")) ||
+      (table === "formula_bom" && Object.prototype.hasOwnProperty.call(body, "ingredient_index"))
+    ) {
+      const field = table === "formula_header" ? "finished_product_id" : "ingredient_index";
+      const raw = body[field];
+      if (raw == null || String(raw).trim() === "") {
+        body[field] = null;
+      } else {
+        const text = String(raw).trim();
+        if (!/^\d+$/.test(text)) {
+          body[field] = null;
+        } else {
+          const productId = Number(text);
+          const { rows: productRows } = await pool.query(
+            `SELECT 1 FROM product WHERE id = $1 LIMIT 1`,
+            [productId]
+          );
+          body[field] = productRows.length ? productId : null;
+        }
+      }
     }
     const pk = await getPrimaryKey(table);
     const keys = Object.keys(body).filter((k) => !pk || k !== pk);
@@ -9230,6 +9321,29 @@ app.put("/api/db/:table/:id", async (req, res) => {
     if (!pk || !/^[a-zA-Z0-9_]+$/.test(pk)) {
       res.status(400).json({ error: "No primary key found for table." });
       return;
+    }
+    // Coerce nullable product foreign keys for formula tables to avoid hard FK failures on stale IDs.
+    if (
+      (table === "formula_header" && Object.prototype.hasOwnProperty.call(body, "finished_product_id")) ||
+      (table === "formula_bom" && Object.prototype.hasOwnProperty.call(body, "ingredient_index"))
+    ) {
+      const field = table === "formula_header" ? "finished_product_id" : "ingredient_index";
+      const raw = body[field];
+      if (raw == null || String(raw).trim() === "") {
+        body[field] = null;
+      } else {
+        const text = String(raw).trim();
+        if (!/^\d+$/.test(text)) {
+          body[field] = null;
+        } else {
+          const productId = Number(text);
+          const { rows: productRows } = await pool.query(
+            `SELECT 1 FROM product WHERE id = $1 LIMIT 1`,
+            [productId]
+          );
+          body[field] = productRows.length ? productId : null;
+        }
+      }
     }
     // Normalize/validate bin.product_id so FK failures become clear user errors.
     if (table === "bin" && Object.prototype.hasOwnProperty.call(body, "product_id")) {

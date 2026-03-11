@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r 'function getLiveValueForTag' c:/Projects/Vizi/app/src --include=*.js --include=*.jsx)"
+    ]
+  }
+}

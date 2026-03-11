@@ -84,6 +84,16 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
   const [designerTab, setDesignerTab] = useState("schema");
   const [listFieldsConfig, setListFieldsConfig] = useState([]);
   const [hiddenDetailColumnsText, setHiddenDetailColumnsText] = useState("");
+  const hiddenDetailSet = useMemo(
+    () =>
+      new Set(
+        String(hiddenDetailColumnsText || "")
+          .split(",")
+          .map((v) => String(v || "").trim())
+          .filter(Boolean)
+      ),
+    [hiddenDetailColumnsText]
+  );
 
   const [fkDraft, setFkDraft] = useState({
     connectionType: "many_to_one",
@@ -372,6 +382,26 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(String(data?.error || "Failed to save detail fields."));
+  }
+
+  async function setColumnHiddenOnDetails(columnName, hidden) {
+    const name = String(columnName || "").trim();
+    if (!name) return;
+    const ordered = schemaRows
+      .map((col) => String(col?.column_name || "").trim())
+      .filter(Boolean);
+    const nextSet = new Set(hiddenDetailSet);
+    if (hidden) nextSet.add(name);
+    else nextSet.delete(name);
+    const nextOrdered = ordered.filter((n) => nextSet.has(n));
+    const nextText = nextOrdered.join(", ");
+    setHiddenDetailColumnsText(nextText);
+    try {
+      await saveHiddenDetailColumns(nextText);
+      toastSuccess("Detail visibility updated.");
+    } catch (err) {
+      toastError(String(err?.message || "Failed to save detail visibility."));
+    }
   }
 
   useEffect(() => {
@@ -1107,35 +1137,15 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                 </button>
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 6, marginBottom: 8 }}>
-              <input
-                style={{ ...inputStyle, width: "100%" }}
-                value={hiddenDetailColumnsText}
-                placeholder="Hide on Details (comma-separated column names)"
-                onChange={(e) => setHiddenDetailColumnsText(e.target.value)}
-              />
-              <button
-                style={primaryButtonStyle}
-                onClick={() =>
-                  runAction(
-                    () => saveHiddenDetailColumns(hiddenDetailColumnsText),
-                    "Details hidden columns updated."
-                  )
-                }
-                title="Save hidden details"
-                aria-label="Save hidden details"
-              >
-                Save
-              </button>
-            </div>
             {selectedTable ? (
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", minWidth: 980, borderCollapse: "collapse", tableLayout: "fixed", fontSize: 12 }}>
+                <table style={{ width: "100%", minWidth: 1080, borderCollapse: "collapse", tableLayout: "fixed", fontSize: 12 }}>
                   <colgroup>
-                    <col style={{ width: "26%" }} />
-                    <col style={{ width: "26%" }} />
-                    <col style={{ width: "10%" }} />
-                    <col style={{ width: "26%" }} />
+                    <col style={{ width: "23%" }} />
+                    <col style={{ width: "22%" }} />
+                    <col style={{ width: "9%" }} />
+                    <col style={{ width: "22%" }} />
+                    <col style={{ width: "8%" }} />
                     <col style={{ width: "6%" }} />
                     <col style={{ width: "10%" }} />
                   </colgroup>
@@ -1145,6 +1155,7 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                       <th style={schemaHeaderCellStyle}>Type</th>
                       <th style={schemaHeaderCellStyle}>Nullable</th>
                       <th style={schemaHeaderCellStyle}>Default</th>
+                      <th style={schemaHeaderCellStyle}>Hide On Details</th>
                       <th style={schemaHeaderCellStyle}>PK</th>
                       <th style={schemaHeaderCellStyle}>Action</th>
                     </tr>
@@ -1222,6 +1233,11 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                               }))
                             }
                           />
+                        </td>
+                        <td style={schemaCellStyle}>
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                            <input type="checkbox" checked={false} disabled />
+                          </label>
                         </td>
                         <td style={schemaCellStyle}>
                           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>
@@ -1342,6 +1358,17 @@ export default function SqlDesigner({ embedded = false, selectedTableHint = "" }
                               }))
                             }
                           />
+                        </td>
+                        <td style={schemaCellStyle}>
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={hiddenDetailSet.has(String(col.column_name || ""))}
+                              onChange={(e) => {
+                                void setColumnHiddenOnDetails(col.column_name, e.target.checked);
+                              }}
+                            />
+                          </label>
                         </td>
                         <td style={schemaCellStyle}>
                           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12 }}>

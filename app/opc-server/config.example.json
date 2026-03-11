@@ -4,7 +4,7 @@
       "name": "PLC-1",
       "host": "192.168.1.10",
       "slot": 0,
-      "pollMs": 1000
+      "pollMs": 250
     }
   ],
   "opcua": {
@@ -12,20 +12,20 @@
     "resourcePath": "/UA/ControlLogix",
     "name": "ControlLogix"
   },
-  "pollMs": 1000,
+  "pollMs": 250,
   "runtime": {
     "opcConnectionEnabled": true,
-    "multiReadEnabled": false,
-    "multiReadBatchSize": 8,
-    "maxReadsPerTick": 150,
-    "readTimeoutMs": 7000,
-    "readRetryCount": 3,
-    "readRetryDelayMs": 250,
-    "plcConnectTimeoutMs": 20000,
-    "plcReceiveTimeoutMs": 60000,
-    "reconnectDelayMs": 3000,
+    "multiReadEnabled": true,
+    "multiReadBatchSize": 20,
+    "maxReadsPerTick": 500,
+    "readTimeoutMs": 4000,
+    "readRetryCount": 2,
+    "readRetryDelayMs": 100,
+    "plcConnectTimeoutMs": 5000,
+    "plcReceiveTimeoutMs": 15000,
+    "reconnectDelayMs": 1500,
     "heartbeatEnabled": true,
-    "heartbeatMs": 8000,
+    "heartbeatMs": 5000,
     "heartbeatFailureThreshold": 4,
     "readReconnectErrorThreshold": 4
   },
@@ -34,7 +34,7 @@
       "name": "Main",
       "prefix": "",
       "plcName": "PLC-1",
-      "samplingInterval": 1000,
+      "samplingInterval": 250,
       "enabled": true
     }
   ],

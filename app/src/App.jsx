@@ -151,7 +151,7 @@ const SCREEN_SIZE_PRESETS = [
 export default function App() {
   const { user, logout, updateProfile, changePassword, refresh } = useAuth();
   const initialStoredProjectId = readStoredActiveProjectId();
-  const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle"
+  const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle" | "junction"
   useEffect(() => {
     // Warm-load PLC/Code Gen chunk so opening drawer feels instant.
     import("./components/PlcAnalyzer").catch(() => {});
@@ -279,12 +279,15 @@ export default function App() {
   const overlayRefs = useRef(new Map()); // id -> <g> element containing imported inner
   const svgRef = useRef(null);
   const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
+  const motorHmiStateByOverlayRef = useRef(new Map());
 
   const shapesRef = useRef(shapes);
   const overlaysRef = useRef(svgOverlays);
   const selPolyRef = useRef(selectedIds);
   const selOverRef = useRef(selectedOverlayIds);
   const projectFileRef = useRef(null);
+  const splitNormalizeInFlightRef = useRef(false);
+  const skipNextSplitNormalizeRef = useRef(false);
   const svgRawCacheRef = useRef(new Map());
   const [projectHandle, setProjectHandle] = useState(null);
   const [projectName, setProjectName] = useState("Untitled");
@@ -917,7 +920,7 @@ export default function App() {
     pollStatus();
     const id = setInterval(
       pollStatus,
-      isPageVisible ? (isLiveMode ? 2000 : 5000) : 15000
+      isPageVisible ? (isLiveMode ? 350 : 2000) : 8000
     );
     return () => {
       alive = false;
@@ -1888,14 +1891,31 @@ export default function App() {
     const pulseResetValue = Object.prototype.hasOwnProperty.call(options || {}, "pulseResetValue")
       ? options.pulseResetValue
       : 0;
+    const applyOptimisticOpcValue = (nextValue) => {
+      const keys = [tagKey, legacyTagKey]
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean);
+      if (!keys.length) return;
+      setOpcLiveValues((prev) => {
+        const out = { ...(prev || {}) };
+        keys.forEach((entry) => {
+          out[entry] = nextValue;
+          out[entry.toLowerCase()] = nextValue;
+        });
+        return out;
+      });
+      setOpcLiveUpdatedAt(Date.now());
+    };
     try {
       setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: true }));
       setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: "" }));
       await writeOpcValue({ tagKey, legacyTagKey, value, uaType });
+      applyOptimisticOpcValue(value);
       if (isPulse) {
         window.setTimeout(async () => {
           try {
             await writeOpcValue({ tagKey, legacyTagKey, value: pulseResetValue, uaType });
+            applyOptimisticOpcValue(pulseResetValue);
           } catch {
             // ignore pulse reset errors
           }
@@ -4080,7 +4100,7 @@ export default function App() {
     liveMenuGroupsRef.current = normalizedGroups;
     setLiveMenuGroups(normalizedGroups);
 
-    pushHistory();
+    resetHistory();
     setScreens(incoming);
     hydrateScreenState(active);
 
@@ -6800,6 +6820,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     historyRef.current.future = []; // clear redo on new action
   }
 
+  function resetHistory() {
+    historyRef.current = { past: [], future: [] };
+  }
+
   function undo() {
     const h = historyRef.current;
     if (!h.past.length) return;
@@ -7302,19 +7326,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       for (const o of svgOverlays) {
         const bb = overlayLocalBBox(o.id);
         if (!bb) continue;
-        const wr = overlayWorldRect(o, bb);
-        const ox = wr.x;
-        const oy = wr.y;
-        const ow = wr.w;
-        const oh = wr.h;
-        const cx = ox + ow / 2;
-        const cy = oy + oh / 2;
-        const candidates = [
-          { x: cx, y: oy },
-          { x: ox + ow, y: cy },
-          { x: cx, y: oy + oh },
-          { x: ox, y: cy },
-        ];
+        const candidates = getOverlayConnectionSnapPoints(o, bb);
         for (const c of candidates) {
           const dx = x - c.x;
           const dy = y - c.y;
@@ -7500,6 +7512,49 @@ const CONTENT_FIT_HEADROOM = 0.94;
       w: sx * bb.width,
       h: sy * bb.height,
     };
+  }
+
+  function getOverlayConnectionSnapPoints(overlay, bb) {
+    if (!overlay || !bb) return [];
+    const wr = overlayWorldRect(overlay, bb);
+    const eType = String(resolveOverlayEType(overlay) || overlay?.eType || "").trim().toLowerCase();
+    const cx = wr.x + wr.w / 2;
+    const cy = wr.y + wr.h / 2;
+    if (eType.startsWith("bin")) {
+      return [{ x: wr.x + wr.w * 0.42, y: wr.y + wr.h }];
+    }
+    return [
+      { x: cx, y: wr.y },
+      { x: wr.x + wr.w, y: cy },
+      { x: cx, y: wr.y + wr.h },
+      { x: wr.x, y: cy },
+    ];
+  }
+
+  function snapPointToNearestOverlayConnection(p, threshold = 24) {
+    const worldPoint = {
+      x: Number(p?.x) || 0,
+      y: Number(p?.y) || 0,
+    };
+    const snapRadius = Math.max(1, Number(threshold) || 24) / Math.max(zoom || 1, 0.0001);
+    let best = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const overlay of overlaysRef.current || []) {
+      const bb = overlayLocalBBox(overlay?.id);
+      if (!bb) continue;
+      const candidates = getOverlayConnectionSnapPoints(overlay, bb);
+      for (const candidate of candidates) {
+        const dx = worldPoint.x - (Number(candidate?.x) || 0);
+        const dy = worldPoint.y - (Number(candidate?.y) || 0);
+        const dist = Math.hypot(dx, dy);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = { x: Number(candidate?.x) || 0, y: Number(candidate?.y) || 0 };
+        }
+      }
+    }
+    if (best && bestDist <= snapRadius) return best;
+    return worldPoint;
   }
 
   function worldFromLocal(o, lx, ly) {
@@ -8393,12 +8448,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
   // ---------- Polyline drawing/editing ----------
   function startPolylineAt(p) {
     pushHistory();
+    const startPoint = snapPointToNearestPolylineEndpoint(p, 24);
     const id = uid();
     const poly = {
       id,
       type: "polyline",
       tagPath: "", // ? NEW
-      points: [p, { x: p.x, y: p.y }], // last is preview
+      points: [startPoint, { x: startPoint.x, y: startPoint.y }], // last is preview
       stroke: "#808080",
       fill: "transparent",
       strokeWidth: 3,
@@ -8427,7 +8483,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const lastFixed = fixed[fixed.length - 1];
         const firstFixed = fixed[0];
         const SNAP_DIST = 12;
-        let nextP = p;
+        let nextP = snapPointToNearestPolylineEndpoint(p, 24, {
+          excludeShapeId: id,
+          excludeIndexes: [0, fixed.length],
+        });
         if (firstFixed && distance(p, firstFixed) <= SNAP_DIST) {
           nextP = { x: firstFixed.x, y: firstFixed.y };
         }
@@ -8441,31 +8500,152 @@ const CONTENT_FIT_HEADROOM = 0.94;
     );
   }
 
+  function projectPointToSegmentForSplit(pt, a, b) {
+    const px = Number(pt?.x) || 0;
+    const py = Number(pt?.y) || 0;
+    const ax = Number(a?.x) || 0;
+    const ay = Number(a?.y) || 0;
+    const bx = Number(b?.x) || 0;
+    const by = Number(b?.y) || 0;
+    const abx = bx - ax;
+    const aby = by - ay;
+    const ab2 = abx * abx + aby * aby;
+    if (ab2 <= 1e-9) {
+      const dx = px - ax;
+      const dy = py - ay;
+      return { point: { x: ax, y: ay }, t: 0, dist2: dx * dx + dy * dy };
+    }
+    const apx = px - ax;
+    const apy = py - ay;
+    const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / ab2));
+    const qx = ax + abx * t;
+    const qy = ay + aby * t;
+    const dx = px - qx;
+    const dy = py - qy;
+    return { point: { x: qx, y: qy }, t, dist2: dx * dx + dy * dy };
+  }
+
+  function splitConnectedPolylineSegments(shapeList, sourcePolylineId = "") {
+    const list = Array.isArray(shapeList) ? shapeList : [];
+    const sourceId = String(sourcePolylineId || "").trim();
+    const threshold = 18 / Math.max(zoom || 1, 0.0001);
+    let changed = false;
+    const result = [];
+
+    for (const shape of list) {
+      if (!(String(shape?.type || "").toLowerCase() === "polyline" || Array.isArray(shape?.points))) {
+        result.push(shape);
+        continue;
+      }
+      const shapeId = String(shape?.id || "");
+      const pts = Array.isArray(shape?.points) ? shape.points : [];
+      if (!shapeId || pts.length < 2 || shapeId === sourceId) {
+        result.push(shape);
+        continue;
+      }
+
+      let bestSplit = null;
+      for (const other of list) {
+        const otherId = String(other?.id || "");
+        if (!otherId || otherId === shapeId) continue;
+        const otherPts = Array.isArray(other?.points) ? other.points : [];
+        if (otherPts.length < 2) continue;
+        const endpoints = [otherPts[0], otherPts[otherPts.length - 1]];
+        for (const endpoint of endpoints) {
+          if (!endpoint) continue;
+          for (let i = 0; i < pts.length - 1; i += 1) {
+            const a = pts[i];
+            const b = pts[i + 1];
+            const proj = projectPointToSegmentForSplit(endpoint, a, b);
+            if (proj.dist2 > threshold * threshold) continue;
+            if (proj.t <= 0.08 || proj.t >= 0.92) continue;
+            if (!bestSplit || proj.dist2 < bestSplit.dist2) {
+              bestSplit = {
+                segmentIndex: i,
+                point: { x: Number(proj.point?.x) || 0, y: Number(proj.point?.y) || 0 },
+                dist2: proj.dist2,
+              };
+            }
+          }
+        }
+      }
+
+      if (!bestSplit) {
+        result.push(shape);
+        continue;
+      }
+
+      const insertAt = Math.max(0, Math.min(pts.length - 2, Number(bestSplit.segmentIndex) || 0));
+      const splitPoint = bestSplit.point;
+      const nextPoints = [
+        ...pts.slice(0, insertAt + 1),
+        splitPoint,
+        ...pts.slice(insertAt + 1),
+      ];
+      result.push({ ...shape, points: nextPoints });
+      changed = true;
+    }
+
+    return changed ? result : list;
+  }
+
+  useEffect(() => {
+    if (splitNormalizeInFlightRef.current) return;
+    if (skipNextSplitNormalizeRef.current) {
+      skipNextSplitNormalizeRef.current = false;
+      return;
+    }
+    if (drawing || dragHandle || dragAll || shapeResize || overlayResize) return;
+    const normalized = splitConnectedPolylineSegments(shapesRef.current || []);
+    if (normalized === (shapesRef.current || [])) return;
+    splitNormalizeInFlightRef.current = true;
+    setShapes(normalized);
+    shapesRef.current = normalized;
+    window.setTimeout(() => {
+      splitNormalizeInFlightRef.current = false;
+    }, 0);
+  }, [shapes, drawing, dragHandle, dragAll, shapeResize, overlayResize]);
+
   function finishPolyline() {
     pushHistory();
     if (!drawing || drawing.mode !== "draw-poly") return;
     const id = drawing.id;
+    // Prevent immediate background re-split pass from nudging the just-committed endpoint.
+    skipNextSplitNormalizeRef.current = true;
 
-    setShapes((prev) =>
-      prev.flatMap((s) => {
+    setShapes((prev) => {
+      const finished = prev.flatMap((s) => {
         // keep everything else (including text)
         if (s.id !== id) return [s];
 
         // only polylines can be finished here
         if (s.type !== "polyline" || !Array.isArray(s.points)) return [s];
 
-        const fixed = s.points.slice(0, -1); // remove preview point
+        const fixed = s.points.slice(0, -1);
+        const preview = s.points[s.points.length - 1];
+        const lastFixed = fixed[fixed.length - 1];
+        const finalPoints =
+          preview &&
+          (!lastFixed ||
+            Math.hypot(
+              (Number(preview?.x) || 0) - (Number(lastFixed?.x) || 0),
+              (Number(preview?.y) || 0) - (Number(lastFixed?.y) || 0)
+            ) > 0.001)
+            ? [...fixed, { x: Number(preview?.x) || 0, y: Number(preview?.y) || 0 }]
+            : fixed;
 
         // if too short, drop ONLY this polyline
-        if (fixed.length < 2) return [];
+        if (finalPoints.length < 2) return [];
 
-        return [{ ...s, points: fixed }];
-      })
-    );
+        return [{ ...s, points: finalPoints }];
+      });
+      const normalized = splitConnectedPolylineSegments(finished, id);
+      shapesRef.current = normalized;
+      return normalized;
+    });
 
     setDrawing(null);
     clearSelection();
-    setTool("select");
     scheduleProjectAutoSave();
   }
 
@@ -9586,6 +9766,212 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
+  function snapPointToNearestPolylineConnection(p, threshold = 24) {
+    const worldPoint = {
+      x: Number(p?.x) || 0,
+      y: Number(p?.y) || 0,
+    };
+    const snapRadius = Math.max(1, Number(threshold) || 24) / Math.max(zoom || 1, 0.0001);
+    let best = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const s of shapesRef.current || []) {
+      if (!(String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points))) continue;
+      const pts = Array.isArray(s?.points) ? s.points : [];
+      if (pts.length < 2) continue;
+      for (const ptNode of pts) {
+        const dx = worldPoint.x - (Number(ptNode?.x) || 0);
+        const dy = worldPoint.y - (Number(ptNode?.y) || 0);
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) {
+          bestDist = d;
+          best = { x: Number(ptNode?.x) || 0, y: Number(ptNode?.y) || 0 };
+        }
+      }
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        const ax = Number(a?.x) || 0;
+        const ay = Number(a?.y) || 0;
+        const bx = Number(b?.x) || 0;
+        const by = Number(b?.y) || 0;
+        const abx = bx - ax;
+        const aby = by - ay;
+        const ab2 = abx * abx + aby * aby;
+        let t = 0;
+        if (ab2 > 1e-9) {
+          t = ((worldPoint.x - ax) * abx + (worldPoint.y - ay) * aby) / ab2;
+        }
+        const tt = Math.max(0, Math.min(1, t));
+        const qx = ax + abx * tt;
+        const qy = ay + aby * tt;
+        const d = Math.hypot(worldPoint.x - qx, worldPoint.y - qy);
+        if (d < bestDist) {
+          bestDist = d;
+          best = { x: qx, y: qy };
+        }
+      }
+    }
+    if (best && bestDist <= snapRadius) return best;
+    return worldPoint;
+  }
+
+  function snapPointToNearestPolylineEndpoint(p, threshold = 24, options = {}) {
+    const worldPoint = {
+      x: Number(p?.x) || 0,
+      y: Number(p?.y) || 0,
+    };
+    const snapRadius = Math.max(1, Number(threshold) || 24) / Math.max(zoom || 1, 0.0001);
+    const excludeShapeId = String(options?.excludeShapeId || "").trim();
+    const excludeIndexes = new Set(
+      (Array.isArray(options?.excludeIndexes) ? options.excludeIndexes : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value))
+    );
+    let best = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const s of shapesRef.current || []) {
+      if (!(String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points))) continue;
+      const shapeId = String(s?.id || "");
+      const pts = Array.isArray(s?.points) ? s.points : [];
+      if (pts.length < 2) continue;
+      const endpoints = [
+        { point: pts[0], index: 0 },
+        { point: pts[pts.length - 1], index: pts.length - 1 },
+      ];
+      for (const endpoint of endpoints) {
+        if (!endpoint?.point) continue;
+        if (shapeId && shapeId === excludeShapeId && excludeIndexes.has(Number(endpoint.index))) continue;
+        const ex = Number(endpoint.point?.x);
+        const ey = Number(endpoint.point?.y);
+        if (!Number.isFinite(ex) || !Number.isFinite(ey)) continue;
+        const d = Math.hypot(worldPoint.x - ex, worldPoint.y - ey);
+        if (d < bestDist) {
+          bestDist = d;
+          best = { x: ex, y: ey };
+        }
+      }
+    }
+    if (best && bestDist <= snapRadius) return best;
+    return worldPoint;
+  }
+
+  function getNearestPolylineEndpointSnap(p, threshold = 24, options = {}) {
+    const worldPoint = {
+      x: Number(p?.x) || 0,
+      y: Number(p?.y) || 0,
+    };
+    const snapRadius = Math.max(1, Number(threshold) || 24) / Math.max(zoom || 1, 0.0001);
+    const excludeShapeId = String(options?.excludeShapeId || "").trim();
+    const excludeIndexes = new Set(
+      (Array.isArray(options?.excludeIndexes) ? options.excludeIndexes : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value))
+    );
+    let bestPoint = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const s of shapesRef.current || []) {
+      if (!(String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points))) continue;
+      const shapeId = String(s?.id || "");
+      const pts = Array.isArray(s?.points) ? s.points : [];
+      if (pts.length < 2) continue;
+      const endpoints = [
+        { point: pts[0], index: 0 },
+        { point: pts[pts.length - 1], index: pts.length - 1 },
+      ];
+      for (const endpoint of endpoints) {
+        if (!endpoint?.point) continue;
+        if (shapeId && shapeId === excludeShapeId && excludeIndexes.has(Number(endpoint.index))) continue;
+        const ex = Number(endpoint.point?.x);
+        const ey = Number(endpoint.point?.y);
+        if (!Number.isFinite(ex) || !Number.isFinite(ey)) continue;
+        const d = Math.hypot(worldPoint.x - ex, worldPoint.y - ey);
+        if (d < bestDist) {
+          bestDist = d;
+          bestPoint = { x: ex, y: ey };
+        }
+      }
+    }
+    return {
+      snapped: !!bestPoint && bestDist <= snapRadius,
+      point: bestPoint && bestDist <= snapRadius ? bestPoint : worldPoint,
+    };
+  }
+
+  function getSnapOffsetForMovedPolylineEndpoints(polyPayloads, dx, dy, threshold = 24) {
+    const payloads = Array.isArray(polyPayloads) ? polyPayloads : [];
+    if (!payloads.length) return { dx: 0, dy: 0 };
+    const snapRadius = Math.max(1, Number(threshold) || 24) / Math.max(zoom || 1, 0.0001);
+    const excludedIds = new Set(payloads.map((item) => String(item?.id || "")).filter(Boolean));
+    let best = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+
+    for (const payload of payloads) {
+      const movedPoints = Array.isArray(payload?.origPoints)
+        ? payload.origPoints.map((pt) => ({
+            x: Number(pt?.x || 0) + Number(dx || 0),
+            y: Number(pt?.y || 0) + Number(dy || 0),
+          }))
+        : [];
+      if (movedPoints.length < 2) continue;
+      const movedEndpoints = [movedPoints[0], movedPoints[movedPoints.length - 1]];
+      for (const movedEndpoint of movedEndpoints) {
+        for (const s of shapesRef.current || []) {
+          if (!(String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points))) continue;
+          const shapeId = String(s?.id || "");
+          if (excludedIds.has(shapeId)) continue;
+          const pts = Array.isArray(s?.points) ? s.points : [];
+          if (pts.length < 2) continue;
+          const candidates = [pts[0], pts[pts.length - 1]];
+          for (const candidate of candidates) {
+            if (!candidate) continue;
+            const cx = Number(candidate?.x);
+            const cy = Number(candidate?.y);
+            if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+            const dist = Math.hypot((Number(movedEndpoint.x) || 0) - cx, (Number(movedEndpoint.y) || 0) - cy);
+            if (dist < bestDist) {
+              bestDist = dist;
+              best = {
+                dx: cx - (Number(movedEndpoint.x) || 0),
+                dy: cy - (Number(movedEndpoint.y) || 0),
+              };
+            }
+          }
+        }
+      }
+    }
+
+    if (best && bestDist <= snapRadius) return best;
+    return { dx: 0, dy: 0 };
+  }
+
+  function startJunctionAt(p) {
+    pushHistory();
+    const snapped = snapPointToNearestPolylineConnection(p, 24);
+    const id = uid();
+    const size = 18;
+    const junction = {
+      id,
+      type: "circle",
+      junctionNode: true,
+      x: (Number(snapped?.x) || 0) - size / 2,
+      y: (Number(snapped?.y) || 0) - size / 2,
+      width: size,
+      height: size,
+      stroke: "#2b6cff",
+      strokeWidth: 2,
+      fill: "#ffffff",
+      lineStyle: "solid",
+      tagPath: "",
+    };
+    setShapes((prev) => [...prev, junction]);
+    setSelectedIds([id]);
+    setSelectedOverlayIds([]);
+    setEditingId(null);
+    setDrawing(null);
+    setShowHUD(false);
+    scheduleProjectAutoSave();
+  }
+
   function applySingleScrewAnimate(nextValue) {
     if (!isSingle || singleKind !== "SVG" || !singleId) return;
     const enabled = Boolean(nextValue);
@@ -10632,6 +11018,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
+    if (tool === "junction") {
+      startJunctionAt(p);
+      return;
+    }
+
     if (tool === "select") {
       const panModifier = !!(e.altKey || e.metaKey || e.ctrlKey);
       if (panModifier) {
@@ -10685,6 +11076,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
       if (!drawing) return;
       if (drawing.mode === "draw-poly") {
+        // Ensure Enter commits the same point currently shown by preview even when a RAF mousemove is pending.
+        const pendingEvt = pendingMouseMoveRef.current;
+        if (pendingEvt) {
+          pendingMouseMoveRef.current = null;
+          if (mouseMoveRafRef.current) {
+            window.cancelAnimationFrame(mouseMoveRafRef.current);
+            mouseMoveRafRef.current = 0;
+          }
+          onMouseMove(pendingEvt);
+        }
         finishPolyline();
         return;
       }
@@ -11018,6 +11419,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
             nextP = constrainHV(last, nextP);
           }
 
+          const endpointSnap = getNearestPolylineEndpointSnap(nextP, 24, {
+            excludeShapeId: id,
+            excludeIndexes: [0, pts.length - 1],
+          });
+          nextP = endpointSnap.point;
+
           const first = fixed[0];
           const SNAP_DIST = 12;
           if (first && distance(nextP, first) <= SNAP_DIST) {
@@ -11026,7 +11433,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
           // Smooth preview updates to reduce micro-jitter while drawing.
           // Keep ALT constrained mode unfiltered for precise orthogonal segments.
-          if (!e.altKey && prevPreview) {
+          if (!e.altKey && prevPreview && !endpointSnap.snapped) {
             nextP = {
               x: prevPreview.x + (nextP.x - prevPreview.x) * PREVIEW_SMOOTH_ALPHA,
               y: prevPreview.y + (nextP.y - prevPreview.y) * PREVIEW_SMOOTH_ALPHA,
@@ -11228,11 +11635,20 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (maybeAutoPanDuringDrag(e)) {
         p = drawing?.mode === "draw-poly" ? svgPoint(e, { snapToGrid: true }) : svgPoint(e, { snapToGrid: false });
       }
+      const draggedShape = shapesRef.current.find((s) => s.id === dragHandle.id);
+      const draggedPointCount = Array.isArray(draggedShape?.points) ? draggedShape.points.length : 0;
+      const isEndpoint = dragHandle.index === 0 || dragHandle.index === draggedPointCount - 1;
+      const snappedPoint = isEndpoint
+        ? snapPointToNearestPolylineEndpoint(p, 24, {
+            excludeShapeId: dragHandle.id,
+            excludeIndexes: [dragHandle.index],
+          })
+        : p;
       setShapes((prev) => {
         const next = prev.map((s) => {
           if (s.id !== dragHandle.id) return s;
           const pts = s.points.slice();
-          pts[dragHandle.index] = { x: p.x, y: p.y };
+          pts[dragHandle.index] = { x: snappedPoint.x, y: snappedPoint.y };
           return { ...s, points: pts };
         });
         shapesRef.current = next;
@@ -11255,6 +11671,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const dragOverlayById = new Map(
         (Array.isArray(dragAll.overlays) ? dragAll.overlays : []).map((item) => [String(item?.id || ""), item])
       );
+      const draggedPolylinePayloads = (Array.isArray(dragAll.shapes) ? dragAll.shapes : []).filter(
+        (item) => item?.kind === "poly" && Array.isArray(item?.origPoints)
+      );
+      const polylineSnapOffset = getSnapOffsetForMovedPolylineEndpoints(draggedPolylinePayloads, dx, dy, 24);
 
       if (dragShapeById.size) {
         setShapes((prev) => {
@@ -11292,7 +11712,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
             }
 
             if (rec.kind === "poly" && Array.isArray(s.points)) {
-              const moved = rec.origPoints.map((pt) => ({ x: pt.x + dx, y: pt.y + dy }));
+              const moved = rec.origPoints.map((pt) => ({
+                x: pt.x + dx + Number(polylineSnapOffset?.dx || 0),
+                y: pt.y + dy + Number(polylineSnapOffset?.dy || 0),
+              }));
               const bb = bboxOfPoints(moved);
               if (!bb) return { ...s, points: moved };
               let shiftX = 0;
@@ -11860,6 +12283,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const selectedShapeItems = (Array.isArray(shapesRef.current) ? shapesRef.current : []).filter(
       (s) => (selectedIds || []).includes(s?.id)
     );
+    const onlyJunctionNodesSelected =
+      selectedShapeItems.length > 0 &&
+      selectedShapeItems.every((s) => s?.junctionNode === true);
+    if (onlyJunctionNodesSelected) return null;
     const onlyPolylinesSelected =
       selectedShapeItems.length > 0 &&
       selectedShapeItems.every(
@@ -12354,6 +12781,65 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isLiveMode) {
+      motorHmiStateByOverlayRef.current = new Map();
+      return;
+    }
+    const prevMap = motorHmiStateByOverlayRef.current || new Map();
+    const nextMap = new Map();
+    const overlays = Array.isArray(svgOverlays) ? svgOverlays : [];
+    const normalizeMotorHmiState = (rawValue) => {
+      const rawText = String(rawValue ?? "").trim();
+      if (!rawText) return { key: "", label: "-" };
+      const lower = rawText.toLowerCase();
+      const asNumber = Number(rawText);
+      if (Number.isFinite(asNumber)) {
+        if (asNumber === 1) return { key: "1", label: "Stopped" };
+        if (asNumber === 2) return { key: "2", label: "Starting" };
+        if (asNumber === 4) return { key: "4", label: "Started" };
+        if (asNumber === 6) return { key: "6", label: "Stopping" };
+      }
+      if (lower.includes("starting")) return { key: "starting", label: "Starting" };
+      if (lower.includes("stopping")) return { key: "stopping", label: "Stopping" };
+      if (lower.includes("started")) return { key: "started", label: "Started" };
+      if (lower.includes("stopped")) return { key: "stopped", label: "Stopped" };
+      return { key: lower, label: rawText };
+    };
+    for (const overlay of overlays) {
+      const eType = resolveOverlayEType(overlay, { directOnly: true });
+      if (!isMotorEType(eType)) continue;
+      const overlayId = String(overlay?.id || "").trim();
+      if (!overlayId) continue;
+      const hmiStatePath = resolveMotorCommandTagPath(
+        overlay,
+        ["HMI_State", "HMIState", "i_HMIState", "o_HMIState", "State"],
+        { strict: true }
+      );
+      if (!hmiStatePath) continue;
+      const resolvedStatePath = findLiveTagPathMatch([hmiStatePath]) || hmiStatePath;
+      const rawStateValue =
+        Object.prototype.hasOwnProperty.call(opcLiveValues || {}, resolvedStatePath)
+          ? opcLiveValues[resolvedStatePath]
+          : opcLiveValues?.[String(resolvedStatePath || "").toLowerCase()];
+      const currentState = normalizeMotorHmiState(rawStateValue);
+      nextMap.set(overlayId, currentState);
+      const prevState = prevMap.get(overlayId);
+      if (!prevState || prevState.key === currentState.key) continue;
+      if (typeof window !== "undefined" && typeof window.viziLog === "function") {
+        const motorName = String(getOverlayPopupTitle(overlay) || overlay?.name || overlayId).trim() || overlayId;
+        window.viziLog("info", `Motor HMI state changed: ${motorName}`, {
+          source: "live.motor.hmi_state",
+          overlayId,
+          from: String(prevState.label || "-"),
+          to: String(currentState.label || "-"),
+          path: resolvedStatePath,
+        });
+      }
+    }
+    motorHmiStateByOverlayRef.current = nextMap;
+  }, [isLiveMode, svgOverlays, opcLiveValues]);
 
   useEffect(() => {
     if (!showUserDrawer) return;
@@ -14260,6 +14746,23 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   <circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="2" />
                 </svg>
                 {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Circle</span> : null}
+              </button>
+              <button
+                className="top-menu-btn"
+                title="Junction Node"
+                style={dockToolButtonStyle(tool === "junction")}
+                onClick={() => {
+                  setTool("junction");
+                  setDrawing(null);
+                  exitEditMode();
+                  setSelectedOverlayIds([]);
+                }}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="2" fill="white" />
+                  <path d="M12 2v5M12 17v5M2 12h5M17 12h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Junction</span> : null}
               </button>
               <button
                 className="top-menu-btn"
@@ -16942,9 +17445,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                             }}
                           >
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                              <path d="M7 4h7l3 3v13H7z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-                              <path d="M14 4v4h4" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-                              <path d="M10 13h6M10 16h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                              <path d="M6 12h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                              <path d="M13 7l5 5-5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                             </svg>
                           </button>
                         ) : null}
@@ -18263,3 +18765,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
     </div>
   );
 }
+
+
+

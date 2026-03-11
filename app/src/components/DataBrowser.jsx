@@ -58,6 +58,14 @@ export default function DataBrowser({
   const [childRelationErrorByTable, setChildRelationErrorByTable] = useState({});
   const [childRelationActiveTab, setChildRelationActiveTab] = useState("");
   const [detailViewTab, setDetailViewTab] = useState("fields");
+  const [formulaBomFilter, setFormulaBomFilter] = useState("");
+  const [formulaBomProductOptions, setFormulaBomProductOptions] = useState([]);
+  const [formulaBomDraftByRow, setFormulaBomDraftByRow] = useState({});
+  const [formulaBomDraftBaselineByRow, setFormulaBomDraftBaselineByRow] = useState({});
+  const [formulaBomBusyByRow, setFormulaBomBusyByRow] = useState({});
+  const [formulaBomAddBusy, setFormulaBomAddBusy] = useState(false);
+  const [formulaBomEditEnabled, setFormulaBomEditEnabled] = useState(false);
+  const [formulaBomSavingAll, setFormulaBomSavingAll] = useState(false);
   const [listFieldEditMode, setListFieldEditMode] = useState(false);
   const [listFieldSavedSignature, setListFieldSavedSignature] = useState("");
   const TABLE_FETCH_BATCH = 200;
@@ -129,6 +137,7 @@ export default function DataBrowser({
   const normalizedEmbeddedRouteName =
     String(embeddedRouteName || "").trim() || normalizedEmbeddedRouteId;
   const isJobsTable = String(currentTable || "").trim().toLowerCase() === "jobs";
+  const isFormulaHeaderTable = String(currentTable || "").trim().toLowerCase() === "formula_header";
   const showJobsRouteContext = isJobsTable && !!normalizedEmbeddedRouteId;
   const rowRouteId = (row) =>
     String(row?.route_id ?? row?.routeid ?? row?.routeId ?? row?.route ?? "").trim();
@@ -176,12 +185,14 @@ export default function DataBrowser({
       seen.add(key);
       out.push(key);
     });
+    // "Hide on details" should only apply on the live details page.
+    if (hideListFieldControls) return out;
     all.forEach((name) => {
       if (seen.has(name)) return;
       out.push(name);
     });
     return out;
-  }, [columns, detailFieldOrder]);
+  }, [columns, detailFieldOrder, hideListFieldControls]);
   const listFieldCandidates = useMemo(() => {
     const available = (columns || [])
       .map((c) => String(c?.column_name || "").trim())
@@ -306,6 +317,30 @@ export default function DataBrowser({
     ...buttonBase,
     background: "transparent",
   };
+  const detailTabsBarStyle = {
+    display: "inline-flex",
+    alignItems: "flex-end",
+    gap: 10,
+    borderBottom: "1px solid var(--border)",
+    paddingBottom: 0,
+    marginLeft: 2,
+  };
+  const detailTabButtonStyle = (active, disabled = false) => ({
+    appearance: "none",
+    border: "none",
+    borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
+    borderRadius: 0,
+    outline: "none",
+    boxShadow: "none",
+    background: "transparent",
+    color: active ? "var(--text)" : "var(--text-muted)",
+    padding: "6px 2px 7px",
+    lineHeight: 1,
+    fontSize: 12,
+    fontWeight: active ? 700 : 600,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.45 : 1,
+  });
   const iconActionButton = {
     border: "1px solid var(--border)",
     background: "transparent",
@@ -888,9 +923,91 @@ export default function DataBrowser({
   }, [childRelations, detailViewTab]);
 
   useEffect(() => {
+    if (hideListFieldControls && detailViewTab === "relations") {
+      setDetailViewTab("fields");
+    }
+  }, [hideListFieldControls, detailViewTab]);
+
+  useEffect(() => {
+    const hasFormulaBomRelation = childRelations.some((relation) => {
+      const tableKey = String(relation?.table || "").trim().toLowerCase();
+      const fkKey = String(relation?.childFkColumn || "").trim().toLowerCase();
+      return tableKey === "formula_bom" && fkKey === "header_index";
+    });
+    if (detailViewTab === "bom" && !(isFormulaHeaderTable && hasFormulaBomRelation)) {
+      setDetailViewTab("fields");
+    }
+  }, [childRelations, detailViewTab, isFormulaHeaderTable]);
+
+  useEffect(() => {
     // Default to field editing when switching records/tables so columns are never "missing" by default.
     setDetailViewTab("fields");
   }, [currentTable, selectedId, detailId]);
+
+  useEffect(() => {
+    setFormulaBomFilter("");
+    setFormulaBomEditEnabled(false);
+  }, [currentTable, selectedId, detailId]);
+
+  useEffect(() => {
+    const relation = childRelations.find((row) => {
+      const tableKey = String(row?.table || "").trim().toLowerCase();
+      const fkKey = String(row?.childFkColumn || "").trim().toLowerCase();
+      return tableKey === "formula_bom" && fkKey === "header_index";
+    });
+    if (!isFormulaHeaderTable || !relation) {
+      setFormulaBomDraftByRow({});
+      setFormulaBomDraftBaselineByRow({});
+      setFormulaBomEditEnabled(false);
+      return;
+    }
+    const linkedRows = Array.isArray(relation?.linkedRows) ? relation.linkedRows : [];
+    const next = {};
+    linkedRows.forEach((row) => {
+      const rowId = getRelationRowId(row, relation);
+      if (!rowId) return;
+      next[rowId] = {
+        ingredient_index: row?.ingredient_index == null ? "" : String(row.ingredient_index),
+        percentage: row?.percentage == null ? "" : String(row.percentage),
+        weight: row?.weight == null ? "" : String(row.weight),
+      };
+    });
+    setFormulaBomDraftByRow(next);
+    setFormulaBomDraftBaselineByRow(next);
+  }, [childRelations, isFormulaHeaderTable]);
+
+  useEffect(() => {
+    let alive = true;
+    async function loadBomProductOptions() {
+      if (!isFormulaHeaderTable) {
+        if (alive) setFormulaBomProductOptions([]);
+        return;
+      }
+      try {
+        const res = await fetch("/api/db/product?limit=2000");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load ingredients.");
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        const options = rows
+          .map((row) => {
+            const value = row?.id == null ? "" : String(row.id).trim();
+            if (!value) return null;
+            const name = String(row?.name || "").trim();
+            const description = String(row?.description || "").trim();
+            const label = name || description || value;
+            return { value, label };
+          })
+          .filter(Boolean);
+        if (alive) setFormulaBomProductOptions(options);
+      } catch {
+        if (alive) setFormulaBomProductOptions([]);
+      }
+    }
+    void loadBomProductOptions();
+    return () => {
+      alive = false;
+    };
+  }, [isFormulaHeaderTable]);
 
   useEffect(() => {
     setListFieldEditMode(false);
@@ -1371,6 +1488,441 @@ export default function DataBrowser({
     );
   }
 
+  function getFormulaBomRelation() {
+    return (
+      childRelations.find((relation) => {
+        const tableKey = String(relation?.table || "").trim().toLowerCase();
+        const fkKey = String(relation?.childFkColumn || "").trim().toLowerCase();
+        return tableKey === "formula_bom" && fkKey === "header_index";
+      }) || null
+    );
+  }
+
+  const parseNullableNumber = (value) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const formatBomNumber = (value, scale = 4) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "";
+    return String(Number(n.toFixed(scale)));
+  };
+
+  async function saveAllFormulaBomRows(relation) {
+    const table = String(relation?.table || "").trim() || "formula_bom";
+    const pk = String(relation?.primaryKey || "").trim() || "id";
+    const rows = Array.isArray(relation?.linkedRows) ? relation.linkedRows : [];
+    const updates = [];
+    const totalPercentAll = rows.reduce((sum, row) => {
+      const rowId = getRelationRowId(row, relation);
+      const draft = formulaBomDraftByRow?.[rowId] || {};
+      const n = parseNullableNumber(draft.percentage);
+      return Number.isFinite(n) ? sum + n : sum;
+    }, 0);
+    if (Math.abs(totalPercentAll - 100) > 0.0001) {
+      setError(`BOM total percentage must equal 100%. Current total: ${totalPercentAll.toFixed(4)}%.`);
+      return;
+    }
+    rows.forEach((row) => {
+      const rowId = getRelationRowId(row, relation);
+      if (!rowId) return;
+      const draft = formulaBomDraftByRow?.[rowId] || {};
+      const base = formulaBomDraftBaselineByRow?.[rowId] || {};
+      const draftSig = JSON.stringify({
+        ingredient_index: String(draft.ingredient_index ?? ""),
+        percentage: String(draft.percentage ?? ""),
+        weight: String(draft.weight ?? ""),
+      });
+      const baseSig = JSON.stringify({
+        ingredient_index: String(base.ingredient_index ?? ""),
+        percentage: String(base.percentage ?? ""),
+        weight: String(base.weight ?? ""),
+      });
+      if (draftSig === baseSig) return;
+      updates.push({ rowId, draft });
+    });
+    if (!updates.length) {
+      setFormulaBomEditEnabled(false);
+      setStatus("No BOM changes to save.");
+      return;
+    }
+    setFormulaBomSavingAll(true);
+    setError("");
+    try {
+      for (const item of updates) {
+        const payload = {
+          ingredient_index: item.draft.ingredient_index ? Number(item.draft.ingredient_index) : null,
+          percentage: parseNullableNumber(item.draft.percentage),
+          weight: parseNullableNumber(item.draft.weight),
+        };
+        const res = await fetch(
+          `/api/db/${encodeURIComponent(table)}/${encodeURIComponent(item.rowId)}?pk=${encodeURIComponent(pk)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || "Failed to update BOM row.");
+      }
+      await reloadRows();
+      if (selectedId && !isNewDetail) await reloadDetailRow(selectedId);
+      setFormulaBomEditEnabled(false);
+      setStatus("BOM updated.");
+    } catch (err) {
+      setError(String(err?.message || "Failed to update BOM."));
+    } finally {
+      setFormulaBomSavingAll(false);
+    }
+  }
+
+  async function addFormulaBomRow(relation) {
+    const table = String(relation?.table || "").trim() || "formula_bom";
+    const parentValue = String(relation?.parentValue || "").trim();
+    const headerIndex = parentValue ? Number(parentValue) : null;
+    if (!Number.isFinite(headerIndex)) {
+      setError("Cannot add BOM row: invalid formula header id.");
+      return;
+    }
+    setFormulaBomAddBusy(true);
+    setError("");
+    try {
+      const payload = {
+        header_index: headerIndex,
+        ingredient_index: null,
+        percentage: null,
+        weight: null,
+      };
+      const res = await fetch(`/api/db/${encodeURIComponent(table)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to add BOM row.");
+      await reloadRows();
+      if (selectedId && !isNewDetail) await reloadDetailRow(selectedId);
+      setStatus("BOM row added.");
+    } catch (err) {
+      setError(String(err?.message || "Failed to add BOM row."));
+    } finally {
+      setFormulaBomAddBusy(false);
+    }
+  }
+
+  async function deleteFormulaBomRow(relation, rowId) {
+    const table = String(relation?.table || "").trim() || "formula_bom";
+    const pk = String(relation?.primaryKey || "").trim() || "id";
+    const confirmed = await showConfirmDialog({
+      title: "Delete BOM Row",
+      message: "Delete this BOM row?",
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
+    setFormulaBomBusyByRow((prev) => ({ ...(prev || {}), [rowId]: true }));
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/db/${encodeURIComponent(table)}/${encodeURIComponent(rowId)}?pk=${encodeURIComponent(pk)}`,
+        { method: "DELETE" }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to delete BOM row.");
+      await reloadRows();
+      if (selectedId && !isNewDetail) await reloadDetailRow(selectedId);
+      setStatus("BOM row deleted.");
+    } catch (err) {
+      setError(String(err?.message || "Failed to delete BOM row."));
+    } finally {
+      setFormulaBomBusyByRow((prev) => ({ ...(prev || {}), [rowId]: false }));
+    }
+  }
+
+  function renderFormulaBomSection() {
+    const relation = getFormulaBomRelation();
+    if (!relation) return <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No BOM rows linked.</div>;
+    const rows = Array.isArray(relation?.linkedRows) ? relation.linkedRows : [];
+    const headerTotalWeightRaw = parseNullableNumber(detail?.total_weight);
+    const headerTotalWeight =
+      Number.isFinite(headerTotalWeightRaw) && headerTotalWeightRaw > 0 ? headerTotalWeightRaw : null;
+    const filter = String(formulaBomFilter || "").trim().toLowerCase();
+    const filtered = rows.filter((row) => {
+      if (!filter) return true;
+      const rowId = getRelationRowId(row, relation);
+      const draft = formulaBomDraftByRow?.[rowId] || {};
+      const ingredientOption =
+        formulaBomProductOptions.find((opt) => String(opt?.value || "") === String(draft?.ingredient_index || "")) ||
+        null;
+      const ingredient = String(
+        ingredientOption?.label ??
+          row?.material_description ??
+          row?.description ??
+          row?.name ??
+          row?.ingredient_index ??
+          ""
+      ).toLowerCase();
+      const source = String(row?.material_code ?? row?.action_type ?? "").toLowerCase();
+      return ingredient.includes(filter) || source.includes(filter);
+    });
+    const totalPercent = rows.reduce((sum, row) => {
+      const rowId = getRelationRowId(row, relation);
+      const draft = formulaBomDraftByRow?.[rowId] || {};
+      const n = parseNullableNumber(draft.percentage);
+      return Number.isFinite(n) ? sum + n : sum;
+    }, 0);
+    const totalWeight = rows.reduce((sum, row) => {
+      const rowId = getRelationRowId(row, relation);
+      const draft = formulaBomDraftByRow?.[rowId] || {};
+      const n = parseNullableNumber(draft.weight);
+      return Number.isFinite(n) ? sum + n : sum;
+    }, 0);
+    const percentIsValid = Math.abs(totalPercent - 100) <= 0.0001;
+    const weightUnit = String(
+      filtered.find((row) => String(row?.weight_units || "").trim())?.weight_units ||
+        rows.find((row) => String(row?.weight_units || "").trim())?.weight_units ||
+        ""
+    ).trim();
+
+    return (
+      <div style={{ display: "grid", gap: 8, marginTop: 0, marginBottom: 8, minHeight: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            value={formulaBomFilter}
+            onChange={(e) => setFormulaBomFilter(String(e.target.value || ""))}
+            placeholder="Filter table..."
+            style={{
+              flex: 1,
+              minWidth: 0,
+              border: "1px solid var(--border)",
+              background: "var(--bg-elev)",
+              color: "var(--text)",
+              borderRadius: 8,
+              padding: "7px 9px",
+              fontSize: 12,
+            }}
+          />
+        </div>
+        <div
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg-soft)",
+            overflow: "hidden",
+            display: "grid",
+            minHeight: 0,
+          }}
+        >
+          <div style={{ overflowX: "auto" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(220px, 2.8fr) minmax(76px, 0.8fr) minmax(76px, 0.8fr) 72px",
+                gap: 8,
+                padding: "8px 10px",
+                fontSize: 12,
+                fontWeight: 700,
+                borderBottom: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                alignItems: "center",
+                minWidth: 500,
+              }}
+            >
+              <div>Ingredient</div>
+              <div>Percentage</div>
+              <div>Weight</div>
+              <div style={{ textAlign: "right", paddingRight: 2 }}>Actions</div>
+            </div>
+          </div>
+          <div style={{ maxHeight: 320, overflow: "auto" }}>
+            {filtered.length ? (
+              <div style={{ overflowX: "auto" }}>
+                {filtered.map((row, idx) => {
+                const rowId = getRelationRowId(row, relation);
+                if (!rowId) return null;
+                const draft = formulaBomDraftByRow?.[rowId] || {
+                  ingredient_index: row?.ingredient_index == null ? "" : String(row.ingredient_index),
+                  percentage: row?.percentage == null ? "" : String(row.percentage),
+                  weight: row?.weight == null ? "" : String(row.weight),
+                };
+                const ingredientText = String(draft?.ingredient_index || "").trim();
+                const busy = formulaBomBusyByRow?.[rowId] === true || formulaBomSavingAll;
+                return (
+                  <div
+                    key={`bom-row-${idx}-${String(row?.id ?? idx)}`}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(220px, 2.8fr) minmax(76px, 0.8fr) minmax(76px, 0.8fr) 72px",
+                      gap: 8,
+                      padding: "8px 10px",
+                      fontSize: 12,
+                      borderBottom: "1px solid var(--border)",
+                      alignItems: "center",
+                      minWidth: 500,
+                    }}
+                  >
+                    <select
+                      value={ingredientText}
+                      disabled={busy || !formulaBomEditEnabled}
+                      onChange={(e) =>
+                        setFormulaBomDraftByRow((prev) => ({
+                          ...(prev || {}),
+                          [rowId]: { ...(prev?.[rowId] || {}), ingredient_index: String(e.target.value || "") },
+                        }))
+                      }
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                        borderRadius: 6,
+                        padding: "5px 6px",
+                        fontSize: 12,
+                        minWidth: 0,
+                        width: "100%",
+                      }}
+                    >
+                      <option value="">Select ingredient...</option>
+                      {formulaBomProductOptions.map((opt) => (
+                        <option key={`bom-ing-${rowId}-${opt.value}`} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={String(draft?.percentage ?? "")}
+                      disabled={busy || !formulaBomEditEnabled}
+                      onChange={(e) => {
+                        const percentageText = String(e.target.value || "");
+                        const percentageNum = parseNullableNumber(percentageText);
+                        setFormulaBomDraftByRow((prev) => {
+                          const current = { ...(prev?.[rowId] || {}) };
+                          const next = { ...current, percentage: percentageText };
+                          if (headerTotalWeight && percentageNum != null) {
+                            next.weight = formatBomNumber((percentageNum / 100) * headerTotalWeight, 4);
+                          } else if (percentageText.trim() === "") {
+                            next.weight = "";
+                          }
+                          return { ...(prev || {}), [rowId]: next };
+                        });
+                      }}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                        borderRadius: 6,
+                        padding: "5px 6px",
+                        fontSize: 12,
+                        width: "100%",
+                        minWidth: 0,
+                        maxWidth: 110,
+                      }}
+                    />
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={String(draft?.weight ?? "")}
+                      disabled={busy || !formulaBomEditEnabled}
+                      onChange={(e) => {
+                        const weightText = String(e.target.value || "");
+                        const weightNum = parseNullableNumber(weightText);
+                        setFormulaBomDraftByRow((prev) => {
+                          const current = { ...(prev?.[rowId] || {}) };
+                          const next = { ...current, weight: weightText };
+                          if (headerTotalWeight && weightNum != null) {
+                            next.percentage = formatBomNumber((weightNum / headerTotalWeight) * 100, 4);
+                          } else if (weightText.trim() === "") {
+                            next.percentage = "";
+                          }
+                          return { ...(prev || {}), [rowId]: next };
+                        });
+                      }}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                        borderRadius: 6,
+                        padding: "5px 6px",
+                        fontSize: 12,
+                        width: "100%",
+                        minWidth: 0,
+                        maxWidth: 110,
+                      }}
+                    />
+                    <div
+                      style={{
+                        display: "inline-flex",
+                        gap: 4,
+                        justifyContent: "flex-end",
+                        justifySelf: "end",
+                        width: "100%",
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => void deleteFormulaBomRow(relation, rowId)}
+                        disabled={busy || !formulaBomEditEnabled}
+                        style={{
+                          ...iconActionButton,
+                          width: 24,
+                          height: 24,
+                          border: "1px solid var(--danger)",
+                          color: "var(--danger)",
+                          opacity: busy || !formulaBomEditEnabled ? 0.6 : 1,
+                          cursor: busy || !formulaBomEditEnabled ? "not-allowed" : "pointer",
+                          fontSize: 12,
+                        }}
+                        title="Delete row"
+                        aria-label="Delete row"
+                      >
+                        {"\uD83D\uDDD1"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              </div>
+            ) : (
+              <div style={{ padding: 10, fontSize: 12, color: "var(--text-muted)" }}>No BOM rows.</div>
+            )}
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(220px, 2.8fr) minmax(76px, 0.8fr) minmax(76px, 0.8fr) 72px",
+                gap: 8,
+                padding: "8px 10px",
+                fontSize: 12,
+                fontWeight: 700,
+                borderTop: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                minWidth: 500,
+              }}
+            >
+              <div>Total</div>
+              <div style={{ color: percentIsValid ? "var(--text)" : "var(--danger)" }}>
+                {totalPercent.toLocaleString()}%
+              </div>
+              <div>{totalWeight.toLocaleString()} {weightUnit}</div>
+              <div />
+            </div>
+          </div>
+          {!percentIsValid ? (
+            <div style={{ padding: "6px 10px", fontSize: 11, color: "var(--danger)" }}>
+              BOM total must equal 100% to save.
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   async function saveListFields() {
     if (!currentTable) return;
     setError("");
@@ -1472,6 +2024,38 @@ export default function DataBrowser({
     navigateData(`/data/${nextTable}`);
   };
 
+  const activeFormulaBomRelation = getFormulaBomRelation();
+  const formulaBomPercentTotal = (() => {
+    if (!activeFormulaBomRelation) return 0;
+    const rows = Array.isArray(activeFormulaBomRelation?.linkedRows) ? activeFormulaBomRelation.linkedRows : [];
+    return rows.reduce((sum, row) => {
+      const rowId = getRelationRowId(row, activeFormulaBomRelation);
+      const draft = formulaBomDraftByRow?.[rowId] || {};
+      const n = parseNullableNumber(draft.percentage);
+      return Number.isFinite(n) ? sum + n : sum;
+    }, 0);
+  })();
+  const formulaBomPercentValid = Math.abs(formulaBomPercentTotal - 100) <= 0.0001;
+  const detailHeaderName = (() => {
+    if (!detail || typeof detail !== "object") return "";
+    const preferredKeys = [
+      "name",
+      "title",
+      "description",
+      "formula_name",
+      "formula_no",
+      "formula_number",
+      "product_name",
+      "material_description",
+    ];
+    for (const key of preferredKeys) {
+      const value = String(detail?.[key] ?? "").trim();
+      if (value) return value;
+    }
+    const selected = String(selectedId || "").trim();
+    return selected;
+  })();
+
   return (
     <div style={pageStyle}>
       <div style={shellStyle}>
@@ -1528,31 +2112,40 @@ export default function DataBrowser({
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Details</div>
-                  <button
-                    type="button"
-                    onClick={() => setDetailViewTab("fields")}
-                    style={{ ...(detailViewTab === "fields" ? primaryButton : ghostButton), padding: "5px 9px", fontSize: 11 }}
-                  >
-                    Fields
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDetailViewTab("relations")}
-                    disabled={!childRelations.length}
-                    style={{
-                      ...(detailViewTab === "relations" ? primaryButton : ghostButton),
-                      padding: "5px 9px",
-                      fontSize: 11,
-                      opacity: childRelations.length ? 1 : 0.45,
-                      cursor: childRelations.length ? "pointer" : "not-allowed",
-                    }}
-                  >
-                    Relations
-                  </button>
+                  <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>
+                    {detailHeaderName ? `Details: ${detailHeaderName}` : "Details"}
+                  </div>
+                  <div style={detailTabsBarStyle}>
+                    <button
+                      type="button"
+                      onClick={() => setDetailViewTab("fields")}
+                      style={detailTabButtonStyle(detailViewTab === "fields")}
+                    >
+                      Fields
+                    </button>
+                    {!hideListFieldControls ? (
+                    <button
+                      type="button"
+                      onClick={() => setDetailViewTab("relations")}
+                      disabled={!childRelations.length}
+                      style={detailTabButtonStyle(detailViewTab === "relations", !childRelations.length)}
+                    >
+                      Relations
+                    </button>
+                    ) : null}
+                    {isFormulaHeaderTable && getFormulaBomRelation() ? (
+                      <button
+                        type="button"
+                        onClick={() => setDetailViewTab("bom")}
+                        style={detailTabButtonStyle(detailViewTab === "bom")}
+                      >
+                        BOM
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  {!isAlarmTable ? (
+                  {!isAlarmTable && detailViewTab !== "bom" ? (
                     <>
                       <button
                         onClick={() => {
@@ -1569,7 +2162,7 @@ export default function DataBrowser({
                           cursor: formEnabled || (!detail && !isNewDetail) ? "not-allowed" : "pointer",
                         }}
                       >
-                        ✎
+                        {"\u270E"}
                       </button>
                       <button
                         onClick={() => void saveRow()}
@@ -1586,7 +2179,7 @@ export default function DataBrowser({
                           cursor: formEnabled ? "pointer" : "not-allowed",
                         }}
                       >
-                        ✓
+                        {"\u2713"}
                       </button>
                       <button
                         onClick={() => {
@@ -1610,7 +2203,7 @@ export default function DataBrowser({
                           cursor: formEnabled ? "pointer" : "not-allowed",
                         }}
                       >
-                        ✕
+                        {"\u2715"}
                       </button>
                       <button
                         onClick={deleteRow}
@@ -1627,7 +2220,114 @@ export default function DataBrowser({
                           cursor: !selectedId || formEnabled ? "not-allowed" : "pointer",
                         }}
                       >
-                        🗑
+                        {"\uD83D\uDDD1"}
+                      </button>
+                    </>
+                  ) : null}
+                  {!isAlarmTable && detailViewTab === "bom" ? (
+                    <>
+                      <button
+                        onClick={() => setFormulaBomEditEnabled(true)}
+                        disabled={formulaBomEditEnabled || !activeFormulaBomRelation || formulaBomSavingAll}
+                        title="Edit BOM"
+                        aria-label="Edit BOM"
+                        style={{
+                          ...iconActionButton,
+                          opacity: formulaBomEditEnabled || !activeFormulaBomRelation || formulaBomSavingAll ? 0.45 : 1,
+                          cursor:
+                            formulaBomEditEnabled || !activeFormulaBomRelation || formulaBomSavingAll
+                              ? "not-allowed"
+                              : "pointer",
+                        }}
+                      >
+                        {"\u270E"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!activeFormulaBomRelation) return;
+                          void saveAllFormulaBomRows(activeFormulaBomRelation);
+                        }}
+                        disabled={
+                          !formulaBomEditEnabled ||
+                          !activeFormulaBomRelation ||
+                          !formulaBomPercentValid ||
+                          formulaBomSavingAll
+                        }
+                        title="Save BOM"
+                        aria-label="Save BOM"
+                        style={{
+                          ...iconActionButton,
+                          border: `1px solid ${
+                            formulaBomEditEnabled && activeFormulaBomRelation && formulaBomPercentValid && !formulaBomSavingAll
+                              ? "var(--accent)"
+                              : "var(--border)"
+                          }`,
+                          background: "transparent",
+                          color:
+                            formulaBomEditEnabled && activeFormulaBomRelation && formulaBomPercentValid && !formulaBomSavingAll
+                              ? "var(--accent)"
+                              : iconActionButton.color,
+                          boxShadow: "none",
+                          opacity:
+                            formulaBomEditEnabled && activeFormulaBomRelation && formulaBomPercentValid && !formulaBomSavingAll
+                              ? 1
+                              : 0.45,
+                          cursor:
+                            formulaBomEditEnabled && activeFormulaBomRelation && formulaBomPercentValid && !formulaBomSavingAll
+                              ? "pointer"
+                              : "not-allowed",
+                        }}
+                      >
+                        {"\u2713"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setFormulaBomDraftByRow(formulaBomDraftBaselineByRow || {});
+                          setFormulaBomEditEnabled(false);
+                        }}
+                        disabled={!formulaBomEditEnabled || formulaBomSavingAll}
+                        title="Cancel BOM edits"
+                        aria-label="Cancel BOM edits"
+                        style={{
+                          ...iconActionButton,
+                          opacity: !formulaBomEditEnabled || formulaBomSavingAll ? 0.45 : 1,
+                          cursor: !formulaBomEditEnabled || formulaBomSavingAll ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {"\u2715"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!activeFormulaBomRelation) return;
+                          void addFormulaBomRow(activeFormulaBomRelation);
+                        }}
+                        disabled={!activeFormulaBomRelation || !formulaBomEditEnabled || formulaBomSavingAll || formulaBomAddBusy}
+                        title="Add BOM row"
+                        aria-label="Add BOM row"
+                        style={{
+                          ...iconActionButton,
+                          border: `1px solid ${
+                            !activeFormulaBomRelation || !formulaBomEditEnabled || formulaBomSavingAll || formulaBomAddBusy
+                              ? "var(--border)"
+                              : "var(--accent)"
+                          }`,
+                          background: "transparent",
+                          color:
+                            !activeFormulaBomRelation || !formulaBomEditEnabled || formulaBomSavingAll || formulaBomAddBusy
+                              ? iconActionButton.color
+                              : "var(--accent)",
+                          boxShadow: "none",
+                          opacity:
+                            !activeFormulaBomRelation || !formulaBomEditEnabled || formulaBomSavingAll || formulaBomAddBusy
+                              ? 0.45
+                              : 1,
+                          cursor:
+                            !activeFormulaBomRelation || !formulaBomEditEnabled || formulaBomSavingAll || formulaBomAddBusy
+                              ? "not-allowed"
+                              : "pointer",
+                        }}
+                      >
+                        {"+"}
                       </button>
                     </>
                   ) : null}
@@ -1656,12 +2356,13 @@ export default function DataBrowser({
                 <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Select a table to begin.</div>
               ) : (
                 <>
-                  {detailViewTab === "relations" ? (
+                  {detailViewTab === "relations" && !hideListFieldControls ? (
                     <>
                       {renderChildRelationTabs()}
                       {renderChildRelationsSection()}
                     </>
                   ) : null}
+                  {detailViewTab === "bom" ? renderFormulaBomSection() : null}
                   {detailViewTab === "fields" ? (
                   <div
                     style={{

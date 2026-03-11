@@ -3053,7 +3053,12 @@ export default function CanvasSvg({
       lower === "#808080" ||
       lower === "rgb(128,128,128)" ||
       lower === "gray" ||
-      lower === "grey"
+      lower === "grey" ||
+      lower === "#fff" ||
+      lower === "#ffffff" ||
+      lower === "white" ||
+      lower === "rgb(255,255,255)" ||
+      lower === "rgba(255,255,255,1)"
     ) {
       return "";
     }
@@ -3227,8 +3232,11 @@ export default function CanvasSvg({
 
   const getPolylineDisplayedColor = (shape, options = {}) => {
     if (shape?.type !== "polyline" || !Array.isArray(shape.points) || !shape.points.length) return "";
+    const includeThemeDefault = options?.includeThemeDefault !== false;
     const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
     if (dynamicColor) return dynamicColor;
+    const explicitStroke = normalizeActiveLineColor(shape?.stroke);
+    if (explicitStroke) return explicitStroke;
     const startPoint = shape.points[0];
     const endPoint = shape.points[shape.points.length - 1];
     const touchColor = normalizeActiveLineColor(
@@ -3236,7 +3244,7 @@ export default function CanvasSvg({
       (endPoint ? getOverlayColorAtPoint(endPoint, options) || getOverlayColorNearPoint(endPoint, 28, options) : "")
     );
     if (touchColor) return touchColor;
-    return isDarkTheme ? "#ffffff" : themeStrokeDefault;
+    return includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "";
   };
 
   const pointsNear = (a, b, threshold = 12) => {
@@ -3335,6 +3343,525 @@ export default function CanvasSvg({
       }
     }
     return bestColor;
+  };
+
+  const projectPointToSegment = (pt, a, b) => {
+    const ax = Number(a?.x) || 0;
+    const ay = Number(a?.y) || 0;
+    const bx = Number(b?.x) || 0;
+    const by = Number(b?.y) || 0;
+    const px = Number(pt?.x) || 0;
+    const py = Number(pt?.y) || 0;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 <= 1e-9) {
+      const ddx = px - ax;
+      const ddy = py - ay;
+      return { t: 0, point: { x: ax, y: ay }, dist2: ddx * ddx + ddy * ddy };
+    }
+    const rawT = ((px - ax) * dx + (py - ay) * dy) / len2;
+    const t = Math.max(0, Math.min(1, rawT));
+    const x = ax + dx * t;
+    const y = ay + dy * t;
+    const ddx = px - x;
+    const ddy = py - y;
+    return { t, point: { x, y }, dist2: ddx * ddx + ddy * ddy };
+  };
+
+  const distancePointToPolyline = (pt, polylinePoints) => {
+    if (!pt || !Array.isArray(polylinePoints) || polylinePoints.length < 2) {
+      return Number.POSITIVE_INFINITY;
+    }
+    let bestDist2 = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < polylinePoints.length - 1; i += 1) {
+      const proj = projectPointToSegment(pt, polylinePoints[i], polylinePoints[i + 1]);
+      if (proj.dist2 < bestDist2) bestDist2 = proj.dist2;
+    }
+    return Math.sqrt(bestDist2);
+  };
+
+  const findSplitTouchCandidates = (shape, threshold = 30) => {
+    if (shape?.type !== "polyline" || !Array.isArray(shape.points) || shape.points.length < 2) return null;
+    const shapeId = String(shape?.id || "");
+    const pts = shape.points;
+    const threshold2 = threshold * threshold;
+    const matches = [];
+    for (const other of Array.isArray(shapes) ? shapes : []) {
+      if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
+      const otherId = String(other?.id || "");
+      if (!otherId || otherId === shapeId) continue;
+      const endpoints = [other.points[0], other.points[other.points.length - 1]].filter(Boolean);
+      for (const endpoint of endpoints) {
+        // If trunk is already split, endpoint may land exactly on an interior vertex.
+        for (let nodeIndex = 1; nodeIndex < pts.length - 1; nodeIndex += 1) {
+          const node = pts[nodeIndex];
+          const dx = (Number(endpoint?.x) || 0) - (Number(node?.x) || 0);
+          const dy = (Number(endpoint?.y) || 0) - (Number(node?.y) || 0);
+          const dist2 = dx * dx + dy * dy;
+          if (dist2 > threshold2) continue;
+          matches.push({
+            sourcePolylineId: otherId,
+            nodeIndex,
+            touchPoint: { x: Number(node?.x) || 0, y: Number(node?.y) || 0 },
+            score: dist2,
+          });
+        }
+        for (let i = 0; i < pts.length - 1; i += 1) {
+          const a = pts[i];
+          const b = pts[i + 1];
+          const proj = projectPointToSegment(endpoint, a, b);
+          if (proj.dist2 > threshold2) continue;
+          if ((Number(proj.t) || 0) <= 0.02 || (Number(proj.t) || 0) >= 0.98) continue;
+          matches.push({
+            sourcePolylineId: otherId,
+            segmentIndex: i,
+            t: proj.t,
+            touchPoint: { x: Number(proj.point?.x) || 0, y: Number(proj.point?.y) || 0 },
+            score: proj.dist2,
+          });
+        }
+      }
+    }
+    if (!matches.length) return null;
+    matches.sort((a, b) => Number(a.score || 0) - Number(b.score || 0));
+    return matches;
+  };
+
+  const getPolylineFlowMeta = (polyline) => {
+    if (polyline?.type !== "polyline" || !Array.isArray(polyline.points) || polyline.points.length < 2) return null;
+    const pts = polyline.points;
+    const minX = Math.min(...pts.map((p) => Number(p?.x) || 0));
+    const maxX = Math.max(...pts.map((p) => Number(p?.x) || 0));
+    const minY = Math.min(...pts.map((p) => Number(p?.y) || 0));
+    const maxY = Math.max(...pts.map((p) => Number(p?.y) || 0));
+    const xSpan = Math.max(0, maxX - minX);
+    const ySpan = Math.max(0, maxY - minY);
+    const startPt = pts[0];
+    const endPt = pts[pts.length - 1];
+    const downstreamIsEnd =
+      (Number(endPt?.x) || 0) > (Number(startPt?.x) || 0) ||
+      ((Number(endPt?.x) || 0) === (Number(startPt?.x) || 0) &&
+        (Number(endPt?.y) || 0) >= (Number(startPt?.y) || 0));
+    const downstreamPoint = downstreamIsEnd ? endPt : startPt;
+    const upstreamPoint = downstreamIsEnd ? startPt : endPt;
+    return {
+      pts,
+      downstreamIsEnd,
+      downstreamPoint,
+      upstreamPoint,
+      orderedPoints: downstreamIsEnd ? pts : [...pts].reverse(),
+      isTrunkLike: xSpan >= 24 && xSpan >= ySpan * 1.5,
+    };
+  };
+
+  const getBranchStartActiveColor = (polyline, options = {}) => {
+    if (!polyline || polyline?.type !== "polyline" || !Array.isArray(polyline.points) || !polyline.points.length) {
+      return "";
+    }
+    const dynamic = normalizeActiveLineColor(getTagColor(polyline.tagPath));
+    if (dynamic) return dynamic;
+    const explicitStroke = normalizeActiveLineColor(polyline?.stroke);
+    if (explicitStroke) return explicitStroke;
+    const startPt = polyline.points[0];
+    const endPt = polyline.points[polyline.points.length - 1];
+    const startOverlayColor = normalizeActiveLineColor(startPt ? getOverlayColorAtPoint(startPt, options) : "");
+    if (startOverlayColor) return startOverlayColor;
+    const endOverlayColor = normalizeActiveLineColor(endPt ? getOverlayColorAtPoint(endPt, options) : "");
+    if (endOverlayColor) return endOverlayColor;
+    const nearStartColor = normalizeActiveLineColor(
+      startPt ? getOverlayColorNearPoint(startPt, 18, options) : ""
+    );
+    if (nearStartColor) return nearStartColor;
+    const nearEndColor = normalizeActiveLineColor(
+      endPt ? getOverlayColorNearPoint(endPt, 18, options) : ""
+    );
+    if (nearEndColor) return nearEndColor;
+    // Active indication can be centered on the branch node, not only endpoints.
+    // Scan branch vertices and segment midpoints with a tight radius.
+    const pts = Array.isArray(polyline.points) ? polyline.points : [];
+    for (let i = 0; i < pts.length; i += 1) {
+      const p = pts[i];
+      const c = normalizeActiveLineColor(
+        getOverlayColorAtPoint(p, options) || getOverlayColorNearPoint(p, 14, options)
+      );
+      if (c) return c;
+      if (i < pts.length - 1) {
+        const n = pts[i + 1];
+        const mid = {
+          x: ((Number(p?.x) || 0) + (Number(n?.x) || 0)) / 2,
+          y: ((Number(p?.y) || 0) + (Number(n?.y) || 0)) / 2,
+        };
+        const mc = normalizeActiveLineColor(getOverlayColorNearPoint(mid, 14, options));
+        if (mc) return mc;
+      }
+    }
+    return "";
+  };
+
+  const getDirectSplitCarryCandidates = (shape, options = {}) => {
+    const meta = getPolylineFlowMeta(shape);
+    if (!meta?.isTrunkLike) return [];
+    const pts = meta.orderedPoints;
+    const prefix = [0];
+    for (let i = 0; i < pts.length - 1; i += 1) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const len = Math.hypot((Number(b?.x) || 0) - (Number(a?.x) || 0), (Number(b?.y) || 0) - (Number(a?.y) || 0));
+      prefix.push(prefix[prefix.length - 1] + len);
+    }
+    const collect = (maxDistPx) => {
+      const candidates = [];
+      const maxDist2 = maxDistPx * maxDistPx;
+      for (const other of Array.isArray(shapes) ? shapes : []) {
+        if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
+        const otherId = String(other?.id || "");
+        if (!otherId || otherId === String(shape?.id || "")) continue;
+        const otherMeta = getPolylineFlowMeta(other);
+        if (otherMeta?.isTrunkLike) continue;
+        const startPt = other.points[0];
+        const endPt = other.points[other.points.length - 1];
+        if (!startPt || !endPt) continue;
+        const color = getBranchStartActiveColor(other, options);
+        if (!color) continue;
+        const testPoints = [endPt, startPt];
+        let bestTouch = null;
+        for (const tp of testPoints) {
+          for (let i = 0; i < pts.length - 1; i += 1) {
+            const proj = projectPointToSegment(tp, pts[i], pts[i + 1]);
+            if (proj.dist2 > maxDist2) continue;
+            const segLen = Math.hypot(
+              (Number(pts[i + 1]?.x) || 0) - (Number(pts[i]?.x) || 0),
+              (Number(pts[i + 1]?.y) || 0) - (Number(pts[i]?.y) || 0)
+            );
+            const downstreamProgress = prefix[i] + segLen * (Number(proj.t) || 0);
+            const next = {
+              sourcePolylineId: otherId,
+              segmentIndex: i,
+              t: proj.t,
+              touchPoint: { x: Number(proj.point?.x) || 0, y: Number(proj.point?.y) || 0 },
+              color,
+              score: proj.dist2,
+              downstreamProgress,
+            };
+            if (!bestTouch || Number(next.score || 0) < Number(bestTouch.score || 0)) bestTouch = next;
+          }
+        }
+        if (bestTouch) candidates.push(bestTouch);
+      }
+      return candidates;
+    };
+    let candidates = collect(16);
+    if (!candidates.length) candidates = collect(140);
+    candidates.sort(
+      (a, b) =>
+        Number(a.downstreamProgress || 0) - Number(b.downstreamProgress || 0) ||
+        Number(a.score || 0) - Number(b.score || 0)
+    );
+    return candidates;
+  };
+
+  const resolveInheritedTrunkCarryColor = (shape, options = {}, visited = new Set(), depth = 0) => {
+    if (depth > 24) return "";
+    const shapeId = String(shape?.id || "");
+    if (!shapeId || visited.has(shapeId)) return "";
+    const meta = getPolylineFlowMeta(shape);
+    if (!meta?.isTrunkLike || !meta.upstreamPoint) return "";
+    const nextVisited = new Set(visited);
+    nextVisited.add(shapeId);
+
+    const ownDirect = getDirectSplitCarryCandidates(shape, options);
+    if (ownDirect.length) {
+      const c = normalizeActiveLineColor(ownDirect[0]?.color);
+      if (c) return c;
+    }
+
+    let best = "";
+    let bestDistance = Number.POSITIVE_INFINITY;
+    const shapeEndpoints = [meta.pts[0], meta.pts[meta.pts.length - 1]].filter(Boolean);
+    for (const other of Array.isArray(shapes) ? shapes : []) {
+      if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
+      const otherId = String(other?.id || "");
+      if (!otherId || otherId === shapeId || nextVisited.has(otherId)) continue;
+      const otherMeta = getPolylineFlowMeta(other);
+      if (!otherMeta?.isTrunkLike) continue;
+      const otherEndpoints = [otherMeta.pts[0], otherMeta.pts[otherMeta.pts.length - 1]].filter(Boolean);
+      let connectDist = Number.POSITIVE_INFINITY;
+      for (const a of shapeEndpoints) {
+        for (const b of otherEndpoints) {
+          const d = Math.hypot((Number(a?.x) || 0) - (Number(b?.x) || 0), (Number(a?.y) || 0) - (Number(b?.y) || 0));
+          if (d < connectDist) connectDist = d;
+        }
+      }
+      for (const b of otherEndpoints) {
+        const d = distancePointToPolyline(b, meta.pts);
+        if (d < connectDist) connectDist = d;
+      }
+      for (const a of shapeEndpoints) {
+        const d = distancePointToPolyline(a, otherMeta.pts);
+        if (d < connectDist) connectDist = d;
+      }
+      if (connectDist > 260) continue;
+      const c =
+        resolveInheritedTrunkCarryColor(other, options, nextVisited, depth + 1);
+      if (!c) continue;
+      if (connectDist < bestDistance) {
+        bestDistance = connectDist;
+        best = c;
+      }
+    }
+    return normalizeActiveLineColor(best);
+  };
+
+  const resolveConnectedTrunkCarryColor = (shape, options = {}) => {
+    const seedMeta = getPolylineFlowMeta(shape);
+    if (!seedMeta?.isTrunkLike) return "";
+    const seedId = String(shape?.id || "");
+    if (!seedId) return "";
+    const trunkById = new Map();
+    for (const s of Array.isArray(shapes) ? shapes : []) {
+      if (s?.type !== "polyline") continue;
+      const id = String(s?.id || "");
+      if (!id) continue;
+      const m = getPolylineFlowMeta(s);
+      if (!m?.isTrunkLike) continue;
+      trunkById.set(id, { shape: s, meta: m });
+    }
+    if (!trunkById.has(seedId)) return "";
+
+    const connected = new Set([seedId]);
+    const queue = [seedId];
+    while (queue.length) {
+      const curId = queue.shift();
+      const cur = trunkById.get(curId);
+      if (!cur) continue;
+      const curEndpoints = [cur.meta.pts[0], cur.meta.pts[cur.meta.pts.length - 1]].filter(Boolean);
+      for (const [otherId, other] of trunkById.entries()) {
+        if (connected.has(otherId) || otherId === curId) continue;
+        const otherEndpoints = [other.meta.pts[0], other.meta.pts[other.meta.pts.length - 1]].filter(Boolean);
+        let connectDist = Number.POSITIVE_INFINITY;
+        for (const a of curEndpoints) {
+          for (const b of otherEndpoints) {
+            const d = Math.hypot((Number(a?.x) || 0) - (Number(b?.x) || 0), (Number(a?.y) || 0) - (Number(b?.y) || 0));
+            if (d < connectDist) connectDist = d;
+          }
+        }
+        for (const a of curEndpoints) {
+          const d = distancePointToPolyline(a, other.meta.pts);
+          if (d < connectDist) connectDist = d;
+        }
+        for (const b of otherEndpoints) {
+          const d = distancePointToPolyline(b, cur.meta.pts);
+          if (d < connectDist) connectDist = d;
+        }
+        if (connectDist > 260) continue;
+        connected.add(otherId);
+        queue.push(otherId);
+      }
+    }
+
+    let bestColor = "";
+    let bestProgress = Number.POSITIVE_INFINITY;
+    const pickProgress = (cand, meta) => {
+      if (!cand) return Number.POSITIVE_INFINITY;
+      const p = Number(cand.downstreamProgress);
+      if (Number.isFinite(p)) return p;
+      const x = Number(cand?.touchPoint?.x) || 0;
+      return meta?.downstreamIsEnd ? x : -x;
+    };
+    for (const id of connected) {
+      const rec = trunkById.get(id);
+      if (!rec) continue;
+      const local = getDirectSplitCarryCandidates(rec.shape, options);
+      if (!local.length) continue;
+      const color = normalizeActiveLineColor(local[0]?.color);
+      if (!color) continue;
+      const progress = pickProgress(local[0], rec.meta);
+      if (progress < bestProgress) {
+        bestProgress = progress;
+        bestColor = color;
+      }
+    }
+    return normalizeActiveLineColor(bestColor);
+  };
+
+  const resolveCollinearTrunkBandCarryColor = (shape, options = {}) => {
+    const targetMeta = getPolylineFlowMeta(shape);
+    if (!targetMeta?.isTrunkLike) return "";
+    const targetPts = targetMeta.pts;
+    const targetMinY = Math.min(...targetPts.map((p) => Number(p?.y) || 0));
+    const targetMaxY = Math.max(...targetPts.map((p) => Number(p?.y) || 0));
+    const targetMidY = (targetMinY + targetMaxY) / 2;
+
+    let bestColor = "";
+    let bestDx = Number.POSITIVE_INFINITY;
+    for (const other of Array.isArray(shapes) ? shapes : []) {
+      if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
+      const otherMeta = getPolylineFlowMeta(other);
+      if (!otherMeta?.isTrunkLike) continue;
+      const local = getDirectSplitCarryCandidates(other, options);
+      if (!local.length) continue;
+      const color = normalizeActiveLineColor(local[0]?.color);
+      if (!color) continue;
+
+      const otherPts = otherMeta.pts;
+      const otherMinY = Math.min(...otherPts.map((p) => Number(p?.y) || 0));
+      const otherMaxY = Math.max(...otherPts.map((p) => Number(p?.y) || 0));
+      const otherMidY = (otherMinY + otherMaxY) / 2;
+      const dy = Math.abs(otherMidY - targetMidY);
+      if (dy > 24) continue;
+
+      const targetMinX = Math.min(...targetPts.map((p) => Number(p?.x) || 0));
+      const otherMinX = Math.min(...otherPts.map((p) => Number(p?.x) || 0));
+      const dx = Math.abs(otherMinX - targetMinX);
+      if (dx < bestDx) {
+        bestDx = dx;
+        bestColor = color;
+      }
+    }
+    return normalizeActiveLineColor(bestColor);
+  };
+
+  const getPolylineSplitCarrySegments = (shape, options = {}) => {
+    const meta = getPolylineFlowMeta(shape);
+    if (!meta?.isTrunkLike) return [];
+    const collectConnectedTrunks = () => {
+      const seedId = String(shape?.id || "");
+      if (!seedId) return [];
+      const trunkById = new Map();
+      for (const s of Array.isArray(shapes) ? shapes : []) {
+        if (s?.type !== "polyline") continue;
+        const id = String(s?.id || "");
+        if (!id) continue;
+        const m = getPolylineFlowMeta(s);
+        if (!m?.isTrunkLike) continue;
+        trunkById.set(id, { shape: s, meta: m });
+      }
+      if (!trunkById.has(seedId)) return [];
+      const connected = new Set([seedId]);
+      const queue = [seedId];
+      while (queue.length) {
+        const curId = queue.shift();
+        const cur = trunkById.get(curId);
+        if (!cur) continue;
+        const curEndpoints = [cur.meta.pts[0], cur.meta.pts[cur.meta.pts.length - 1]].filter(Boolean);
+        for (const [otherId, other] of trunkById.entries()) {
+          if (connected.has(otherId) || otherId === curId) continue;
+          const otherEndpoints = [other.meta.pts[0], other.meta.pts[other.meta.pts.length - 1]].filter(Boolean);
+          let connectDist = Number.POSITIVE_INFINITY;
+          for (const a of curEndpoints) {
+            for (const b of otherEndpoints) {
+              const d = Math.hypot((Number(a?.x) || 0) - (Number(b?.x) || 0), (Number(a?.y) || 0) - (Number(b?.y) || 0));
+              if (d < connectDist) connectDist = d;
+            }
+          }
+          for (const a of curEndpoints) {
+            const d = distancePointToPolyline(a, other.meta.pts);
+            if (d < connectDist) connectDist = d;
+          }
+          for (const b of otherEndpoints) {
+            const d = distancePointToPolyline(b, cur.meta.pts);
+            if (d < connectDist) connectDist = d;
+          }
+          if (connectDist > 260) continue;
+          connected.add(otherId);
+          queue.push(otherId);
+        }
+      }
+      return Array.from(connected)
+        .map((id) => trunkById.get(id))
+        .filter(Boolean);
+    };
+
+    const buildOrderedCarryFromTouch = (orderedPoints, touch) => {
+      if (!Array.isArray(orderedPoints) || orderedPoints.length < 2 || !touch) return [];
+      const seg = Math.max(0, Math.min(orderedPoints.length - 2, Number(touch.segmentIndex) || 0));
+      const out = [
+        { x: Number(touch.touchPoint?.x) || 0, y: Number(touch.touchPoint?.y) || 0 },
+        ...orderedPoints.slice(seg + 1),
+      ];
+      const compact = [];
+      for (const pt of out) {
+        if (!compact.length || !pointsNear(compact[compact.length - 1], pt, 0.001)) compact.push(pt);
+      }
+      return compact.length >= 2 ? compact : [];
+    };
+    const trimOrderedPointsFromStartX = (orderedPoints, startX, downstreamIsEnd) => {
+      if (!Array.isArray(orderedPoints) || orderedPoints.length < 2) return [];
+      const want = (x) => (downstreamIsEnd ? x >= startX : x <= startX);
+      const out = [];
+      for (let i = 0; i < orderedPoints.length - 1; i += 1) {
+        const a = orderedPoints[i];
+        const b = orderedPoints[i + 1];
+        const ax = Number(a?.x) || 0;
+        const bx = Number(b?.x) || 0;
+        const aOk = want(ax);
+        const bOk = want(bx);
+        if (!out.length) {
+          if (aOk) out.push(a);
+          if (!aOk && bOk) {
+            const dx = bx - ax;
+            const t = Math.abs(dx) < 1e-9 ? 0 : (startX - ax) / dx;
+            const y = (Number(a?.y) || 0) + ((Number(b?.y) || 0) - (Number(a?.y) || 0)) * t;
+            out.push({ x: startX, y });
+          }
+        }
+        if (out.length && bOk) out.push(b);
+      }
+      const compact = [];
+      for (const pt of out) {
+        if (!compact.length || !pointsNear(compact[compact.length - 1], pt, 0.001)) compact.push(pt);
+      }
+      return compact.length >= 2 ? compact : [];
+    };
+
+    const connected = collectConnectedTrunks();
+    let allCandidates = [];
+    for (const rec of connected) {
+      const local = getDirectSplitCarryCandidates(rec.shape, options);
+      for (const c of local) allCandidates.push(c);
+    }
+    if (!allCandidates.length) {
+      const targetMidY =
+        (Math.min(...meta.pts.map((p) => Number(p?.y) || 0)) +
+          Math.max(...meta.pts.map((p) => Number(p?.y) || 0))) /
+        2;
+      const bandCandidates = [];
+      for (const s of Array.isArray(shapes) ? shapes : []) {
+        if (s?.type !== "polyline") continue;
+        const m = getPolylineFlowMeta(s);
+        if (!m?.isTrunkLike) continue;
+        const midY =
+          (Math.min(...m.pts.map((p) => Number(p?.y) || 0)) +
+            Math.max(...m.pts.map((p) => Number(p?.y) || 0))) /
+          2;
+        if (Math.abs(midY - targetMidY) > 24) continue;
+        const local = getDirectSplitCarryCandidates(s, options);
+        for (const c of local) bandCandidates.push(c);
+      }
+      if (bandCandidates.length) allCandidates = bandCandidates;
+    }
+
+    if (!allCandidates.length) {
+      const inherited =
+        resolveInheritedTrunkCarryColor(shape, options) ||
+        resolveConnectedTrunkCarryColor(shape, options) ||
+        resolveCollinearTrunkBandCarryColor(shape, options);
+      return inherited ? [{ color: inherited, points: meta.orderedPoints }] : [];
+    }
+
+    const sortByFlow = [...allCandidates].sort(
+      (a, b) =>
+        Number(a?.downstreamProgress || 0) - Number(b?.downstreamProgress || 0) ||
+        Number(a?.score || 0) - Number(b?.score || 0)
+    );
+    const first = sortByFlow[0];
+    const chainColor = normalizeActiveLineColor(first?.color);
+    if (!chainColor) return [];
+    const startX = Number(first?.touchPoint?.x) || 0;
+    const points = trimOrderedPointsFromStartX(meta.orderedPoints, startX, meta.downstreamIsEnd);
+    if (!points.length) return [];
+    return [{ color: chainColor, points }];
   };
 
 
@@ -4434,14 +4961,25 @@ export default function CanvasSvg({
                 !polyFillRaw || polyFillRaw === "none" || polyFillRaw === "transparent"
                   ? "none"
                   : String(s.fill);
-              const resolvedPolylineStroke = getPolylineDisplayedColor(s);
+              const resolvedPolylineStroke = normalizeActiveLineColor(
+                getPolylineDisplayedColor(s, { includeThemeDefault: false })
+              );
               const startPoint =
                 Array.isArray(s.points) && s.points.length ? s.points[0] : null;
               const endPoint =
                 Array.isArray(s.points) && s.points.length ? s.points[s.points.length - 1] : null;
-              const touchColor =
+              const touchColor = normalizeActiveLineColor(
                 (startPoint ? getOverlayColorAtPoint(startPoint) : "") ||
-                (endPoint ? getOverlayColorAtPoint(endPoint) : "");
+                (endPoint ? getOverlayColorAtPoint(endPoint) : "")
+              );
+              const splitCarrySegments = getPolylineSplitCarrySegments(s);
+              const hasSplitCarry = Array.isArray(splitCarrySegments) && splitCarrySegments.length > 0;
+              const splitCarryColor = hasSplitCarry
+                ? normalizeActiveLineColor(splitCarrySegments[0]?.color)
+                : "";
+              const activeDynamicColor = normalizeActiveLineColor(dynamicColor);
+              const activeStrokeColor =
+                resolvedPolylineStroke || touchColor || activeDynamicColor || splitCarryColor;
 
               return (
                 <g key={s.id}>
@@ -4505,7 +5043,7 @@ export default function CanvasSvg({
                     stroke={
                       isSelected
                         ? "#2b6cff"
-                        : resolvedPolylineStroke || touchColor || dynamicColor || (isDarkTheme ? "#ffffff" : themeStrokeDefault)
+                        : activeStrokeColor || (isDarkTheme ? "#ffffff" : themeStrokeDefault)
                     }
                     strokeWidth={s.strokeWidth}
                     // ✅ Apply styleProps FIRST so our explicit defaults don’t overwrite it
@@ -4525,6 +5063,30 @@ export default function CanvasSvg({
                     pointerEvents="auto"
                     style={{ cursor: polyCursor }}
                   />
+                  {!isSelected && Array.isArray(splitCarrySegments) && splitCarrySegments.length ? (
+                    <>
+                      {splitCarrySegments.map((segment, idx) => (
+                        (() => {
+                          const segStroke = normalizeActiveLineColor(segment?.color);
+                          if (!segStroke) return null;
+                          return (
+                        <polyline
+                          key={`${s.id}-split-carry-${idx}`}
+                          points={pointsToAttr(segment.points)}
+                          fill="none"
+                          stroke={segStroke}
+                          strokeWidth={s.strokeWidth}
+                          {...styleProps}
+                          strokeLinejoin={styleProps.strokeLinejoin ?? "round"}
+                          strokeLinecap={styleProps.strokeLinecap ?? "round"}
+                          vectorEffect="non-scaling-stroke"
+                          pointerEvents="none"
+                        />
+                          );
+                        })()
+                      ))}
+                    </>
+                  ) : null}
 
                   {isEditing && (
                     <>

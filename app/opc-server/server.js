@@ -96,6 +96,12 @@ function parsePositiveMs(value, fallback = null) {
   return Math.max(100, Math.round(n));
 }
 
+function clampMinMs(value, minMs, fallback = null) {
+  const parsed = parsePositiveMs(value, fallback);
+  if (!Number.isFinite(Number(parsed)) || !Number.isFinite(Number(minMs))) return parsed;
+  return Math.max(Math.round(Number(minMs)), Math.round(Number(parsed)));
+}
+
 function parsePositiveNumber(value, fallback = null) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -139,35 +145,36 @@ async function main() {
   const config = await loadConfig();
   const runtime = config?.runtime || {};
   let opcConnectionEnabled = runtime?.opcConnectionEnabled !== false;
-  const multiReadEnabled = runtime?.multiReadEnabled === true;
-  const multiReadBatchSizeRaw = Number.parseInt(String(runtime?.multiReadBatchSize ?? "16"), 10);
+  // Force conservative single-read mode for stability with PLCs that drop CIP sessions under multi-read load.
+  const multiReadEnabled = false;
+  const multiReadBatchSizeRaw = Number.parseInt(String(runtime?.multiReadBatchSize ?? "20"), 10);
   const multiReadBatchSize = Number.isFinite(multiReadBatchSizeRaw)
     ? Math.max(1, Math.min(25, multiReadBatchSizeRaw))
-    : 16;
-  const maxReadsPerTickRaw = Number.parseInt(String(runtime?.maxReadsPerTick ?? "150"), 10);
+    : 20;
+  const maxReadsPerTickRaw = Number.parseInt(String(runtime?.maxReadsPerTick ?? "250"), 10);
   const maxReadsPerTick = Number.isFinite(maxReadsPerTickRaw)
     ? Math.max(10, Math.min(5000, maxReadsPerTickRaw))
-    : 150;
-  const readTimeoutMs = parsePositiveMs(runtime?.readTimeoutMs, 7000);
-  const readRetryCountRaw = Number.parseInt(String(runtime?.readRetryCount ?? "3"), 10);
+    : 250;
+  const readTimeoutMs = clampMinMs(runtime?.readTimeoutMs, 3000, 4000);
+  const readRetryCountRaw = Number.parseInt(String(runtime?.readRetryCount ?? "2"), 10);
   const readRetryCount = Number.isFinite(readRetryCountRaw)
     ? Math.max(0, Math.min(5, readRetryCountRaw))
-    : 3;
-  const readRetryDelayMsRaw = Number.parseInt(String(runtime?.readRetryDelayMs ?? "250"), 10);
+    : 2;
+  const readRetryDelayMsRaw = Number.parseInt(String(runtime?.readRetryDelayMs ?? "100"), 10);
   const readRetryDelayMs = Number.isFinite(readRetryDelayMsRaw)
     ? Math.max(0, Math.min(5000, readRetryDelayMsRaw))
-    : 250;
-  const plcConnectTimeoutMs = parsePositiveMs(runtime?.plcConnectTimeoutMs, Math.max(5000, readTimeoutMs * 3));
-  const plcReceiveTimeoutMs = parsePositiveMs(runtime?.plcReceiveTimeoutMs, Math.max(15000, readTimeoutMs * 6));
+    : 100;
+  const plcConnectTimeoutMs = clampMinMs(runtime?.plcConnectTimeoutMs, 5000, Math.max(5000, readTimeoutMs * 2));
+  const plcReceiveTimeoutMs = clampMinMs(runtime?.plcReceiveTimeoutMs, 15000, Math.max(15000, readTimeoutMs * 4));
   const errorBackoffEnabled = runtime?.errorBackoffEnabled !== false;
   const errorBackoffBaseMs = parsePositiveMs(runtime?.errorBackoffBaseMs, 1000);
   const errorBackoffMaxMs = parsePositiveMs(runtime?.errorBackoffMaxMs, 15000);
   const errorBackoffThreshold = Math.max(1, Math.round(parsePositiveNumber(runtime?.errorBackoffThreshold, 3)));
   const pollJitterMs = Math.max(0, Math.round(parseNonNegativeNumber(runtime?.pollJitterMs, 0) || 0));
   const deadbandDefault = parseNonNegativeNumber(runtime?.deadbandDefault, null);
-  const reconnectDelayMs = parsePositiveMs(runtime?.reconnectDelayMs, 2000);
+  const reconnectDelayMs = clampMinMs(runtime?.reconnectDelayMs, 1500, 1500);
   const reconnectMaxAttempts = parsePositiveNumber(runtime?.reconnectMaxAttempts, null);
-  const timeoutAutoRestartEnabled = runtime?.timeoutAutoRestartEnabled !== false;
+  const timeoutAutoRestartEnabled = runtime?.timeoutAutoRestartEnabled === true;
   const timeoutAutoRestartStreakRaw = Number.parseInt(
     String(runtime?.timeoutAutoRestartStreak ?? "8"),
     10
@@ -176,9 +183,11 @@ async function main() {
     ? Math.max(2, Math.min(100, timeoutAutoRestartStreakRaw))
     : 8;
   const timeoutAutoRestartWindowMs = parsePositiveMs(runtime?.timeoutAutoRestartWindowMs, 180000);
-  const heartbeatEnabled = runtime?.heartbeatEnabled !== false;
-  const heartbeatMs = parsePositiveMs(runtime?.heartbeatMs, 5000);
-  const heartbeatReconnectOnFailure = runtime?.heartbeatReconnectOnFailure === true;
+  // Heartbeat reads are currently too disruptive on some PLC/session combinations.
+  // Keep them fully disabled in the bridge and rely on the normal poll loop instead.
+  const heartbeatEnabled = false;
+  const heartbeatMs = clampMinMs(runtime?.heartbeatMs, 5000, 5000);
+  const heartbeatReconnectOnFailure = false;
   const heartbeatFailureThresholdRaw = Number.parseInt(String(runtime?.heartbeatFailureThreshold ?? "3"), 10);
   const heartbeatFailureThreshold = Number.isFinite(heartbeatFailureThresholdRaw)
     ? Math.max(1, Math.min(10, heartbeatFailureThresholdRaw))
@@ -188,8 +197,8 @@ async function main() {
     10
   );
   const readReconnectErrorThreshold = Number.isFinite(readReconnectErrorThresholdRaw)
-    ? Math.max(1, Math.min(20, readReconnectErrorThresholdRaw))
-    : 3;
+    ? Math.max(8, Math.min(20, readReconnectErrorThresholdRaw))
+    : 8;
   const mqttEnabled = runtime?.mqttEnabled === true;
   const mqttBrokerUrl = String(runtime?.mqttBrokerUrl || "mqtt://localhost:1883").trim();
   const mqttClientId = String(runtime?.mqttClientId || "").trim();
@@ -200,14 +209,14 @@ async function main() {
   const mqttQosRaw = Number.parseInt(String(runtime?.mqttQos ?? "0"), 10);
   const mqttQos = Number.isFinite(mqttQosRaw) ? Math.max(0, Math.min(2, mqttQosRaw)) : 0;
   const mqttRetain = runtime?.mqttRetain === true;
-  const globalPollMs = parsePositiveMs(config?.pollMs, 500);
+  const globalPollMs = clampMinMs(config?.pollMs, 500, 500);
   const plcs = Array.isArray(config?.plcs) && config.plcs.length
     ? config.plcs
         .map((p, idx) => ({
           name: String(p?.name || `PLC-${idx + 1}`),
           host: String(p?.host || ""),
           slot: Number.isFinite(Number(p?.slot)) ? Number(p.slot) : 0,
-          pollMs: parsePositiveMs(p?.pollMs, globalPollMs),
+          pollMs: clampMinMs(p?.pollMs, 500, globalPollMs),
         }))
         .filter((p) => p.name && p.host)
     : config?.plc?.host
@@ -241,7 +250,7 @@ async function main() {
           tagPath: String(t?.tagPath || t?.name || ""),
           topic: String(t?.topic || ""),
           pollMs: parsePositiveMs(t?.pollMs, null),
-          samplingInterval: parsePositiveMs(t?.samplingInterval, null),
+          samplingInterval: clampMinMs(t?.samplingInterval, 500, null),
           deadband: parseNonNegativeNumber(t?.deadband, deadbandDefault),
           muted: t?.muted === true,
         }))
@@ -773,6 +782,29 @@ async function main() {
   }
 
   const writeBridgeServer = http.createServer(async (req, res) => {
+    if (req.method === "GET" && req.url === "/internal/status") {
+      if (OPC_SERVER_KEY) {
+        const headerKey = String(req.headers["x-opc-key"] || "");
+        if (headerKey !== OPC_SERVER_KEY) {
+          writeJson(res, 401, { error: "Unauthorized." });
+          return;
+        }
+      }
+      writeJson(res, 200, pendingStatusPayload || {
+        at: Date.now(),
+        connected: Array.from(plcConnected.values()).every(Boolean),
+        connections: Object.fromEntries(plcConnected.entries()),
+        runtime: {
+          plcTargets: (Array.isArray(plcs) ? plcs : []).map((p) => ({
+            name: String(p?.name || "").trim(),
+            host: String(p?.host || "").trim(),
+            slot: Number.isFinite(Number(p?.slot)) ? Number(p.slot) : 0,
+            connected: plcConnected.get(String(p?.name || "").trim()) === true,
+          })),
+        },
+      });
+      return;
+    }
     if (req.method !== "POST" || req.url !== "/internal/write") {
       writeJson(res, 404, { error: "Not found." });
       return;
@@ -1056,7 +1088,7 @@ async function main() {
     } catch {
       // ignore runtime toggle read failures
     }
-  }, 1500);
+  }, 15000);
 
   let lastRestartSeen = 0;
   setInterval(() => {
@@ -1109,11 +1141,18 @@ async function main() {
         pendingStatusPayload = null;
         const headers = { "content-type": "application/json" };
         if (OPC_SERVER_KEY) headers["x-opc-key"] = OPC_SERVER_KEY;
-        await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/status`, {
+        const response = await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/status`, {
           method: "POST",
           headers,
           body: JSON.stringify(payload),
         });
+        if (!response.ok) {
+          const bodyText = await response.text().catch(() => "");
+          pendingStatusPayload = pendingStatusPayload || payload;
+          throw new Error(
+            `AI status publish failed (${response.status}${bodyText ? `: ${bodyText.slice(0, 300)}` : ""})`
+          );
+        }
       }
     } catch (err) {
       pushIssue({
@@ -1212,9 +1251,12 @@ async function main() {
           plcConnectTimeoutMs,
           plcReceiveTimeoutMs,
           heartbeatMs,
+          lastPollAtByPlc: Object.fromEntries(plcLastPollAt.entries()),
           deferredReadsByPlc: Object.fromEntries(plcDeferredReads.entries()),
+          transportFailureStreakByPlc: Object.fromEntries(plcReadTransportFailureStreak.entries()),
           heartbeatFailureStreakByPlc: Object.fromEntries(plcHeartbeatFailureStreak.entries()),
           connectFailureStreakByPlc: Object.fromEntries(plcConnectFailureStreak.entries()),
+          timeoutFailureWindowByPlc: Object.fromEntries(plcTimeoutFailureWindow.entries()),
           issueCount: issueLog.length,
           issueLog: issueLog.slice(0, 200),
           plcTargets: (Array.isArray(plcs) ? plcs : []).map((p) => {
