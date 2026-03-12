@@ -179,10 +179,95 @@ function extractChatAiAction(rawText = "") {
     }
   }
 
+  if (!action) {
+    const marker = cleaned.match(/MESORA_ACTION\s*[:=]/i);
+    if (marker && Number.isFinite(marker.index)) {
+      const start = cleaned.indexOf("{", marker.index);
+      if (start >= 0) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        let end = -1;
+        for (let i = start; i < cleaned.length; i += 1) {
+          const ch = cleaned[i];
+          if (inString) {
+            if (escaped) {
+              escaped = false;
+            } else if (ch === "\\") {
+              escaped = true;
+            } else if (ch === "\"") {
+              inString = false;
+            }
+            continue;
+          }
+          if (ch === "\"") {
+            inString = true;
+            continue;
+          }
+          if (ch === "{") depth += 1;
+          if (ch === "}") {
+            depth -= 1;
+            if (depth === 0) {
+              end = i + 1;
+              break;
+            }
+          }
+        }
+        if (end > start) {
+          const candidate = cleaned.slice(start, end);
+          const parsed = parseCandidate(candidate);
+          if (parsed) {
+            action = parsed;
+            cleaned = `${cleaned.slice(0, marker.index)}${cleaned.slice(end)}`;
+          }
+        }
+      }
+    }
+  }
+
   return {
     message: String(cleaned || "").trim(),
     action,
   };
+}
+
+function inferDesignSvgActionFromPrompt(prompt = "") {
+  const raw = String(prompt || "").trim();
+  if (!raw) return null;
+  const text = raw.toLowerCase();
+  const wantsPlacement =
+    /\b(add|place|layout|arrange|insert|draw|drop)\b/.test(text) &&
+    /\b(svg|bin|bins|diverter|diverters|blower|blowers|airlock|airlocks|motor|motors)\b/.test(text);
+  if (!wantsPlacement) return null;
+
+  const numMatch = text.match(/\b(\d{1,3})\b/);
+  const wordToNum = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+    seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+  };
+  const wordNum =
+    Object.entries(wordToNum).find(([word]) => new RegExp(`\\b${word}\\b`).test(text))?.[1] || null;
+  const count = Math.max(1, Math.min(120, Number(numMatch?.[1] || wordNum || 1)));
+
+  const keyword =
+    /\bbin(s)?\b/.test(text) ? "bin" :
+    /\bdiverter(s)?\b/.test(text) ? "diverter" :
+    /\bblower(s)?\b/.test(text) ? "blower" :
+    /\bairlock(s)?\b/.test(text) ? "airlock" :
+    /\bmotor(s)?\b/.test(text) ? "motor" :
+    "bin";
+  const labelBase = keyword.charAt(0).toUpperCase() + keyword.slice(1);
+  const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
+  return normalizeChatAiAction({
+    type: "add_svg_layout",
+    payload: {
+      items: Array.from({ length: count }, (_, i) => ({
+        svgKey: keyword,
+        label: `${labelBase} ${i + 1}`,
+      })),
+      layout: { mode: "grid", columns },
+    },
+  });
 }
 
 const app = express();
@@ -450,6 +535,13 @@ if (FRONTEND_DIST_DIR && fs.existsSync(FRONTEND_INDEX_PATH)) {
   });
 }
 
+function normalizeDbClient(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "sqlserver" || raw === "mssql") return "sqlserver";
+  return "postgres";
+}
+
+let DB_CLIENT = normalizeDbClient(process.env.DB_CLIENT || "postgres");
 let DATABASE_URL = process.env.DATABASE_URL || "";
 let DB_POOL_MAX = Math.max(1, Number.parseInt(String(process.env.DB_POOL_MAX || "10"), 10) || 10);
 const DB_POOL_MAX_LISTENERS = Math.max(
@@ -575,6 +667,36 @@ function resolveSvgKeyToAbsolutePath(key) {
 }
 
 function parseDatabaseConnectionInfo(connectionString) {
+  if (DB_CLIENT === "sqlserver") {
+    const host = String(process.env.DB_SQLSERVER_HOST || "").trim();
+    const port = Number.parseInt(String(process.env.DB_SQLSERVER_PORT || "1433"), 10);
+    const database = String(process.env.DB_SQLSERVER_DATABASE || "").trim();
+    const user = String(process.env.DB_SQLSERVER_USER || "").trim();
+    const encrypt = ["1", "true", "yes", "on"].includes(
+      String(process.env.DB_SQLSERVER_ENCRYPT || "true").trim().toLowerCase()
+    );
+    const trustServerCertificate = ["1", "true", "yes", "on"].includes(
+      String(process.env.DB_SQLSERVER_TRUST_SERVER_CERTIFICATE || "true")
+        .trim()
+        .toLowerCase()
+    );
+    const applicationName = String(process.env.DB_SQLSERVER_APP_NAME || "").trim();
+    const passwordSet = String(process.env.DB_SQLSERVER_PASSWORD || "").trim().length > 0;
+    const configured = !!(host && database && user && Number.isFinite(port));
+    return {
+      configured,
+      protocol: "sqlserver",
+      host,
+      port: Number.isFinite(port) ? port : 1433,
+      database,
+      user,
+      ssl: encrypt,
+      sslMode: encrypt ? "encrypt" : "",
+      applicationName,
+      trustServerCertificate,
+      passwordSet,
+    };
+  }
   const raw = String(connectionString || "").trim();
   if (!raw) {
     return {
@@ -626,6 +748,7 @@ function parseDatabaseConnectionInfo(connectionString) {
 }
 
 async function ensureDatabaseExists(connectionString = DATABASE_URL) {
+  if (DB_CLIENT !== "postgres") return;
   if (!connectionString) return;
   const url = new URL(connectionString);
   const dbName = url.pathname.replace("/", "");
@@ -3605,6 +3728,38 @@ const OLLAMA_IDLE_UNLOAD_MS = Math.max(
   30000,
   Number.parseInt(process.env.OLLAMA_IDLE_UNLOAD_MS || "180000", 10) || 180000
 );
+const CHAT_AI_HISTORY_MAX = Math.max(
+  2,
+  Math.min(24, Number.parseInt(process.env.CHAT_AI_HISTORY_MAX || "8", 10) || 8)
+);
+const CHAT_AI_MESSAGE_CHAR_MAX = Math.max(
+  120,
+  Math.min(4000, Number.parseInt(process.env.CHAT_AI_MESSAGE_CHAR_MAX || "900", 10) || 900)
+);
+const OLLAMA_CHAT_MAX_PREDICT = Math.max(
+  64,
+  Math.min(2048, Number.parseInt(process.env.OLLAMA_CHAT_MAX_PREDICT || "320", 10) || 320)
+);
+const OLLAMA_CHAT_TEMPERATURE = Number.isFinite(Number(process.env.OLLAMA_CHAT_TEMPERATURE))
+  ? Number(process.env.OLLAMA_CHAT_TEMPERATURE)
+  : 0.2;
+const OLLAMA_CHAT_KEEP_ALIVE = String(process.env.OLLAMA_CHAT_KEEP_ALIVE || "20m").trim() || "20m";
+const FLOUR_KNOWLEDGE_MAX_CHARS = Math.max(
+  500,
+  Math.min(24000, Number.parseInt(process.env.FLOUR_KNOWLEDGE_MAX_CHARS || "6000", 10) || 6000)
+);
+const CHAT_L5X_DOC_MAX_CHARS = Math.max(
+  2000,
+  Math.min(300000, Number.parseInt(process.env.CHAT_L5X_DOC_MAX_CHARS || "160000", 10) || 160000)
+);
+const CHAT_L5X_CONTEXT_MAX_CHARS = Math.max(
+  500,
+  Math.min(60000, Number.parseInt(process.env.CHAT_L5X_CONTEXT_MAX_CHARS || "14000", 10) || 14000)
+);
+const CHAT_L5X_CONTEXT_DOC_LIMIT = Math.max(
+  1,
+  Math.min(8, Number.parseInt(process.env.CHAT_L5X_CONTEXT_DOC_LIMIT || "3", 10) || 3)
+);
 
 function resolveOllamaNativeBaseUrl({ baseUrl = "", ollamaNativeUrl = "" } = {}) {
   const direct = String(ollamaNativeUrl || "").trim();
@@ -5206,6 +5361,9 @@ function upsertEnvVar(filePath, key, value) {
 }
 
 async function rebuildDatabasePool(connectionString, poolMax = DB_POOL_MAX) {
+  if (DB_CLIENT !== "postgres") {
+    throw new Error("Runtime pool rebuild currently supports postgres only.");
+  }
   const safeConn = String(connectionString || "").trim();
   if (!safeConn) throw new Error("DATABASE_URL is required.");
   const nextPool = new Pool({
@@ -6387,8 +6545,9 @@ app.get("/api/alarms", async (req, res) => {
   }
 });
 
-app.get("/api/chat/messages", async (_req, res) => {
+app.get("/api/chat/messages", async (req, res) => {
   try {
+    const chatMode = String(req.query?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
     const { rows } = await pool.query(
       `
       SELECT
@@ -6396,16 +6555,85 @@ app.get("/api/chat/messages", async (_req, res) => {
         m.message,
         m.created_at,
         m.user_id,
+        m.mode,
         COALESCE(NULLIF(u.display_name, ''), u.username, CONCAT('User ', m.user_id::text)) AS author
       FROM support_chat_messages m
       LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.mode = $1
       ORDER BY m.created_at DESC, m.id DESC
       LIMIT 200
-      `
+      `,
+      [chatMode]
     );
     res.json({ messages: rows.reverse() });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load chat messages." });
+  }
+});
+
+app.get("/api/chat/context-docs", async (req, res) => {
+  try {
+    const authUser = req.user || (await getUserFromRequest(req));
+    if (!authUser) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const chatMode = String(req.query?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
+    const docs = await listChatContextDocs(chatMode);
+    res.json({ docs });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load chat context docs." });
+  }
+});
+
+app.post("/api/chat/context-docs/l5x", async (req, res) => {
+  try {
+    const authUser = req.user || (await getUserFromRequest(req));
+    if (!authUser) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const chatMode = String(req.body?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
+    const sourceName = String(req.body?.fileName || req.body?.sourceName || "upload.l5x").trim() || "upload.l5x";
+    const content = String(req.body?.content || "").trim();
+    if (!content) {
+      res.status(400).json({ error: "L5X content is required." });
+      return;
+    }
+    if (content.length > CHAT_L5X_DOC_MAX_CHARS) {
+      res.status(400).json({ error: `L5X content too large (max ${CHAT_L5X_DOC_MAX_CHARS} chars).` });
+      return;
+    }
+    const summary = summarizeL5xText(content);
+    const { rows } = await pool.query(
+      `
+      INSERT INTO support_chat_documents (mode, source_name, content_text, content_summary, created_by, is_active, updated_at)
+      VALUES ($1, $2, $3, $4, $5, true, now())
+      RETURNING id, mode, source_name, content_summary, created_by, created_at, updated_at
+      `,
+      [chatMode, sourceName.slice(0, 220), content, summary.slice(0, 500), Number(authUser.id || 0) || null]
+    );
+    res.status(201).json({ doc: rows[0] || null });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to upload L5X context." });
+  }
+});
+
+app.delete("/api/chat/context-docs", async (req, res) => {
+  try {
+    const authUser = req.user || (await getUserFromRequest(req));
+    if (!authUser) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const chatMode = String(req.query?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
+    await pool.query(
+      `DELETE FROM support_chat_documents WHERE mode = $1`,
+      [chatMode]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to clear chat context docs." });
   }
 });
 
@@ -6445,6 +6673,71 @@ async function ensureMesoraAiUserId() {
   return id;
 }
 
+function summarizeL5xText(raw = "") {
+  const text = String(raw || "");
+  const tagMatches = text.match(/<Tag\b/gi) || [];
+  const routineMatches = text.match(/<Routine\b/gi) || [];
+  const programMatches = text.match(/<Program\b/gi) || [];
+  const aoiMatches = text.match(/<AddOnInstructionDefinition\b/gi) || [];
+  const dataTypeMatches = text.match(/<DataType\b/gi) || [];
+  const ctrl = text.match(/<Controller\b[^>]*Name="([^"]+)"/i);
+  const chunks = [];
+  if (ctrl?.[1]) chunks.push(`Controller: ${String(ctrl[1]).trim()}`);
+  chunks.push(
+    `Tags: ${tagMatches.length}`,
+    `Programs: ${programMatches.length}`,
+    `Routines: ${routineMatches.length}`,
+    `AOIs: ${aoiMatches.length}`,
+    `DataTypes: ${dataTypeMatches.length}`
+  );
+  return chunks.join(" | ");
+}
+
+async function listChatContextDocs(mode = "design") {
+  const resolvedMode = String(mode || "").trim().toLowerCase() === "live" ? "live" : "design";
+  const { rows } = await pool.query(
+    `
+    SELECT id, mode, source_name, content_summary, created_by, created_at, updated_at
+    FROM support_chat_documents
+    WHERE mode = $1 AND is_active = true
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 50
+    `,
+    [resolvedMode]
+  );
+  return rows;
+}
+
+async function getChatContextForPrompt(mode = "design") {
+  const resolvedMode = String(mode || "").trim().toLowerCase() === "live" ? "live" : "design";
+  const { rows } = await pool.query(
+    `
+    SELECT source_name, content_summary, content_text, updated_at
+    FROM support_chat_documents
+    WHERE mode = $1 AND is_active = true
+    ORDER BY updated_at DESC, id DESC
+    LIMIT $2
+    `,
+    [resolvedMode, CHAT_L5X_CONTEXT_DOC_LIMIT]
+  );
+  if (!rows.length) return "";
+  let budget = CHAT_L5X_CONTEXT_MAX_CHARS;
+  const sections = [];
+  for (const row of rows) {
+    if (budget <= 80) break;
+    const name = String(row?.source_name || "L5X").trim() || "L5X";
+    const summary = String(row?.content_summary || "").trim();
+    const content = String(row?.content_text || "").trim();
+    if (!content) continue;
+    const header = `Source: ${name}${summary ? ` | ${summary}` : ""}`;
+    const allowance = Math.max(120, budget - header.length - 24);
+    const clipped = content.slice(0, allowance);
+    sections.push(`${header}\n${clipped}`);
+    budget -= header.length + clipped.length + 20;
+  }
+  return sections.join("\n\n---\n\n");
+}
+
 async function getChatOllamaReply({ prompt = "", history = [], chatMode = "design" } = {}) {
   const cleanedPrompt = String(prompt || "").trim();
   if (!cleanedPrompt) throw new Error("AI prompt is required.");
@@ -6453,12 +6746,14 @@ async function getChatOllamaReply({ prompt = "", history = [], chatMode = "desig
     throw new Error("Ollama is not configured. Set active AI agent to Ollama in AI Config.");
   }
   const flourMillKnowledge = getFlourMillKnowledge();
+  const flourKnowledgeTrimmed = String(flourMillKnowledge || "").slice(0, FLOUR_KNOWLEDGE_MAX_CHARS);
+  const l5xContext = await getChatContextForPrompt(chatMode);
   const safeHistory = (Array.isArray(history) ? history : [])
-    .slice(-14)
+    .slice(-CHAT_AI_HISTORY_MAX)
     .map((item) => {
       const role = String(item?.role || "").trim().toLowerCase();
       if (role !== "user" && role !== "assistant") return null;
-      const content = String(item?.content || "").slice(0, 2000).trim();
+      const content = String(item?.content || "").slice(0, CHAT_AI_MESSAGE_CHAR_MAX).trim();
       if (!content) return null;
       return { role, content };
     })
@@ -6481,8 +6776,11 @@ async function getChatOllamaReply({ prompt = "", history = [], chatMode = "desig
   const system = mode === "live" ? systemLive : systemDesign;
   const promptInput = [
     { role: "system", content: system },
-    ...(flourMillKnowledge
-      ? [{ role: "system", content: `Flour Mill Domain Knowledge:\n${flourMillKnowledge}` }]
+    ...(flourKnowledgeTrimmed
+      ? [{ role: "system", content: `Flour Mill Domain Knowledge:\n${flourKnowledgeTrimmed}` }]
+      : []),
+    ...(l5xContext
+      ? [{ role: "system", content: `Uploaded L5X Context (mode=${mode}):\n${l5xContext}` }]
       : []),
     ...safeHistory,
     { role: "user", content: cleanedPrompt },
@@ -6498,6 +6796,11 @@ async function getChatOllamaReply({ prompt = "", history = [], chatMode = "desig
         .map((m) => `${String(m.role || "user").toUpperCase()}: ${String(m.content || "")}`)
         .join("\n\n"),
       stream: false,
+      keep_alive: OLLAMA_CHAT_KEEP_ALIVE,
+      options: {
+        num_predict: OLLAMA_CHAT_MAX_PREDICT,
+        temperature: OLLAMA_CHAT_TEMPERATURE,
+      },
     }),
   });
   if (!resp.ok) {
@@ -6509,9 +6812,12 @@ async function getChatOllamaReply({ prompt = "", history = [], chatMode = "desig
   if (!answer) throw new Error("Ollama returned an empty response.");
   const parsed = extractChatAiAction(answer);
   const message = String(parsed?.message || "").trim();
+  const fallbackAction = mode === "design" && !parsed?.action
+    ? inferDesignSvgActionFromPrompt(cleanedPrompt)
+    : null;
   return {
     message: (message || answer).slice(0, 4000),
-    action: parsed?.action || null,
+    action: parsed?.action || fallbackAction || null,
   };
 }
 
@@ -6523,6 +6829,7 @@ app.post("/api/chat/messages", async (req, res) => {
       return;
     }
     const message = String(req.body?.message || req.body?.content || "").trim();
+    const chatMode = String(req.body?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
     if (!message) {
       res.status(400).json({ error: "Message is required." });
       return;
@@ -6533,11 +6840,11 @@ app.post("/api/chat/messages", async (req, res) => {
     }
     const { rows } = await pool.query(
       `
-      INSERT INTO support_chat_messages (user_id, message)
-      VALUES ($1, $2)
-      RETURNING id, user_id, message, created_at
+      INSERT INTO support_chat_messages (user_id, mode, message)
+      VALUES ($1, $2, $3)
+      RETURNING id, user_id, mode, message, created_at
       `,
-      [authUser.id, message]
+      [authUser.id, chatMode, message]
     );
     const row = rows[0] || null;
     if (!row) {
@@ -6569,11 +6876,11 @@ app.post("/api/chat/messages", async (req, res) => {
       const aiUserId = await ensureMesoraAiUserId();
       const aiInsert = await pool.query(
         `
-        INSERT INTO support_chat_messages (user_id, message)
-        VALUES ($1, $2)
-        RETURNING id, user_id, message, created_at
+        INSERT INTO support_chat_messages (user_id, mode, message)
+        VALUES ($1, $2, $3)
+        RETURNING id, user_id, mode, message, created_at
         `,
-        [aiUserId, answer]
+        [aiUserId, chatMode, answer]
       );
       const aiRow = aiInsert.rows?.[0] || null;
       if (aiRow) {
@@ -8186,17 +8493,38 @@ app.put("/api/system/version/align", async (_req, res) => {
 app.get("/api/db/config", async (_req, res) => {
   try {
     const connection = parseDatabaseConnectionInfo(DATABASE_URL);
-    const connectionUrl = parseDatabaseUrlObject(DATABASE_URL);
-    const editable = {
-      protocol: String(connectionUrl?.protocol || "postgres:").replace(/:$/, "") || "postgres",
-      host: String(connectionUrl?.hostname || "").trim(),
-      port: Number.isFinite(Number(connectionUrl?.port)) ? Number(connectionUrl.port) : 5432,
-      database: String(connectionUrl?.pathname || "").replace(/^\//, "").trim(),
-      user: decodeURIComponent(String(connectionUrl?.username || "").trim()),
-      passwordSet: String(connectionUrl?.password || "").trim().length > 0,
-      sslMode: String(connectionUrl?.searchParams?.get("sslmode") || "").trim(),
-      applicationName: String(connectionUrl?.searchParams?.get("application_name") || "").trim(),
-    };
+    const connectionUrl = DB_CLIENT === "postgres" ? parseDatabaseUrlObject(DATABASE_URL) : null;
+    const editable =
+      DB_CLIENT === "sqlserver"
+        ? {
+            protocol: "sqlserver",
+            host: String(process.env.DB_SQLSERVER_HOST || "").trim(),
+            port: Number.parseInt(String(process.env.DB_SQLSERVER_PORT || "1433"), 10) || 1433,
+            database: String(process.env.DB_SQLSERVER_DATABASE || "").trim(),
+            user: String(process.env.DB_SQLSERVER_USER || "").trim(),
+            passwordSet: String(process.env.DB_SQLSERVER_PASSWORD || "").trim().length > 0,
+            sslMode: ["1", "true", "yes", "on"].includes(
+              String(process.env.DB_SQLSERVER_ENCRYPT || "true").trim().toLowerCase()
+            )
+              ? "encrypt"
+              : "",
+            applicationName: String(process.env.DB_SQLSERVER_APP_NAME || "").trim(),
+            trustServerCertificate: ["1", "true", "yes", "on"].includes(
+              String(process.env.DB_SQLSERVER_TRUST_SERVER_CERTIFICATE || "true")
+                .trim()
+                .toLowerCase()
+            ),
+          }
+        : {
+            protocol: String(connectionUrl?.protocol || "postgres:").replace(/:$/, "") || "postgres",
+            host: String(connectionUrl?.hostname || "").trim(),
+            port: Number.isFinite(Number(connectionUrl?.port)) ? Number(connectionUrl.port) : 5432,
+            database: String(connectionUrl?.pathname || "").replace(/^\//, "").trim(),
+            user: decodeURIComponent(String(connectionUrl?.username || "").trim()),
+            passwordSet: String(connectionUrl?.password || "").trim().length > 0,
+            sslMode: String(connectionUrl?.searchParams?.get("sslmode") || "").trim(),
+            applicationName: String(connectionUrl?.searchParams?.get("application_name") || "").trim(),
+          };
     const poolInfo = {
       configuredMax: DB_POOL_MAX,
       max: Number.isFinite(Number(pool?.options?.max)) ? Number(pool.options.max) : null,
@@ -8272,6 +8600,8 @@ app.get("/api/db/config", async (_req, res) => {
 
     const versionState = await getSystemVersionState();
     res.json({
+      dbClient: DB_CLIENT,
+      supportedClients: ["postgres", "sqlserver"],
       connection,
       editable,
       versions: versionState,
@@ -8299,28 +8629,27 @@ app.get("/api/db/config", async (_req, res) => {
 app.put("/api/db/config", async (req, res) => {
   try {
     const body = req.body && typeof req.body === "object" ? req.body : {};
+    const requestedClient = normalizeDbClient(body?.client || body?.dbClient || DB_CLIENT);
     const currentUrl = parseDatabaseUrlObject(DATABASE_URL);
-    if (!currentUrl) {
-      res.status(500).json({ error: "Current DATABASE_URL is invalid or not configured." });
-      return;
-    }
 
     const incoming = body?.connection && typeof body.connection === "object" ? body.connection : {};
-    const protocol = String(incoming.protocol || currentUrl.protocol.replace(/:$/, "") || "postgres")
+    const protocol = String(
+      incoming.protocol || currentUrl?.protocol?.replace(/:$/, "") || requestedClient || "postgres"
+    )
       .trim()
       .replace(/:$/, "");
-    const host = String(incoming.host || currentUrl.hostname || "").trim();
-    const database = String(incoming.database || currentUrl.pathname.replace(/^\//, "") || "").trim();
-    const user = String(incoming.user || decodeURIComponent(currentUrl.username || "") || "").trim();
+    const host = String(incoming.host || currentUrl?.hostname || "").trim();
+    const database = String(incoming.database || currentUrl?.pathname?.replace(/^\//, "") || "").trim();
+    const user = String(incoming.user || decodeURIComponent(currentUrl?.username || "") || "").trim();
     const sslMode = String(
-      incoming.sslMode != null ? incoming.sslMode : currentUrl.searchParams.get("sslmode") || ""
+      incoming.sslMode != null ? incoming.sslMode : currentUrl?.searchParams?.get("sslmode") || ""
     ).trim();
     const applicationName = String(
       incoming.applicationName != null
         ? incoming.applicationName
-        : currentUrl.searchParams.get("application_name") || ""
+        : currentUrl?.searchParams?.get("application_name") || ""
     ).trim();
-    const nextPortRaw = incoming.port != null ? incoming.port : currentUrl.port || 5432;
+    const nextPortRaw = incoming.port != null ? incoming.port : currentUrl?.port || 5432;
     const port = Number.parseInt(String(nextPortRaw), 10);
     const nextPoolMax = Number.parseInt(String(body.poolMax != null ? body.poolMax : DB_POOL_MAX), 10);
     const password = incoming.password != null ? String(incoming.password) : "";
@@ -8346,8 +8675,13 @@ app.put("/api/db/config", async (req, res) => {
       res.status(400).json({ error: "Host, port, database, and user are required." });
       return;
     }
-    if (protocol !== "postgres" && protocol !== "postgresql") {
-      res.status(400).json({ error: "Protocol must be postgres or postgresql." });
+    if (
+      protocol !== "postgres" &&
+      protocol !== "postgresql" &&
+      protocol !== "sqlserver" &&
+      protocol !== "mssql"
+    ) {
+      res.status(400).json({ error: "Protocol must be postgres/postgresql or sqlserver/mssql." });
       return;
     }
     if (!Number.isFinite(nextPoolMax) || nextPoolMax < 1 || nextPoolMax > 200) {
@@ -8355,6 +8689,57 @@ app.put("/api/db/config", async (req, res) => {
       return;
     }
 
+    const envPath = path.resolve(AI_SERVER_DIR, ".env");
+    if (protocol === "sqlserver" || protocol === "mssql") {
+      const trustServerCertificate =
+        incoming.trustServerCertificate === true ||
+        String(incoming.trustServerCertificate || "").trim().toLowerCase() === "true";
+      // Save SQL Server settings as an inactive option; keep active runtime on postgres.
+      upsertEnvVar(envPath, "DB_SQLSERVER_HOST", host);
+      upsertEnvVar(envPath, "DB_SQLSERVER_PORT", String(port || 1433));
+      upsertEnvVar(envPath, "DB_SQLSERVER_DATABASE", database);
+      upsertEnvVar(envPath, "DB_SQLSERVER_USER", user);
+      if (password.length > 0) upsertEnvVar(envPath, "DB_SQLSERVER_PASSWORD", password);
+      upsertEnvVar(
+        envPath,
+        "DB_SQLSERVER_ENCRYPT",
+        String(sslMode ? sslMode.toLowerCase() !== "disable" : true)
+      );
+      upsertEnvVar(
+        envPath,
+        "DB_SQLSERVER_TRUST_SERVER_CERTIFICATE",
+        String(trustServerCertificate)
+      );
+      upsertEnvVar(envPath, "DB_SQLSERVER_APP_NAME", applicationName);
+      upsertEnvVar(envPath, "DB_POOL_MAX", String(nextPoolMax));
+      process.env.DB_SQLSERVER_HOST = host;
+      process.env.DB_SQLSERVER_PORT = String(port || 1433);
+      process.env.DB_SQLSERVER_DATABASE = database;
+      process.env.DB_SQLSERVER_USER = user;
+      if (password.length > 0) process.env.DB_SQLSERVER_PASSWORD = password;
+      process.env.DB_SQLSERVER_ENCRYPT = String(sslMode ? sslMode.toLowerCase() !== "disable" : true);
+      process.env.DB_SQLSERVER_TRUST_SERVER_CERTIFICATE = String(trustServerCertificate);
+      process.env.DB_SQLSERVER_APP_NAME = applicationName;
+      res.json({
+        ok: true,
+        pendingActivation: true,
+        message:
+          "SQL Server option saved as inactive. Active runtime remains postgres; no switch was made.",
+        sqlGuards: {
+          reportQueryTimeoutMs: nextReportQueryTimeoutMs,
+          reportMaxResultRows: nextReportMaxResultRows,
+          reportMaxConcurrentQueries: nextReportMaxConcurrentQueries,
+          reportRateWindowMs: nextReportRateWindowMs,
+          reportRateMaxRequests: nextReportRateMaxRequests,
+        },
+      });
+      return;
+    }
+
+    if (!currentUrl) {
+      res.status(500).json({ error: "Current DATABASE_URL is invalid or not configured." });
+      return;
+    }
     const nextUrl = new URL(currentUrl.toString());
     nextUrl.protocol = `${protocol}:`;
     nextUrl.hostname = host;
@@ -8372,9 +8757,11 @@ app.put("/api/db/config", async (req, res) => {
     await ensureDatabaseExists(nextUrl.toString());
     await rebuildDatabasePool(nextUrl.toString(), nextPoolMax);
 
-    const envPath = path.resolve(AI_SERVER_DIR, ".env");
+    upsertEnvVar(envPath, "DB_CLIENT", "postgres");
     upsertEnvVar(envPath, "DATABASE_URL", nextUrl.toString());
     upsertEnvVar(envPath, "DB_POOL_MAX", String(nextPoolMax));
+    DB_CLIENT = "postgres";
+    process.env.DB_CLIENT = "postgres";
 
     try {
       const currentCfg = await pool.query("SELECT config FROM opc_config WHERE id = 1 LIMIT 1");
@@ -11110,6 +11497,11 @@ app.post("/api/ai/apply", async (req, res) => {
 });
 
 async function start() {
+  if (DB_CLIENT !== "postgres") {
+    throw new Error(
+      "DB_CLIENT=sqlserver is scaffolded in phase 1 config only. Runtime SQL execution remains postgres until phase 2 adapter/query parity is implemented."
+    );
+  }
   await ensureDatabaseExists();
   pool = new Pool({ connectionString: DATABASE_URL, max: DB_POOL_MAX });
   if (typeof pool.setMaxListeners === "function") {

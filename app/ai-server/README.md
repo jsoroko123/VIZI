@@ -34,6 +34,13 @@ From repo root you can run:
 
 Only `CREATE TABLE` and `CREATE INDEX` statements are allowed to apply.
 
+## Database Client Option (Phase 1 Scaffold)
+- Default runtime client remains `postgres`.
+- You can now save SQL Server connection settings from Database Config (`sqlserver` option), which writes:
+  - `DB_SQLSERVER_*` environment values
+- This save is inactive by design in phase 1; active runtime does not switch away from postgres.
+- Full SQL execution/query parity for SQL Server is completed in the next phase.
+
 ## Microsoft Login (Optional)
 Microsoft OAuth is already supported by the backend and login page.
 

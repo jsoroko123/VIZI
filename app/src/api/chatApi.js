@@ -1,7 +1,10 @@
 import { requestJson } from "./http";
 
-export function listChatMessages() {
-  return requestJson("/api/chat/messages", { fallbackError: "Failed to load chat." });
+export function listChatMessages(options = {}) {
+  const chatMode = String(options?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
+  return requestJson(`/api/chat/messages?chatMode=${encodeURIComponent(chatMode)}`, {
+    fallbackError: "Failed to load chat.",
+  });
 }
 
 export function postChatMessage(content) {
@@ -31,5 +34,34 @@ export function postChatMessageWithAi(content, options = {}) {
       chatMode: chatMode === "live" ? "live" : "design",
     }),
     fallbackError: "Failed to send message.",
+  });
+}
+
+export function listChatContextDocs(options = {}) {
+  const chatMode = String(options?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
+  return requestJson(`/api/chat/context-docs?chatMode=${encodeURIComponent(chatMode)}`, {
+    fallbackError: "Failed to load AI context docs.",
+  });
+}
+
+export function uploadChatContextL5x(fileName, content, options = {}) {
+  const chatMode = String(options?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
+  return requestJson("/api/chat/context-docs/l5x", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fileName: String(fileName || "").trim(),
+      content: String(content || ""),
+      chatMode,
+    }),
+    fallbackError: "Failed to upload L5X context.",
+  });
+}
+
+export function clearChatContextDocs(options = {}) {
+  const chatMode = String(options?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
+  return requestJson(`/api/chat/context-docs?chatMode=${encodeURIComponent(chatMode)}`, {
+    method: "DELETE",
+    fallbackError: "Failed to clear AI context docs.",
   });
 }

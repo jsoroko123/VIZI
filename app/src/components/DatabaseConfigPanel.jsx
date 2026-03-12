@@ -66,23 +66,23 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
         return payload && typeof payload === "object" ? payload : {};
       };
 
-      const [configRes, pgRes, appRes] = await Promise.allSettled([
-        fetchJson("/api/db/config"),
-        fetchJson("/api/db/diagnostics/postgres"),
-        fetchJson("/api/diagnostics/app"),
-      ]);
+      const config = await fetchJson("/api/db/config");
+      setData(config);
+      const dbClient = String(config?.dbClient || "postgres").trim().toLowerCase();
+      const jobs = [fetchJson("/api/diagnostics/app")];
+      if (dbClient === "postgres") jobs.push(fetchJson("/api/db/diagnostics/postgres"));
+      const settled = await Promise.allSettled(jobs);
+      const appRes = settled[0];
+      const pgRes = settled.length > 1 ? settled[1] : null;
 
-      if (configRes.status === "fulfilled") setData(configRes.value);
-      else setData(null);
-
-      if (pgRes.status === "fulfilled") setPgDiag(pgRes.value);
-      else setPgDiag(null);
-
-      if (appRes.status === "fulfilled") setAppDiag(appRes.value);
+      if (appRes?.status === "fulfilled") setAppDiag(appRes.value);
       else setAppDiag(null);
 
-      const errors = [configRes, pgRes, appRes]
-        .filter((r) => r.status === "rejected")
+      if (pgRes?.status === "fulfilled") setPgDiag(pgRes.value);
+      else setPgDiag(null);
+
+      const errors = [appRes, pgRes]
+        .filter((r) => r && r.status === "rejected")
         .map((r) => String(r.reason?.message || "Request failed"));
       if (errors.length) setError(errors[0]);
     } catch (err) {
@@ -269,6 +269,7 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          client: form.protocol,
           connection: {
             protocol: form.protocol,
             host: form.host,
@@ -400,6 +401,7 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
           <select value={form.protocol} onChange={(e) => onField("protocol", e.target.value)} style={inputStyle}>
             <option value="postgres">postgres</option>
             <option value="postgresql">postgresql</option>
+            <option value="sqlserver">sqlserver</option>
           </select>
           <input value={form.host} onChange={(e) => onField("host", e.target.value)} style={inputStyle} placeholder="host" />
           <input value={form.port} onChange={(e) => onField("port", e.target.value)} style={inputStyle} placeholder="port" />

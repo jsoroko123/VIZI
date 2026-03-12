@@ -314,13 +314,76 @@ export async function ensureAppSchema({ pool, createPasswordHash, defaultRolePer
     CREATE TABLE IF NOT EXISTS support_chat_messages (
       id BIGSERIAL PRIMARY KEY,
       user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      mode TEXT NOT NULL DEFAULT 'design',
       message TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
   await pool.query(`
+    ALTER TABLE support_chat_messages
+    ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'design';
+  `);
+  await pool.query(`
+    UPDATE support_chat_messages
+    SET mode = 'design'
+    WHERE mode IS NULL OR TRIM(mode) = '';
+  `);
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS support_chat_messages_created_idx
     ON support_chat_messages(created_at DESC, id DESC);
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS support_chat_messages_mode_created_idx
+    ON support_chat_messages(mode, created_at DESC, id DESC);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS support_chat_documents (
+      id BIGSERIAL PRIMARY KEY,
+      mode TEXT NOT NULL DEFAULT 'design',
+      source_name TEXT NOT NULL DEFAULT '',
+      content_text TEXT NOT NULL DEFAULT '',
+      content_summary TEXT NOT NULL DEFAULT '',
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  await pool.query(`
+    ALTER TABLE support_chat_documents
+    ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'design';
+  `);
+  await pool.query(`
+    ALTER TABLE support_chat_documents
+    ADD COLUMN IF NOT EXISTS source_name TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE support_chat_documents
+    ADD COLUMN IF NOT EXISTS content_text TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE support_chat_documents
+    ADD COLUMN IF NOT EXISTS content_summary TEXT NOT NULL DEFAULT '';
+  `);
+  await pool.query(`
+    ALTER TABLE support_chat_documents
+    ADD COLUMN IF NOT EXISTS created_by INT REFERENCES users(id) ON DELETE SET NULL;
+  `);
+  await pool.query(`
+    ALTER TABLE support_chat_documents
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+  `);
+  await pool.query(`
+    ALTER TABLE support_chat_documents
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    ALTER TABLE support_chat_documents
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS support_chat_documents_mode_active_updated_idx
+    ON support_chat_documents(mode, is_active, updated_at DESC, id DESC);
   `);
   await pool.query(`
     ALTER TABLE users

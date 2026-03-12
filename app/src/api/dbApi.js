@@ -36,6 +36,21 @@ export function updateTableRow(table, rowId, values) {
   });
 }
 
+export function insertTableRow(table, values) {
+  return requestJson(`/api/db/${encodeURIComponent(table)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(values || {}),
+    fallbackError: "Failed to create row.",
+  });
+}
+
+export function getTableMeta(table) {
+  return requestJson(`/api/db/${encodeURIComponent(table)}/meta`, {
+    fallbackError: "Failed to load table metadata.",
+  });
+}
+
 export function listRoutesByProject(projectId, limit = 2000) {
   return requestJson(`/api/db/route?limit=${Number(limit) || 2000}&project_id=${encodeURIComponent(projectId)}`);
 }

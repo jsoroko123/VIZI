@@ -1,3 +1,5 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
 export default function TeamChatPanel({
   showTeamChat,
   setShowTeamChat,
@@ -19,16 +21,87 @@ export default function TeamChatPanel({
   teamChatSending,
   teamChatUnreadCount,
   onSend,
+  onUploadL5x,
+  onClearL5x,
+  chatContextDocs = [],
+  chatContextUploading = false,
   currentUserId,
   liveUsers = [],
 }) {
+  const [activeTab, setActiveTab] = useState("team");
+  const [aiSendingLabel, setAiSendingLabel] = useState("Thinking...");
+  const aiLabelTimerRef = useRef(0);
+  const l5xInputRef = useRef(null);
+  const normalizedTab = canAskAi ? activeTab : "team";
   const liveCount = Array.isArray(liveUsers) ? liveUsers.length : 0;
+  const aiBusyLabels = useMemo(
+    () => [
+      "Juggling valves...",
+      "Developing brilliance...",
+      "Perfecting the plan...",
+      "Wrangling tiny robots...",
+      "Polishing pixels...",
+      "Negotiating with semicolons...",
+      "Untangling logic noodles...",
+      "Calibrating wizardry...",
+      "Assembling cleverness...",
+      "Tuning flour-powered AI...",
+    ],
+    []
+  );
+
+  const isAiAuthor = (row) => String(row?.author || "").trim().toLowerCase() === "mesora ai";
+  const isAiPrompt = (row) => /^\/ai\b/i.test(String(row?.message || "").trim());
+
+  const teamOnlyMessages = useMemo(
+    () => (Array.isArray(teamChatMessages) ? teamChatMessages.filter((row) => !isAiAuthor(row) && !isAiPrompt(row)) : []),
+    [teamChatMessages]
+  );
+  const aiOnlyMessages = useMemo(
+    () => (Array.isArray(teamChatMessages) ? teamChatMessages.filter((row) => isAiAuthor(row) || isAiPrompt(row)) : []),
+    [teamChatMessages]
+  );
+  const visibleMessages = normalizedTab === "ai" ? aiOnlyMessages : teamOnlyMessages;
+
   const resolvedRight = isLiveMode && isLiveMobile
     ? 0
     : (rightOffset ?? (isLiveMode ? 8 : (desktopRightPx ?? 20)));
   const resolvedBottom = isLiveMode && isLiveMobile
     ? liveBottomCarouselHeightPx + 8
     : (Number(bottomOffset) > 0 ? Number(bottomOffset) : 16);
+
+  useEffect(() => {
+    if (!(normalizedTab === "ai" && teamChatSending)) {
+      setAiSendingLabel("Thinking...");
+      if (aiLabelTimerRef.current) {
+        window.clearInterval(aiLabelTimerRef.current);
+        aiLabelTimerRef.current = 0;
+      }
+      return;
+    }
+    const pick = (prev = "") => {
+      const list = Array.isArray(aiBusyLabels) ? aiBusyLabels : [];
+      if (!list.length) return "Thinking...";
+      if (list.length === 1) return list[0];
+      let next = prev || list[Math.floor(Math.random() * list.length)];
+      let guard = 0;
+      while (next === prev && guard < 8) {
+        next = list[Math.floor(Math.random() * list.length)];
+        guard += 1;
+      }
+      return next;
+    };
+    setAiSendingLabel((prev) => pick(prev));
+    aiLabelTimerRef.current = window.setInterval(() => {
+      setAiSendingLabel((prev) => pick(prev));
+    }, 5000);
+    return () => {
+      if (aiLabelTimerRef.current) {
+        window.clearInterval(aiLabelTimerRef.current);
+        aiLabelTimerRef.current = 0;
+      }
+    };
+  }, [normalizedTab, teamChatSending, aiBusyLabels]);
 
   return (
     <>
@@ -66,9 +139,13 @@ export default function TeamChatPanel({
             }}
           >
             <div style={{ display: "grid", gap: 2 }}>
-              <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>Team Chat</div>
+              <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+                {normalizedTab === "ai" ? "AI Chat" : "Team Chat"}
+              </div>
               <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                {liveCount ? `${liveCount} live: ${liveUsers.map((u) => u.username).join(", ")}` : "No live users"}
+                {normalizedTab === "ai"
+                  ? (isLiveMode ? "Milling AI Assistant" : "Design AI Assistant")
+                  : (liveCount ? `${liveCount} live: ${liveUsers.map((u) => u.username).join(", ")}` : "No live users")}
               </div>
             </div>
             <button
@@ -86,6 +163,54 @@ export default function TeamChatPanel({
               Close
             </button>
           </div>
+
+          <div
+            style={{
+              display: "flex",
+              gap: 6,
+              padding: "7px 10px",
+              borderBottom: "1px solid var(--border)",
+              background: "color-mix(in srgb, var(--bg-soft) 62%, var(--bg-elev) 38%)",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setActiveTab("team")}
+              style={{
+                border: "1px solid var(--border)",
+                background: normalizedTab === "team" ? "var(--selected-bg)" : "var(--bg-elev)",
+                color: normalizedTab === "team" ? "var(--selected-text)" : "var(--text)",
+                borderRadius: 8,
+                padding: "5px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                boxShadow: normalizedTab === "team" ? "var(--selected-shadow)" : "none",
+              }}
+            >
+              Team Chat
+            </button>
+            {canAskAi ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab("ai")}
+                style={{
+                  border: "1px solid var(--border)",
+                  background: normalizedTab === "ai" ? "var(--selected-bg)" : "var(--bg-elev)",
+                  color: normalizedTab === "ai" ? "var(--selected-text)" : "var(--text)",
+                  borderRadius: 8,
+                  padding: "5px 10px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  boxShadow: normalizedTab === "ai" ? "var(--selected-shadow)" : "none",
+                }}
+              >
+                AI Chat
+              </button>
+            ) : null}
+          </div>
+
           <div
             ref={teamChatBodyRef}
             className="vizi-scroll"
@@ -101,11 +226,15 @@ export default function TeamChatPanel({
           >
             {teamChatLoading ? (
               <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading chat...</div>
-            ) : teamChatMessages.length ? (
-              teamChatMessages.map((row, idx) => {
+            ) : visibleMessages.length ? (
+              visibleMessages.map((row, idx) => {
                 const id = Number(row?.id || 0);
                 const mine = Number(row?.user_id || 0) === Number(currentUserId || 0);
                 const at = row?.created_at ? new Date(row.created_at) : null;
+                const messageText = String(row?.message || "");
+                const cleanText = normalizedTab === "ai" && isAiPrompt(row)
+                  ? messageText.replace(/^\/ai\s*/i, "")
+                  : messageText;
                 return (
                   <div
                     key={`team-chat-msg-${id || idx}`}
@@ -122,18 +251,21 @@ export default function TeamChatPanel({
                   >
                     <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", marginBottom: 2 }}>
                       {String(row?.author || "User")}
-                      {at && !Number.isNaN(at.getTime()) ? ` • ${at.toLocaleString()}` : ""}
+                      {at && !Number.isNaN(at.getTime()) ? ` | ${at.toLocaleString()}` : ""}
                     </div>
                     <div style={{ fontSize: 12, lineHeight: 1.35, color: "var(--text)", whiteSpace: "pre-wrap" }}>
-                      {String(row?.message || "")}
+                      {cleanText}
                     </div>
                   </div>
                 );
               })
             ) : (
-              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No messages yet.</div>
+              <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                {normalizedTab === "ai" ? "No AI messages yet." : "No team messages yet."}
+              </div>
             )}
           </div>
+
           <div
             style={{
               borderTop: "1px solid var(--border)",
@@ -143,20 +275,85 @@ export default function TeamChatPanel({
               gap: 8,
             }}
           >
+            {normalizedTab === "ai" ? (
+              <div style={{ display: "grid", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                    L5X Context: {Array.isArray(chatContextDocs) ? chatContextDocs.length : 0} loaded
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input
+                      ref={l5xInputRef}
+                      type="file"
+                      accept=".l5x,.l5k,.xml,.txt,text/plain,text/xml,application/xml"
+                      style={{ display: "none" }}
+                      onChange={(e) => {
+                        const file = e?.target?.files?.[0] || null;
+                        if (file && typeof onUploadL5x === "function") void onUploadL5x(file);
+                        if (e?.target) e.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => l5xInputRef.current?.click()}
+                      disabled={chatContextUploading}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text)",
+                        borderRadius: 8,
+                        padding: "4px 8px",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: chatContextUploading ? "wait" : "pointer",
+                        opacity: chatContextUploading ? 0.6 : 1,
+                      }}
+                    >
+                      {chatContextUploading ? "Uploading..." : "Load L5X"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => typeof onClearL5x === "function" && onClearL5x()}
+                      disabled={chatContextUploading || !(Array.isArray(chatContextDocs) && chatContextDocs.length)}
+                      style={{
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text-muted)",
+                        borderRadius: 8,
+                        padding: "4px 8px",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: chatContextUploading ? "wait" : "pointer",
+                        opacity: chatContextUploading || !(Array.isArray(chatContextDocs) && chatContextDocs.length) ? 0.5 : 1,
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                {Array.isArray(chatContextDocs) && chatContextDocs[0] ? (
+                  <div style={{ fontSize: 10, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    Latest: {String(chatContextDocs[0]?.source_name || "upload.l5x")} {String(chatContextDocs[0]?.content_summary || "").trim() ? `| ${String(chatContextDocs[0]?.content_summary || "").trim()}` : ""}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <textarea
               value={teamChatDraft}
               onChange={(e) => setTeamChatDraft(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  void onSend();
+                  if (normalizedTab === "ai" && canAskAi) {
+                    void onSend({ askAi: true, forceAiPrefix: true });
+                  } else {
+                    void onSend();
+                  }
                 }
               }}
               placeholder={
-                canAskAi
-                  ? isLiveMode
-                    ? "Ask milling ops... (use /ai)"
-                    : "Ask design/build questions... (use /ai)"
+                normalizedTab === "ai"
+                  ? (isLiveMode ? "Ask milling ops..." : "Ask design/build questions...")
                   : "Type message..."
               }
               rows={2}
@@ -174,44 +371,46 @@ export default function TeamChatPanel({
               }}
             />
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              {canAskAi ? (
+              {normalizedTab === "ai" && canAskAi ? (
                 <button
-                  onClick={() => void onSend({ askAi: true })}
+                  onClick={() => void onSend({ askAi: true, forceAiPrefix: true })}
                   disabled={teamChatSending || !String(teamChatDraft || "").trim()}
                   style={{
-                    border: "1px solid var(--border)",
-                    background: "var(--bg)",
-                    color: "var(--text)",
+                    border: "1px solid var(--accent)",
+                    background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
+                    color: "var(--accent-text)",
                     borderRadius: 8,
-                    padding: "6px 10px",
+                    padding: "6px 12px",
                     fontSize: 12,
                     fontWeight: 700,
                     cursor: teamChatSending ? "wait" : "pointer",
                     opacity: teamChatSending || !String(teamChatDraft || "").trim() ? 0.55 : 1,
-                    marginRight: 6,
                   }}
                   title="Ask Mesora AI using Ollama"
                 >
-                  Ask AI
+                  {teamChatSending ? aiSendingLabel : "Ask AI"}
                 </button>
               ) : null}
-              <button
-                onClick={() => void onSend()}
-                disabled={teamChatSending || !String(teamChatDraft || "").trim()}
-                style={{
-                  border: "1px solid var(--accent)",
-                  background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
-                  color: "var(--accent-text)",
-                  borderRadius: 8,
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: teamChatSending ? "wait" : "pointer",
-                  opacity: teamChatSending || !String(teamChatDraft || "").trim() ? 0.55 : 1,
-                }}
-              >
-                {teamChatSending ? "Sending..." : "Send"}
-              </button>
+
+              {normalizedTab === "team" ? (
+                <button
+                  onClick={() => void onSend()}
+                  disabled={teamChatSending || !String(teamChatDraft || "").trim()}
+                  style={{
+                    border: "1px solid var(--accent)",
+                    background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
+                    color: "var(--accent-text)",
+                    borderRadius: 8,
+                    padding: "6px 12px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: teamChatSending ? "wait" : "pointer",
+                    opacity: teamChatSending || !String(teamChatDraft || "").trim() ? 0.55 : 1,
+                  }}
+                >
+                  {teamChatSending ? "Sending..." : "Send"}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>

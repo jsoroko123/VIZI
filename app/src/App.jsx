@@ -92,6 +92,8 @@ import {
 import { defaultWidgetSettings, widgetTemplate } from "./utils/widgetTemplates";
 import {
   fetchBatchFirstValues,
+  getTableMeta,
+  insertTableRow,
   listActiveAlarms,
   listAllEquipment,
   listAllRoutes,
@@ -395,7 +397,11 @@ export default function App() {
     teamChatSending,
     teamChatUnreadCount,
     teamChatBodyRef,
+    chatContextDocs,
+    chatContextUploading,
     sendTeamChatMessage,
+    uploadL5xContextFile,
+    clearL5xContextDocs,
   } = useTeamChat({
     userId: user?.id,
     isPageVisible,
@@ -2932,6 +2938,117 @@ export default function App() {
     normalizeTagValue(row?.bin_name ?? row?.binName ?? row?.name ?? row?.Name ?? "");
   const getProjectBinPath = (row) =>
     normalizeTagValue(row?.tag_path ?? row?.tagPath ?? row?.svg_tag_path ?? row?.svgTagPath ?? row?.path ?? row?.Path ?? "");
+  const extractBinNumber = (input) => {
+    const raw = String(input || "").trim();
+    if (!raw) return null;
+    const explicit = raw.match(/\bbin\s*0*(\d+)\b/i);
+    if (explicit?.[1]) {
+      const n = Number(explicit[1]);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+    }
+    const fallback = raw.match(/\b0*(\d+)\b/);
+    if (!fallback?.[1]) return null;
+    const n = Number(fallback[1]);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  };
+  const toCanonicalBinName = (input) => {
+    const n = extractBinNumber(input);
+    if (n == null) return "";
+    return `Bin${n}`;
+  };
+  const resolveBinTableColumns = async (tableName) => {
+    const table = String(tableName || "bin").trim() || "bin";
+    try {
+      const meta = await getTableMeta(table);
+      const cols = Array.isArray(meta?.columns) ? meta.columns : [];
+      const names = new Set(
+        cols
+          .map((c) => String(c?.column_name || "").trim().toLowerCase())
+          .filter(Boolean)
+      );
+      return names;
+    } catch {
+      return new Set();
+    }
+  };
+  const buildBinInsertPayload = (binName, tableColumns) => {
+    const cols = tableColumns instanceof Set ? tableColumns : new Set();
+    const payload = {};
+    if (cols.has("name")) payload.name = binName;
+    if (cols.has("bin_name")) payload.bin_name = binName;
+    if (cols.has("description")) payload.description = `${binName} (AI)`;
+    if (cols.has("tag_path")) payload.tag_path = binName;
+    if (cols.has("project_id") && String(activeProjectId || "").trim()) {
+      payload.project_id = String(activeProjectId || "").trim();
+    }
+    return payload;
+  };
+  const ensureAiBinsExist = async (items) => {
+    const requested = (Array.isArray(items) ? items : [])
+      .map((item) => {
+        const label = String(item?.label || "").trim();
+        const path = String(item?.tagPath || "").trim();
+        const byLabel = toCanonicalBinName(label);
+        const byPath = toCanonicalBinName(path);
+        const canonicalName = byLabel || byPath;
+        if (!canonicalName) return null;
+        return { ...item, canonicalName };
+      })
+      .filter(Boolean);
+    if (!requested.length) return new Map();
+
+    const rows = Array.isArray(projectBinRows) ? projectBinRows : [];
+    const byName = new Map();
+    rows.forEach((row) => {
+      const rowName = toCanonicalBinName(getProjectBinName(row) || getProjectBinPath(row));
+      if (!rowName) return;
+      const rowId = getProjectBinRowId(row);
+      const key = getProjectBinBindingKey(row) || (rowId ? `id:${rowId}` : "");
+      if (!key) return;
+      byName.set(rowName.toLowerCase(), { row, key });
+    });
+
+    const missing = [];
+    requested.forEach((item) => {
+      const k = item.canonicalName.toLowerCase();
+      if (!byName.has(k)) missing.push(item.canonicalName);
+    });
+    const uniqueMissing = Array.from(new Set(missing));
+    if (uniqueMissing.length) {
+      const table = String(projectBinTableName || "bin").trim() || "bin";
+      const cols = await resolveBinTableColumns(table);
+      const createdRows = [];
+      for (const binName of uniqueMissing) {
+        const payload = buildBinInsertPayload(binName, cols);
+        if (!Object.keys(payload).length) continue;
+        try {
+          const data = await insertTableRow(table, payload);
+          const created = data?.row && typeof data.row === "object" ? data.row : null;
+          if (!created) continue;
+          createdRows.push(created);
+          const rowId = getProjectBinRowId(created);
+          const key = getProjectBinBindingKey(created) || (rowId ? `id:${rowId}` : "");
+          if (key) byName.set(binName.toLowerCase(), { row: created, key });
+        } catch {
+          // Keep layout flow running even if one insert fails.
+        }
+      }
+      if (createdRows.length) {
+        setProjectBinRows((prev) => [...(Array.isArray(prev) ? prev : []), ...createdRows]);
+      }
+    }
+
+    const bindings = new Map();
+    requested.forEach((item) => {
+      const hit = byName.get(item.canonicalName.toLowerCase());
+      if (!hit?.key) return;
+      bindings.set(item.id, {
+        binBindingKey: hit.key,
+        canonicalName: item.canonicalName,
+      });
+    });
+    return bindings;
+  };
   const getProjectBinLevelFieldName = (row) => {
     if (!row || typeof row !== "object") return "";
     const candidates = [
@@ -9130,13 +9247,31 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const selected = String(rawSelection || "").trim();
     if (!selected) return null;
     const entries = Array.isArray(svgFiles) ? svgFiles : [];
+    const normalizeToken = (value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "");
     const byExactKey = entries.find(
       (file) => String(file?.key || "").trim().toLowerCase() === selected.toLowerCase()
     );
     const byName = entries.find(
       (file) => String(file?.name || "").trim().toLowerCase() === selected.toLowerCase()
     );
-    const match = byExactKey || byName || null;
+    const selectedNorm = normalizeToken(selected);
+    const byFuzzy = !byExactKey && !byName
+      ? entries.find((file) => {
+          const keyNorm = normalizeToken(file?.key || "");
+          const nameNorm = normalizeToken(file?.name || "");
+          if (!selectedNorm || (!keyNorm && !nameNorm)) return false;
+          return (
+            keyNorm.includes(selectedNorm) ||
+            nameNorm.includes(selectedNorm) ||
+            selectedNorm.includes(nameNorm)
+          );
+        })
+      : null;
+    const match = byExactKey || byName || byFuzzy || null;
     if (!match?.key) return null;
     return {
       key: String(match.key),
@@ -9164,13 +9299,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const x = Number(entry.x);
         const y = Number(entry.y);
         const width = Number(entry.width || entry.w || 0);
+        const inferredType = inferETypeFromFileKey(svgChoice.key);
+        const isLikelyBin =
+          isBinEType(inferredType) ||
+          /\bbin\b/i.test(String(svgChoice.key || "")) ||
+          /\bbin\b/i.test(String(svgChoice.name || ""));
+        const canonicalBinName = isLikelyBin ? toCanonicalBinName(label || tagPath) : "";
         return {
+          id: `ai-layout-${idx}-${Math.random().toString(36).slice(2, 8)}`,
           svgKey: svgChoice.key,
           label,
           tagPath,
           x: Number.isFinite(x) ? x : null,
           y: Number.isFinite(y) ? y : null,
           width: Number.isFinite(width) && width > 0 ? width : null,
+          isLikelyBin,
+          canonicalBinName,
         };
       })
       .filter(Boolean);
@@ -9180,6 +9324,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
 
     const count = normalizedItems.length;
+    const binBindings = await ensureAiBinsExist(
+      normalizedItems
+        .filter((item) => item?.isLikelyBin && item?.canonicalBinName)
+        .map((item) => ({
+          id: item.id,
+          label: item.canonicalBinName,
+          tagPath: item.tagPath,
+        }))
+    );
     const defaultCellW = Math.max(50, Number(layout.cellW) || Number(layout.targetW) || 120);
     const defaultCellH = Math.max(40, Number(layout.cellH) || Math.round(defaultCellW * 0.92));
     const gapX = Math.max(0, Number(layout.gapX) || 24);
@@ -9219,10 +9372,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
               };
           const targetWidth = Math.max(50, Number(item.width || defaultCellW));
           const overlay = await buildOverlayFromKey(item.svgKey, center, targetWidth);
+          const binBinding = item?.id ? binBindings.get(item.id) : null;
           return {
             ...overlay,
-            name: item.label || overlay.name,
+            name: (binBinding?.canonicalName || item.label || overlay.name),
             tagPath: item.tagPath || overlay.tagPath || "",
+            binBindingKey: binBinding?.binBindingKey || "",
           };
         })
       )
@@ -14169,7 +14324,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             position: "fixed",
             left: projectDrawerInsetPx + liveMenuLayoutInsetPx + 8,
             top: TOP_BAR_H + liveAlarmBarOffset + 8,
-            bottom: 8,
+            bottom: showDesktopTaskbar ? TASKBAR_H + 8 : 8,
             width: liveEquipmentDrawerWidthPx - 16,
             zIndex: LIVE_EQUIPMENT_Z_BASE + 50,
             pointerEvents: "auto",
@@ -14326,7 +14481,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
               entries: liveEquipmentBottomDockEntries,
               style: {
                 top: "auto",
-                bottom: 10,
+                bottom: showDesktopTaskbar ? TASKBAR_H + 10 : 10,
               },
             },
           ].map((lane) =>
@@ -16684,12 +16839,24 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 >
                   {projectIdentityReady ? activeProject?.name || projectName || "None" : "Loading..."}
                 </button>
-                <div
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isLiveMode) return;
+                    const list = Array.isArray(screens) ? screens : [];
+                    if (list.length <= 1) return;
+                    const currentId = String(activeScreenId || "");
+                    const currentIndex = list.findIndex((s) => String(s?.id || "") === currentId);
+                    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+                    const next = list[(safeIndex + 1) % list.length];
+                    if (next?.id) switchToScreen(String(next.id));
+                  }}
+                  disabled={isLiveMode || !projectIdentityReady || (Array.isArray(screens) ? screens.length : 0) <= 1}
                   title={
                     projectIdentityReady
                       ? (isLiveMode
                           ? activeMenuLabel || "No menu selected"
-                          : activeScreen?.name || screenName || "No screen selected")
+                          : `${activeScreen?.name || screenName || "No screen selected"} (click to cycle screens)`)
                       : "Loading screen..."
                   }
                   style={{
@@ -16705,12 +16872,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     flex: "0 0 auto",
+                    cursor:
+                      !isLiveMode && (Array.isArray(screens) ? screens.length : 0) > 1
+                        ? "pointer"
+                        : "default",
+                    opacity: !isLiveMode || (Array.isArray(screens) ? screens.length : 0) > 1 ? 1 : 0.92,
+                    outline: "none",
                   }}
                 >
                   {projectIdentityReady
                     ? (isLiveMode ? activeMenuLabel || "None" : activeScreen?.name || screenName || "None")
                     : "Loading..."}
-                </div>
+                </button>
               </>
             ) : null}
             {!isLiveMode && !showZoom ? (
@@ -19030,6 +19203,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         teamChatSending={teamChatSending}
         teamChatUnreadCount={teamChatUnreadCount}
         onSend={sendTeamChatMessage}
+        onUploadL5x={uploadL5xContextFile}
+        onClearL5x={clearL5xContextDocs}
+        chatContextDocs={chatContextDocs}
+        chatContextUploading={chatContextUploading}
         currentUserId={user?.id}
         liveUsers={teamChatLiveUsers}
       />
