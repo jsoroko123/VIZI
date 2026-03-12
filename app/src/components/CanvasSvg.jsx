@@ -2454,7 +2454,13 @@ export default function CanvasSvg({
       : null;
     const lastUpdateLabel = lastUpdateTs != null ? formatTooltipTime(lastUpdateTs) : "--";
     const lineTension = Math.max(0, Math.min(1, Number(cfg?.lineTension) || 0.34));
-    const effectiveTension = axisTimeline.length > 240 ? 0 : lineTension;
+    const lineStyle = String(cfg?.lineStyle || "").trim().toLowerCase() === "step" ? "step" : "smooth";
+    const isStepLine = lineStyle === "step";
+    const lineWidth = Math.max(1, Math.min(8, Number(cfg?.lineWidth) || 2.4));
+    const showLegend = cfg?.showLegend !== false;
+    const showGrid = cfg?.showGrid !== false;
+    const yAxisSide = String(cfg?.yAxisSide || "").trim().toLowerCase() === "right" ? "right" : "left";
+    const effectiveTension = isStepLine ? 0 : (axisTimeline.length > 240 ? 0 : lineTension);
     const showPoints = cfg?.showPoints !== false;
     const baseScales = dense
       ? { x: { display: false }, y: { display: false } }
@@ -2472,19 +2478,20 @@ export default function CanvasSvg({
               autoSkipPadding: 10,
               font: { size: 10, weight: "600" },
             },
-            grid: { color: "transparent", drawBorder: false },
+            grid: { color: showGrid ? gridColor : "transparent", drawBorder: false },
             border: { display: false },
           },
           y: {
             display: true,
             alignToPixels: true,
+            position: yAxisSide,
             ticks: {
               color: axisColor,
               font: { size: 10, weight: "600" },
               maxTicksLimit: 5,
               callback: yTickFmt,
             },
-            grid: { color: gridColor, borderDash: [4, 4], drawBorder: false },
+            grid: { color: showGrid ? gridColor : "transparent", borderDash: [4, 4], drawBorder: false },
             border: { display: false },
             min: minV,
             max: maxV,
@@ -2500,7 +2507,7 @@ export default function CanvasSvg({
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: {
-          display: useMultiLine,
+          display: showLegend,
           position: "top",
           labels: {
             color: axisColor,
@@ -2553,14 +2560,14 @@ export default function CanvasSvg({
       ...commonOptions,
       elements: {
         ...commonOptions.elements,
-        line: { ...commonOptions.elements.line, tension: effectiveTension, borderWidth: 2.6 },
+        line: { ...commonOptions.elements.line, tension: effectiveTension, borderWidth: lineWidth },
       },
     };
     const areaOptions = {
       ...commonOptions,
       elements: {
         ...commonOptions.elements,
-        line: { ...commonOptions.elements.line, tension: effectiveTension, borderWidth: 2.4 },
+        line: { ...commonOptions.elements.line, tension: effectiveTension, borderWidth: lineWidth },
       },
     };
     const barCount = Math.max(1, labels.length || 0);
@@ -2590,11 +2597,12 @@ export default function CanvasSvg({
               data: axisTimeline.map((ts) => (byTs.has(Number(ts)) ? byTs.get(Number(ts)) : null)),
               borderColor: series.color,
               backgroundColor: series.color,
-              borderWidth: 2.3,
+              borderWidth: lineWidth,
               fill: false,
               spanGaps: true,
               tension: effectiveTension,
-              cubicInterpolationMode: "monotone",
+              stepped: isStepLine,
+              cubicInterpolationMode: isStepLine ? undefined : "monotone",
             };
           }),
         }
@@ -2617,10 +2625,11 @@ export default function CanvasSvg({
                       return g;
                     }
                   : accentLine,
-              borderWidth: kind === "areaChart" ? 2.2 : 2.4,
+              borderWidth: lineWidth,
               fill: kind === "areaChart",
               tension: effectiveTension,
-              cubicInterpolationMode: "monotone",
+              stepped: isStepLine,
+              cubicInterpolationMode: isStepLine ? undefined : "monotone",
             },
           ],
         };

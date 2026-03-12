@@ -572,6 +572,13 @@ export default function PropertiesPanel({
   const widgetMaxPointsVal = String(hudFields?.widgetMaxPoints ?? "500");
   const widgetLineTensionVal = String(hudFields?.widgetLineTension ?? "0.34");
   const widgetShowPointsVal = String(hudFields?.widgetShowPoints ?? "true");
+  const widgetShowLegendVal = String(hudFields?.widgetShowLegend ?? "true");
+  const widgetShowGridVal = String(hudFields?.widgetShowGrid ?? "true");
+  const widgetLineWidthVal = String(hudFields?.widgetLineWidth ?? "2.4");
+  const widgetLineStyleVal =
+    String(hudFields?.widgetLineStyle || "").trim().toLowerCase() === "step" ? "step" : "smooth";
+  const widgetYAxisSideVal =
+    String(hudFields?.widgetYAxisSide || "").trim().toLowerCase() === "right" ? "right" : "left";
   const widgetSeriesTagsVal = String(hudFields?.widgetSeriesTags ?? "");
   const widgetAxisModeVal = String(hudFields?.widgetAxisMode ?? "auto");
   const widgetTimerPreTagVal = String(hudFields?.widgetTimerPreTag || "");
@@ -1355,6 +1362,72 @@ export default function PropertiesPanel({
                       options={[
                         { value: "true", label: "Yes" },
                         { value: "false", label: "No" },
+                      ]}
+                    />
+                    <Row
+                      label="Line Width"
+                      type="number"
+                      value={widgetLineWidthVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetLineWidth: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="2.4"
+                    />
+                    <SelectRow
+                      label="Line Style"
+                      value={widgetLineStyleVal}
+                      onChange={(v) => {
+                        const mode = String(v || "").trim().toLowerCase() === "step" ? "step" : "smooth";
+                        setHudFields((p) => ({ ...p, widgetLineStyle: mode }));
+                        applySingleWidgetSettings?.({ ...hudFields, widgetLineStyle: mode });
+                      }}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={[
+                        { value: "smooth", label: "Smooth" },
+                        { value: "step", label: "Step" },
+                      ]}
+                    />
+                  </>
+                )}
+                {isTrendChartKind && (
+                  <>
+                    <SelectRow
+                      label="Show Legend"
+                      value={widgetShowLegendVal}
+                      onChange={(v) => {
+                        setHudFields((p) => ({ ...p, widgetShowLegend: v }));
+                        applySingleWidgetSettings?.({ ...hudFields, widgetShowLegend: v });
+                      }}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={[
+                        { value: "true", label: "Yes" },
+                        { value: "false", label: "No" },
+                      ]}
+                    />
+                    <SelectRow
+                      label="Show Grid"
+                      value={widgetShowGridVal}
+                      onChange={(v) => {
+                        setHudFields((p) => ({ ...p, widgetShowGrid: v }));
+                        applySingleWidgetSettings?.({ ...hudFields, widgetShowGrid: v });
+                      }}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={[
+                        { value: "true", label: "Yes" },
+                        { value: "false", label: "No" },
+                      ]}
+                    />
+                    <SelectRow
+                      label="Y Axis Side"
+                      value={widgetYAxisSideVal}
+                      onChange={(v) => {
+                        const side = String(v || "").trim().toLowerCase() === "right" ? "right" : "left";
+                        setHudFields((p) => ({ ...p, widgetYAxisSide: side }));
+                        applySingleWidgetSettings?.({ ...hudFields, widgetYAxisSide: side });
+                      }}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={[
+                        { value: "left", label: "Left" },
+                        { value: "right", label: "Right" },
                       ]}
                     />
                   </>

@@ -40,7 +40,7 @@ export function postChatMessageWithAi(content, options = {}) {
 export function listChatContextDocs(options = {}) {
   const chatMode = String(options?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
   return requestJson(`/api/chat/context-docs?chatMode=${encodeURIComponent(chatMode)}`, {
-    fallbackError: "Failed to load AI context docs.",
+    fallbackError: "Failed to load L5X.",
   });
 }
 

@@ -308,7 +308,7 @@ export function useTeamChat({
       setChatContextDocs(docs);
       return docs;
     } catch (err) {
-      if (!silent) toastError(err?.message || "Failed to load L5X context docs.");
+      if (!silent) toastError(err?.message || "Failed to load L5X.");
       return [];
     }
   };

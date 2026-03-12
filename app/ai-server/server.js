@@ -1,4 +1,4 @@
-﻿import "dotenv/config";
+import "dotenv/config";
 import fs from "fs";
 import path from "path";
 import express from "express";
@@ -3750,7 +3750,7 @@ const FLOUR_KNOWLEDGE_MAX_CHARS = Math.max(
 );
 const CHAT_L5X_DOC_MAX_CHARS = Math.max(
   2000,
-  Math.min(300000, Number.parseInt(process.env.CHAT_L5X_DOC_MAX_CHARS || "160000", 10) || 160000)
+  Math.min(4000000, Number.parseInt(process.env.CHAT_L5X_DOC_MAX_CHARS || "2000000", 10) || 2000000)
 );
 const CHAT_L5X_CONTEXT_MAX_CHARS = Math.max(
   500,
@@ -6582,7 +6582,7 @@ app.get("/api/chat/context-docs", async (req, res) => {
     const docs = await listChatContextDocs(chatMode);
     res.json({ docs });
   } catch (err) {
-    res.status(500).json({ error: err?.message || "Failed to load chat context docs." });
+    res.status(500).json({ error: err?.message || "Failed to load L5X." });
   }
 });
 
@@ -6595,25 +6595,32 @@ app.post("/api/chat/context-docs/l5x", async (req, res) => {
     }
     const chatMode = String(req.body?.chatMode || "").trim().toLowerCase() === "live" ? "live" : "design";
     const sourceName = String(req.body?.fileName || req.body?.sourceName || "upload.l5x").trim() || "upload.l5x";
-    const content = String(req.body?.content || "").trim();
+    const rawContent = String(req.body?.content || "");
+    const content = rawContent.trim();
     if (!content) {
       res.status(400).json({ error: "L5X content is required." });
       return;
     }
-    if (content.length > CHAT_L5X_DOC_MAX_CHARS) {
-      res.status(400).json({ error: `L5X content too large (max ${CHAT_L5X_DOC_MAX_CHARS} chars).` });
-      return;
-    }
-    const summary = summarizeL5xText(content);
+    const exceeds = content.length > CHAT_L5X_DOC_MAX_CHARS;
+    const storedContent = exceeds ? content.slice(0, CHAT_L5X_DOC_MAX_CHARS) : content;
+    const summaryBase = summarizeL5xText(storedContent);
+    const summary = exceeds
+      ? `${summaryBase} | Truncated to ${CHAT_L5X_DOC_MAX_CHARS} chars`
+      : summaryBase;
     const { rows } = await pool.query(
       `
       INSERT INTO support_chat_documents (mode, source_name, content_text, content_summary, created_by, is_active, updated_at)
       VALUES ($1, $2, $3, $4, $5, true, now())
       RETURNING id, mode, source_name, content_summary, created_by, created_at, updated_at
       `,
-      [chatMode, sourceName.slice(0, 220), content, summary.slice(0, 500), Number(authUser.id || 0) || null]
+      [chatMode, sourceName.slice(0, 220), storedContent, summary.slice(0, 500), Number(authUser.id || 0) || null]
     );
-    res.status(201).json({ doc: rows[0] || null });
+    res.status(201).json({
+      doc: rows[0] || null,
+      truncated: exceeds,
+      storedChars: storedContent.length,
+      maxChars: CHAT_L5X_DOC_MAX_CHARS,
+    });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to upload L5X context." });
   }
@@ -6638,6 +6645,8 @@ app.delete("/api/chat/context-docs", async (req, res) => {
 });
 
 let mesoraAiUserIdCache = 0;
+const motorDiagDocParseCache = new Map();
+const motorDiagAoiCatalogCache = new Map();
 async function ensureMesoraAiUserId() {
   if (Number.isFinite(Number(mesoraAiUserIdCache)) && Number(mesoraAiUserIdCache) > 0) {
     return Number(mesoraAiUserIdCache);
@@ -6738,7 +6747,632 @@ async function getChatContextForPrompt(mode = "design") {
   return sections.join("\n\n---\n\n");
 }
 
-async function getChatOllamaReply({ prompt = "", history = [], chatMode = "design" } = {}) {
+function normalizeLadderTagToken(raw = "") {
+  let text = String(raw || "").trim();
+  if (!text) return "";
+  text = text.replace(/^['"]|['"]$/g, "").trim();
+  if (!text) return "";
+  text = text.replace(/\s+/g, "");
+  return text;
+}
+
+function isLikelyTagToken(raw = "") {
+  const text = normalizeLadderTagToken(raw);
+  if (!text) return false;
+  if (/^[+-]?\d+(\.\d+)?$/.test(text)) return false;
+  if (/^(true|false)$/i.test(text)) return false;
+  if (!/[a-z_]/i.test(text)) return false;
+  if (/[+\-*/<>=]/.test(text) && !/[.:_]/.test(text)) return false;
+  return true;
+}
+
+function decodeL5xText(raw = "") {
+  return String(raw || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function tokenizeInstructionArgs(raw = "") {
+  const src = String(raw || "").trim();
+  if (!src) return [];
+  const out = [];
+  let cur = "";
+  let quote = "";
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === "'" || ch === "\"") {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+    if (ch === ",") {
+      out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+function parseRungConditions(rungText = "") {
+  const text = decodeL5xText(rungText);
+  const conditions = [];
+  const coils = [];
+  const customCalls = [];
+  const knownInstructions = new Set([
+    "OTE", "OTL", "OTU",
+    "XIC", "XIO", "EQU", "NEQ", "LES", "LEQ", "GRT", "GEQ",
+    "ONS", "OSR", "OSF", "BST", "NXB", "BND",
+    "MOV", "MVM", "COP", "CPS", "CLR",
+    "ADD", "SUB", "MUL", "DIV", "MOD",
+    "AND", "OR", "XOR", "NOT",
+    "TON", "TOF", "RTO", "RES",
+    "JMP", "LBL", "JSR", "RET",
+  ]);
+  const re = /([A-Z]{2,6})\(([^)]*)\)/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const instruction = String(match[1] || "").trim().toUpperCase();
+    const args = tokenizeInstructionArgs(match[2] || "");
+    const firstArg = normalizeLadderTagToken(args[0] || "");
+    if (["OTE", "OTL", "OTU"].includes(instruction)) {
+      if (isLikelyTagToken(firstArg)) coils.push(firstArg);
+      continue;
+    }
+    if (["XIC", "XIO", "EQU", "NEQ", "LES", "LEQ", "GRT", "GEQ"].includes(instruction)) {
+      if (isLikelyTagToken(firstArg)) {
+        conditions.push({
+          instruction,
+          tag: firstArg,
+          arg1: firstArg,
+          arg2: normalizeLadderTagToken(args[1] || ""),
+          raw: `${instruction}(${args.join(",")})`,
+        });
+      }
+    }
+    if (!knownInstructions.has(instruction)) {
+      customCalls.push({
+        instruction,
+        args: args.map((arg) => normalizeLadderTagToken(arg)),
+        raw: `${instruction}(${args.join(",")})`,
+      });
+    }
+  }
+  return { text, coils, conditions, customCalls };
+}
+
+function getMotorDiagCacheKey(doc = {}) {
+  const source = String(doc?.source_name || "").trim().toLowerCase();
+  const updatedAt = String(doc?.updated_at || "").trim();
+  const len = Number(String(doc?.content_text || "").length || 0);
+  return `${source}|${updatedAt}|${len}`;
+}
+
+function parseMotorDiagDocRungs(doc = {}) {
+  const key = getMotorDiagCacheKey(doc);
+  const cached = motorDiagDocParseCache.get(key);
+  if (cached && Array.isArray(cached.rungs)) return cached.rungs;
+  const text = String(doc?.content_text || "");
+  const rungBlocks = text.match(/<Text\b[^>]*>[\s\S]*?<\/Text>/gi) || [];
+  const parsedRungs = [];
+  for (const block of rungBlocks.slice(0, 1800)) {
+    const inner = String(block).replace(/^<Text\b[^>]*>/i, "").replace(/<\/Text>$/i, "");
+    const parsed = parseRungConditions(inner);
+    if (!parsed.coils.length || !parsed.conditions.length) continue;
+    parsedRungs.push({
+      coils: parsed.coils.slice(0, 5),
+      conditions: parsed.conditions.slice(0, 30),
+      customCalls: (Array.isArray(parsed.customCalls) ? parsed.customCalls : []).slice(0, 16),
+    });
+    if (parsedRungs.length >= 320) break;
+  }
+  motorDiagDocParseCache.set(key, { at: Date.now(), rungs: parsedRungs });
+  if (motorDiagDocParseCache.size > 64) {
+    const entries = Array.from(motorDiagDocParseCache.entries()).sort((a, b) => Number(a?.[1]?.at || 0) - Number(b?.[1]?.at || 0));
+    const trim = Math.max(1, entries.length - 48);
+    for (let i = 0; i < trim; i += 1) {
+      motorDiagDocParseCache.delete(entries[i][0]);
+    }
+  }
+  return parsedRungs;
+}
+
+function trimAoiTagExpression(raw = "") {
+  const tag = normalizeLadderTagToken(raw);
+  if (!tag) return "";
+  return tag.replace(/^\w+::/g, "");
+}
+
+function resolveAoiConditionTag(templateTag = "", argByParam = new Map()) {
+  const token = trimAoiTagExpression(templateTag);
+  if (!token) return "";
+  const parts = token.split(".");
+  const root = String(parts[0] || "").trim();
+  if (!root) return token;
+  const mapped = argByParam.get(root.toLowerCase());
+  if (!mapped) return token;
+  const rest = parts.slice(1).join(".");
+  return rest ? `${mapped}.${rest}` : mapped;
+}
+
+function parseAoiCatalogFromText(text = "") {
+  const src = String(text || "");
+  const catalog = new Map();
+  const blockRe = /<AddOnInstructionDefinition\b([^>]*)>([\s\S]*?)<\/AddOnInstructionDefinition>/gi;
+  let blockMatch;
+  while ((blockMatch = blockRe.exec(src)) !== null) {
+    const attrs = String(blockMatch[1] || "");
+    const body = String(blockMatch[2] || "");
+    const aoiName = extractXmlAttr(attrs, "Name");
+    if (!aoiName) continue;
+    const paramNames = [];
+    const paramRe = /<Parameter\b([^>]*)\/?>/gi;
+    let pm;
+    while ((pm = paramRe.exec(body)) !== null) {
+      const pAttrs = String(pm[1] || "");
+      const pName = normalizeLadderTagToken(extractXmlAttr(pAttrs, "Name"));
+      const usage = String(extractXmlAttr(pAttrs, "Usage") || extractXmlAttr(pAttrs, "Direction")).toLowerCase();
+      if (!pName) continue;
+      if (usage && !["input", "inout", "inputoutput"].includes(usage)) continue;
+      paramNames.push(pName);
+      if (paramNames.length >= 64) break;
+    }
+    const rungBlocks = body.match(/<Text\b[^>]*>[\s\S]*?<\/Text>/gi) || [];
+    const templates = [];
+    for (const rb of rungBlocks.slice(0, 420)) {
+      const inner = String(rb).replace(/^<Text\b[^>]*>/i, "").replace(/<\/Text>$/i, "");
+      const parsed = parseRungConditions(inner);
+      for (const cond of parsed.conditions || []) {
+        const tagExpr = trimAoiTagExpression(cond.tag);
+        if (!tagExpr) continue;
+        const root = String(tagExpr.split(".")[0] || "").trim().toLowerCase();
+        if (root && !paramNames.some((p) => p.toLowerCase() === root)) continue;
+        templates.push({
+          instruction: cond.instruction,
+          tagExpr,
+          arg2Expr: trimAoiTagExpression(cond.arg2),
+          raw: cond.raw,
+        });
+        if (templates.length >= 220) break;
+      }
+      if (templates.length >= 220) break;
+    }
+    catalog.set(aoiName.toLowerCase(), { name: aoiName, params: paramNames, templates });
+    if (catalog.size >= 120) break;
+  }
+  return catalog;
+}
+
+function parseAoiCatalogFromDoc(doc = {}) {
+  const key = getMotorDiagCacheKey(doc);
+  const cached = motorDiagAoiCatalogCache.get(key);
+  if (cached?.catalog && cached.catalog instanceof Map) return cached.catalog;
+  const text = String(doc?.content_text || "");
+  const catalog = parseAoiCatalogFromText(text);
+  motorDiagAoiCatalogCache.set(key, { at: Date.now(), catalog });
+  if (motorDiagAoiCatalogCache.size > 48) {
+    const entries = Array.from(motorDiagAoiCatalogCache.entries()).sort((a, b) => Number(a?.[1]?.at || 0) - Number(b?.[1]?.at || 0));
+    const trim = Math.max(1, entries.length - 36);
+    for (let i = 0; i < trim; i += 1) motorDiagAoiCatalogCache.delete(entries[i][0]);
+  }
+  return catalog;
+}
+
+function expandAoiConditionsForRung(rung = {}, aoiCatalog = new Map()) {
+  const calls = Array.isArray(rung?.customCalls) ? rung.customCalls : [];
+  const expanded = [];
+  for (const call of calls) {
+    const name = String(call?.instruction || "").trim().toLowerCase();
+    if (!name) continue;
+    const def = aoiCatalog.get(name);
+    if (!def) continue;
+    const args = Array.isArray(call?.args) ? call.args : [];
+    const argByParam = new Map();
+    (Array.isArray(def.params) ? def.params : []).forEach((p, idx) => {
+      const arg = normalizeLadderTagToken(args[idx] || "");
+      if (!p || !arg || !isLikelyTagToken(arg)) return;
+      argByParam.set(String(p).toLowerCase(), arg);
+    });
+    for (const t of Array.isArray(def.templates) ? def.templates : []) {
+      const tag = resolveAoiConditionTag(t.tagExpr, argByParam);
+      if (!tag || !isLikelyTagToken(tag)) continue;
+      const arg2 = resolveAoiConditionTag(t.arg2Expr, argByParam);
+      expanded.push({
+        instruction: String(t.instruction || "").toUpperCase(),
+        tag,
+        arg1: tag,
+        arg2,
+        raw: `${def.name}:${String(t.raw || "")}`,
+        sourceAoi: def.name,
+      });
+      if (expanded.length >= 260) break;
+    }
+    if (expanded.length >= 260) break;
+  }
+  return expanded;
+}
+
+function tokenLoose(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function tokensMatch(tagA = "", tagB = "") {
+  const a = String(tagA || "").trim().toLowerCase();
+  const b = String(tagB || "").trim().toLowerCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.endsWith(`.${b}`) || b.endsWith(`.${a}`)) return true;
+  const la = tokenLoose(a);
+  const lb = tokenLoose(b);
+  if (!la || !lb) return false;
+  return la === lb || la.endsWith(lb) || lb.endsWith(la);
+}
+
+function inferMotorTokenFromPrompt(prompt = "") {
+  const text = String(prompt || "").trim();
+  if (!text) return "";
+  const patterns = [
+    /\bmotor(?:\s+tag|\s+name)?\s*[:=]?\s*([A-Za-z0-9_:.\/-]+)/i,
+    /\bwhy\b[\s\S]{0,80}\b([A-Za-z][A-Za-z0-9_:.\/-]{1,})\b[\s\S]{0,30}\b(?:running|start|on)\b/i,
+    /\b([A-Za-z][A-Za-z0-9_:.\/-]{1,})\b[\s\S]{0,20}\bmotor\b/i,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    const token = normalizeLadderTagToken(m?.[1] || "");
+    if (isLikelyTagToken(token)) return token;
+  }
+  return "";
+}
+
+function isMotorDiagnosticRequest(prompt = "") {
+  const text = String(prompt || "").toLowerCase();
+  if (!text) return false;
+  const asksMotor = /\bmotor\b/.test(text);
+  const asksWhyNot = /\b(why|isn'?t|not running|won'?t start|not starting|not on|not turning on)\b/.test(text);
+  return asksMotor && asksWhyNot;
+}
+
+async function loadLatestChatL5xDocs(mode = "design") {
+  const resolvedMode = String(mode || "").trim().toLowerCase() === "live" ? "live" : "design";
+  const { rows } = await pool.query(
+    `
+    SELECT source_name, content_text, content_summary, updated_at
+    FROM support_chat_documents
+    WHERE mode = $1 AND is_active = true
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 5
+    `,
+    [resolvedMode]
+  );
+  return rows;
+}
+
+async function loadOpcStatusSnapshot() {
+  const { rows } = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+  const status = rows?.[0]?.status && typeof rows[0].status === "object" ? rows[0].status : {};
+  const values = status?.values && typeof status.values === "object" ? status.values : {};
+  const qualities = status?.qualities && typeof status.qualities === "object" ? status.qualities : {};
+  return { values, qualities };
+}
+
+function buildOpcLookup(values = {}, qualities = {}) {
+  const entries = Object.entries(values || {});
+  const exact = new Map();
+  const lower = new Map();
+  entries.forEach(([k, v]) => {
+    const key = String(k || "").trim();
+    if (!key) return;
+    exact.set(key, v);
+    lower.set(key.toLowerCase(), { key, value: v });
+  });
+  const resolve = (rawTag) => {
+    const tag = String(rawTag || "").trim();
+    if (!tag) return null;
+    if (exact.has(tag)) {
+      const value = exact.get(tag);
+      return { key: tag, value, quality: qualities?.[tag] ?? null };
+    }
+    const direct = lower.get(tag.toLowerCase());
+    if (direct) return { key: direct.key, value: direct.value, quality: qualities?.[direct.key] ?? null };
+    const suffix = entries.find(([k]) => tokensMatch(String(k || ""), tag));
+    if (!suffix) return null;
+    const key = String(suffix[0] || "");
+    return { key, value: suffix[1], quality: qualities?.[key] ?? null };
+  };
+  return { resolve };
+}
+
+function toBoolLike(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value !== 0 : null;
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return null;
+  if (["true", "on", "1", "yes", "running"].includes(text)) return true;
+  if (["false", "off", "0", "no", "stopped"].includes(text)) return false;
+  const n = Number(text);
+  if (Number.isFinite(n)) return n !== 0;
+  return null;
+}
+
+function evaluateConditionStatus(condition, resolved) {
+  const instruction = String(condition?.instruction || "").toUpperCase();
+  const value = resolved?.value;
+  const boolLike = toBoolLike(value);
+  const rhsRaw = String(condition?.arg2 || "").trim();
+  const rhsNum = Number(rhsRaw);
+  const lhsNum = Number(value);
+  if (instruction === "XIC") {
+    if (boolLike == null) return { met: null, reason: "unknown" };
+    return { met: boolLike === true, reason: boolLike === true ? "true" : "false" };
+  }
+  if (instruction === "XIO") {
+    if (boolLike == null) return { met: null, reason: "unknown" };
+    return { met: boolLike === false, reason: boolLike === false ? "false (required)" : "true (blocks)" };
+  }
+  if (["EQU", "NEQ", "LES", "LEQ", "GRT", "GEQ"].includes(instruction) && Number.isFinite(lhsNum)) {
+    let met = null;
+    if (Number.isFinite(rhsNum)) {
+      if (instruction === "EQU") met = lhsNum === rhsNum;
+      if (instruction === "NEQ") met = lhsNum !== rhsNum;
+      if (instruction === "LES") met = lhsNum < rhsNum;
+      if (instruction === "LEQ") met = lhsNum <= rhsNum;
+      if (instruction === "GRT") met = lhsNum > rhsNum;
+      if (instruction === "GEQ") met = lhsNum >= rhsNum;
+    }
+    return { met, reason: Number.isFinite(rhsNum) ? `${lhsNum} vs ${rhsNum}` : "rhs unresolved" };
+  }
+  return { met: null, reason: "unsupported instruction" };
+}
+
+function classifyConditionKind(condition) {
+  const tag = String(condition?.tag || "").toLowerCase();
+  const instruction = String(condition?.instruction || "").toUpperCase();
+  const interlockWords = ["interlock", "fault", "trip", "estop", "e_stop", "overload", "alarm", "safe", "safety"];
+  const permissiveWords = ["perm", "permissive", "ready", "enable", "enabled", "allow", "ok", "run_cmd", "runreq", "start"];
+  if (interlockWords.some((w) => tag.includes(w))) return "interlock";
+  if (permissiveWords.some((w) => tag.includes(w))) return "permissive";
+  if (instruction === "XIO") return "interlock";
+  if (instruction === "XIC") return "permissive";
+  return "condition";
+}
+
+function buildMotorDiagnosticSummary({
+  prompt = "",
+  motorToken = "",
+  rungMatches = [],
+  evaluations = [],
+} = {}) {
+  const blockers = evaluations.filter((row) => row.met === false);
+  const unknowns = evaluations.filter((row) => row.met == null);
+  const satisfied = evaluations.filter((row) => row.met === true);
+  const targetCoil =
+    rungMatches[0]?.coils?.find((coil) => (motorToken ? tokensMatch(coil, motorToken) : true)) ||
+    rungMatches[0]?.coils?.[0] ||
+    motorToken ||
+    "motor";
+  const withKinds = evaluations.map((row) => ({ ...row, kind: classifyConditionKind(row) }));
+  const blockerLines = withKinds
+    .filter((row) => row.met === false)
+    .slice(0, 16)
+    .map(
+      (b) =>
+        `- [${b.kind}] ${b.instruction}(${b.tag}) -> value=${String(b.value)} quality=${String(
+          b.quality || "Unknown"
+        )} [BLOCKED]`
+    );
+  const unknownLines = withKinds
+    .filter((row) => row.met == null)
+    .slice(0, 10)
+    .map(
+      (u) =>
+        `- [${u.kind}] ${u.instruction}(${u.tag}) -> value=${
+          u.value == null ? "not found" : String(u.value)
+        } quality=${String(u.quality || "Unknown")} [UNKNOWN]`
+    );
+  const summaryText = [
+    `Motor diagnostic for ${targetCoil}: Rungs matched=${rungMatches.length}. Checks=${evaluations.length}. Blocked=${blockers.length}, Satisfied=${satisfied.length}, Unknown=${unknowns.length}.`,
+    blockerLines.length ? `Likely blockers:\n${blockerLines.join("\n")}` : "No hard blockers detected in evaluated interlocks/permissives.",
+    unknownLines.length ? `Needs verification:\n${unknownLines.join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const contextText = [
+    `Motor diagnostic precheck for prompt "${String(prompt || "").slice(0, 220)}"`,
+    summaryText,
+  ].join("\n\n");
+  return { summaryText, contextText, blockers, unknowns, satisfied };
+}
+
+async function maybeDiagnoseMotorFromPrompt({ prompt = "", chatMode = "design" } = {}) {
+  const requested = isMotorDiagnosticRequest(prompt);
+  if (!requested) return { requested: false, summary: "", context: "" };
+  const motorToken = inferMotorTokenFromPrompt(prompt);
+  const docs = await loadLatestChatL5xDocs(chatMode);
+  if (!docs.length) {
+    return {
+      requested: true,
+      summary: "Motor diagnostic: no uploaded L5X context found. Load an L5X file in AI Chat first.",
+      context: "",
+    };
+  }
+
+  const rungMatches = [];
+  for (const doc of docs) {
+    const parsedRungs = parseMotorDiagDocRungs(doc);
+    const aoiCatalog = parseAoiCatalogFromDoc(doc);
+    for (const parsed of parsedRungs) {
+      const coilHit = motorToken
+        ? parsed.coils.some((coil) => tokensMatch(coil, motorToken))
+        : parsed.coils.some((coil) => /\bmotor\b|\brun\b/i.test(String(coil)));
+      if (!coilHit) continue;
+      const expandedAoiConditions = expandAoiConditionsForRung(parsed, aoiCatalog);
+      rungMatches.push({
+        source: String(doc?.source_name || "l5x"),
+        coils: parsed.coils.slice(0, 5),
+        conditions: [...(parsed.conditions || []).slice(0, 30), ...expandedAoiConditions.slice(0, 40)],
+      });
+      if (rungMatches.length >= 10) break;
+    }
+    if (rungMatches.length >= 10) break;
+  }
+
+  if (!rungMatches.length) {
+    const targetText = motorToken ? ` for "${motorToken}"` : "";
+    return {
+      requested: true,
+      summary: `Motor diagnostic: no motor run rung found${targetText} in uploaded L5X context.`,
+      context: "",
+    };
+  }
+
+  const uniqueConditions = [];
+  const seen = new Set();
+  rungMatches.forEach((rung) => {
+    rung.conditions.forEach((cond) => {
+      const key = `${cond.instruction}|${String(cond.tag || "").toLowerCase()}|${String(cond.arg2 || "").toLowerCase()}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      uniqueConditions.push(cond);
+    });
+  });
+
+  const { values, qualities } = await loadOpcStatusSnapshot();
+  const lookup = buildOpcLookup(values, qualities);
+  const evaluations = uniqueConditions.slice(0, 80).map((cond) => {
+    const resolved = lookup.resolve(cond.tag);
+    const evalResult = evaluateConditionStatus(cond, resolved);
+    return {
+      ...cond,
+      resolvedTag: resolved?.key || "",
+      value: resolved?.value,
+      quality: resolved?.quality,
+      met: evalResult.met,
+      evalReason: evalResult.reason,
+    };
+  });
+  const { summaryText, contextText } = buildMotorDiagnosticSummary({
+    prompt,
+    motorToken,
+    rungMatches,
+    evaluations,
+  });
+  return { requested: true, summary: summaryText, context: contextText };
+}
+
+async function maybeDiagnoseMotorFromPlcInsightsContext({
+  prompt = "",
+  rawSample = "",
+  controllerTags = [],
+  debugSnapshot = null,
+} = {}) {
+  const requested = isMotorDiagnosticRequest(prompt);
+  if (!requested) return { requested: false, summary: "", context: "" };
+  const motorToken = inferMotorTokenFromPrompt(prompt);
+  const text = String(rawSample || "");
+  if (!text.trim()) {
+    return {
+      requested: true,
+      summary: "Motor diagnostic: no L5X text excerpt available in PLC context.",
+      context: "",
+    };
+  }
+  const rungBlocks = text.match(/<Text\b[^>]*>[\s\S]*?<\/Text>/gi) || [];
+  const aoiCatalog = parseAoiCatalogFromText(text);
+  const parsedRungs = [];
+  for (const block of rungBlocks.slice(0, 1400)) {
+    const inner = String(block).replace(/^<Text\b[^>]*>/i, "").replace(/<\/Text>$/i, "");
+    const parsed = parseRungConditions(inner);
+    if (!parsed.coils.length || !parsed.conditions.length) continue;
+    parsedRungs.push(parsed);
+    if (parsedRungs.length >= 280) break;
+  }
+  const rungMatches = parsedRungs
+    .filter((parsed) =>
+      motorToken
+        ? parsed.coils.some((coil) => tokensMatch(coil, motorToken))
+        : parsed.coils.some((coil) => /\bmotor\b|\brun\b/i.test(String(coil)))
+    )
+    .slice(0, 10)
+    .map((parsed) => ({
+      source: "plc-insights-context",
+      coils: parsed.coils.slice(0, 5),
+      conditions: [
+        ...(parsed.conditions || []).slice(0, 30),
+        ...expandAoiConditionsForRung(parsed, aoiCatalog).slice(0, 40),
+      ],
+    }));
+
+  if (!rungMatches.length) {
+    const t = motorToken ? ` for "${motorToken}"` : "";
+    return {
+      requested: true,
+      summary: `Motor diagnostic: no matching run rung found${t} in provided PLC context excerpt.`,
+      context: "",
+    };
+  }
+
+  const uniqueConditions = [];
+  const seen = new Set();
+  rungMatches.forEach((rung) => {
+    rung.conditions.forEach((cond) => {
+      const key = `${cond.instruction}|${String(cond.tag || "").toLowerCase()}|${String(cond.arg2 || "").toLowerCase()}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      uniqueConditions.push(cond);
+    });
+  });
+
+  const { values, qualities } = await loadOpcStatusSnapshot();
+  const debugTags = Array.isArray(debugSnapshot?.tags) ? debugSnapshot.tags : [];
+  debugTags.forEach((tag) => {
+    const key = String(tag?.key || "").trim();
+    if (!key || Object.prototype.hasOwnProperty.call(values, key)) return;
+    values[key] = tag?.value;
+    qualities[key] = String(tag?.quality || "").trim() || "Unknown";
+  });
+  const lookup = buildOpcLookup(values, qualities);
+  const tagNameSet = new Set(
+    (Array.isArray(controllerTags) ? controllerTags : [])
+      .map((t) => String(t?.name || t?.tagPath || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const evaluations = uniqueConditions.slice(0, 90).map((cond) => {
+    const resolved = lookup.resolve(cond.tag);
+    const evalResult = evaluateConditionStatus(cond, resolved);
+    const inControllerTagList = tagNameSet.has(String(cond.tag || "").trim().toLowerCase());
+    return {
+      ...cond,
+      resolvedTag: resolved?.key || "",
+      value: resolved?.value,
+      quality: resolved?.quality,
+      met: evalResult.met,
+      evalReason: evalResult.reason,
+      inControllerTagList,
+    };
+  });
+  const { summaryText, contextText } = buildMotorDiagnosticSummary({
+    prompt,
+    motorToken,
+    rungMatches,
+    evaluations,
+  });
+  return { requested: true, summary: summaryText, context: contextText };
+}
+
+async function getChatOllamaReply({ prompt = "", history = [], chatMode = "design", motorDiagnostic = "" } = {}) {
   const cleanedPrompt = String(prompt || "").trim();
   if (!cleanedPrompt) throw new Error("AI prompt is required.");
   const runtime = getActiveAiRuntime();
@@ -6781,6 +7415,9 @@ async function getChatOllamaReply({ prompt = "", history = [], chatMode = "desig
       : []),
     ...(l5xContext
       ? [{ role: "system", content: `Uploaded L5X Context (mode=${mode}):\n${l5xContext}` }]
+      : []),
+    ...(String(motorDiagnostic || "").trim()
+      ? [{ role: "system", content: `Motor Diagnostic Precheck:\n${String(motorDiagnostic || "").trim()}` }]
       : []),
     ...safeHistory,
     { role: "user", content: cleanedPrompt },
@@ -6868,11 +7505,22 @@ app.post("/api/chat/messages", async (req, res) => {
 
     let aiMessage = null;
     let aiError = "";
+    let aiAction = null;
+    let motorDiag = null;
     try {
       const chatModeRaw = String(req.body?.chatMode || "").trim().toLowerCase();
       const chatMode = chatModeRaw === "live" ? "live" : "design";
-      const aiReply = await getChatOllamaReply({ prompt: normalizedPrompt, history, chatMode });
-      const answer = String(aiReply?.message || "").trim();
+      motorDiag = await maybeDiagnoseMotorFromPrompt({ prompt: normalizedPrompt, chatMode });
+      const aiReply = await getChatOllamaReply({
+        prompt: normalizedPrompt,
+        history,
+        chatMode,
+        motorDiagnostic: String(motorDiag?.context || "").trim(),
+      });
+      let answer = String(aiReply?.message || "").trim();
+      if (motorDiag?.requested && String(motorDiag?.summary || "").trim()) {
+        answer = `${String(motorDiag.summary).trim()}\n\n${answer}`.trim();
+      }
       const aiUserId = await ensureMesoraAiUserId();
       const aiInsert = await pool.query(
         `
@@ -6889,14 +7537,41 @@ app.post("/api/chat/messages", async (req, res) => {
           author: "Mesora AI",
         };
       }
-      const aiAction = normalizeChatAiAction(aiReply?.action || null);
+      aiAction = normalizeChatAiAction(aiReply?.action || null);
       res.status(201).json({ message: postedMessage, aiMessage, aiError, aiAction });
       return;
     } catch (err) {
       aiError = String(err?.message || "Failed to generate AI reply.");
     }
 
-    res.status(201).json({ message: postedMessage, aiMessage, aiError, aiAction: null });
+    if (motorDiag?.requested && String(motorDiag?.summary || "").trim()) {
+      try {
+        const chatModeRaw = String(req.body?.chatMode || "").trim().toLowerCase();
+        const chatMode = chatModeRaw === "live" ? "live" : "design";
+        const aiUserId = await ensureMesoraAiUserId();
+        const fallbackAnswer = String(motorDiag.summary || "").trim();
+        const aiInsert = await pool.query(
+          `
+          INSERT INTO support_chat_messages (user_id, mode, message)
+          VALUES ($1, $2, $3)
+          RETURNING id, user_id, mode, message, created_at
+          `,
+          [aiUserId, chatMode, fallbackAnswer]
+        );
+        const aiRow = aiInsert.rows?.[0] || null;
+        if (aiRow) {
+          aiMessage = {
+            ...aiRow,
+            author: "Mesora AI",
+          };
+        }
+        aiError = "";
+      } catch {
+        // keep original aiError
+      }
+    }
+
+    res.status(201).json({ message: postedMessage, aiMessage, aiError, aiAction });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to send chat message." });
   }
@@ -10808,6 +11483,12 @@ async function handlePlcInsights(req, res) {
         debugSnapshot = debugSession.snapshot || null;
       }
     }
+    const motorDiag = await maybeDiagnoseMotorFromPlcInsightsContext({
+      prompt,
+      rawSample,
+      controllerTags,
+      debugSnapshot,
+    });
 
     const safeHistory = history
       .slice(-12)
@@ -10846,6 +11527,9 @@ async function handlePlcInsights(req, res) {
       rawSample
         ? `L5X XML excerpt (truncated):\n${rawSample}`
         : "L5X XML excerpt: not provided",
+      motorDiag?.requested && String(motorDiag?.context || "").trim()
+        ? `Motor diagnostic precheck:\n${String(motorDiag.context).trim()}`
+        : "Motor diagnostic precheck: not requested.",
       formatPlcDebugContext(debugSnapshot),
     ].join("\n\n");
     const flourMillKnowledge = getFlourMillKnowledge();
@@ -10947,7 +11631,11 @@ async function handlePlcInsights(req, res) {
             overrides: source?.opcPlan || {},
           })
         : null;
-      res.json({ answer: buildLocalFallbackAnswer(), opcPlan, debugSessionId });
+      const fallback = buildLocalFallbackAnswer();
+      const answer = motorDiag?.requested && String(motorDiag?.summary || "").trim()
+        ? `${String(motorDiag.summary).trim()}\n\n${fallback}`
+        : fallback;
+      res.json({ answer, opcPlan, debugSessionId });
       return;
     }
 
@@ -10956,6 +11644,9 @@ async function handlePlcInsights(req, res) {
       answer = String(await getModelText(input)).trim();
     } catch {
       answer = buildLocalFallbackAnswer();
+    }
+    if (motorDiag?.requested && String(motorDiag?.summary || "").trim()) {
+      answer = `${String(motorDiag.summary).trim()}\n\n${answer}`.trim();
     }
     const wantsOpcConnection =
       source?.requestOpcPlan === true ||

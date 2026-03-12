@@ -243,6 +243,7 @@ export default function App() {
   const [liveEquipmentOverlayIds, setLiveEquipmentOverlayIds] = useState([]);
   const [liveEquipmentDockSideById, setLiveEquipmentDockSideById] = useState({});
   const [liveEquipmentFloatingById, setLiveEquipmentFloatingById] = useState({});
+  const liveEquipmentFloatingByIdRef = useRef({});
   const [liveEquipmentConnectFxById, setLiveEquipmentConnectFxById] = useState({});
   const [liveEquipmentLiveDataCollapsedByOverlay, setLiveEquipmentLiveDataCollapsedByOverlay] = useState({});
   const MAX_LIVE_EQUIPMENT_POPUPS = 120;
@@ -250,6 +251,8 @@ export default function App() {
   const liveEquipmentConnectFxTimersRef = useRef(new Map());
   const liveEquipmentCardRefs = useRef(new Map());
   const liveEquipmentDragRef = useRef(null);
+  const liveEquipmentDragRafRef = useRef(0);
+  const liveEquipmentDragPendingRef = useRef(null);
   const liveEquipmentModeToggleHintRef = useRef({});
   const liveEquipmentZCounterRef = useRef(0);
   const [liveEquipmentZById, setLiveEquipmentZById] = useState({});
@@ -261,6 +264,12 @@ export default function App() {
   const liveAlarmMarqueeViewportRef = useRef(null);
   const liveAlarmMarqueeTrackRef = useRef(null);
   const [marquee, setMarquee] = useState(null);
+  useEffect(() => {
+    liveEquipmentFloatingByIdRef.current =
+      liveEquipmentFloatingById && typeof liveEquipmentFloatingById === "object"
+        ? liveEquipmentFloatingById
+        : {};
+  }, [liveEquipmentFloatingById]);
 
   const [vbW, setVbW] = useState(1600);
   const [vbH, setVbH] = useState(900);
@@ -3318,6 +3327,77 @@ export default function App() {
     if (!isBinEType(eType)) return "";
     const row = findProjectBinRowForOverlay(overlay);
     return getProjectBinPath(row);
+  };
+  const renderLiveDataSection = (overlay, details, compact = false) => {
+    const eType = String(resolveOverlayEType(overlay) || "").trim();
+    const isMotor = isMotorEType(eType);
+    if (isMotor) {
+      const graphH = compact ? 86 : 108;
+      return (
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: compact ? 5 : 6 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: compact ? 5 : 6 }}>
+            <div style={{ fontSize: compact ? 10 : 11, fontWeight: 700, color: "var(--text)" }}>Live Trend</div>
+          </div>
+          <div
+            style={{
+              border: "1px solid color-mix(in srgb, var(--border) 88%, #334155 12%)",
+              borderRadius: 8,
+              background: "color-mix(in srgb, var(--bg) 95%, #020617 5%)",
+              padding: compact ? "6px 7px" : "8px 9px",
+            }}
+          >
+            <svg width="100%" height={graphH} viewBox="0 0 260 90" preserveAspectRatio="none" aria-hidden="true">
+              <line x1="0" y1="78" x2="260" y2="78" stroke="#475569" strokeWidth="1" />
+              <line x1="0" y1="54" x2="260" y2="54" stroke="#334155" strokeWidth="0.8" />
+              <line x1="0" y1="30" x2="260" y2="30" stroke="#1e293b" strokeWidth="0.8" />
+              <polyline
+                points="0,64 22,60 44,62 66,52 88,55 110,42 132,46 154,36 176,40 198,29 220,33 242,25 260,28"
+                fill="none"
+                stroke="#22c55e"
+                strokeWidth="2.1"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <div style={{ marginTop: 4, fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
+              Placeholder trend. Add motor series data when ready.
+            </div>
+          </div>
+        </div>
+      );
+    }
+    const list = Array.isArray(details) ? details : [];
+    return (
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: compact ? 5 : 6 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: compact ? 5 : 6 }}>
+          <div style={{ fontSize: compact ? 10 : 11, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
+        </div>
+        {list.length ? (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr auto",
+              columnGap: compact ? 8 : 10,
+              rowGap: compact ? 3 : 4,
+              alignContent: "start",
+              alignItems: "center",
+              fontSize: compact ? 10 : 11,
+            }}
+          >
+            {list.map((row, idx) => (
+              <Fragment key={`live-equipment-data-row-${String(overlay?.id || "")}-${idx}`}>
+                <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
+                <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
+              </Fragment>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: compact ? 10 : 11, color: "var(--text-muted)" }}>
+            No live values found for this equipment.
+          </div>
+        )}
+      </div>
+    );
   };
   const renderLiveBinDetails = (overlay, compact = false) => {
     const eType = String(resolveOverlayEType(overlay) || "").trim();
@@ -9719,6 +9799,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
     widgetMaxPoints: "500",
     widgetLineTension: "0.34",
     widgetShowPoints: "true",
+    widgetShowLegend: "true",
+    widgetShowGrid: "true",
+    widgetLineWidth: "2.4",
+    widgetLineStyle: "smooth",
+    widgetYAxisSide: "left",
     widgetSeriesTags: "",
     widgetAxisMode: "auto",
     widgetTimerPreTag: "",
@@ -9768,6 +9853,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
         widgetMaxPoints: "500",
         widgetLineTension: "0.34",
         widgetShowPoints: "true",
+        widgetShowLegend: "true",
+        widgetShowGrid: "true",
+        widgetLineWidth: "2.4",
+        widgetLineStyle: "smooth",
+        widgetYAxisSide: "left",
         widgetSeriesTags: "",
         widgetAxisMode: "auto",
         widgetTimerPreTag: "",
@@ -9860,6 +9950,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetMaxPoints: String(Number.isFinite(Number(w.maxPoints)) ? Number(w.maxPoints) : 500),
           widgetLineTension: String(Number.isFinite(Number(w.lineTension)) ? Number(w.lineTension) : 0.34),
           widgetShowPoints: String(w.showPoints !== false),
+          widgetShowLegend: String(w.showLegend !== false),
+          widgetShowGrid: String(w.showGrid !== false),
+          widgetLineWidth: String(Number.isFinite(Number(w.lineWidth)) ? Number(w.lineWidth) : 2.4),
+          widgetLineStyle: String(String(w.lineStyle || "").trim().toLowerCase() === "step" ? "step" : "smooth"),
+          widgetYAxisSide: String(String(w.yAxisSide || "").trim().toLowerCase() === "right" ? "right" : "left"),
           widgetSeriesTags: normalizeSeriesTagsValue(w.seriesTags, tagPath).join("\n"),
           widgetAxisMode: String(w.axisMode === "manual" ? "manual" : "auto"),
           widgetTimerPreTag: String(w.timerPreTag || ""),
@@ -9926,6 +10021,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetMaxPoints: "500",
           widgetLineTension: "0.34",
           widgetShowPoints: "true",
+          widgetShowLegend: "true",
+          widgetShowGrid: "true",
+          widgetLineWidth: "2.4",
+          widgetLineStyle: "smooth",
+          widgetYAxisSide: "left",
           widgetSeriesTags: "",
           widgetAxisMode: "auto",
           widgetTimerPreTag: "",
@@ -9983,6 +10083,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       widgetMaxPoints: "500",
       widgetLineTension: "0.34",
       widgetShowPoints: "true",
+      widgetShowLegend: "true",
+      widgetShowGrid: "true",
+      widgetLineWidth: "2.4",
+      widgetLineStyle: "smooth",
+      widgetYAxisSide: "left",
       widgetSeriesTags: "",
       widgetAxisMode: "auto",
       widgetTimerPreTag: "",
@@ -10256,6 +10361,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const maxPoints = Number(source.widgetMaxPoints);
     const lineTension = Number(source.widgetLineTension);
     const showPoints = String(source.widgetShowPoints ?? "true").toLowerCase() !== "false";
+    const showLegend = String(source.widgetShowLegend ?? "true").toLowerCase() !== "false";
+    const showGrid = String(source.widgetShowGrid ?? "true").toLowerCase() !== "false";
+    const lineWidth = Number(source.widgetLineWidth);
+    const lineStyle = String(source.widgetLineStyle || "").trim().toLowerCase() === "step" ? "step" : "smooth";
+    const yAxisSide = String(source.widgetYAxisSide || "").trim().toLowerCase() === "right" ? "right" : "left";
     const axisMode = String(source.widgetAxisMode || "").trim().toLowerCase() === "manual"
       ? "manual"
       : "auto";
@@ -10360,6 +10470,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
             maxPoints: Number.isFinite(maxPoints) ? Math.max(50, Math.min(10000, Math.round(maxPoints))) : Number(current.maxPoints ?? 500) || 500,
             lineTension: Number.isFinite(lineTension) ? Math.max(0, Math.min(1, lineTension)) : Number(current.lineTension ?? 0.34),
             showPoints,
+            showLegend,
+            showGrid,
+            lineWidth: Number.isFinite(lineWidth) ? Math.max(1, Math.min(8, lineWidth)) : Number(current.lineWidth ?? 2.4) || 2.4,
+            lineStyle,
+            yAxisSide,
             seriesTags,
             axisMode,
             timerPreTag,
@@ -10890,6 +11005,86 @@ const CONTENT_FIT_HEADROOM = 0.94;
     []
   );
 
+  function getLiveEquipmentOverlayClientRect(id) {
+    const nextId = String(id || "").trim();
+    if (!nextId) return null;
+    const overlayRefNode = overlayRefs.current?.get(nextId);
+    if (overlayRefNode && typeof overlayRefNode.getBoundingClientRect === "function") {
+      const rect = overlayRefNode.getBoundingClientRect();
+      if (Number.isFinite(rect.left) && Number.isFinite(rect.top)) return rect;
+    }
+    try {
+      const escapedId =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape(nextId)
+          : nextId.replace(/"/g, '\\"');
+      const node = document.querySelector(`[data-overlay-id="${escapedId}"]`);
+      if (node && typeof node.getBoundingClientRect === "function") {
+        const rect = node.getBoundingClientRect();
+        if (Number.isFinite(rect.left) && Number.isFinite(rect.top)) return rect;
+      }
+    } catch {
+      // Fall through to world-space fallback.
+    }
+    const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === nextId);
+    if (!overlay || !svgRef.current) return null;
+    const bb = overlayLocalBBox(nextId);
+    if (!bb) return null;
+    const wr = overlayWorldRect(overlay, bb);
+    const svgRect = svgRef.current.getBoundingClientRect();
+    const z = Number(zoom) || 1;
+    const px = Number(pan?.x) || 0;
+    const py = Number(pan?.y) || 0;
+    const left = svgRect.left + px + wr.x * z;
+    const top = svgRect.top + py + wr.y * z;
+    const width = Math.max(1, wr.w * z);
+    const height = Math.max(1, wr.h * z);
+    return {
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+    };
+  }
+
+  function getSmartLiveEquipmentPopupPosition(id) {
+    const overlayRect = getLiveEquipmentOverlayClientRect(id);
+    if (!overlayRect) return null;
+    const viewportRect = getLiveEquipmentCanvasBoundsRect();
+    const estimatedW = Math.min(300, Math.max(180, Math.round((Number(window.innerWidth) || 0) * 0.68)));
+    const estimatedH = Math.min(Math.round((Number(window.innerHeight) || 0) * 0.34), 420);
+    const gap = 12;
+    const roomRight = Number(viewportRect.right) - Number(overlayRect.right);
+    const roomLeft = Number(overlayRect.left) - Number(viewportRect.left);
+    const placeRight = roomRight >= estimatedW + gap || roomRight >= roomLeft;
+    const startX = placeRight
+      ? Number(overlayRect.right) + gap
+      : Number(overlayRect.left) - estimatedW - gap;
+    const startY = Number(overlayRect.top) + Number(overlayRect.height) / 2 - estimatedH / 2;
+    return clampLiveEquipmentFloatingPosition(id, startX, startY);
+  }
+
+  function getLiveEquipmentCanvasBoundsRect() {
+    const svgRect = svgRef.current?.getBoundingClientRect?.() || null;
+    const scrollRect = svgRef.current?.closest?.(".vizi-scroll")?.getBoundingClientRect?.() || null;
+    const fallback = {
+      left: 0,
+      top: TOP_BAR_H + (isLiveMode ? LIVE_ALARM_BAR_H : 0),
+      right: Number(window.innerWidth) || 0,
+      bottom: Number(window.innerHeight) || 0,
+    };
+    const base = svgRect || scrollRect || fallback;
+    if (!svgRect || !scrollRect) return base;
+    const left = Math.max(Number(svgRect.left) || 0, Number(scrollRect.left) || 0);
+    const top = Math.max(Number(svgRect.top) || 0, Number(scrollRect.top) || 0);
+    const right = Math.min(Number(svgRect.right) || 0, Number(scrollRect.right) || 0);
+    const bottom = Math.min(Number(svgRect.bottom) || 0, Number(scrollRect.bottom) || 0);
+    if (!(right > left && bottom > top)) return base;
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
   function onLiveOverlayMouseDown(e, id) {
     const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === String(id || ""));
     if (overlay?.widget) return;
@@ -10921,6 +11116,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
       : (typeof window !== "undefined" ? window.innerHeight / 2 : 0);
     const lane = Number(e?.clientY || 0) > midY ? "top" : "bottom";
     setLiveEquipmentDockSideById((prev) => ({ ...(prev || {}), [nextId]: lane }));
+    setLiveEquipmentFloatingById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      if (map[nextId]) return map;
+      const smartPos = getSmartLiveEquipmentPopupPosition(nextId);
+      if (!smartPos) return map;
+      return { ...map, [nextId]: smartPos };
+    });
     setLiveEquipmentOverlayIds((prev) => {
       const list = Array.isArray(prev) ? prev : [];
       if (list.some((x) => String(x || "") === nextId)) return list;
@@ -11050,18 +11252,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
     });
   }
 
-  function clampLiveEquipmentFloatingPosition(id, xRaw, yRaw) {
-    const viewportRect =
-      svgRef.current?.closest?.(".vizi-scroll")?.getBoundingClientRect?.() || null;
+  function clampLiveEquipmentFloatingPosition(id, xRaw, yRaw, options = {}) {
+    const viewportRect = options?.boundsRect || getLiveEquipmentCanvasBoundsRect();
     const cardEl = liveEquipmentCardRefs.current.get(String(id || "").trim());
-    const cardRect = cardEl?.getBoundingClientRect?.() || null;
+    const cardRect =
+      Number.isFinite(Number(options?.cardW)) && Number.isFinite(Number(options?.cardH))
+        ? null
+        : (cardEl?.getBoundingClientRect?.() || null);
     const cardW = Math.max(
       1,
+      Number(options?.cardW) ||
       Number(cardRect?.width) ||
         Math.min(300, Math.max(180, Math.round((Number(window.innerWidth) || 0) * 0.68)))
     );
     const cardH = Math.max(
       1,
+      Number(options?.cardH) ||
       Number(cardRect?.height) ||
         Math.min(Math.round((Number(window.innerHeight) || 0) * 0.34), 420)
     );
@@ -11084,7 +11290,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const nextId = String(id || "").trim();
     if (!nextId) return;
     bringLiveEquipmentToFront(nextId);
-    const pos = liveEquipmentFloatingById?.[nextId];
+    const pos = liveEquipmentFloatingByIdRef.current?.[nextId];
     if (!pos) return;
     liveEquipmentDragRef.current = {
       id: nextId,
@@ -11092,6 +11298,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       startY: Number(e.clientY) || 0,
       originX: Number(pos.x) || 0,
       originY: Number(pos.y) || 0,
+      latestX: Number(pos.x) || 0,
+      latestY: Number(pos.y) || 0,
+      boundsRect: getLiveEquipmentCanvasBoundsRect(),
+      cardW: Math.max(1, Number(liveEquipmentCardRefs.current.get(nextId)?.getBoundingClientRect?.()?.width) || 0),
+      cardH: Math.max(1, Number(liveEquipmentCardRefs.current.get(nextId)?.getBoundingClientRect?.()?.height) || 0),
     };
     e.preventDefault();
     e.stopPropagation();
@@ -11106,7 +11317,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const nextId = String(id || "").trim();
     if (!nextId) return;
     bringLiveEquipmentToFront(nextId);
-    const existing = liveEquipmentFloatingById?.[nextId];
+    const existing = liveEquipmentFloatingByIdRef.current?.[nextId];
     let originX = Number(existing?.x);
     let originY = Number(existing?.y);
     if (!Number.isFinite(originX) || !Number.isFinite(originY)) {
@@ -11132,6 +11343,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       startY: Number(e.clientY) || 0,
       originX,
       originY,
+      latestX: originX,
+      latestY: originY,
+      boundsRect: getLiveEquipmentCanvasBoundsRect(),
+      cardW: Math.max(1, Number(liveEquipmentCardRefs.current.get(nextId)?.getBoundingClientRect?.()?.width) || 0),
+      cardH: Math.max(1, Number(liveEquipmentCardRefs.current.get(nextId)?.getBoundingClientRect?.()?.height) || 0),
     };
     e.preventDefault();
     e.stopPropagation();
@@ -11141,33 +11357,68 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const onMove = (e) => {
       const drag = liveEquipmentDragRef.current;
       if (!drag) return;
-      const dx = (Number(e.clientX) || 0) - drag.startX;
-      const dy = (Number(e.clientY) || 0) - drag.startY;
+      liveEquipmentDragPendingRef.current = {
+        clientX: Number(e.clientX) || 0,
+        clientY: Number(e.clientY) || 0,
+      };
+      if (liveEquipmentDragRafRef.current) return;
+      liveEquipmentDragRafRef.current = window.requestAnimationFrame(() => {
+        liveEquipmentDragRafRef.current = 0;
+        const nextPointer = liveEquipmentDragPendingRef.current;
+        liveEquipmentDragPendingRef.current = null;
+        const activeDrag = liveEquipmentDragRef.current;
+        if (!nextPointer || !activeDrag) return;
+        const dx = nextPointer.clientX - activeDrag.startX;
+        const dy = nextPointer.clientY - activeDrag.startY;
+        const clamped = clampLiveEquipmentFloatingPosition(
+          activeDrag.id,
+          activeDrag.originX + dx,
+          activeDrag.originY + dy,
+          {
+            boundsRect: activeDrag.boundsRect,
+            cardW: activeDrag.cardW,
+            cardH: activeDrag.cardH,
+          }
+        );
+        activeDrag.latestX = clamped.x;
+        activeDrag.latestY = clamped.y;
+        const cardEl = liveEquipmentCardRefs.current.get(String(activeDrag.id || ""));
+        if (cardEl) {
+          cardEl.style.left = `${clamped.x}px`;
+          cardEl.style.top = `${clamped.y}px`;
+        }
+      });
+    };
+    const onUp = () => {
+      const drag = liveEquipmentDragRef.current;
+      if (!drag) return;
+      const finalX = Number.isFinite(Number(drag.latestX)) ? Number(drag.latestX) : Number(drag.originX) || 0;
+      const finalY = Number.isFinite(Number(drag.latestY)) ? Number(drag.latestY) : Number(drag.originY) || 0;
       setLiveEquipmentFloatingById((prev) => {
         const map = prev && typeof prev === "object" ? prev : {};
         const cur = map[drag.id];
         if (!cur) return map;
-        const clamped = clampLiveEquipmentFloatingPosition(
-          drag.id,
-          drag.originX + dx,
-          drag.originY + dy
-        );
-        return {
-          ...map,
-          [drag.id]: { x: clamped.x, y: clamped.y },
-        };
+        if (Number(cur.x) === finalX && Number(cur.y) === finalY) return map;
+        return { ...map, [drag.id]: { x: finalX, y: finalY } };
       });
       setLiveEquipmentDockTick((v) => v + 1);
-    };
-    const onUp = () => {
-      if (!liveEquipmentDragRef.current) return;
       liveEquipmentDragRef.current = null;
+      liveEquipmentDragPendingRef.current = null;
+      if (liveEquipmentDragRafRef.current) {
+        window.cancelAnimationFrame(liveEquipmentDragRafRef.current);
+        liveEquipmentDragRafRef.current = 0;
+      }
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      liveEquipmentDragPendingRef.current = null;
+      if (liveEquipmentDragRafRef.current) {
+        window.cancelAnimationFrame(liveEquipmentDragRafRef.current);
+        liveEquipmentDragRafRef.current = 0;
+      }
     };
   }, [TOP_BAR_H, isLiveMode]);
 
@@ -14433,25 +14684,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
-                <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
-                  </div>
-                  {Array.isArray(details) && details.length ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 10, rowGap: 4, alignContent: "start", alignItems: "center", fontSize: 11 }}>
-                      {details.map((row, idx) => (
-                        <Fragment key={`live-equipment-drawer-row-${overlay?.id}-${idx}`}>
-                          <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
-                          <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
-                        </Fragment>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                      No live values found for this equipment.
-                    </div>
-                  )}
-                </div>
+                {renderLiveDataSection(overlay, details, false)}
                 {renderLiveMotorControls(overlay, false)}
                 {renderLiveDiverterControls(overlay, false)}
                 {renderLiveBinDetails(overlay, false)}
@@ -14571,23 +14804,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
                 <div style={{ minHeight: 0, overflow: "visible", display: "grid", gap: 6, alignContent: "start" }}>
-                <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
-                  </div>
-                  {details.length ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 8, rowGap: 3, alignContent: "start", alignItems: "center", fontSize: 10 }}>
-                      {details.map((row, idx) => (
-                        <Fragment key={`live-equipment-row-${overlay.id}-${idx}`}>
-                          <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
-                          <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
-                        </Fragment>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
-                  )}
-                </div>
+                {renderLiveDataSection(overlay, details, true)}
                 </div>
                 <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
                 {renderLiveMotorControls(overlay, true)}
@@ -14628,6 +14845,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   display: "flex",
                   flexDirection: "column",
                   gap: 6,
+                  willChange: "left, top",
                   zIndex: LIVE_EQUIPMENT_Z_BASE + 100 + Number(liveEquipmentZById?.[id] || 0),
                   pointerEvents: "auto",
                 }}
@@ -14696,23 +14914,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
                 <div style={{ minHeight: 0, overflow: "visible", display: "grid", gap: 6, alignContent: "start" }}>
-                <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text)" }}>Live Data</div>
-                  </div>
-                  {details.length ? (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", columnGap: 8, rowGap: 3, alignContent: "start", alignItems: "center", fontSize: 10 }}>
-                      {details.map((row, idx) => (
-                        <Fragment key={`live-equipment-floating-row-${overlay.id}-${idx}`}>
-                          <div style={{ color: "var(--text-muted)" }}>{row.key}</div>
-                          <div style={{ color: "var(--text)", fontWeight: 700, textAlign: "right" }}>{row.value}</div>
-                        </Fragment>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 10, color: "var(--text-muted)" }}>No live values found for this equipment.</div>
-                  )}
-                </div>
+                {renderLiveDataSection(overlay, details, true)}
                 </div>
                 <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
                 {renderLiveMotorControls(overlay, true)}
@@ -18944,7 +19146,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     display: "inline-flex",
                     alignItems: "center",
                     gap: 8,
-                    padding: "5px 8px",
+                    padding: "",
+                    margin: "-1px",
                     borderRadius: 9,
                     background: `color-mix(in srgb, var(--bg) 93%, ${groupTint} 7%)`,
                   }}
@@ -19241,8 +19444,3 @@ const CONTENT_FIT_HEADROOM = 0.94;
     </div>
   );
 }
-
-
-
-
-
