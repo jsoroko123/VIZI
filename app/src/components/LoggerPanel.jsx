@@ -2,6 +2,29 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toastError, toastSuccess } from "../utils/toast";
 
 const LEVELS = ["all", "error", "warn", "info", "debug"];
+const CATEGORIES = [
+  "all",
+  "general",
+  "api",
+  "opc",
+  "database",
+  "auth",
+  "security",
+  "client",
+  "process",
+  "system",
+];
+const DATA_TYPES = [
+  "all",
+  "text",
+  "json_object",
+  "json_array",
+  "error",
+  "number",
+  "boolean",
+  "null",
+  "unknown",
+];
 
 function formatWhen(value) {
   const ts = Number(value || 0);
@@ -45,11 +68,31 @@ function formatJsonBlock(value) {
   }
 }
 
+function toFriendlyLabel(value) {
+  return String(value || "")
+    .replace(/[_\-]+/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function summarizeMeta(value) {
+  const parsed = tryParseJson(value) || (value && typeof value === "object" ? value : null);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  return Object.entries(parsed)
+    .filter(([, v]) => v == null || ["string", "number", "boolean"].includes(typeof v))
+    .slice(0, 6)
+    .map(([k, v]) => ({ key: k, value: v == null ? "-" : String(v) }));
+}
+
 export default function LoggerPanel({ embedded = false, canEdit = false }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filterLevel, setFilterLevel] = useState("all");
+  const [filterCategory, setFilterCategory] = useState("all");
+  const [filterDataType, setFilterDataType] = useState("all");
+  const [filterSource, setFilterSource] = useState("");
   const [filterText, setFilterText] = useState("");
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState(0);
 
@@ -60,7 +103,18 @@ export default function LoggerPanel({ embedded = false, canEdit = false }) {
         const q = new URLSearchParams();
         q.set("limit", "300");
         if (filterLevel !== "all") q.set("level", filterLevel);
+        if (filterCategory !== "all") q.set("category", filterCategory);
+        if (filterDataType !== "all") q.set("data_type", filterDataType);
+        if (String(filterSource || "").trim()) q.set("source", String(filterSource || "").trim());
         if (String(filterText || "").trim()) q.set("q", String(filterText || "").trim());
+        if (String(filterFrom || "").trim()) {
+          const iso = new Date(String(filterFrom)).toISOString();
+          q.set("from", iso);
+        }
+        if (String(filterTo || "").trim()) {
+          const iso = new Date(String(filterTo)).toISOString();
+          q.set("to", iso);
+        }
         const res = await fetch(`/api/logs?${q.toString()}`, { credentials: "include" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.error || "Failed to load logs.");
@@ -75,7 +129,7 @@ export default function LoggerPanel({ embedded = false, canEdit = false }) {
         if (!silent) setLoading(false);
       }
     },
-    [filterLevel, filterText]
+    [filterLevel, filterCategory, filterDataType, filterSource, filterText, filterFrom, filterTo]
   );
 
   useEffect(() => {
@@ -181,12 +235,92 @@ export default function LoggerPanel({ embedded = false, canEdit = false }) {
             </option>
           ))}
         </select>
+        <select
+          value={filterCategory}
+          onChange={(e) => setFilterCategory(String(e.target.value || "all"))}
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg-elev)",
+            color: "var(--text)",
+            padding: "8px 10px",
+            fontWeight: 600,
+          }}
+        >
+          {CATEGORIES.map((v) => (
+            <option key={v} value={v}>
+              {v === "all" ? "All categories" : toFriendlyLabel(v)}
+            </option>
+          ))}
+        </select>
+        <select
+          value={filterDataType}
+          onChange={(e) => setFilterDataType(String(e.target.value || "all"))}
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg-elev)",
+            color: "var(--text)",
+            padding: "8px 10px",
+            fontWeight: 600,
+          }}
+        >
+          {DATA_TYPES.map((v) => (
+            <option key={v} value={v}>
+              {v === "all" ? "All data types" : toFriendlyLabel(v)}
+            </option>
+          ))}
+        </select>
+        <input
+          value={filterSource}
+          onChange={(e) => setFilterSource(String(e.target.value || ""))}
+          placeholder="Source filter"
+          style={{
+            flex: "0 1 180px",
+            minWidth: 140,
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg-elev)",
+            color: "var(--text)",
+            padding: "8px 10px",
+          }}
+        />
         <input
           value={filterText}
           onChange={(e) => setFilterText(String(e.target.value || ""))}
           placeholder="Search logs"
           style={{
             flex: "1 1 260px",
+            minWidth: 180,
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg-elev)",
+            color: "var(--text)",
+            padding: "8px 10px",
+          }}
+        />
+        <input
+          type="datetime-local"
+          value={filterFrom}
+          onChange={(e) => setFilterFrom(String(e.target.value || ""))}
+          title="From date/time"
+          style={{
+            flex: "0 1 200px",
+            minWidth: 180,
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--bg-elev)",
+            color: "var(--text)",
+            padding: "8px 10px",
+          }}
+        />
+        <input
+          type="datetime-local"
+          value={filterTo}
+          onChange={(e) => setFilterTo(String(e.target.value || ""))}
+          title="To date/time"
+          style={{
+            flex: "0 1 200px",
             minWidth: 180,
             border: "1px solid var(--border)",
             borderRadius: 8,
@@ -283,12 +417,39 @@ export default function LoggerPanel({ embedded = false, canEdit = false }) {
                   <span style={{ fontSize: 11, fontWeight: 800, color: levelColor(row?.level) }}>
                     {String(row?.level || "info").toUpperCase()}
                   </span>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: 999, padding: "1px 6px" }}>
+                    {toFriendlyLabel(row?.category || "general")}
+                  </span>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: 999, padding: "1px 6px" }}>
+                    {toFriendlyLabel(row?.data_type || row?.dataType || "unknown")}
+                  </span>
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{formatWhen(row?.at)}</span>
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{String(row?.source || "server")}</span>
+                  {Number(row?.count || 1) > 1 ? (
+                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>x{Number(row?.count || 1)}</span>
+                  ) : null}
                 </div>
                 <div style={{ color: "var(--text)", fontWeight: 600, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                   {messageText}
                 </div>
+                {summarizeMeta(row?.meta).length ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {summarizeMeta(row?.meta).map((pair) => (
+                      <span
+                        key={`${row?.id || idx}-${pair.key}`}
+                        style={{
+                          fontSize: 10,
+                          color: "var(--text-muted)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 999,
+                          padding: "1px 6px",
+                        }}
+                      >
+                        {toFriendlyLabel(pair.key)}: {pair.value}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 {formattedMessageJson ? (
                   <pre
                     style={{
@@ -322,7 +483,7 @@ export default function LoggerPanel({ embedded = false, canEdit = false }) {
                       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
                     }}
                   >
-                    {formattedMetaJson || String(row?.meta || "")}
+                    {String(row?.meta_pretty || formattedMetaJson || String(row?.meta || ""))}
                   </pre>
                 ) : null}
               </div>

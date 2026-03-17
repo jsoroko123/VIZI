@@ -5,17 +5,24 @@ const STARTUP_PORTS = [4840, 5055, 5173];
 const processes = [];
 let stopping = false;
 
-function run(name, command, args) {
+function run(name, command, args, options = {}) {
+  const { critical = true } = options;
   const child = spawn(command, args, {
     stdio: "inherit",
     shell: true,
     env: process.env,
   });
 
-  processes.push(child);
+  processes.push({ name, child, critical });
 
   child.on("exit", (code, signal) => {
     if (stopping) return;
+    if (!critical) {
+      console.error(
+        `[${name}] exited (code=${code ?? "null"}, signal=${signal ?? "null"}). Continuing without ${name}.`
+      );
+      return;
+    }
     console.error(`[${name}] exited (code=${code ?? "null"}, signal=${signal ?? "null"}). Stopping all services.`);
     shutdown(code ?? 1);
   });
@@ -25,15 +32,17 @@ function shutdown(exitCode = 0) {
   if (stopping) return;
   stopping = true;
 
-  for (const child of processes) {
-    if (!child.killed) {
+  for (const proc of processes) {
+    const child = proc.child;
+    if (child && !child.killed) {
       child.kill("SIGTERM");
     }
   }
 
   setTimeout(() => {
-    for (const child of processes) {
-      if (!child.killed) {
+    for (const proc of processes) {
+      const child = proc.child;
+      if (child && !child.killed) {
         child.kill("SIGKILL");
       }
     }
@@ -60,16 +69,22 @@ function getListeningPidsWindows(ports) {
     "Select-Object -ExpandProperty OwningProcess -Unique",
   ].join(" ");
 
-  const result = spawn("powershell", ["-NoProfile", "-Command", psCommand], {
-    stdio: ["ignore", "pipe", "pipe"],
-    shell: false,
-  });
-
   return new Promise((resolve) => {
+    let result;
+    try {
+      result = spawn("powershell", ["-NoProfile", "-Command", psCommand], {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+      });
+    } catch {
+      resolve([]);
+      return;
+    }
     let stdout = "";
     result.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
     });
+    result.on("error", () => resolve([]));
     result.on("close", () => {
       const pids = stdout
         .split(/\r?\n/)
@@ -112,16 +127,22 @@ async function getStaleAppPidsWindows() {
     "} | Select-Object -ExpandProperty ProcessId",
   ].join(" ");
 
-  const result = spawn("powershell", ["-NoProfile", "-Command", psCommand], {
-    stdio: ["ignore", "pipe", "pipe"],
-    shell: false,
-  });
-
   return new Promise((resolve) => {
+    let result;
+    try {
+      result = spawn("powershell", ["-NoProfile", "-Command", psCommand], {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+      });
+    } catch {
+      resolve([]);
+      return;
+    }
     let stdout = "";
     result.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
     });
+    result.on("error", () => resolve([]));
     result.on("close", () => {
       const pids = stdout
         .split(/\r?\n/)
@@ -165,6 +186,6 @@ async function cleanStartup() {
 
 await cleanStartup();
 
-run("opc-server", "npm", ["--prefix", "opc-server", "run", "start:watchdog"]);
+run("opc-server", "npm", ["--prefix", "opc-server", "run", "start:watchdog"], { critical: false });
 run("app-server", "npm", ["--prefix", "ai-server", "run", "start:watchdog"]);
-run("vite", "npm", ["run", "dev:vite"]);
+run("vite", "npm", ["run", "dev:vite"], { critical: false });

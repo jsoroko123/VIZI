@@ -58,6 +58,14 @@ export default function DataBrowser({
   const [childRelationErrorByTable, setChildRelationErrorByTable] = useState({});
   const [childRelationActiveTab, setChildRelationActiveTab] = useState("");
   const [detailViewTab, setDetailViewTab] = useState("fields");
+  const [routeBinSetupLoading, setRouteBinSetupLoading] = useState(false);
+  const [routeBinSetupBusy, setRouteBinSetupBusy] = useState(false);
+  const [routeBinSetupError, setRouteBinSetupError] = useState("");
+  const [routeBinGroups, setRouteBinGroups] = useState([]);
+  const [routeBinRows, setRouteBinRows] = useState([]);
+  const [routeBinCatalog, setRouteBinCatalog] = useState([]);
+  const [routeBinGroupNameDraft, setRouteBinGroupNameDraft] = useState("");
+  const [routeBinPickByGroupId, setRouteBinPickByGroupId] = useState({});
   const [formulaBomFilter, setFormulaBomFilter] = useState("");
   const [formulaBomProductOptions, setFormulaBomProductOptions] = useState([]);
   const [formulaBomDraftByRow, setFormulaBomDraftByRow] = useState({});
@@ -138,6 +146,14 @@ export default function DataBrowser({
     String(embeddedRouteName || "").trim() || normalizedEmbeddedRouteId;
   const isJobsTable = String(currentTable || "").trim().toLowerCase() === "jobs";
   const isFormulaHeaderTable = String(currentTable || "").trim().toLowerCase() === "formula_header";
+  const isRouteTable = String(currentTable || "").trim().toLowerCase() === "route";
+  const selectedRouteDbId = useMemo(() => {
+    if (!isRouteTable || isNewDetail) return "";
+    const fromDetail = detail?.id == null ? "" : String(detail.id).trim();
+    const fromSelected = selectedId == null ? "" : String(selectedId).trim();
+    return fromDetail || fromSelected;
+  }, [isRouteTable, isNewDetail, detail, selectedId]);
+  const canUseRouteBinSetup = isRouteTable && !isNewDetail && Boolean(String(selectedRouteDbId || "").trim());
   const showJobsRouteContext = isJobsTable && !!normalizedEmbeddedRouteId;
   const rowRouteId = (row) =>
     String(row?.route_id ?? row?.routeid ?? row?.routeId ?? row?.route ?? "").trim();
@@ -943,6 +959,61 @@ export default function DataBrowser({
     // Default to field editing when switching records/tables so columns are never "missing" by default.
     setDetailViewTab("fields");
   }, [currentTable, selectedId, detailId]);
+
+  useEffect(() => {
+    let alive = true;
+    async function loadRouteBinSetupData() {
+      if (!canUseRouteBinSetup) {
+        if (alive) {
+          setRouteBinGroups([]);
+          setRouteBinRows([]);
+          setRouteBinCatalog([]);
+          setRouteBinSetupError("");
+        }
+        return;
+      }
+      setRouteBinSetupLoading(true);
+      setRouteBinSetupError("");
+      try {
+        const [groupsRes, rowsRes, binsRes] = await Promise.all([
+          fetch("/api/db/route_bin_group?limit=2000"),
+          fetch("/api/db/route_bin_list?limit=5000"),
+          fetch("/api/db/bin?limit=2000"),
+        ]);
+        const groupsData = await groupsRes.json().catch(() => ({}));
+        const rowsData = await rowsRes.json().catch(() => ({}));
+        const binsData = await binsRes.json().catch(() => ({}));
+        if (!groupsRes.ok) throw new Error(String(groupsData?.error || "Failed to load route bin groups."));
+        if (!rowsRes.ok) throw new Error(String(rowsData?.error || "Failed to load route bin assignments."));
+        if (!binsRes.ok) throw new Error(String(binsData?.error || "Failed to load bins."));
+        const routeKey = String(selectedRouteDbId || "").trim();
+        const groups = (Array.isArray(groupsData?.rows) ? groupsData.rows : []).filter((group) => {
+          const routeNumber = String(group?.routenumber ?? "").trim();
+          return routeNumber === routeKey;
+        });
+        const groupIds = new Set(
+          groups.map((group) => String(group?.id ?? "").trim()).filter(Boolean)
+        );
+        const binRows = (Array.isArray(rowsData?.rows) ? rowsData.rows : []).filter((row) => {
+          const assignedGroup = String(row?.assigned_bin_group ?? "").trim();
+          return assignedGroup && groupIds.has(assignedGroup);
+        });
+        if (!alive) return;
+        setRouteBinGroups(groups);
+        setRouteBinRows(binRows);
+        setRouteBinCatalog(Array.isArray(binsData?.rows) ? binsData.rows : []);
+      } catch (err) {
+        if (!alive) return;
+        setRouteBinSetupError(String(err?.message || "Failed to load route bin setup."));
+      } finally {
+        if (alive) setRouteBinSetupLoading(false);
+      }
+    }
+    void loadRouteBinSetupData();
+    return () => {
+      alive = false;
+    };
+  }, [canUseRouteBinSetup, selectedRouteDbId]);
 
   useEffect(() => {
     setFormulaBomFilter("");
@@ -1923,6 +1994,380 @@ export default function DataBrowser({
     );
   }
 
+  async function reloadRouteBinSetupData() {
+    if (!canUseRouteBinSetup) return;
+    setRouteBinSetupLoading(true);
+    setRouteBinSetupError("");
+    try {
+      const [groupsRes, rowsRes, binsRes] = await Promise.all([
+        fetch("/api/db/route_bin_group?limit=2000"),
+        fetch("/api/db/route_bin_list?limit=5000"),
+        fetch("/api/db/bin?limit=2000"),
+      ]);
+      const groupsData = await groupsRes.json().catch(() => ({}));
+      const rowsData = await rowsRes.json().catch(() => ({}));
+      const binsData = await binsRes.json().catch(() => ({}));
+      if (!groupsRes.ok) throw new Error(String(groupsData?.error || "Failed to load route bin groups."));
+      if (!rowsRes.ok) throw new Error(String(rowsData?.error || "Failed to load route bin assignments."));
+      if (!binsRes.ok) throw new Error(String(binsData?.error || "Failed to load bins."));
+      const routeKey = String(selectedRouteDbId || "").trim();
+      const groups = (Array.isArray(groupsData?.rows) ? groupsData.rows : []).filter((group) => {
+        const routeNumber = String(group?.routenumber ?? "").trim();
+        return routeNumber === routeKey;
+      });
+      const groupIds = new Set(groups.map((group) => String(group?.id ?? "").trim()).filter(Boolean));
+      const binRows = (Array.isArray(rowsData?.rows) ? rowsData.rows : []).filter((row) => {
+        const assignedGroup = String(row?.assigned_bin_group ?? "").trim();
+        return assignedGroup && groupIds.has(assignedGroup);
+      });
+      setRouteBinGroups(groups);
+      setRouteBinRows(binRows);
+      setRouteBinCatalog(Array.isArray(binsData?.rows) ? binsData.rows : []);
+    } catch (err) {
+      setRouteBinSetupError(String(err?.message || "Failed to load route bin setup."));
+    } finally {
+      setRouteBinSetupLoading(false);
+    }
+  }
+
+  async function createRouteBinGroup() {
+    if (!canUseRouteBinSetup || routeBinSetupBusy) return;
+    const groupName = String(routeBinGroupNameDraft || "").trim();
+    if (!groupName) {
+      setRouteBinSetupError("Group name is required.");
+      return;
+    }
+    const routeIdNumber = Number(selectedRouteDbId);
+    if (!Number.isFinite(routeIdNumber) || routeIdNumber <= 0) {
+      setRouteBinSetupError("Invalid route id for group creation.");
+      return;
+    }
+    setRouteBinSetupBusy(true);
+    setRouteBinSetupError("");
+    try {
+      const maxSort = routeBinGroups.reduce((acc, group) => {
+        const n = Number(group?.sortorder);
+        return Number.isFinite(n) ? Math.max(acc, n) : acc;
+      }, 0);
+      const nextGroupId = routeBinGroups.reduce((acc, group) => {
+        const n = Number(group?.groupid);
+        return Number.isFinite(n) ? Math.max(acc, n) : acc;
+      }, 0) + 1;
+      const payload = {
+        routenumber: routeIdNumber,
+        groupname: groupName,
+        groupid: nextGroupId,
+        grouptype: "BIN",
+        enabled: true,
+        sortorder: maxSort + 1,
+      };
+      const res = await fetch("/api/db/route_bin_group", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(data?.error || "Failed to create route bin group."));
+      setRouteBinGroupNameDraft("");
+      await reloadRouteBinSetupData();
+      toastSuccess("Route bin group created.");
+    } catch (err) {
+      const msg = String(err?.message || "Failed to create route bin group.");
+      setRouteBinSetupError(msg);
+      toastError(msg);
+    } finally {
+      setRouteBinSetupBusy(false);
+    }
+  }
+
+  async function assignBinToRouteGroup(groupIdRaw) {
+    const groupId = String(groupIdRaw || "").trim();
+    const binId = String(routeBinPickByGroupId?.[groupId] || "").trim();
+    if (!groupId || !binId || routeBinSetupBusy) return;
+    setRouteBinSetupBusy(true);
+    setRouteBinSetupError("");
+    try {
+      const existing = routeBinRows.find((row) => String(row?.bin_id ?? "").trim() === binId) || null;
+      if (existing) {
+        const rowId = String(existing?.id ?? "").trim();
+        const res = await fetch(`/api/db/route_bin_list/${encodeURIComponent(rowId)}?pk=id`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assigned_bin_group: Number(groupId) }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(String(data?.error || "Failed to move bin assignment."));
+      } else {
+        const bin = routeBinCatalog.find((row) => String(row?.id ?? "").trim() === binId) || null;
+        const binName = String(bin?.name || "").trim();
+        const payload = {
+          name: binName || `Bin ${binId}`,
+          description: "",
+          bin_id: Number(binId),
+          bin_number: binName,
+          hide_job_form: false,
+          assigned_bin_group: Number(groupId),
+        };
+        const res = await fetch("/api/db/route_bin_list", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(String(data?.error || "Failed to assign bin to group."));
+      }
+      setRouteBinPickByGroupId((prev) => ({ ...(prev || {}), [groupId]: "" }));
+      await reloadRouteBinSetupData();
+      toastSuccess("Bin assigned.");
+    } catch (err) {
+      const msg = String(err?.message || "Failed to assign bin.");
+      setRouteBinSetupError(msg);
+      toastError(msg);
+    } finally {
+      setRouteBinSetupBusy(false);
+    }
+  }
+
+  async function unassignRouteBinRow(rowIdRaw) {
+    const rowId = String(rowIdRaw || "").trim();
+    if (!rowId || routeBinSetupBusy) return;
+    setRouteBinSetupBusy(true);
+    setRouteBinSetupError("");
+    try {
+      const res = await fetch(`/api/db/route_bin_list/${encodeURIComponent(rowId)}?pk=id`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assigned_bin_group: null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(data?.error || "Failed to unassign bin."));
+      await reloadRouteBinSetupData();
+      toastSuccess("Bin unassigned.");
+    } catch (err) {
+      const msg = String(err?.message || "Failed to unassign bin.");
+      setRouteBinSetupError(msg);
+      toastError(msg);
+    } finally {
+      setRouteBinSetupBusy(false);
+    }
+  }
+
+  function renderRouteBinSetupSection() {
+    if (!canUseRouteBinSetup) return null;
+    const assignmentByGroupId = {};
+    routeBinRows.forEach((row) => {
+      const gid = String(row?.assigned_bin_group ?? "").trim();
+      if (!gid) return;
+      if (!assignmentByGroupId[gid]) assignmentByGroupId[gid] = [];
+      assignmentByGroupId[gid].push(row);
+    });
+    const routeAssignmentByBinId = {};
+    routeBinRows.forEach((row) => {
+      const bid = String(row?.bin_id ?? "").trim();
+      if (!bid) return;
+      routeAssignmentByBinId[bid] = String(row?.assigned_bin_group ?? "").trim();
+    });
+    return (
+      <div style={{ display: "grid", gap: 10, minHeight: 0, overflow: "auto", padding: "2px 2px 4px" }}>
+        <div
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: 8,
+            background: "var(--bg-soft)",
+            display: "grid",
+            gap: 6,
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text)" }}>
+            Route #{selectedRouteDbId} Bin Groups
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              value={routeBinGroupNameDraft}
+              onChange={(e) => setRouteBinGroupNameDraft(String(e.target.value || ""))}
+              placeholder="New group name"
+              disabled={routeBinSetupBusy}
+              style={{
+                flex: "1 1 auto",
+                minWidth: 0,
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 6,
+                padding: "6px 8px",
+                fontSize: 12,
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => void createRouteBinGroup()}
+              disabled={!String(routeBinGroupNameDraft || "").trim() || routeBinSetupBusy}
+              style={{
+                ...primaryButton,
+                padding: "6px 10px",
+                fontSize: 11,
+                opacity: !String(routeBinGroupNameDraft || "").trim() || routeBinSetupBusy ? 0.55 : 1,
+                cursor: !String(routeBinGroupNameDraft || "").trim() || routeBinSetupBusy ? "not-allowed" : "pointer",
+              }}
+            >
+              Add Group
+            </button>
+          </div>
+          {routeBinSetupLoading ? (
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Loading route bins...</div>
+          ) : null}
+          {routeBinSetupError ? (
+            <div style={{ fontSize: 11, color: "var(--danger)" }}>{routeBinSetupError}</div>
+          ) : null}
+        </div>
+        {routeBinGroups.length ? (
+          routeBinGroups
+            .slice()
+            .sort((a, b) => {
+              const as = Number(a?.sortorder);
+              const bs = Number(b?.sortorder);
+              if (Number.isFinite(as) && Number.isFinite(bs) && as !== bs) return as - bs;
+              return String(a?.groupname || "").localeCompare(String(b?.groupname || ""));
+            })
+            .map((group) => {
+              const gid = String(group?.id ?? "").trim();
+              const rows = Array.isArray(assignmentByGroupId[gid]) ? assignmentByGroupId[gid] : [];
+              const pickValue = String(routeBinPickByGroupId?.[gid] || "").trim();
+              const availableBins = routeBinCatalog.filter((bin) => {
+                const bid = String(bin?.id ?? "").trim();
+                if (!bid) return false;
+                const assignedGid = String(routeAssignmentByBinId[bid] || "").trim();
+                return !assignedGid || assignedGid !== gid;
+              });
+              return (
+                <div
+                  key={`route-bin-group-${gid}`}
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: 8,
+                    background: "var(--bg-soft)",
+                    display: "grid",
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>
+                    {String(group?.groupname || `Group ${gid}`)} ({rows.length})
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <select
+                      value={pickValue}
+                      onChange={(e) =>
+                        setRouteBinPickByGroupId((prev) => ({
+                          ...(prev || {}),
+                          [gid]: String(e.target.value || ""),
+                        }))
+                      }
+                      disabled={routeBinSetupBusy}
+                      style={{
+                        flex: "1 1 auto",
+                        minWidth: 0,
+                        border: "1px solid var(--border)",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                        borderRadius: 6,
+                        padding: "5px 6px",
+                        fontSize: 11,
+                      }}
+                    >
+                      <option value="">Select bin...</option>
+                      {availableBins.map((bin) => {
+                        const bid = String(bin?.id ?? "").trim();
+                        if (!bid) return null;
+                        const name = String(bin?.name || "").trim() || `Bin ${bid}`;
+                        const assignedGid = String(routeAssignmentByBinId[bid] || "").trim();
+                        const assignedGroupName =
+                          routeBinGroups.find((g) => String(g?.id ?? "").trim() === assignedGid)?.groupname || "";
+                        const label = assignedGid ? `${name} (move from ${assignedGroupName || assignedGid})` : name;
+                        return (
+                          <option key={`route-bin-option-${gid}-${bid}`} value={bid}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void assignBinToRouteGroup(gid)}
+                      disabled={!pickValue || routeBinSetupBusy}
+                      style={{
+                        ...primaryButton,
+                        padding: "6px 10px",
+                        fontSize: 11,
+                        opacity: !pickValue || routeBinSetupBusy ? 0.55 : 1,
+                        cursor: !pickValue || routeBinSetupBusy ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      Assign
+                    </button>
+                  </div>
+                  {rows.length ? (
+                    <div style={{ display: "grid", gap: 4 }}>
+                      {rows.map((row) => {
+                        const rowId = String(row?.id ?? "").trim();
+                        const binId = String(row?.bin_id ?? "").trim();
+                        const bin = routeBinCatalog.find((b) => String(b?.id ?? "").trim() === binId) || null;
+                        const rowLabel =
+                          String(bin?.name || "").trim() ||
+                          String(row?.name || "").trim() ||
+                          String(row?.bin_number || "").trim() ||
+                          (binId ? `Bin ${binId}` : `Assignment ${rowId}`);
+                        return (
+                          <div
+                            key={`route-bin-row-${rowId}`}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: 8,
+                              border: "1px solid var(--border)",
+                              borderRadius: 6,
+                              padding: "4px 6px",
+                              background: "var(--bg-elev)",
+                            }}
+                          >
+                            <div style={{ fontSize: 11, color: "var(--text)" }}>{rowLabel}</div>
+                            <button
+                              type="button"
+                              disabled={routeBinSetupBusy}
+                              onClick={() => void unassignRouteBinRow(rowId)}
+                              style={{
+                                ...iconActionButton,
+                                width: 24,
+                                height: 24,
+                                border: "1px solid var(--danger)",
+                                color: "var(--danger)",
+                                background: "transparent",
+                                boxShadow: "none",
+                                opacity: routeBinSetupBusy ? 0.55 : 1,
+                              }}
+                              title="Unassign bin from this group"
+                            >
+                              {"\u2715"}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>No bins assigned.</div>
+                  )}
+                </div>
+              );
+            })
+        ) : !routeBinSetupLoading ? (
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>No route bin groups yet.</div>
+        ) : null}
+      </div>
+    );
+  }
+
   async function saveListFields() {
     if (!currentTable) return;
     setError("");
@@ -2380,6 +2825,7 @@ export default function DataBrowser({
                       marginBottom: 10,
                     }}
                   >
+                      {canUseRouteBinSetup ? renderRouteBinSetupSection() : null}
                       {detailRenderOrder
                         .filter((name) => !isHiddenColumn(name))
                         .map((columnName) => {

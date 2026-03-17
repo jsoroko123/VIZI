@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 function asText(value, fallback = "--") {
   const text = String(value ?? "").trim();
@@ -48,24 +48,74 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
     sslMode: "",
     applicationName: "",
     poolMax: "10",
+    trendDatabaseUrl: "",
+    trendPoolMax: "10",
+    logDatabaseUrl: "",
+    logPoolMax: "10",
     reportQueryTimeoutMs: "12000",
     reportMaxResultRows: "2000",
     reportMaxConcurrentQueries: "3",
     reportRateWindowMs: "10000",
     reportRateMaxRequests: "6",
   });
+  const [backupConfig, setBackupConfig] = useState({
+    enabled: false,
+    intervalMinutes: 1440,
+    keepBackups: 30,
+    includeTrendDb: true,
+    redundancyEnabled: false,
+    redundancyCopies: 1,
+    lastRunAt: 0,
+  });
+  const [backups, setBackups] = useState([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupSaving, setBackupSaving] = useState(false);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [backupRestoringId, setBackupRestoringId] = useState("");
+  const [backupDownloadingId, setBackupDownloadingId] = useState("");
+  const [backupImporting, setBackupImporting] = useState(false);
+  const [backupError, setBackupError] = useState("");
+  const [backupOk, setBackupOk] = useState("");
+  const backupImportInputRef = useRef(null);
+
+  const fetchJson = async (url, options = undefined) => {
+    const res = await fetch(url, {
+      credentials: "include",
+      ...(options && typeof options === "object" ? options : {}),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(payload?.error || `Failed to load ${url}.`));
+    return payload && typeof payload === "object" ? payload : {};
+  };
+
+  const loadBackupData = async () => {
+    setBackupLoading(true);
+    setBackupError("");
+    try {
+      const payload = await fetchJson("/api/db/backups");
+      const cfg = payload?.config && typeof payload.config === "object" ? payload.config : {};
+      setBackupConfig((prev) => ({
+        ...prev,
+        enabled: cfg.enabled === true,
+        intervalMinutes: Number.isFinite(Number(cfg.intervalMinutes)) ? Number(cfg.intervalMinutes) : 1440,
+        keepBackups: Number.isFinite(Number(cfg.keepBackups)) ? Number(cfg.keepBackups) : 30,
+        includeTrendDb: cfg.includeTrendDb !== false,
+        redundancyEnabled: cfg.redundancyEnabled === true,
+        redundancyCopies: Number.isFinite(Number(cfg.redundancyCopies)) ? Number(cfg.redundancyCopies) : 1,
+        lastRunAt: Number.isFinite(Number(cfg.lastRunAt)) ? Number(cfg.lastRunAt) : 0,
+      }));
+      setBackups(Array.isArray(payload?.backups) ? payload.backups : []);
+    } catch (err) {
+      setBackupError(String(err?.message || "Failed to load backup data."));
+    } finally {
+      setBackupLoading(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
     setError("");
     try {
-      const fetchJson = async (url) => {
-        const res = await fetch(url, { credentials: "include" });
-        const payload = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(String(payload?.error || `Failed to load ${url}.`));
-        return payload && typeof payload === "object" ? payload : {};
-      };
-
       const config = await fetchJson("/api/db/config");
       setData(config);
       const dbClient = String(config?.dbClient || "postgres").trim().toLowerCase();
@@ -93,6 +143,7 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
     } finally {
       setLoading(false);
     }
+    await loadBackupData();
   };
 
   useEffect(() => {
@@ -104,6 +155,10 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
     const editable = data?.editable && typeof data.editable === "object" ? data.editable : {};
     const connection = data?.connection && typeof data.connection === "object" ? data.connection : {};
     const pool = data?.pool && typeof data.pool === "object" ? data.pool : {};
+    const trendConnection = data?.trendConnection && typeof data.trendConnection === "object" ? data.trendConnection : {};
+    const trendPool = data?.trendPool && typeof data.trendPool === "object" ? data.trendPool : {};
+    const logConnection = data?.logConnection && typeof data.logConnection === "object" ? data.logConnection : {};
+    const logPool = data?.logPool && typeof data.logPool === "object" ? data.logPool : {};
     const sqlGuards = data?.sqlGuards && typeof data.sqlGuards === "object" ? data.sqlGuards : {};
     setForm((prev) => ({
       ...prev,
@@ -130,6 +185,30 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
           ? Number(pool.configuredMax)
           : Number.isFinite(Number(pool?.max))
           ? Number(pool.max)
+          : 10
+      ),
+      trendDatabaseUrl: String(
+        editable?.trendDatabaseUrl || trendConnection?.maskedUrl || prev.trendDatabaseUrl || ""
+      ),
+      trendPoolMax: String(
+        Number.isFinite(Number(editable?.trendPoolMax))
+          ? Number(editable.trendPoolMax)
+          : Number.isFinite(Number(trendPool?.configuredMax))
+          ? Number(trendPool.configuredMax)
+          : Number.isFinite(Number(prev.trendPoolMax))
+          ? Number(prev.trendPoolMax)
+          : 10
+      ),
+      logDatabaseUrl: String(
+        editable?.logDatabaseUrl || logConnection?.maskedUrl || prev.logDatabaseUrl || ""
+      ),
+      logPoolMax: String(
+        Number.isFinite(Number(editable?.logPoolMax))
+          ? Number(editable.logPoolMax)
+          : Number.isFinite(Number(logPool?.configuredMax))
+          ? Number(logPool.configuredMax)
+          : Number.isFinite(Number(prev.logPoolMax))
+          ? Number(prev.logPoolMax)
           : 10
       ),
       reportQueryTimeoutMs: String(
@@ -174,6 +253,12 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
   const versions = data?.versions && typeof data.versions === "object" ? data.versions : {};
   const health = data?.health && typeof data.health === "object" ? data.health : {};
   const pool = data?.pool && typeof data.pool === "object" ? data.pool : {};
+  const trendPoolConfig = data?.trendPool && typeof data.trendPool === "object" ? data.trendPool : {};
+  const logPoolConfig = data?.logPool && typeof data.logPool === "object" ? data.logPool : {};
+  const trendConnectionConfig =
+    data?.trendConnection && typeof data.trendConnection === "object" ? data.trendConnection : {};
+  const logConnectionConfig =
+    data?.logConnection && typeof data.logConnection === "object" ? data.logConnection : {};
   const catalog = data?.catalog && typeof data.catalog === "object" ? data.catalog : {};
   const pgSettings = pgDiag?.settings && typeof pgDiag.settings === "object" ? pgDiag.settings : {};
   const pgConn = pgDiag?.connections && typeof pgDiag.connections === "object" ? pgDiag.connections : {};
@@ -183,6 +268,17 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
   const pgBg = pgDiag?.bgwriter && typeof pgDiag.bgwriter === "object" ? pgDiag.bgwriter : {};
   const pgLocks = pgDiag?.locks && typeof pgDiag.locks === "object" ? pgDiag.locks : {};
   const pgUptime = pgDiag?.uptime && typeof pgDiag.uptime === "object" ? pgDiag.uptime : {};
+  const trendDiag = pgDiag?.trend && typeof pgDiag.trend === "object" ? pgDiag.trend : null;
+  const trendConn = trendDiag?.connections && typeof trendDiag.connections === "object" ? trendDiag.connections : {};
+  const trendDb = trendDiag?.database && typeof trendDiag.database === "object" ? trendDiag.database : {};
+  const trendSize = trendDiag?.size && typeof trendDiag.size === "object" ? trendDiag.size : {};
+  const trendWal = trendDiag?.wal && typeof trendDiag.wal === "object" ? trendDiag.wal : {};
+  const trendBg = trendDiag?.bgwriter && typeof trendDiag.bgwriter === "object" ? trendDiag.bgwriter : {};
+  const trendLocks = trendDiag?.locks && typeof trendDiag.locks === "object" ? trendDiag.locks : {};
+  const trendUptime = trendDiag?.uptime && typeof trendDiag.uptime === "object" ? trendDiag.uptime : {};
+  const trendPool = trendDiag?.pool && typeof trendDiag.pool === "object" ? trendDiag.pool : {};
+  const trendConnectionInfo =
+    trendDiag?.connection && typeof trendDiag.connection === "object" ? trendDiag.connection : {};
   const appInfo = appDiag?.app && typeof appDiag.app === "object" ? appDiag.app : {};
   const appDb = appDiag?.db && typeof appDiag.db === "object" ? appDiag.db : {};
   const appOpc = appDiag?.opc && typeof appDiag.opc === "object" ? appDiag.opc : {};
@@ -207,6 +303,12 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
     if (!Number.isFinite(hit) || !Number.isFinite(read) || hit + read <= 0) return null;
     return (hit / (hit + read)) * 100;
   }, [pgDb?.blks_hit, pgDb?.blks_read]);
+  const trendCacheHitPct = useMemo(() => {
+    const hit = Number(trendDb?.blks_hit);
+    const read = Number(trendDb?.blks_read);
+    if (!Number.isFinite(hit) || !Number.isFinite(read) || hit + read <= 0) return null;
+    return (hit / (hit + read)) * 100;
+  }, [trendDb?.blks_hit, trendDb?.blks_read]);
 
   const checkedAtText = useMemo(() => {
     const ts = Number(health?.checkedAt || 0);
@@ -223,6 +325,16 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
     if (!Number.isFinite(ts) || ts <= 0) return "--";
     return new Date(ts).toLocaleString();
   }, [appDiag?.checkedAt]);
+  const trendCheckedAtText = useMemo(() => {
+    const ts = Number(trendDiag?.checkedAt || 0);
+    if (!Number.isFinite(ts) || ts <= 0) return "--";
+    return new Date(ts).toLocaleString();
+  }, [trendDiag?.checkedAt]);
+  const backupLastRunText = useMemo(() => {
+    const ts = Number(backupConfig?.lastRunAt || 0);
+    if (!Number.isFinite(ts) || ts <= 0) return "--";
+    return new Date(ts).toLocaleString();
+  }, [backupConfig?.lastRunAt]);
 
   const cardStyle = {
     border: "1px solid var(--border)",
@@ -281,6 +393,10 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
             applicationName: form.applicationName,
           },
           poolMax: form.poolMax,
+          trendDatabaseUrl: form.trendDatabaseUrl,
+          trendPoolMax: form.trendPoolMax,
+          logDatabaseUrl: form.logDatabaseUrl,
+          logPoolMax: form.logPoolMax,
           sqlGuards: {
             reportQueryTimeoutMs: form.reportQueryTimeoutMs,
             reportMaxResultRows: form.reportMaxResultRows,
@@ -318,6 +434,170 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
       setSaveError(String(err?.message || "Failed to align versions."));
     } finally {
       setAligningVersion(false);
+    }
+  };
+
+  const onBackupField = (key, value) => {
+    setBackupError("");
+    setBackupOk("");
+    setBackupConfig((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const saveBackupConfig = async () => {
+    setBackupSaving(true);
+    setBackupError("");
+    setBackupOk("");
+    try {
+      const payload = await fetchJson("/api/db/backup/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: backupConfig }),
+      });
+      const cfg = payload?.config && typeof payload.config === "object" ? payload.config : {};
+      setBackupConfig((prev) => ({
+        ...prev,
+        enabled: cfg.enabled === true,
+        intervalMinutes: Number.isFinite(Number(cfg.intervalMinutes)) ? Number(cfg.intervalMinutes) : prev.intervalMinutes,
+        keepBackups: Number.isFinite(Number(cfg.keepBackups)) ? Number(cfg.keepBackups) : prev.keepBackups,
+        includeTrendDb: cfg.includeTrendDb !== false,
+        redundancyEnabled: cfg.redundancyEnabled === true,
+        redundancyCopies: Number.isFinite(Number(cfg.redundancyCopies)) ? Number(cfg.redundancyCopies) : prev.redundancyCopies,
+        lastRunAt: Number.isFinite(Number(cfg.lastRunAt)) ? Number(cfg.lastRunAt) : prev.lastRunAt,
+      }));
+      setBackupOk("Backup config saved.");
+      await loadBackupData();
+    } catch (err) {
+      setBackupError(String(err?.message || "Failed to save backup config."));
+    } finally {
+      setBackupSaving(false);
+    }
+  };
+
+  const runBackupNow = async () => {
+    setBackupRunning(true);
+    setBackupError("");
+    setBackupOk("");
+    try {
+      await fetchJson("/api/db/backups/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeTrendDb: backupConfig.includeTrendDb !== false }),
+      });
+      setBackupOk("Backup created.");
+      await loadBackupData();
+    } catch (err) {
+      setBackupError(String(err?.message || "Failed to create backup."));
+    } finally {
+      setBackupRunning(false);
+    }
+  };
+
+  const restoreBackup = async (backupId) => {
+    const id = String(backupId || "").trim();
+    if (!id) return;
+    const proceed = window.confirm(
+      "Restore this backup now? This will overwrite current database contents and may disrupt active users."
+    );
+    if (!proceed) return;
+    setBackupRestoringId(id);
+    setBackupError("");
+    setBackupOk("");
+    try {
+      await fetchJson("/api/db/backups/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backupId: id }),
+      });
+      setBackupOk("Restore completed.");
+      await loadBackupData();
+      await load();
+    } catch (err) {
+      setBackupError(String(err?.message || "Failed to restore backup."));
+    } finally {
+      setBackupRestoringId("");
+    }
+  };
+
+  const downloadBackup = async (backupItem) => {
+    const id = String(backupItem?.id || "").trim();
+    if (!id) return;
+    setBackupDownloadingId(id);
+    setBackupError("");
+    setBackupOk("");
+    try {
+      const kinds = Array.from(
+        new Set(
+          (Array.isArray(backupItem?.files) ? backupItem.files : [])
+            .map((f) => String(f?.kind || "").trim().toLowerCase())
+            .filter((k) => k === "main" || k === "trend")
+        )
+      );
+      if (!kinds.length) throw new Error("No backup dump files found.");
+      const downloaded = [];
+      for (const kind of kinds) {
+        const res = await fetch(`/api/db/backups/file/${encodeURIComponent(id)}/${encodeURIComponent(kind)}`, {
+          method: "GET",
+          credentials: "include",
+        });
+        if (!res.ok) {
+          const payload = await res.json().catch(() => ({}));
+          throw new Error(String(payload?.error || `Failed to download ${kind} dump.`));
+        }
+        const blob = await res.blob();
+        const cd = String(res.headers.get("content-disposition") || "");
+        const nameMatch = cd.match(/filename=\"?([^\";]+)\"?/i);
+        const fileName = nameMatch?.[1] ? String(nameMatch[1]).trim() : `${id}__${kind}.dump`;
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        downloaded.push(fileName);
+      }
+      setBackupOk(`Backup downloaded: ${downloaded.join(", ")}`);
+    } catch (err) {
+      setBackupError(String(err?.message || "Failed to download backup."));
+    } finally {
+      setBackupDownloadingId("");
+    }
+  };
+
+  const onImportBackupClick = () => {
+    const el = backupImportInputRef.current;
+    if (!el) return;
+    el.value = "";
+    el.click();
+  };
+
+  const importBackupFromFile = async (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    setBackupImporting(true);
+    setBackupError("");
+    setBackupOk("");
+    try {
+      const text = await file.text();
+      let parsed = null;
+      try {
+        parsed = JSON.parse(String(text || "").trim());
+      } catch {
+        throw new Error("Backup file is not valid JSON.");
+      }
+      await fetchJson("/api/db/backups/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bundle: parsed }),
+      });
+      setBackupOk("Backup imported.");
+      await loadBackupData();
+    } catch (err) {
+      setBackupError(String(err?.message || "Failed to import backup."));
+    } finally {
+      setBackupImporting(false);
+      if (event?.target) event.target.value = "";
     }
   };
 
@@ -411,6 +691,36 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
           <input value={form.sslMode} onChange={(e) => onField("sslMode", e.target.value)} style={inputStyle} placeholder="sslmode (optional)" />
           <input value={form.applicationName} onChange={(e) => onField("applicationName", e.target.value)} style={inputStyle} placeholder="application_name (optional)" />
           <input value={form.poolMax} onChange={(e) => onField("poolMax", e.target.value)} style={inputStyle} placeholder="pool max" />
+          <input
+            value={form.trendDatabaseUrl}
+            onChange={(e) => onField("trendDatabaseUrl", e.target.value)}
+            style={inputStyle}
+            placeholder="trend database url (postgres://...)"
+          />
+          <input
+            value={form.trendPoolMax}
+            onChange={(e) => onField("trendPoolMax", e.target.value)}
+            style={inputStyle}
+            placeholder="trend pool max"
+            type="number"
+            min="1"
+            max="200"
+          />
+          <input
+            value={form.logDatabaseUrl}
+            onChange={(e) => onField("logDatabaseUrl", e.target.value)}
+            style={inputStyle}
+            placeholder="logger database url (postgres://...)"
+          />
+          <input
+            value={form.logPoolMax}
+            onChange={(e) => onField("logPoolMax", e.target.value)}
+            style={inputStyle}
+            placeholder="logger pool max"
+            type="number"
+            min="1"
+            max="200"
+          />
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button
@@ -439,6 +749,12 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
           <div><strong>Status:</strong> {connection?.configured ? "Configured" : "Not configured"}</div>
           <div><strong>SSL:</strong> {connection?.ssl === true ? "Enabled" : "Disabled"}</div>
           <div><strong>Current Pool Max:</strong> {asNumber(pool?.configuredMax ?? pool?.max)}</div>
+          <div><strong>Trend DB:</strong> {asText(trendConnectionConfig?.database)}</div>
+          <div><strong>Trend Pool Max:</strong> {asNumber(trendPoolConfig?.configuredMax ?? trendPoolConfig?.max)}</div>
+          <div><strong>Trend Same As Main:</strong> {trendPoolConfig?.sameAsMain ? "Yes" : "No"}</div>
+          <div><strong>Logger DB:</strong> {asText(logConnectionConfig?.database)}</div>
+          <div><strong>Logger Pool Max:</strong> {asNumber(logPoolConfig?.configuredMax ?? logPoolConfig?.max)}</div>
+          <div><strong>Logger Same As Main:</strong> {logPoolConfig?.sameAsMain ? "Yes" : "No"}</div>
         </div>
       </div>
       ) : null}
@@ -522,6 +838,263 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
               placeholder="6"
             />
           </label>
+        </div>
+      </div>
+      ) : null}
+
+      {showConfig ? (
+      <div style={cardStyle}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Backup And Restore</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 8, alignItems: "end" }}>
+          <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+            <span>Auto Backup</span>
+            <select
+              value={backupConfig.enabled ? "on" : "off"}
+              onChange={(e) => onBackupField("enabled", e.target.value === "on")}
+              style={inputStyle}
+            >
+              <option value="off">Off</option>
+              <option value="on">On</option>
+            </select>
+          </label>
+          <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+            <span>Interval (minutes)</span>
+            <input
+              value={backupConfig.intervalMinutes}
+              onChange={(e) => onBackupField("intervalMinutes", e.target.value)}
+              style={inputStyle}
+              type="number"
+              min="15"
+              max="10080"
+            />
+          </label>
+          <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+            <span>Keep Backups</span>
+            <input
+              value={backupConfig.keepBackups}
+              onChange={(e) => onBackupField("keepBackups", e.target.value)}
+              style={inputStyle}
+              type="number"
+              min="3"
+              max="500"
+            />
+          </label>
+          <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+            <span>Include Trend DB</span>
+            <select
+              value={backupConfig.includeTrendDb === false ? "no" : "yes"}
+              onChange={(e) => onBackupField("includeTrendDb", e.target.value === "yes")}
+              style={inputStyle}
+            >
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+          <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+            <span>Redundancy</span>
+            <select
+              value={backupConfig.redundancyEnabled ? "on" : "off"}
+              onChange={(e) => onBackupField("redundancyEnabled", e.target.value === "on")}
+              style={inputStyle}
+            >
+              <option value="off">Off</option>
+              <option value="on">On</option>
+            </select>
+          </label>
+          <label style={{ display: "grid", gap: 6, fontSize: 12 }}>
+            <span>Redundant Copies</span>
+            <input
+              value={backupConfig.redundancyCopies}
+              onChange={(e) => onBackupField("redundancyCopies", e.target.value)}
+              style={inputStyle}
+              type="number"
+              min="1"
+              max="3"
+              disabled={!backupConfig.redundancyEnabled}
+            />
+          </label>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+          <input
+            ref={backupImportInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(e) => void importBackupFromFile(e)}
+          />
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => void saveBackupConfig()}
+            disabled={backupSaving}
+            style={{
+              border: "1px solid #2b6cff",
+              background: backupSaving ? "var(--bg-soft)" : "#2b6cff",
+              color: backupSaving ? "var(--text-muted)" : "#fff",
+              borderRadius: 8,
+              padding: "6px 10px",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: backupSaving ? "not-allowed" : "pointer",
+            }}
+          >
+            {backupSaving ? "Saving..." : "Save Backup Settings"}
+          </button>
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => void runBackupNow()}
+            disabled={backupRunning || backupLoading}
+            style={{
+              border: "1px solid #16a34a",
+              background: backupRunning ? "var(--bg-soft)" : "#16a34a",
+              color: backupRunning ? "var(--text-muted)" : "#fff",
+              borderRadius: 8,
+              padding: "6px 10px",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: backupRunning ? "not-allowed" : "pointer",
+            }}
+          >
+            {backupRunning ? "Backing up..." : "Run Backup Now"}
+          </button>
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => onImportBackupClick()}
+            disabled={backupImporting || !!backupRestoringId || backupRunning}
+            style={{
+              border: "1px solid #7c3aed",
+              background: backupImporting ? "var(--bg-soft)" : "#7c3aed",
+              color: backupImporting ? "var(--text-muted)" : "#fff",
+              borderRadius: 8,
+              padding: "6px 10px",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: backupImporting ? "not-allowed" : "pointer",
+            }}
+          >
+            {backupImporting ? "Importing..." : "Import Backup File"}
+          </button>
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => void loadBackupData()}
+            disabled={backupLoading}
+            style={{
+              border: "1px solid var(--border)",
+              background: "var(--bg-soft)",
+              color: "var(--text)",
+              borderRadius: 8,
+              padding: "6px 10px",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: backupLoading ? "not-allowed" : "pointer",
+            }}
+          >
+            {backupLoading ? "Refreshing..." : "Refresh Backups"}
+          </button>
+          <div style={{ fontSize: 12, color: backupError ? "#b42318" : "var(--text-muted)" }}>
+            {backupError || backupOk || ""}
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          <strong>Last Auto/Manual Run:</strong> {backupLastRunText}
+        </div>
+        <div
+          className="vizi-scroll"
+          style={{
+            maxHeight: 220,
+            overflow: "auto",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            background: "var(--bg-soft)",
+            padding: 8,
+            display: "grid",
+            gap: 6,
+          }}
+        >
+          {Array.isArray(backups) && backups.length ? (
+            backups.map((item) => {
+              const id = String(item?.id || "").trim();
+              const createdAt = Number(item?.createdAt || 0);
+              const createdText = Number.isFinite(createdAt) && createdAt > 0 ? new Date(createdAt).toLocaleString() : "--";
+              const fileSummary = Array.isArray(item?.files)
+                ? item.files
+                    .map((f) => `${String(f?.kind || "db")}:${String(f?.dbName || "--")}`)
+                    .join(" | ")
+                : "--";
+              const restoring = backupRestoringId && backupRestoringId === id;
+              const downloading = backupDownloadingId && backupDownloadingId === id;
+              return (
+                <div
+                  key={id}
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    background: "var(--bg-elev)",
+                    padding: 8,
+                    display: "grid",
+                    gap: 6,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>{id}</div>
+                    <button
+                      type="button"
+                      data-preserve-style="true"
+                      onClick={() => void downloadBackup(item)}
+                      disabled={!!backupRestoringId || backupRunning || backupImporting}
+                      style={{
+                        border: "1px solid #2b6cff",
+                        background: downloading ? "var(--bg-soft)" : "#2b6cff",
+                        color: downloading ? "var(--text-muted)" : "#fff",
+                        borderRadius: 8,
+                        padding: "4px 8px",
+                        fontSize: 11,
+                        fontWeight: 800,
+                        cursor: downloading ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {downloading ? "Downloading..." : "Download"}
+                    </button>
+                    <button
+                      type="button"
+                      data-preserve-style="true"
+                      onClick={() => void restoreBackup(id)}
+                      disabled={!!backupRestoringId || backupRunning || backupImporting}
+                      style={{
+                        border: "1px solid #f59e0b",
+                        background: restoring ? "var(--bg-soft)" : "#f59e0b",
+                        color: restoring ? "var(--text-muted)" : "#111827",
+                        borderRadius: 8,
+                        padding: "4px 8px",
+                        fontSize: 11,
+                        fontWeight: 800,
+                        cursor: restoring ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {restoring ? "Restoring..." : "Restore"}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    <strong>Created:</strong> {createdText} | <strong>Reason:</strong> {asText(item?.reason, "manual")}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    <strong>Files:</strong> {fileSummary}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    <strong>Redundancy:</strong>{" "}
+                    {item?.redundancy?.enabled ? `On (${Number(item?.redundancy?.copies || 1)} copy${Number(item?.redundancy?.copies || 1) > 1 ? "ies" : ""})` : "Off"}
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              No backups found yet.
+            </div>
+          )}
         </div>
       </div>
       ) : null}
@@ -660,6 +1233,37 @@ export default function DatabaseConfigPanel({ embedded = false, mode = "all" }) 
           <div><strong>Sync Time:</strong> {asNumber(pgBg?.checkpoint_sync_time)} ms</div>
           <div><strong>Total Locks:</strong> {asNumber(pgLocks?.total)}</div>
           <div><strong>Waiting Locks:</strong> {asNumber(pgLocks?.waiting)}</div>
+        </div>
+      </div>
+      ) : null}
+
+      {showDiagnostics && trendDiag ? (
+      <div style={cardStyle}>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Trend Database Diagnostics</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, fontSize: 12 }}>
+          <div><strong>Database:</strong> {asText(trendConnectionInfo?.database)}</div>
+          <div><strong>Host:</strong> {asText(trendConnectionInfo?.host)}</div>
+          <div><strong>Pool Max:</strong> {asNumber(trendPool?.max)}</div>
+          <div><strong>Same As Main:</strong> {trendDiag?.sameAsMain ? "Yes" : "No"}</div>
+          <div><strong>Connections:</strong> {asNumber(trendConn?.total)}</div>
+          <div><strong>Active:</strong> {asNumber(trendConn?.active)}</div>
+          <div><strong>Waiting:</strong> {asNumber(trendConn?.waiting)}</div>
+          <div><strong>Cache Hit:</strong> {asPct(trendCacheHitPct)}</div>
+          <div><strong>DB Size:</strong> {asBytes(trendSize?.db_bytes)}</div>
+          <div><strong>Tables:</strong> {asBytes(trendSize?.tables_bytes)}</div>
+          <div><strong>Indexes:</strong> {asBytes(trendSize?.indexes_bytes)}</div>
+          <div><strong>WAL:</strong> {asBytes(trendWal?.wal_bytes)}</div>
+          <div><strong>Temp Files:</strong> {asNumber(trendDb?.temp_files)}</div>
+          <div><strong>Temp Bytes:</strong> {asBytes(trendDb?.temp_bytes)}</div>
+          <div><strong>Deadlocks:</strong> {asNumber(trendDb?.deadlocks)}</div>
+          <div><strong>Uptime:</strong> {asNumber(trendUptime?.uptime_seconds)} s</div>
+          <div><strong>Timed Checkpoints:</strong> {asNumber(trendBg?.checkpoints_timed)}</div>
+          <div><strong>Req Checkpoints:</strong> {asNumber(trendBg?.checkpoints_req)}</div>
+          <div><strong>Total Locks:</strong> {asNumber(trendLocks?.total)}</div>
+          <div><strong>Waiting Locks:</strong> {asNumber(trendLocks?.waiting)}</div>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          <strong>Checked:</strong> {trendCheckedAtText}
         </div>
       </div>
       ) : null}

@@ -93,7 +93,13 @@ export default defineConfig({
           if (id.includes("react-router")) return "vendor-router";
           if (id.includes("react-dom") || id.includes("/react/")) return "vendor-react";
           if (id.includes("chart.js") || id.includes("react-chartjs-2")) return "vendor-chart";
-          return "vendor";
+          if (id.includes("@mui/icons-material")) return "vendor-mui-icons";
+          if (id.includes("recharts")) return "vendor-recharts";
+          if (id.includes("react-select")) return "vendor-react-select";
+          if (id.includes("tesseract.js")) return "vendor-tesseract";
+          if (id.includes("@techstark/opencv-js")) return "vendor-opencv";
+          if (id.includes("@reduxjs/")) return "vendor-redux";
+          return undefined;
         },
       },
     },

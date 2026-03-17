@@ -1,6 +1,7 @@
 // src/components/CanvasSvg.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GRID, pointsToAttr, bboxOfPoints } from "../utils/geometry";
+import { getOpcLiveValuesForKeys, subscribeOpcLiveKeys } from "../state/opcLiveStore";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -27,6 +28,29 @@ ChartJS.register(
   Filler
 );
 
+const hoverGuidePlugin = {
+  id: "viziHoverGuide",
+  afterDraw(chart, _args, pluginOptions) {
+    const tooltip = chart?.tooltip;
+    const active = typeof tooltip?.getActiveElements === "function" ? tooltip.getActiveElements() : [];
+    if (!Array.isArray(active) || active.length === 0) return;
+    const x = Number(active[0]?.element?.x);
+    if (!Number.isFinite(x)) return;
+    const area = chart?.chartArea;
+    const ctx = chart?.ctx;
+    if (!area || !ctx) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(x, area.top);
+    ctx.lineTo(x, area.bottom);
+    ctx.lineWidth = Number(pluginOptions?.lineWidth) > 0 ? Number(pluginOptions.lineWidth) : 1;
+    ctx.strokeStyle = String(pluginOptions?.color || "rgba(148,163,184,0.35)");
+    if (Array.isArray(pluginOptions?.dash)) ctx.setLineDash(pluginOptions.dash);
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+
 export default function CanvasSvg({
   svgRef,
   zoom, // ✅ already passed from App.jsx
@@ -46,6 +70,7 @@ export default function CanvasSvg({
   showTagPaths,
   showGrid,
   showRulers = true,
+  useWindowPointerTracking = false,
   onSvgMouseDown,
   onMouseMove,
   onMouseUp,
@@ -76,17 +101,19 @@ export default function CanvasSvg({
   routeColorsBySvgKey,
   routeStrokeColorByGroupPath,
   svgLiveValuesByGroupPath,
-  opcLiveValues,
+  liveTagKeys,
   opcTags,
   widgetDbValues,
   binProductLabelByOverlayId,
   binNameLabelByOverlayId,
   binLevelRatioByOverlayId,
   onWidgetDurationPresetChange,
+  onTrendTagDrop,
   hiddenTagBubbleIds,
   onHideTagBubble,
   onSvgDoubleClick, // ✅ used in TopRuler + main svg
   collaboratorCursors,
+  liveUpdatesEnabled = true,
   theme,
   canvasBackgroundColor,
   liveClickable = false,
@@ -96,6 +123,52 @@ export default function CanvasSvg({
   viewportScrollTarget = null,
   onViewportScroll = null,
 }) {
+  const watchedLiveKeys = useMemo(() => {
+    const source = Array.isArray(liveTagKeys) ? liveTagKeys : [];
+    const seen = new Set();
+    const out = [];
+    source.forEach((raw) => {
+      const key = String(raw || "").replace(/\r?\n/g, "").trim();
+      if (!key) return;
+      const lower = key.toLowerCase();
+      if (seen.has(lower)) return;
+      seen.add(lower);
+      out.push(key);
+    });
+    return out;
+  }, [liveTagKeys]);
+  const opcLiveValuesRef = useRef(
+    liveUpdatesEnabled ? getOpcLiveValuesForKeys(watchedLiveKeys) : {}
+  );
+  const [, setLiveRenderTick] = useState(0);
+  useEffect(() => {
+    if (!liveUpdatesEnabled) return undefined;
+    // Hard decoupling: sample buffered live values on a fixed cadence.
+    // OPC updates never drive immediate React renders — only this interval does.
+    const intervalMs = isLiveMode ? 1500 : 4000;
+    const id = window.setInterval(() => {
+      setLiveRenderTick((x) => (x + 1) % 1000000);
+    }, intervalMs);
+    return () => window.clearInterval(id);
+  }, [liveUpdatesEnabled, isLiveMode]);
+  useEffect(() => {
+    if (!liveUpdatesEnabled) {
+      opcLiveValuesRef.current = {};
+      setLiveRenderTick((x) => (x + 1) % 1000000);
+      return undefined;
+    }
+    opcLiveValuesRef.current = getOpcLiveValuesForKeys(watchedLiveKeys);
+    setLiveRenderTick((x) => (x + 1) % 1000000);
+    // No keys to watch — avoid subscribing to the global store (would fire on ALL OPC updates).
+    if (!watchedLiveKeys.length) return undefined;
+    return subscribeOpcLiveKeys(watchedLiveKeys, () => {
+      // Update ref only. The fixed interval above drives renders.
+      // Calling setLiveRenderTick here would rerender the canvas on every OPC tick (~650ms),
+      // saturating the main thread on heavy projects.
+      opcLiveValuesRef.current = getOpcLiveValuesForKeys(watchedLiveKeys);
+    });
+  }, [liveUpdatesEnabled, watchedLiveKeys]);
+  const opcLiveValues = liveUpdatesEnabled ? opcLiveValuesRef.current : {};
   const vb = useMemo(() => `0 0 ${vbW} ${vbH}`, [vbW, vbH]);
   const rulerSize = showRulers ? RULER : 0;
   const isLineMode = tool === "polyline" || tool === "rect" || tool === "circle";
@@ -108,6 +181,12 @@ export default function CanvasSvg({
   const collabCursorTargetsRef = useRef(new Map());
   const collabCursorRafRef = useRef(0);
   const collabCursorLastTsRef = useRef(0);
+  const nudgeRafRef = useRef(0);
+  const nudgePendingRef = useRef({ dx: 0, dy: 0 });
+  const nudgeSelectedIdsRef = useRef(Array.isArray(selectedIds) ? selectedIds : []);
+  const nudgeSelectedOverlayIdsRef = useRef(Array.isArray(selectedOverlayIds) ? selectedOverlayIds : []);
+  const nudgeSelectedSegmentRef = useRef(selectedSegment || null);
+  const nudgeZoomRef = useRef(Number(zoom) || 1);
   const getTextBounds = (shape, options = {}) => {
     if (!shape) return null;
     const minW = Number.isFinite(Number(options.minW)) ? Number(options.minW) : 40;
@@ -174,6 +253,19 @@ export default function CanvasSvg({
   // wrapper size for rulers
   const wrapRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
+
+  useEffect(() => {
+    nudgeSelectedIdsRef.current = Array.isArray(selectedIds) ? selectedIds : [];
+  }, [selectedIds]);
+  useEffect(() => {
+    nudgeSelectedOverlayIdsRef.current = Array.isArray(selectedOverlayIds) ? selectedOverlayIds : [];
+  }, [selectedOverlayIds]);
+  useEffect(() => {
+    nudgeSelectedSegmentRef.current = selectedSegment || null;
+  }, [selectedSegment]);
+  useEffect(() => {
+    nudgeZoomRef.current = Number(zoom) || 1;
+  }, [zoom]);
 
   useEffect(() => {
     if (!wrapRef.current) return;
@@ -276,26 +368,79 @@ export default function CanvasSvg({
     return raw;
   };
 
-  const liveLookup = useMemo(() => {
-    const map = new Map();
-    const src = opcLiveValues || {};
-    Object.entries(src).forEach(([key, value]) => {
-      const k = String(key || "").replace(/\r?\n/g, "").trim();
-      if (!k) return;
-      map.set(k, value);
-      map.set(k.toLowerCase(), value);
+  const liveLookupKeyList = useMemo(() => {
+    const source = Array.isArray(watchedLiveKeys) ? watchedLiveKeys : [];
+    const seen = new Set();
+    const out = [];
+    source.forEach((raw) => {
+      const key = String(raw || "").replace(/\r?\n/g, "").trim();
+      if (!key) return;
+      const lower = key.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        out.push(key);
+      }
+      if (key !== lower && !seen.has(`${lower}::lower`)) {
+        seen.add(`${lower}::lower`);
+        out.push(lower);
+      }
     });
-    return map;
-  }, [opcLiveValues]);
-  const liveLookupRef = useRef(liveLookup);
+    return out;
+  }, [watchedLiveKeys]);
+  const selectedShapeIdSet = useMemo(
+    () => new Set(Array.isArray(selectedIds) ? selectedIds : []),
+    [selectedIds]
+  );
+  const selectedOverlayIdSet = useMemo(
+    () => new Set(Array.isArray(selectedOverlayIds) ? selectedOverlayIds : []),
+    [selectedOverlayIds]
+  );
+  const opcTagCount = Array.isArray(opcTags) ? opcTags.length : 0;
+  // Emergency stability guard:
+  // widget background processors (trend/history/weather polling + live series sampling)
+  // can saturate the main thread on heavy projects; keep them off in live mode.
+  const disableWidgetBackgroundWork = !liveUpdatesEnabled || isLiveMode || opcTagCount >= 120;
+  const liveLookupRef = useRef(opcLiveValues && typeof opcLiveValues === "object" ? opcLiveValues : {});
+  const liveResolvedKeyByPathRef = useRef(new Map());
+  const liveValueByPathRef = useRef(new Map());
   useEffect(() => {
-    liveLookupRef.current = liveLookup;
-  }, [liveLookup]);
+    liveLookupRef.current = opcLiveValues && typeof opcLiveValues === "object" ? opcLiveValues : {};
+    liveValueByPathRef.current = new Map();
+  }, [opcLiveValues]);
+
+  const readLiveValue = (rawKey) => {
+    const src = liveLookupRef.current && typeof liveLookupRef.current === "object"
+      ? liveLookupRef.current
+      : {};
+    const key = String(rawKey || "").replace(/\r?\n/g, "").trim();
+    if (!key) return undefined;
+    if (Object.prototype.hasOwnProperty.call(src, key)) return src[key];
+    const lower = key.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(src, lower)) return src[lower];
+    return undefined;
+  };
 
   const getLiveValueForTagPath = (rawTagPath) => {
-    const lookupMap = liveLookupRef.current || liveLookup;
     const tagPath = String(rawTagPath || "").replace(/\r?\n/g, "").trim();
     if (!tagPath) return "";
+    const cacheKey = tagPath.toLowerCase();
+    if (liveValueByPathRef.current.has(cacheKey)) {
+      return liveValueByPathRef.current.get(cacheKey);
+    }
+
+    const resolvedCache = liveResolvedKeyByPathRef.current.get(cacheKey);
+    if (resolvedCache === "__miss__") {
+      liveValueByPathRef.current.set(cacheKey, "");
+      return "";
+    }
+    if (resolvedCache) {
+      const value = readLiveValue(resolvedCache);
+      const safe = value == null ? "" : value;
+      if (safe !== "") {
+        liveValueByPathRef.current.set(cacheKey, safe);
+        return safe;
+      }
+    }
 
     const candidates = [tagPath];
     const parts = tagPath.split(".").map((x) => x.trim()).filter(Boolean);
@@ -305,19 +450,30 @@ export default function CanvasSvg({
     candidates.push(`Default.${tagPath}`);
 
     for (const key of candidates) {
-      const direct = lookupMap.get(key);
-      if (direct != null && direct !== "") return direct;
-      const lower = lookupMap.get(String(key).toLowerCase());
-      if (lower != null && lower !== "") return lower;
+      const direct = readLiveValue(key);
+      if (direct != null && direct !== "") {
+        liveResolvedKeyByPathRef.current.set(cacheKey, key);
+        liveValueByPathRef.current.set(cacheKey, direct);
+        return direct;
+      }
+      const lower = readLiveValue(String(key).toLowerCase());
+      if (lower != null && lower !== "") {
+        liveResolvedKeyByPathRef.current.set(cacheKey, String(key).toLowerCase());
+        liveValueByPathRef.current.set(cacheKey, lower);
+        return lower;
+      }
     }
     // Support short tag bindings (e.g. "Group.Tag") when live keys are "Topic.Group.Tag".
     // Prefer exact suffix match to align with trend candidate behavior.
     for (const key of candidates) {
       const suffix = `.${String(key || "").toLowerCase()}`;
-      for (const [mapKey, mapValue] of lookupMap.entries()) {
+      for (const mapKey of liveLookupKeyList) {
+        const mapValue = readLiveValue(mapKey);
         if (mapValue == null || mapValue === "") continue;
         const textKey = String(mapKey || "").toLowerCase();
         if (textKey === String(key || "").toLowerCase() || textKey.endsWith(suffix)) {
+          liveResolvedKeyByPathRef.current.set(cacheKey, mapKey);
+          liveValueByPathRef.current.set(cacheKey, mapValue);
           return mapValue;
         }
       }
@@ -338,15 +494,25 @@ export default function CanvasSvg({
         `${prefix}value`,
       ];
       for (const k of preferred) {
-        const v = lookupMap.get(k);
-        if (v != null && v !== "") return v;
+        const v = readLiveValue(k);
+        if (v != null && v !== "") {
+          liveResolvedKeyByPathRef.current.set(cacheKey, k);
+          liveValueByPathRef.current.set(cacheKey, v);
+          return v;
+        }
       }
-      for (const [k, v] of lookupMap.entries()) {
-        if (typeof k !== "string") continue;
+      for (const k of liveLookupKeyList) {
+        const v = readLiveValue(k);
         if (!k.startsWith(prefix)) continue;
-        if (v != null && v !== "") return v;
+        if (v != null && v !== "") {
+          liveResolvedKeyByPathRef.current.set(cacheKey, k);
+          liveValueByPathRef.current.set(cacheKey, v);
+          return v;
+        }
       }
     }
+    liveResolvedKeyByPathRef.current.set(cacheKey, "__miss__");
+    liveValueByPathRef.current.set(cacheKey, "");
     return "";
   };
 
@@ -381,9 +547,11 @@ export default function CanvasSvg({
   };
   const widgetHistoryRef = useRef(new Map()); // overlayId -> [{t,v}]
   const widgetLiveSeriesRef = useRef(new Map()); // overlayId -> [{ tagPath, tagKey, points:[{t,v}] }] from live opc values
+  const widgetBackgroundDisabledRef = useRef(false);
   const [, setWidgetRenderTick] = useState(0);
   const widgetTrendSeriesRef = useRef(new Map()); // overlayId -> [{ tagPath, tagKey, points:[{t,v}] }] from /api/opc/trends
   const [, setWidgetTrendTick] = useState(0);
+  const [widgetLiveSampleTick, setWidgetLiveSampleTick] = useState(0);
   const [widgetTrendReloadNonce, setWidgetTrendReloadNonce] = useState(0);
   const widgetBarDatasetRef = useRef(new Map()); // overlayId -> { labels: string[], values: number[], updatedAt: number }
   const [, setWidgetBarTick] = useState(0);
@@ -396,6 +564,14 @@ export default function CanvasSvg({
   const weatherCacheRef = useRef(new Map());
   const trendLiveKeyListRef = useRef([]);
   const trendTagCandidateCacheRef = useRef(new Map());
+
+  useEffect(() => {
+    if (disableWidgetBackgroundWork) return undefined;
+    const id = window.setInterval(() => {
+      setWidgetLiveSampleTick((x) => (x + 1) % 1000000);
+    }, 450);
+    return () => window.clearInterval(id);
+  }, [disableWidgetBackgroundWork]);
 
   const decodeWeatherCode = (codeRaw) => {
     const code = Number(codeRaw);
@@ -587,9 +763,16 @@ export default function CanvasSvg({
   };
 
   useEffect(() => {
-    trendLiveKeyListRef.current = Object.keys(opcLiveValues || {}).map((k) => String(k || "").trim()).filter(Boolean);
+    if (disableWidgetBackgroundWork) {
+      trendLiveKeyListRef.current = [];
+      trendTagCandidateCacheRef.current.clear();
+      return;
+    }
+    trendLiveKeyListRef.current = (Array.isArray(liveLookupKeyList) ? liveLookupKeyList : [])
+      .map((k) => String(k || "").trim())
+      .filter(Boolean);
     trendTagCandidateCacheRef.current.clear();
-  }, [opcLiveValues]);
+  }, [liveLookupKeyList, disableWidgetBackgroundWork]);
 
   useEffect(() => {
     const activeIds = new Set((Array.isArray(svgOverlays) ? svgOverlays : []).map((o) => String(o?.id || "")));
@@ -609,7 +792,7 @@ export default function CanvasSvg({
     setWidgetWriteBusyByOverlay(pruneMap);
     setWidgetWriteErrorByOverlay(pruneMap);
     setWidgetPressByOverlay(pruneMap);
-  }, [svgOverlays]);
+  }, [svgOverlays, liveUpdatesEnabled]);
 
   useEffect(
     () => () => {
@@ -654,6 +837,16 @@ export default function CanvasSvg({
   };
 
   useEffect(() => {
+    if (disableWidgetBackgroundWork) {
+      if (!widgetBackgroundDisabledRef.current) {
+        widgetBackgroundDisabledRef.current = true;
+        widgetHistoryRef.current = new Map();
+        widgetLiveSeriesRef.current = new Map();
+        setWidgetRenderTick((x) => x + 1);
+      }
+      return;
+    }
+    widgetBackgroundDisabledRef.current = false;
     const now = Date.now();
     let changed = false;
     const keep = new Set();
@@ -663,7 +856,19 @@ export default function CanvasSvg({
       const id = String(o.id || "");
       if (!id) return;
       keep.add(id);
-      const raw = getWidgetValueForOverlay(o);
+      const kind = String(o?.widget?.kind || "").trim().toLowerCase();
+      const seriesForValue = parseWidgetSeriesTags(o).filter(
+        (tp) => !String(tp || "").trim().toLowerCase().startsWith("db:")
+      );
+      const rawPrimarySeries =
+        (kind === "linechart" || kind === "line_chart" || kind === "line-chart" ||
+          kind === "areachart" || kind === "area_chart" || kind === "area-chart") &&
+        seriesForValue.length
+          ? getLiveValueForTagPath(seriesForValue[0])
+          : null;
+      const raw = rawPrimarySeries != null && rawPrimarySeries !== ""
+        ? rawPrimarySeries
+        : getWidgetValueForOverlay(o);
       const n = toNumberOrNull(raw);
       if (n == null) return;
       const maxHist = Math.max(
@@ -684,7 +889,6 @@ export default function CanvasSvg({
         changed = true;
       }
 
-      const kind = String(o?.widget?.kind || "").trim().toLowerCase();
       if (!lineKindSet.has(kind)) return;
       const seriesTags = parseWidgetSeriesTags(o).filter(
         (tp) => !String(tp || "").trim().toLowerCase().startsWith("db:")
@@ -733,9 +937,14 @@ export default function CanvasSvg({
       }
     });
     if (changed) setWidgetRenderTick((x) => x + 1);
-  }, [svgOverlays, opcLiveValues, widgetDbValues]);
+  }, [svgOverlays, widgetDbValues, disableWidgetBackgroundWork, widgetLiveSampleTick]);
 
   useEffect(() => {
+    if (disableWidgetBackgroundWork) {
+      widgetTrendSeriesRef.current = new Map();
+      setWidgetTrendTick((x) => x + 1);
+      return;
+    }
     let alive = true;
     const chartKinds = new Set(["lineChart", "areaChart", "statusTable"]);
     const parseRangeMs = (raw) => {
@@ -908,9 +1117,14 @@ export default function CanvasSvg({
       alive = false;
       clearInterval(id);
     };
-  }, [svgOverlays, widgetTrendReloadNonce, liveClickable]);
+  }, [svgOverlays, widgetTrendReloadNonce, liveClickable, liveUpdatesEnabled, disableWidgetBackgroundWork]);
 
   useEffect(() => {
+    if (disableWidgetBackgroundWork) {
+      widgetBarDatasetRef.current = new Map();
+      setWidgetBarTick((x) => x + 1);
+      return;
+    }
     let alive = true;
 
     async function loadBarChartDatasets() {
@@ -1067,9 +1281,13 @@ export default function CanvasSvg({
       alive = false;
       clearInterval(id);
     };
-  }, [svgOverlays, liveClickable]);
+  }, [svgOverlays, liveClickable, liveUpdatesEnabled, disableWidgetBackgroundWork]);
 
   useEffect(() => {
+    if (disableWidgetBackgroundWork) {
+      setWeatherByOverlayId({});
+      return undefined;
+    }
     let alive = true;
     const weatherOverlays = (Array.isArray(svgOverlays) ? svgOverlays : []).filter((o) => {
       const kind = String(o?.widget?.kind || "").trim().toLowerCase();
@@ -1188,7 +1406,7 @@ export default function CanvasSvg({
       alive = false;
       clearInterval(id);
     };
-  }, [svgOverlays]);
+  }, [svgOverlays, liveUpdatesEnabled, disableWidgetBackgroundWork]);
 
   const renderWidgetOverlay = (overlay) => {
     if (!overlay?.widget) return null;
@@ -2323,22 +2541,20 @@ export default function CanvasSvg({
     const chartH = Math.max(minChartH, Math.round(h - headH - 14 - footerH));
     const chartW = Math.max(minChartW, Math.round(w - pad * 2));
     const chartX = Math.round(x + pad);
-    const durationPresetMap = {
-      "15m": 15,
-      "1h": 60,
-      "6h": 360,
-      "24h": 1440,
-      "7d": 10080,
-    };
-    const durationChipOptions = [
-      { value: "15m", label: "15m" },
-      { value: "1h", label: "1h" },
-      { value: "6h", label: "6h" },
-      { value: "24h", label: "24h" },
-      { value: "7d", label: "7d" },
-    ];
-    const applyDurationPreset = (presetValue) => {
-      const mins = durationPresetMap[presetValue] || 60;
+    const applyWindowZoom = (factor) => {
+      const safeFactor = Number(factor);
+      if (!Number.isFinite(safeFactor) || safeFactor <= 0) return;
+      const nowTs = Date.now();
+      const currentFrom = Number.isFinite(rangeFrom) ? Number(rangeFrom) : nowTs - windowMinutes * 60 * 1000;
+      const currentTo = Number.isFinite(rangeTo) ? Number(rangeTo) : nowTs;
+      const left = Math.min(currentFrom, currentTo);
+      const right = Math.max(currentFrom, currentTo);
+      const span = Math.max(60_000, right - left);
+      const nextSpan = Math.max(60_000, Math.min(10080 * 60 * 1000, span * safeFactor));
+      const center = left + span / 2;
+      const nextFrom = Math.round(center - nextSpan / 2);
+      const nextTo = Math.round(center + nextSpan / 2);
+      const nextMinutes = Math.max(1, Math.min(10080, Math.round(nextSpan / 60000)));
       setSvgOverlays?.((prev) =>
         prev.map((o) =>
           o.id !== overlay.id
@@ -2347,29 +2563,87 @@ export default function CanvasSvg({
                 ...o,
                 widget: {
                   ...(o.widget || {}),
-                  durationPreset: presetValue,
-                  windowMinutes: mins,
+                  durationPreset: "",
+                  windowMinutes: nextMinutes,
+                  rangeFrom: nextFrom,
+                  rangeTo: nextTo,
+                },
+              }
+        )
+      );
+      widgetTrendSeriesRef.current.set(String(overlay.id || ""), []);
+      setWidgetTrendTick((x) => x + 1);
+      setWidgetTrendReloadNonce((n) => n + 1);
+    };
+    const toDateInput = (raw) => {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) return "";
+      const d = new Date(n);
+      const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+      return local.toISOString().slice(0, 10);
+    };
+    const parseDateInput = (raw, endOfDay = false) => {
+      const text = String(raw || "").trim();
+      if (!text) return null;
+      const suffix = endOfDay ? "T23:59:59.999" : "T00:00:00.000";
+      const ms = Date.parse(`${text}${suffix}`);
+      return Number.isFinite(ms) ? ms : null;
+    };
+    const applyRangeFromTo = (nextFromRaw, nextToRaw) => {
+      let nextFrom = parseDateInput(nextFromRaw, false);
+      let nextTo = parseDateInput(nextToRaw, true);
+      if (nextFrom != null && nextTo != null && nextFrom > nextTo) {
+        const t = nextFrom;
+        nextFrom = nextTo;
+        nextTo = t;
+      }
+      const nextWindowMinutes =
+        nextFrom != null && nextTo != null
+          ? Math.max(1, Math.min(10080, Math.round((nextTo - nextFrom) / 60000)))
+          : windowMinutes;
+      setSvgOverlays?.((prev) =>
+        prev.map((o) =>
+          o.id !== overlay.id
+            ? o
+            : {
+                ...o,
+                widget: {
+                  ...(o.widget || {}),
+                  durationPreset: "",
+                  windowMinutes: nextWindowMinutes,
+                  rangeFrom: nextFrom,
+                  rangeTo: nextTo,
+                },
+              }
+        )
+      );
+      widgetTrendSeriesRef.current.set(String(overlay.id || ""), []);
+      setWidgetTrendTick((x) => x + 1);
+      setWidgetTrendReloadNonce((n) => n + 1);
+    };
+    const resetZoomWindow = () => {
+      setSvgOverlays?.((prev) =>
+        prev.map((o) =>
+          o.id !== overlay.id
+            ? o
+            : {
+                ...o,
+                widget: {
+                  ...(o.widget || {}),
                   rangeFrom: null,
                   rangeTo: null,
                 },
               }
         )
       );
-      onWidgetDurationPresetChange?.(overlay.id, presetValue, mins);
       widgetTrendSeriesRef.current.set(String(overlay.id || ""), []);
       setWidgetTrendTick((x) => x + 1);
       setWidgetTrendReloadNonce((n) => n + 1);
     };
-    const inferDurationPreset = () => {
-      const raw = String(cfg?.durationPreset || "").trim().toLowerCase();
-      if (raw && Object.prototype.hasOwnProperty.call(durationPresetMap, raw)) return raw;
-      const wm = Number(cfg?.windowMinutes);
-      if (!Number.isFinite(wm)) return "1h";
-      const found = Object.entries(durationPresetMap).find(([, mins]) => Number(mins) === Math.round(wm));
-      return found?.[0] || "1h";
-    };
-    const activeDurationPreset = inferDurationPreset();
-    const activeDurationLabel = activeDurationPreset ? activeDurationPreset.toUpperCase() : `${windowMinutes}m`;
+    const activeDurationLabel = `${windowMinutes}m`;
+    const isDateRangeWidget = kind === "lineChart" || kind === "areaChart" || kind === "statusTable";
+    const rangeFromInput = toDateInput(rangeFrom);
+    const rangeToInput = toDateInput(rangeTo);
     const viewScale = Math.max(1, Number(zoom) || 1);
     const overlayScale = Math.max(overlayScaleX(overlay), overlayScaleY(overlay), 1);
     const viewportDprBoost = Math.max(1, Number(viewportScale) || 1);
@@ -2459,9 +2733,52 @@ export default function CanvasSvg({
     const lineWidth = Math.max(1, Math.min(8, Number(cfg?.lineWidth) || 2.4));
     const showLegend = cfg?.showLegend !== false;
     const showGrid = cfg?.showGrid !== false;
+    const markSpots = cfg?.markSpots !== false;
+    const markerSize = Math.max(2, Math.min(12, Number(cfg?.markerSize) || 4.2));
     const yAxisSide = String(cfg?.yAxisSide || "").trim().toLowerCase() === "right" ? "right" : "left";
     const effectiveTension = isStepLine ? 0 : (axisTimeline.length > 240 ? 0 : lineTension);
     const showPoints = cfg?.showPoints !== false;
+    const basePointRadius = !showPoints || dense ? 0 : axisTimeline.length <= 2 ? 3.6 : 2.2;
+    const markColor = isDark ? "#f59e0b" : "#d97706";
+    const makeMarkIndexSet = (vals) => {
+      const set = new Set();
+      if (!Array.isArray(vals) || !vals.length) return set;
+      let minIdx = -1;
+      let maxIdx = -1;
+      let minVal = Infinity;
+      let maxVal = -Infinity;
+      vals.forEach((raw, idx) => {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return;
+        if (minIdx < 0) minIdx = idx;
+        if (maxIdx < 0) maxIdx = idx;
+        if (n < minVal) {
+          minVal = n;
+          minIdx = idx;
+        }
+        if (n > maxVal) {
+          maxVal = n;
+          maxIdx = idx;
+        }
+      });
+      if (minIdx >= 0) set.add(minIdx);
+      if (maxIdx >= 0) set.add(maxIdx);
+      for (let i = vals.length - 1; i >= 0; i -= 1) {
+        if (Number.isFinite(Number(vals[i]))) {
+          set.add(i);
+          break;
+        }
+      }
+      return set;
+    };
+    const singleMarkIndexes = makeMarkIndexSet(points.map((p) => Number(p?.v)));
+    const multiMarkIndexes = new Map(
+      lineSeriesMultiRaw.map((series) => {
+        const byTs = new Map(series.points.map((p) => [Number(p.t), Number(p.v)]));
+        const vals = axisTimeline.map((ts) => (byTs.has(Number(ts)) ? byTs.get(Number(ts)) : null));
+        return [series.label, makeMarkIndexSet(vals)];
+      })
+    );
     const baseScales = dense
       ? { x: { display: false }, y: { display: false } }
       : {
@@ -2541,12 +2858,16 @@ export default function CanvasSvg({
             },
           },
         },
+        viziHoverGuide: {
+          color: isDark ? "rgba(148,163,184,0.42)" : "rgba(51,65,85,0.28)",
+          lineWidth: 1,
+        },
       },
       scales: baseScales,
       elements: {
         line: { borderJoinStyle: "round", capBezierPoints: true },
         point: {
-          radius: !showPoints || dense ? 0 : axisTimeline.length <= 2 ? 3.6 : 2.2,
+          radius: basePointRadius,
           hoverRadius: !showPoints || dense ? 0 : 5,
           hitRadius: !showPoints || dense ? 0 : 8,
           pointStyle: "circle",
@@ -2603,6 +2924,19 @@ export default function CanvasSvg({
               tension: effectiveTension,
               stepped: isStepLine,
               cubicInterpolationMode: isStepLine ? undefined : "monotone",
+              pointRadius: (ctx) => {
+                const idx = Number(ctx?.dataIndex);
+                if (!Number.isFinite(idx)) return basePointRadius;
+                if (!markSpots) return basePointRadius;
+                const set = multiMarkIndexes.get(series.label);
+                return set?.has(idx) ? Math.max(basePointRadius, markerSize) : basePointRadius;
+              },
+              pointBackgroundColor: (ctx) => {
+                const idx = Number(ctx?.dataIndex);
+                if (!Number.isFinite(idx) || !markSpots) return series.color;
+                const set = multiMarkIndexes.get(series.label);
+                return set?.has(idx) ? markColor : series.color;
+              },
             };
           }),
         }
@@ -2630,6 +2964,16 @@ export default function CanvasSvg({
               tension: effectiveTension,
               stepped: isStepLine,
               cubicInterpolationMode: isStepLine ? undefined : "monotone",
+              pointRadius: (ctx) => {
+                const idx = Number(ctx?.dataIndex);
+                if (!Number.isFinite(idx) || !markSpots) return basePointRadius;
+                return singleMarkIndexes.has(idx) ? Math.max(basePointRadius, markerSize) : basePointRadius;
+              },
+              pointBackgroundColor: (ctx) => {
+                const idx = Number(ctx?.dataIndex);
+                if (!Number.isFinite(idx) || !markSpots) return accentLine;
+                return singleMarkIndexes.has(idx) ? markColor : accentLine;
+              },
             },
           ],
         };
@@ -2695,28 +3039,104 @@ export default function CanvasSvg({
         ) : null}
         {!dense && kind !== "barChart" ? (() => {
           const chipGap = 4;
-          const chipH = Math.max(12, headH - 12);
-          const chipY = y + (headH - chipH) / 2;
+          const chipH = Math.max(18, Math.min(24, headH - 8));
+          const chipY = Math.max(y + 2, Math.min(y + (headH - chipH) / 2, y + headH - chipH - 2));
           const chipWByLabel = (label) => Math.max(24, 10 + String(label || "").length * 5.5);
-          const chipWidths = durationChipOptions.map((opt) => chipWByLabel(opt.label));
-          const totalW = chipWidths.reduce((a, b) => a + b, 0) + chipGap * Math.max(0, durationChipOptions.length - 1);
-          const startX = Math.max(x + pad, x + w - pad - totalW);
-          let cursorX = startX;
+          const zoomChipOptions = [
+            { key: "zoom-out", label: "-", onClick: () => applyWindowZoom(2) },
+            { key: "zoom-in", label: "+", onClick: () => applyWindowZoom(0.5) },
+            { key: "zoom-reset", label: "Reset", onClick: () => resetZoomWindow() },
+          ];
+          const zoomChipWidths = zoomChipOptions.map((opt) => chipWByLabel(opt.label));
+          const zoomW = zoomChipWidths.reduce((a, b) => a + b, 0) + chipGap * Math.max(0, zoomChipOptions.length - 1);
+          const zoomStartX = Math.max(x + pad, x + w - pad - zoomW);
+          const desiredDateW = isDateRangeWidget ? Math.max(180, Math.min(280, Math.round(w * 0.44))) : 0;
+          const maxDateW = Math.max(0, zoomStartX - (x + pad) - chipGap);
+          const dateControlsW = Math.min(desiredDateW, maxDateW);
+          const showDateControls = isDateRangeWidget && dateControlsW >= 120;
+          const centeredDateX = x + Math.round((w - dateControlsW) / 2);
+          const dateMaxX = zoomStartX - chipGap - dateControlsW;
+          const dateStartX = Math.max(x + pad, Math.min(centeredDateX, dateMaxX));
+          let cursorX = zoomStartX;
           return (
             <g data-widget-control="true">
-              {durationChipOptions.map((opt, i) => {
-                const active = activeDurationPreset === opt.value;
-                const cw = chipWidths[i];
+              {showDateControls ? (
+                <>
+                  <foreignObject x={dateStartX} y={chipY} width={dateControlsW} height={chipH}>
+                    <div
+                      xmlns="http://www.w3.org/1999/xhtml"
+                      data-widget-control="true"
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 4,
+                        pointerEvents: "auto",
+                      }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                      }}
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                      }}
+                    >
+                      <input
+                        data-widget-control="true"
+                        type="date"
+                        value={rangeFromInput}
+                        onChange={(e) => applyRangeFromTo(e.target.value, rangeToInput)}
+                        title="From"
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          borderRadius: 6,
+                          border: "1px solid var(--border)",
+                          background: "var(--bg-elev)",
+                          color: "var(--text)",
+                          fontSize: 9,
+                          padding: "0 4px",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                      <input
+                        data-widget-control="true"
+                        type="date"
+                        value={rangeToInput}
+                        onChange={(e) => applyRangeFromTo(rangeFromInput, e.target.value)}
+                        title="To"
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          borderRadius: 6,
+                          border: "1px solid var(--border)",
+                          background: "var(--bg-elev)",
+                          color: "var(--text)",
+                          fontSize: 9,
+                          padding: "0 4px",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </div>
+                  </foreignObject>
+                </>
+              ) : null}
+              {zoomChipOptions.map((opt, i) => {
+                const cw = zoomChipWidths[i];
                 const cx = cursorX;
                 cursorX += cw + chipGap;
                 return (
                   <g
-                    key={`${overlay.id}-dur-${opt.value}`}
+                    key={`${overlay.id}-${opt.key}`}
                     data-widget-control="true"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      opt.onClick();
+                    }}
                     onMouseDown={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      applyDurationPreset(opt.value);
                     }}
                     style={{ cursor: "pointer" }}
                   >
@@ -2726,14 +3146,14 @@ export default function CanvasSvg({
                       width={cw}
                       height={chipH}
                       rx={6}
-                      fill={active ? (isDark ? "rgba(34,211,238,0.2)" : "rgba(37,99,235,0.16)") : "var(--bg-elev)"}
-                      stroke={active ? accentLine : "var(--border)"}
+                      fill="var(--bg-elev)"
+                      stroke="var(--border)"
                     />
                     <text
                       x={cx + cw / 2}
                       y={chipY + chipH / 2 + 2.8}
                       textAnchor="middle"
-                      fill={active ? (isDark ? "#9be8ff" : "#1d4ed8") : axisColor}
+                      fill={axisColor}
                       fontSize={9}
                       fontFamily="system-ui"
                       fontWeight={700}
@@ -2754,7 +3174,7 @@ export default function CanvasSvg({
               {kind === "barChart" ? (
                 <Bar key={chartKey} data={barData} options={barOptions} />
               ) : (
-                <Line key={chartKey} data={lineLikeData} options={kind === "areaChart" ? areaOptions : lineOptions} />
+                <Line key={chartKey} data={lineLikeData} options={kind === "areaChart" ? areaOptions : lineOptions} plugins={[hoverGuidePlugin]} />
               )}
             </div>
           </foreignObject>
@@ -2802,7 +3222,7 @@ export default function CanvasSvg({
       for (const groupKey of candidates) {
         const prefix = `${String(groupKey).toLowerCase()}.`;
         for (const suffix of suffixes) {
-          const v = liveLookup.get(`${prefix}${suffix}`);
+          const v = readLiveValue(`${prefix}${suffix}`);
           if (v != null && v !== "") return String(v);
         }
       }
@@ -2852,13 +3272,17 @@ export default function CanvasSvg({
   const getLiveValueForExactOrSuffixKey = (rawKey) => {
     const key = String(rawKey || "").replace(/\r?\n/g, "").trim();
     if (!key) return null;
-    if (liveLookup.has(key)) return liveLookup.get(key);
+    const exact = readLiveValue(key);
+    if (exact != null) return exact;
     const lowerKey = key.toLowerCase();
-    if (liveLookup.has(lowerKey)) return liveLookup.get(lowerKey);
+    const lowerExact = readLiveValue(lowerKey);
+    if (lowerExact != null) return lowerExact;
     const suffix = `.${lowerKey}`;
-    for (const [mapKey, mapValue] of liveLookup.entries()) {
+    for (const mapKey of liveLookupKeyList) {
+      const mapValue = readLiveValue(mapKey);
       const k = String(mapKey || "").trim().toLowerCase();
       if (!k) continue;
+      if (mapValue == null) continue;
       if (k === lowerKey || k.endsWith(suffix)) return mapValue;
     }
     return null;
@@ -3210,6 +3634,16 @@ export default function CanvasSvg({
     () => new Set(Array.isArray(hiddenTagBubbleIds) ? hiddenTagBubbleIds : []),
     [hiddenTagBubbleIds]
   );
+  const extractDraggedTrendTag = (dataTransfer) => {
+    if (!dataTransfer) return "";
+    const custom = String(dataTransfer.getData("application/x-vizi-trend-tag") || "").trim();
+    if (custom) return custom;
+    const text = String(dataTransfer.getData("text/plain") || "").trim();
+    if (text.toLowerCase().startsWith("vizi-trend-tag:")) {
+      return text.slice("vizi-trend-tag:".length).trim();
+    }
+    return "";
+  };
 
   const lastTagColorRef = useRef(new Map());
 
@@ -3405,10 +3839,25 @@ export default function CanvasSvg({
     };
   };
 
+  // Per-render cache for getDirectEntryActiveColorForDiverter.
+  // Each overlay's entry color is computed at most once per render; subsequent calls
+  // hit the Map in O(1). _diverterVisiting handles cycle detection for chained diverters.
+  const _diverterColorCache = new Map();
+  const _diverterVisiting = new Set();
+
   const getDirectEntryActiveColorForDiverter = (overlay, options = {}) => {
     if (!overlay || !Array.isArray(shapes) || !shapes.length) return "";
+    const cacheKey = String(overlay?.id || "");
+    if (cacheKey) {
+      if (_diverterColorCache.has(cacheKey)) return _diverterColorCache.get(cacheKey);
+      if (_diverterVisiting.has(cacheKey)) return "";
+      _diverterVisiting.add(cacheKey);
+    }
     const bb = overlay?.bbox || overlayLocalBBox?.(overlay.id);
-    if (!bb) return "";
+    if (!bb) {
+      if (cacheKey) { _diverterVisiting.delete(cacheKey); _diverterColorCache.set(cacheKey, ""); }
+      return "";
+    }
     const wr = overlayWorldRect(overlay, bb);
     const threshold = 28;
     const excludedOverlayIds = new Set(
@@ -3495,7 +3944,7 @@ export default function CanvasSvg({
         bestColor = c;
       }
     }
-    if (!bestColor && excludedOverlayIds.size) return "";
+    if (cacheKey) { _diverterVisiting.delete(cacheKey); _diverterColorCache.set(cacheKey, bestColor); }
     return bestColor;
   };
 
@@ -4487,46 +4936,33 @@ export default function CanvasSvg({
      KEYBOARD NUDGE (ARROWS)
      ========================================================= */
   useEffect(() => {
-    const handleKeyDown = (e) => {
-      const hasShapeSel = selectedIds?.length > 0;
-      const hasOverlaySel = selectedOverlayIds?.length > 0;
+    const flushNudge = () => {
+      nudgeRafRef.current = 0;
+      const pending = nudgePendingRef.current || { dx: 0, dy: 0 };
+      const dx = Number(pending.dx) || 0;
+      const dy = Number(pending.dy) || 0;
+      if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) return;
+      nudgePendingRef.current = { dx: 0, dy: 0 };
+
+      const selectedShapeIds = Array.isArray(nudgeSelectedIdsRef.current) ? nudgeSelectedIdsRef.current : [];
+      const selectedOverlayIdsNow = Array.isArray(nudgeSelectedOverlayIdsRef.current)
+        ? nudgeSelectedOverlayIdsRef.current
+        : [];
+      const hasShapeSel = selectedShapeIds.length > 0;
+      const hasOverlaySel = selectedOverlayIdsNow.length > 0;
       if (!hasShapeSel && !hasOverlaySel) return;
 
-      // Don’t interfere with typing in inputs
-      const tag = (e.target?.tagName || "").toLowerCase();
-      if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
-
-      let dx = 0;
-      let dy = 0;
-
-      const base = e.shiftKey ? 10 : 1;
-      const step = base / (zoom || 1);
-
-      switch (e.key) {
-        case "ArrowLeft":
-          dx = -step;
-          break;
-        case "ArrowRight":
-          dx = step;
-          break;
-        case "ArrowUp":
-          dy = -step;
-          break;
-        case "ArrowDown":
-          dy = step;
-          break;
-        default:
-          return;
-      }
-
-      e.preventDefault();
-
       if (hasShapeSel && typeof setShapes === "function") {
-        if (selectedSegment?.id && selectedIds.includes(selectedSegment.id) && selectedSegment.kind === "point") {
-          const ptIndex = selectedSegment.index;
+        const selectedSegmentNow = nudgeSelectedSegmentRef.current;
+        if (
+          selectedSegmentNow?.id &&
+          selectedShapeIds.includes(selectedSegmentNow.id) &&
+          selectedSegmentNow.kind === "point"
+        ) {
+          const ptIndex = selectedSegmentNow.index;
           setShapes((prev) =>
             prev.map((s) => {
-              if (s.id !== selectedSegment.id) return s;
+              if (s.id !== selectedSegmentNow.id) return s;
               if (!Array.isArray(s.points)) return s;
               if (ptIndex < 0 || ptIndex >= s.points.length) return s;
               const pts = s.points.map((pt) => ({ ...pt }));
@@ -4537,9 +4973,10 @@ export default function CanvasSvg({
           return;
         }
 
+        const shapeSet = new Set(selectedShapeIds);
         setShapes((prev) =>
           prev.map((s) => {
-            if (!selectedIds.includes(s.id)) return s;
+            if (!shapeSet.has(s.id)) return s;
             if (s.type === "text") {
               return {
                 ...s,
@@ -4559,18 +4996,72 @@ export default function CanvasSvg({
       }
 
       if (hasOverlaySel && typeof setSvgOverlays === "function") {
+        const overlaySet = new Set(selectedOverlayIdsNow);
         setSvgOverlays((prev) =>
           prev.map((o) => {
-            if (!selectedOverlayIds.includes(o.id)) return o;
+            if (!overlaySet.has(o.id)) return o;
             return { ...o, tx: o.tx + dx, ty: o.ty + dy };
           })
         );
       }
     };
 
+    const handleKeyDown = (e) => {
+      const selectedShapeIds = Array.isArray(nudgeSelectedIdsRef.current) ? nudgeSelectedIdsRef.current : [];
+      const selectedOverlayIdsNow = Array.isArray(nudgeSelectedOverlayIdsRef.current)
+        ? nudgeSelectedOverlayIdsRef.current
+        : [];
+      const hasShapeSel = selectedShapeIds.length > 0;
+      const hasOverlaySel = selectedOverlayIdsNow.length > 0;
+      if (!hasShapeSel && !hasOverlaySel) return;
+
+      // Don’t interfere with typing in inputs
+      const tag = (e.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
+
+      let dx = 0;
+      let dy = 0;
+
+      const base = e.shiftKey ? 10 : 1;
+      const step = base / (nudgeZoomRef.current || 1);
+
+      switch (e.key) {
+        case "ArrowLeft":
+          dx = -step;
+          break;
+        case "ArrowRight":
+          dx = step;
+          break;
+        case "ArrowUp":
+          dy = -step;
+          break;
+        case "ArrowDown":
+          dy = step;
+          break;
+        default:
+          return;
+      }
+
+      e.preventDefault();
+      nudgePendingRef.current = {
+        dx: Number(nudgePendingRef.current?.dx || 0) + dx,
+        dy: Number(nudgePendingRef.current?.dy || 0) + dy,
+      };
+      if (!nudgeRafRef.current) {
+        nudgeRafRef.current = window.requestAnimationFrame(flushNudge);
+      }
+    };
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedIds, selectedOverlayIds, selectedSegment, zoom, setShapes, setSvgOverlays]);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      if (nudgeRafRef.current) {
+        window.cancelAnimationFrame(nudgeRafRef.current);
+        nudgeRafRef.current = 0;
+      }
+      nudgePendingRef.current = { dx: 0, dy: 0 };
+    };
+  }, [setShapes, setSvgOverlays]);
 
   /* ============================
      RULERS (SCREEN-PIXEL)
@@ -4938,6 +5429,17 @@ export default function CanvasSvg({
       {svgOverlays.map((o) => {
         const overlayTagPath = String(o?.tagPath || "").trim();
         const overlayEType = String(o?.eType || o?.name || "").trim();
+        const widgetKind = String(o?.widget?.kind || "").trim().toLowerCase();
+        const widgetBarMode = String(o?.widget?.barSourceMode || "table").trim().toLowerCase();
+        const widgetUsesSeriesTags =
+          widgetKind === "linechart" ||
+          widgetKind === "line_chart" ||
+          widgetKind === "line-chart" ||
+          ((widgetKind === "barchart" || widgetKind === "bar_chart" || widgetKind === "bar-chart") &&
+            widgetBarMode === "tags");
+        const widgetSeriesTags = widgetUsesSeriesTags
+          ? parseWidgetSeriesTags(o).filter((tp) => !String(tp || "").toLowerCase().startsWith("db:"))
+          : [];
         const isBinOverlay = String(overlayEType || "").trim().toLowerCase().startsWith("bin");
         const hasBinDbBinding =
           !!String(o?.binBindingKey || "").trim() ||
@@ -4947,6 +5449,10 @@ export default function CanvasSvg({
           ? hasBinDbBinding
             ? ""
             : "Bin not bound to database row"
+          : widgetUsesSeriesTags
+          ? !widgetSeriesTags.length
+            ? "Widget series tags missing"
+            : ""
           : !overlayTagPath
           ? "SVG not tagged"
           : !hasKnownOverlayTagPath(overlayTagPath)
@@ -5152,8 +5658,8 @@ export default function CanvasSvg({
           }}
           onWheel={onWheel}
           onMouseDown={onSvgMouseDown}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
+          onMouseMove={useWindowPointerTracking ? undefined : onMouseMove}
+          onMouseUp={useWindowPointerTracking ? undefined : onMouseUp}
           // ✅ NEW: forward dblclick on main svg (finish line in App)
           onDoubleClick={(e) => {
             const target = e.target;
@@ -5245,16 +5751,23 @@ export default function CanvasSvg({
             )}
 
             {shapes.map((s) => {
-              const isSelected = selectedIds.includes(s.id);
+              const isSelected = selectedShapeIdSet.has(s.id);
               const isEditing = s.id === editingId;
               const dynamicColor = getTagColor(s.tagPath);
 
               if (s.type === "text") {
                 const isInline = inlineEditId === s.id;
+                const textCursor = isLiveMode
+                  ? "default"
+                  : tool === "select"
+                  ? "move"
+                  : "crosshair";
 
                 return (
                   <g
                     key={s.id}
+                    data-shape-id={s.id}
+                    data-drag-selected-shape={isSelected ? "1" : undefined}
                     onMouseDown={(e) => onShapeMouseDown(e, s.id)}
                     onDoubleClick={(e) => onShapeDoubleClick(e, s.id)}
                     onContextMenu={(e) => {
@@ -5266,7 +5779,7 @@ export default function CanvasSvg({
                       }
                       onContextMenu?.(e);
                     }}
-                    style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+                    style={{ cursor: textCursor }}
                   >
                     {/* Invisible hitbox so right-click works anywhere over text bounds */}
                     {(() => {
@@ -5355,7 +5868,7 @@ export default function CanvasSvg({
                 const fill = s.fill ?? "transparent";
 
                 return (
-                  <g key={s.id}>
+                  <g key={s.id} data-shape-id={s.id} data-drag-selected-shape={isSelected ? "1" : undefined}>
                     <rect
                       x={rx - 6}
                       y={ry - 6}
@@ -5424,7 +5937,7 @@ export default function CanvasSvg({
                 const fill = s.fill ?? "transparent";
 
                 return (
-                  <g key={s.id}>
+                  <g key={s.id} data-shape-id={s.id} data-drag-selected-shape={isSelected ? "1" : undefined}>
                     <rect
                       x={rx - 6}
                       y={ry - 6}
@@ -5511,7 +6024,7 @@ export default function CanvasSvg({
                 splitCarrySegments.length > 0;
 
               return (
-                <g key={s.id}>
+                <g key={s.id} data-shape-id={s.id} data-drag-selected-shape={isSelected ? "1" : undefined}>
                   {(() => {
                     const onPolyDbl = (e) => {
                       if (isEditing) {
@@ -5654,14 +6167,18 @@ export default function CanvasSvg({
               );
             })}
 
-            {svgOverlays.map((o) => {
-              const isSel = selectedOverlayIds.includes(o.id);
+              {svgOverlays.map((o) => {
+                const isSel = selectedOverlayIdSet.has(o.id);
               const showHandles = singleSelectedOverlayId === o.id;
 
-              return (
-                <g
-                  key={o.id}
+                const overlayCursor = isLiveMode
+                  ? (o.widget ? "default" : (liveClickable ? "pointer" : "default"))
+                  : (tool === "select" ? "move" : "crosshair");
+                return (
+                  <g
+                    key={o.id}
                   data-overlay-id={o.id}
+                  data-drag-selected-overlay={isSel ? "1" : undefined}
                   onDoubleClick={(e) => onOverlayDoubleClick?.(e, o.id)}
                 >
                 <g
@@ -5675,10 +6192,10 @@ export default function CanvasSvg({
                     if (liveClickable && o.widget) return;
                     onOverlayDoubleClick?.(e, o.id);
                   }}
-                  onMouseEnter={() => setHoverOverlayId(o.id)}
-                  onMouseLeave={() => setHoverOverlayId((prev) => (prev === o.id ? null : prev))}
-                  style={{
-                      cursor: liveClickable ? "pointer" : tool === "select" ? "move" : "crosshair",
+                  onMouseEnter={isLineMode ? () => setHoverOverlayId(o.id) : undefined}
+                  onMouseLeave={isLineMode ? () => setHoverOverlayId((prev) => (prev === o.id ? null : prev)) : undefined}
+                    style={{
+                      cursor: overlayCursor,
                       pointerEvents: o.widget ? "all" : "visiblePainted",
                     }}
                   >
@@ -5872,10 +6389,18 @@ export default function CanvasSvg({
               );
             })}
             {selectedOverlayIds?.length > 1 && selectedIds?.length === 0 && overlayGroupSelectionUI
-              ? overlayGroupSelectionUI(z)
+              ? (
+                <g data-drag-selected-overlay-ui="1">
+                  {overlayGroupSelectionUI(z)}
+                </g>
+              )
               : null}
             {selectedIds?.length > 0 && selectedOverlayIds?.length === 0 && shapeSelectionUI
-              ? shapeSelectionUI(z)
+              ? (
+                <g data-drag-selected-shape-ui="1">
+                  {shapeSelectionUI(z)}
+                </g>
+              )
               : null}
 
             {smoothedCollabCursors.length > 0 && (
@@ -5953,7 +6478,7 @@ export default function CanvasSvg({
               {layer.kind === "barChart" ? (
                 <Bar key={layer.chartKey} data={layer.barData} options={layer.barOptions} />
               ) : (
-                <Line key={layer.chartKey} data={layer.lineLikeData} options={layer.lineOptions} />
+                <Line key={layer.chartKey} data={layer.lineLikeData} options={layer.lineOptions} plugins={[hoverGuidePlugin]} />
               )}
             </div>
           ))}
@@ -6014,3 +6539,4 @@ export default function CanvasSvg({
     </div>
   );
 }
+

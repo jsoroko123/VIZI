@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import LoggerPanel from "./LoggerPanel";
 
 function asCount(value, fallback = "--") {
   return Number.isFinite(Number(value)) ? String(Math.round(Number(value))) : fallback;
@@ -44,8 +45,10 @@ function asPct(value, fallback = "--") {
   return `${n.toFixed(1)}%`;
 }
 
-export default function ServerDiagnosticsPanel({ embedded = false }) {
-  const [activeTab, setActiveTab] = useState("diagnostics");
+export default function ServerDiagnosticsPanel({ embedded = false, canEditLogs = false, initialTab = "diagnostics" }) {
+  const [activeTab, setActiveTab] = useState(
+    String(initialTab || "").trim().toLowerCase() === "logs" ? "logs" : "diagnostics"
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [serviceBusyAction, setServiceBusyAction] = useState("");
@@ -70,6 +73,11 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
     appDiag: null,
     authSettings: null,
   });
+
+  useEffect(() => {
+    const next = String(initialTab || "").trim().toLowerCase() === "logs" ? "logs" : "diagnostics";
+    setActiveTab(next);
+  }, [initialTab]);
 
   const load = async () => {
     setLoading(true);
@@ -454,6 +462,14 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
           >
             Settings
           </button>
+          <button
+            type="button"
+            data-preserve-style="true"
+            onClick={() => setActiveTab("logs")}
+            style={tabButtonStyle(activeTab === "logs")}
+          >
+            Logs
+          </button>
       </div>
 
       {activeTab === "settings" ? (
@@ -718,6 +734,12 @@ export default function ServerDiagnosticsPanel({ embedded = false }) {
         </div>
       </div>
       </>
+      ) : null}
+
+      {activeTab === "logs" ? (
+        <div style={{ minHeight: 0 }}>
+          <LoggerPanel embedded canEdit={canEditLogs} />
+        </div>
       ) : null}
     </div>
   );

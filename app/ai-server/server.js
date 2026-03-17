@@ -29,6 +29,7 @@ const OPC_BRIDGE_STATUS_TIMEOUT_MS = Math.max(
   250,
   Number.parseInt(String(process.env.OPC_BRIDGE_STATUS_TIMEOUT_MS || "1200"), 10) || 1200
 );
+const OPC_PERSIST_LIVE_STATUS = String(process.env.OPC_PERSIST_LIVE_STATUS || "0").trim() === "1";
 const AI_SERVER_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_APP_ROOT = path.resolve(AI_SERVER_DIR, "..");
 
@@ -290,6 +291,141 @@ const CLIENT_LOG_MESSAGE_MAX = Math.max(
 );
 const CLIENT_LOG_SOURCE_MAX = 80;
 const CLIENT_LOG_META_MAX = 24000;
+const LOG_CATEGORY_VALUES = new Set([
+  "general",
+  "api",
+  "opc",
+  "database",
+  "auth",
+  "security",
+  "client",
+  "process",
+  "system",
+]);
+const LOG_DATA_TYPE_VALUES = new Set([
+  "text",
+  "json_object",
+  "json_array",
+  "error",
+  "number",
+  "boolean",
+  "null",
+  "unknown",
+]);
+
+function normalizeLogCategory(value, fallback = "general") {
+  const key = String(value || "").trim().toLowerCase();
+  if (LOG_CATEGORY_VALUES.has(key)) return key;
+  const fb = String(fallback || "").trim().toLowerCase();
+  return LOG_CATEGORY_VALUES.has(fb) ? fb : "general";
+}
+
+function inferLogCategory(message = "", source = "", meta = {}) {
+  const src = String(source || "").trim().toLowerCase();
+  const msg = String(message || "").trim().toLowerCase();
+  if (src.includes("opc") || msg.includes("opc")) return "opc";
+  if (src.includes("db") || src.includes("postgres") || msg.includes("database") || msg.includes("sql")) return "database";
+  if (src.includes("auth") || src.includes("security") || msg.includes("login") || msg.includes("token")) return "auth";
+  if (src.startsWith("client:")) return "client";
+  if (src.includes("process") || src.includes("node") || msg.includes("uncaught") || msg.includes("unhandled")) return "process";
+  if (src.includes("api") || String(meta?.route || "").startsWith("/api/")) return "api";
+  if (src.includes("system")) return "system";
+  return "general";
+}
+
+function inferLogDataType(message = "", meta = {}) {
+  if (meta instanceof Error || meta?.error) return "error";
+  if (Array.isArray(meta)) return "json_array";
+  if (meta && typeof meta === "object") return "json_object";
+  if (meta == null) {
+    const parsed = tryParseJsonText(message);
+    if (parsed && Array.isArray(parsed)) return "json_array";
+    if (parsed && typeof parsed === "object") return "json_object";
+    return "text";
+  }
+  if (typeof meta === "number") return "number";
+  if (typeof meta === "boolean") return "boolean";
+  if (typeof meta === "string") {
+    const parsed = tryParseJsonText(meta);
+    if (parsed && Array.isArray(parsed)) return "json_array";
+    if (parsed && typeof parsed === "object") return "json_object";
+    return "text";
+  }
+  return "unknown";
+}
+
+function tryParseJsonText(value) {
+  const text = String(value == null ? "" : value).trim();
+  if (!text) return null;
+  if (!(text.startsWith("{") || text.startsWith("["))) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function ensureServerLogSchema(db) {
+  if (!db) return;
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS server_logs (
+      id BIGSERIAL PRIMARY KEY,
+      at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      level TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'server',
+      category TEXT NOT NULL DEFAULT 'general',
+      data_type TEXT NOT NULL DEFAULT 'unknown',
+      message TEXT NOT NULL DEFAULT '',
+      meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+      count INTEGER NOT NULL DEFAULT 1
+    );
+  `);
+  await db.query(`ALTER TABLE server_logs ADD COLUMN IF NOT EXISTS at TIMESTAMPTZ NOT NULL DEFAULT now();`);
+  await db.query(`ALTER TABLE server_logs ADD COLUMN IF NOT EXISTS level TEXT NOT NULL DEFAULT 'info';`);
+  await db.query(`ALTER TABLE server_logs ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'server';`);
+  await db.query(`ALTER TABLE server_logs ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'general';`);
+  await db.query(`ALTER TABLE server_logs ADD COLUMN IF NOT EXISTS data_type TEXT NOT NULL DEFAULT 'unknown';`);
+  await db.query(`ALTER TABLE server_logs ADD COLUMN IF NOT EXISTS message TEXT NOT NULL DEFAULT '';`);
+  await db.query(`ALTER TABLE server_logs ADD COLUMN IF NOT EXISTS meta JSONB NOT NULL DEFAULT '{}'::jsonb;`);
+  await db.query(`ALTER TABLE server_logs ADD COLUMN IF NOT EXISTS count INTEGER NOT NULL DEFAULT 1;`);
+  await db.query(`CREATE INDEX IF NOT EXISTS server_logs_at_idx ON server_logs(at DESC);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS server_logs_level_idx ON server_logs(level);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS server_logs_source_idx ON server_logs(source);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS server_logs_category_idx ON server_logs(category);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS server_logs_data_type_idx ON server_logs(data_type);`);
+}
+
+function persistServerLog(entry) {
+  if (!logPool || !entry) return;
+  const ts = Number(entry?.at || Date.now());
+  const atIso = Number.isFinite(ts) ? new Date(ts).toISOString() : new Date().toISOString();
+  const level = String(entry?.level || "info").trim().toLowerCase();
+  const source = String(entry?.source || "server").trim() || "server";
+  const category = normalizeLogCategory(entry?.category, inferLogCategory(entry?.message, source, entry?.meta));
+  const dataType = (() => {
+    const key = String(entry?.dataType || entry?.data_type || "").trim().toLowerCase();
+    if (LOG_DATA_TYPE_VALUES.has(key)) return key;
+    return inferLogDataType(entry?.message, entry?.meta);
+  })();
+  const message = String(entry?.message || "");
+  const meta = serializeLogMeta(entry?.meta);
+  const count = Math.max(1, Number.parseInt(String(entry?.count || 1), 10) || 1);
+  void logPool
+    .query(
+      `
+      INSERT INTO server_logs (at, level, source, category, data_type, message, meta, count)
+      VALUES ($1::timestamptz, $2, $3, $4, $5, $6, $7::jsonb, $8)
+      `,
+      [atIso, level, source, category, dataType, message, JSON.stringify(meta || {}), count]
+    )
+    .catch((err) => {
+      try {
+        process.stderr.write(`[logger] failed to persist log entry: ${String(err?.message || err)}\n`);
+      } catch {
+        // ignore
+      }
+    });
+}
 
 function serializeLogMeta(meta) {
   if (meta == null) return {};
@@ -315,6 +451,15 @@ function appendServerLog(level, message, meta = {}, source = "server") {
   const normalizedLevel = String(level || "info").toLowerCase();
   const normalizedSource = String(source || "server");
   const normalizedMessage = String(message || "");
+  const normalizedCategory = normalizeLogCategory(
+    meta?.category,
+    inferLogCategory(normalizedMessage, normalizedSource, serializedMeta)
+  );
+  const normalizedDataType = (() => {
+    const explicit = String(meta?.dataType || meta?.data_type || "").trim().toLowerCase();
+    if (LOG_DATA_TYPE_VALUES.has(explicit)) return explicit;
+    return inferLogDataType(normalizedMessage, serializedMeta);
+  })();
   const now = Date.now();
   const signature = (() => {
     try {
@@ -356,6 +501,8 @@ function appendServerLog(level, message, meta = {}, source = "server") {
     at: now,
     level: normalizedLevel,
     source: normalizedSource,
+    category: normalizedCategory,
+    dataType: normalizedDataType,
     message: normalizedMessage,
     meta: serializedMeta,
     count: 1,
@@ -364,6 +511,7 @@ function appendServerLog(level, message, meta = {}, source = "server") {
   if (serverLogs.length > SERVER_LOG_LIMIT) {
     serverLogs.splice(0, serverLogs.length - SERVER_LOG_LIMIT);
   }
+  persistServerLog(entry);
   return entry;
 }
 
@@ -480,7 +628,13 @@ function sanitizeClientLogBody(body = {}) {
   if (metaText.length > CLIENT_LOG_META_MAX) {
     meta = { note: "meta_truncated", preview: metaText.slice(0, CLIENT_LOG_META_MAX) };
   }
-  return { level, message, source, meta };
+  const explicitCategory = normalizeLogCategory(body?.category);
+  const category = explicitCategory || inferLogCategory(message, source, meta);
+  const explicitDataType = String(body?.data_type ?? body?.dataType ?? "").trim().toLowerCase();
+  const dataType = LOG_DATA_TYPE_VALUES.has(explicitDataType)
+    ? explicitDataType
+    : inferLogDataType(message, meta);
+  return { level, message, source, meta, category, dataType };
 }
 
 const origConsoleError = console.error.bind(console);
@@ -541,9 +695,57 @@ function normalizeDbClient(value) {
   return "postgres";
 }
 
+function deriveTrendDatabaseUrl(primaryUrl) {
+  const raw = String(primaryUrl || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    const dbName = String(url.pathname || "").replace(/^\//, "").trim();
+    if (!dbName) return raw;
+    const nextName = dbName.toLowerCase().endsWith("_trend") || dbName.toLowerCase().endsWith("_trends")
+      ? dbName
+      : `${dbName}_trends`;
+    url.pathname = `/${nextName}`;
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function deriveLogDatabaseUrl(primaryUrl) {
+  const raw = String(primaryUrl || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    const dbName = String(url.pathname || "").replace(/^\//, "").trim();
+    if (!dbName) return raw;
+    const nextName = dbName.toLowerCase().endsWith("_log") || dbName.toLowerCase().endsWith("_logs")
+      ? dbName
+      : `${dbName}_logs`;
+    url.pathname = `/${nextName}`;
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
 let DB_CLIENT = normalizeDbClient(process.env.DB_CLIENT || "postgres");
 let DATABASE_URL = process.env.DATABASE_URL || "";
 let DB_POOL_MAX = Math.max(1, Number.parseInt(String(process.env.DB_POOL_MAX || "10"), 10) || 10);
+const TREND_DATABASE_URL_FROM_ENV = String(process.env.TREND_DATABASE_URL || "").trim();
+let TREND_DATABASE_URL = TREND_DATABASE_URL_FROM_ENV || deriveTrendDatabaseUrl(DATABASE_URL);
+const TREND_DATABASE_URL_IS_DERIVED = !TREND_DATABASE_URL_FROM_ENV;
+let TREND_DB_POOL_MAX = Math.max(
+  1,
+  Number.parseInt(String(process.env.TREND_DB_POOL_MAX || process.env.DB_POOL_MAX || "10"), 10) || 10
+);
+const LOG_DATABASE_URL_FROM_ENV = String(process.env.LOG_DATABASE_URL || "").trim();
+let LOG_DATABASE_URL = LOG_DATABASE_URL_FROM_ENV || deriveLogDatabaseUrl(DATABASE_URL);
+const LOG_DATABASE_URL_IS_DERIVED = !LOG_DATABASE_URL_FROM_ENV;
+let LOG_DB_POOL_MAX = Math.max(
+  1,
+  Number.parseInt(String(process.env.LOG_DB_POOL_MAX || process.env.DB_POOL_MAX || "10"), 10) || 10
+);
 const DB_POOL_MAX_LISTENERS = Math.max(
   20,
   Number.parseInt(String(process.env.DB_POOL_MAX_LISTENERS || "100"), 10) || 100
@@ -775,6 +977,8 @@ async function ensureDatabaseExists(connectionString = DATABASE_URL) {
 }
 
 let pool = null;
+let trendPool = null;
+let logPool = null;
 let opcTagScaleCache = { loadedAt: 0, map: new Map() };
 let serviceControlLocked = false;
 
@@ -854,9 +1058,27 @@ const PROJECT_VERSION_KEEP_BYTES_PER_PROJECT = Math.max(
   ) || 128 * 1024 * 1024
 );
 const TREND_CODEC = "json-gzip-v1";
+const TREND_CHUNK_TABLE_BASE = "opc_tag_trend_chunks";
+const TREND_CHUNK_TABLE_MONTH_RE = /^opc_tag_trend_chunks_\d{6}$/;
+const TREND_TABLE_CACHE_MS = 30_000;
+const DB_BACKUP_DIR = path.resolve(AI_SERVER_DIR, "backups", "database");
+const DB_BACKUP_REDUNDANT_DIR = path.resolve(AI_SERVER_DIR, "backups", "database_redundant");
+const DB_BACKUP_DEFAULTS = Object.freeze({
+  enabled: false,
+  intervalMinutes: 1440,
+  keepBackups: 30,
+  includeTrendDb: true,
+  redundancyEnabled: false,
+  redundancyCopies: 1,
+  lastRunAt: 0,
+});
 const trendBuffers = new Map();
 let trendLastCleanupAt = 0;
 let trendTagConfigCache = { loadedAt: 0, map: null };
+let trendChunkTableCache = { loadedAt: 0, tables: [] };
+let dbBackupState = { ...DB_BACKUP_DEFAULTS };
+let dbBackupTimer = null;
+let dbBackupInFlight = false;
 let projectVersionMaintenanceInFlight = false;
 let dbMaintenanceInFlight = false;
 const DB_MAINTENANCE_MS = Math.max(
@@ -1062,11 +1284,13 @@ function buildPlcDebugSnapshot(status, session) {
 }
 
 async function loadOpcStatusFromStore() {
-  const { rows } = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
-  if (!rows.length || !rows[0]?.status || typeof rows[0].status !== "object") {
+  const cached = getOpcStatusFromCache();
+  if (cached && Object.keys(cached).length) return cached;
+  const row = await loadPersistedOpcStatusRow();
+  if (!row?.status || typeof row.status !== "object") {
     return { at: Date.now(), connected: false, connections: {}, values: {}, errors: {}, qualities: {}, diagnostics: {} };
   }
-  return rows[0].status;
+  return row.status;
 }
 
 async function refreshPlcDebugSession(session) {
@@ -2271,6 +2495,110 @@ async function loadTrendTagConfigMap() {
   }
 }
 
+function getTrendMonthKey(ts) {
+  const at = normalizeTrendTimestamp(ts);
+  const d = new Date(at);
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${year}${month}`;
+}
+
+function getTrendChunkTableNameForTimestamp(ts) {
+  return `${TREND_CHUNK_TABLE_BASE}_${getTrendMonthKey(ts)}`;
+}
+
+function isTrendChunkTableName(tableName) {
+  const name = String(tableName || "").trim().toLowerCase();
+  return name === TREND_CHUNK_TABLE_BASE || TREND_CHUNK_TABLE_MONTH_RE.test(name);
+}
+
+function quoteTrendChunkTable(tableName) {
+  const name = String(tableName || "").trim().toLowerCase();
+  if (!isTrendChunkTableName(name)) {
+    throw new Error("Invalid trend table name.");
+  }
+  return quoteIdent(name);
+}
+
+async function ensureTrendChunkTable(trendDb, tableName) {
+  if (!trendDb) return null;
+  const name = String(tableName || "").trim().toLowerCase();
+  if (!isTrendChunkTableName(name)) {
+    throw new Error("Invalid trend table name.");
+  }
+  const quotedTable = quoteTrendChunkTable(name);
+  await trendDb.query(`
+    CREATE TABLE IF NOT EXISTS ${quotedTable} (
+      id BIGSERIAL PRIMARY KEY,
+      tag_key TEXT NOT NULL,
+      from_ts BIGINT NOT NULL,
+      to_ts BIGINT NOT NULL,
+      sample_count INT NOT NULL DEFAULT 0,
+      codec TEXT NOT NULL DEFAULT 'json-gzip-v1',
+      payload BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+  const tagToIdx = `${name}_tag_to_idx`;
+  const toIdx = `${name}_to_idx`;
+  await trendDb.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdent(tagToIdx)}
+    ON ${quotedTable}(tag_key, to_ts DESC);
+  `);
+  await trendDb.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdent(toIdx)}
+    ON ${quotedTable}(to_ts DESC);
+  `);
+  trendChunkTableCache = { loadedAt: 0, tables: [] };
+  return name;
+}
+
+async function listTrendChunkTables(trendDb, options = {}) {
+  if (!trendDb) return [];
+  const refresh = options?.refresh === true;
+  const includeLegacy = options?.includeLegacy !== false;
+  const now = Date.now();
+  if (
+    !refresh &&
+    Array.isArray(trendChunkTableCache.tables) &&
+    trendChunkTableCache.tables.length &&
+    now - Number(trendChunkTableCache.loadedAt || 0) < TREND_TABLE_CACHE_MS
+  ) {
+    return trendChunkTableCache.tables;
+  }
+  const { rows } = await trendDb.query(`
+    SELECT tablename
+    FROM pg_tables
+    WHERE schemaname = 'public'
+      AND (
+        tablename = $1
+        OR tablename LIKE $2
+      )
+  `, [TREND_CHUNK_TABLE_BASE, `${TREND_CHUNK_TABLE_BASE}_%`]);
+  const names = rows
+    .map((r) => String(r?.tablename || "").trim().toLowerCase())
+    .filter((name) => isTrendChunkTableName(name));
+  const out = [];
+  if (includeLegacy && names.includes(TREND_CHUNK_TABLE_BASE)) {
+    out.push(TREND_CHUNK_TABLE_BASE);
+  }
+  names
+    .filter((name) => TREND_CHUNK_TABLE_MONTH_RE.test(name))
+    .sort((a, b) => a.localeCompare(b))
+    .forEach((name) => out.push(name));
+  trendChunkTableCache = { loadedAt: now, tables: out };
+  return out;
+}
+
+function buildTrendUnionSql(tableNames, selectColumns, whereSql = "") {
+  const names = Array.isArray(tableNames) ? tableNames : [];
+  const parts = names
+    .map((name) => String(name || "").trim().toLowerCase())
+    .filter((name) => isTrendChunkTableName(name))
+    .map((name) => `SELECT ${selectColumns} FROM ${quoteTrendChunkTable(name)} ${whereSql}`.trim());
+  return parts.join(" UNION ALL ");
+}
+
 function appendTrendSample(tagKey, at, numericValue, options = {}) {
   const key = String(tagKey || "").trim();
   if (!key) return;
@@ -2322,9 +2650,13 @@ async function flushTrendBuffer(tagKey) {
     p: buffer.points,
   });
   const payload = gzipSync(Buffer.from(payloadJson, "utf8"), { level: 9 });
-  await pool.query(
+  const trendDb = trendPool || pool;
+  if (!trendDb) return;
+  const targetTable = getTrendChunkTableNameForTimestamp(buffer.lastTs || buffer.baseTs);
+  await ensureTrendChunkTable(trendDb, targetTable);
+  await trendDb.query(
     `
-    INSERT INTO opc_tag_trend_chunks (
+    INSERT INTO ${quoteTrendChunkTable(targetTable)} (
       tag_key, from_ts, to_ts, sample_count, codec, payload
     ) VALUES ($1, $2, $3, $4, $5, $6)
     `,
@@ -2631,8 +2963,10 @@ function buildAutomationValueContext(event) {
 }
 
 async function loadCurrentOpcStatus() {
-  const { rows } = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
-  return rows[0]?.status && typeof rows[0].status === "object" ? rows[0].status : {};
+  const cached = getOpcStatusFromCache();
+  if (cached && Object.keys(cached).length) return cached;
+  const row = await loadPersistedOpcStatusRow();
+  return row?.status && typeof row.status === "object" ? row.status : {};
 }
 
 function getAutomationContextValue(context, pathValue) {
@@ -3643,6 +3977,7 @@ async function verifySchemaCoverage() {
       "id",
       "name",
       "description",
+      "bin_id",
       "bin_number",
       "hide_job_form",
       "assigned_bin_group",
@@ -3706,6 +4041,23 @@ async function verifySchemaCoverage() {
     );
     if (!routeCols.length) {
       throw new Error(`Schema verification failed: table "route" missing column "project_id"`);
+    }
+  }
+
+  if (logPool) {
+    const expectedLogCols = ["id", "at", "level", "source", "category", "data_type", "message", "meta", "count"];
+    const { rows: logColsRows } = await logPool.query(
+      `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'server_logs'
+      `
+    );
+    const existingLogCols = new Set(logColsRows.map((r) => r.column_name));
+    for (const col of expectedLogCols) {
+      if (!existingLogCols.has(col)) {
+        throw new Error(`Schema verification failed: table "server_logs" missing column "${col}"`);
+      }
     }
   }
 }
@@ -5360,6 +5712,588 @@ function upsertEnvVar(filePath, key, value) {
   fs.writeFileSync(filePath, nextText, "utf8");
 }
 
+function normalizeDbBackupConfig(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+  const enabled = src.enabled === true;
+  const intervalMinutes = Math.max(
+    15,
+    Math.min(7 * 24 * 60, Number.parseInt(String(src.intervalMinutes || ""), 10) || DB_BACKUP_DEFAULTS.intervalMinutes)
+  );
+  const keepBackups = Math.max(
+    3,
+    Math.min(500, Number.parseInt(String(src.keepBackups || ""), 10) || DB_BACKUP_DEFAULTS.keepBackups)
+  );
+  const includeTrendDb = src.includeTrendDb !== false;
+  const redundancyEnabled = src.redundancyEnabled === true;
+  const redundancyCopies = Math.max(
+    1,
+    Math.min(3, Number.parseInt(String(src.redundancyCopies || ""), 10) || DB_BACKUP_DEFAULTS.redundancyCopies)
+  );
+  const lastRunAt = Math.max(0, Number.parseInt(String(src.lastRunAt || "0"), 10) || 0);
+  return { enabled, intervalMinutes, keepBackups, includeTrendDb, redundancyEnabled, redundancyCopies, lastRunAt };
+}
+
+function ensureDirectoryExists(dirPath) {
+  const target = String(dirPath || "").trim();
+  if (!target) return;
+  fs.mkdirSync(target, { recursive: true });
+}
+
+function safeBackupToken(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 120);
+}
+
+function makeBackupId(ts = Date.now()) {
+  const d = new Date(Number(ts) || Date.now());
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
+}
+
+function resolvePgToolBinary(toolName = "pg_dump") {
+  const base = String(toolName || "").trim();
+  if (!base) return "";
+  const exe = process.platform === "win32" ? `${base}.exe` : base;
+  const candidates = [
+    path.resolve("C:/Program Files/PostgreSQL/18/bin", exe),
+    path.resolve("C:/Program Files/PostgreSQL/17/bin", exe),
+    path.resolve("C:/Program Files/PostgreSQL/16/bin", exe),
+    path.resolve("C:/Program Files/PostgreSQL/15/bin", exe),
+    path.resolve("C:/Program Files/PostgreSQL/14/bin", exe),
+    path.resolve("C:/Program Files/PostgreSQL/13/bin", exe),
+    exe,
+    base,
+  ];
+  return pickFirstExisting(candidates) || exe;
+}
+
+function runCommand(binary, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(binary, args, {
+      env: options?.env && typeof options.env === "object" ? options.env : process.env,
+      cwd: options?.cwd || process.cwd(),
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (chunk) => {
+      stdout += String(chunk || "");
+    });
+    proc.stderr?.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve({ code: 0, stdout, stderr });
+        return;
+      }
+      const msg = String(stderr || stdout || `Process failed with exit code ${code}.`).trim();
+      reject(new Error(msg));
+    });
+  });
+}
+
+function getDbConnectionParts(connectionString) {
+  const url = parseDatabaseUrlObject(connectionString);
+  if (!url) return null;
+  return {
+    connectionString: String(connectionString || "").trim(),
+    host: String(url.hostname || "").trim() || "localhost",
+    port: Number.parseInt(String(url.port || "5432"), 10) || 5432,
+    user: decodeURIComponent(String(url.username || "").trim()),
+    password: decodeURIComponent(String(url.password || "").trim()),
+    database: String(url.pathname || "").replace(/^\//, "").trim(),
+  };
+}
+
+function listBackupManifestFiles() {
+  if (!fs.existsSync(DB_BACKUP_DIR)) return [];
+  return fs
+    .readdirSync(DB_BACKUP_DIR)
+    .filter((name) => name.toLowerCase().endsWith(".json"))
+    .map((name) => path.resolve(DB_BACKUP_DIR, name));
+}
+
+function listBackups() {
+  const manifestFiles = listBackupManifestFiles();
+  const rows = [];
+  for (const filePath of manifestFiles) {
+    try {
+      const raw = String(fs.readFileSync(filePath, "utf8") || "").trim();
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (!parsed || typeof parsed !== "object") continue;
+      const id = String(parsed.id || "").trim();
+      if (!id) continue;
+      const createdAt = Number(parsed.createdAt || 0);
+      const files = Array.isArray(parsed.files)
+        ? parsed.files.map((f) => ({
+            kind: String(f?.kind || "").trim(),
+            fileName: String(f?.fileName || "").trim(),
+            sizeBytes: Number(f?.sizeBytes || 0) || 0,
+            dbName: String(f?.dbName || "").trim(),
+          }))
+        : [];
+      const redundancy = parsed?.redundancy && typeof parsed.redundancy === "object"
+        ? {
+            enabled: parsed.redundancy.enabled === true,
+            copies: Math.max(1, Number.parseInt(String(parsed.redundancy.copies || "1"), 10) || 1),
+            mirroredAt: Number(parsed.redundancy.mirroredAt || 0) || 0,
+          }
+        : null;
+      rows.push({
+        id,
+        createdAt: Number.isFinite(createdAt) ? createdAt : 0,
+        reason: String(parsed.reason || "").trim() || "manual",
+        files,
+        redundancy,
+      });
+    } catch {
+      // ignore invalid manifest
+    }
+  }
+  rows.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  return rows;
+}
+
+function findBackupById(backupId) {
+  const id = safeBackupToken(backupId);
+  if (!id) return null;
+  return listBackups().find((b) => String(b?.id || "") === id) || null;
+}
+
+function getRedundantBackupDirForCopy(copyIndex = 1) {
+  const idx = Math.max(1, Number.parseInt(String(copyIndex || "1"), 10) || 1);
+  if (idx <= 1) return DB_BACKUP_REDUNDANT_DIR;
+  return path.resolve(DB_BACKUP_REDUNDANT_DIR, `copy_${idx}`);
+}
+
+function copyBackupToRedundantStorage(manifest) {
+  if (!manifest || typeof manifest !== "object") return { copies: 0 };
+  const files = Array.isArray(manifest.files) ? manifest.files : [];
+  const copies = Math.max(1, Number.parseInt(String(dbBackupState?.redundancyCopies || "1"), 10) || 1);
+  for (let i = 1; i <= copies; i += 1) {
+    const targetDir = getRedundantBackupDirForCopy(i);
+    ensureDirectoryExists(targetDir);
+    files.forEach((f) => {
+      const fileName = String(f?.fileName || "").trim();
+      if (!fileName) return;
+      const src = path.resolve(DB_BACKUP_DIR, fileName);
+      const dst = path.resolve(targetDir, fileName);
+      if (!src.startsWith(`${DB_BACKUP_DIR}${path.sep}`) || !dst.startsWith(`${targetDir}${path.sep}`)) return;
+      if (!fs.existsSync(src)) return;
+      fs.copyFileSync(src, dst);
+    });
+    const manifestName = `${safeBackupToken(manifest.id)}.json`;
+    const srcManifest = path.resolve(DB_BACKUP_DIR, manifestName);
+    const dstManifest = path.resolve(targetDir, manifestName);
+    if (srcManifest.startsWith(`${DB_BACKUP_DIR}${path.sep}`) && dstManifest.startsWith(`${targetDir}${path.sep}`) && fs.existsSync(srcManifest)) {
+      fs.copyFileSync(srcManifest, dstManifest);
+    }
+  }
+  return { copies };
+}
+
+function resolveBackupFilePathWithRedundancy(fileName = "") {
+  const clean = String(fileName || "").trim();
+  if (!clean) return "";
+  const primary = path.resolve(DB_BACKUP_DIR, clean);
+  if (primary.startsWith(`${DB_BACKUP_DIR}${path.sep}`) && fs.existsSync(primary)) return primary;
+  const copies = Math.max(1, Number.parseInt(String(dbBackupState?.redundancyCopies || "1"), 10) || 1);
+  for (let i = 1; i <= copies; i += 1) {
+    const dir = getRedundantBackupDirForCopy(i);
+    const candidate = path.resolve(dir, clean);
+    if (!candidate.startsWith(`${dir}${path.sep}`)) continue;
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return "";
+}
+
+function readBackupManifestById(backupId) {
+  const id = safeBackupToken(backupId);
+  if (!id) return null;
+  const manifestPath = path.resolve(DB_BACKUP_DIR, `${id}.json`);
+  if (!manifestPath.startsWith(`${DB_BACKUP_DIR}${path.sep}`) || !fs.existsSync(manifestPath)) return null;
+  try {
+    const raw = String(fs.readFileSync(manifestPath, "utf8") || "").trim();
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function buildBackupExportBundle(backupId) {
+  const backup = findBackupById(backupId);
+  if (!backup) throw new Error("Backup not found.");
+  const manifest = readBackupManifestById(backup.id);
+  if (!manifest || typeof manifest !== "object") throw new Error("Backup manifest is missing.");
+  const files = Array.isArray(manifest.files) ? manifest.files : [];
+  if (!files.length) throw new Error("Backup has no files.");
+  const bundleFiles = files.map((f) => {
+    const fileName = safeBackupToken(String(f?.fileName || "").trim());
+    if (!fileName) throw new Error("Backup file entry is invalid.");
+    const abs = resolveBackupFilePathWithRedundancy(fileName);
+    if (!abs || !fs.existsSync(abs)) {
+      throw new Error(`Backup file missing: ${fileName}`);
+    }
+    const buf = fs.readFileSync(abs);
+    return {
+      kind: String(f?.kind || "").trim() || "main",
+      dbName: String(f?.dbName || "").trim(),
+      fileName,
+      sizeBytes: Number(buf.length || 0),
+      contentBase64: buf.toString("base64"),
+    };
+  });
+  return {
+    format: "mesora-db-backup-bundle.v1",
+    exportedAt: Date.now(),
+    backup: {
+      id: String(manifest.id || backup.id || "").trim(),
+      createdAt: Number(manifest.createdAt || backup.createdAt || Date.now()) || Date.now(),
+      reason: String(manifest.reason || backup.reason || "manual").trim() || "manual",
+      files: bundleFiles,
+    },
+  };
+}
+
+function importBackupBundle(bundleRaw) {
+  const root = bundleRaw && typeof bundleRaw === "object" ? bundleRaw : {};
+  const backup = root?.backup && typeof root.backup === "object" ? root.backup : root;
+  const files = Array.isArray(backup?.files) ? backup.files : [];
+  if (!files.length) throw new Error("Backup bundle has no files.");
+  const hasMain = files.some((f) => String(f?.kind || "").trim().toLowerCase() === "main");
+  if (!hasMain) throw new Error("Backup bundle is missing a main database dump.");
+
+  ensureDirectoryExists(DB_BACKUP_DIR);
+  const baseId = safeBackupToken(backup?.id) || makeBackupId(Date.now());
+  let id = baseId;
+  let suffix = 1;
+  while (fs.existsSync(path.resolve(DB_BACKUP_DIR, `${id}.json`))) {
+    id = `${baseId}_${suffix}`;
+    suffix += 1;
+  }
+
+  const outFiles = [];
+  for (const row of files) {
+    const kindRaw = String(row?.kind || "").trim().toLowerCase();
+    const kind = kindRaw === "trend" ? "trend" : "main";
+    const dbName = safeBackupToken(String(row?.dbName || "").trim()) || (kind === "trend" ? "trend" : "main");
+    const requestedName = String(row?.fileName || "").trim();
+    const ext = requestedName.toLowerCase().endsWith(".dump") ? ".dump" : ".dump";
+    const safeStem = safeBackupToken(requestedName.replace(/\.dump$/i, "")) || `${id}__${dbName}`;
+    let outName = `${safeStem}${ext}`;
+    let outPath = path.resolve(DB_BACKUP_DIR, outName);
+    let fileSuffix = 1;
+    while (fs.existsSync(outPath)) {
+      outName = `${safeStem}_${fileSuffix}${ext}`;
+      outPath = path.resolve(DB_BACKUP_DIR, outName);
+      fileSuffix += 1;
+    }
+    if (!outPath.startsWith(`${DB_BACKUP_DIR}${path.sep}`)) {
+      throw new Error("Invalid backup file path.");
+    }
+    const base64 = String(row?.contentBase64 || "").trim();
+    if (!base64) throw new Error(`Backup file content missing for ${outName}.`);
+    let buf;
+    try {
+      buf = Buffer.from(base64, "base64");
+    } catch {
+      throw new Error(`Backup file content is invalid for ${outName}.`);
+    }
+    if (!buf || !buf.length) throw new Error(`Backup file is empty for ${outName}.`);
+    fs.writeFileSync(outPath, buf);
+    outFiles.push({
+      kind,
+      dbName,
+      fileName: outName,
+      sizeBytes: Number(buf.length || 0),
+    });
+  }
+
+  const createdAt = Number(backup?.createdAt || 0);
+  const manifest = {
+    id,
+    createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : Date.now(),
+    reason: `import:${String(backup?.reason || "manual").trim() || "manual"}`,
+    files: outFiles,
+  };
+  const manifestPath = path.resolve(DB_BACKUP_DIR, `${id}.json`);
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  if (dbBackupState.redundancyEnabled === true) {
+    const mirror = copyBackupToRedundantStorage(manifest);
+    manifest.redundancy = {
+      enabled: true,
+      copies: Number(mirror?.copies || 1) || 1,
+      mirroredAt: Date.now(),
+    };
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  }
+  pruneBackupHistory(dbBackupState.keepBackups);
+  return manifest;
+}
+
+function deleteBackupFiles(backup) {
+  const files = Array.isArray(backup?.files) ? backup.files : [];
+  files.forEach((f) => {
+    const fileName = String(f?.fileName || "").trim();
+    if (!fileName) return;
+    const abs = path.resolve(DB_BACKUP_DIR, fileName);
+    if (!abs.startsWith(`${DB_BACKUP_DIR}${path.sep}`)) return;
+    if (fs.existsSync(abs)) {
+      try {
+        fs.unlinkSync(abs);
+      } catch {
+        // ignore
+      }
+    }
+    const copies = Math.max(1, Number.parseInt(String(dbBackupState?.redundancyCopies || "1"), 10) || 1);
+    for (let i = 1; i <= copies; i += 1) {
+      const dir = getRedundantBackupDirForCopy(i);
+      const mirror = path.resolve(dir, fileName);
+      if (!mirror.startsWith(`${dir}${path.sep}`)) continue;
+      if (fs.existsSync(mirror)) {
+        try {
+          fs.unlinkSync(mirror);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  });
+  const manifest = path.resolve(DB_BACKUP_DIR, `${safeBackupToken(backup?.id)}.json`);
+  if (manifest.startsWith(`${DB_BACKUP_DIR}${path.sep}`) && fs.existsSync(manifest)) {
+    try {
+      fs.unlinkSync(manifest);
+    } catch {
+      // ignore
+    }
+  }
+  const copies = Math.max(1, Number.parseInt(String(dbBackupState?.redundancyCopies || "1"), 10) || 1);
+  for (let i = 1; i <= copies; i += 1) {
+    const dir = getRedundantBackupDirForCopy(i);
+    const mirrorManifest = path.resolve(dir, `${safeBackupToken(backup?.id)}.json`);
+    if (!mirrorManifest.startsWith(`${dir}${path.sep}`)) continue;
+    if (fs.existsSync(mirrorManifest)) {
+      try {
+        fs.unlinkSync(mirrorManifest);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+function pruneBackupHistory(keepBackups = DB_BACKUP_DEFAULTS.keepBackups) {
+  const maxKeep = Math.max(3, Math.min(500, Number.parseInt(String(keepBackups || ""), 10) || DB_BACKUP_DEFAULTS.keepBackups));
+  const items = listBackups();
+  if (items.length <= maxKeep) return;
+  items.slice(maxKeep).forEach((backup) => deleteBackupFiles(backup));
+}
+
+async function runPgDumpToFile(connectionString, outFile) {
+  const parts = getDbConnectionParts(connectionString);
+  if (!parts || !parts.database) {
+    throw new Error("Invalid database connection for backup.");
+  }
+  const pgDump = resolvePgToolBinary("pg_dump");
+  const env = {
+    ...process.env,
+    PGPASSWORD: parts.password || process.env.PGPASSWORD || "",
+  };
+  const args = [
+    "-h",
+    parts.host,
+    "-p",
+    String(parts.port),
+    "-U",
+    parts.user,
+    "-d",
+    parts.database,
+    "--format=custom",
+    "--no-owner",
+    "--no-privileges",
+    "--file",
+    outFile,
+  ];
+  await runCommand(pgDump, args, { env, cwd: AI_SERVER_DIR });
+}
+
+async function runPgRestoreFromFile(connectionString, dumpFile) {
+  const parts = getDbConnectionParts(connectionString);
+  if (!parts || !parts.database) {
+    throw new Error("Invalid database connection for restore.");
+  }
+  const pgRestore = resolvePgToolBinary("pg_restore");
+  const env = {
+    ...process.env,
+    PGPASSWORD: parts.password || process.env.PGPASSWORD || "",
+  };
+  const args = [
+    "-h",
+    parts.host,
+    "-p",
+    String(parts.port),
+    "-U",
+    parts.user,
+    "-d",
+    parts.database,
+    "--clean",
+    "--if-exists",
+    "--no-owner",
+    "--no-privileges",
+    dumpFile,
+  ];
+  await runCommand(pgRestore, args, { env, cwd: AI_SERVER_DIR });
+}
+
+async function loadDbBackupConfigFromStore() {
+  const cfg = await loadOpcConfigFromStore();
+  const runtime = cfg?.runtime && typeof cfg.runtime === "object" ? cfg.runtime : {};
+  const backup = runtime?.databaseBackup && typeof runtime.databaseBackup === "object" ? runtime.databaseBackup : {};
+  return normalizeDbBackupConfig(backup);
+}
+
+async function saveDbBackupConfigToStore(nextConfigRaw = {}) {
+  const nextConfig = normalizeDbBackupConfig(nextConfigRaw);
+  const cfg = await loadOpcConfigFromStore();
+  const runtime = cfg?.runtime && typeof cfg.runtime === "object" ? cfg.runtime : {};
+  const next = {
+    ...(cfg && typeof cfg === "object" ? cfg : {}),
+    runtime: {
+      ...runtime,
+      databaseBackup: nextConfig,
+    },
+  };
+  await saveOpcConfigToStore(next);
+  dbBackupState = nextConfig;
+  return nextConfig;
+}
+
+async function runDatabaseBackup(options = {}) {
+  if (DB_CLIENT !== "postgres") {
+    throw new Error("Database backup is currently supported for postgres runtime only.");
+  }
+  const now = Date.now();
+  const id = makeBackupId(now);
+  const reason = String(options?.reason || "manual").trim() || "manual";
+  ensureDirectoryExists(DB_BACKUP_DIR);
+  const main = getDbConnectionParts(DATABASE_URL);
+  if (!main || !main.database) {
+    throw new Error("Main database is not configured.");
+  }
+  const includeTrend = options?.includeTrendDb !== false && dbBackupState.includeTrendDb !== false;
+  const files = [];
+  const mainFileName = `${id}__${safeBackupToken(main.database || "main")}.dump`;
+  const mainFileAbs = path.resolve(DB_BACKUP_DIR, mainFileName);
+  await runPgDumpToFile(DATABASE_URL, mainFileAbs);
+  files.push({
+    kind: "main",
+    dbName: String(main.database || ""),
+    fileName: mainFileName,
+    sizeBytes: fs.existsSync(mainFileAbs) ? Number(fs.statSync(mainFileAbs).size || 0) : 0,
+  });
+
+  const trendSameAsMain =
+    String(TREND_DATABASE_URL || "").trim() &&
+    String(TREND_DATABASE_URL || "").trim() === String(DATABASE_URL || "").trim();
+  if (includeTrend && TREND_DATABASE_URL && !trendSameAsMain) {
+    const trend = getDbConnectionParts(TREND_DATABASE_URL);
+    if (trend && trend.database) {
+      const trendFileName = `${id}__${safeBackupToken(trend.database || "trend")}.dump`;
+      const trendFileAbs = path.resolve(DB_BACKUP_DIR, trendFileName);
+      await runPgDumpToFile(TREND_DATABASE_URL, trendFileAbs);
+      files.push({
+        kind: "trend",
+        dbName: String(trend.database || ""),
+        fileName: trendFileName,
+        sizeBytes: fs.existsSync(trendFileAbs) ? Number(fs.statSync(trendFileAbs).size || 0) : 0,
+      });
+    }
+  }
+
+  const manifest = { id, createdAt: now, reason, files };
+  const manifestPath = path.resolve(DB_BACKUP_DIR, `${id}.json`);
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  const redundancyEnabled = dbBackupState.redundancyEnabled === true;
+  if (redundancyEnabled) {
+    const mirror = copyBackupToRedundantStorage(manifest);
+    manifest.redundancy = {
+      enabled: true,
+      copies: Number(mirror?.copies || 1) || 1,
+      mirroredAt: Date.now(),
+    };
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  }
+  const nextCfg = normalizeDbBackupConfig({ ...dbBackupState, lastRunAt: now });
+  await saveDbBackupConfigToStore(nextCfg);
+  pruneBackupHistory(nextCfg.keepBackups);
+  return manifest;
+}
+
+async function runDatabaseRestore(backupId = "") {
+  if (DB_CLIENT !== "postgres") {
+    throw new Error("Database restore is currently supported for postgres runtime only.");
+  }
+  const backup = findBackupById(backupId);
+  if (!backup) throw new Error("Backup not found.");
+  const mainFile = backup.files.find((f) => String(f?.kind || "") === "main");
+  if (!mainFile?.fileName) throw new Error("Main database dump not found in backup.");
+  const mainAbs = resolveBackupFilePathWithRedundancy(mainFile.fileName);
+  if (!mainAbs || !fs.existsSync(mainAbs)) {
+    throw new Error("Main backup dump file is missing.");
+  }
+  await runPgRestoreFromFile(DATABASE_URL, mainAbs);
+
+  const trendFile = backup.files.find((f) => String(f?.kind || "") === "trend");
+  const trendSameAsMain =
+    String(TREND_DATABASE_URL || "").trim() &&
+    String(TREND_DATABASE_URL || "").trim() === String(DATABASE_URL || "").trim();
+  if (trendFile?.fileName && TREND_DATABASE_URL && !trendSameAsMain) {
+    const trendAbs = resolveBackupFilePathWithRedundancy(trendFile.fileName);
+    if (trendAbs && fs.existsSync(trendAbs)) {
+      await runPgRestoreFromFile(TREND_DATABASE_URL, trendAbs);
+    }
+  }
+  return { ok: true, backupId: backup.id, restoredAt: Date.now() };
+}
+
+function scheduleDatabaseBackups() {
+  if (dbBackupTimer) {
+    clearInterval(dbBackupTimer);
+    dbBackupTimer = null;
+  }
+  dbBackupTimer = setInterval(() => {
+    const state = normalizeDbBackupConfig(dbBackupState);
+    if (!state.enabled || dbBackupInFlight) return;
+    const now = Date.now();
+    const lastRunAt = Number(state.lastRunAt || 0);
+    const dueMs = Math.max(15 * 60 * 1000, Number(state.intervalMinutes || DB_BACKUP_DEFAULTS.intervalMinutes) * 60 * 1000);
+    if (lastRunAt > 0 && now - lastRunAt < dueMs) return;
+    dbBackupInFlight = true;
+    runDatabaseBackup({ reason: "auto", includeTrendDb: state.includeTrendDb })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`Auto backup failed: ${String(err?.message || err)}`);
+      })
+      .finally(() => {
+        dbBackupInFlight = false;
+      });
+  }, 60 * 1000);
+}
+
 async function rebuildDatabasePool(connectionString, poolMax = DB_POOL_MAX) {
   if (DB_CLIENT !== "postgres") {
     throw new Error("Runtime pool rebuild currently supports postgres only.");
@@ -5381,6 +6315,7 @@ async function rebuildDatabasePool(connectionString, poolMax = DB_POOL_MAX) {
   }
 
   const oldPool = pool;
+  const trendUsedOldPool = trendPool === oldPool;
   pool = nextPool;
   DATABASE_URL = safeConn;
   DB_POOL_MAX = Math.max(1, Number.parseInt(String(poolMax || DB_POOL_MAX), 10) || DB_POOL_MAX);
@@ -5389,6 +6324,90 @@ async function rebuildDatabasePool(connectionString, poolMax = DB_POOL_MAX) {
   if (oldPool) {
     oldPool.end().catch(() => {});
   }
+  if (trendUsedOldPool) {
+    trendPool = pool;
+  }
+}
+
+async function rebuildAuxDatabasePools(
+  trendConnectionString = TREND_DATABASE_URL,
+  trendPoolMax = TREND_DB_POOL_MAX,
+  logConnectionString = LOG_DATABASE_URL,
+  logPoolMax = LOG_DB_POOL_MAX
+) {
+  if (DB_CLIENT !== "postgres") {
+    throw new Error("Runtime pool rebuild currently supports postgres only.");
+  }
+  const mainConn = String(DATABASE_URL || "").trim();
+  const nextTrendConn = String(trendConnectionString || "").trim() || mainConn;
+  const nextLogConn = String(logConnectionString || "").trim() || mainConn;
+  const nextTrendPoolMax = Math.max(
+    1,
+    Number.parseInt(String(trendPoolMax || TREND_DB_POOL_MAX || DB_POOL_MAX), 10) || TREND_DB_POOL_MAX || DB_POOL_MAX
+  );
+  const nextLogPoolMax = Math.max(
+    1,
+    Number.parseInt(String(logPoolMax || LOG_DB_POOL_MAX || DB_POOL_MAX), 10) || LOG_DB_POOL_MAX || DB_POOL_MAX
+  );
+
+  const sameTrendAsMain = nextTrendConn === mainConn;
+  const sameLogAsMain = nextLogConn === mainConn;
+  const sameLogAsTrend = !sameLogAsMain && nextLogConn === nextTrendConn;
+
+  let nextTrendPool = sameTrendAsMain ? pool : null;
+  let nextLogPool = sameLogAsMain ? pool : null;
+  let createdTrendPool = null;
+  let createdLogPool = null;
+
+  try {
+    if (!sameTrendAsMain) {
+      createdTrendPool = new Pool({
+        connectionString: nextTrendConn,
+        max: nextTrendPoolMax,
+      });
+      if (typeof createdTrendPool.setMaxListeners === "function") {
+        createdTrendPool.setMaxListeners(DB_POOL_MAX_LISTENERS);
+      }
+      await createdTrendPool.query("SELECT 1");
+      nextTrendPool = createdTrendPool;
+    }
+
+    if (sameLogAsTrend) {
+      nextLogPool = nextTrendPool;
+    } else if (!sameLogAsMain) {
+      createdLogPool = new Pool({
+        connectionString: nextLogConn,
+        max: nextLogPoolMax,
+      });
+      if (typeof createdLogPool.setMaxListeners === "function") {
+        createdLogPool.setMaxListeners(DB_POOL_MAX_LISTENERS);
+      }
+      await createdLogPool.query("SELECT 1");
+      nextLogPool = createdLogPool;
+    }
+  } catch (err) {
+    if (createdLogPool) createdLogPool.end().catch(() => {});
+    if (createdTrendPool) createdTrendPool.end().catch(() => {});
+    throw err;
+  }
+
+  const oldTrendPool = trendPool;
+  const oldLogPool = logPool;
+  trendPool = nextTrendPool || pool;
+  logPool = nextLogPool || pool;
+
+  TREND_DATABASE_URL = nextTrendConn || mainConn;
+  TREND_DB_POOL_MAX = nextTrendPoolMax;
+  LOG_DATABASE_URL = nextLogConn || mainConn;
+  LOG_DB_POOL_MAX = nextLogPoolMax;
+  process.env.TREND_DATABASE_URL = TREND_DATABASE_URL;
+  process.env.TREND_DB_POOL_MAX = String(TREND_DB_POOL_MAX);
+  process.env.LOG_DATABASE_URL = LOG_DATABASE_URL;
+  process.env.LOG_DB_POOL_MAX = String(LOG_DB_POOL_MAX);
+
+  const poolsToKeep = new Set([pool, trendPool, logPool].filter(Boolean));
+  if (oldTrendPool && !poolsToKeep.has(oldTrendPool)) oldTrendPool.end().catch(() => {});
+  if (oldLogPool && !poolsToKeep.has(oldLogPool)) oldLogPool.end().catch(() => {});
 }
 
 async function ensureSystemVersionState() {
@@ -5476,7 +6495,14 @@ async function runDatabaseMaintenance() {
     );
 
     const trendCutoff = Date.now() - OPC_TREND_RETENTION_MS;
-    await pool.query("DELETE FROM opc_tag_trend_chunks WHERE to_ts < $1", [trendCutoff]);
+    const trendDb = trendPool || pool;
+    if (trendDb) {
+      await ensureTrendChunkTable(trendDb, getTrendChunkTableNameForTimestamp(Date.now()));
+      const trendTables = await listTrendChunkTables(trendDb, { refresh: true, includeLegacy: true });
+      for (const tableName of trendTables) {
+        await trendDb.query(`DELETE FROM ${quoteTrendChunkTable(tableName)} WHERE to_ts < $1`, [trendCutoff]);
+      }
+    }
   } catch {
     // ignore maintenance errors
   } finally {
@@ -5933,8 +6959,9 @@ app.get("/api/weather/current", async (req, res) => {
   }
 });
 
-app.get("/api/opc/config", async (_req, res) => {
+app.get("/api/opc/config", async (req, res) => {
   try {
+    const requestedKeys = parseOpcStatusRequestedKeys(req.query?.keys || "");
     const { rows } = await pool.query(
       "SELECT config, updated_at FROM opc_config WHERE id = 1"
     );
@@ -5942,7 +6969,38 @@ app.get("/api/opc/config", async (_req, res) => {
       const row = rows[0] || {};
       // DB is the source of truth after row creation. Do not rehydrate from file here,
       // otherwise user deletions can be unintentionally restored from stale config.json.
-      res.json(row.config);
+      const configObj = row.config && typeof row.config === "object" ? row.config : {};
+      if (!requestedKeys.length) {
+        res.json(configObj);
+        return;
+      }
+      const srcTags = Array.isArray(configObj?.tags) ? configObj.tags : [];
+      const keySet = new Set(requestedKeys.map((k) => normalizeOpcStatusKey(k).toLowerCase()).filter(Boolean));
+      const filteredTags = srcTags.filter((tag) => {
+        const topic = normalizeOpcStatusKey(tag?.topic || "");
+        const group = normalizeOpcStatusKey(tag?.groupName || "");
+        const tagPath = normalizeOpcStatusKey(tag?.tagPath || "");
+        const name = normalizeOpcStatusKey(tag?.name || "");
+        const candidates = [
+          topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
+          topic && group && name ? `${topic}.${group}.${name}` : "",
+          topic && tagPath ? `${topic}.${tagPath}` : "",
+          topic && name ? `${topic}.${name}` : "",
+          group && tagPath ? `${group}.${tagPath}` : "",
+          group && name ? `${group}.${name}` : "",
+          tagPath,
+          name,
+        ]
+          .map((x) => normalizeOpcStatusKey(x).toLowerCase())
+          .filter(Boolean);
+        return candidates.some((c) => keySet.has(c));
+      });
+      res.json({
+        ...configObj,
+        tags: filteredTags,
+        scoped: true,
+        requestedKeyCount: requestedKeys.length,
+      });
       return;
     }
     if (fs.existsSync(OPC_CONFIG_PATH)) {
@@ -6369,70 +7427,323 @@ app.post("/api/opc/restart", (_req, res) => {
   }
 });
 
-app.get("/api/opc/status", async (_req, res) => {
-  try {
-    const { rows } = await pool.query(
-      "SELECT status, updated_at::text AS updated_at FROM opc_status WHERE id = 1 LIMIT 1"
-    );
-    if (!rows.length || !rows[0]?.status) {
-      const empty = { values: {}, errors: {}, qualities: {}, diagnostics: {}, at: null, connected: false };
-      maybeLogOpcConnectionState(empty);
-      res.json(empty);
+const opcStatusCache = {
+  status: null,
+  updatedAtMs: 0,
+};
+const OPC_STATUS_DB_WRITE_MIN_INTERVAL_MS = Math.max(
+  200,
+  Number.parseInt(String(process.env.OPC_STATUS_DB_WRITE_MIN_INTERVAL_MS || "1000"), 10) || 1000
+);
+let opcStatusDbLastWriteAtMs = 0;
+let opcStatusDbPersistInFlight = false;
+let opcStatusDbPersistTimer = null;
+let opcStatusDbPendingStatus = null;
+const OPC_STATUS_STREAM_HEARTBEAT_MS = 15000;
+let opcStatusStreamClientSeq = 0;
+const opcStatusStreamClients = new Map();
+
+function diffOpcStatusMap(prevMap, nextMap) {
+  const prev = prevMap && typeof prevMap === "object" ? prevMap : {};
+  const next = nextMap && typeof nextMap === "object" ? nextMap : {};
+  const out = {};
+  let changed = false;
+  Object.keys(next).forEach((key) => {
+    const prevHas = Object.prototype.hasOwnProperty.call(prev, key);
+    if (!prevHas || !Object.is(prev[key], next[key])) {
+      out[key] = next[key];
+      changed = true;
+    }
+  });
+  Object.keys(prev).forEach((key) => {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      out[key] = null;
+      changed = true;
+    }
+  });
+  return changed ? out : null;
+}
+
+function sendOpcStatusSse(res, payload) {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function notifyOpcStatusStreamClients(nextStatus, prevStatus = null) {
+  if (!opcStatusStreamClients.size) return;
+  const nextSafe = nextStatus && typeof nextStatus === "object" ? nextStatus : {};
+  const prevSafe = prevStatus && typeof prevStatus === "object" ? prevStatus : {};
+  opcStatusStreamClients.forEach((client, id) => {
+    try {
+      const scopedNext = client.keys.length ? filterOpcStatusByKeys(nextSafe, client.keys) : nextSafe;
+      const basePrev = client.lastStatus && typeof client.lastStatus === "object"
+        ? client.lastStatus
+        : (client.keys.length ? filterOpcStatusByKeys(prevSafe, client.keys) : prevSafe);
+      const valuesDelta = diffOpcStatusMap(basePrev?.values, scopedNext?.values);
+      const errorsDelta = diffOpcStatusMap(basePrev?.errors, scopedNext?.errors);
+      const qualitiesDelta = diffOpcStatusMap(basePrev?.qualities, scopedNext?.qualities);
+      const diagnosticsDelta = diffOpcStatusMap(basePrev?.diagnostics, scopedNext?.diagnostics);
+      if (!valuesDelta && !errorsDelta && !qualitiesDelta && !diagnosticsDelta) return;
+      sendOpcStatusSse(client.res, {
+        type: "delta",
+        at: scopedNext?.at || Date.now(),
+        connected: scopedNext?.connected === true,
+        stale: scopedNext?.stale === true,
+        staleAgeMs: Number(scopedNext?.staleAgeMs || 0) || 0,
+        bridgeFallback: scopedNext?.bridgeFallback === true,
+        values: valuesDelta || {},
+        errors: errorsDelta || {},
+        qualities: qualitiesDelta || {},
+        diagnostics: diagnosticsDelta || {},
+      });
+      client.lastStatus = scopedNext;
+    } catch {
+      try {
+        client.res.end();
+      } catch {
+        // ignore
+      }
+      opcStatusStreamClients.delete(id);
+    }
+  });
+}
+
+function writeOpcStatusCache(status, updatedAtRaw = null) {
+  const safeStatus = status && typeof status === "object" && !Array.isArray(status) ? status : null;
+  if (!safeStatus) return;
+  const prev = opcStatusCache.status && typeof opcStatusCache.status === "object" ? opcStatusCache.status : null;
+  const updatedAtMs = parseTimestampMs(updatedAtRaw);
+  opcStatusCache.status = safeStatus;
+  opcStatusCache.updatedAtMs =
+    Number.isFinite(updatedAtMs) && updatedAtMs > 0 ? updatedAtMs : Date.now();
+  notifyOpcStatusStreamClients(safeStatus, prev);
+}
+
+function getOpcStatusFromCache() {
+  return opcStatusCache.status && typeof opcStatusCache.status === "object"
+    ? opcStatusCache.status
+    : {};
+}
+
+async function loadPersistedOpcStatusRow() {
+  if (!OPC_PERSIST_LIVE_STATUS) return null;
+  const { rows } = await pool.query(
+    "SELECT status, updated_at::text AS updated_at FROM opc_status WHERE id = 1 LIMIT 1"
+  );
+  if (!rows.length || !rows[0]?.status || typeof rows[0].status !== "object") return null;
+  return rows[0];
+}
+
+async function persistOpcStatusToDbNow(status) {
+  if (!OPC_PERSIST_LIVE_STATUS) return;
+  const safe =
+    status && typeof status === "object" && !Array.isArray(status)
+      ? status
+      : { values: {}, errors: {}, qualities: {}, diagnostics: {}, connected: false, at: Date.now() };
+  await pool.query(
+    `
+      INSERT INTO opc_status (id, status, updated_at)
+      VALUES (1, $1::jsonb, now())
+      ON CONFLICT (id)
+      DO UPDATE SET status = EXCLUDED.status, updated_at = now()
+      `,
+    [JSON.stringify(safe)]
+  );
+  opcStatusDbLastWriteAtMs = Date.now();
+}
+
+function scheduleOpcStatusDbPersist(status) {
+  if (!OPC_PERSIST_LIVE_STATUS) return;
+  opcStatusDbPendingStatus = status;
+  const run = async () => {
+    if (opcStatusDbPersistInFlight) return;
+    const now = Date.now();
+    const waitMs = Math.max(0, OPC_STATUS_DB_WRITE_MIN_INTERVAL_MS - (now - opcStatusDbLastWriteAtMs));
+    if (waitMs > 0) {
+      if (!opcStatusDbPersistTimer) {
+        opcStatusDbPersistTimer = setTimeout(() => {
+          opcStatusDbPersistTimer = null;
+          void run();
+        }, waitMs);
+      }
       return;
     }
-    const baseStatus =
-      rows[0]?.status && typeof rows[0].status === "object" ? rows[0].status : {};
-    const statusAtMs = Number(baseStatus?.at || 0);
-    const dbUpdatedAtMs = parseTimestampMs(rows[0]?.updated_at);
-    const freshnessAt = Math.max(
-      Number.isFinite(statusAtMs) ? statusAtMs : 0,
-      Number.isFinite(dbUpdatedAtMs) ? dbUpdatedAtMs : 0
-    );
-    const staleAgeMs = freshnessAt > 0 ? Math.max(0, Date.now() - freshnessAt) : Number.POSITIVE_INFINITY;
-    const isStale = staleAgeMs > OPC_STATUS_STALE_MS;
-    let effectiveStatus = baseStatus;
-    if (isStale) {
-      try {
-        const bridgeStatus = await loadBridgeStatusSnapshot();
-        const bridgeConnections =
-          bridgeStatus?.connections && typeof bridgeStatus.connections === "object"
-            ? bridgeStatus.connections
-            : {};
-        const bridgeConnectedFlag =
-          typeof bridgeStatus?.connected === "boolean"
-            ? bridgeStatus.connected
-            : Object.values(bridgeConnections).some((value) => value === true);
-        if (bridgeConnectedFlag) {
-          effectiveStatus = {
-            ...baseStatus,
-            connected: true,
-            stale: false,
-            staleAgeMs,
-            bridgeFallback: true,
-            bridgeLastPollAt: bridgeStatus?.lastPollAt || null,
-            connections:
-              Object.keys(bridgeConnections).length > 0
-                ? bridgeConnections
-                : baseStatus?.connections,
-            runtime:
-              bridgeStatus?.runtime && typeof bridgeStatus.runtime === "object"
-                ? {
-                    ...(baseStatus?.runtime && typeof baseStatus.runtime === "object"
-                      ? baseStatus.runtime
-                      : {}),
-                    ...bridgeStatus.runtime,
-                  }
-                : baseStatus?.runtime,
-          };
-        } else {
-          effectiveStatus = {
-            ...baseStatus,
-            connected: false,
-            stale: true,
-            staleAgeMs,
-          };
+    const next = opcStatusDbPendingStatus;
+    if (!next) return;
+    opcStatusDbPendingStatus = null;
+    opcStatusDbPersistInFlight = true;
+    try {
+      await persistOpcStatusToDbNow(next);
+    } catch (err) {
+      logOpcError("persist status", err);
+    } finally {
+      opcStatusDbPersistInFlight = false;
+      if (opcStatusDbPendingStatus) {
+        if (!opcStatusDbPersistTimer) {
+          opcStatusDbPersistTimer = setTimeout(() => {
+            opcStatusDbPersistTimer = null;
+            void run();
+          }, OPC_STATUS_DB_WRITE_MIN_INTERVAL_MS);
         }
-      } catch {
+      }
+    }
+  };
+  void run();
+}
+
+function normalizeOpcStatusKey(value) {
+  return String(value || "").replace(/\r?\n/g, "").trim();
+}
+
+function parseOpcStatusRequestedKeys(input) {
+  const src = Array.isArray(input)
+    ? input
+    : typeof input === "string"
+    ? String(input)
+        .split(",")
+        .map((x) => String(x || "").trim())
+    : [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of src) {
+    const key = normalizeOpcStatusKey(raw);
+    if (!key) continue;
+    const lower = key.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    out.push(key);
+    if (out.length >= 5000) break;
+  }
+  return out;
+}
+
+function filterOpcStatusByKeys(status, requestedKeys = []) {
+  const keys = parseOpcStatusRequestedKeys(requestedKeys);
+  if (!keys.length) return status;
+  const source = status && typeof status === "object" ? status : {};
+  const resolveMatches = (obj) => {
+    const src = obj && typeof obj === "object" ? obj : {};
+    const lowerToActual = new Map();
+    const tailToActual = new Map();
+    const allActualLowers = [];
+    Object.keys(src).forEach((actualKey) => {
+      const lower = normalizeOpcStatusKey(actualKey).toLowerCase();
+      if (!lower) return;
+      if (!lowerToActual.has(lower)) lowerToActual.set(lower, actualKey);
+      const tail = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : lower;
+      const list = tailToActual.get(tail) || [];
+      list.push(actualKey);
+      tailToActual.set(tail, list);
+      allActualLowers.push(lower);
+    });
+    const out = {};
+    const included = new Set();
+    keys.forEach((rawKey) => {
+      const requested = normalizeOpcStatusKey(rawKey).toLowerCase();
+      if (!requested) return;
+      const direct = lowerToActual.get(requested);
+      if (direct && !included.has(direct)) {
+        out[direct] = src[direct];
+        included.add(direct);
+        return;
+      }
+      const tail = requested.includes(".") ? requested.slice(requested.lastIndexOf(".") + 1) : requested;
+      const candidates = tailToActual.get(tail) || [];
+      let suffixMatched = false;
+      for (const candidate of candidates) {
+        const candidateLower = normalizeOpcStatusKey(candidate).toLowerCase();
+        if (candidateLower === requested || candidateLower.endsWith(`.${requested}`)) {
+          if (!included.has(candidate)) {
+            out[candidate] = src[candidate];
+            included.add(candidate);
+          }
+          suffixMatched = true;
+          return;
+        }
+      }
+      // Prefix match: requested is a group path — include all keys that start with "requested."
+      if (!suffixMatched) {
+        const prefix = `${requested}.`;
+        for (const lower of allActualLowers) {
+          if (lower === requested || lower.startsWith(prefix) || lower.endsWith(`.${requested}`) || lower.includes(`.${requested}.`)) {
+            const actual = lowerToActual.get(lower);
+            if (actual && !included.has(actual)) {
+              out[actual] = src[actual];
+              included.add(actual);
+            }
+          }
+        }
+      }
+    });
+    return out;
+  };
+  return {
+    ...source,
+    values: resolveMatches(source.values),
+    errors: resolveMatches(source.errors),
+    qualities: resolveMatches(source.qualities),
+    diagnostics: resolveMatches(source.diagnostics),
+    scoped: true,
+    requestedKeyCount: keys.length,
+  };
+}
+
+async function loadEffectiveOpcStatus() {
+  let baseStatus = getOpcStatusFromCache();
+  if (!Object.keys(baseStatus).length) baseStatus = null;
+  let dbUpdatedAtMs = Number(opcStatusCache.updatedAtMs || 0);
+
+  if (!baseStatus) {
+    const row = await loadPersistedOpcStatusRow();
+    if (!row?.status) {
+      return { values: {}, errors: {}, qualities: {}, diagnostics: {}, at: null, connected: false };
+    }
+    baseStatus = row.status && typeof row.status === "object" ? row.status : {};
+    dbUpdatedAtMs = parseTimestampMs(row?.updated_at);
+    writeOpcStatusCache(baseStatus, row?.updated_at);
+  }
+
+  const statusAtMs = Number(baseStatus?.at || 0);
+  const freshnessAt = Math.max(
+    Number.isFinite(statusAtMs) ? statusAtMs : 0,
+    Number.isFinite(dbUpdatedAtMs) ? dbUpdatedAtMs : 0
+  );
+  const staleAgeMs = freshnessAt > 0 ? Math.max(0, Date.now() - freshnessAt) : Number.POSITIVE_INFINITY;
+  const isStale = staleAgeMs > OPC_STATUS_STALE_MS;
+  let effectiveStatus = baseStatus;
+  if (isStale) {
+    try {
+      const bridgeStatus = await loadBridgeStatusSnapshot();
+      const bridgeConnections =
+        bridgeStatus?.connections && typeof bridgeStatus.connections === "object"
+          ? bridgeStatus.connections
+          : {};
+      const bridgeConnectedFlag =
+        typeof bridgeStatus?.connected === "boolean"
+          ? bridgeStatus.connected
+          : Object.values(bridgeConnections).some((value) => value === true);
+      if (bridgeConnectedFlag) {
+        effectiveStatus = {
+          ...baseStatus,
+          connected: true,
+          stale: false,
+          staleAgeMs,
+          bridgeFallback: true,
+          bridgeLastPollAt: bridgeStatus?.lastPollAt || null,
+          connections:
+            Object.keys(bridgeConnections).length > 0
+              ? bridgeConnections
+              : baseStatus?.connections,
+          runtime:
+            bridgeStatus?.runtime && typeof bridgeStatus.runtime === "object"
+              ? {
+                  ...(baseStatus?.runtime && typeof baseStatus.runtime === "object"
+                    ? baseStatus.runtime
+                    : {}),
+                  ...bridgeStatus.runtime,
+                }
+              : baseStatus?.runtime,
+        };
+      } else {
         effectiveStatus = {
           ...baseStatus,
           connected: false,
@@ -6440,13 +7751,99 @@ app.get("/api/opc/status", async (_req, res) => {
           staleAgeMs,
         };
       }
+    } catch {
+      effectiveStatus = {
+        ...baseStatus,
+        connected: false,
+        stale: true,
+        staleAgeMs,
+      };
     }
-    maybeLogOpcConnectionState(effectiveStatus);
-    res.json(effectiveStatus);
+  }
+  return effectiveStatus;
+}
+
+app.get("/api/opc/status", async (req, res) => {
+  try {
+    const effectiveStatus = await loadEffectiveOpcStatus();
+    const requestedKeys = parseOpcStatusRequestedKeys(req.query?.keys || "");
+    const payload = requestedKeys.length ? filterOpcStatusByKeys(effectiveStatus, requestedKeys) : effectiveStatus;
+    maybeLogOpcConnectionState(payload);
+    res.json(payload);
   } catch (err) {
     logOpcError("load status", err);
     res.status(500).json({ error: err?.message || "Failed to load OPC status." });
   }
+});
+
+app.post("/api/opc/status/query", async (req, res) => {
+  try {
+    const requestedKeys = parseOpcStatusRequestedKeys(req.body?.keys);
+    if (!requestedKeys.length) {
+      const effectiveStatus = await loadEffectiveOpcStatus();
+      maybeLogOpcConnectionState(effectiveStatus);
+      res.json(effectiveStatus);
+      return;
+    }
+    const effectiveStatus = await loadEffectiveOpcStatus();
+    const payload = filterOpcStatusByKeys(effectiveStatus, requestedKeys);
+    maybeLogOpcConnectionState(payload);
+    res.json(payload);
+  } catch (err) {
+    logOpcError("load status scoped", err);
+    res.status(500).json({ error: err?.message || "Failed to load scoped OPC status." });
+  }
+});
+
+app.get("/api/opc/status/stream", async (req, res) => {
+  let clientId = 0;
+  let heartbeatId = null;
+  try {
+    const requestedKeys = parseOpcStatusRequestedKeys(req.query?.keys || "");
+    const effectiveStatus = await loadEffectiveOpcStatus();
+    const scopedStatus = requestedKeys.length
+      ? filterOpcStatusByKeys(effectiveStatus, requestedKeys)
+      : effectiveStatus;
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    res.write("retry: 2000\n\n");
+
+    clientId = ++opcStatusStreamClientSeq;
+    opcStatusStreamClients.set(clientId, {
+      id: clientId,
+      res,
+      keys: requestedKeys,
+      lastStatus: scopedStatus,
+    });
+    sendOpcStatusSse(res, {
+      type: "snapshot",
+      ...scopedStatus,
+      scoped: requestedKeys.length > 0,
+      requestedKeyCount: requestedKeys.length,
+    });
+    heartbeatId = setInterval(() => {
+      try {
+        res.write(": keepalive\n\n");
+      } catch {
+        // ignore heartbeat write failures
+      }
+    }, OPC_STATUS_STREAM_HEARTBEAT_MS);
+  } catch (err) {
+    logOpcError("stream status", err);
+    res.status(500).json({ error: err?.message || "Failed to open OPC status stream." });
+    return;
+  }
+
+  const close = () => {
+    if (heartbeatId) clearInterval(heartbeatId);
+    if (clientId) opcStatusStreamClients.delete(clientId);
+  };
+  req.on("close", close);
+  req.on("end", close);
 });
 
 app.get("/api/alarms", async (req, res) => {
@@ -7061,8 +8458,11 @@ async function loadLatestChatL5xDocs(mode = "design") {
 }
 
 async function loadOpcStatusSnapshot() {
-  const { rows } = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
-  const status = rows?.[0]?.status && typeof rows[0].status === "object" ? rows[0].status : {};
+  const cached = getOpcStatusFromCache();
+  const status =
+    cached && Object.keys(cached).length
+      ? cached
+      : ((await loadPersistedOpcStatusRow())?.status || {});
   const values = status?.values && typeof status.values === "object" ? status.values : {};
   const qualities = status?.qualities && typeof status.qualities === "object" ? status.qualities : {};
   return { values, qualities };
@@ -7671,13 +9071,28 @@ app.post("/api/alarms/:alarmKey/unshelve", async (req, res) => {
 
 app.get("/api/opc/trends/tags", async (_req, res) => {
   try {
-    const { rows } = await pool.query(
+    const trendDb = trendPool || pool;
+    if (!trendDb) {
+      res.status(503).json({ error: "Trend database is not available." });
+      return;
+    }
+    const trendTables = await listTrendChunkTables(trendDb, { includeLegacy: true });
+    if (!trendTables.length) {
+      res.json({ tags: [] });
+      return;
+    }
+    const unionSql = buildTrendUnionSql(trendTables, "tag_key, to_ts, sample_count");
+    if (!unionSql) {
+      res.json({ tags: [] });
+      return;
+    }
+    const { rows } = await trendDb.query(
       `
       SELECT
         tag_key,
         MAX(to_ts) AS last_at,
         SUM(sample_count)::bigint AS sample_count
-      FROM opc_tag_trend_chunks
+      FROM (${unionSql}) AS trend_rows
       GROUP BY tag_key
       ORDER BY tag_key
       `
@@ -7711,16 +9126,28 @@ app.get("/api/opc/trends", async (req, res) => {
     if (trendBuffers.has(tagKey)) {
       await flushTrendBuffer(tagKey);
     }
-    const { rows } = await pool.query(
-      `
-      SELECT codec, payload, from_ts, to_ts
-      FROM opc_tag_trend_chunks
-      WHERE tag_key = $1 AND to_ts >= $2 AND from_ts <= $3
-      ORDER BY from_ts ASC
-      LIMIT 5000
-      `,
-      [tagKey, rangeFrom, rangeTo]
+    const trendDb = trendPool || pool;
+    if (!trendDb) {
+      res.status(503).json({ error: "Trend database is not available." });
+      return;
+    }
+    const trendTables = await listTrendChunkTables(trendDb, { includeLegacy: true });
+    const unionSql = buildTrendUnionSql(
+      trendTables,
+      "codec, payload, from_ts, to_ts, tag_key",
+      "WHERE tag_key = $1 AND to_ts >= $2 AND from_ts <= $3"
     );
+    const { rows } = unionSql
+      ? await trendDb.query(
+          `
+          SELECT codec, payload, from_ts, to_ts
+          FROM (${unionSql}) AS trend_rows
+          ORDER BY from_ts ASC
+          LIMIT 5000
+          `,
+          [tagKey, rangeFrom, rangeTo]
+        )
+      : { rows: [] };
     const points = [];
     for (const row of rows) {
       const decoded = decodeTrendChunkPayload(String(row?.codec || ""), row?.payload);
@@ -7729,8 +9156,7 @@ app.get("/api/opc/trends", async (req, res) => {
         points.push(pt);
       });
     }
-    const live = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
-    const liveStatus = live.rows[0]?.status || {};
+    const liveStatus = await loadCurrentOpcStatus();
     const liveAt = normalizeTrendTimestamp(liveStatus?.at || now);
     const liveValue = toFiniteNumber(liveStatus?.values?.[tagKey]);
     if (liveValue != null && liveAt >= rangeFrom && liveAt <= rangeTo) {
@@ -7920,10 +9346,13 @@ async function performOpcWrite({
     }
   }
 
-  const current = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
-  const baseStatus = current.rows[0]?.status && typeof current.rows[0].status === "object"
-    ? current.rows[0].status
-    : {};
+  let baseStatus = getOpcStatusFromCache();
+  if ((!baseStatus || !Object.keys(baseStatus).length) && OPC_PERSIST_LIVE_STATUS) {
+    const current = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+    baseStatus = current.rows[0]?.status && typeof current.rows[0].status === "object"
+      ? current.rows[0].status
+      : {};
+  }
   const at = Date.now();
   const nextStatus = {
     ...baseStatus,
@@ -8020,15 +9449,8 @@ async function performOpcWrite({
     };
   }
 
-  await pool.query(
-    `
-    INSERT INTO opc_status (id, status, updated_at)
-    VALUES (1, $1::jsonb, now())
-    ON CONFLICT (id)
-    DO UPDATE SET status = EXCLUDED.status, updated_at = now()
-    `,
-    [JSON.stringify(nextStatus)]
-  );
+  writeOpcStatusCache(nextStatus, Date.now());
+  scheduleOpcStatusDbPersist(nextStatus);
 
   const n = toFiniteNumber(nextValue);
   if (n != null) {
@@ -8818,26 +10240,25 @@ app.post("/api/opc/status", async (req, res) => {
       res.status(400).json({ error: "status object required." });
       return;
     }
-    const current = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
-    const existingStatus =
-      current.rows[0]?.status && typeof current.rows[0].status === "object"
-        ? current.rows[0].status
+    let existingStatus =
+      opcStatusCache.status && typeof opcStatusCache.status === "object"
+        ? opcStatusCache.status
         : {};
+    if (OPC_PERSIST_LIVE_STATUS && (!existingStatus || !Object.keys(existingStatus).length)) {
+      const current = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
+      existingStatus =
+        current.rows[0]?.status && typeof current.rows[0].status === "object"
+          ? current.rows[0].status
+          : {};
+    }
     const mergedStatus = {
       ...status,
       diagnostics: mergeWriteDiagnostics(status?.diagnostics, existingStatus?.diagnostics),
       runtime: mergeRuntimeWriteMetrics(status?.runtime, existingStatus?.runtime),
     };
     maybeLogOpcConnectionState(mergedStatus);
-    await pool.query(
-      `
-      INSERT INTO opc_status (id, status, updated_at)
-      VALUES (1, $1::jsonb, now())
-      ON CONFLICT (id)
-      DO UPDATE SET status = EXCLUDED.status, updated_at = now()
-      `,
-      [JSON.stringify(mergedStatus)]
-    );
+    writeOpcStatusCache(mergedStatus, Date.now());
+    scheduleOpcStatusDbPersist(mergedStatus);
     try {
       await runAutomationRulesForStatusChange(existingStatus, mergedStatus);
     } catch (err) {
@@ -8851,30 +10272,39 @@ app.post("/api/opc/status", async (req, res) => {
         ? mergedStatus.diagnostics
         : {};
     const trendConfigMap = await loadTrendTagConfigMap();
-    Object.entries(values).forEach(([tagKey, rawValue]) => {
-      const key = String(tagKey || "").trim();
-      const cfg = trendConfigMap instanceof Map ? trendConfigMap.get(key) : null;
-      if (trendConfigMap instanceof Map && !cfg) return;
-      const n = toFiniteNumber(rawValue);
-      if (n == null) return;
-      const mode = cfg?.trendMode || "value";
-      const diag = diagnostics?.[key] && typeof diagnostics[key] === "object" ? diagnostics[key] : null;
-      const effectiveIntervalMs = Math.max(
-        1000,
-        Number.parseInt(String(diag?.effectiveIntervalMs || ""), 10) || 0
-      );
-      appendTrendSample(tagKey, at, n, {
-        mode,
-        forceMs:
-          cfg?.trendSampleMs ||
-          (mode === "time" ? effectiveIntervalMs || 1000 : OPC_TREND_FORCE_SAMPLE_MS),
+    if (!(trendConfigMap instanceof Map) || trendConfigMap.size > 0) {
+      Object.entries(values).forEach(([tagKey, rawValue]) => {
+        const key = String(tagKey || "").trim();
+        const cfg = trendConfigMap instanceof Map ? trendConfigMap.get(key) : null;
+        if (trendConfigMap instanceof Map && !cfg) return;
+        const n = toFiniteNumber(rawValue);
+        if (n == null) return;
+        const mode = cfg?.trendMode || "value";
+        const diag = diagnostics?.[key] && typeof diagnostics[key] === "object" ? diagnostics[key] : null;
+        const effectiveIntervalMs = Math.max(
+          1000,
+          Number.parseInt(String(diag?.effectiveIntervalMs || ""), 10) || 0
+        );
+        appendTrendSample(tagKey, at, n, {
+          mode,
+          forceMs:
+            cfg?.trendSampleMs ||
+            (mode === "time" ? effectiveIntervalMs || 1000 : OPC_TREND_FORCE_SAMPLE_MS),
+        });
       });
-    });
+    }
     await flushTrendBuffersIfNeeded(at);
     if (at - trendLastCleanupAt >= 5 * 60 * 1000) {
       trendLastCleanupAt = at;
       const cutoff = at - OPC_TREND_RETENTION_MS;
-      await pool.query("DELETE FROM opc_tag_trend_chunks WHERE to_ts < $1", [cutoff]);
+      const trendDb = trendPool || pool;
+      if (trendDb) {
+        await ensureTrendChunkTable(trendDb, getTrendChunkTableNameForTimestamp(at));
+        const trendTables = await listTrendChunkTables(trendDb, { refresh: true, includeLegacy: true });
+        for (const tableName of trendTables) {
+          await trendDb.query(`DELETE FROM ${quoteTrendChunkTable(tableName)} WHERE to_ts < $1`, [cutoff]);
+        }
+      }
     }
     try {
       await refreshActiveOpcAlarms(mergedStatus);
@@ -9165,10 +10595,167 @@ app.put("/api/system/version/align", async (_req, res) => {
   }
 });
 
+app.get("/api/db/backup/config", async (_req, res) => {
+  try {
+    const cfg = await loadDbBackupConfigFromStore();
+    dbBackupState = cfg;
+    res.json({ config: cfg });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load backup config." });
+  }
+});
+
+app.put("/api/db/backup/config", async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const incoming = body?.config && typeof body.config === "object" ? body.config : body;
+    const next = await saveDbBackupConfigToStore({
+      ...dbBackupState,
+      ...incoming,
+    });
+    scheduleDatabaseBackups();
+    res.json({ ok: true, config: next });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to save backup config." });
+  }
+});
+
+app.get("/api/db/backups", async (_req, res) => {
+  try {
+    const cfg = await loadDbBackupConfigFromStore();
+    dbBackupState = cfg;
+    const backups = listBackups();
+    res.json({
+      config: cfg,
+      backups,
+      running: dbBackupInFlight,
+      backupDir: DB_BACKUP_DIR,
+      backupRedundantDir: DB_BACKUP_REDUNDANT_DIR,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to load backups." });
+  }
+});
+
+app.post("/api/db/backups/run", async (req, res) => {
+  if (dbBackupInFlight) {
+    res.status(409).json({ error: "A backup operation is already running." });
+    return;
+  }
+  dbBackupInFlight = true;
+  try {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const includeTrendDb = body?.includeTrendDb !== false;
+    const backup = await runDatabaseBackup({ reason: "manual", includeTrendDb });
+    res.json({ ok: true, backup });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to create backup." });
+  } finally {
+    dbBackupInFlight = false;
+  }
+});
+
+app.post("/api/db/backups/restore", async (req, res) => {
+  if (dbBackupInFlight) {
+    res.status(409).json({ error: "Another backup/restore operation is already running." });
+    return;
+  }
+  dbBackupInFlight = true;
+  try {
+    const backupId = safeBackupToken(req.body?.backupId || req.body?.id || "");
+    if (!backupId) {
+      res.status(400).json({ error: "backupId required." });
+      return;
+    }
+    const result = await runDatabaseRestore(backupId);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to restore backup." });
+  } finally {
+    dbBackupInFlight = false;
+  }
+});
+
+app.get("/api/db/backups/file/:backupId/:kind", async (req, res) => {
+  try {
+    const backupId = safeBackupToken(req.params?.backupId || "");
+    const kind = String(req.params?.kind || "main").trim().toLowerCase();
+    if (!backupId) {
+      res.status(400).json({ error: "backupId required." });
+      return;
+    }
+    if (kind !== "main" && kind !== "trend") {
+      res.status(400).json({ error: "kind must be main or trend." });
+      return;
+    }
+    const backup = findBackupById(backupId);
+    if (!backup) {
+      res.status(404).json({ error: "Backup not found." });
+      return;
+    }
+    const file = (Array.isArray(backup.files) ? backup.files : []).find(
+      (f) => String(f?.kind || "").trim().toLowerCase() === kind
+    );
+    if (!file?.fileName) {
+      res.status(404).json({ error: `Backup ${kind} dump not found.` });
+      return;
+    }
+    const fileName = String(file.fileName || "").trim();
+    const abs = resolveBackupFilePathWithRedundancy(fileName);
+    if (!abs || !fs.existsSync(abs)) {
+      res.status(404).json({ error: "Backup dump file is missing." });
+      return;
+    }
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.status(200).sendFile(abs);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to download backup file." });
+  }
+});
+
+app.get("/api/db/backups/export/:backupId", async (req, res) => {
+  try {
+    const backupId = safeBackupToken(req.params?.backupId || "");
+    if (!backupId) {
+      res.status(400).json({ error: "backupId required." });
+      return;
+    }
+    const bundle = buildBackupExportBundle(backupId);
+    const fileName = `${safeBackupToken(backupId)}.mesora-backup.json`;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.status(200).send(`${JSON.stringify(bundle, null, 2)}\n`);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to export backup." });
+  }
+});
+
+app.post("/api/db/backups/import", async (req, res) => {
+  if (dbBackupInFlight) {
+    res.status(409).json({ error: "Another backup/restore operation is already running." });
+    return;
+  }
+  try {
+    const body = req.body && typeof req.body === "object" ? req.body : {};
+    const bundle = body?.bundle && typeof body.bundle === "object" ? body.bundle : body;
+    const backup = importBackupBundle(bundle);
+    res.json({ ok: true, backup });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || "Failed to import backup bundle." });
+  }
+});
+
 app.get("/api/db/config", async (_req, res) => {
   try {
     const connection = parseDatabaseConnectionInfo(DATABASE_URL);
     const connectionUrl = DB_CLIENT === "postgres" ? parseDatabaseUrlObject(DATABASE_URL) : null;
+    const trendConnection = parseDatabaseConnectionInfo(TREND_DATABASE_URL || DATABASE_URL);
+    const trendConnectionUrl =
+      DB_CLIENT === "postgres" ? parseDatabaseUrlObject(TREND_DATABASE_URL || DATABASE_URL) : null;
+    const logConnection = parseDatabaseConnectionInfo(LOG_DATABASE_URL || DATABASE_URL);
+    const logConnectionUrl =
+      DB_CLIENT === "postgres" ? parseDatabaseUrlObject(LOG_DATABASE_URL || DATABASE_URL) : null;
     const editable =
       DB_CLIENT === "sqlserver"
         ? {
@@ -9199,6 +10786,26 @@ app.get("/api/db/config", async (_req, res) => {
             passwordSet: String(connectionUrl?.password || "").trim().length > 0,
             sslMode: String(connectionUrl?.searchParams?.get("sslmode") || "").trim(),
             applicationName: String(connectionUrl?.searchParams?.get("application_name") || "").trim(),
+            trendDatabaseUrl: String(TREND_DATABASE_URL || "").trim(),
+            trendPoolMax: TREND_DB_POOL_MAX,
+            trendProtocol:
+              String(trendConnectionUrl?.protocol || "postgres:").replace(/:$/, "") || "postgres",
+            trendHost: String(trendConnectionUrl?.hostname || "").trim(),
+            trendPort: Number.isFinite(Number(trendConnectionUrl?.port))
+              ? Number(trendConnectionUrl.port)
+              : 5432,
+            trendDatabase: String(trendConnectionUrl?.pathname || "").replace(/^\//, "").trim(),
+            trendUser: decodeURIComponent(String(trendConnectionUrl?.username || "").trim()),
+            logDatabaseUrl: String(LOG_DATABASE_URL || "").trim(),
+            logPoolMax: LOG_DB_POOL_MAX,
+            logProtocol:
+              String(logConnectionUrl?.protocol || "postgres:").replace(/:$/, "") || "postgres",
+            logHost: String(logConnectionUrl?.hostname || "").trim(),
+            logPort: Number.isFinite(Number(logConnectionUrl?.port))
+              ? Number(logConnectionUrl.port)
+              : 5432,
+            logDatabase: String(logConnectionUrl?.pathname || "").replace(/^\//, "").trim(),
+            logUser: decodeURIComponent(String(logConnectionUrl?.username || "").trim()),
           };
     const poolInfo = {
       configuredMax: DB_POOL_MAX,
@@ -9206,6 +10813,23 @@ app.get("/api/db/config", async (_req, res) => {
       total: Number.isFinite(Number(pool?.totalCount)) ? Number(pool.totalCount) : 0,
       idle: Number.isFinite(Number(pool?.idleCount)) ? Number(pool.idleCount) : 0,
       waiting: Number.isFinite(Number(pool?.waitingCount)) ? Number(pool.waitingCount) : 0,
+    };
+    const trendPoolInfo = {
+      configuredMax: TREND_DB_POOL_MAX,
+      max: Number.isFinite(Number(trendPool?.options?.max)) ? Number(trendPool.options.max) : null,
+      total: Number.isFinite(Number(trendPool?.totalCount)) ? Number(trendPool.totalCount) : 0,
+      idle: Number.isFinite(Number(trendPool?.idleCount)) ? Number(trendPool.idleCount) : 0,
+      waiting: Number.isFinite(Number(trendPool?.waitingCount)) ? Number(trendPool.waitingCount) : 0,
+      sameAsMain: !!trendPool && trendPool === pool,
+    };
+    const logPoolInfo = {
+      configuredMax: LOG_DB_POOL_MAX,
+      max: Number.isFinite(Number(logPool?.options?.max)) ? Number(logPool.options.max) : null,
+      total: Number.isFinite(Number(logPool?.totalCount)) ? Number(logPool.totalCount) : 0,
+      idle: Number.isFinite(Number(logPool?.idleCount)) ? Number(logPool.idleCount) : 0,
+      waiting: Number.isFinite(Number(logPool?.waitingCount)) ? Number(logPool.waitingCount) : 0,
+      sameAsMain: !!logPool && logPool === pool,
+      sameAsTrend: !!logPool && !!trendPool && logPool === trendPool && trendPool !== pool,
     };
     let sqlGuards = {
       reportQueryTimeoutMs: REPORT_QUERY_TIMEOUT_MS,
@@ -9278,9 +10902,13 @@ app.get("/api/db/config", async (_req, res) => {
       dbClient: DB_CLIENT,
       supportedClients: ["postgres", "sqlserver"],
       connection,
+      trendConnection,
+      logConnection,
       editable,
       versions: versionState,
       pool: poolInfo,
+      trendPool: trendPoolInfo,
+      logPool: logPoolInfo,
       sqlGuards,
       health: {
         connected,
@@ -9327,6 +10955,14 @@ app.put("/api/db/config", async (req, res) => {
     const nextPortRaw = incoming.port != null ? incoming.port : currentUrl?.port || 5432;
     const port = Number.parseInt(String(nextPortRaw), 10);
     const nextPoolMax = Number.parseInt(String(body.poolMax != null ? body.poolMax : DB_POOL_MAX), 10);
+    const nextTrendPoolMax = Number.parseInt(
+      String(body.trendPoolMax != null ? body.trendPoolMax : TREND_DB_POOL_MAX),
+      10
+    );
+    const nextLogPoolMax = Number.parseInt(
+      String(body.logPoolMax != null ? body.logPoolMax : LOG_DB_POOL_MAX),
+      10
+    );
     const password = incoming.password != null ? String(incoming.password) : "";
     const incomingSqlGuards =
       body?.sqlGuards && typeof body.sqlGuards === "object" ? body.sqlGuards : {};
@@ -9361,6 +10997,14 @@ app.put("/api/db/config", async (req, res) => {
     }
     if (!Number.isFinite(nextPoolMax) || nextPoolMax < 1 || nextPoolMax > 200) {
       res.status(400).json({ error: "poolMax must be between 1 and 200." });
+      return;
+    }
+    if (!Number.isFinite(nextTrendPoolMax) || nextTrendPoolMax < 1 || nextTrendPoolMax > 200) {
+      res.status(400).json({ error: "trendPoolMax must be between 1 and 200." });
+      return;
+    }
+    if (!Number.isFinite(nextLogPoolMax) || nextLogPoolMax < 1 || nextLogPoolMax > 200) {
+      res.status(400).json({ error: "logPoolMax must be between 1 and 200." });
       return;
     }
 
@@ -9429,12 +11073,39 @@ app.put("/api/db/config", async (req, res) => {
     if (applicationName) nextUrl.searchParams.set("application_name", applicationName);
     else nextUrl.searchParams.delete("application_name");
 
+    const trendDatabaseUrlRaw =
+      body?.trendDatabaseUrl != null
+        ? String(body.trendDatabaseUrl || "").trim()
+        : String(TREND_DATABASE_URL || "").trim();
+    const logDatabaseUrlRaw =
+      body?.logDatabaseUrl != null
+        ? String(body.logDatabaseUrl || "").trim()
+        : String(LOG_DATABASE_URL || "").trim();
+    const nextTrendUrl = trendDatabaseUrlRaw || deriveTrendDatabaseUrl(nextUrl.toString());
+    const nextLogUrl = logDatabaseUrlRaw || deriveLogDatabaseUrl(nextUrl.toString());
+    if (!parseDatabaseUrlObject(nextTrendUrl)) {
+      res.status(400).json({ error: "trendDatabaseUrl must be a valid postgres URL." });
+      return;
+    }
+    if (!parseDatabaseUrlObject(nextLogUrl)) {
+      res.status(400).json({ error: "logDatabaseUrl must be a valid postgres URL." });
+      return;
+    }
+
     await ensureDatabaseExists(nextUrl.toString());
+    await ensureDatabaseExists(nextTrendUrl);
+    await ensureDatabaseExists(nextLogUrl);
     await rebuildDatabasePool(nextUrl.toString(), nextPoolMax);
+    await rebuildAuxDatabasePools(nextTrendUrl, nextTrendPoolMax, nextLogUrl, nextLogPoolMax);
+    await ensureServerLogSchema(logPool || pool);
 
     upsertEnvVar(envPath, "DB_CLIENT", "postgres");
     upsertEnvVar(envPath, "DATABASE_URL", nextUrl.toString());
     upsertEnvVar(envPath, "DB_POOL_MAX", String(nextPoolMax));
+    upsertEnvVar(envPath, "TREND_DATABASE_URL", nextTrendUrl);
+    upsertEnvVar(envPath, "TREND_DB_POOL_MAX", String(nextTrendPoolMax));
+    upsertEnvVar(envPath, "LOG_DATABASE_URL", nextLogUrl);
+    upsertEnvVar(envPath, "LOG_DB_POOL_MAX", String(nextLogPoolMax));
     DB_CLIENT = "postgres";
     process.env.DB_CLIENT = "postgres";
 
@@ -9487,154 +11158,205 @@ app.get("/api/db/diagnostics/postgres", async (_req, res) => {
       return;
     }
 
-    const safeQuery = async (sql, params = []) => {
-      try {
-        return await pool.query(sql, params);
-      } catch (_err) {
-        return { rows: [] };
+    const collectDiagForPool = async (targetPool, options = {}) => {
+      if (!targetPool || typeof targetPool.query !== "function") {
+        return {
+          checkedAt: Date.now(),
+          settings: {},
+          connections: {},
+          database: {},
+          size: {},
+          topTables: [],
+          bgwriter: {},
+          wal: {},
+          locks: {},
+          uptime: {},
+          pool: {},
+          connection: parseDatabaseConnectionInfo(options?.connectionString || ""),
+        };
       }
+      const safeQuery = async (sql, params = []) => {
+        try {
+          return await targetPool.query(sql, params);
+        } catch (_err) {
+          return { rows: [] };
+        }
+      };
+      const [settingsRes, activityRes, dbStatRes, sizeRes, topTablesRes, bgwriterRes, walRes, locksRes, uptimeRes] = await Promise.all([
+        safeQuery(
+          `
+          SELECT name, setting, unit
+          FROM pg_settings
+          WHERE name = ANY($1::text[])
+        `,
+          [[
+            "shared_buffers",
+            "work_mem",
+            "maintenance_work_mem",
+            "effective_cache_size",
+            "temp_buffers",
+            "max_connections",
+            "max_worker_processes",
+            "max_parallel_workers",
+            "max_parallel_workers_per_gather",
+            "max_parallel_maintenance_workers",
+          ]]
+        ),
+        safeQuery(`
+          SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE state = 'active')::int AS active,
+            COUNT(*) FILTER (WHERE state = 'idle')::int AS idle,
+            COUNT(*) FILTER (WHERE wait_event IS NOT NULL)::int AS waiting
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+        `),
+        safeQuery(`
+          SELECT
+            blks_hit::bigint,
+            blks_read::bigint,
+            temp_files::bigint,
+            temp_bytes::bigint,
+            xact_commit::bigint,
+            xact_rollback::bigint,
+            deadlocks::bigint
+          FROM pg_stat_database
+          WHERE datname = current_database()
+        `),
+        safeQuery(`
+          SELECT
+            pg_database_size(current_database())::bigint AS db_bytes,
+            COALESCE((
+              SELECT SUM(pg_total_relation_size(c.oid))::bigint
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'r'
+            ), 0)::bigint AS tables_bytes,
+            COALESCE((
+              SELECT SUM(pg_total_relation_size(c.oid))::bigint
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relkind = 'i'
+            ), 0)::bigint AS indexes_bytes
+        `),
+        safeQuery(`
+          SELECT
+            c.relname AS table_name,
+            COALESCE(s.n_live_tup, 0)::bigint AS est_rows,
+            pg_total_relation_size(c.oid)::bigint AS total_bytes,
+            pg_relation_size(c.oid)::bigint AS table_bytes,
+            pg_indexes_size(c.oid)::bigint AS index_bytes
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+          WHERE n.nspname = 'public' AND c.relkind = 'r'
+          ORDER BY pg_total_relation_size(c.oid) DESC
+          LIMIT 25
+        `),
+        safeQuery(`
+          SELECT
+            checkpoints_timed::bigint,
+            checkpoints_req::bigint,
+            checkpoint_write_time::double precision,
+            checkpoint_sync_time::double precision,
+            buffers_checkpoint::bigint,
+            buffers_clean::bigint,
+            buffers_backend::bigint,
+            maxwritten_clean::bigint
+          FROM pg_stat_bgwriter
+        `),
+        safeQuery(`
+          SELECT
+            wal_records::bigint,
+            wal_fpi::bigint,
+            wal_bytes::numeric::text AS wal_bytes
+          FROM pg_stat_wal
+        `),
+        safeQuery(`
+          SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE NOT granted)::int AS waiting
+          FROM pg_locks
+        `),
+        safeQuery(`
+          SELECT
+            EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time()))::bigint AS uptime_seconds,
+            pg_postmaster_start_time()::text AS started_at
+        `),
+      ]);
+      const settingsRows = Array.isArray(settingsRes.rows) ? settingsRes.rows : [];
+      const settings = settingsRows.reduce((acc, row) => {
+        const key = String(row?.name || "").trim();
+        if (!key) return acc;
+        acc[key] = {
+          setting: String(row?.setting || ""),
+          unit: String(row?.unit || ""),
+        };
+        return acc;
+      }, {});
+      return {
+        checkedAt: Date.now(),
+        settings,
+        connections: activityRes.rows?.[0] || {},
+        database: dbStatRes.rows?.[0] || {},
+        size: sizeRes.rows?.[0] || {},
+        topTables: Array.isArray(topTablesRes.rows) ? topTablesRes.rows : [],
+        bgwriter: bgwriterRes.rows?.[0] || {},
+        wal: walRes.rows?.[0] || {},
+        locks: locksRes.rows?.[0] || {},
+        uptime: uptimeRes.rows?.[0] || {},
+        pool: {
+          max: Number.isFinite(Number(targetPool?.options?.max)) ? Number(targetPool.options.max) : null,
+          total: Number.isFinite(Number(targetPool?.totalCount)) ? Number(targetPool.totalCount) : 0,
+          idle: Number.isFinite(Number(targetPool?.idleCount)) ? Number(targetPool.idleCount) : 0,
+          waiting: Number.isFinite(Number(targetPool?.waitingCount)) ? Number(targetPool.waitingCount) : 0,
+        },
+        connection: parseDatabaseConnectionInfo(options?.connectionString || ""),
+      };
     };
 
-    const [settingsRes, activityRes, dbStatRes, sizeRes, topTablesRes, bgwriterRes, walRes, locksRes, uptimeRes] = await Promise.all([
-      safeQuery(
-        `
-        SELECT name, setting, unit
-        FROM pg_settings
-        WHERE name = ANY($1::text[])
-      `,
-        [[
-          "shared_buffers",
-          "work_mem",
-          "maintenance_work_mem",
-          "effective_cache_size",
-          "temp_buffers",
-          "max_connections",
-          "max_worker_processes",
-          "max_parallel_workers",
-          "max_parallel_workers_per_gather",
-          "max_parallel_maintenance_workers",
-        ]]
-      ),
-      safeQuery(`
-        SELECT
-          COUNT(*)::int AS total,
-          COUNT(*) FILTER (WHERE state = 'active')::int AS active,
-          COUNT(*) FILTER (WHERE state = 'idle')::int AS idle,
-          COUNT(*) FILTER (WHERE wait_event IS NOT NULL)::int AS waiting
-        FROM pg_stat_activity
-        WHERE datname = current_database()
-      `),
-      safeQuery(`
-        SELECT
-          blks_hit::bigint,
-          blks_read::bigint,
-          temp_files::bigint,
-          temp_bytes::bigint,
-          xact_commit::bigint,
-          xact_rollback::bigint,
-          deadlocks::bigint
-        FROM pg_stat_database
-        WHERE datname = current_database()
-      `),
-      safeQuery(`
-        SELECT
-          pg_database_size(current_database())::bigint AS db_bytes,
-          COALESCE((
-            SELECT SUM(pg_total_relation_size(c.oid))::bigint
-            FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public' AND c.relkind = 'r'
-          ), 0)::bigint AS tables_bytes,
-          COALESCE((
-            SELECT SUM(pg_total_relation_size(c.oid))::bigint
-            FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public' AND c.relkind = 'i'
-          ), 0)::bigint AS indexes_bytes
-      `),
-      safeQuery(`
-        SELECT
-          c.relname AS table_name,
-          COALESCE(s.n_live_tup, 0)::bigint AS est_rows,
-          pg_total_relation_size(c.oid)::bigint AS total_bytes,
-          pg_relation_size(c.oid)::bigint AS table_bytes,
-          pg_indexes_size(c.oid)::bigint AS index_bytes
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
-        WHERE n.nspname = 'public' AND c.relkind = 'r'
-        ORDER BY pg_total_relation_size(c.oid) DESC
-        LIMIT 25
-      `),
-      safeQuery(`
-        SELECT
-          checkpoints_timed::bigint,
-          checkpoints_req::bigint,
-          checkpoint_write_time::double precision,
-          checkpoint_sync_time::double precision,
-          buffers_checkpoint::bigint,
-          buffers_clean::bigint,
-          buffers_backend::bigint,
-          maxwritten_clean::bigint
-        FROM pg_stat_bgwriter
-      `),
-      safeQuery(`
-        SELECT
-          wal_records::bigint,
-          wal_fpi::bigint,
-          wal_bytes::numeric::text AS wal_bytes
-        FROM pg_stat_wal
-      `),
-      safeQuery(`
-        SELECT
-          COUNT(*)::int AS total,
-          COUNT(*) FILTER (WHERE NOT granted)::int AS waiting
-        FROM pg_locks
-      `),
-      safeQuery(`
-        SELECT
-          EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time()))::bigint AS uptime_seconds,
-          pg_postmaster_start_time()::text AS started_at
-      `),
-    ]);
-
-    const settingsRows = Array.isArray(settingsRes.rows) ? settingsRes.rows : [];
-    const settings = settingsRows.reduce((acc, row) => {
-      const key = String(row?.name || "").trim();
-      if (!key) return acc;
-      acc[key] = {
-        setting: String(row?.setting || ""),
-        unit: String(row?.unit || ""),
-      };
-      return acc;
-    }, {});
-
-    const activity = activityRes.rows?.[0] || {};
-    const dbStat = dbStatRes.rows?.[0] || {};
-    const size = sizeRes.rows?.[0] || {};
-    const topTables = Array.isArray(topTablesRes.rows) ? topTablesRes.rows : [];
-    const bgwriter = bgwriterRes.rows?.[0] || {};
-    const wal = walRes.rows?.[0] || {};
-    const locks = locksRes.rows?.[0] || {};
-    const uptime = uptimeRes.rows?.[0] || {};
+    const mainDiag = await collectDiagForPool(pool, { connectionString: DATABASE_URL });
+    const trendIsSameAsMain = !!trendPool && trendPool === pool;
+    const trendDiag = trendPool
+      ? trendIsSameAsMain
+        ? {
+            ...mainDiag,
+            sameAsMain: true,
+            connection: parseDatabaseConnectionInfo(TREND_DATABASE_URL || DATABASE_URL),
+          }
+        : {
+            ...(await collectDiagForPool(trendPool, { connectionString: TREND_DATABASE_URL })),
+            sameAsMain: false,
+          }
+      : null;
+    const logIsSameAsMain = !!logPool && logPool === pool;
+    const logIsSameAsTrend = !!logPool && !!trendPool && logPool === trendPool && trendPool !== pool;
+    const logDiag = logPool
+      ? logIsSameAsMain
+        ? {
+            ...mainDiag,
+            sameAsMain: true,
+            sameAsTrend: false,
+            connection: parseDatabaseConnectionInfo(LOG_DATABASE_URL || DATABASE_URL),
+          }
+        : logIsSameAsTrend
+        ? {
+            ...(trendDiag || (await collectDiagForPool(logPool, { connectionString: LOG_DATABASE_URL }))),
+            sameAsMain: false,
+            sameAsTrend: true,
+            connection: parseDatabaseConnectionInfo(LOG_DATABASE_URL || TREND_DATABASE_URL || DATABASE_URL),
+          }
+        : {
+            ...(await collectDiagForPool(logPool, { connectionString: LOG_DATABASE_URL })),
+            sameAsMain: false,
+            sameAsTrend: false,
+          }
+      : null;
 
     res.json({
-      checkedAt: Date.now(),
-      settings,
-      connections: activity,
-      database: dbStat,
-      size,
-      topTables,
-      bgwriter,
-      wal,
-      locks,
-      uptime,
-      pool: {
-        max: Number.isFinite(Number(pool?.options?.max)) ? Number(pool.options.max) : null,
-        total: Number.isFinite(Number(pool?.totalCount)) ? Number(pool.totalCount) : 0,
-        idle: Number.isFinite(Number(pool?.idleCount)) ? Number(pool.idleCount) : 0,
-        waiting: Number.isFinite(Number(pool?.waitingCount)) ? Number(pool.waitingCount) : 0,
-      },
+      ...mainDiag,
+      trend: trendDiag,
+      log: logDiag,
     });
   } catch (err) {
     res.status(500).json({ error: err?.message || "Failed to load PostgreSQL diagnostics." });
@@ -9647,13 +11369,90 @@ app.get("/api/logs", requireAreaView("server"), async (req, res) => {
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, limitRaw)) : 250;
     const levelFilter = String(req.query?.level || "").trim().toLowerCase();
     const sourceFilter = String(req.query?.source || "").trim().toLowerCase();
+    const categoryFilter = String(req.query?.category || "").trim().toLowerCase();
+    const dataTypeFilter = String(req.query?.data_type || req.query?.dataType || "").trim().toLowerCase();
     const search = String(req.query?.q || "").trim().toLowerCase();
+    const fromTsRaw = Number.parseInt(String(req.query?.from || ""), 10);
+    const toTsRaw = Number.parseInt(String(req.query?.to || ""), 10);
+    const fromIso = Number.isFinite(fromTsRaw) && fromTsRaw > 0 ? new Date(fromTsRaw).toISOString() : "";
+    const toIso = Number.isFinite(toTsRaw) && toTsRaw > 0 ? new Date(toTsRaw).toISOString() : "";
+
+    if (logPool) {
+      const where = [];
+      const values = [];
+      const push = (sql, value) => {
+        values.push(value);
+        where.push(sql.replace("?", `$${values.length}`));
+      };
+      if (levelFilter) push(`lower(level) = ?`, levelFilter);
+      if (sourceFilter) push(`lower(source) like ?`, `%${sourceFilter}%`);
+      if (categoryFilter) push(`lower(category) = ?`, categoryFilter);
+      if (dataTypeFilter) push(`lower(data_type) = ?`, dataTypeFilter);
+      if (fromIso) push(`at >= ?::timestamptz`, fromIso);
+      if (toIso) push(`at <= ?::timestamptz`, toIso);
+      if (search) {
+        values.push(`%${search}%`);
+        values.push(`%${search}%`);
+        where.push(`(lower(message) like $${values.length - 1} OR lower(coalesce(meta::text, '')) like $${values.length})`);
+      }
+      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+      const totalSql = `SELECT COUNT(*)::int AS total FROM server_logs ${whereSql}`;
+      const totalRes = await logPool.query(totalSql, values);
+      const total = Number(totalRes.rows?.[0]?.total || 0);
+      const listValues = [...values, limit];
+      const listSql = `
+        SELECT
+          id,
+          (extract(epoch from at) * 1000)::bigint AS at,
+          level,
+          source,
+          category,
+          data_type,
+          message,
+          meta,
+          count
+        FROM server_logs
+        ${whereSql}
+        ORDER BY at DESC, id DESC
+        LIMIT $${listValues.length}
+      `;
+      const listRes = await logPool.query(listSql, listValues);
+      const rows = (Array.isArray(listRes.rows) ? listRes.rows : []).map((row) => {
+        const meta = row?.meta && typeof row.meta === "object" ? row.meta : {};
+        return {
+          id: row.id,
+          at: Number(row.at) || Date.now(),
+          level: String(row.level || "info"),
+          source: String(row.source || "server"),
+          category: String(row.category || "general"),
+          data_type: String(row.data_type || "unknown"),
+          message: String(row.message || ""),
+          meta,
+          meta_pretty: (() => {
+            try {
+              return JSON.stringify(meta, null, 2);
+            } catch {
+              return "";
+            }
+          })(),
+          count: Math.max(1, Number.parseInt(String(row.count || 1), 10) || 1),
+        };
+      });
+      return res.json({
+        rows,
+        total,
+        limit,
+        storage: "database",
+      });
+    }
 
     const rows = [...serverLogs]
       .reverse()
       .filter((entry) => {
         if (levelFilter && String(entry?.level || "").toLowerCase() !== levelFilter) return false;
         if (sourceFilter && !String(entry?.source || "").toLowerCase().includes(sourceFilter)) return false;
+        if (categoryFilter && String(entry?.category || "").toLowerCase() !== categoryFilter) return false;
+        if (dataTypeFilter && String(entry?.dataType || "").toLowerCase() !== dataTypeFilter) return false;
         if (!search) return true;
         const message = String(entry?.message || "").toLowerCase();
         const metaText = (() => {
@@ -9666,10 +11465,11 @@ app.get("/api/logs", requireAreaView("server"), async (req, res) => {
         return message.includes(search) || metaText.includes(search);
       });
 
-    res.json({
+    return res.json({
       rows: rows.slice(0, limit),
       total: rows.length,
       limit,
+      storage: "memory",
       serverLogLimit: SERVER_LOG_LIMIT,
     });
   } catch (err) {
@@ -9691,6 +11491,8 @@ app.post("/api/logs/client", async (req, res) => {
       userName: userName || null,
       userAgent: truncateString(req.headers["user-agent"] || "", 240),
       route: truncateString(req.body?.route || "", 240),
+      dataType: payload.dataType,
+      category: payload.category,
     };
     appendServerLog(payload.level, payload.message, meta, source);
     res.json({ ok: true });
@@ -9702,6 +11504,9 @@ app.post("/api/logs/client", async (req, res) => {
 app.delete("/api/logs", requireAreaEdit("server"), async (_req, res) => {
   try {
     serverLogs.splice(0, serverLogs.length);
+    if (logPool) {
+      await logPool.query(`TRUNCATE TABLE server_logs RESTART IDENTITY`);
+    }
     appendServerLog("warn", "Logs cleared by user request.", {}, "server");
     res.json({ ok: true });
   } catch (err) {
@@ -9748,10 +11553,7 @@ app.get("/api/diagnostics/app", async (_req, res) => {
 
     let opcStatus = {};
     try {
-      const opcRes = await pool.query("SELECT status FROM opc_status WHERE id = 1 LIMIT 1");
-      opcStatus = (opcRes.rows?.[0]?.status && typeof opcRes.rows[0].status === "object")
-        ? opcRes.rows[0].status
-        : {};
+      opcStatus = await loadCurrentOpcStatus();
     } catch {
       opcStatus = {};
     }
@@ -12194,13 +13996,64 @@ async function start() {
     );
   }
   await ensureDatabaseExists();
+  if (TREND_DATABASE_URL_IS_DERIVED) {
+    TREND_DATABASE_URL = deriveTrendDatabaseUrl(DATABASE_URL);
+  }
+  if (LOG_DATABASE_URL_IS_DERIVED) {
+    LOG_DATABASE_URL = deriveLogDatabaseUrl(DATABASE_URL);
+  }
+  if (!TREND_DATABASE_URL) TREND_DATABASE_URL = DATABASE_URL;
+  if (!LOG_DATABASE_URL) LOG_DATABASE_URL = DATABASE_URL;
+  process.env.TREND_DATABASE_URL = TREND_DATABASE_URL;
+  process.env.TREND_DB_POOL_MAX = String(TREND_DB_POOL_MAX);
+  process.env.LOG_DATABASE_URL = LOG_DATABASE_URL;
+  process.env.LOG_DB_POOL_MAX = String(LOG_DB_POOL_MAX);
+  await ensureDatabaseExists(TREND_DATABASE_URL);
+  await ensureDatabaseExists(LOG_DATABASE_URL);
   pool = new Pool({ connectionString: DATABASE_URL, max: DB_POOL_MAX });
   if (typeof pool.setMaxListeners === "function") {
     pool.setMaxListeners(DB_POOL_MAX_LISTENERS);
   }
+  if (String(TREND_DATABASE_URL || "").trim() === String(DATABASE_URL || "").trim()) {
+    trendPool = pool;
+  } else {
+    trendPool = new Pool({
+      connectionString: TREND_DATABASE_URL,
+      max: TREND_DB_POOL_MAX,
+    });
+    if (typeof trendPool.setMaxListeners === "function") {
+      trendPool.setMaxListeners(DB_POOL_MAX_LISTENERS);
+    }
+    await trendPool.query("SELECT 1");
+  }
+  if (String(LOG_DATABASE_URL || "").trim() === String(DATABASE_URL || "").trim()) {
+    logPool = pool;
+  } else if (String(LOG_DATABASE_URL || "").trim() === String(TREND_DATABASE_URL || "").trim()) {
+    logPool = trendPool;
+  } else {
+    logPool = new Pool({
+      connectionString: LOG_DATABASE_URL,
+      max: LOG_DB_POOL_MAX,
+    });
+    if (typeof logPool.setMaxListeners === "function") {
+      logPool.setMaxListeners(DB_POOL_MAX_LISTENERS);
+    }
+    await logPool.query("SELECT 1");
+  }
   await ensureSystemVersionState();
   await ensureDesignerTablesFromSchema(pool);
   await ensureAppSchema({ pool, createPasswordHash, defaultRolePermissionRows, applyPrimaryKeyState });
+  if (logPool) {
+    await ensureServerLogSchema(logPool);
+  }
+  const trendDb = trendPool || pool;
+  if (trendDb) {
+    await ensureTrendChunkTable(trendDb, getTrendChunkTableNameForTimestamp(Date.now()));
+    await listTrendChunkTables(trendDb, { refresh: true, includeLegacy: true });
+  }
+  dbBackupState = await loadDbBackupConfigFromStore();
+  ensureDirectoryExists(DB_BACKUP_DIR);
+  scheduleDatabaseBackups();
   await verifySchemaCoverage();
   setTimeout(() => {
     void runProjectVersionMaintenance();

@@ -50,82 +50,84 @@ function RequireAuth({ children }) {
   return children;
 }
 
-createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <AuthProvider>
-      <Suspense fallback={<div style={{ padding: 24 }}>Loading...</div>}>
-        <BrowserRouter>
-          <ToastHost />
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route
-              path="/"
-              element={
-                <RequireAuth>
-                  <App />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/ai"
-              element={
-                <RequireAuth>
-                  <AiTableBuilder />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/ai-config"
-              element={
-                <RequireAuth>
-                  <AiConfigPanel />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/data"
-              element={
-                <RequireAuth>
-                  <DataBrowser />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/data/:table"
-              element={
-                <RequireAuth>
-                  <DataBrowser />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/data/:table/:id"
-              element={
-                <RequireAuth>
-                  <DataBrowser />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/report-designer"
-              element={
-                <RequireAuth>
-                  <ReportDesigner />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/opc"
-              element={
-                <RequireAuth>
-                  <OpcConfig />
-                </RequireAuth>
-              }
-            />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
-      </Suspense>
-    </AuthProvider>
-  </StrictMode>,
-)
+const appTree = (
+  <AuthProvider>
+    <Suspense fallback={<div style={{ padding: 24 }}>Loading...</div>}>
+      <BrowserRouter>
+        <ToastHost />
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/"
+            element={
+              <RequireAuth>
+                <App />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/ai"
+            element={
+              <RequireAuth>
+                <AiTableBuilder />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/ai-config"
+            element={
+              <RequireAuth>
+                <AiConfigPanel />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/data"
+            element={
+              <RequireAuth>
+                <DataBrowser />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/data/:table"
+            element={
+              <RequireAuth>
+                <DataBrowser />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/data/:table/:id"
+            element={
+              <RequireAuth>
+                <DataBrowser />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/report-designer"
+            element={
+              <RequireAuth>
+                <ReportDesigner />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/opc"
+            element={
+              <RequireAuth>
+                <OpcConfig />
+              </RequireAuth>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </Suspense>
+  </AuthProvider>
+);
+
+createRoot(document.getElementById("root")).render(
+  import.meta.env.DEV ? appTree : <StrictMode>{appTree}</StrictMode>
+);

@@ -23,6 +23,10 @@
     "ai-server": "npm run app-server"
   },
   "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/icons-material": "^7.3.9",
+    "@mui/material": "^7.3.9",
     "@techstark/opencv-js": "^4.12.0-release.1",
     "chart.js": "^4.5.1",
     "react": "^19.2.0",
@@ -34,9 +38,9 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
-    "@eslint/js": "^9.39.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",

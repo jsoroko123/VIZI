@@ -68,6 +68,8 @@ export function defaultWidgetSettings(widgetKey) {
     showPoints: true,
     showLegend: true,
     showGrid: true,
+    markSpots: true,
+    markerSize: 4.2,
     lineWidth: 2.4,
     lineStyle: "smooth",
     yAxisSide: "left",

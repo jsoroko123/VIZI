@@ -568,12 +568,13 @@ export default function PropertiesPanel({
   const widgetRangeFromVal = String(hudFields?.widgetRangeFrom || "");
   const widgetRangeToVal = String(hudFields?.widgetRangeTo || "");
   const widgetWindowMinutesVal = String(hudFields?.widgetWindowMinutes ?? "60");
-  const widgetDurationPresetVal = String(hudFields?.widgetDurationPreset ?? "1h");
   const widgetMaxPointsVal = String(hudFields?.widgetMaxPoints ?? "500");
   const widgetLineTensionVal = String(hudFields?.widgetLineTension ?? "0.34");
   const widgetShowPointsVal = String(hudFields?.widgetShowPoints ?? "true");
   const widgetShowLegendVal = String(hudFields?.widgetShowLegend ?? "true");
   const widgetShowGridVal = String(hudFields?.widgetShowGrid ?? "true");
+  const widgetMarkSpotsVal = String(hudFields?.widgetMarkSpots ?? "true");
+  const widgetMarkerSizeVal = String(hudFields?.widgetMarkerSize ?? "4.2");
   const widgetLineWidthVal = String(hudFields?.widgetLineWidth ?? "2.4");
   const widgetLineStyleVal =
     String(hudFields?.widgetLineStyle || "").trim().toLowerCase() === "step" ? "step" : "smooth";
@@ -649,6 +650,10 @@ export default function PropertiesPanel({
   );
   const isTrendChartKind =
     widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart";
+  const widgetUsesSeriesTagBinding =
+    isWidget &&
+    (widgetKindVal === "lineChart" ||
+      (widgetKindVal === "barChart" && widgetBarSourceModeVal === "tags"));
   const chartMinMaxDisabled = isTrendChartKind && widgetAxisModeVal !== "manual";
   const svgBinSelectOptions = useMemo(() => {
     const base = Array.isArray(svgBinOptions) ? [...svgBinOptions] : [];
@@ -730,7 +735,14 @@ export default function PropertiesPanel({
     setTimeout(() => {
       const a = latest.current;
 
-      a.applySingleTagPath?.(next.tagPath);
+      const isSeriesDrivenWidget =
+        isWidget &&
+        (String(next.widgetKind || "").trim() === "lineChart" ||
+          (String(next.widgetKind || "").trim() === "barChart" &&
+            String(next.widgetBarSourceMode || "table").trim().toLowerCase() === "tags"));
+      if (!isSeriesDrivenWidget) {
+        a.applySingleTagPath?.(next.tagPath);
+      }
 
       if (isSvg) {
         a.applySingleEType?.(next.eType);
@@ -919,7 +931,7 @@ export default function PropertiesPanel({
                 placeholder="Element ID"
               />
 
-            {(!isSvg || !isBinSvg) && (
+            {(!isSvg || !isBinSvg) && !widgetUsesSeriesTagBinding && (
               <SelectRow
                 label="Tag Path"
                 value={hudFields.tagPath}
@@ -935,7 +947,9 @@ export default function PropertiesPanel({
             )}
             {isWidget ? (
               <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
-                Use tag path for OPC binding or `db:table.column` for database binding.
+                {widgetUsesSeriesTagBinding
+                  ? "This widget uses Series Tags below for binding."
+                  : "Use tag path for OPC binding or `db:table.column` for database binding."}
               </div>
             ) : isSvg && !isBinSvg ? (
               <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
@@ -1193,43 +1207,56 @@ export default function PropertiesPanel({
                   </div>
                 ) : null}
                 {(widgetKindVal === "lineChart" || widgetKindVal === "areaChart") && (
-                  <SelectRow
-                    label="Duration"
-                    value={widgetDurationPresetVal}
-                    onChange={(v) => {
-                      const presetToMinutes = {
-                        "15m": "15",
-                        "30m": "30",
-                        "1h": "60",
-                        "2h": "120",
-                        "6h": "360",
-                        "12h": "720",
-                        "24h": "1440",
-                        "7d": "10080",
-                      };
-                      const minutes = presetToMinutes[v] || "60";
-                      const next = {
-                        ...hudFields,
-                        widgetDurationPreset: v,
-                        widgetWindowMinutes: minutes,
-                        widgetRangeFrom: "",
-                        widgetRangeTo: "",
-                      };
-                      setHudFields(next);
-                      applySingleWidgetSettings?.(next);
-                    }}
-                    onBlur={() => applySingleWidgetSettings?.(hudFields)}
-                    options={[
-                      { value: "15m", label: "15 min" },
-                      { value: "30m", label: "30 min" },
-                      { value: "1h", label: "1 hour" },
-                      { value: "2h", label: "2 hours" },
-                      { value: "6h", label: "6 hours" },
-                      { value: "12h", label: "12 hours" },
-                      { value: "24h", label: "24 hours" },
-                      { value: "7d", label: "7 days" },
-                    ]}
-                  />
+                  <>
+                    <Row
+                      label="From"
+                      type="datetime-local"
+                      value={widgetRangeFromVal}
+                      onChange={(v) =>
+                        setHudFields((p) => ({
+                          ...p,
+                          widgetRangeFrom: v,
+                          widgetDurationPreset: "",
+                        }))
+                      }
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder=""
+                    />
+                    <Row
+                      label="To"
+                      type="datetime-local"
+                      value={widgetRangeToVal}
+                      onChange={(v) =>
+                        setHudFields((p) => ({
+                          ...p,
+                          widgetRangeTo: v,
+                          widgetDurationPreset: "",
+                        }))
+                      }
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder=""
+                    />
+                  </>
+                )}
+                {isTrendChartKind && (
+                  <>
+                    <Row
+                      label="Window (min)"
+                      type="number"
+                      value={widgetWindowMinutesVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetWindowMinutes: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="60"
+                    />
+                    <Row
+                      label="Max Points"
+                      type="number"
+                      value={widgetMaxPointsVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetMaxPoints: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="500"
+                    />
+                  </>
                 )}
                 {widgetKindVal === "barChart" && (
                   <>
@@ -1363,6 +1390,27 @@ export default function PropertiesPanel({
                         { value: "true", label: "Yes" },
                         { value: "false", label: "No" },
                       ]}
+                    />
+                    <SelectRow
+                      label="Mark Spots"
+                      value={widgetMarkSpotsVal}
+                      onChange={(v) => {
+                        setHudFields((p) => ({ ...p, widgetMarkSpots: v }));
+                        applySingleWidgetSettings?.({ ...hudFields, widgetMarkSpots: v });
+                      }}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      options={[
+                        { value: "true", label: "Yes" },
+                        { value: "false", label: "No" },
+                      ]}
+                    />
+                    <Row
+                      label="Spot Size"
+                      type="number"
+                      value={widgetMarkerSizeVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetMarkerSize: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="4.2"
                     />
                     <Row
                       label="Line Width"

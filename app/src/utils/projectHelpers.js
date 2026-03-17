@@ -6,6 +6,34 @@ export const LIVE_MENU_EXPANDED_WIDTH_KEY = "vizi_live_menu_expanded_width";
 export const LIVE_MENU_EXPANDED_WIDTH_DEFAULT = 248;
 export const LIVE_MENU_EXPANDED_WIDTH_MIN = 200;
 export const LIVE_MENU_EXPANDED_WIDTH_MAX = 520;
+export const LIVE_MENU_ICON_KEY_ALIASES = {
+  grid: "AppsRounded",
+  screen: "MonitorRounded",
+  database: "StorageRounded",
+  table: "TableChartRounded",
+  chart: "ShowChartRounded",
+  trend: "TimelineRounded",
+  report: "DescriptionRounded",
+  file: "InsertDriveFileRounded",
+  folder: "FolderRounded",
+  product: "Inventory2Rounded",
+  bin: "InboxRounded",
+  gear: "SettingsRounded",
+  wrench: "BuildRounded",
+  filter: "FilterAltRounded",
+  flask: "ScienceRounded",
+  bolt: "BoltRounded",
+  factory: "BusinessRounded",
+};
+
+export function normalizeLiveMenuIcon(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const legacy = LIVE_MENU_ICON_KEY_ALIASES[raw.toLowerCase()];
+  if (legacy) return legacy;
+  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(raw)) return "";
+  return raw;
+}
 
 export function normalizeProjectMode(value) {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "design";
@@ -95,6 +123,7 @@ export function defaultLiveMenuGroupsFromScreens(sourceScreens) {
       type: "screen",
       screenId: String(screen?.id || ""),
       label: "",
+      icon: "MonitorRounded",
       restricted: false,
       allowedRoleIds: [],
     }))
@@ -140,6 +169,7 @@ export function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
               type,
               screenId,
               label: String(item?.label || "").trim(),
+              icon: normalizeLiveMenuIcon(item?.icon),
               restricted: Boolean(item?.restricted),
               allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
             };
@@ -149,6 +179,7 @@ export function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
               id: String(item?.id || `live-item-${uid()}`),
               type: "reports",
               label: String(item?.label || "").trim(),
+              icon: normalizeLiveMenuIcon(item?.icon),
               restricted: Boolean(item?.restricted),
               allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
             };
@@ -158,6 +189,7 @@ export function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
             type: "data",
             dataTable: String(item?.dataTable || "").trim(),
             label: String(item?.label || "").trim(),
+            icon: normalizeLiveMenuIcon(item?.icon),
             restricted: Boolean(item?.restricted),
             allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
           };

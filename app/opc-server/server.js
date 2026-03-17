@@ -46,6 +46,8 @@ function parseEnumList(raw, enumObj, fallback = []) {
 }
 
 async function loadConfig() {
+  const localConfigPath = path.resolve(process.cwd(), "config.json");
+  const localConfigExamplePath = path.resolve(process.cwd(), "config.example.json");
   try {
     const headers = OPC_SERVER_KEY ? { "x-opc-key": OPC_SERVER_KEY } : undefined;
     const res = await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/config`, { headers });
@@ -55,9 +57,36 @@ async function loadConfig() {
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error || `Failed to load config (status ${res.status}).`);
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(err?.message || "Failed to load config from database.");
-    process.exit(1);
+    const fetchError = err?.message || "Failed to load config from database.";
+    const fallbackPath = fs.existsSync(localConfigPath)
+      ? localConfigPath
+      : fs.existsSync(localConfigExamplePath)
+      ? localConfigExamplePath
+      : null;
+    if (!fallbackPath) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `${fetchError}. Also no local OPC config found at ${localConfigPath} or ${localConfigExamplePath}.`
+      );
+      process.exit(1);
+    }
+    try {
+      const raw = fs.readFileSync(fallbackPath, "utf8");
+      const parsed = JSON.parse(raw);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `Using local OPC config from ${fallbackPath} because AI config endpoint (${AI_SERVER_URL}) is unavailable: ${fetchError}`
+      );
+      return parsed;
+    } catch (localErr) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `${fetchError}. Failed to parse local OPC config at ${fallbackPath}: ${
+          localErr?.message || "unknown error"
+        }`
+      );
+      process.exit(1);
+    }
   }
 }
 

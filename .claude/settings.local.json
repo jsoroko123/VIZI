@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -r 'function getLiveValueForTag' c:/Projects/Vizi/app/src --include=*.js --include=*.jsx)"
+      "Bash(grep -r 'function getLiveValueForTag' c:/Projects/Vizi/app/src --include=*.js --include=*.jsx)",
+      "Read(//c/Users/jeff.soroko/Downloads/**)",
+      "Bash(gunzip -c Trace-20260317T094718.json.gz)",
+      "Bash(node -e \":*)",
+      "Bash(xargs grep:*)",
+      "Bash(curl -s http://127.0.0.1:4851/status)",
+      "Bash(curl -s http://127.0.0.1:4851/)",
+      "Bash(curl -s http://127.0.0.1:4851/health)",
+      "Bash(curl -s http://127.0.0.1:4851/tags)",
+      "Bash(curl -s http://127.0.0.1:4851/internal/status)",
+      "Bash(PGPASSWORD=vizi123 psql -U postgres -h localhost -d vizi_db -c \"SELECT id, updated_at, jsonb_array_length\\(COALESCE\\(\\(status->''values''\\)::jsonb, ''[]''::jsonb\\)\\) as value_count, \\(status->>''connected''\\)::text as connected FROM opc_status LIMIT 5;\")"
     ]
   }
 }

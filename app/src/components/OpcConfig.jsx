@@ -4,6 +4,8 @@ import { showToast, toastError, toastSuccess } from "../utils/toast";
 const DIAGNOSTICS_UI_MAX_ROWS = 500;
 const RESTART_PENDING_TIMEOUT_MS = 15000;
 const ALARM_OPERATORS = ["==", "!=", ">", ">=", "<", "<="];
+const TAG_TABLE_PAGE_SIZE = 800;
+const TAG_TABLE_MAX_WINDOW = 50000;
 
 function normalizeTagName(name) {
   return String(name || "")
@@ -357,6 +359,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const pauseTemplateEditorPolling =
     mode === "tags" && String(tagSectionTab || "").trim().toLowerCase() === "templates";
   const [tagSearch, setTagSearch] = useState("");
+  const deferredTagSearch = useDeferredValue(tagSearch);
+  const [tagRenderLimit, setTagRenderLimit] = useState(TAG_TABLE_PAGE_SIZE);
   const [showTagsDrawer, setShowTagsDrawer] = useState(false);
   const [showDrawerMenu, setShowDrawerMenu] = useState(false);
   const [manualTag, setManualTag] = useState({
@@ -1030,8 +1034,11 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       setManualTopic((prev) => ({ ...prev, plcName: plcs[0]?.name || "" }));
     }
   }, [topics, plcs, applyTopic, manualTag.topic, manualTopic.plcName]);
-  const groupedTags = useMemo(() => {
-    const q = String(tagSearch || "").trim().toLowerCase();
+  const groupedTagResult = useMemo(() => {
+    const q = String(deferredTagSearch || "").trim().toLowerCase();
+    const maxRows = Math.max(TAG_TABLE_PAGE_SIZE, Math.min(TAG_TABLE_MAX_WINDOW, Number(tagRenderLimit) || TAG_TABLE_PAGE_SIZE));
+    let matchedCount = 0;
+    let renderedCount = 0;
     const groups = new Map();
     (tags || []).forEach((tag, idx) => {
       const name = normalizeTagName(tag?.name || "");
@@ -1044,6 +1051,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         if (!hay.includes(q)) return;
       }
       if (!name && !tagPath && !groupRaw) return;
+      matchedCount += 1;
+      if (renderedCount >= maxRows) return;
       const topicKey = normalizeTagName(tag?.topic || "") || "No Topic";
       const groupKey = getTagGroupKey(tag);
       if (!groups.has(topicKey)) groups.set(topicKey, new Map());
@@ -1052,12 +1061,19 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         topicMap.set(groupKey, { groupName: groupKey, items: [] });
       }
       topicMap.get(groupKey).items.push({ tag: { ...tag, name }, idx });
+      renderedCount += 1;
     });
-    return Array.from(groups.entries()).map(([topic, tagMap]) => ({
+    const grouped = Array.from(groups.entries()).map(([topic, tagMap]) => ({
       topic,
       groups: Array.from(tagMap.values()),
     }));
-  }, [tags, tagSearch]);
+    return {
+      groups: grouped,
+      matchedCount,
+      renderedCount,
+      hasMore: renderedCount < matchedCount,
+    };
+  }, [tags, deferredTagSearch, tagRenderLimit]);
 
   const templateSourceGroups = useMemo(() => {
     const groups = new Map();
@@ -1078,6 +1094,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         return String(a.topic || "").localeCompare(String(b.topic || ""));
       });
   }, [tags]);
+
+  useEffect(() => {
+    setTagRenderLimit(TAG_TABLE_PAGE_SIZE);
+  }, [deferredTagSearch, tags.length]);
 
   useEffect(() => {
     if (!templateSourceGroups.length) {
@@ -1361,6 +1381,14 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
     const count = tagColumnKeys.filter((key) => tagVisibleColumns[key] !== false).length;
     return count || 1;
   }, [tagVisibleColumns, tagColumnKeys]);
+
+  const loadMoreTagRows = useCallback(() => {
+    setTagRenderLimit((prev) => {
+      const current = Math.max(TAG_TABLE_PAGE_SIZE, Number(prev) || TAG_TABLE_PAGE_SIZE);
+      if (current >= TAG_TABLE_MAX_WINDOW) return current;
+      return Math.min(TAG_TABLE_MAX_WINDOW, current + TAG_TABLE_PAGE_SIZE);
+    });
+  }, []);
 
   function showTagColumn(key) {
     return tagVisibleColumns[key] !== false;
@@ -3890,10 +3918,17 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                 ...sectionCardStyle,
                 marginTop: 10,
                 overflowX: "auto",
-                overflowY: "visible",
+                overflowY: "auto",
+                maxHeight: "62vh",
                 contain: "layout style paint",
                 contentVisibility: "auto",
                 containIntrinsicSize: "900px",
+              }}
+              onScroll={(e) => {
+                if (!groupedTagResult.hasMore) return;
+                const el = e.currentTarget;
+                const remaining = Number(el.scrollHeight) - Number(el.scrollTop) - Number(el.clientHeight);
+                if (remaining <= 220) loadMoreTagRows();
               }}
             >
               <div style={{ marginBottom: 8 }}>
@@ -3913,7 +3948,10 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                   }}
                 />
               </div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginBottom: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 10 }}>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  Showing {groupedTagResult.renderedCount.toLocaleString()} of {groupedTagResult.matchedCount.toLocaleString()} matched
+                </div>
                 <button
                   onClick={addTagFromToolbar}
                   title="Add Tag"
@@ -3939,7 +3977,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
               </div>
               {tags.length === 0 ? (
                 <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No tags.</div>
-              ) : groupedTags.length === 0 ? (
+              ) : groupedTagResult.groups.length === 0 ? (
                 <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No tags match search.</div>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12, tableLayout: "auto" }}>
@@ -3993,7 +4031,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     </tr>
                   </thead>
                   <tbody>
-                    {groupedTags.map((group) => {
+                    {groupedTagResult.groups.map((group) => {
                       const topicKey = group.topic ?? "";
                       const topicExpanded = expandedPrefixes[`topic:${topicKey}`] ?? true;
                       const topicMeta = topicMap.get(topicKey);
@@ -4070,7 +4108,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                   while (parent) {
                                     if (knownGroupNames.has(parent)) {
                                       const parentExpanded =
-                                        expandedPrefixes[`topic:${topicKey}::group:${parent}`] ?? true;
+                                        expandedPrefixes[`topic:${topicKey}::group:${parent}`] ?? false;
                                       if (!parentExpanded) return false;
                                     }
                                     parent = getParentGroupName(parent);
@@ -4082,7 +4120,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                   .map((tagGroup) => {
                                 const groupName = tagGroup.groupName ?? "Ungrouped";
                                 const groupExpanded =
-                                  expandedPrefixes[`topic:${topicKey}::group:${groupName}`] ?? true;
+                                  expandedPrefixes[`topic:${topicKey}::group:${groupName}`] ?? false;
                                 const groupDepth =
                                   groupName === "Ungrouped"
                                     ? 0
@@ -4110,6 +4148,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                       .filter(Boolean),
                                   ),
                                 );
+                                const canAddToGroup = !isLeafTagTarget(topicKey, groupName);
                                 return (
                                   <Fragment key={`group-${topicKey}-${groupName}`}>
                                     <tr
@@ -4154,16 +4193,18 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                         </span>
                                         <button
                                           onClick={() => {
+                                            if (!canAddToGroup) return;
                                             setActiveTagGroup({ topic: topicKey, groupName });
                                             addTagToGroup(topicKey, groupName);
                                           }}
-                                          title="Add Tag"
+                                          title={canAddToGroup ? "Add Tag" : "Cannot add under a leaf tag"}
                                           aria-label="Add Tag"
+                                          disabled={!canAddToGroup}
                                           style={{
                                             ...drawerButtonStyle,
                                             border: "1px solid #2b6cff",
-                                            background: "var(--bg-elev)",
-                                            color: "#2b6cff",
+                                            background: canAddToGroup ? "var(--bg-elev)" : "var(--bg-soft)",
+                                            color: canAddToGroup ? "#2b6cff" : "var(--text-muted)",
                                             borderRadius: 6,
                                             width: 32,
                                                       height: 32,
@@ -4176,6 +4217,8 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                             lineHeight: 1,
                                             marginLeft: 10,
                                             fontWeight: 800,
+                                            cursor: canAddToGroup ? "pointer" : "not-allowed",
+                                            opacity: canAddToGroup ? 1 : 0.7,
                                           }}
                                         >
                                           +
@@ -4275,7 +4318,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                                                 const expandedKey = `topic:${topicKey}::group:${groupName}::tag:${node.path || node.idx}`;
                                                 const expanded = hideSyntheticRoot
                                                   ? true
-                                                  : (expandedPrefixes[expandedKey] ?? true);
+                                                  : (expandedPrefixes[expandedKey] ?? false);
                                                 if (!hideSyntheticRoot) {
                                                   out.push({
                                                     ...node,
@@ -5645,6 +5688,12 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   }
 
   function addTagToGroup(topicKey, groupName) {
+    if (isLeafTagTarget(topicKey, groupName)) {
+      const target = normalizeTagName(groupName || "") || "selected node";
+      setStatus("");
+      setError(`Cannot add a tag under "${target}". Add tags only under groups or UDT nodes.`);
+      return;
+    }
     const newIndex = (config.tags || []).length;
     setConfig((prev) => {
       const next = [...(prev.tags || [])];
@@ -5685,6 +5734,32 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
         el.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }, 0);
+  }
+
+  function isLeafTagTarget(topicKey, groupName) {
+    const topicTarget = normalizeTagName(topicKey || "") || "No Topic";
+    const target = normalizeTagName(groupName || "");
+    if (!target) return false;
+    const tagList = Array.isArray(config?.tags) ? config.tags : [];
+    let hasExactLeaf = false;
+    let hasDescendants = false;
+    for (const tag of tagList) {
+      const topic = normalizeTagName(tag?.topic || "") || "No Topic";
+      if (topic !== topicTarget) continue;
+      const candidateName = normalizeTagName(tag?.name || "");
+      const candidatePath = normalizeTagName(tag?.tagPath || "");
+      if (candidateName === target || candidatePath === target) {
+        hasExactLeaf = true;
+      }
+      if (
+        (candidateName && candidateName.startsWith(`${target}.`)) ||
+        (candidatePath && candidatePath.startsWith(`${target}.`))
+      ) {
+        hasDescendants = true;
+      }
+      if (hasExactLeaf && hasDescendants) return false;
+    }
+    return hasExactLeaf && !hasDescendants;
   }
 
   const updateTemplateFieldRow = useCallback((idx, key, value, fallbackRow = null, path = "") => {

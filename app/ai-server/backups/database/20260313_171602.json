@@ -1,0 +1,19 @@
+{
+  "id": "20260313_171602",
+  "createdAt": 1773422162761,
+  "reason": "manual",
+  "files": [
+    {
+      "kind": "main",
+      "dbName": "vizi_db",
+      "fileName": "20260313_171602__vizi_db.dump",
+      "sizeBytes": 70353421
+    },
+    {
+      "kind": "trend",
+      "dbName": "vizi_db_trends",
+      "fileName": "20260313_171602__vizi_db_trends.dump",
+      "sizeBytes": 100332
+    }
+  ]
+}

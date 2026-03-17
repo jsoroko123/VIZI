@@ -1,14 +1,8 @@
 // src/App.jsx
-import { Fragment, Suspense, lazy, useMemo, useRef, useState, useEffect, useLayoutEffect } from "react";
+import { Fragment, Suspense, lazy, startTransition, useMemo, useRef, useState, useEffect, useLayoutEffect } from "react";
 import PropertiesPanel from "./components/PropertiesPanel";
-import ImportModal from "./components/ImportModal";
-import WidgetSelectorModal from "./components/WidgetSelectorModal";
 import CanvasSvg from "./components/CanvasSvg";
-import ViewBoxModal from "./components/ViewBoxModal";
 import TopBarRightControls from "./components/TopBarRightControls";
-import LiveAlarmBar from "./components/live/LiveAlarmBar";
-import LiveEquipmentConnectorLayer from "./components/live/LiveEquipmentConnectorLayer";
-import TeamChatPanel from "./components/app/TeamChatPanel";
 import { useAuth } from "./components/AuthContext.jsx";
 
 import { uid } from "./utils/ids";
@@ -44,6 +38,7 @@ import {
   defaultLiveMenuGroupsFromScreens,
   normalizeLiveMenuGroups,
   normalizeProjectCanvasBackground,
+  normalizeLiveMenuIcon,
   normalizeProjectMode,
   normalizeProjectUiPreferences,
   normalizeRoleIdList,
@@ -105,7 +100,22 @@ import {
   listTableRecordsUnscoped,
   updateTableRow,
 } from "./api/dbApi";
-import { getOpcConfig, getOpcMappingSets, getOpcStatus, getOpcTagMappings, getOpcTemplates, writeOpcValue } from "./api/opcApi";
+import {
+  getOpcConfig,
+  getOpcMappingSets,
+  getOpcStatus,
+  getOpcTagMappings,
+  getOpcTemplates,
+  subscribeOpcStatusStream,
+  writeOpcValue,
+} from "./api/opcApi";
+import {
+  clearOpcLiveSnapshot,
+  getOpcLiveSnapshot,
+  patchOpcLiveSnapshot,
+  setOpcLiveSnapshot,
+  subscribeOpcLiveKeys,
+} from "./state/opcLiveStore";
 import {
   deleteProjectById,
   getProjectById,
@@ -119,6 +129,14 @@ import { listSecurityRoles } from "./api/securityApi";
 import { listSvgCatalog, readSvgRaw as readSvgRawApi, saveSvgMeta } from "./api/svgApi";
 import { checkPlcDebugSession } from "./api/aiApi";
 import appLogo from "./assets/Images/logo.png";
+import {
+  DynamicMaterialIcon,
+  MATERIAL_ICON_NAMES,
+  MATERIAL_ICON_NAMES_LOWER_MAP,
+  MaterialExpandMoreIcon,
+  MaterialFallbackIcon,
+  MaterialKeyboardArrowDownRoundedIcon,
+} from "./utils/materialIconsRuntime";
 
 const HelpPanel = lazy(() => import("./components/HelpPanel"));
 const OpcConfig = lazy(() => import("./components/OpcConfig"));
@@ -129,18 +147,87 @@ const SqlDesigner = lazy(() => import("./components/SqlDesigner"));
 const AutomationRulesPanel = lazy(() => import("./components/AutomationRulesPanel"));
 const PlcAnalyzer = lazy(() => import("./components/PlcAnalyzer"));
 const ServerDiagnosticsPanel = lazy(() => import("./components/ServerDiagnosticsPanel"));
-const LoggerPanel = lazy(() => import("./components/LoggerPanel"));
 const SecurityManager = lazy(() => import("./components/SecurityManager"));
+const LiveTrendBuilderPage = lazy(() => import("./components/live/LiveTrendBuilderPage"));
+const TeamChatPanel = lazy(() => import("./components/app/TeamChatPanel"));
+const ImportModal = lazy(() => import("./components/ImportModal"));
+const WidgetSelectorModal = lazy(() => import("./components/WidgetSelectorModal"));
+const ViewBoxModal = lazy(() => import("./components/ViewBoxModal"));
+const LiveAlarmBar = lazy(() => import("./components/live/LiveAlarmBar"));
+const LiveEquipmentConnectorLayer = lazy(() => import("./components/live/LiveEquipmentConnectorLayer"));
 const THEME_KEY = "vizi_theme";
 const SHOW_GRID_KEY = "vizi_show_grid";
 const SHOW_TAG_PATHS_KEY = "vizi_show_tag_paths";
 const SHOW_RULERS_KEY = "vizi_show_rulers";
+const DESIGN_LIVE_UPDATES_DISABLED_KEY = "vizi_design_live_updates_disabled";
+const LIVE_SAVED_TRENDS_KEY = "vizi_live_saved_trends";
 const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
 const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
 const SVG_RAW_CACHE_MAX = 96;
 const LIVE_ALARM_BAR_H = 34;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
 const LIVE_EQUIPMENT_Z_BASE = 12000;
+const PROJECT_SYNC_POLL_MS_VISIBLE = 1200;
+const PROJECT_SYNC_POLL_MS_HIDDEN = 4000;
+const CURSOR_POLL_MS_COLLAB = 900;
+const CURSOR_POLL_MS_SOLO = 2500;
+const CURSOR_POLL_MS_HIDDEN = 6000;
+const OPC_STATUS_POLL_MS_HIDDEN = 10000;
+const OPC_STATUS_POLL_MS_DESIGN = 4000;
+const OPC_STATUS_POLL_MS_LIVE_SMALL = 2500;
+const OPC_STATUS_POLL_MS_LIVE_MEDIUM = 3500;
+const OPC_STATUS_POLL_MS_LIVE_LARGE = 5000;
+const PROJECT_DATA_POLL_MS_LIVE = 5000;
+const PROJECT_DATA_POLL_MS_DESIGN = 10000;
+const PROJECT_DATA_POLL_MS_HIDDEN = 20000;
+const PERF_DISABLE_BACKGROUND_SYNC = true;
+const PERF_DISABLE_CLIENT_LOGS = true;
+const PERF_HARD_REALTIME_MODE = false;
+const OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE = false;
+const OPC_UI_HIGH_LOAD_TAG_THRESHOLD = 120;
+const OPC_LIVE_KEY_HARD_CAP = 120;
+const OPC_CANVAS_KEY_HARD_CAP = 48;
+const LIVE_EQUIPMENT_STATUS_TAG_ALIASES = [
+  "Mode_Status",
+  "ModeStatus",
+  "Control_Status",
+  "ControlStatus",
+  "i_ModeStatus",
+  "o_ModeStatus",
+  "StsMode",
+  "HMI_ModeStatus",
+  "HMI_State",
+  "HMIState",
+  "i_HMIState",
+  "o_HMIState",
+  "State",
+  "i_ManualMode",
+  "o_ManualMode",
+  "ManualMode",
+  "StsManual",
+  "ManualActive",
+  "i_AutoMode",
+  "o_AutoMode",
+  "AutoMode",
+  "StsAuto",
+  "AutoActive",
+  "i_MaintenanceMode",
+  "o_MaintenanceMode",
+  "MaintenanceMode",
+  "MaintMode",
+  "StsMaint",
+  "MaintActive",
+  "HMI_Control",
+  "hmi_control",
+  "HMIControl",
+  "hmiControl",
+  "hmicontrol",
+  "i_FaultReset",
+  "FaultReset",
+  "CmdFaultReset",
+  "i_CmdFaultReset",
+  "HMI_EquipmentReset",
+];
 const POLYLINE_OVERLAY_SNAP_RADIUS_PX = 7;
 const POLYLINE_CONNECTION_SNAP_THRESHOLD = 10;
 const POLYLINE_ENDPOINT_SNAP_THRESHOLD = 9;
@@ -152,17 +239,102 @@ const SCREEN_SIZE_PRESETS = [
   { value: "3440x1440", label: "UWQHD 3440x1440", w: 3440, h: 1440 },
   { value: "3840x2160", label: "4K 3840x2160", w: 3840, h: 2160 },
 ];
+const LEGACY_LIVE_MENU_ICON_NAMES = {
+  grid: "AppsRounded",
+  screen: "MonitorRounded",
+  database: "StorageRounded",
+  table: "TableChartRounded",
+  chart: "ShowChartRounded",
+  trend: "TimelineRounded",
+  report: "DescriptionRounded",
+  file: "InsertDriveFileRounded",
+  folder: "FolderRounded",
+  product: "Inventory2Rounded",
+  bin: "InboxRounded",
+  gear: "SettingsRounded",
+  wrench: "BuildRounded",
+  filter: "FilterAltRounded",
+  flask: "ScienceRounded",
+  bolt: "BoltRounded",
+  factory: "BusinessRounded",
+};
+const FALLBACK_MENU_ICON_NAME = "AppsRounded";
+const LIVE_MENU_ICON_PAGE_SIZE = 16;
+const AUTO_MENU_ICON_OPTION = {
+  value: "",
+  label: "Auto",
+  iconName: "AutoAwesomeRounded",
+};
+const formatMaterialIconLabel = (name) =>
+  String(name || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Za-z])([0-9]+)/g, "$1 $2")
+    .trim();
+const LIVE_MENU_ICON_OPTIONS = [
+  AUTO_MENU_ICON_OPTION,
+  ...MATERIAL_ICON_NAMES.map((name) => ({
+    value: name,
+    label: formatMaterialIconLabel(name),
+    iconName: name,
+  })),
+];
+const LIVE_MENU_ICON_OPTION_MAP = new Map(LIVE_MENU_ICON_OPTIONS.map((opt) => [String(opt.value), opt]));
+
+function resolveLiveMenuIconName(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const legacy = LEGACY_LIVE_MENU_ICON_NAMES[raw.toLowerCase()];
+  if (legacy) return legacy;
+  const direct = MATERIAL_ICON_NAMES_LOWER_MAP.get(raw.toLowerCase());
+  return direct || "";
+}
+
+function getLiveMenuIconOption(value) {
+  const normalized = resolveLiveMenuIconName(normalizeLiveMenuIcon(value));
+  if (!normalized) return AUTO_MENU_ICON_OPTION;
+  return LIVE_MENU_ICON_OPTION_MAP.get(normalized) || AUTO_MENU_ICON_OPTION;
+}
+
+function renderLiveMenuIconGlyph(iconKey, size = 12) {
+  const normalized = resolveLiveMenuIconName(normalizeLiveMenuIcon(iconKey));
+  const fallback = resolveLiveMenuIconName(FALLBACK_MENU_ICON_NAME) || FALLBACK_MENU_ICON_NAME;
+  const iconName = normalized || fallback;
+  return (
+    <DynamicMaterialIcon
+      name={iconName}
+      fallback={MaterialFallbackIcon}
+      style={{ fontSize: size }}
+      aria-hidden="true"
+    />
+  );
+}
 
 export default function App() {
   const { user, logout, updateProfile, changePassword, refresh } = useAuth();
   const initialStoredProjectId = readStoredActiveProjectId();
   const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle"
-  useEffect(() => {
-    // Warm-load PLC/Code Gen chunk so opening drawer feels instant.
-    import("./components/PlcAnalyzer").catch(() => {});
-  }, []);
   const DEFAULT_STROKE = "#808080";
   const DEFAULT_FILL = "#CCCCCC";
+const HOME_SCREEN_ID = "screen-home";
+const HOME_SCREEN_NAME = "Home";
+const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
+  function buildHomeScreenPayload() {
+    return {
+      id: HOME_SCREEN_ID,
+      name: HOME_SCREEN_NAME,
+      shapes: [],
+      svgOverlays: [],
+      vbW: 1600,
+      vbH: 900,
+      pan: { x: 0, y: 0 },
+      zoom: 1,
+      showInLiveMenu: false,
+      hideInTaskbar: true,
+      routeId: "",
+      autoFitMode: "content",
+      zoomByViewport: {},
+    };
+  }
   const [shapes, setShapes] = useState([]); // polyline | rect | circle | text
 
   // Multi-selection
@@ -177,6 +349,8 @@ export default function App() {
   // unified drag for moving ALL selected items
   // { startWorld, polylines:[{id, origPoints}], overlays:[{id, origTx, origTy}] }
   const [dragAll, setDragAll] = useState(null);
+  const pendingDragAllRef = useRef(null); // { startWorld, selectedIds, selectedOverlayIds }
+  const dragAllPreviewRef = useRef({ dx: 0, dy: 0 });
   const [canvasPanDrag, setCanvasPanDrag] = useState(null); // { startClient:{x,y}, startPan:{x,y}, moved:boolean }
 
   // editing a polyline
@@ -200,7 +374,21 @@ export default function App() {
   const duplicateOffsetRef = useRef(20);
   const mouseMoveRafRef = useRef(0);
   const pendingMouseMoveRef = useRef(null);
+  const canvasUpdateQueueRef = useRef([]);
+  const canvasUpdateByKeyRef = useRef(new Map());
+  const canvasUpdateRafRef = useRef(0);
   const dragPointerSmoothingRef = useRef({ mode: "", x: NaN, y: NaN });
+  const dragAllLastDeltaRef = useRef({ dx: NaN, dy: NaN });
+  const dragAllHistoryPushedRef = useRef(false);
+  const dragPreviewNodesRef = useRef([]);
+  const dragPreviewAppliedRef = useRef({ dx: NaN, dy: NaN });
+  const svgClientRectCacheRef = useRef(null);
+  const dragPolylineSnapCacheRef = useRef({
+    at: 0,
+    dx: NaN,
+    dy: NaN,
+    result: { dx: 0, dy: 0 },
+  });
   const [polyHandleMenu, setPolyHandleMenu] = useState(null);
 
   // SVG overlays (imported files): { id, name, inner, tx, ty, scale, fill, stroke, tagPath }
@@ -239,8 +427,18 @@ export default function App() {
       return true;
     }
   });
+  const [designLiveUpdatesDisabled, setDesignLiveUpdatesDisabled] = useState(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      return localStorage.getItem(DESIGN_LIVE_UPDATES_DISABLED_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  });
   const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
   const [liveEquipmentOverlayIds, setLiveEquipmentOverlayIds] = useState([]);
+  const [liveEquipmentOpcTick, setLiveEquipmentOpcTick] = useState(0);
+  const liveEquipmentActiveRef = useRef(false);
   const [liveEquipmentDockSideById, setLiveEquipmentDockSideById] = useState({});
   const [liveEquipmentFloatingById, setLiveEquipmentFloatingById] = useState({});
   const liveEquipmentFloatingByIdRef = useRef({});
@@ -281,11 +479,19 @@ export default function App() {
 
   const [opcTags, setOpcTags] = useState([]);
   const [opcTemplates, setOpcTemplates] = useState([]);
-  const [opcLiveValues, setOpcLiveValues] = useState({});
+  const [opcLiveValues] = useState({});
   const [opcLiveUpdatedAt, setOpcLiveUpdatedAt] = useState(0);
   const [opcLiveLastError, setOpcLiveLastError] = useState("");
   const [opcTagMappings, setOpcTagMappings] = useState([]);
   const [opcMappingSets, setOpcMappingSets] = useState([]);
+  const opcActiveTagCount = useMemo(
+    () =>
+      (Array.isArray(opcTags) ? opcTags : []).reduce((count, tag) => {
+        if (!tag || tag.enabled === false || tag.muted === true) return count;
+        return count + 1;
+      }, 0),
+    [opcTags]
+  );
   const [widgetDbValues, setWidgetDbValues] = useState({});
   const [isPageVisible, setIsPageVisible] = useState(() =>
     typeof document === "undefined" ? true : !document.hidden
@@ -320,6 +526,7 @@ export default function App() {
   );
   const [projectPlcs, setProjectPlcs] = useState([]);
   const [screens, setScreens] = useState([
+    buildHomeScreenPayload(),
     {
       id: "screen-1",
       name: "Screen 1",
@@ -333,8 +540,8 @@ export default function App() {
       routeId: "",
     },
   ]);
-  const [activeScreenId, setActiveScreenId] = useState("screen-1");
-  const [screenName, setScreenName] = useState("Screen 1");
+  const [activeScreenId, setActiveScreenId] = useState(HOME_SCREEN_ID);
+  const [screenName, setScreenName] = useState(HOME_SCREEN_NAME);
   const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(() => initialStoredProjectId);
   const [projectRouteRows, setProjectRouteRows] = useState([]);
@@ -362,6 +569,175 @@ export default function App() {
   const [showProjectDrawer, setShowProjectDrawer] = useState(false);
   const [projectMode, setProjectMode] = useState(() => readStoredProjectMode(initialStoredProjectId));
   const isLiveMode = projectMode === "live";
+  const liveUpdatesEnabled = isLiveMode || !designLiveUpdatesDisabled;
+  const liveUiSafeMode = false;
+  const opcHighLoadUiMode = liveUpdatesEnabled && opcActiveTagCount >= OPC_UI_HIGH_LOAD_TAG_THRESHOLD;
+  const opcScopedStatusKeys = useMemo(() => {
+    if (!liveUpdatesEnabled) return [];
+    const keys = new Set();
+    const addKey = (raw) => {
+      const value = normalizeTagValue(raw || "");
+      if (!value) return;
+      const lower = value.toLowerCase();
+      if (lower.startsWith("db:") || lower.startsWith("dbq:")) return;
+      keys.add(value);
+      if (!lower.startsWith("default.")) keys.add(`Default.${value}`);
+      const parts = value.split(".").map((x) => String(x || "").trim()).filter(Boolean);
+      for (let i = 1; i < parts.length; i += 1) {
+        keys.add(parts.slice(i).join("."));
+      }
+    };
+    const normalizeLoose = (value) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    const addPopupOverlayCommandAndStatusKeys = (overlay) => {
+      const overlayPath = normalizeTagValue(overlay?.tagPath || "");
+      if (!overlayPath) return;
+      addKey(overlayPath);
+      const parts = overlayPath.split(".").map((x) => String(x || "").trim()).filter(Boolean);
+      const parentScopes = new Set([
+        overlayPath,
+        parts.length > 1 ? parts.slice(0, -1).join(".") : "",
+        parts.length > 2 ? parts.slice(1, -1).join(".") : "",
+      ]);
+      parentScopes.forEach((scope) => {
+        const base = String(scope || "").trim();
+        if (!base) return;
+        LIVE_EQUIPMENT_STATUS_TAG_ALIASES.forEach((alias) => {
+          const member = String(alias || "").trim();
+          if (!member) return;
+          addKey(`${base}.${member}`);
+          addKey(`${base}/${member}`);
+        });
+      });
+
+      const overlayPathLower = overlayPath.toLowerCase();
+      const overlayPathLoose = normalizeLoose(overlayPath);
+      const tags = Array.isArray(opcTags) ? opcTags : [];
+      for (const tag of tags) {
+        const topic = normalizeTagValue(tag?.topic || "");
+        const group = normalizeTagValue(tag?.groupName || "");
+        const member = normalizeTagValue(tag?.tagPath || tag?.name || "");
+        const name = normalizeTagValue(tag?.name || "");
+        const groupLower = group.toLowerCase();
+        const memberLower = member.toLowerCase();
+        const groupMatch =
+          !!groupLower &&
+          (groupLower === overlayPathLower ||
+            groupLower.endsWith(`.${overlayPathLower}`) ||
+            overlayPathLower.endsWith(`.${groupLower}`));
+        const memberMatch =
+          !!memberLower &&
+          (memberLower === overlayPathLower ||
+            memberLower.startsWith(`${overlayPathLower}.`) ||
+            memberLower.endsWith(`.${overlayPathLower}`));
+        const groupLoose = normalizeLoose(group);
+        const memberLoose = normalizeLoose(member || name);
+        const looseMatch =
+          !!overlayPathLoose &&
+          ((groupLoose &&
+            (groupLoose.includes(overlayPathLoose) ||
+              overlayPathLoose.includes(groupLoose))) ||
+            (memberLoose &&
+              (memberLoose.includes(overlayPathLoose) ||
+                overlayPathLoose.includes(memberLoose))));
+        if (!groupMatch && !memberMatch && !looseMatch) continue;
+        const members = [member, name].filter(Boolean);
+        members.forEach((rawMember) => {
+          const m = normalizeTagValue(rawMember);
+          if (!m) return;
+          if (topic && group) addKey(`${topic}.${group}.${m}`);
+          if (topic) addKey(`${topic}.${m}`);
+          if (group) addKey(`${group}.${m}`);
+          addKey(m);
+        });
+      }
+    };
+
+    const overlaysList = Array.isArray(svgOverlays) ? svgOverlays : [];
+    const overlayById = new Map(
+      overlaysList.map((overlay) => [String(overlay?.id || "").trim(), overlay])
+    );
+    const prioritizedOverlays = (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds : [])
+      .map((id) => overlayById.get(String(id || "").trim()))
+      .filter(Boolean);
+    // Prioritize currently open equipment popups so their live values are always in scope.
+    prioritizedOverlays.forEach((overlay) => {
+      addPopupOverlayCommandAndStatusKeys(overlay);
+      if (OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE) {
+        normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlay?.tagPath).forEach(addKey);
+      }
+      addKey(overlay?.widget?.timerAccTag);
+      addKey(overlay?.widget?.timerPresetTag);
+      addKey(overlay?.widget?.timerDoneTag);
+      addKey(overlay?.widget?.timerEnableTag);
+    });
+
+    (Array.isArray(shapes) ? shapes : []).forEach((shape) => {
+      addKey(shape?.tagPath);
+    });
+
+    overlaysList.forEach((overlay) => {
+      addKey(overlay?.tagPath);
+      // Keep high-cardinality trend/chart series tags off the real-time UI path.
+      // They can be handled by background/trend fetches without blocking interaction.
+      if (OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE) {
+        normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlay?.tagPath).forEach(addKey);
+      }
+      addKey(overlay?.widget?.timerAccTag);
+      addKey(overlay?.widget?.timerPresetTag);
+      addKey(overlay?.widget?.timerDoneTag);
+      addKey(overlay?.widget?.timerEnableTag);
+    });
+
+    const out = Array.from(keys);
+    return out.slice(0, OPC_LIVE_KEY_HARD_CAP);
+  }, [liveUpdatesEnabled, shapes, svgOverlays, liveEquipmentOverlayIds, opcTags]);
+  const opcScopedStatusKeySetLower = useMemo(
+    () =>
+      new Set(
+        (Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : [])
+          .map((raw) => normalizeTagValue(raw || "").toLowerCase())
+          .filter(Boolean)
+      ),
+    [opcScopedStatusKeys]
+  );
+  const opcDerivedTags = useMemo(() => {
+    const tags = Array.isArray(opcTags) ? opcTags : [];
+    if (!tags.length) return [];
+    const keySet = opcScopedStatusKeySetLower;
+    if (!keySet.size) return [];
+    const out = [];
+    const pushIfMatch = (tag) => {
+      if (!tag || out.length >= OPC_LIVE_KEY_HARD_CAP) return;
+      const topic = normalizeTagValue(tag?.topic || "");
+      const group = normalizeTagValue(tag?.groupName || "");
+      const name = normalizeTagValue(tag?.name || "");
+      const tagPath = normalizeTagValue(tag?.tagPath || "");
+      const candidates = [
+        topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
+        topic && group && name ? `${topic}.${group}.${name}` : "",
+        topic && tagPath ? `${topic}.${tagPath}` : "",
+        topic && name ? `${topic}.${name}` : "",
+        group && tagPath ? `${group}.${tagPath}` : "",
+        group && name ? `${group}.${name}` : "",
+        tagPath,
+        name,
+      ]
+        .map((entry) => normalizeTagValue(entry || ""))
+        .filter(Boolean);
+      const matched = candidates.some((candidate) => {
+        const lower = candidate.toLowerCase();
+        return keySet.has(lower);
+      });
+      if (matched) out.push(tag);
+    };
+    for (let i = 0; i < tags.length && out.length < OPC_LIVE_KEY_HARD_CAP; i += 1) {
+      pushIfMatch(tags[i]);
+    }
+    return out;
+  }, [opcTags, opcScopedStatusKeySetLower]);
   const [liveMenuCollapsed, setLiveMenuCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -426,9 +802,13 @@ export default function App() {
   const [canvasViewportScrollTarget, setCanvasViewportScrollTarget] = useState({ x: 0, y: 0 });
   const [liveMenuGroups, setLiveMenuGroups] = useState(() =>
     defaultLiveMenuGroupsFromScreens([
+      buildHomeScreenPayload(),
       { id: "screen-1", name: "Screen 1", showInLiveMenu: true },
     ])
   );
+  const [liveMenuIconPickerFor, setLiveMenuIconPickerFor] = useState("");
+  const [liveMenuIconSearch, setLiveMenuIconSearch] = useState("");
+  const [liveMenuIconVisibleCount, setLiveMenuIconVisibleCount] = useState(LIVE_MENU_ICON_PAGE_SIZE);
   const [collapsedLiveGroupIds, setCollapsedLiveGroupIds] = useState([]);
   const lastProjectSignatureRef = useRef("");
   const projectSaveInFlightRef = useRef(false);
@@ -440,9 +820,21 @@ export default function App() {
   const liveDragSyncQueuedRef = useRef(false);
   const uiPreferenceAutosaveReadyRef = useRef(false);
   const projectHydrationReadyRef = useRef(false);
+  const projectCursorCountRef = useRef(0);
+  const liveUpdatesEnabledRef = useRef(liveUpdatesEnabled);
+  const opcHighLoadUiModeRef = useRef(opcHighLoadUiMode);
+  const lastDraftPersistAtRef = useRef(0);
   const opcStatusFailureCountRef = useRef(0);
   const opcStatusNextAttemptAtRef = useRef(0);
   const lastOpcToastErrorRef = useRef("");
+  const opcStatusStreamConnectedRef = useRef(false);
+  const opcLiveValuesRef = useRef({});
+  const opcTagsAllRef = useRef([]);
+  const opcConfigSignatureRef = useRef("");
+  const opcTemplateSignatureRef = useRef("");
+  const opcTagMappingsSignatureRef = useRef("");
+  const opcMappingSetsSignatureRef = useRef("");
+  const liveActiveAlarmsSignatureRef = useRef("");
   const autoFitInitRef = useRef(false);
   const zoomHoldTimeoutRef = useRef(null);
   const zoomHoldIntervalRef = useRef(null);
@@ -451,6 +843,9 @@ export default function App() {
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
   const cursorPublishInFlightRef = useRef(false);
   const queuedCursorPointRef = useRef(null);
+  const lastProjectCursorSignatureRef = useRef("");
+  const lastPresenceSignatureRef = useRef("");
+  const lastLiveOverlayClickRef = useRef({ id: "", at: 0 });
   const projectNameRef = useRef(projectName);
   const showGridRef = useRef(showGrid);
   const showTagPathsRef = useRef(showTagPaths);
@@ -479,6 +874,100 @@ export default function App() {
     () => getProjectDraftStorageKey(activeProjectId),
     [activeProjectId]
   );
+  const filterOpcValuesToUiScope = (values) => {
+    const source = values && typeof values === "object" ? values : {};
+    const keys = opcScopedStatusKeySetLower;
+    if (!keys || !keys.size) return {};
+    const orderedKeys = Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : [];
+    const popupBoost = (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ? 32 : 0;
+    const dynamicCap = liveUiSafeMode
+      ? Math.min(24 + popupBoost, Math.max(10, keys.size + 2))
+      : Math.min(48 + popupBoost, Math.max(14, keys.size + 6));
+    const out = {};
+    let count = 0;
+    // Build scoped prefix set for matching sub-member keys (e.g. "Motor_MB_2.HMI_State" under scope "Motor_MB_2")
+    const scopedPrefixes = Array.from(keys).map((k) => `${k}.`);
+    // First pass: exact matches from orderedKeys
+    for (const rawScopedKey of orderedKeys) {
+      const scopedKey = normalizeTagValue(rawScopedKey || "");
+      if (!scopedKey) continue;
+      const scopedLower = scopedKey.toLowerCase();
+      if (!keys.has(scopedLower)) continue;
+      let hasValue = false;
+      let nextKey = scopedKey;
+      let nextValue = undefined;
+      if (Object.prototype.hasOwnProperty.call(source, scopedKey)) {
+        hasValue = true;
+        nextValue = source[scopedKey];
+      } else if (Object.prototype.hasOwnProperty.call(source, scopedLower)) {
+        hasValue = true;
+        nextKey = scopedLower;
+        nextValue = source[scopedLower];
+      }
+      if (!hasValue) continue;
+      out[nextKey] = nextValue;
+      count += 1;
+      if (count >= dynamicCap) break;
+    }
+    // Second pass: include sub-member keys (UDT members) whose prefix is in scope
+    if (count < dynamicCap) {
+      for (const sourceKey of Object.keys(source)) {
+        if (Object.prototype.hasOwnProperty.call(out, sourceKey)) continue;
+        const sourceLower = sourceKey.toLowerCase();
+        const inScope = scopedPrefixes.some((prefix) => sourceLower.startsWith(prefix));
+        if (!inScope) continue;
+        out[sourceKey] = source[sourceKey];
+        count += 1;
+        if (count >= dynamicCap) break;
+      }
+    }
+    return out;
+  };
+  const filterOpcTagsToUiScope = (tags) => {
+    const list = Array.isArray(tags) ? tags : [];
+    if (!isLiveMode) return list;
+    const keys = opcScopedStatusKeySetLower;
+    if (!keys || !keys.size) return [];
+    const out = [];
+    for (let i = 0; i < list.length; i += 1) {
+      const tag = list[i];
+      const topic = normalizeTagValue(tag?.topic || "");
+      const group = normalizeTagValue(tag?.groupName || "");
+      const name = normalizeTagValue(tag?.name || "");
+      const tagPath = normalizeTagValue(tag?.tagPath || "");
+      const candidates = [
+        topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
+        topic && group && name ? `${topic}.${group}.${name}` : "",
+        topic && tagPath ? `${topic}.${tagPath}` : "",
+        topic && name ? `${topic}.${name}` : "",
+        group && tagPath ? `${group}.${tagPath}` : "",
+        group && name ? `${group}.${name}` : "",
+        tagPath,
+        name,
+      ]
+        .map((entry) => normalizeTagValue(entry || "").toLowerCase())
+        .filter(Boolean);
+      if (!candidates.some((candidate) => keys.has(candidate))) continue;
+      out.push(tag);
+      if (out.length >= OPC_CANVAS_KEY_HARD_CAP) break;
+    }
+    return out;
+  };
+  const areOpcValueMapsEqual = (currentValues, nextValues) => {
+    const current =
+      currentValues && typeof currentValues === "object" ? currentValues : {};
+    const next = nextValues && typeof nextValues === "object" ? nextValues : {};
+    if (current === next) return true;
+    const currentKeys = Object.keys(current);
+    const nextKeys = Object.keys(next);
+    if (currentKeys.length !== nextKeys.length) return false;
+    for (let i = 0; i < currentKeys.length; i += 1) {
+      const key = currentKeys[i];
+      if (!Object.prototype.hasOwnProperty.call(next, key)) return false;
+      if (!Object.is(current[key], next[key])) return false;
+    }
+    return true;
+  };
 
   useEffect(() => {
     projectNameRef.current = projectName;
@@ -506,6 +995,23 @@ export default function App() {
     panRef.current = pan;
     zoomRef.current = zoom;
   }, [pan, zoom]);
+
+  useEffect(() => {
+    projectCursorCountRef.current = Array.isArray(projectCursors) ? projectCursors.length : 0;
+  }, [projectCursors.length]);
+
+  useEffect(() => {
+    liveUpdatesEnabledRef.current = !!liveUpdatesEnabled;
+  }, [liveUpdatesEnabled]);
+
+  useEffect(() => {
+    opcHighLoadUiModeRef.current = !!opcHighLoadUiMode;
+  }, [opcHighLoadUiMode]);
+
+  useEffect(() => {
+    opcLiveValuesRef.current =
+      opcLiveValues && typeof opcLiveValues === "object" ? opcLiveValues : {};
+  }, [opcLiveValues]);
 
   useEffect(() => {
     setSvgOverlays((prev) => {
@@ -637,7 +1143,14 @@ export default function App() {
   }, [isPageVisible]);
 
   useEffect(() => {
+    if (liveUiSafeMode) {
+      liveActiveAlarmsSignatureRef.current = "";
+      setLiveActiveAlarmsDb([]);
+      setLiveActiveAlarmsDbLoaded(true);
+      return undefined;
+    }
     if (!isLiveMode) {
+      liveActiveAlarmsSignatureRef.current = "";
       setLiveActiveAlarmsDb([]);
       setLiveActiveAlarmsDbLoaded(false);
       return undefined;
@@ -650,24 +1163,32 @@ export default function App() {
         const data = await listActiveAlarms();
         if (cancelled) return;
         const rows = Array.isArray(data?.active) ? data.active : [];
-        setLiveActiveAlarmsDb(
-          rows.map((row, idx) => {
-            const occurredAt = Number(new Date(row?.first_triggered_at || 0).getTime() || 0);
-            return {
-              id: String(row?.alarm_key || `${row?.topic || "alarm"}.${row?.label || idx}.${idx}`),
-              label: String(row?.label || row?.tag_path || `Alarm ${idx + 1}`),
-              topic: String(row?.topic || ""),
-              operator: String(row?.operator || ""),
-              threshold: String(row?.threshold ?? ""),
-              value: row?.last_value == null || row?.last_value === "" ? "-" : String(row?.last_value),
-              occurredAt,
-            };
-          })
-        );
+        const nextRows = rows.map((row, idx) => {
+          const occurredAt = Number(new Date(row?.first_triggered_at || 0).getTime() || 0);
+          return {
+            id: String(row?.alarm_key || `${row?.topic || "alarm"}.${row?.label || idx}.${idx}`),
+            label: String(row?.label || row?.tag_path || `Alarm ${idx + 1}`),
+            topic: String(row?.topic || ""),
+            operator: String(row?.operator || ""),
+            threshold: String(row?.threshold ?? ""),
+            value: row?.last_value == null || row?.last_value === "" ? "-" : String(row?.last_value),
+            occurredAt,
+          };
+        });
+        const nextSig = nextRows
+          .map((row) => `${row.id}|${row.value}|${row.operator}|${row.threshold}|${row.occurredAt}`)
+          .join("||");
+        if (nextSig !== liveActiveAlarmsSignatureRef.current) {
+          liveActiveAlarmsSignatureRef.current = nextSig;
+          setLiveActiveAlarmsDb(nextRows);
+        }
         setLiveActiveAlarmsDbLoaded(true);
       } catch {
         if (cancelled) return;
-        setLiveActiveAlarmsDb([]);
+        if (liveActiveAlarmsSignatureRef.current !== "") {
+          liveActiveAlarmsSignatureRef.current = "";
+          setLiveActiveAlarmsDb([]);
+        }
         setLiveActiveAlarmsDbLoaded(true);
       } finally {
         if (cancelled) return;
@@ -679,7 +1200,7 @@ export default function App() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [isLiveMode, isPageVisible]);
+  }, [isLiveMode, isPageVisible, liveUiSafeMode]);
 
   useEffect(() => {
     let alive = true;
@@ -746,37 +1267,43 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (import.meta.env.DEV) return;
     const id = String(activeProjectId || "").trim();
     if (!id) return;
-    const t = setTimeout(() => {
+    if (isLiveMode) return;
+    let intervalId = null;
+    let timeoutId = null;
+    let idleId = null;
+    const MIN_DRAFT_PERSIST_MS = 15000;
+    const persistDraft = () => {
+      if (isInteractingRef.current) return;
+      const now = Date.now();
+      if (now - Number(lastDraftPersistAtRef.current || 0) < MIN_DRAFT_PERSIST_MS) return;
       try {
         localStorage.setItem(
           projectDraftStorageKey,
-          JSON.stringify({ savedAt: Date.now(), payload: getProjectPayloadFromRefs() })
+          JSON.stringify({ savedAt: now, payload: getProjectPayloadFromRefs() })
         );
+        lastDraftPersistAtRef.current = now;
       } catch {
         // ignore draft persistence failures
       }
-    }, 180);
-    return () => clearTimeout(t);
-  }, [
-    activeProjectId,
-    projectDraftStorageKey,
-    projectMode,
-    projectName,
-    projectCanvasBackground,
-    projectPlcs,
-    screens,
-    activeScreenId,
-    screenName,
-    vbW,
-    vbH,
-    pan,
-    zoom,
-    shapes,
-    svgOverlays,
-    liveMenuGroups,
-  ]);
+    };
+    const schedulePersist = () => {
+      if (typeof window.requestIdleCallback === "function") {
+        idleId = window.requestIdleCallback(persistDraft, { timeout: 1200 });
+      } else {
+        timeoutId = setTimeout(persistDraft, 420);
+      }
+    };
+    schedulePersist();
+    intervalId = setInterval(schedulePersist, 20000);
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      if (timeoutId) clearTimeout(timeoutId);
+      if (idleId && typeof window.cancelIdleCallback === "function") window.cancelIdleCallback(idleId);
+    };
+  }, [activeProjectId, projectDraftStorageKey, isLiveMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -798,19 +1325,10 @@ export default function App() {
       } catch {
         // ignore viewport zoom cache persistence failures
       }
-      try {
-        localStorage.setItem(
-          getProjectDraftStorageKey(id),
-          JSON.stringify({ savedAt: Date.now(), payload: getProjectPayloadFromRefs() })
-        );
-      } catch {
-        // ignore
-      }
       const shouldWarn =
         pendingSilentSaveRef.current ||
         projectSaveInFlightRef.current ||
-        !!queuedSaveAfterFlightRef.current ||
-        hasUnsavedProjectChangesFromRefs();
+        !!queuedSaveAfterFlightRef.current;
       if (shouldWarn) {
         event.preventDefault();
         event.returnValue = "";
@@ -832,8 +1350,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!liveUpdatesEnabled) return undefined;
     let alive = true;
     let configNextAttemptAt = 0;
+    const signatureForList = (rows, fields = []) => {
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) return "0";
+      const parts = new Array(list.length);
+      for (let i = 0; i < list.length; i += 1) {
+        const row = list[i] && typeof list[i] === "object" ? list[i] : {};
+        if (!fields.length) {
+          parts[i] = JSON.stringify(row);
+          continue;
+        }
+        const picked = fields.map((f) => `${f}:${String(row?.[f] ?? "")}`).join("|");
+        parts[i] = picked;
+      }
+      return `${list.length}:${parts.join("||")}`;
+    };
     const wait = (ms) =>
       new Promise((resolve) => {
         window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
@@ -851,7 +1385,39 @@ export default function App() {
           const data = await getOpcConfig();
           if (!alive) return;
           const tags = Array.isArray(data?.tags) ? data.tags : [];
-          setOpcTags(tags);
+          opcTagsAllRef.current = tags;
+          const tagsForUi = filterOpcTagsToUiScope(tags);
+          const nextSig = signatureForList(tags, [
+            "topic",
+            "groupName",
+            "tagPath",
+            "name",
+            "enabled",
+            "muted",
+            "alarmEnabled",
+            "plcType",
+            "mappingSet",
+            "showPopupTagValue",
+          ]);
+          if (opcConfigSignatureRef.current !== nextSig) {
+            opcConfigSignatureRef.current = nextSig;
+            setOpcTags(tagsForUi);
+          } else if (isLiveMode) {
+            setOpcTags((prev) => {
+              const prevList = Array.isArray(prev) ? prev : [];
+              if (prevList.length === tagsForUi.length) {
+                let same = true;
+                for (let ii = 0; ii < prevList.length; ii += 1) {
+                  if (prevList[ii] !== tagsForUi[ii]) {
+                    same = false;
+                    break;
+                  }
+                }
+                if (same) return prev;
+              }
+              return tagsForUi;
+            });
+          }
           configNextAttemptAt = 0;
           return;
         } catch {
@@ -866,7 +1432,12 @@ export default function App() {
       try {
         const data = await getOpcTemplates();
         if (!alive) return;
-        setOpcTemplates(data.templates || []);
+        const templates = Array.isArray(data?.templates) ? data.templates : [];
+        const nextSig = signatureForList(templates, ["name", "parent_name", "state_mappings"]);
+        if (opcTemplateSignatureRef.current !== nextSig) {
+          opcTemplateSignatureRef.current = nextSig;
+          setOpcTemplates(templates);
+        }
       } catch {
         // ignore
       }
@@ -875,7 +1446,12 @@ export default function App() {
       try {
         const data = await getOpcTagMappings();
         if (!alive) return;
-        setOpcTagMappings(data.mappings || []);
+        const mappings = Array.isArray(data?.mappings) ? data.mappings : [];
+        const nextSig = signatureForList(mappings, ["tag_key", "field", "state", "color"]);
+        if (opcTagMappingsSignatureRef.current !== nextSig) {
+          opcTagMappingsSignatureRef.current = nextSig;
+          setOpcTagMappings(mappings);
+        }
       } catch {
         // ignore
       }
@@ -884,7 +1460,12 @@ export default function App() {
       try {
         const data = await getOpcMappingSets();
         if (!alive) return;
-        setOpcMappingSets(data.sets || []);
+        const sets = Array.isArray(data?.sets) ? data.sets : [];
+        const nextSig = signatureForList(sets, ["name", "mappings"]);
+        if (opcMappingSetsSignatureRef.current !== nextSig) {
+          opcMappingSetsSignatureRef.current = nextSig;
+          setOpcMappingSets(sets);
+        }
       } catch {
         // ignore
       }
@@ -893,8 +1474,8 @@ export default function App() {
     loadTemplates();
     loadTagMappings();
     loadMappingSets();
-    const configPollMs = isPageVisible ? (isLiveMode ? 8000 : 12000) : 60000;
-    const metaPollMs = isPageVisible ? 20000 : 180000;
+    const configPollMs = isPageVisible ? (isLiveMode ? 20000 : 30000) : 90000;
+    const metaPollMs = isPageVisible ? 120000 : 240000;
     const configId = setInterval(loadConfig, configPollMs);
     const templateId = setInterval(loadTemplates, metaPollMs);
     const mappingId = setInterval(loadTagMappings, metaPollMs);
@@ -906,20 +1487,176 @@ export default function App() {
       clearInterval(mappingId);
       clearInterval(mappingSetId);
     };
-  }, [isPageVisible, isLiveMode]);
+  }, [isPageVisible, isLiveMode, liveUpdatesEnabled, opcScopedStatusKeys]);
 
   useEffect(() => {
+    const streamKeyLimit = 0;
+    const streamKeys =
+      Array.isArray(opcScopedStatusKeys) && opcScopedStatusKeys.length <= streamKeyLimit
+        ? opcScopedStatusKeys
+        : [];
+    const shouldUseStream =
+      liveUpdatesEnabled &&
+      isPageVisible &&
+      isLiveMode &&
+      streamKeys.length > 0;
+    if (!shouldUseStream) {
+      opcStatusStreamConnectedRef.current = false;
+      return undefined;
+    }
     let alive = true;
-    async function pollStatus() {
-      if (!isPageVisible) return;
-      if (Date.now() < Number(opcStatusNextAttemptAtRef.current || 0)) return;
-      try {
-        const data = await getOpcStatus();
+    let flushTimer = null;
+    let pendingSnapshot = null;
+    let pendingPatch = null;
+    let pendingAtMs = 0;
+    const flushPendingValues = () => {
+      flushTimer = null;
+      if (!alive) return;
+      if (isInteractingRef.current) {
+        if (!flushTimer) flushTimer = setTimeout(flushPendingValues, 360);
+        return;
+      }
+      const snapshot = pendingSnapshot;
+      const patch = pendingPatch;
+      const atMs = Number(pendingAtMs || 0);
+      pendingSnapshot = null;
+      pendingPatch = null;
+      pendingAtMs = 0;
+      let changed = false;
+      if (snapshot && typeof snapshot === "object") {
+        const filteredSnapshot = filterOpcValuesToUiScope(snapshot);
+        if (!areOpcValueMapsEqual(opcLiveValuesRef.current, filteredSnapshot)) {
+          opcLiveValuesRef.current = filteredSnapshot;
+          changed = true;
+          setOpcLiveSnapshot(filteredSnapshot);
+        }
+      } else if (patch && typeof patch === "object") {
+        const filteredPatch = filterOpcValuesToUiScope(patch);
+        const current = opcLiveValuesRef.current || {};
+        const next = { ...current };
+        Object.entries(filteredPatch).forEach(([key, value]) => {
+          if (value === null) {
+            if (Object.prototype.hasOwnProperty.call(next, key)) {
+              delete next[key];
+              changed = true;
+            }
+            return;
+          }
+          if (!Object.is(next[key], value)) {
+            next[key] = value;
+            changed = true;
+          }
+        });
+        if (changed) {
+          opcLiveValuesRef.current = next;
+          patchOpcLiveSnapshot(filteredPatch);
+        }
+      }
+      if (changed && atMs > 0) {
+        // Intentionally do not set App state here to avoid global rerenders on live tag ticks.
+      }
+    };
+    const queueValuesUpdate = (kind, values, atMs) => {
+      const filteredValues = filterOpcValuesToUiScope(values);
+      if (kind === "snapshot") {
+        pendingSnapshot = filteredValues;
+        pendingPatch = null;
+      } else if (kind === "delta") {
+        const src = filteredValues;
+        const nextPatch = pendingPatch && typeof pendingPatch === "object" ? { ...pendingPatch } : {};
+        Object.entries(src).forEach(([key, value]) => {
+          nextPatch[key] = value;
+        });
+        pendingPatch = nextPatch;
+      } else {
+        pendingSnapshot = filteredValues;
+        pendingPatch = null;
+      }
+      pendingAtMs = Number(atMs || 0);
+      if (!flushTimer) {
+        flushTimer = setTimeout(flushPendingValues, 250);
+      }
+    };
+    const applyConnectedState = (data) => {
+      const connectedFlag = typeof data?.connected === "boolean" ? data.connected : null;
+      const staleFlag = data?.stale === true;
+      if (connectedFlag === false) {
+        setOpcLiveLastError(
+          staleFlag ? "OPC disconnected (status stale)." : "OPC disconnected."
+        );
+      } else {
+        setOpcLiveLastError("");
+      }
+    };
+    const unsubscribe = subscribeOpcStatusStream({
+      keys: streamKeys,
+      onOpen: () => {
         if (!alive) return;
-        setOpcLiveValues(data.values || {});
+        opcStatusStreamConnectedRef.current = true;
+        opcStatusFailureCountRef.current = 0;
+        opcStatusNextAttemptAtRef.current = 0;
+      },
+      onError: () => {
+        if (!alive) return;
+        opcStatusStreamConnectedRef.current = false;
+      },
+      onMessage: (data) => {
+        if (!alive || !data || typeof data !== "object") return;
+        const kind = String(data?.type || "").trim().toLowerCase();
+        const nextValues = data?.values && typeof data.values === "object" ? data.values : {};
         const atMs =
           Number(new Date(data?.at || 0).getTime() || 0) || Date.now();
-        setOpcLiveUpdatedAt(atMs);
+        queueValuesUpdate(kind, nextValues, atMs);
+        opcStatusFailureCountRef.current = 0;
+        opcStatusNextAttemptAtRef.current = 0;
+        applyConnectedState(data);
+      },
+    });
+    return () => {
+      alive = false;
+      opcStatusStreamConnectedRef.current = false;
+      if (flushTimer) clearTimeout(flushTimer);
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
+  }, [liveUpdatesEnabled, isPageVisible, isLiveMode, opcScopedStatusKeys, opcScopedStatusKeySetLower]);
+
+  useEffect(() => {
+    if (!liveUpdatesEnabled) return undefined;
+    let alive = true;
+    const hasScopedKeys =
+      Array.isArray(opcScopedStatusKeys) && opcScopedStatusKeys.length > 0;
+    if (!hasScopedKeys) {
+      const current = opcLiveValuesRef.current || {};
+      if (Object.keys(current).length) {
+        opcLiveValuesRef.current = {};
+        clearOpcLiveSnapshot();
+        setOpcLiveUpdatedAt(0);
+      }
+      return undefined;
+    }
+    async function pollStatus() {
+      if (!isPageVisible) return;
+      if (opcStatusStreamConnectedRef.current) return;
+      if (Date.now() < Number(opcStatusNextAttemptAtRef.current || 0)) return;
+      if (isInteractingRef.current) return;
+      try {
+        const data = await getOpcStatus(
+          { keys: opcScopedStatusKeys }
+        );
+        if (!alive) return;
+        const nextValues = filterOpcValuesToUiScope(
+          data?.values && typeof data.values === "object" ? data.values : {}
+        );
+        const changed = !areOpcValueMapsEqual(opcLiveValuesRef.current, nextValues);
+        if (changed) {
+          opcLiveValuesRef.current = nextValues;
+          setOpcLiveSnapshot(nextValues);
+        }
+        const atMs =
+          Number(new Date(data?.at || 0).getTime() || 0) || Date.now();
+        if (changed && atMs > 0) {
+          // Intentionally do not set App state here to avoid global rerenders on live tag ticks.
+        }
         opcStatusFailureCountRef.current = 0;
         opcStatusNextAttemptAtRef.current = 0;
         const connectedFlag =
@@ -943,15 +1680,44 @@ export default function App() {
       }
     }
     pollStatus();
+    const pollIntervalMs = !isPageVisible
+      ? OPC_STATUS_POLL_MS_HIDDEN
+      : !isLiveMode
+        ? OPC_STATUS_POLL_MS_DESIGN
+        : opcActiveTagCount <= 64
+          ? OPC_STATUS_POLL_MS_LIVE_SMALL
+          : opcActiveTagCount <= 256
+            ? OPC_STATUS_POLL_MS_LIVE_MEDIUM
+            : OPC_STATUS_POLL_MS_LIVE_LARGE;
     const id = setInterval(
       pollStatus,
-      isPageVisible ? (isLiveMode ? 350 : 2000) : 8000
+      pollIntervalMs
     );
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [isPageVisible, isLiveMode]);
+  }, [isPageVisible, isLiveMode, liveUpdatesEnabled, opcActiveTagCount, opcScopedStatusKeys, opcScopedStatusKeySetLower]);
+
+  useEffect(() => {
+    const allTags = Array.isArray(opcTagsAllRef.current) ? opcTagsAllRef.current : [];
+    if (!allTags.length) return;
+    const next = filterOpcTagsToUiScope(allTags);
+    setOpcTags((prev) => {
+      const prevList = Array.isArray(prev) ? prev : [];
+      if (prevList.length === next.length) {
+        let same = true;
+        for (let i = 0; i < prevList.length; i += 1) {
+          if (prevList[i] !== next[i]) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return prev;
+      }
+      return next;
+    });
+  }, [isLiveMode, opcScopedStatusKeySetLower]);
 
   useEffect(() => {
     const msg = String(opcLiveLastError || "").trim();
@@ -965,6 +1731,7 @@ export default function App() {
   }, [opcLiveLastError]);
 
   useEffect(() => {
+    if (PERF_HARD_REALTIME_MODE) return undefined;
     let alive = true;
     const pollSessionKeepAlive = async () => {
       if (!alive) return;
@@ -1003,9 +1770,10 @@ export default function App() {
       alive = false;
       clearInterval(id);
     };
-  }, [projectPlcs, isPageVisible]);
+  }, [projectPlcs, isPageVisible, isLiveMode]);
 
   useEffect(() => {
+    if (PERF_HARD_REALTIME_MODE) return undefined;
     let alive = true;
     async function pollWidgetDbValues() {
       if (!isPageVisible) return;
@@ -1057,7 +1825,7 @@ export default function App() {
       alive = false;
       clearInterval(id);
     };
-  }, [svgOverlays, isPageVisible, isLiveMode]);
+  }, [svgOverlays, isPageVisible, isLiveMode, liveUpdatesEnabled]);
 
   const opcTemplateMap = useMemo(() => {
     const map = new Map();
@@ -1120,6 +1888,7 @@ export default function App() {
 
   const tagStateColorsByPath = useMemo(() => {
     const map = new Map();
+    if (liveUiSafeMode) return map;
     const live = opcLiveValues || {};
 
     const inferGroupName = (tag) => {
@@ -1151,7 +1920,7 @@ export default function App() {
       return null;
     };
 
-    (opcTags || []).forEach((tag) => {
+    (opcDerivedTags || []).forEach((tag) => {
       const tagPath = normalizeTagValue(tag?.tagPath || "");
       const tagName = normalizeTagValue(tag?.name || "");
       const topicName = normalizeTagValue(tag?.topic || "");
@@ -1229,7 +1998,7 @@ export default function App() {
       }
     });
     return map;
-  }, [opcTags, opcLiveValues, opcTemplateMap, opcTagMappingMap, opcMappingSetMap]);
+  }, [opcDerivedTags, opcLiveValues, opcTemplateMap, opcTagMappingMap, opcMappingSetMap, liveUiSafeMode]);
 
   const routeColorsBySvgKey = useMemo(() => {
     const map = new Map();
@@ -1359,6 +2128,7 @@ export default function App() {
 
   const routeStrokeColorByGroupPath = useMemo(() => {
     const map = new Map();
+    if (liveUiSafeMode) return map;
     const live = opcLiveValues || {};
 
     const readLiveTagValue = (tag, topic) => {
@@ -1383,7 +2153,7 @@ export default function App() {
       return null;
     };
 
-    (opcTags || []).forEach((tag) => {
+    (opcDerivedTags || []).forEach((tag) => {
       const topic = normalizeTagValue(tag?.topic || "");
       const group = normalizeTagValue(tag?.groupName || "");
       if (!topic || !group) return;
@@ -1409,10 +2179,11 @@ export default function App() {
     });
 
     return map;
-  }, [opcTags, opcLiveValues, routeColorByRouteNumber]);
+  }, [opcDerivedTags, opcLiveValues, routeColorByRouteNumber, liveUiSafeMode]);
 
   const svgLiveValuesByGroupPath = useMemo(() => {
     const map = new Map();
+    if (liveUiSafeMode) return map;
     const live = opcLiveValues || {};
 
     const readLiveTagValue = (tag, topic) => {
@@ -1439,7 +2210,8 @@ export default function App() {
     };
 
     const groups = new Map();
-    (opcTags || []).forEach((tag) => {
+    if (opcHighLoadUiMode) return map;
+    (opcDerivedTags || []).forEach((tag) => {
       const topic = normalizeTagValue(tag?.topic || "Default") || "Default";
       const group = normalizeTagValue(tag?.groupName || "");
       if (!group) return;
@@ -1472,7 +2244,7 @@ export default function App() {
     });
 
     return map;
-  }, [opcTags, opcLiveValues]);
+  }, [opcDerivedTags, opcLiveValues, opcHighLoadUiMode, liveUiSafeMode]);
 
   const liveActiveAlarmsComputed = useMemo(() => {
     const live = opcLiveValues || {};
@@ -1491,7 +2263,8 @@ export default function App() {
       if (operator === "!=") return thresholdText ? `${thresholdText}_test` : "1";
       return thresholdText || "1";
     };
-    (opcTags || []).forEach((tag, idx) => {
+    if (opcHighLoadUiMode || liveUiSafeMode) return alarms;
+    (opcDerivedTags || []).forEach((tag, idx) => {
       if (!isTruthyFlag(tag?.alarmEnabled)) return;
       const threshold = normalizeTagValue(tag?.alarmValue || "");
       if (!threshold) return;
@@ -1538,7 +2311,7 @@ export default function App() {
       });
     });
     return alarms;
-  }, [opcTags, opcLiveValues]);
+  }, [opcDerivedTags, opcLiveValues, opcHighLoadUiMode, liveUiSafeMode]);
   const liveTestAlarms = useMemo(
     () => [
       {
@@ -1563,12 +2336,13 @@ export default function App() {
     []
   );
   const liveActiveAlarms = useMemo(() => {
+    if (opcHighLoadUiMode || liveUiSafeMode) return [];
     const source = liveActiveAlarmsDbLoaded ? liveActiveAlarmsDb : liveActiveAlarmsComputed;
     if (Array.isArray(source) && source.length) return source;
     return liveTestAlarms;
-  }, [liveActiveAlarmsDbLoaded, liveActiveAlarmsDb, liveActiveAlarmsComputed, liveTestAlarms]);
+  }, [liveActiveAlarmsDbLoaded, liveActiveAlarmsDb, liveActiveAlarmsComputed, liveTestAlarms, opcHighLoadUiMode, liveUiSafeMode]);
   const findLiveTagPathMatch = (candidates) => {
-    const live = opcLiveValues || {};
+    const live = getOpcLiveSnapshot();
     const keys = Object.keys(live);
     for (const raw of candidates || []) {
       const cand = String(raw || "").trim();
@@ -1583,6 +2357,11 @@ export default function App() {
     }
     return "";
   };
+  const getOpcTagsForResolution = () => {
+    const allTags = Array.isArray(opcTagsAllRef.current) ? opcTagsAllRef.current : [];
+    if (allTags.length) return allTags;
+    return Array.isArray(opcTags) ? opcTags : [];
+  };
   const findOpcConfiguredTagPathMatch = (overlay, candidates) => {
     const tagPath = normalizeTagValue(overlay?.tagPath || "");
     const rawParts = tagPath.split(".").map((x) => String(x || "").trim()).filter(Boolean);
@@ -1596,7 +2375,7 @@ export default function App() {
       .filter(Boolean);
     const desiredLoose = desired.map((d) => String(d || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
     if (!desired.length) return "";
-    const tags = Array.isArray(opcTags) ? opcTags : [];
+    const tags = getOpcTagsForResolution();
     for (const tag of tags) {
       const topic = normalizeTagValue(tag?.topic || "");
       const group = normalizeTagValue(tag?.groupName || "");
@@ -1674,7 +2453,7 @@ export default function App() {
       const overlayPath = normalizeTagValue(tagPath).toLowerCase();
       if (!overlayPath) return "";
       const counts = new Map();
-      const tags = Array.isArray(opcTags) ? opcTags : [];
+      const tags = getOpcTagsForResolution();
       for (const t of tags) {
         const topic = normalizeTagValue(t?.topic || "").trim();
         if (!topic) continue;
@@ -1822,11 +2601,11 @@ export default function App() {
       return bestItem;
     };
 
-    const liveKeys = Object.keys(opcLiveValues || {});
+    const liveKeys = Object.keys(getOpcLiveSnapshot());
     const bestLive = chooseBest(liveKeys, (k) => k);
     if (bestLive) return bestLive;
 
-    const tags = Array.isArray(opcTags) ? opcTags : [];
+    const tags = getOpcTagsForResolution();
     const configuredFulls = [];
     for (const t of tags) {
       const topic = normalizeTagValue(t?.topic || "");
@@ -1876,7 +2655,7 @@ export default function App() {
     const matchOpcTagForPath = (path) => {
       const target = normalizeTagValue(path).toLowerCase();
       if (!target) return null;
-      const tags = Array.isArray(opcTags) ? opcTags : [];
+      const tags = getOpcTagsForResolution();
       for (const t of tags) {
         const topic = normalizeTagValue(t?.topic || "");
         const group = normalizeTagValue(t?.groupName || "");
@@ -1917,19 +2696,24 @@ export default function App() {
       ? options.pulseResetValue
       : 0;
     const applyOptimisticOpcValue = (nextValue) => {
+      const scopedKeys = opcScopedStatusKeySetLower;
       const keys = [tagKey, legacyTagKey]
         .map((entry) => String(entry || "").trim())
+        .filter((entry) => {
+          if (!entry) return false;
+          const normalized = normalizeTagValue(entry).toLowerCase();
+          return scopedKeys.has(normalized);
+        })
         .filter(Boolean);
       if (!keys.length) return;
-      setOpcLiveValues((prev) => {
-        const out = { ...(prev || {}) };
-        keys.forEach((entry) => {
-          out[entry] = nextValue;
-          out[entry.toLowerCase()] = nextValue;
-        });
-        return out;
+      const patch = {};
+      keys.forEach((entry) => {
+        const lowerKey = entry.toLowerCase();
+        patch[entry] = nextValue;
+        patch[lowerKey] = nextValue;
       });
-      setOpcLiveUpdatedAt(Date.now());
+      opcLiveValuesRef.current = { ...(opcLiveValuesRef.current || {}), ...patch };
+      patchOpcLiveSnapshot(patch);
     };
     try {
       setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: true }));
@@ -1990,16 +2774,21 @@ export default function App() {
         .toLowerCase()
         .replace(/[^a-z0-9]/g, "");
     const isHmiControlPath = (path) => normalizeCommandPathKey(path).endsWith("hmicontrol");
-    const modeStatusPath = resolveMotorCommandTagPath(overlay, ["Mode_Status", "ModeStatus", "Control_Status", "ControlStatus", "i_ModeStatus", "o_ModeStatus", "StsMode", "HMI_ModeStatus"], { strict: true });
-    const hmiStatePath = resolveMotorCommandTagPath(overlay, ["HMI_State", "HMIState", "i_HMIState", "o_HMIState", "State"], { strict: true });
-    const manualStatePath = resolveMotorCommandTagPath(overlay, ["i_ManualMode", "o_ManualMode", "ManualMode", "StsManual", "ManualActive"], { strict: true });
-    const autoStatePath = resolveMotorCommandTagPath(overlay, ["i_AutoMode", "o_AutoMode", "AutoMode", "StsAuto", "AutoActive"], { strict: true });
-    const maintenanceStatePath = resolveMotorCommandTagPath(overlay, ["i_MaintenanceMode", "o_MaintenanceMode", "MaintenanceMode", "MaintMode", "StsMaint", "MaintActive"], { strict: true });
+    const resolveOverlayMotorPath = (aliases, options = {}) => {
+      const strictOptions = { ...(options || {}), strict: true };
+      const strictPath = resolveMotorCommandTagPath(overlay, aliases, strictOptions);
+      if (strictPath) return strictPath;
+      return resolveMotorCommandTagPath(overlay, aliases, { ...(options || {}), strict: false });
+    };
+    const modeStatusPath = resolveOverlayMotorPath(["Mode_Status", "ModeStatus", "Control_Status", "ControlStatus", "i_ModeStatus", "o_ModeStatus", "StsMode", "HMI_ModeStatus"]);
+    const hmiStatePath = resolveOverlayMotorPath(["HMI_State", "HMIState", "i_HMIState", "o_HMIState", "State"]);
+    const manualStatePath = resolveOverlayMotorPath(["i_ManualMode", "o_ManualMode", "ManualMode", "StsManual", "ManualActive"]);
+    const autoStatePath = resolveOverlayMotorPath(["i_AutoMode", "o_AutoMode", "AutoMode", "StsAuto", "AutoActive"]);
+    const maintenanceStatePath = resolveOverlayMotorPath(["i_MaintenanceMode", "o_MaintenanceMode", "MaintenanceMode", "MaintMode", "StsMaint", "MaintActive"]);
     const commandAnchorPaths = [modeStatusPath, hmiStatePath, manualStatePath, autoStatePath, maintenanceStatePath].filter(Boolean);
-    const rawHmiControlPath = resolveMotorCommandTagPath(
-      overlay,
+    const rawHmiControlPath = resolveOverlayMotorPath(
       ["HMI_Control", "hmi_control", "HMIControl", "hmiControl", "hmicontrol"],
-      { strict: true, anchorPaths: commandAnchorPaths }
+      { anchorPaths: commandAnchorPaths }
     );
     const hmiControlPath = String(rawHmiControlPath || "").trim();
     const usesHmiControl = isHmiControlPath(hmiControlPath);
@@ -2025,7 +2814,10 @@ export default function App() {
     const readLiveRaw = (path) => {
       const resolved = findLiveTagPathMatch([path]);
       if (!resolved) return null;
-      return opcLiveValues?.[resolved];
+      const snap = getOpcLiveSnapshot();
+      return Object.prototype.hasOwnProperty.call(snap, resolved)
+        ? snap[resolved]
+        : snap[String(resolved).toLowerCase()];
     };
     const readLiveBool = (path) => {
       const raw = readLiveRaw(path);
@@ -2395,44 +3187,38 @@ export default function App() {
         .toLowerCase()
         .replace(/[^a-z0-9]/g, "");
     const isHmiControlPath = (path) => normalizeCommandPathKey(path).endsWith("hmicontrol");
-    const modeStatusPath = resolveMotorCommandTagPath(
-      overlay,
-      ["Mode_Status", "ModeStatus", "Control_Status", "ControlStatus", "i_ModeStatus", "o_ModeStatus", "StsMode", "HMI_ModeStatus"],
-      { strict: true }
+    const resolveOverlayDiverterPath = (aliases, options = {}) => {
+      const strictOptions = { ...(options || {}), strict: true };
+      const strictPath = resolveMotorCommandTagPath(overlay, aliases, strictOptions);
+      if (strictPath) return strictPath;
+      return resolveMotorCommandTagPath(overlay, aliases, { ...(options || {}), strict: false });
+    };
+    const modeStatusPath = resolveOverlayDiverterPath(
+      ["Mode_Status", "ModeStatus", "Control_Status", "ControlStatus", "i_ModeStatus", "o_ModeStatus", "StsMode", "HMI_ModeStatus"]
     );
-    const hmiStatePath = resolveMotorCommandTagPath(
-      overlay,
-      ["HMI_State", "HMIState", "i_HMIState", "o_HMIState", "State"],
-      { strict: true }
+    const hmiStatePath = resolveOverlayDiverterPath(
+      ["HMI_State", "HMIState", "i_HMIState", "o_HMIState", "State"]
     );
-    const manualStatePath = resolveMotorCommandTagPath(
-      overlay,
-      ["i_ManualMode", "o_ManualMode", "ManualMode", "StsManual", "ManualActive"],
-      { strict: true }
+    const manualStatePath = resolveOverlayDiverterPath(
+      ["i_ManualMode", "o_ManualMode", "ManualMode", "StsManual", "ManualActive"]
     );
-    const autoStatePath = resolveMotorCommandTagPath(
-      overlay,
-      ["i_AutoMode", "o_AutoMode", "AutoMode", "StsAuto", "AutoActive"],
-      { strict: true }
+    const autoStatePath = resolveOverlayDiverterPath(
+      ["i_AutoMode", "o_AutoMode", "AutoMode", "StsAuto", "AutoActive"]
     );
-    const maintenanceStatePath = resolveMotorCommandTagPath(
-      overlay,
-      ["i_MaintenanceMode", "o_MaintenanceMode", "MaintenanceMode", "MaintMode", "StsMaint", "MaintActive"],
-      { strict: true }
+    const maintenanceStatePath = resolveOverlayDiverterPath(
+      ["i_MaintenanceMode", "o_MaintenanceMode", "MaintenanceMode", "MaintMode", "StsMaint", "MaintActive"]
     );
     const anchorPaths = [modeStatusPath, hmiStatePath, manualStatePath, autoStatePath, maintenanceStatePath].filter(Boolean);
-    const rawHmiControlPath = resolveMotorCommandTagPath(
-      overlay,
+    const rawHmiControlPath = resolveOverlayDiverterPath(
       ["HMI_Control", "hmi_control", "HMIControl", "hmiControl", "hmicontrol"],
-      { strict: true, anchorPaths }
+      { anchorPaths }
     );
     const hmiControlPath = String(rawHmiControlPath || "").trim();
     const usesHmiControl = isHmiControlPath(hmiControlPath);
     const resetPath =
-      resolveMotorCommandTagPath(
-        overlay,
+      resolveOverlayDiverterPath(
         ["i_FaultReset", "FaultReset", "CmdFaultReset", "i_CmdFaultReset", "HMI_EquipmentReset"],
-        { strict: true, anchorPaths: [...anchorPaths, hmiControlPath].filter(Boolean) }
+        { anchorPaths: [...anchorPaths, hmiControlPath].filter(Boolean) }
       ) || hmiControlPath;
     const autoPath = hmiControlPath;
     const manualPath = hmiControlPath;
@@ -2458,7 +3244,10 @@ export default function App() {
     const readLiveRaw = (path) => {
       const resolved = findLiveTagPathMatch([path]);
       if (!resolved) return null;
-      return opcLiveValues?.[resolved];
+      const snap = getOpcLiveSnapshot();
+      return Object.prototype.hasOwnProperty.call(snap, resolved)
+        ? snap[resolved]
+        : snap[String(resolved).toLowerCase()];
     };
     const readLiveBool = (path) => {
       const raw = readLiveRaw(path);
@@ -2731,6 +3520,7 @@ export default function App() {
   };
   const buildLiveEquipmentDetails = (overlay) => {
     if (!overlay) return [];
+    const liveSnap = getOpcLiveSnapshot();
     const path = String(overlay.tagPath || "").trim();
     const eType = resolveOverlayEType(overlay);
     const rows = [];
@@ -2781,9 +3571,9 @@ export default function App() {
         "";
       if (resolvedPath) {
         const liveValue =
-          Object.prototype.hasOwnProperty.call(opcLiveValues || {}, resolvedPath)
-            ? opcLiveValues[resolvedPath]
-            : opcLiveValues?.[String(resolvedPath).toLowerCase()];
+          Object.prototype.hasOwnProperty.call(liveSnap, resolvedPath)
+            ? liveSnap[resolvedPath]
+            : liveSnap[String(resolvedPath).toLowerCase()];
         if (liveValue != null && liveValue !== "") {
           pushRow("Tag Value", liveValue);
         }
@@ -2814,11 +3604,10 @@ export default function App() {
       ]
         .map((x) => normalizeTagValue(x))
         .filter(Boolean);
-      const live = opcLiveValues || {};
       for (const k of candidates) {
-        if (Object.prototype.hasOwnProperty.call(live, k)) return live[k];
+        if (Object.prototype.hasOwnProperty.call(liveSnap, k)) return liveSnap[k];
         const lower = k.toLowerCase();
-        if (Object.prototype.hasOwnProperty.call(live, lower)) return live[lower];
+        if (Object.prototype.hasOwnProperty.call(liveSnap, lower)) return liveSnap[lower];
       }
       return "";
     };
@@ -2860,7 +3649,7 @@ export default function App() {
     }
     if (path) {
       const lowerPath = path.toLowerCase();
-      const direct = Object.entries(opcLiveValues || {}).filter(([k]) => {
+      const direct = Object.entries(liveSnap).filter(([k]) => {
         const key = String(k || "").toLowerCase();
         return key === lowerPath || key.endsWith(`.${lowerPath}`) || key.includes(`${lowerPath}.`);
       });
@@ -3608,6 +4397,7 @@ export default function App() {
     );
   };
   const liveEquipmentOverlays = useMemo(() => {
+    if (opcHighLoadUiMode || liveUiSafeMode) return [];
     const byId = new Map((svgOverlays || []).map((o) => [String(o.id || ""), o]));
     return (liveEquipmentOverlayIds || [])
       .map((id) => byId.get(String(id || "")))
@@ -3616,7 +4406,7 @@ export default function App() {
         overlay,
         details: buildLiveEquipmentDetails(overlay),
       }));
-  }, [svgOverlays, liveEquipmentOverlayIds, svgLiveValuesByGroupPath, opcLiveValues, opcTags]);
+  }, [svgOverlays, liveEquipmentOverlayIds, svgLiveValuesByGroupPath, opcTags, opcHighLoadUiMode, liveUiSafeMode, liveEquipmentOpcTick]);
   const binProductLabelByOverlayId = useMemo(() => {
     const out = {};
     (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
@@ -3785,6 +4575,7 @@ export default function App() {
   }, [isLiveMode, liveEquipmentDockEntries, liveEquipmentDockSideById, liveEquipmentFloatingById, pan, zoom, liveEquipmentDockTick]);
 
   const svgTagGroupMenuOptions = useMemo(() => {
+    if (isLiveMode) return [{ value: "", label: "Select tag group" }];
     const options = [{ value: "", label: "Select tag group" }];
     const seen = new Set();
     (opcTags || []).forEach((tag) => {
@@ -3813,7 +4604,7 @@ export default function App() {
       options.push({ value: current, label: current, group: "Custom" });
     }
     return options;
-  }, [opcTags, selectedOverlayIds, selectedIds, svgOverlays]);
+  }, [isLiveMode, opcTags, selectedOverlayIds, selectedIds, svgOverlays]);
 
 
   const PAN_SPEED = 0.05; // ?? adjust this to taste
@@ -3928,8 +4719,15 @@ export default function App() {
         ? { x: fallback.designScroll.x, y: fallback.designScroll.y }
         : scroll;
     const routeId = String(screen?.routeId ?? fallback?.routeId ?? "").trim();
+    const id = String(screen?.id || fallback?.id || uid());
+    const hideInTaskbar =
+      typeof screen?.hideInTaskbar === "boolean"
+        ? screen.hideInTaskbar
+        : typeof fallback?.hideInTaskbar === "boolean"
+        ? fallback.hideInTaskbar
+        : id === HOME_SCREEN_ID;
     return {
-      id: String(screen?.id || fallback?.id || uid()),
+      id,
       name,
       shapes: Array.isArray(screen?.shapes) ? screen.shapes : Array.isArray(fallback?.shapes) ? fallback.shapes : [],
       svgOverlays: Array.isArray(screen?.svgOverlays)
@@ -3951,6 +4749,7 @@ export default function App() {
           : typeof fallback?.showInLiveMenu === "boolean"
           ? fallback.showInLiveMenu
           : true,
+      hideInTaskbar,
       routeId,
       autoFitMode: normalizeScreenAutoFitMode(
         screen?.autoFitMode,
@@ -3960,11 +4759,28 @@ export default function App() {
     };
   }
 
+  function ensureHomeScreenInList(list) {
+    const source = Array.isArray(list) ? list : [];
+    const normalized = source.map((s) => normalizeScreenPayload(s));
+    const idx = normalized.findIndex((s) => String(s?.id || "") === HOME_SCREEN_ID);
+    const homeFallback = normalizeScreenPayload(buildHomeScreenPayload());
+    if (idx < 0) return [homeFallback, ...normalized];
+    const home = normalizeScreenPayload(normalized[idx], homeFallback);
+    const rest = normalized.filter((_, i) => i !== idx);
+    return [home, ...rest];
+  }
+
   function commitCurrentScreenState(sourceScreens = screensRef.current) {
-    const list = Array.isArray(sourceScreens) ? sourceScreens.map((s) => normalizeScreenPayload(s)) : [];
+    const source = Array.isArray(sourceScreens) ? sourceScreens : [];
+    const list = source.slice();
     const fallbackId = list[0]?.id || `screen-${Date.now()}`;
     const currentId = String(activeScreenIdRef.current || fallbackId);
-    const currentScreen = list.find((s) => s.id === currentId) || {};
+    const currentIdx = list.findIndex((s) => String(s?.id || "") === currentId);
+    const currentRaw = currentIdx >= 0 ? list[currentIdx] : {};
+    const currentScreen = normalizeScreenPayload(currentRaw || {}, {
+      id: currentId,
+      name: screenNameRef.current || "Screen 1",
+    });
     const isDesignMode = normalizeProjectMode(projectModeRef.current) === "design";
     const designPan =
       isDesignMode
@@ -4028,14 +4844,14 @@ export default function App() {
         name: screenNameRef.current || currentScreen.name || "Screen 1",
       }
     );
-    const idx = list.findIndex((s) => s.id === currentId);
-    if (idx >= 0) list[idx] = snapshot;
+    if (currentIdx >= 0) list[currentIdx] = snapshot;
     else list.push(snapshot);
     return { list, currentId };
   }
 
   function hydrateScreenState(screen) {
     const next = normalizeScreenPayload(screen);
+    const isHomeScreen = String(next?.id || "") === HOME_SCREEN_ID;
     const rect = svgRef.current?.getBoundingClientRect?.();
     const projectId =
       normalizeTagValue(activeProjectIdRef.current || activeProjectId || readStoredActiveProjectId()) || "";
@@ -4050,7 +4866,7 @@ export default function App() {
       String(next.id || ""),
       viewportKey
     );
-    const resolvedZoom = Number.isFinite(cachedLastZoom)
+    const resolvedZoomRaw = Number.isFinite(cachedLastZoom)
       ? cachedLastZoom
       : Number.isFinite(mappedZoom)
       ? mappedZoom
@@ -4061,6 +4877,7 @@ export default function App() {
       : Number.isFinite(Number(next?.zoom))
       ? Number(next.zoom)
       : 1;
+    const resolvedZoom = isHomeScreen ? 1 : resolvedZoomRaw;
     if (viewportKey) {
       next.zoomByViewport = normalizeZoomByViewportMap(next.zoomByViewport);
       next.zoomByViewport[viewportKey] = resolvedZoom;
@@ -4077,14 +4894,16 @@ export default function App() {
         : { x: 0, y: 0 };
     panRef.current = resolvedPan;
     zoomRef.current = resolvedZoom;
-    setActiveScreenId(next.id);
-    setScreenName(next.name);
-    setShapes(next.shapes);
-    setSvgOverlays(next.svgOverlays);
-    setVbW(next.vbW);
-    setVbH(next.vbH);
-    setPan(resolvedPan);
-    setZoom(resolvedZoom);
+    startTransition(() => {
+      setActiveScreenId(next.id);
+      setScreenName(next.name);
+      setShapes(next.shapes);
+      setSvgOverlays(next.svgOverlays);
+      setVbW(next.vbW);
+      setVbH(next.vbH);
+      setPan(resolvedPan);
+      setZoom(resolvedZoom);
+    });
     if (projectId && viewportKey) {
       const nextCache = readViewportZoomCache();
       nextCache[`${projectId}|${String(next.id || "")}|${viewportKey}`] = resolvedZoom;
@@ -4245,10 +5064,17 @@ export default function App() {
       },
       { id: "screen-1", name: "Screen 1" }
     );
-    const incoming = Array.isArray(data?.screens) && data.screens.length
+    const incomingRaw = Array.isArray(data?.screens) && data.screens.length
       ? data.screens.map((s) => normalizeScreenPayload(s))
       : [fallbackScreen];
-    const nextActiveId = String(data?.activeScreenId || incoming[0]?.id || "screen-1");
+    const incoming = ensureHomeScreenInList(incomingRaw);
+    const requestedActiveId = options?.forceHomeScreen
+      ? HOME_SCREEN_ID
+      : String(data?.activeScreenId || "").trim();
+    const nextActiveId =
+      requestedActiveId && incoming.some((s) => String(s?.id || "") === requestedActiveId)
+        ? requestedActiveId
+        : String(incoming?.[0]?.id || "");
     const active = incoming.find((s) => s.id === nextActiveId) || incoming[0];
     if (Object.prototype.hasOwnProperty.call(data || {}, "projectMode")) {
       setProjectMode(normalizeProjectMode(data?.projectMode));
@@ -4293,10 +5119,17 @@ export default function App() {
       },
       { id: "screen-1", name: "Screen 1" }
     );
-    const incoming = Array.isArray(data?.screens) && data.screens.length
+    const incomingRaw = Array.isArray(data?.screens) && data.screens.length
       ? data.screens.map((s) => normalizeScreenPayload(s))
       : [fallbackScreen];
-    const nextActiveId = String(data?.activeScreenId || incoming[0]?.id || "screen-1");
+    const incoming = ensureHomeScreenInList(incomingRaw);
+    const requestedActiveId = options?.forceHomeScreen
+      ? HOME_SCREEN_ID
+      : String(data?.activeScreenId || "").trim();
+    const nextActiveId =
+      requestedActiveId && incoming.some((s) => String(s?.id || "") === requestedActiveId)
+        ? requestedActiveId
+        : String(incoming?.[0]?.id || "");
     const active = incoming.find((s) => s.id === nextActiveId) || incoming[0];
     if (Object.prototype.hasOwnProperty.call(data || {}, "projectMode")) {
       setProjectMode(normalizeProjectMode(data?.projectMode));
@@ -4421,6 +5254,13 @@ export default function App() {
 
   useEffect(() => {
     if (!user?.id) {
+      if (typeof window !== "undefined") {
+        try {
+          sessionStorage.removeItem(LOGIN_HOME_MARKER_KEY);
+        } catch {
+          // ignore storage errors
+        }
+      }
       setProjects([]);
       setActiveProjectId("");
       setProjectIdentityReady(true);
@@ -4437,11 +5277,21 @@ export default function App() {
         if (!bootstrappedProject && list.length) {
           const stored = localStorage.getItem("vizi_active_project_id") || "";
           const preferred = list.find((p) => p?.id === stored) || list[0];
+          let forceHomeScreen = false;
+          try {
+            const marker = typeof window !== "undefined" ? sessionStorage.getItem(LOGIN_HOME_MARKER_KEY) : "";
+            forceHomeScreen = String(marker || "").trim() !== String(user?.id || "").trim();
+            if (forceHomeScreen && typeof window !== "undefined") {
+              sessionStorage.setItem(LOGIN_HOME_MARKER_KEY, String(user?.id || "").trim());
+            }
+          } catch {
+            forceHomeScreen = false;
+          }
           if (preferred?.id) {
             bootstrappedProject = true;
             setProjectIdentityReady(false);
             setActiveProjectId(preferred.id);
-            openProjectFromDb(preferred.id);
+            openProjectFromDb(preferred.id, { forceHomeScreen });
           }
         } else if (!bootstrappedProject && !list.length) {
           bootstrappedProject = true;
@@ -4594,7 +5444,9 @@ export default function App() {
     };
 
     void refreshProjectBins();
-    const pollMs = isPageVisible ? (isLiveMode ? 2500 : 6000) : 12000;
+    const pollMs = isPageVisible
+      ? (isLiveMode ? PROJECT_DATA_POLL_MS_LIVE : PROJECT_DATA_POLL_MS_DESIGN)
+      : PROJECT_DATA_POLL_MS_HIDDEN;
     const id = window.setInterval(() => {
       void refreshProjectBins();
     }, pollMs);
@@ -4673,7 +5525,9 @@ export default function App() {
     };
 
     void refreshProjectProducts();
-    const pollMs = isPageVisible ? (isLiveMode ? 2500 : 6000) : 12000;
+    const pollMs = isPageVisible
+      ? (isLiveMode ? PROJECT_DATA_POLL_MS_LIVE : PROJECT_DATA_POLL_MS_DESIGN)
+      : PROJECT_DATA_POLL_MS_HIDDEN;
     const id = window.setInterval(() => {
       void refreshProjectProducts();
     }, pollMs);
@@ -4738,7 +5592,9 @@ export default function App() {
     };
 
     void refreshProjectEquipment();
-    const pollMs = isPageVisible ? (isLiveMode ? 2500 : 6000) : 12000;
+    const pollMs = isPageVisible
+      ? (isLiveMode ? PROJECT_DATA_POLL_MS_LIVE : PROJECT_DATA_POLL_MS_DESIGN)
+      : PROJECT_DATA_POLL_MS_HIDDEN;
     const id = window.setInterval(() => {
       void refreshProjectEquipment();
     }, pollMs);
@@ -4911,8 +5767,18 @@ export default function App() {
     return savedOk;
   }
 
-function flushScheduledProjectSave() {
+  function flushScheduledProjectSave() {
+    if (PERF_DISABLE_BACKGROUND_SYNC) {
+      pendingSilentSaveRef.current = false;
+      setHasPendingAutoSave(false);
+      return;
+    }
     if (!pendingSilentSaveRef.current) return;
+    if (projectModeRef.current === "live") {
+      pendingSilentSaveRef.current = false;
+      setHasPendingAutoSave(false);
+      return;
+    }
     if (!projectHydrationReadyRef.current) {
       pendingSilentSaveRef.current = false;
       setHasPendingAutoSave(false);
@@ -4923,7 +5789,19 @@ function flushScheduledProjectSave() {
       return;
     }
     pendingSilentSaveRef.current = false;
-    saveProjectToDb({ silent: true });
+    const run = () => {
+      if (projectModeRef.current === "live") return;
+      if (isInteractingRef.current || projectSaveInFlightRef.current) {
+        autoSaveTimerRef.current = setTimeout(flushScheduledProjectSave, 500);
+        return;
+      }
+      saveProjectToDb({ silent: true, keepalive: true, skipListReload: true, teamMerge: true });
+    };
+    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(run, { timeout: 1200 });
+    } else {
+      setTimeout(run, 0);
+    }
   }
 
   function hasUnsavedProjectChangesFromRefs() {
@@ -4933,6 +5811,8 @@ function flushScheduledProjectSave() {
   }
 
   function scheduleProjectAutoSave(delayMs = 450) {
+    if (PERF_DISABLE_BACKGROUND_SYNC) return;
+    if (projectModeRef.current === "live") return;
     if (!projectHydrationReadyRef.current) return;
     pendingSilentSaveRef.current = true;
     setHasPendingAutoSave(true);
@@ -4941,6 +5821,8 @@ function flushScheduledProjectSave() {
   }
 
   function syncProjectDuringDrag() {
+    if (PERF_DISABLE_BACKGROUND_SYNC) return;
+    if (projectModeRef.current === "live") return;
     if (!activeProjectIdRef.current) return;
     if (!projectHydrationReadyRef.current) return;
     liveDragSyncQueuedRef.current = true;
@@ -4957,7 +5839,7 @@ function flushScheduledProjectSave() {
       }
       const now = Date.now();
       const lastAt = Number(liveDragSyncRef.current?.at || 0);
-      if (now - lastAt < 260) {
+      if (now - lastAt < 1200) {
         syncProjectDuringDrag();
         return;
       }
@@ -4976,7 +5858,9 @@ function flushScheduledProjectSave() {
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
+    if (PERF_DISABLE_BACKGROUND_SYNC) return undefined;
     const flushForLifecycle = () => {
+      if (projectModeRef.current === "live") return;
       if (projectSaveInFlightRef.current) return;
       if (!hasUnsavedProjectChangesFromRefs()) return;
       saveProjectToDb({ silent: true, keepalive: true, skipListReload: true });
@@ -4993,14 +5877,17 @@ function flushScheduledProjectSave() {
     };
   }, []);
 
-  async function openProjectFromDb(id) {
+  async function openProjectFromDb(id, options = {}) {
     if (!id) return;
     try {
       setProjectIdentityReady(false);
       projectHydrationReadyRef.current = false;
       setProjectStatus("");
       const data = await getProjectById(id);
-      applyProjectPayload(data?.data || {}, { projectId: data?.id || id });
+      applyProjectPayload(data?.data || {}, {
+        projectId: data?.id || id,
+        forceHomeScreen: options?.forceHomeScreen === true,
+      });
       setProjectName(data?.name || "Untitled");
       setActiveProjectId(data?.id || "");
       {
@@ -5042,6 +5929,7 @@ function flushScheduledProjectSave() {
 
   function newProjectFromDb() {
     const defaultScreens = [
+      buildHomeScreenPayload(),
       {
         id: "screen-1",
         name: "Screen 1",
@@ -5057,15 +5945,15 @@ function flushScheduledProjectSave() {
     const defaultMenuGroups = defaultLiveMenuGroupsFromScreens(defaultScreens);
     applyProjectPayload({
       projectMode: "design",
-      activeScreenId: "screen-1",
+      activeScreenId: HOME_SCREEN_ID,
       screens: defaultScreens,
       liveMenuGroups: defaultMenuGroups,
     });
     setProjectName("Untitled");
     setProjectMode("design");
     setProjectCanvasBackground(normalizeProjectCanvasBackground(null));
-    setScreenName("Screen 1");
-    setActiveScreenId("screen-1");
+    setScreenName(HOME_SCREEN_NAME);
+    setActiveScreenId(HOME_SCREEN_ID);
     setScreens(defaultScreens);
     canvasViewportScrollRef.current = { x: 0, y: 0 };
     setCanvasViewportScrollTarget({ x: 0, y: 0 });
@@ -5087,7 +5975,7 @@ function flushScheduledProjectSave() {
       pan: { x: 0, y: 0 },
       zoom: 1,
       projectMode: "design",
-      activeScreenId: "screen-1",
+      activeScreenId: HOME_SCREEN_ID,
       screens: defaultScreens,
       liveMenuGroups: defaultMenuGroups,
       shapes: [],
@@ -5154,11 +6042,15 @@ function flushScheduledProjectSave() {
   }
 
   useEffect(() => {
+    if (PERF_DISABLE_BACKGROUND_SYNC) return undefined;
     if (!activeProjectId) return;
-    if (!projectCursors.length) return;
+    if (isLiveMode) return;
     let alive = true;
     async function pollProject() {
       if (!isPageVisible) return;
+      if (!liveUpdatesEnabledRef.current) return;
+      if (opcHighLoadUiModeRef.current) return;
+      if (Number(projectCursorCountRef.current || 0) <= 0) return;
       if (isInteractingRef.current) return;
       try {
         const data = await getProjectById(activeProjectId);
@@ -5166,6 +6058,13 @@ function flushScheduledProjectSave() {
         const remoteUpdatedAt = String(data?.updated_at || "");
         if (!remoteUpdatedAt || remoteUpdatedAt === activeProjectUpdatedAtRef.current) return;
         const remoteSig = projectPayloadSignature(data?.data || {});
+        if (remoteSig && remoteSig === lastProjectSignatureRef.current) {
+          activeProjectUpdatedAtRef.current = remoteUpdatedAt;
+          setActiveProjectUpdatedAt(remoteUpdatedAt);
+          const byNoApply = String(data?.updated_by_username || "");
+          setActiveProjectUpdatedBy(byNoApply);
+          return;
+        }
         applyRemoteProjectPayload(data?.data || {}, { projectId: activeProjectId });
         lastProjectSignatureRef.current = remoteSig;
         activeProjectUpdatedAtRef.current = remoteUpdatedAt;
@@ -5177,31 +6076,39 @@ function flushScheduledProjectSave() {
       }
     }
     pollProject();
-    const id = setInterval(pollProject, isPageVisible ? 240 : 1200);
+    const id = setInterval(
+      pollProject,
+      isPageVisible ? PROJECT_SYNC_POLL_MS_VISIBLE : PROJECT_SYNC_POLL_MS_HIDDEN
+    );
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [activeProjectId, isPageVisible, projectCursors.length]);
+  }, [activeProjectId, isPageVisible, isLiveMode]);
 
   useEffect(() => {
+    if (PERF_DISABLE_BACKGROUND_SYNC) return undefined;
     if (!activeProjectId || !isPageVisible) return;
     if (!projectHydrationReadyRef.current) return;
+    if (isLiveMode) return;
     const id = setInterval(() => {
       if (!projectHydrationReadyRef.current) return;
-      const sig = projectPayloadSignature(getProjectPayload());
+      if (isInteractingRef.current) return;
+      const sig = projectPayloadSignature(getProjectPayloadFromRefs());
       if (!sig) return;
       if (sig === lastProjectSignatureRef.current) return;
-      saveProjectToDb({ silent: true });
+      saveProjectToDb({ silent: true, keepalive: true, skipListReload: true, teamMerge: true });
     }, 5000);
     return () => clearInterval(id);
-  }, [activeProjectId, projectName, projectCanvasBackground, projectPlcs, activeScreenId, screenName, screens, liveMenuGroups, projectMode, vbW, vbH, pan, zoom, shapes, svgOverlays, isPageVisible]);
+  }, [activeProjectId, isPageVisible, isLiveMode]);
 
   useEffect(() => {
+    if (PERF_DISABLE_BACKGROUND_SYNC) return undefined;
     if (!activeProjectId) return;
+    if (isLiveMode) return;
     if (!projectHydrationReadyRef.current) return;
     scheduleProjectAutoSave(160);
-  }, [activeProjectId, zoom]);
+  }, [activeProjectId, zoom, isLiveMode]);
 
   useEffect(() => {
     const projectId = normalizeTagValue(activeProjectId);
@@ -5222,6 +6129,7 @@ function flushScheduledProjectSave() {
   }, [activeProjectId, activeScreenId, zoom, vbW, vbH]);
 
   useEffect(() => {
+    if (PERF_DISABLE_BACKGROUND_SYNC) return undefined;
     if (!uiPreferenceAutosaveReadyRef.current) {
       uiPreferenceAutosaveReadyRef.current = true;
       return;
@@ -5230,45 +6138,129 @@ function flushScheduledProjectSave() {
   }, [showGrid, showTagPaths, showRulers, liveMenuCollapsed, liveMenuExpandedWidth]);
 
   useEffect(() => {
+    if (PERF_DISABLE_BACKGROUND_SYNC) {
+      setProjectCursors([]);
+      lastProjectCursorSignatureRef.current = "";
+      return;
+    }
     if (!activeProjectId) {
       setProjectCursors([]);
       lastCursorSentRef.current = { at: 0, x: NaN, y: NaN };
       cursorPublishInFlightRef.current = false;
       queuedCursorPointRef.current = null;
+      lastProjectCursorSignatureRef.current = "";
+      return;
+    }
+    if (isLiveMode) {
+      setProjectCursors([]);
+      lastProjectCursorSignatureRef.current = "";
+      return;
+    }
+    if (!liveUpdatesEnabled) {
+      setProjectCursors([]);
+      lastProjectCursorSignatureRef.current = "";
+      return;
+    }
+    if (opcHighLoadUiMode) {
+      setProjectCursors([]);
+      lastProjectCursorSignatureRef.current = "";
       return;
     }
     let alive = true;
+    const buildCursorSignature = (items) => {
+      const list = Array.isArray(items) ? items : [];
+      return list
+        .map((row) => {
+          const uid =
+            String(row?.user_id || row?.userId || row?.username || row?.id || "").trim() || "anon";
+          const x = Number(row?.x);
+          const y = Number(row?.y);
+          const ts = Number(Date.parse(String(row?.updated_at || row?.updatedAt || row?.ts || ""))) || 0;
+          const rx = Number.isFinite(x) ? Math.round(x * 10) / 10 : 0;
+          const ry = Number.isFinite(y) ? Math.round(y * 10) / 10 : 0;
+          return `${uid}:${rx},${ry}:${ts}`;
+        })
+        .sort()
+        .join("|");
+    };
     async function pollCursors() {
       if (!isPageVisible) return;
       try {
         const data = await listProjectCursors(activeProjectId);
         if (!alive) return;
-        setProjectCursors(Array.isArray(data?.cursors) ? data.cursors : []);
+        const nextCursors = Array.isArray(data?.cursors) ? data.cursors : [];
+        const nextSig = buildCursorSignature(nextCursors);
+        if (nextSig === lastProjectCursorSignatureRef.current) return;
+        lastProjectCursorSignatureRef.current = nextSig;
+        setProjectCursors(nextCursors);
       } catch {
         // ignore cursor polling failures
       }
     }
     pollCursors();
     const hasCollaborators = Array.isArray(projectCursors) && projectCursors.length > 0;
-    const id = setInterval(pollCursors, isPageVisible ? (hasCollaborators ? 120 : 1500) : 5000);
+    const id = setInterval(
+      pollCursors,
+      isPageVisible
+        ? (hasCollaborators ? CURSOR_POLL_MS_COLLAB : CURSOR_POLL_MS_SOLO)
+        : CURSOR_POLL_MS_HIDDEN
+    );
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [activeProjectId, isPageVisible, projectCursors.length]);
+  }, [activeProjectId, isPageVisible, projectCursors.length, liveUpdatesEnabled, opcHighLoadUiMode, isLiveMode]);
 
   useEffect(() => {
+    if (PERF_DISABLE_BACKGROUND_SYNC) {
+      setLivePresenceUsers([]);
+      lastPresenceSignatureRef.current = "";
+      return;
+    }
     if (!user?.id) {
       setLivePresenceUsers([]);
+      lastPresenceSignatureRef.current = "";
+      return;
+    }
+    if (isLiveMode) {
+      setLivePresenceUsers([]);
+      lastPresenceSignatureRef.current = "";
+      return;
+    }
+    if (!liveUpdatesEnabled) {
+      setLivePresenceUsers([]);
+      lastPresenceSignatureRef.current = "";
+      return;
+    }
+    if (opcHighLoadUiMode) {
+      setLivePresenceUsers([]);
+      lastPresenceSignatureRef.current = "";
       return;
     }
     let alive = true;
+    const buildPresenceSignature = (items) => {
+      const list = Array.isArray(items) ? items : [];
+      return list
+        .map((row) => {
+          const uid =
+            String(row?.user_id || row?.userId || row?.username || row?.id || "").trim() || "anon";
+          const ts = Number(Date.parse(String(row?.last_seen || row?.updated_at || row?.updatedAt || ""))) || 0;
+          const status = String(row?.status || row?.state || "").trim().toLowerCase();
+          return `${uid}:${status}:${ts}`;
+        })
+        .sort()
+        .join("|");
+    };
     const pollPresence = async () => {
       if (!isPageVisible) return;
       try {
         const data = await pingUserPresence();
         if (!alive) return;
-        setLivePresenceUsers(Array.isArray(data?.users) ? data.users : []);
+        const nextUsers = Array.isArray(data?.users) ? data.users : [];
+        const nextSig = buildPresenceSignature(nextUsers);
+        if (nextSig === lastPresenceSignatureRef.current) return;
+        lastPresenceSignatureRef.current = nextSig;
+        setLivePresenceUsers(nextUsers);
       } catch {
         // ignore presence polling failures
       }
@@ -5279,7 +6271,7 @@ function flushScheduledProjectSave() {
       alive = false;
       clearInterval(id);
     };
-  }, [user?.id, isPageVisible]);
+  }, [user?.id, isPageVisible, liveUpdatesEnabled, opcHighLoadUiMode, isLiveMode]);
 
   useEffect(() => {
     function isTypingTarget(t) {
@@ -5444,11 +6436,33 @@ function flushScheduledProjectSave() {
   const [showHUD, setShowHUD] = useState(false);
   const [showMainDrawer, setShowMainDrawer] = useState(false);
   const [drawerView, setDrawerView] = useState("ai");
+  const [serverDiagnosticsInitialTab, setServerDiagnosticsInitialTab] = useState("diagnostics");
   const [databaseTab, setDatabaseTab] = useState("data");
   const [showLiveMenuDrawer, setShowLiveMenuDrawer] = useState(false);
   const [showTaskbarZoomTools, setShowTaskbarZoomTools] = useState(false);
   const [showUserDrawer, setShowUserDrawer] = useState(false);
   const [showSecurityDrawer, setShowSecurityDrawer] = useState(false);
+  useEffect(() => {
+    const onPointerDown = (event) => {
+      const target = event?.target;
+      if (target instanceof Element && target.closest("[data-live-menu-icon-picker='1']")) return;
+      setLiveMenuIconPickerFor("");
+      setLiveMenuIconSearch("");
+      setLiveMenuIconVisibleCount(LIVE_MENU_ICON_PAGE_SIZE);
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    return () => window.removeEventListener("mousedown", onPointerDown);
+  }, []);
+  const [liveSavedTrends, setLiveSavedTrends] = useState(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = localStorage.getItem(LIVE_SAVED_TRENDS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
   const getViewportSize = () => ({
     w: typeof window !== "undefined" ? window.innerWidth : 1400,
     h: typeof window !== "undefined" ? window.innerHeight : 900,
@@ -5519,6 +6533,14 @@ function flushScheduledProjectSave() {
     }
     return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
   });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(LIVE_SAVED_TRENDS_KEY, JSON.stringify(Array.isArray(liveSavedTrends) ? liveSavedTrends : []));
+    } catch {
+      // ignore
+    }
+  }, [liveSavedTrends]);
   const [profileDraft, setProfileDraft] = useState({ username: "", display_name: "", avatar_url: "" });
   const [passwordDraft, setPasswordDraft] = useState({ current: "", next: "" });
   const [userSettingsEditing, setUserSettingsEditing] = useState(false);
@@ -5840,13 +6862,16 @@ function flushScheduledProjectSave() {
 
   function openDrawer(view, options = {}) {
     if (!canLeaveSaveDrawerState()) return;
-    const next = view || "ai";
+    const requested = String(view || "ai").trim().toLowerCase();
+    const next = requested === "logger" ? "server" : requested;
     const areaForView =
       next === "plc" || next === "code-gen-pro"
         ? "plc"
         : next === "opc" || next === "logs" || next === "diagnostics"
         ? "opc"
         : next === "tags"
+        ? "tags"
+        : next === "trends"
         ? "tags"
         : next === "server"
         ? "server"
@@ -5868,6 +6893,10 @@ function flushScheduledProjectSave() {
     setShowUserDrawer(false);
     setShowSecurityDrawer(false);
     setMainDrawerFullscreen(false);
+    if (next === "server") {
+      const requestedServerTab = String(options?.serverTab || (requested === "logger" ? "logs" : "")).trim().toLowerCase();
+      setServerDiagnosticsInitialTab(requestedServerTab === "logs" ? "logs" : "diagnostics");
+    }
     setDrawerView(next);
     if (next === "database") {
       const forceDataOnly = options?.forceDatabaseDataTab === true && isLiveMode;
@@ -6092,6 +7121,15 @@ function flushScheduledProjectSave() {
       // ignore
     }
   }, [showRulers]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(DESIGN_LIVE_UPDATES_DISABLED_KEY, designLiveUpdatesDisabled ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [designLiveUpdatesDisabled]);
 
   const avatarLabel = useMemo(() => {
     const name = String(user?.display_name || user?.username || "").trim();
@@ -7126,6 +8164,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const sourceScreens = Array.isArray(screensRef.current) ? screensRef.current : [];
     const active = sourceScreens.find((s) => String(s?.id || "") === activeId) || sourceScreens[0] || null;
     const next = normalizeScreenPayload(active || {}, { id: activeId || "screen-1", name: screenNameRef.current || "Screen 1" });
+    const isHomeScreen = String(next?.id || "") === HOME_SCREEN_ID;
     const rect = svgRef.current?.getBoundingClientRect?.();
     const projectId =
       normalizeTagValue(activeProjectIdRef.current || activeProjectId || readStoredActiveProjectId()) || "";
@@ -7140,7 +8179,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       String(next.id || ""),
       viewportKey
     );
-    const resolvedZoom = Number.isFinite(cachedLastZoom)
+    const resolvedZoomRaw = Number.isFinite(cachedLastZoom)
       ? cachedLastZoom
       : Number.isFinite(mappedZoom)
       ? mappedZoom
@@ -7151,6 +8190,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       : Number.isFinite(Number(next.zoom))
       ? Number(next.zoom)
       : 1;
+    const resolvedZoom = isHomeScreen ? 1 : resolvedZoomRaw;
     setZoom(resolvedZoom);
     zoomRef.current = resolvedZoom;
     setPan(
@@ -7494,18 +8534,34 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function svgPoint(evt, options = {}) {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
-
-    const pt = svg.createSVGPoint();
-    pt.x = evt.clientX;
-    pt.y = evt.clientY;
-
-    const ctm = svg.getScreenCTM();
-    if (!ctm) return { x: 0, y: 0 };
-
-    const p = pt.matrixTransform(ctm.inverse());
-
-    let x = (p.x - (pan?.x || 0)) / (zoom || 1);
-    let y = (p.y - (pan?.y || 0)) / (zoom || 1);
+    const cachedRect = svgClientRectCacheRef.current;
+    const rect =
+      cachedRect && Number(cachedRect.width) > 0 && Number(cachedRect.height) > 0
+        ? cachedRect
+        : (typeof svg.getBoundingClientRect === "function" ? svg.getBoundingClientRect() : null);
+    let x = 0;
+    let y = 0;
+    const rectW = Number(rect?.width) || 0;
+    const rectH = Number(rect?.height) || 0;
+    if (rect && rectW > 0 && rectH > 0) {
+      const relX = (Number(evt?.clientX) || 0) - Number(rect.left || 0);
+      const relY = (Number(evt?.clientY) || 0) - Number(rect.top || 0);
+      const sx = Math.max(0, Math.min(1, relX / rectW));
+      const sy = Math.max(0, Math.min(1, relY / rectH));
+      const svgX = sx * (Number(vbW) || 0);
+      const svgY = sy * (Number(vbH) || 0);
+      x = (svgX - (pan?.x || 0)) / (zoom || 1);
+      y = (svgY - (pan?.y || 0)) / (zoom || 1);
+    } else {
+      const pt = svg.createSVGPoint();
+      pt.x = Number(evt?.clientX) || 0;
+      pt.y = Number(evt?.clientY) || 0;
+      const ctm = svg.getScreenCTM();
+      if (!ctm) return { x: 0, y: 0 };
+      const p = pt.matrixTransform(ctm.inverse());
+      x = (p.x - (pan?.x || 0)) / (zoom || 1);
+      y = (p.y - (pan?.y || 0)) / (zoom || 1);
+    }
 
     if (tool === "polyline" && !evt.altKey) {
       const snapRadius = POLYLINE_OVERLAY_SNAP_RADIUS_PX / (zoom || 1);
@@ -7782,8 +8838,239 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (!shapePayload.length && !overlayPayload.length) return;
 
-    pushHistory();
-    setDragAll({ startWorld, shapes: shapePayload, overlays: overlayPayload });
+    dragAllHistoryPushedRef.current = false;
+    dragAllLastDeltaRef.current = { dx: NaN, dy: NaN };
+    dragAllPreviewRef.current = { dx: 0, dy: 0 };
+    dragPreviewAppliedRef.current = { dx: NaN, dy: NaN };
+    refreshSvgClientRectCache();
+    refreshDragPreviewTargets(
+      shapePayload.map((item) => String(item?.id || "")).filter(Boolean),
+      overlayPayload.map((item) => String(item?.id || "")).filter(Boolean)
+    );
+    applyDragPreviewTransform(0, 0);
+    const shapeById = new Map(shapePayload.map((item) => [String(item?.id || ""), item]));
+    const overlayById = new Map(overlayPayload.map((item) => [String(item?.id || ""), item]));
+    const draggedPolylinePayloads = shapePayload.filter((item) => item?.kind === "poly" && Array.isArray(item?.origPoints));
+    setDragAll({
+      startWorld,
+      shapes: shapePayload,
+      overlays: overlayPayload,
+      shapeById,
+      overlayById,
+      draggedPolylinePayloads,
+    });
+  }
+
+  function applyDragPreviewTransform(dx, dy) {
+    const prev = dragPreviewAppliedRef.current || { dx: NaN, dy: NaN };
+    if (
+      Number.isFinite(Number(prev.dx)) &&
+      Number.isFinite(Number(prev.dy)) &&
+      Math.abs(Number(prev.dx) - Number(dx || 0)) < 0.01 &&
+      Math.abs(Number(prev.dy) - Number(dy || 0)) < 0.01
+    ) {
+      return;
+    }
+    dragPreviewAppliedRef.current = { dx: Number(dx) || 0, dy: Number(dy) || 0 };
+    const targets = Array.isArray(dragPreviewNodesRef.current) ? dragPreviewNodesRef.current : [];
+    const x = Number.isFinite(Number(dx)) ? Number(dx) : 0;
+    const y = Number.isFinite(Number(dy)) ? Number(dy) : 0;
+    const hasShift = Math.abs(x) > 0.0001 || Math.abs(y) > 0.0001;
+    const transform = hasShift ? `translate(${x} ${y})` : "";
+    for (const node of targets) {
+      if (!node || typeof node.setAttribute !== "function" || typeof node.removeAttribute !== "function") continue;
+      if (transform) node.setAttribute("transform", transform);
+      else node.removeAttribute("transform");
+    }
+  }
+
+  function refreshDragPreviewTargets(shapeIds = [], overlayIds = []) {
+    const svg = svgRef.current;
+    if (!svg || typeof svg.querySelector !== "function") {
+      dragPreviewNodesRef.current = [];
+      return;
+    }
+    const escapeCss = (value) => {
+      const raw = String(value || "");
+      if (typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function") {
+        return CSS.escape(raw);
+      }
+      return raw.replace(/["\\]/g, "\\$&");
+    };
+    const targets = [];
+    for (const id of Array.isArray(shapeIds) ? shapeIds : []) {
+      const key = String(id || "").trim();
+      if (!key) continue;
+      const node = svg.querySelector(`[data-shape-id="${escapeCss(key)}"]`);
+      if (node) targets.push(node);
+    }
+    for (const id of Array.isArray(overlayIds) ? overlayIds : []) {
+      const key = String(id || "").trim();
+      if (!key) continue;
+      const node = svg.querySelector(`[data-overlay-id="${escapeCss(key)}"]`);
+      if (node) targets.push(node);
+    }
+    dragPreviewNodesRef.current = targets;
+  }
+
+  function refreshSvgClientRectCache() {
+    const svg = svgRef.current;
+    if (!svg || typeof svg.getBoundingClientRect !== "function") {
+      svgClientRectCacheRef.current = null;
+      return;
+    }
+    const rect = svg.getBoundingClientRect();
+    const width = Number(rect?.width) || 0;
+    const height = Number(rect?.height) || 0;
+    if (width <= 0 || height <= 0) {
+      svgClientRectCacheRef.current = null;
+      return;
+    }
+    svgClientRectCacheRef.current = {
+      left: Number(rect.left) || 0,
+      top: Number(rect.top) || 0,
+      width,
+      height,
+    };
+  }
+
+  function applyDragAllDelta(dragState, dx, dy) {
+    if (!dragState) return;
+    const maxX = Math.max(0, Number(vbW) || 0);
+    const maxY = Math.max(0, Number(vbH) || 0);
+    const dragShapeById =
+      dragState.shapeById instanceof Map
+        ? dragState.shapeById
+        : new Map((Array.isArray(dragState.shapes) ? dragState.shapes : []).map((item) => [String(item?.id || ""), item]));
+    const dragOverlayById =
+      dragState.overlayById instanceof Map
+        ? dragState.overlayById
+        : new Map((Array.isArray(dragState.overlays) ? dragState.overlays : []).map((item) => [String(item?.id || ""), item]));
+    const draggedPolylinePayloads = Array.isArray(dragState.draggedPolylinePayloads)
+      ? dragState.draggedPolylinePayloads
+      : (Array.isArray(dragState.shapes) ? dragState.shapes : []).filter(
+          (item) => item?.kind === "poly" && Array.isArray(item?.origPoints)
+        );
+    const polylineSnapOffset = getSnapOffsetForMovedPolylineEndpoints(
+      draggedPolylinePayloads,
+      dx,
+      dy,
+      POLYLINE_ENDPOINT_SNAP_THRESHOLD
+    );
+
+    if (dragShapeById.size) {
+      setShapes((prev) => {
+        const next = prev.map((s) => {
+          const rec = dragShapeById.get(String(s?.id || ""));
+          if (!rec) return s;
+
+          if (rec.kind === "text" && s.type === "text") {
+            const fontSize = Number(s.fontSize ?? 24);
+            const txt = String(s.text ?? "");
+            const estW = Math.max(10, txt.length * fontSize * 0.6);
+            const anchor = String(s.anchor || "start");
+            const leftOffset = anchor === "middle" ? estW / 2 : anchor === "end" ? estW : 0;
+            const minTextX = leftOffset;
+            const maxTextX = maxX - Math.max(0, estW - leftOffset);
+            return {
+              ...s,
+              x: Math.max(minTextX, Math.min(Math.max(minTextX, maxTextX), rec.origX + dx)),
+              y: Math.max(0, Math.min(maxY, rec.origY + dy)),
+            };
+          }
+
+          if ((rec.kind === "rect" || rec.kind === "circle") && (s.type === "rect" || s.type === "circle")) {
+            const w = Math.max(0, Number(rec.origW ?? s.width ?? 0));
+            const h = Math.max(0, Number(rec.origH ?? s.height ?? 0));
+            const x = Math.max(0, Math.min(Math.max(0, maxX - w), rec.origX + dx));
+            const y = Math.max(0, Math.min(Math.max(0, maxY - h), rec.origY + dy));
+            return {
+              ...s,
+              x,
+              y,
+              width: w,
+              height: h,
+            };
+          }
+
+          if (rec.kind === "poly" && Array.isArray(s.points)) {
+            const moved = rec.origPoints.map((pt) => ({
+              x: pt.x + dx + Number(polylineSnapOffset?.dx || 0),
+              y: pt.y + dy + Number(polylineSnapOffset?.dy || 0),
+            }));
+            const bb = bboxOfPoints(moved);
+            if (!bb) return { ...s, points: moved };
+            let shiftX = 0;
+            let shiftY = 0;
+            if (bb.minX < 0) shiftX = -bb.minX;
+            if (bb.minY < 0) shiftY = -bb.minY;
+            if (bb.minX + bb.w > maxX) shiftX = Math.min(shiftX, maxX - (bb.minX + bb.w));
+            if (bb.minY + bb.h > maxY) shiftY = Math.min(shiftY, maxY - (bb.minY + bb.h));
+            return {
+              ...s,
+              points: moved.map((pt) => ({ x: pt.x + shiftX, y: pt.y + shiftY })),
+            };
+          }
+
+          return s;
+        });
+        shapesRef.current = next;
+        return next;
+      });
+    }
+
+    if (dragOverlayById.size) {
+      let dynamicCanvasW = maxX;
+      const overlayLookup = new Map((overlaysRef.current || []).map((o) => [String(o?.id || ""), o]));
+      for (const rec of dragOverlayById.values()) {
+        const o = overlayLookup.get(String(rec?.id || ""));
+        if (!o) continue;
+        if (!rec) continue;
+        const bb = o?.bbox || overlayLocalBBox(o.id);
+        if (!bb) continue;
+        const sx = overlayScaleX(o);
+        const bx = Number(bb.x) || 0;
+        const bw = Math.max(1, Number(bb.width) || 1);
+        const rawTx = Number(rec.origTx || 0) + dx;
+        const right = rawTx + sx * (bx + bw);
+        if (right + 8 > dynamicCanvasW) dynamicCanvasW = right + 8;
+      }
+
+      if (dynamicCanvasW > maxX + 0.5) {
+        const nextW = Math.ceil(dynamicCanvasW);
+        setVbW(nextW);
+        vbWRef.current = nextW;
+        setScreens((prev) =>
+          (Array.isArray(prev) ? prev : []).map((s) =>
+            String(s?.id || "") === String(activeScreenId || "")
+              ? { ...s, vbW: Math.max(Number(s?.vbW) || 0, nextW) }
+              : s
+          )
+        );
+      }
+
+      setSvgOverlays((prev) => {
+        const next = prev.map((o) => {
+          const rec = dragOverlayById.get(String(o?.id || ""));
+          if (!rec) return o;
+          const bb = o?.bbox || overlayLocalBBox(o.id);
+          const sx = overlayScaleX(o);
+          const sy = overlayScaleY(o);
+          if (!bb) return { ...o, tx: rec.origTx + dx, ty: rec.origTy + dy };
+          const clamped = clampOverlayTransformToCanvas(
+            rec.origTx + dx,
+            rec.origTy + dy,
+            sx,
+            sy,
+            bb,
+            { canvasW: dynamicCanvasW, canvasH: maxY }
+          );
+          return { ...o, tx: clamped.tx, ty: clamped.ty };
+        });
+        overlaysRef.current = next;
+        return next;
+      });
+    }
   }
 
 
@@ -7988,6 +9275,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   useEffect(() => {
+    if (isLiveMode) return undefined;
     let cancelled = false;
     let timer = null;
     const syncETypeFromSource = async () => {
@@ -8039,7 +9327,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       cancelled = true;
       if (timer) window.clearInterval(timer);
     };
-  }, [svgFiles, generatedSvgs]);
+  }, [svgFiles, generatedSvgs, isLiveMode]);
 
   function ensureGeneratedKey(name) {
     const clean = String(name || "Generated.svg").replace(/[\\/:*?"<>|]/g, "_");
@@ -8894,6 +10182,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (e.shiftKey) {
       setSelectedIds((prev) => toggleIn(prev, id));
+      pendingDragAllRef.current = null;
       return;
     }
 
@@ -8901,6 +10190,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!isAlreadySelected) {
       setSelectedIds([id]);
       setSelectedOverlayIds([]);
+      pendingDragAllRef.current = null;
       return;
     }
 
@@ -8908,7 +10198,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       tool === "circle" && e.altKey
         ? svgPoint(e, { clampToCanvas: false })
         : svgPoint(e);
-    beginDragAll(p, selectedIds, selectedOverlayIds);
+    pendingDragAllRef.current = {
+      startWorld: p,
+      selectedIds: [...selectedIds],
+      selectedOverlayIds: [...selectedOverlayIds],
+    };
   }
 
   function onShapeDoubleClick(e, id) {
@@ -8989,6 +10283,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (tool !== "select") return;
     e.stopPropagation();
     e.preventDefault();
+    pendingDragAllRef.current = null;
     pushHistory();
     setSelectedIds([id]);
     setSelectedOverlayIds([]);
@@ -9032,6 +10327,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (tool !== "select") return;
     e.stopPropagation();
     e.preventDefault();
+    pendingDragAllRef.current = null;
     if (e.altKey) {
       const p = svgPoint(e);
       insertPointOnPolyline(id, p);
@@ -9051,11 +10347,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (Number(e?.detail || 0) > 1) return; // let double-click open properties in Move mode
     const target = e.target;
     const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
-    if (isLiveMode && target && typeof target.closest === "function") {
+    if (target && typeof target.closest === "function") {
       if (target.closest(interactiveSelector)) return;
     }
     const nativeEvent = e.nativeEvent;
-    if (isLiveMode && nativeEvent && typeof nativeEvent.composedPath === "function") {
+    if (nativeEvent && typeof nativeEvent.composedPath === "function") {
       const path = nativeEvent.composedPath();
       const hitInteractive = path.some((node) => {
         if (!node || typeof node !== "object") return false;
@@ -9073,6 +10369,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setSelectedOverlayIds((prev) => toggleIn(prev, id));
       exitEditMode();
       setDrawing(null);
+      pendingDragAllRef.current = null;
       return;
     }
 
@@ -9082,14 +10379,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setSelectedIds([]);
       exitEditMode();
       setDrawing(null);
-      beginDragAll(p, [], [id]);
+      pendingDragAllRef.current = null;
       return;
     }
 
     exitEditMode();
     setDrawing(null);
 
-    beginDragAll(p, selectedIds, selectedOverlayIds);
+    pendingDragAllRef.current = {
+      startWorld: p,
+      selectedIds: [...selectedIds],
+      selectedOverlayIds: [...selectedOverlayIds],
+    };
   }
 
   function onOverlayDoubleClick(e, id) {
@@ -9109,6 +10410,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!areOverlaysSelectableByMode()) return;
     e.stopPropagation();
     e.preventDefault();
+    pendingDragAllRef.current = null;
 
     if (e.altKey) {
       // Alt = move overlay instead of resize
@@ -9801,6 +11103,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     widgetShowPoints: "true",
     widgetShowLegend: "true",
     widgetShowGrid: "true",
+    widgetMarkSpots: "true",
+    widgetMarkerSize: "4.2",
     widgetLineWidth: "2.4",
     widgetLineStyle: "smooth",
     widgetYAxisSide: "left",
@@ -9855,6 +11159,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         widgetShowPoints: "true",
         widgetShowLegend: "true",
         widgetShowGrid: "true",
+        widgetMarkSpots: "true",
+        widgetMarkerSize: "4.2",
         widgetLineWidth: "2.4",
         widgetLineStyle: "smooth",
         widgetYAxisSide: "left",
@@ -9952,6 +11258,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetShowPoints: String(w.showPoints !== false),
           widgetShowLegend: String(w.showLegend !== false),
           widgetShowGrid: String(w.showGrid !== false),
+          widgetMarkSpots: String(w.markSpots !== false),
+          widgetMarkerSize: String(Number.isFinite(Number(w.markerSize)) ? Number(w.markerSize) : 4.2),
           widgetLineWidth: String(Number.isFinite(Number(w.lineWidth)) ? Number(w.lineWidth) : 2.4),
           widgetLineStyle: String(String(w.lineStyle || "").trim().toLowerCase() === "step" ? "step" : "smooth"),
           widgetYAxisSide: String(String(w.yAxisSide || "").trim().toLowerCase() === "right" ? "right" : "left"),
@@ -10023,6 +11331,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetShowPoints: "true",
           widgetShowLegend: "true",
           widgetShowGrid: "true",
+          widgetMarkSpots: "true",
+          widgetMarkerSize: "4.2",
           widgetLineWidth: "2.4",
           widgetLineStyle: "smooth",
           widgetYAxisSide: "left",
@@ -10085,6 +11395,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
       widgetShowPoints: "true",
       widgetShowLegend: "true",
       widgetShowGrid: "true",
+      widgetMarkSpots: "true",
+      widgetMarkerSize: "4.2",
       widgetLineWidth: "2.4",
       widgetLineStyle: "smooth",
       widgetYAxisSide: "left",
@@ -10363,6 +11675,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const showPoints = String(source.widgetShowPoints ?? "true").toLowerCase() !== "false";
     const showLegend = String(source.widgetShowLegend ?? "true").toLowerCase() !== "false";
     const showGrid = String(source.widgetShowGrid ?? "true").toLowerCase() !== "false";
+    const markSpots = String(source.widgetMarkSpots ?? "true").toLowerCase() !== "false";
+    const markerSize = Number(source.widgetMarkerSize);
     const lineWidth = Number(source.widgetLineWidth);
     const lineStyle = String(source.widgetLineStyle || "").trim().toLowerCase() === "step" ? "step" : "smooth";
     const yAxisSide = String(source.widgetYAxisSide || "").trim().toLowerCase() === "right" ? "right" : "left";
@@ -10472,6 +11786,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
             showPoints,
             showLegend,
             showGrid,
+            markSpots,
+            markerSize: Number.isFinite(markerSize) ? Math.max(2, Math.min(12, markerSize)) : Number(current.markerSize ?? 4.2) || 4.2,
             lineWidth: Number.isFinite(lineWidth) ? Math.max(1, Math.min(8, lineWidth)) : Number(current.lineWidth ?? 2.4) || 2.4,
             lineStyle,
             yAxisSide,
@@ -11049,6 +12365,32 @@ const CONTENT_FIT_HEADROOM = 0.94;
     };
   }
 
+  function saveLiveTrendPreset(nameRaw, tagsRaw) {
+    const name = String(nameRaw || "").trim() || `Trend ${new Date().toLocaleString()}`;
+    const tags = normalizeSeriesTagsValue(tagsRaw, "").filter((t) => !String(t || "").toLowerCase().startsWith("db:"));
+    if (!tags.length) {
+      toastError("Select at least one tag before saving trend.");
+      return;
+    }
+    setLiveSavedTrends((prev) => {
+      const next = Array.isArray(prev) ? [...prev] : [];
+      const id = uid();
+      next.unshift({
+        id,
+        name,
+        tags,
+        createdAt: Date.now(),
+      });
+      return next.slice(0, 200);
+    });
+  }
+
+  function deleteLiveTrendPreset(idRaw) {
+    const id = String(idRaw || "").trim();
+    if (!id) return;
+    setLiveSavedTrends((prev) => (Array.isArray(prev) ? prev.filter((x) => String(x?.id || "") !== id) : []));
+  }
+
   function getSmartLiveEquipmentPopupPosition(id) {
     const overlayRect = getLiveEquipmentOverlayClientRect(id);
     if (!overlayRect) return null;
@@ -11086,6 +12428,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   function onLiveOverlayMouseDown(e, id) {
+    if (PERF_HARD_REALTIME_MODE) return;
     const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === String(id || ""));
     if (overlay?.widget) return;
     const target = e.target;
@@ -11106,7 +12449,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     e.stopPropagation();
     const nextId = String(id || "").trim();
     if (!nextId) return;
-    bringLiveEquipmentToFront(nextId);
+    const now = Date.now();
+    const last = lastLiveOverlayClickRef.current || { id: "", at: 0 };
+    if (last.id === nextId && now - Number(last.at || 0) < 180) return;
+    lastLiveOverlayClickRef.current = { id: nextId, at: now };
     const viewportRect =
       svgRef.current?.closest?.(".vizi-scroll")?.getBoundingClientRect?.() ||
       svgRef.current?.getBoundingClientRect?.() ||
@@ -11115,23 +12461,93 @@ const CONTENT_FIT_HEADROOM = 0.94;
       ? Number(viewportRect.top || 0) + Number(viewportRect.height || 0) / 2
       : (typeof window !== "undefined" ? window.innerHeight / 2 : 0);
     const lane = Number(e?.clientY || 0) > midY ? "top" : "bottom";
-    setLiveEquipmentDockSideById((prev) => ({ ...(prev || {}), [nextId]: lane }));
-    setLiveEquipmentFloatingById((prev) => {
-      const map = prev && typeof prev === "object" ? prev : {};
-      if (map[nextId]) return map;
-      const smartPos = getSmartLiveEquipmentPopupPosition(nextId);
-      if (!smartPos) return map;
-      return { ...map, [nextId]: smartPos };
-    });
-    setLiveEquipmentOverlayIds((prev) => {
-      const list = Array.isArray(prev) ? prev : [];
-      if (list.some((x) => String(x || "") === nextId)) return list;
-      const without = list.filter((x) => String(x || "") !== nextId);
-      const nextList = [...without, nextId];
-      if (nextList.length <= MAX_LIVE_EQUIPMENT_POPUPS) return nextList;
-      return nextList.slice(nextList.length - MAX_LIVE_EQUIPMENT_POPUPS);
+    startTransition(() => {
+      bringLiveEquipmentToFront(nextId);
+      setLiveEquipmentDockSideById((prev) => ({ ...(prev || {}), [nextId]: lane }));
+      setLiveEquipmentFloatingById((prev) => {
+        const map = prev && typeof prev === "object" ? prev : {};
+        if (map[nextId]) return map;
+        const smartPos = getSmartLiveEquipmentPopupPosition(nextId);
+        if (!smartPos) return map;
+        return { ...map, [nextId]: smartPos };
+      });
+      setLiveEquipmentOverlayIds((prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        if (list.some((x) => String(x || "") === nextId)) return list;
+        const without = list.filter((x) => String(x || "") !== nextId);
+        const nextList = [...without, nextId];
+        if (nextList.length <= MAX_LIVE_EQUIPMENT_POPUPS) return nextList;
+        return nextList.slice(nextList.length - MAX_LIVE_EQUIPMENT_POPUPS);
+      });
     });
   }
+
+  const liveEquipmentPopupWatchKeys = useMemo(() => {
+    const activeIds = new Set(
+      [...(Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds : []), liveEquipmentDrawerOverlayId]
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    );
+    if (!activeIds.size) return [];
+    const overlayById = new Map(
+      (Array.isArray(svgOverlays) ? svgOverlays : []).map((overlay) => [String(overlay?.id || "").trim(), overlay])
+    );
+    const pathLowers = [];
+    const pathLooses = [];
+    activeIds.forEach((id) => {
+      const overlay = overlayById.get(id);
+      const path = normalizeTagValue(overlay?.tagPath || "");
+      if (!path) return;
+      const lower = path.toLowerCase();
+      const loose = lower.replace(/[^a-z0-9]/g, "");
+      if (lower) pathLowers.push(lower);
+      if (loose) pathLooses.push(loose);
+    });
+    if (!pathLowers.length && !pathLooses.length) return [];
+    const ordered = Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : [];
+    const seen = new Set();
+    const out = [];
+    for (const raw of ordered) {
+      const key = normalizeTagValue(raw || "");
+      if (!key) continue;
+      const lower = key.toLowerCase();
+      const loose = lower.replace(/[^a-z0-9]/g, "");
+      const pathMatch = pathLowers.some(
+        (token) =>
+          lower === token ||
+          lower.startsWith(`${token}.`) ||
+          lower.startsWith(`${token}/`) ||
+          lower.includes(`.${token}.`) ||
+          lower.endsWith(`.${token}`) ||
+          lower.endsWith(`/${token}`)
+      );
+      const looseMatch = pathLooses.some((token) => token && loose && (loose.includes(token) || token.includes(loose)));
+      if (!pathMatch && !looseMatch) continue;
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+      out.push(key);
+      if (out.length >= 72) break;
+    }
+    if (out.length) return out;
+    return ordered.slice(0, Math.min(32, ordered.length));
+  }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId, svgOverlays, opcScopedStatusKeys]);
+
+  // Track whether any live equipment popups are open so live updates can stay isolated.
+  useEffect(() => {
+    liveEquipmentActiveRef.current =
+      (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ||
+      !!String(liveEquipmentDrawerOverlayId || "").trim();
+  }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId]);
+
+  // Subscribe only to popup-relevant OPC keys so unrelated tag churn never repaints popups.
+  useEffect(() => {
+    if (!liveEquipmentPopupWatchKeys.length) return undefined;
+    return subscribeOpcLiveKeys(liveEquipmentPopupWatchKeys, () => {
+      if (liveEquipmentActiveRef.current && liveEquipmentPopupWatchKeys.length) {
+        setLiveEquipmentOpcTick((x) => (x + 1) % 1000000);
+      }
+    });
+  }, [liveEquipmentPopupWatchKeys]);
 
   useEffect(() => {
     setLiveEquipmentOverlayIds((prev) => {
@@ -11485,6 +12901,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (e.button === 2) return;
     if (importOpen) return;
     if (showProjectNameInput) cancelNewProjectInput();
+    pendingDragAllRef.current = null;
 
     const p = svgPoint(e);
 
@@ -11806,6 +13223,33 @@ const CONTENT_FIT_HEADROOM = 0.94;
     })();
   }
 
+  function enqueueCanvasUpdate(key, updateFn) {
+    if (typeof updateFn !== "function") return;
+    const queueKey = String(key || "").trim() || `anon:${Date.now()}:${Math.random()}`;
+    const byKey = canvasUpdateByKeyRef.current;
+    if (!byKey.has(queueKey)) {
+      canvasUpdateQueueRef.current.push(queueKey);
+    }
+    byKey.set(queueKey, updateFn);
+    if (canvasUpdateRafRef.current) return;
+    canvasUpdateRafRef.current = window.requestAnimationFrame(() => {
+      canvasUpdateRafRef.current = 0;
+      const order = canvasUpdateQueueRef.current;
+      const jobs = order.splice(0, order.length).map((jobKey) => byKey.get(jobKey)).filter(Boolean);
+      byKey.clear();
+      if (!jobs.length) return;
+      startTransition(() => {
+        jobs.forEach((job) => {
+          try {
+            job();
+          } catch {
+            // Keep async canvas queue resilient to individual update failures.
+          }
+        });
+      });
+    });
+  }
+
   function onMouseMoveImmediate(e) {
     const smoothDragPointer = (rawPoint, mode) => {
       const rawX = Number(rawPoint?.x);
@@ -11816,9 +13260,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
         dragPointerSmoothingRef.current = { mode, x: rawX, y: rawY };
         return { x: rawX, y: rawY };
       }
-      const alpha = 0.58;
-      const sx = Number(prev.x) + (rawX - Number(prev.x)) * alpha;
-      const sy = Number(prev.y) + (rawY - Number(prev.y)) * alpha;
+      const dx = rawX - Number(prev.x);
+      const dy = rawY - Number(prev.y);
+      const dist = Math.hypot(dx, dy);
+      // Adaptive smoothing: heavy filter at low speed to cut jitter, lighter filter at high speed for responsiveness.
+      const minAlpha = 0.3;
+      const maxAlpha = 0.82;
+      const maxDist = 14;
+      const t = Math.max(0, Math.min(1, dist / maxDist));
+      const alpha = minAlpha + (maxAlpha - minAlpha) * t;
+      const sx = Number(prev.x) + dx * alpha;
+      const sy = Number(prev.y) + dy * alpha;
       dragPointerSmoothingRef.current = { mode, x: sx, y: sy };
       return { x: sx, y: sy };
     };
@@ -11868,21 +13320,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
           const next = { x: nextX, y: Number(cur.y || 0) };
           viewportEl.scrollLeft = nextX;
           canvasViewportScrollRef.current = next;
-          setCanvasViewportScrollTarget(next);
+          enqueueCanvasUpdate("viewport-scroll-target", () => setCanvasViewportScrollTarget(next));
           return true;
         }
       }
 
-      let applied = null;
-      setPan((prev) => {
-        const next = clampPanToViewport({
-          x: Number(prev?.x || 0) + stepX,
-          y: Number(prev?.y || 0) + stepY,
-        });
-        applied = next;
-        return next;
+      const basePan = panRef.current || { x: 0, y: 0 };
+      const nextPan = clampPanToViewport({
+        x: Number(basePan?.x || 0) + stepX,
+        y: Number(basePan?.y || 0) + stepY,
       });
-      if (applied) panRef.current = applied;
+      panRef.current = nextPan;
+      enqueueCanvasUpdate("pan", () => setPan(nextPan));
       return true;
     };
 
@@ -11892,9 +13341,28 @@ const CONTENT_FIT_HEADROOM = 0.94;
         : drawing?.mode === "draw-circle" && e.altKey
         ? svgPoint(e, { snapToGrid: false, clampToCanvas: false })
         : svgPoint(e, { snapToGrid: false });
-    publishProjectCursor(p);
+    if (!(dragAll || dragHandle || overlayResize || shapeResize || canvasPanDrag)) {
+      publishProjectCursor(p);
+    }
+    const pendingDragAll = pendingDragAllRef.current;
+    if (pendingDragAll && !dragAll && !dragHandle && !overlayResize && !shapeResize && !marquee && !canvasPanDrag) {
+      const start = pendingDragAll.startWorld || { x: 0, y: 0 };
+      const moveX = Number(p?.x || 0) - Number(start?.x || 0);
+      const moveY = Number(p?.y || 0) - Number(start?.y || 0);
+      const moveDist = Math.hypot(moveX, moveY);
+      const startThreshold = 2 / Math.max(0.25, Number(zoom || 1));
+      if (moveDist >= startThreshold) {
+        beginDragAll(
+          start,
+          Array.isArray(pendingDragAll.selectedIds) ? pendingDragAll.selectedIds : [],
+          Array.isArray(pendingDragAll.selectedOverlayIds) ? pendingDragAll.selectedOverlayIds : []
+        );
+        pendingDragAllRef.current = null;
+      }
+      return;
+    }
     if (marquee) {
-      setMarquee((m) => (m ? { ...m, cur: p } : m));
+      enqueueCanvasUpdate("marquee", () => setMarquee((m) => (m ? { ...m, cur: p } : m)));
       return;
     }
 
@@ -11903,13 +13371,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const dy = (Number(e.clientY) || 0) - Number(canvasPanDrag.startClient?.y || 0);
       const moved = Math.abs(dx) > 1 || Math.abs(dy) > 1;
       if (moved && !canvasPanDrag.moved) {
-        setCanvasPanDrag((prev) => (prev ? { ...prev, moved: true } : prev));
+        enqueueCanvasUpdate("canvas-pan-drag", () => setCanvasPanDrag((prev) => (prev ? { ...prev, moved: true } : prev)));
       }
       const nextPan = clampPanToViewport({
         x: Number(canvasPanDrag.startPan?.x || 0) + dx,
         y: Number(canvasPanDrag.startPan?.y || 0) + dy,
       });
-      setPan(nextPan);
+      panRef.current = nextPan;
+      enqueueCanvasUpdate("pan", () => setPan(nextPan));
       return;
     }
 
@@ -11918,7 +13387,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const PREVIEW_SMOOTH_ALPHA = 0.45;
       const PREVIEW_MIN_MOVE = 0.35;
 
-      setShapes((prev) =>
+      enqueueCanvasUpdate("shapes", () => setShapes((prev) =>
         prev.map((s) => {
           if (s.id !== id) return s;
 
@@ -11967,7 +13436,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           pts[pts.length - 1] = { x: nextP.x, y: nextP.y };
           return { ...s, points: pts };
         })
-      );
+      ));
       return;
     }
 
@@ -11983,7 +13452,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const ratio = d / startDist;
         const base = Array.isArray(overlayResize.overlays) ? overlayResize.overlays : [];
         const byId = new Map(base.map((o) => [String(o.id), o]));
-        setSvgOverlays((prev) => {
+        enqueueCanvasUpdate("overlays", () => setSvgOverlays((prev) => {
           const next = prev.map((o) => {
             const rec = byId.get(String(o.id));
             if (!rec) return o;
@@ -12002,7 +13471,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           });
           overlaysRef.current = next;
           return next;
-        });
+        }));
         syncProjectDuringDrag();
         return;
       }
@@ -12025,7 +13494,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           width,
           height,
         });
-        setSvgOverlays((prev) => {
+        enqueueCanvasUpdate("overlays", () => setSvgOverlays((prev) => {
           const next = prev.map((x) =>
             x.id === id
               ? {
@@ -12041,7 +13510,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           );
           overlaysRef.current = next;
           return next;
-        });
+        }));
         syncProjectDuringDrag();
         return;
       }
@@ -12060,7 +13529,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         ? clampOverlayTransformToCanvas(newTxRaw, newTyRaw, newScaleX, newScaleY, bb)
         : { tx: newTxRaw, ty: newTyRaw };
 
-      setSvgOverlays((prev) => {
+      enqueueCanvasUpdate("overlays", () => setSvgOverlays((prev) => {
         const next = prev.map((x) =>
           x.id === id
             ? { ...x, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY, tx: clamped.tx, ty: clamped.ty }
@@ -12068,7 +13537,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         );
         overlaysRef.current = next;
         return next;
-      });
+      }));
       syncProjectDuringDrag();
       return;
     }
@@ -12101,7 +13570,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const dx = nextX - Number(startBBox.x || 0);
       const dy = nextY - Number(startBBox.y || 0);
       const srcById = new Map((Array.isArray(shapeResize.originals) ? shapeResize.originals : []).map((s) => [s.id, s]));
-      setShapes((prev) => {
+      enqueueCanvasUpdate("shapes", () => setShapes((prev) => {
         const next = prev.map((s) => {
           const src = srcById.get(s.id);
           if (!src) return s;
@@ -12148,7 +13617,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         });
         shapesRef.current = next;
         return next;
-      });
+      }));
       syncProjectDuringDrag();
       return;
     }
@@ -12167,7 +13636,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             excludeIndexes: [dragHandle.index],
           })
         : p;
-      setShapes((prev) => {
+      enqueueCanvasUpdate("shapes", () => setShapes((prev) => {
         const next = prev.map((s) => {
           if (s.id !== dragHandle.id) return s;
           const pts = s.points.slice();
@@ -12176,7 +13645,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         });
         shapesRef.current = next;
         return next;
-      });
+      }));
       syncProjectDuringDrag();
       return;
     }
@@ -12186,136 +13655,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const pointer = smoothDragPointer(svgPoint(e, { clampToCanvas: false }), "drag-all");
       const dx = pointer.x - dragAll.startWorld.x;
       const dy = pointer.y - dragAll.startWorld.y;
-      const maxX = Math.max(0, Number(vbW) || 0);
-      const maxY = Math.max(0, Number(vbH) || 0);
-      const dragShapeById = new Map(
-        (Array.isArray(dragAll.shapes) ? dragAll.shapes : []).map((item) => [String(item?.id || ""), item])
-      );
-      const dragOverlayById = new Map(
-        (Array.isArray(dragAll.overlays) ? dragAll.overlays : []).map((item) => [String(item?.id || ""), item])
-      );
-      const draggedPolylinePayloads = (Array.isArray(dragAll.shapes) ? dragAll.shapes : []).filter(
-        (item) => item?.kind === "poly" && Array.isArray(item?.origPoints)
-      );
-      const polylineSnapOffset = getSnapOffsetForMovedPolylineEndpoints(
-        draggedPolylinePayloads,
-        dx,
-        dy,
-        POLYLINE_ENDPOINT_SNAP_THRESHOLD
-      );
-
-      if (dragShapeById.size) {
-        setShapes((prev) => {
-          const next = prev.map((s) => {
-            const rec = dragShapeById.get(String(s?.id || ""));
-            if (!rec) return s;
-
-            if (rec.kind === "text" && s.type === "text") {
-              const fontSize = Number(s.fontSize ?? 24);
-              const txt = String(s.text ?? "");
-              const estW = Math.max(10, txt.length * fontSize * 0.6);
-              const anchor = String(s.anchor || "start");
-              const leftOffset = anchor === "middle" ? estW / 2 : anchor === "end" ? estW : 0;
-              const minTextX = leftOffset;
-              const maxTextX = maxX - Math.max(0, estW - leftOffset);
-              return {
-                ...s,
-                x: Math.max(minTextX, Math.min(Math.max(minTextX, maxTextX), rec.origX + dx)),
-                y: Math.max(0, Math.min(maxY, rec.origY + dy)),
-              };
-            }
-
-            if ((rec.kind === "rect" || rec.kind === "circle") && (s.type === "rect" || s.type === "circle")) {
-              const w = Math.max(0, Number(rec.origW ?? s.width ?? 0));
-              const h = Math.max(0, Number(rec.origH ?? s.height ?? 0));
-              const x = Math.max(0, Math.min(Math.max(0, maxX - w), rec.origX + dx));
-              const y = Math.max(0, Math.min(Math.max(0, maxY - h), rec.origY + dy));
-              return {
-                ...s,
-                x,
-                y,
-                width: w,
-                height: h,
-              };
-            }
-
-            if (rec.kind === "poly" && Array.isArray(s.points)) {
-              const moved = rec.origPoints.map((pt) => ({
-                x: pt.x + dx + Number(polylineSnapOffset?.dx || 0),
-                y: pt.y + dy + Number(polylineSnapOffset?.dy || 0),
-              }));
-              const bb = bboxOfPoints(moved);
-              if (!bb) return { ...s, points: moved };
-              let shiftX = 0;
-              let shiftY = 0;
-              if (bb.minX < 0) shiftX = -bb.minX;
-              if (bb.minY < 0) shiftY = -bb.minY;
-              if (bb.minX + bb.w > maxX) shiftX = Math.min(shiftX, maxX - (bb.minX + bb.w));
-              if (bb.minY + bb.h > maxY) shiftY = Math.min(shiftY, maxY - (bb.minY + bb.h));
-              return {
-                ...s,
-                points: moved.map((pt) => ({ x: pt.x + shiftX, y: pt.y + shiftY })),
-              };
-            }
-
-            return s;
-          });
-          shapesRef.current = next;
-          return next;
-        });
+      const prevDelta = dragAllLastDeltaRef.current || { dx: NaN, dy: NaN };
+      if (
+        Number.isFinite(Number(prevDelta.dx)) &&
+        Number.isFinite(Number(prevDelta.dy)) &&
+        Math.abs(dx - Number(prevDelta.dx)) < 0.01 &&
+        Math.abs(dy - Number(prevDelta.dy)) < 0.01
+      ) {
+        return;
       }
-
-    if (dragOverlayById.size) {
-      let dynamicCanvasW = maxX;
-      for (const o of svgOverlays) {
-        const rec = dragOverlayById.get(String(o?.id || ""));
-        if (!rec) continue;
-        const bb = o?.bbox || overlayLocalBBox(o.id);
-        if (!bb) continue;
-        const sx = overlayScaleX(o);
-        const bx = Number(bb.x) || 0;
-        const bw = Math.max(1, Number(bb.width) || 1);
-        const rawTx = Number(rec.origTx || 0) + dx;
-        const right = rawTx + sx * (bx + bw);
-        if (right + 8 > dynamicCanvasW) dynamicCanvasW = right + 8;
+      dragAllLastDeltaRef.current = { dx, dy };
+      if (!dragAllHistoryPushedRef.current) {
+        pushHistory();
+        dragAllHistoryPushedRef.current = true;
       }
-
-      if (dynamicCanvasW > maxX + 0.5) {
-        const nextW = Math.ceil(dynamicCanvasW);
-        setVbW(nextW);
-        vbWRef.current = nextW;
-        setScreens((prev) =>
-          (Array.isArray(prev) ? prev : []).map((s) =>
-            String(s?.id || "") === String(activeScreenId || "")
-              ? { ...s, vbW: Math.max(Number(s?.vbW) || 0, nextW) }
-              : s
-          )
-        );
-      }
-
-      setSvgOverlays((prev) => {
-        const next = prev.map((o) => {
-          const rec = dragOverlayById.get(String(o?.id || ""));
-          if (!rec) return o;
-          const bb = o?.bbox || overlayLocalBBox(o.id);
-          const sx = overlayScaleX(o);
-          const sy = overlayScaleY(o);
-          if (!bb) return { ...o, tx: rec.origTx + dx, ty: rec.origTy + dy };
-          const clamped = clampOverlayTransformToCanvas(
-            rec.origTx + dx,
-            rec.origTy + dy,
-            sx,
-            sy,
-            bb,
-            { canvasW: dynamicCanvasW, canvasH: maxY }
-          );
-          return { ...o, tx: clamped.tx, ty: clamped.ty };
-        });
-        overlaysRef.current = next;
-        return next;
-      });
-      }
-      syncProjectDuringDrag();
+      dragAllPreviewRef.current = { dx, dy };
+      applyDragPreviewTransform(dx, dy);
       return;
     }
 
@@ -12326,11 +13681,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const y = Math.min(sy, p.y);
       const width = Math.abs(p.x - sx);
       const height = Math.abs(p.y - sy);
-      setShapes((prev) => {
+      enqueueCanvasUpdate("shapes", () => setShapes((prev) => {
         const next = prev.map((s) => (s.id === drawing.id ? { ...s, x, y, width, height } : s));
         shapesRef.current = next;
         return next;
-      });
+      }));
       return;
     }
 
@@ -12345,11 +13700,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const y = sy - r;
       const width = r * 2;
       const height = r * 2;
-      setShapes((prev) => {
+      enqueueCanvasUpdate("shapes", () => setShapes((prev) => {
         const next = prev.map((s) => (s.id === drawing.id ? { ...s, x, y, width, height } : s));
         shapesRef.current = next;
         return next;
-      });
+      }));
       return;
     }
 
@@ -12374,7 +13729,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   function onMouseUp() {
+    const dragAllSnapshot = dragAll;
+    const dragAllPreviewSnapshot = dragAllPreviewRef.current;
+    const dragAllDeltaSnapshot = dragAllLastDeltaRef.current || { dx: NaN, dy: NaN };
+    const dragAllMoved =
+      Number.isFinite(Number(dragAllDeltaSnapshot?.dx)) &&
+      Number.isFinite(Number(dragAllDeltaSnapshot?.dy)) &&
+      (Math.abs(Number(dragAllDeltaSnapshot.dx)) > 0.01 || Math.abs(Number(dragAllDeltaSnapshot.dy)) > 0.01);
     dragPointerSmoothingRef.current = { mode: "", x: NaN, y: NaN };
+    dragAllLastDeltaRef.current = { dx: NaN, dy: NaN };
+    dragAllHistoryPushedRef.current = false;
+    dragPolylineSnapCacheRef.current = { at: 0, dx: NaN, dy: NaN, result: { dx: 0, dy: 0 } };
     const hadDragHandle = !!dragHandle;
     const hadCanvasPanDrag = !!canvasPanDrag;
     const didCanvasPanMove = Boolean(canvasPanDrag?.moved);
@@ -12453,6 +13818,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
 
       setMarquee(null);
+      dragAllPreviewRef.current = { dx: 0, dy: 0 };
+      applyDragPreviewTransform(0, 0);
+      dragPreviewNodesRef.current = [];
+      dragPreviewAppliedRef.current = { dx: NaN, dy: NaN };
+      svgClientRectCacheRef.current = null;
       setDragAll(null);
       setDragHandle(null);
       setOverlayResize(null);
@@ -12460,7 +13830,23 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
-    const movedSomething = !!(dragAll || dragHandle || overlayResize || shapeResize);
+    const movedSomething = !!(dragAllMoved || dragHandle || overlayResize || shapeResize);
+    if (dragAllSnapshot && dragAllMoved) {
+      const dx = Number.isFinite(Number(dragAllDeltaSnapshot?.dx))
+        ? Number(dragAllDeltaSnapshot.dx)
+        : (Number.isFinite(Number(dragAllPreviewSnapshot?.dx)) ? Number(dragAllPreviewSnapshot.dx) : 0);
+      const dy = Number.isFinite(Number(dragAllDeltaSnapshot?.dy))
+        ? Number(dragAllDeltaSnapshot.dy)
+        : (Number.isFinite(Number(dragAllPreviewSnapshot?.dy)) ? Number(dragAllPreviewSnapshot.dy) : 0);
+      applyDragAllDelta(dragAllSnapshot, dx, dy);
+      syncProjectDuringDrag();
+    }
+    dragAllPreviewRef.current = { dx: 0, dy: 0 };
+    applyDragPreviewTransform(0, 0);
+    dragPreviewNodesRef.current = [];
+    dragPreviewAppliedRef.current = { dx: NaN, dy: NaN };
+    svgClientRectCacheRef.current = null;
+    pendingDragAllRef.current = null;
     setDragAll(null);
     setDragHandle(null);
     setOverlayResize(null);
@@ -12503,7 +13889,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
         window.cancelAnimationFrame(mouseMoveRafRef.current);
         mouseMoveRafRef.current = 0;
       }
+      if (canvasUpdateRafRef.current) {
+        window.cancelAnimationFrame(canvasUpdateRafRef.current);
+        canvasUpdateRafRef.current = 0;
+      }
       pendingMouseMoveRef.current = null;
+      canvasUpdateQueueRef.current = [];
+      canvasUpdateByKeyRef.current.clear();
     };
   }, []);
 
@@ -12947,6 +14339,29 @@ const CONTENT_FIT_HEADROOM = 0.94;
     selectedOverlayIds.length === 1 && selectedIds.length === 0
       ? svgOverlays.find((o) => o.id === selectedOverlayIds[0]) || null
       : null;
+  const contextSingleSupportsTagMenu = useMemo(() => {
+    const overlay = contextSingleSvg;
+    if (!overlay) return false;
+    const widgetKind = String(overlay?.widget?.kind || "").trim().toLowerCase();
+    const isLineWidget =
+      widgetKind === "linechart" ||
+      widgetKind === "line_chart" ||
+      widgetKind === "line-chart";
+    const isBarWidget =
+      widgetKind === "barchart" ||
+      widgetKind === "bar_chart" ||
+      widgetKind === "bar-chart";
+    if (isLineWidget || isBarWidget) return false;
+
+    const source = String(
+      overlay?.sourceKey || overlay?.key || overlay?.name || overlay?.id || ""
+    )
+      .trim()
+      .toLowerCase();
+    const isBinSvg = !overlay?.widget && source.includes("bin");
+    if (isBinSvg) return false;
+    return true;
+  }, [contextSingleSvg]);
   const topMenuTextButtonStyle = {
     border: "1px solid var(--border)",
     background: "var(--bg-elev)",
@@ -13085,9 +14500,30 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!Array.isArray(screens) || !screens.length) return null;
     return screens.find((s) => s.id === activeScreenId) || screens[0];
   }, [screens, activeScreenId]);
+  useLayoutEffect(() => {
+    if (String(activeScreenId || "") !== HOME_SCREEN_ID) return;
+    if (Number(zoom) === 1) return;
+    zoomRef.current = 1;
+    setZoom(1);
+  }, [activeScreenId, zoom]);
   const liveMenuGroupsForRender = useMemo(
     () => normalizeLiveMenuGroups(liveMenuGroups, screens),
     [liveMenuGroups, screens]
+  );
+  const liveMenuIconQuery = String(liveMenuIconSearch || "").trim().toLowerCase();
+  const liveMenuIconOptionsFiltered = useMemo(() => {
+    if (!liveMenuIconQuery) return LIVE_MENU_ICON_OPTIONS;
+    const filtered = LIVE_MENU_ICON_OPTIONS.filter((opt) => {
+      if (!opt?.value) return true;
+      const value = String(opt.value || "").toLowerCase();
+      const label = String(opt.label || "").toLowerCase();
+      return value.includes(liveMenuIconQuery) || label.includes(liveMenuIconQuery);
+    });
+    return filtered.length ? filtered : LIVE_MENU_ICON_OPTIONS.slice(0, 1);
+  }, [liveMenuIconQuery]);
+  const liveMenuIconOptionsVisible = useMemo(
+    () => liveMenuIconOptionsFiltered.slice(0, Math.max(LIVE_MENU_ICON_PAGE_SIZE, Number(liveMenuIconVisibleCount) || LIVE_MENU_ICON_PAGE_SIZE)),
+    [liveMenuIconOptionsFiltered, liveMenuIconVisibleCount]
   );
   const liveMenuGroupsVisible = useMemo(
     () =>
@@ -13217,9 +14653,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
     return map;
   }, [liveMenuGroupsForRender]);
+  const taskbarVisibleScreens = useMemo(
+    () =>
+      (Array.isArray(screens) ? screens : []).filter(
+        (screen) => !Boolean(screen?.hideInTaskbar)
+      ),
+    [screens]
+  );
   const taskbarScreenGroups = useMemo(() => {
     const byGroup = new Map();
-    for (const screen of Array.isArray(screens) ? screens : []) {
+    for (const screen of taskbarVisibleScreens) {
       const id = String(screen?.id || "").trim();
       if (!id) continue;
       const groupName = String(taskbarScreenGroupNameById.get(id) || "Ungrouped");
@@ -13227,14 +14670,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
       byGroup.get(groupName).push(screen);
     }
     return Array.from(byGroup.entries()).map(([groupName, items]) => ({ groupName, items }));
-  }, [screens, taskbarScreenGroupNameById]);
+  }, [taskbarVisibleScreens, taskbarScreenGroupNameById]);
   const taskbarButtonWidthCh = useMemo(() => {
-    const labels = (Array.isArray(screens) ? screens : []).map((screen, index) =>
+    const labels = taskbarVisibleScreens.map((screen, index) =>
       String(screen?.name || "").trim() || `Screen ${index + 1}`
     );
     const longest = labels.reduce((m, x) => Math.max(m, String(x || "").length), 0);
     return Math.max(10, Math.min(26, longest + 2));
-  }, [screens]);
+  }, [taskbarVisibleScreens]);
   const opcLiveValueCount = useMemo(
     () => Object.keys(opcLiveValues || {}).length,
     [opcLiveValues]
@@ -13267,7 +14710,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       ((drawerView === "plc" || drawerView === "code-gen-pro") && !canViewArea("plc")) ||
       ((drawerView === "opc" || drawerView === "logs" || drawerView === "diagnostics") &&
         !canViewArea("opc")) ||
-      (drawerView === "tags" && !canViewArea("tags")) ||
+      ((drawerView === "tags" || drawerView === "trends") && !canViewArea("tags")) ||
       ((drawerView === "server" || drawerView === "logger") && !canViewArea("server")) ||
       (drawerView === "reports" && !canViewArea("reports")) ||
       (drawerView === "ai" && !canViewArea("ai")) ||
@@ -13279,6 +14722,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
+    if (PERF_DISABLE_CLIENT_LOGS) return undefined;
     let sending = false;
     let queue = [];
     const flush = async () => {
@@ -13359,13 +14803,24 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }, []);
 
   useEffect(() => {
-    if (!isLiveMode) {
+    if (!isLiveMode || opcHighLoadUiMode || liveUiSafeMode) {
+      motorHmiStateByOverlayRef.current = new Map();
+      return;
+    }
+    const activeOverlayIds = new Set(
+      [...(Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds : []), liveEquipmentDrawerOverlayId]
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    );
+    if (!activeOverlayIds.size) {
       motorHmiStateByOverlayRef.current = new Map();
       return;
     }
     const prevMap = motorHmiStateByOverlayRef.current || new Map();
     const nextMap = new Map();
-    const overlays = Array.isArray(svgOverlays) ? svgOverlays : [];
+    const overlays = (Array.isArray(svgOverlays) ? svgOverlays : []).filter((overlay) =>
+      activeOverlayIds.has(String(overlay?.id || "").trim())
+    );
     const normalizeMotorHmiState = (rawValue) => {
       const rawText = String(rawValue ?? "").trim();
       if (!rawText) return { key: "", label: "-" };
@@ -13395,10 +14850,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       );
       if (!hmiStatePath) continue;
       const resolvedStatePath = findLiveTagPathMatch([hmiStatePath]) || hmiStatePath;
+      const _stateSnap = getOpcLiveSnapshot();
       const rawStateValue =
-        Object.prototype.hasOwnProperty.call(opcLiveValues || {}, resolvedStatePath)
-          ? opcLiveValues[resolvedStatePath]
-          : opcLiveValues?.[String(resolvedStatePath || "").toLowerCase()];
+        Object.prototype.hasOwnProperty.call(_stateSnap, resolvedStatePath)
+          ? _stateSnap[resolvedStatePath]
+          : _stateSnap[String(resolvedStatePath || "").toLowerCase()];
       const currentState = normalizeMotorHmiState(rawStateValue);
       nextMap.set(overlayId, currentState);
       const prevState = prevMap.get(overlayId);
@@ -13415,7 +14871,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
     }
     motorHmiStateByOverlayRef.current = nextMap;
-  }, [isLiveMode, svgOverlays, opcLiveValues]);
+  }, [
+    isLiveMode,
+    svgOverlays,
+    opcHighLoadUiMode,
+    liveUiSafeMode,
+    liveEquipmentOpcTick,
+    liveEquipmentOverlayIds,
+    liveEquipmentDrawerOverlayId,
+  ]);
 
   useEffect(() => {
     if (!showUserDrawer) return;
@@ -13494,12 +14958,20 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }, [isLiveMode, showLiveMenuDrawer]);
 
   function switchToScreen(nextScreenId) {
+    const requestedId = String(nextScreenId || "").trim();
+    if (!requestedId) return;
+    const currentId = String(activeScreenIdRef.current || activeScreenId || "").trim();
+    if (requestedId === currentId) return;
     const committed = commitCurrentScreenState();
-    const target = committed.list.find((s) => s.id === nextScreenId) || committed.list[0];
-    setScreens(committed.list);
+    const target = committed.list.find((s) => s.id === requestedId) || committed.list[0];
+    screensRef.current = committed.list;
+    startTransition(() => {
+      setScreens(committed.list);
+    });
     if (!target) return;
     hydrateScreenState(target);
-    scheduleProjectAutoSave();
+    // Switching screens should feel instant; defer autosave bookkeeping slightly.
+    scheduleProjectAutoSave(900);
   }
 
   function addScreen() {
@@ -13949,6 +15421,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 type: "data",
                 dataTable: String(databaseTablesForMenu[0] || "").trim(),
                 label: "",
+                icon: "StorageRounded",
                 restricted: false,
                 allowedRoleIds: [],
               }
@@ -13957,10 +15430,19 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 id: `live-item-${uid()}`,
                 type: "reports",
                 label: "",
+                icon: "DescriptionRounded",
                 restricted: false,
                 allowedRoleIds: [],
               }
-            : { id: `live-item-${uid()}`, type: "screen", screenId, label: "", restricted: false, allowedRoleIds: [] };
+            : {
+                id: `live-item-${uid()}`,
+                type: "screen",
+                screenId,
+                label: "",
+                icon: "MonitorRounded",
+                restricted: false,
+                allowedRoleIds: [],
+              };
         return { ...group, items: [...group.items, item] };
       });
       liveMenuGroupsRef.current = nextGroups;
@@ -13992,6 +15474,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 type: "data",
                 dataTable: String(patch?.dataTable ?? item.dataTable ?? "").trim(),
                 label: String(patch?.label ?? item.label ?? "").trim(),
+                icon: normalizeLiveMenuIcon(patch?.icon ?? item?.icon),
                 restricted: Boolean(patch?.restricted ?? item?.restricted),
                 allowedRoleIds: normalizeRoleIdList(patch?.allowedRoleIds ?? item?.allowedRoleIds),
               };
@@ -14001,6 +15484,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 id: item.id,
                 type: "reports",
                 label: String(patch?.label ?? item.label ?? "").trim(),
+                icon: normalizeLiveMenuIcon(patch?.icon ?? item?.icon),
                 restricted: Boolean(patch?.restricted ?? item?.restricted),
                 allowedRoleIds: normalizeRoleIdList(patch?.allowedRoleIds ?? item?.allowedRoleIds),
               };
@@ -14012,6 +15496,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
               type: "screen",
               screenId: screens.some((s) => s.id === screenId) ? screenId : fallbackScreenId,
               label: String(patch?.label ?? item.label ?? "").trim(),
+              icon: normalizeLiveMenuIcon(patch?.icon ?? item?.icon),
               restricted: Boolean(patch?.restricted ?? item?.restricted),
               allowedRoleIds: normalizeRoleIdList(patch?.allowedRoleIds ?? item?.allowedRoleIds),
             };
@@ -14072,6 +15557,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
       null;
     const routeName = String(route?.name || routeId).trim() || routeId;
     return { routeId, routeName };
+  }
+
+  function getLiveMenuItemIconKey(item, fallbackType = "") {
+    const type = String(fallbackType || item?.type || "").trim().toLowerCase();
+    const explicit = normalizeLiveMenuIcon(item?.icon);
+    if (explicit) return explicit;
+    if (type === "data") return "StorageRounded";
+    if (type === "reports") return "DescriptionRounded";
+    return "MonitorRounded";
   }
 
   function resolveLiveMenuItemLabel(item, screen = null) {
@@ -14236,7 +15730,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const liveEquipmentDrawerWidthPx =
     isLiveMode && isLiveEquipmentLeftDockMode ? 360 : 0;
   const mainDrawerAppendFromLeft =
-    isLiveMode && showMainDrawer && drawerView === "database";
+    isLiveMode && showMainDrawer && (drawerView === "database" || drawerView === "trends");
   const activeMainDrawerWidth = getMainDrawerWidthForView(drawerSizes, drawerView);
   const mainDrawerAppendLeftPx =
     projectDrawerInsetPx + liveMenuLayoutInsetPx + liveEquipmentDrawerWidthPx;
@@ -14294,6 +15788,45 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return out;
   }, [liveActiveAlarmsWithOccurred]);
   const liveAlarmMarqueeDurationSec = LIVE_ALARM_MARQUEE_DURATION_SEC;
+  const canvasLiveTagKeys = useMemo(() => {
+    const set = new Set();
+    const addKey = (raw) => {
+      const value = normalizeTagValue(raw || "");
+      if (!value) return;
+      const lower = value.toLowerCase();
+      if (lower.startsWith("db:") || lower.startsWith("dbq:")) return;
+      set.add(value);
+      if (!lower.startsWith("default.")) set.add(`Default.${value}`);
+      const parts = value.split(".").map((x) => String(x || "").trim()).filter(Boolean);
+      for (let i = 1; i < parts.length; i += 1) {
+        set.add(parts.slice(i).join("."));
+      }
+    };
+    (Array.isArray(shapes) ? shapes : []).forEach((shape) => addKey(shape?.tagPath));
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      addKey(overlay?.tagPath);
+      if (OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE) {
+        normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlay?.tagPath).forEach(addKey);
+      }
+      addKey(overlay?.widget?.timerAccTag);
+      addKey(overlay?.widget?.timerPresetTag);
+      addKey(overlay?.widget?.timerDoneTag);
+      addKey(overlay?.widget?.timerEnableTag);
+    });
+    return Array.from(set).slice(0, OPC_CANVAS_KEY_HARD_CAP);
+  }, [shapes, svgOverlays]);
+  const canvasWidgetDbValues = liveUpdatesEnabled ? widgetDbValues : {};
+  const canvasOpcTags = useMemo(() => {
+    if (!liveUpdatesEnabled) return [];
+    const keys = new Set((Array.isArray(canvasLiveTagKeys) ? canvasLiveTagKeys : []).map((k) => String(k || "").toLowerCase()));
+    if (!keys.size) return [];
+    return (Array.isArray(opcTags) ? opcTags : []).filter((tag) => {
+      const path = normalizeTagValue(tag?.tagPath || "").toLowerCase();
+      const name = normalizeTagValue(tag?.name || "").toLowerCase();
+      return (path && keys.has(path)) || (name && keys.has(name));
+    });
+  }, [liveUpdatesEnabled, opcTags, canvasLiveTagKeys]);
+  const canvasCollaboratorCursors = liveUpdatesEnabled && !liveUiSafeMode ? projectCursors : [];
   const teamChatLiveUsers = useMemo(() => {
     const rows = Array.isArray(livePresenceUsers) ? livePresenceUsers : [];
     const byId = new Map();
@@ -14339,6 +15872,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
   useEffect(() => {
     if (!isLiveMode) setShowLiveMenuDrawer(false);
   }, [isLiveMode]);
+  const useWindowPointerTracking =
+    Boolean(dragAll) ||
+    Boolean(dragHandle) ||
+    Boolean(overlayResize) ||
+    Boolean(shapeResize) ||
+    Boolean(marquee) ||
+    Boolean(canvasPanDrag) ||
+    String(drawing?.mode || "") === "draw-rect" ||
+    String(drawing?.mode || "") === "draw-circle";
 
   useEffect(() => {
     const activeIds = new Set((liveActiveAlarms || []).map((a) => String(a?.id || "")).filter(Boolean));
@@ -14388,14 +15930,19 @@ const CONTENT_FIT_HEADROOM = 0.94;
         boxSizing: "border-box",
       }}
     >
-      <ViewBoxModal
-        open={viewBoxOpen}
-        onClose={() => setViewBoxOpen(false)}
-        vbW={vbW}
-        vbH={vbH}
-        onApply={applyViewBox}
-      />
+      {viewBoxOpen ? (
+        <Suspense fallback={null}>
+          <ViewBoxModal
+            open={viewBoxOpen}
+            onClose={() => setViewBoxOpen(false)}
+            vbW={vbW}
+            vbH={vbH}
+            onApply={applyViewBox}
+          />
+        </Suspense>
+      ) : null}
 
+      {!isLiveMode ? (
       <PropertiesPanel
         showHUD={showHUD}
         setShowHUD={setShowHUD}
@@ -14459,34 +16006,44 @@ const CONTENT_FIT_HEADROOM = 0.94;
         dockBottom={0}
         dockWidth={360}
       />
+      ) : null}
 
-      <ImportModal
-        importOpen={importOpen}
-        setImportOpen={setImportOpen}
-        svgFiles={svgFiles}
-        svgLibrary={svgLibraryMap}
-        loadSvgRaw={readSvgRawByKey}
-        onPickSvg={onPickSvg}
-        docked={!isLiveMode}
-        dockLeft={leftToolDockOffsetPx}
-        dockTop={TOP_BAR_H}
-        dockBottom={0}
-        dockWidth={svgImportDockWidthPx || 320}
-      />
-      <WidgetSelectorModal
-        open={widgetOpen}
-        onClose={() => setWidgetOpen(false)}
-        onPickWidget={(key) => onPickWidget(key)}
-        docked={!isLiveMode}
-        dockLeft={leftToolDockOffsetPx}
-        dockTop={TOP_BAR_H}
-        dockBottom={0}
-        dockWidth={widgetDockWidthPx || 320}
-      />
+      {importOpen ? (
+        <Suspense fallback={null}>
+          <ImportModal
+            importOpen={importOpen}
+            setImportOpen={setImportOpen}
+            svgFiles={svgFiles}
+            svgLibrary={svgLibraryMap}
+            loadSvgRaw={readSvgRawByKey}
+            onPickSvg={onPickSvg}
+            docked={!isLiveMode}
+            dockLeft={leftToolDockOffsetPx}
+            dockTop={TOP_BAR_H}
+            dockBottom={0}
+            dockWidth={svgImportDockWidthPx || 320}
+          />
+        </Suspense>
+      ) : null}
+      {widgetOpen ? (
+        <Suspense fallback={null}>
+          <WidgetSelectorModal
+            open={widgetOpen}
+            onClose={() => setWidgetOpen(false)}
+            onPickWidget={(key) => onPickWidget(key)}
+            docked={!isLiveMode}
+            dockLeft={leftToolDockOffsetPx}
+            dockTop={TOP_BAR_H}
+            dockBottom={0}
+            dockWidth={widgetDockWidthPx || 320}
+          />
+        </Suspense>
+      ) : null}
 
-      <CanvasSvg
+        <CanvasSvg
           svgRef={svgRef}
           theme={theme}
+        liveUpdatesEnabled={liveUpdatesEnabled}
         canvasBackgroundColor={activeCanvasBackgroundColor}
         viewportTopOffset={TOP_BAR_H + liveAlarmBarOffset}
         viewportLeftOffset={canvasLeftInsetPx}
@@ -14498,7 +16055,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           if (!Number.isFinite(x) || !Number.isFinite(y)) return;
           canvasViewportScrollRef.current = { x, y };
         }}
-        liveClickable={isLiveMode && canInteractLiveScreens}
+        liveClickable={!PERF_HARD_REALTIME_MODE && isLiveMode && canInteractLiveScreens}
         isLiveMode={isLiveMode}
           zoom={zoom}          // ? NEW
           onWheel={onWheelZoom} // ? NEW
@@ -14506,6 +16063,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           vbH={vbH}
           tool={isLiveMode ? "select" : tool}
           shapes={shapes}
+          useWindowPointerTracking={useWindowPointerTracking}
           selectedIds={selectedIds}
           setSelectedIds={setSelectedIds}
           setSelectedOverlayIds={setSelectedOverlayIds}
@@ -14554,9 +16112,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
         routeColorsBySvgKey={routeColorsBySvgKey}
         routeStrokeColorByGroupPath={routeStrokeColorByGroupPath}
         svgLiveValuesByGroupPath={svgLiveValuesByGroupPath}
-        opcLiveValues={opcLiveValues}
-        opcTags={opcTags}
-        widgetDbValues={widgetDbValues}
+        liveTagKeys={canvasLiveTagKeys}
+        opcTags={canvasOpcTags}
+        widgetDbValues={canvasWidgetDbValues}
         binProductLabelByOverlayId={binProductLabelByOverlayId}
         binNameLabelByOverlayId={binNameLabelByOverlayId}
         binLevelRatioByOverlayId={binLevelRatioByOverlayId}
@@ -14565,7 +16123,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         onHideTagBubble={(id) =>
           setHiddenTagBubbleIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
         }
-        collaboratorCursors={projectCursors}
+        collaboratorCursors={canvasCollaboratorCursors}
       />
 
       {isLiveMode && isLiveEquipmentLeftDockMode && liveEquipmentDrawerEntries.length ? (
@@ -14696,10 +16254,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
       ) : null}
       {isLiveMode && liveEquipmentDockEntries.length > 0 ? (
         <>
-          <LiveEquipmentConnectorLayer
-            lines={liveEquipmentConnectorLines}
-            connectFxById={liveEquipmentConnectFxById}
-          />
+          <Suspense fallback={null}>
+            <LiveEquipmentConnectorLayer
+              lines={liveEquipmentConnectorLines}
+              connectFxById={liveEquipmentConnectFxById}
+            />
+          </Suspense>
           {[
             {
               key: "top",
@@ -15302,6 +16862,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 </svg>
                 {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Show Ruler</span> : null}
               </button>
+              <button
+                className="top-menu-btn"
+                title={designLiveUpdatesDisabled ? "Enable Live Updates" : "Disable Live Updates"}
+                style={dockToolButtonStyle(!!designLiveUpdatesDisabled)}
+                onClick={() => setDesignLiveUpdatesDisabled((v) => !v)}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M7 5h3v14H7zM14 5h3v14h-3z" stroke="currentColor" strokeWidth="2" />
+                </svg>
+                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Pause Live</span> : null}
+              </button>
             </div>
           ) : null}
 
@@ -15836,7 +17407,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
               Hide Properties
             </div>
           )}
-          {contextMenu.mode === "element" && contextSingleSvg && !contextSingleSvg.widget && (
+          {contextMenu.mode === "element" && contextSingleSvg && contextSingleSupportsTagMenu && (
             <div style={{ padding: "8px 12px", display: "grid", gap: 6 }}>
               <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Tag</div>
               <input
@@ -16073,7 +17644,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             top: leftDrawerTopPx,
             left: 0,
             right: 0,
-            bottom: 0,
+            bottom: showDesktopTaskbar ? TASKBAR_H : 0,
             zIndex: 220,
             pointerEvents: mainDrawerAppendFromLeft ? "none" : "auto",
           }}
@@ -16144,14 +17715,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     ? "PLC"
                     : drawerView === "server"
                     ? "Server Diagnostics"
-                    : drawerView === "logger"
-                    ? "Logger"
                     : drawerView === "database"
                     ? (isLiveMode && databaseDataOnlyMode
                         ? (normalizeTableDisplayName(activeDatabaseTable) || "Data")
                         : "Database")
                     : drawerView === "automation"
                     ? "Automation"
+                    : drawerView === "trends"
+                    ? "Trends"
                     : drawerView === "tags"
                     ? "Tags"
                   : drawerView === "logs"
@@ -16240,6 +17811,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={drawerContentShellStyle}>
                   <AutomationRulesPanel embedded activeProjectId={activeProjectId} />
                 </div>
+              ) : drawerView === "trends" ? (
+                <div style={{ ...drawerContentShellStyle, overflow: "hidden", display: "flex", flexDirection: "column", minHeight: 0 }}>
+                  <LiveTrendBuilderPage
+                    opcTags={opcTags}
+                    opcLiveValues={opcLiveValues}
+                    savedTrends={liveSavedTrends}
+                    onSaveTrend={saveLiveTrendPreset}
+                    onDeleteTrend={deleteLiveTrendPreset}
+                    theme={theme}
+                  />
+                </div>
               ) : drawerView === "tags" ? (
                 <div style={drawerContentShellStyle}>
                   <OpcConfig embedded mode="tags" />
@@ -16280,11 +17862,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 </div>
               ) : drawerView === "server" ? (
                 <div style={drawerContentShellStyle}>
-                  <ServerDiagnosticsPanel embedded />
-                </div>
-              ) : drawerView === "logger" ? (
-                <div style={drawerContentShellStyle}>
-                  <LoggerPanel embedded canEdit={canEditArea("server")} />
+                  <ServerDiagnosticsPanel
+                    embedded
+                    canEditLogs={canEditArea("server")}
+                    initialTab={serverDiagnosticsInitialTab}
+                  />
                 </div>
               ) : drawerView === "database" ? (
                 <div
@@ -17278,6 +18860,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   <path d="M8 4v4M12 4v4M16 4v4" stroke="currentColor" strokeWidth="2" />
                 </svg>
               </button>
+              <button
+                className="top-menu-btn"
+                title={designLiveUpdatesDisabled ? "Enable Live Updates" : "Disable Live Updates"}
+                style={topMenuModeButtonStyle(!!designLiveUpdatesDisabled)}
+                onClick={() => setDesignLiveUpdatesDisabled((v) => !v)}
+              >
+                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
+                  <path d="M7 5h3v14H7zM14 5h3v14h-3z" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </button>
                 </div>
               </>
             ) : null}
@@ -17303,24 +18895,28 @@ const CONTENT_FIT_HEADROOM = 0.94;
         />
       </div>
 
-      <LiveAlarmBar
-        visible={isLiveMode}
-        hasLiveAlarms={hasLiveAlarms}
-        theme={theme}
-        top={TOP_BAR_H}
-        left={0}
-        right={0}
-        height={LIVE_ALARM_BAR_H}
-        alarmCount={liveActiveAlarmsWithOccurred.length}
-        liveAlarmMarqueeViewportRef={liveAlarmMarqueeViewportRef}
-        liveAlarmMarqueeTrackRef={liveAlarmMarqueeTrackRef}
-        liveAlarmMarqueeDurationSec={liveAlarmMarqueeDurationSec}
-        liveAlarmMarqueeItems={liveAlarmMarqueeItems}
-        onOpenAlarms={() => {
-          setShowLiveMenuDrawer(true);
-          openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath });
-        }}
-      />
+      {isLiveMode ? (
+        <Suspense fallback={null}>
+          <LiveAlarmBar
+            visible={isLiveMode}
+            hasLiveAlarms={hasLiveAlarms}
+            theme={theme}
+            top={TOP_BAR_H}
+            left={0}
+            right={0}
+            height={LIVE_ALARM_BAR_H}
+            alarmCount={liveActiveAlarmsWithOccurred.length}
+            liveAlarmMarqueeViewportRef={liveAlarmMarqueeViewportRef}
+            liveAlarmMarqueeTrackRef={liveAlarmMarqueeTrackRef}
+            liveAlarmMarqueeDurationSec={liveAlarmMarqueeDurationSec}
+            liveAlarmMarqueeItems={liveAlarmMarqueeItems}
+            onOpenAlarms={() => {
+              setShowLiveMenuDrawer(true);
+              openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath });
+            }}
+          />
+        </Suspense>
+      ) : null}
 
       {isLiveMode && isLiveMobile ? (
         <div
@@ -17370,13 +18966,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   ? showMainDrawer && drawerView === "reports"
                   : String(item?.screenId || "") === String(activeScreenId);
                 const locked = !canOpenLiveMenuItem(item);
-                const initials = label
-                  .split(/\s+/)
-                  .filter(Boolean)
-                  .join(" ")
-                  .replace(/[^a-zA-Z0-9]/g, "")
-                  .slice(0, 3)
-                  .toUpperCase() || (isData ? "DAT" : isReports ? "RPT" : "SCR");
+                const iconKey = getLiveMenuItemIconKey(item, itemType);
                 return (
                   <button
                     key={`live-menu-mobile-item-${item?.id || idx}`}
@@ -17423,13 +19013,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         border: "1px solid color-mix(in srgb, #ffffff 46%, var(--border) 54%)",
                         display: "grid",
                         placeItems: "center",
-                        fontSize: 9,
-                        fontWeight: 900,
                         background: "rgba(255,255,255,0.12)",
-                        letterSpacing: "0.04em",
                       }}
                     >
-                      {initials}
+                      {renderLiveMenuIconGlyph(iconKey, 12)}
                     </span>
                   </button>
                 );
@@ -17765,13 +19352,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                       ? showMainDrawer && drawerView === "reports"
                       : String(item.screenId || "") === String(activeScreenId);
                     const locked = !canOpenLiveMenuItem(item);
-                    const initials = label
-                      .split(/\s+/)
-                      .filter(Boolean)
-                      .join(" ")
-                      .replace(/[^a-zA-Z0-9]/g, "")
-                      .slice(0, 3)
-                      .toUpperCase() || (isData ? "DAT" : isReports ? "RPT" : "SCR");
+                    const iconKey = getLiveMenuItemIconKey(item, itemType);
                     const collapsedHover = !liveMenuIsExpanded && liveMenuHoverItemId === String(item.id || "");
                     const showJobFormBtn = liveMenuIsExpanded && isScreen;
                     return (
@@ -17887,13 +19468,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
                             color: "inherit",
                             display: "grid",
                             placeItems: "center",
-                            fontSize: liveMenuIsExpanded ? 9 : 11,
-                            fontWeight: 900,
                             margin: liveMenuIsExpanded ? 0 : "0 auto",
-                            letterSpacing: liveMenuIsExpanded ? "0.02em" : "0.08em",
                           }}
                         >
-                          {initials}
+                          {renderLiveMenuIconGlyph(iconKey, liveMenuIsExpanded ? 12 : 14)}
                         </span>
                         {!liveMenuIsExpanded && liveMenuHoverItemId === String(item.id || "") ? (
                           <span
@@ -17975,6 +19553,51 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 No live menu items configured.
               </div>
             )}
+            {canViewArea("tags") ? (
+              <button
+                onClick={() => openDrawer("trends")}
+                data-preserve-style="true"
+                style={{
+                  width: "100%",
+                  minHeight: liveMenuIsExpanded ? (isLiveMobile ? 34 : 28) : 30,
+                  borderRadius: 10,
+                  border: `1px solid ${showMainDrawer && drawerView === "trends" ? "var(--selected-border)" : "var(--border)"}`,
+                  background:
+                    showMainDrawer && drawerView === "trends"
+                      ? "var(--selected-bg)"
+                      : "color-mix(in srgb, var(--bg) 88%, #0b1729 12%)",
+                  color: showMainDrawer && drawerView === "trends" ? "var(--selected-text)" : "var(--text)",
+                  boxShadow: showMainDrawer && drawerView === "trends" ? "var(--selected-shadow)" : "none",
+                  padding: liveMenuIsExpanded ? (isLiveMobile ? "6px 9px" : "4px 8px") : 0,
+                  fontSize: 11,
+                  fontWeight: 800,
+                  textAlign: "left",
+                  cursor: "pointer",
+                  display: "grid",
+                  gridTemplateColumns: liveMenuIsExpanded ? "22px 1fr" : "1fr",
+                  alignItems: "center",
+                  gap: liveMenuIsExpanded ? 8 : 0,
+                  marginTop: 6,
+                }}
+                title="Open Trends"
+              >
+                <span
+                  style={{
+                    width: liveMenuIsExpanded ? 22 : 30,
+                    height: liveMenuIsExpanded ? 18 : 22,
+                    borderRadius: liveMenuIsExpanded ? 7 : 8,
+                    border: liveMenuIsExpanded ? "1px solid var(--border)" : "none",
+                    background: liveMenuIsExpanded ? "color-mix(in srgb, var(--bg-elev) 85%, transparent)" : "transparent",
+                    display: "grid",
+                    placeItems: "center",
+                    margin: liveMenuIsExpanded ? 0 : "0 auto",
+                  }}
+                >
+                  {renderLiveMenuIconGlyph("trend", liveMenuIsExpanded ? 12 : 14)}
+                </span>
+                {liveMenuIsExpanded ? <span>Trends</span> : null}
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -18724,7 +20347,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         </button>
                       </div>
                       <div style={{ display: "grid", gap: 6 }}>
-                        {group.items.map((item, index) => (
+                        {group.items.map((item, index) => {
+                          const selectedIconKey = normalizeLiveMenuIcon(item?.icon);
+                          const selectedIconOption = getLiveMenuIconOption(selectedIconKey);
+                          const selectedIconName = selectedIconOption?.iconName || "HelpOutline";
+                          const IconPickerChevron =
+                            MaterialKeyboardArrowDownRoundedIcon || MaterialExpandMoreIcon;
+                          const iconPickerId = `menu-icon-picker:${group.id}:${item.id}`;
+                          const iconMenuOpen = liveMenuIconPickerFor === iconPickerId;
+                          return (
                           <div
                             key={`menu-item-${item.id}`}
                             style={{
@@ -18732,7 +20363,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               borderRadius: 7,
                               padding: 6,
                               display: "grid",
-                              gridTemplateColumns: "82px 1fr 1fr auto auto auto auto",
+                              gridTemplateColumns: "82px 112px 1fr 1fr auto auto auto auto",
                               gap: 6,
                               alignItems: "center",
                               background: "var(--bg-elev)",
@@ -18755,6 +20386,160 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               <option value="data">Data</option>
                               <option value="reports">Reports</option>
                             </select>
+                            <div style={{ position: "relative" }} data-live-menu-icon-picker="1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLiveMenuIconPickerFor((prev) => {
+                                    const next = prev === iconPickerId ? "" : iconPickerId;
+                                    setLiveMenuIconSearch("");
+                                    setLiveMenuIconVisibleCount(LIVE_MENU_ICON_PAGE_SIZE);
+                                    return next;
+                                  });
+                                }}
+                                style={{
+                                  width: "100%",
+                                  border: "1px solid var(--border)",
+                                  background: "var(--bg)",
+                                  color: "var(--text)",
+                                  borderRadius: 6,
+                                  padding: "5px 6px",
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  cursor: "pointer",
+                                  display: "grid",
+                                  gridTemplateColumns: "16px 1fr 14px",
+                                  alignItems: "center",
+                                  gap: 6,
+                                }}
+                                title="Menu icon"
+                              >
+                                <span style={{ display: "inline-grid", placeItems: "center" }}>
+                                  <DynamicMaterialIcon
+                                    name={selectedIconName}
+                                    fallback={MaterialFallbackIcon}
+                                    style={{ fontSize: 14 }}
+                                    aria-hidden="true"
+                                  />
+                                </span>
+                                <span style={{ textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {selectedIconOption.label}
+                                </span>
+                                <span style={{ display: "inline-grid", placeItems: "center" }}>
+                                  <IconPickerChevron style={{ fontSize: 14 }} aria-hidden="true" />
+                                </span>
+                              </button>
+                              {iconMenuOpen ? (
+                                <div
+                                  className="vizi-scroll"
+                                  style={{
+                                    position: "absolute",
+                                    top: "calc(100% + 4px)",
+                                    left: 0,
+                                    width: 428,
+                                    maxWidth: "min(92vw, 428px)",
+                                    zIndex: 40,
+                                    maxHeight: 360,
+                                    overflow: "auto",
+                                    border: "1px solid var(--border)",
+                                    borderRadius: 8,
+                                    background: "var(--bg-elev)",
+                                    boxShadow: "0 10px 22px rgba(2,8,23,0.24)",
+                                    padding: 4,
+                                    display: "grid",
+                                    gap: 3,
+                                  }}
+                                >
+                                  <input
+                                    value={liveMenuIconSearch}
+                                    onChange={(e) => {
+                                      setLiveMenuIconSearch(e.target.value);
+                                      setLiveMenuIconVisibleCount(LIVE_MENU_ICON_PAGE_SIZE);
+                                    }}
+                                    placeholder="Search Material icons..."
+                                    style={{
+                                      border: "1px solid var(--border)",
+                                      background: "var(--bg)",
+                                      color: "var(--text)",
+                                      borderRadius: 6,
+                                      padding: "6px 8px",
+                                      fontSize: 11,
+                                      fontWeight: 600,
+                                      marginBottom: 2,
+                                    }}
+                                  />
+                                  <div style={{ fontSize: 10, color: "var(--text-muted)", padding: "0 2px 4px", display: "flex", justifyContent: "space-between" }}>
+                                    <span>{liveMenuIconOptionsFiltered.length} icons</span>
+                                    <span>{Math.min(liveMenuIconOptionsVisible.length, liveMenuIconOptionsFiltered.length)} shown</span>
+                                  </div>
+                                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 4 }}>
+                                  {liveMenuIconOptionsVisible.map((opt) => {
+                                    const active = String(opt.value) === String(selectedIconKey);
+                                    return (
+                                      <button
+                                        type="button"
+                                        key={`menu-icon-option-${opt.value || "auto"}`}
+                                        onClick={() => {
+                                          updateLiveMenuItem(group.id, item.id, { icon: opt.value });
+                                          setLiveMenuIconPickerFor("");
+                                          setLiveMenuIconSearch("");
+                                        }}
+                                        style={{
+                                          border: `1px solid ${active ? "var(--selected-border)" : "transparent"}`,
+                                          background: active ? "var(--selected-bg)" : "transparent",
+                                          color: active ? "var(--selected-text)" : "var(--text)",
+                                          borderRadius: 6,
+                                          padding: "6px 4px",
+                                          fontSize: 10,
+                                          fontWeight: 600,
+                                          cursor: "pointer",
+                                          display: "flex",
+                                          flexDirection: "column",
+                                          alignItems: "center",
+                                          justifyContent: "center",
+                                          gap: 4,
+                                          textAlign: "center",
+                                          minHeight: 58,
+                                        }}
+                                      >
+                                        <span style={{ display: "inline-grid", placeItems: "center" }}>
+                                          <DynamicMaterialIcon
+                                            name={opt?.iconName}
+                                            fallback={MaterialFallbackIcon}
+                                            style={{ fontSize: 14 }}
+                                            aria-hidden="true"
+                                          />
+                                        </span>
+                                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>
+                                          {opt.label}
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                  </div>
+                                  {liveMenuIconOptionsVisible.length < liveMenuIconOptionsFiltered.length ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setLiveMenuIconVisibleCount((prev) => prev + LIVE_MENU_ICON_PAGE_SIZE * 2)
+                                      }
+                                      style={{
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg)",
+                                        color: "var(--text)",
+                                        borderRadius: 6,
+                                        padding: "6px 8px",
+                                        fontSize: 11,
+                                        fontWeight: 700,
+                                        cursor: "pointer",
+                                      }}
+                                    >
+                                      Load More
+                                    </button>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
                             {item.type === "data" ? (
                               <select
                                 value={String(item.dataTable || "").trim()}
@@ -18963,7 +20748,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                               </div>
                             ) : null}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                       <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
                         <button
@@ -19385,34 +21171,38 @@ const CONTENT_FIT_HEADROOM = 0.94;
         </div>
       ) : null}
 
-      <TeamChatPanel
-        showTeamChat={showTeamChat}
-        setShowTeamChat={setShowTeamChat}
-        isLiveMode={isLiveMode}
-        canAskAi={true}
-        isLiveMobile={isLiveMobile}
-        topOffset={TOP_BAR_H + liveAlarmBarOffset}
-        leftOffset={projectDrawerInsetPx}
-        rightOffset={!isLiveMode && showRulers ? 32 : undefined}
-        bottomOffset={showDesktopTaskbar ? TASKBAR_H + 20 : (isLiveMode ? 72 : 16)}
-        desktopTopPx={teamChatDesktopTopPx}
-        desktopRightPx={teamChatDesktopRightPx}
-        liveBottomCarouselHeightPx={liveBottomCarouselHeightPx}
-        teamChatBodyRef={teamChatBodyRef}
-        teamChatLoading={teamChatLoading}
-        teamChatMessages={teamChatMessages}
-        teamChatDraft={teamChatDraft}
-        setTeamChatDraft={setTeamChatDraft}
-        teamChatSending={teamChatSending}
-        teamChatUnreadCount={teamChatUnreadCount}
-        onSend={sendTeamChatMessage}
-        onUploadL5x={uploadL5xContextFile}
-        onClearL5x={clearL5xContextDocs}
-        chatContextDocs={chatContextDocs}
-        chatContextUploading={chatContextUploading}
-        currentUserId={user?.id}
-        liveUsers={teamChatLiveUsers}
-      />
+      {showTeamChat ? (
+        <Suspense fallback={null}>
+          <TeamChatPanel
+            showTeamChat={showTeamChat}
+            setShowTeamChat={setShowTeamChat}
+            isLiveMode={isLiveMode}
+            canAskAi={true}
+            isLiveMobile={isLiveMobile}
+            topOffset={TOP_BAR_H + liveAlarmBarOffset}
+            leftOffset={projectDrawerInsetPx}
+            rightOffset={!isLiveMode && showRulers ? 32 : undefined}
+            bottomOffset={showDesktopTaskbar ? TASKBAR_H + 20 : (isLiveMode ? 72 : 16)}
+            desktopTopPx={teamChatDesktopTopPx}
+            desktopRightPx={teamChatDesktopRightPx}
+            liveBottomCarouselHeightPx={liveBottomCarouselHeightPx}
+            teamChatBodyRef={teamChatBodyRef}
+            teamChatLoading={teamChatLoading}
+            teamChatMessages={teamChatMessages}
+            teamChatDraft={teamChatDraft}
+            setTeamChatDraft={setTeamChatDraft}
+            teamChatSending={teamChatSending}
+            teamChatUnreadCount={teamChatUnreadCount}
+            onSend={sendTeamChatMessage}
+            onUploadL5x={uploadL5xContextFile}
+            onClearL5x={clearL5xContextDocs}
+            chatContextDocs={chatContextDocs}
+            chatContextUploading={chatContextUploading}
+            currentUserId={user?.id}
+            liveUsers={teamChatLiveUsers}
+          />
+        </Suspense>
+      ) : null}
 
       {!showZoom && !isLiveMode && (
         <button

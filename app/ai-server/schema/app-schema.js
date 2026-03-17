@@ -1399,6 +1399,7 @@ export async function ensureAppSchema({ pool, createPasswordHash, defaultRolePer
       id BIGSERIAL PRIMARY KEY,
       name TEXT,
       description TEXT,
+      bin_id BIGINT,
       bin_number VARCHAR(10),
       hide_job_form BOOLEAN DEFAULT false,
       assigned_bin_group BIGINT,
@@ -1408,6 +1409,7 @@ export async function ensureAppSchema({ pool, createPasswordHash, defaultRolePer
   `);
   await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS name TEXT;`);
   await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS description TEXT;`);
+  await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS bin_id BIGINT;`);
   await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS bin_number VARCHAR(10);`);
   await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS hide_job_form BOOLEAN DEFAULT false;`);
   await pool.query(`ALTER TABLE route_bin_list ADD COLUMN IF NOT EXISTS assigned_bin_group BIGINT;`);
@@ -1811,6 +1813,50 @@ export async function ensureAppSchema({ pool, createPasswordHash, defaultRolePer
     END$$;
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS bin_product_id_idx ON bin(product_id);`);
+  await pool.query(`
+    UPDATE route_bin_list AS rbl
+    SET bin_id = b.id
+    FROM bin AS b
+    WHERE rbl.bin_id IS NULL
+      AND (
+        lower(btrim(COALESCE(b.name, ''))) = lower(btrim(COALESCE(rbl.bin_number, '')))
+        OR regexp_replace(lower(btrim(COALESCE(b.name, ''))), '^bin\\s*', '') =
+           regexp_replace(lower(btrim(COALESCE(rbl.bin_number, ''))), '^bin\\s*', '')
+      );
+  `);
+  await pool.query(`
+    UPDATE route_bin_list AS rbl
+    SET bin_id = NULL
+    WHERE rbl.bin_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM bin AS b WHERE b.id = rbl.bin_id
+      );
+  `);
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'route_bin_list'
+      ) AND EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'bin'
+      ) THEN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'route_bin_list_bin_id_fkey'
+        ) THEN
+          ALTER TABLE route_bin_list
+          ADD CONSTRAINT route_bin_list_bin_id_fkey
+          FOREIGN KEY (bin_id) REFERENCES bin(id)
+          ON DELETE SET NULL;
+        END IF;
+      END IF;
+    END$$;
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS route_bin_list_bin_id_idx
+    ON route_bin_list(bin_id);
+  `);
   await pool.query(
     `
     INSERT INTO ui_table_config (table_name, list_fields, detail_fields)
@@ -1841,6 +1887,7 @@ export async function ensureAppSchema({ pool, createPasswordHash, defaultRolePer
       JSON.stringify([
         "name",
         "description",
+        "bin_id",
         "bin_number",
         "hide_job_form",
         "assigned_bin_group",
