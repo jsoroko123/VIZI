@@ -27,7 +27,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useLiveMenuAccess } from "./hooks/useLiveMenuAccess";
 import { useTeamChat } from "./hooks/useTeamChat";
 import { exportToIgnitionJson, downloadIgnitionJson } from "./utils/ignitionExport";
-import { toastError, toastSuccess } from "./utils/toast";
+import { dismissToast, showToast, toastError, toastSuccess } from "./utils/toast";
 import { clearProjectDraft, getProjectDraftStorageKey } from "./utils/projectDraftStorage";
 import {
   DEFAULT_CANVAS_BG_DARK,
@@ -192,6 +192,7 @@ const OPC_UI_HIGH_LOAD_TAG_THRESHOLD = 400;
 const OPC_LIVE_KEY_HARD_CAP = 400;
 const OPC_CANVAS_KEY_HARD_CAP = 400;
 const OPC_STATUS_STREAM_KEY_LIMIT = 400;
+const LIVE_MODE_LOADING_TOAST_ID = "vizi-live-mode-loading";
 const LIVE_EQUIPMENT_STATUS_TAG_ALIASES = [
   "Mode_Status",
   "ModeStatus",
@@ -627,10 +628,11 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const liveEquipmentTickLastAtRef = useRef(0);
   const liveEquipmentFastTickTimerRef = useRef(0);
   const liveEquipmentFastTickLastAtRef = useRef(0);
-  const LIVE_EQUIPMENT_FAST_POLL_MS = 140;
-  const LIVE_EQUIPMENT_FAST_TICK_MIN_MS = 70;
+  const LIVE_EQUIPMENT_FAST_POLL_MS = 400;
+  const LIVE_EQUIPMENT_FAST_TICK_MIN_MS = 300;
   const LIVE_EQUIPMENT_WRITE_CONFIRM_MS = 1200;
-  const LIVE_EQUIPMENT_PULSE_RESET_DELAY_MS = 120;
+  const LIVE_EQUIPMENT_WRITE_HINT_TTL_MS = 1400;
+  const LIVE_EQUIPMENT_PULSE_RESET_DELAY_MS = 250;
   const LIVE_EQUIPMENT_WRITE_REFRESH_DELAYS_MS = [30, 120, 320, 800];
   const [liveEquipmentDockSideById, setLiveEquipmentDockSideById] = useState({});
   const [liveEquipmentFloatingById, setLiveEquipmentFloatingById] = useState({});
@@ -644,7 +646,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const liveEquipmentDragRef = useRef(null);
   const liveEquipmentDragRafRef = useRef(0);
   const liveEquipmentDragPendingRef = useRef(null);
-  const liveEquipmentModeToggleHintRef = useRef({});
+  const liveEquipmentWriteHintRef = useRef({});
   const liveEquipmentZCounterRef = useRef(0);
   const [liveEquipmentZById, setLiveEquipmentZById] = useState({});
   const [liveEquipmentDockTick, setLiveEquipmentDockTick] = useState(0);
@@ -675,6 +677,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [opcTemplates, setOpcTemplates] = useState([]);
   const [opcLiveValues] = useState({});
   const [opcLiveUpdatedAt, setOpcLiveUpdatedAt] = useState(0);
+  const [liveModeStatusReadyAt, setLiveModeStatusReadyAt] = useState(0);
   const [opcLiveLastError, setOpcLiveLastError] = useState("");
   const [opcTagMappings, setOpcTagMappings] = useState([]);
   const [opcMappingSets, setOpcMappingSets] = useState([]);
@@ -765,6 +768,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [projectMode, setProjectMode] = useState(() => readStoredProjectMode(initialStoredProjectId));
   const isLiveMode = projectMode === "live";
   const liveUpdatesEnabled = isLiveMode || !designLiveUpdatesDisabled;
+  const opcMetaEnabled = true;
   const opcUiEnabled = isLiveMode;
   const liveUiSafeMode = false;
   const opcHighLoadUiMode = opcUiEnabled && opcActiveTagCount >= OPC_UI_HIGH_LOAD_TAG_THRESHOLD;
@@ -794,6 +798,59 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     }
     return { byGroup, byMember, byGroupLoose };
   }, [opcTags]);
+  const popupScopedCandidateTagsCacheRef = useRef(new Map());
+  useEffect(() => {
+    popupScopedCandidateTagsCacheRef.current = new Map();
+  }, [opcTagIndex]);
+  const liveEquipmentCommandPathCacheRef = useRef(new Map());
+  useEffect(() => {
+    liveEquipmentCommandPathCacheRef.current = new Map();
+  }, [opcTags]);
+  const getPopupScopedCandidateTags = useCallback((rawOverlayPath) => {
+    const overlayPath = normalizeTagValue(rawOverlayPath || "");
+    if (!overlayPath) return [];
+    const cacheKey = overlayPath.toLowerCase();
+    const cached = popupScopedCandidateTagsCacheRef.current.get(cacheKey);
+    if (cached) return cached;
+    const normalizeLoose = (value) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+    const overlayPathLower = overlayPath.toLowerCase();
+    const overlayPathLoose = normalizeLoose(overlayPath);
+    const { byGroup, byMember, byGroupLoose } = opcTagIndex;
+    const suffixDot = `.${overlayPathLower}`;
+    const prefixDot = `${overlayPathLower}.`;
+    const candidateTags = new Set();
+    byGroup.forEach((tagList, groupLower) => {
+      if (
+        groupLower === overlayPathLower ||
+        groupLower.endsWith(suffixDot) ||
+        overlayPathLower.endsWith(`.${groupLower}`)
+      ) {
+        tagList.forEach((tag) => candidateTags.add(tag));
+      }
+    });
+    byMember.forEach((tagList, memberLower) => {
+      if (
+        memberLower === overlayPathLower ||
+        memberLower.startsWith(prefixDot) ||
+        memberLower.endsWith(suffixDot)
+      ) {
+        tagList.forEach((tag) => candidateTags.add(tag));
+      }
+    });
+    if (overlayPathLoose) {
+      byGroupLoose.forEach((tagList, groupLoose) => {
+        if (groupLoose.includes(overlayPathLoose) || overlayPathLoose.includes(groupLoose)) {
+          tagList.forEach((tag) => candidateTags.add(tag));
+        }
+      });
+    }
+    const resolved = Array.from(candidateTags);
+    popupScopedCandidateTagsCacheRef.current.set(cacheKey, resolved);
+    return resolved;
+  }, [opcTagIndex]);
 
   const opcScopedStatusKeys = useMemo(() => {
     if (!opcUiEnabled) return [];
@@ -845,6 +902,23 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
           addKey(`${base}/${member}`, { withDefault: false, withSuffix: false });
         });
       });
+
+      for (const tag of getPopupScopedCandidateTags(overlayPath)) {
+        const topic = normalizeTagValue(tag?.topic || "");
+        const group = normalizeTagValue(tag?.groupName || "");
+        const member = normalizeTagValue(tag?.tagPath || tag?.name || "");
+        const name = normalizeTagValue(tag?.name || "");
+        const members = [member, name].filter(Boolean);
+        members.forEach((rawMember) => {
+          const m = normalizeTagValue(rawMember);
+          if (!m) return;
+          if (topic && group) addKey(`${topic}.${group}.${m}`, { withSuffix: false });
+          if (topic) addKey(`${topic}.${m}`, { withSuffix: false });
+          if (group) addKey(`${group}.${m}`, { withSuffix: false });
+          addKey(m, { withSuffix: false });
+        });
+      }
+      return;
 
       const overlayPathLower = overlayPath.toLowerCase();
       const overlayPathLoose = normalizeLoose(overlayPath);
@@ -935,7 +1009,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
 
     const out = Array.from(keys);
     return out.slice(0, OPC_LIVE_KEY_HARD_CAP);
-  }, [opcUiEnabled, shapes, svgOverlays, liveEquipmentOverlayIds, opcTags, opcTagIndex]);
+  }, [opcUiEnabled, shapes, svgOverlays, liveEquipmentOverlayIds, opcTags, opcTagIndex, getPopupScopedCandidateTags]);
   const opcScopedStatusKeySetLower = useMemo(
     () =>
       new Set(
@@ -1076,6 +1150,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const opcPriorityHintsSignatureRef = useRef("");
   const opcPriorityHintsLastSentAtRef = useRef(0);
   const opcPriorityHintsNextAttemptAtRef = useRef(0);
+  const liveModeLoadingToastVisibleRef = useRef(false);
   const liveActiveAlarmsSignatureRef = useRef("");
   const autoFitInitRef = useRef(false);
   const zoomHoldTimeoutRef = useRef(null);
@@ -1091,6 +1166,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     opcLiveValuesRef.current = {};
     clearOpcLiveSnapshot();
     opcLiveUpdatedAtPublishRef.current = 0;
+    setLiveModeStatusReadyAt(0);
     setOpcLiveUpdatedAt(0);
     setOpcLiveLastError("");
   }, []);
@@ -1602,7 +1678,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   }, []);
 
   useEffect(() => {
-    if (!opcUiEnabled) {
+    if (!opcMetaEnabled) {
       clearAppOpcUiState();
       return undefined;
     }
@@ -1637,8 +1713,8 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
           if (!alive) return;
         }
         try {
-          const scopedKeys = Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : [];
-          if (!scopedKeys.length) {
+          const scopedKeys = opcUiEnabled ? (Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : []) : [];
+          if (opcUiEnabled && !scopedKeys.length) {
             opcTagsAllRef.current = [];
             if (opcConfigSignatureRef.current !== "0") {
               opcConfigSignatureRef.current = "0";
@@ -1649,11 +1725,13 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
             configNextAttemptAt = 0;
             return;
           }
-          const data = await getOpcConfig({ keys: scopedKeys });
+          const data = opcUiEnabled
+            ? await getOpcConfig({ keys: scopedKeys })
+            : await getOpcConfig();
           if (!alive) return;
           const tags = Array.isArray(data?.tags) ? data.tags : [];
           opcTagsAllRef.current = tags;
-          const tagsForUi = filterOpcTagsToUiScope(tags);
+          const tagsForUi = opcUiEnabled ? filterOpcTagsToUiScope(tags) : tags;
           const nextSig = signatureForList(tags, [
             "topic",
             "groupName",
@@ -1741,8 +1819,12 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     loadTemplates();
     loadTagMappings();
     loadMappingSets();
-    const configPollMs = isPageVisible ? 20000 : 90000;
-    const metaPollMs = isPageVisible ? 120000 : 240000;
+    const configPollMs = opcUiEnabled
+      ? (isPageVisible ? 20000 : 90000)
+      : (isPageVisible ? 120000 : 240000);
+    const metaPollMs = opcUiEnabled
+      ? (isPageVisible ? 120000 : 240000)
+      : (isPageVisible ? 240000 : 480000);
     const configId = setInterval(loadConfig, configPollMs);
     const templateId = setInterval(loadTemplates, metaPollMs);
     const mappingId = setInterval(loadTagMappings, metaPollMs);
@@ -1754,7 +1836,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       clearInterval(mappingId);
       clearInterval(mappingSetId);
     };
-  }, [clearAppOpcUiState, isPageVisible, opcScopedStatusKeys, opcUiEnabled]);
+  }, [clearAppOpcUiState, isPageVisible, opcMetaEnabled, opcScopedStatusKeys, opcUiEnabled]);
 
   useEffect(() => {
     const streamKeyLimit = Math.max(
@@ -1825,10 +1907,15 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       }
       if (changed && atMs > 0 && !isInteractingRef.current) {
         const lastPublishedAt = Number(opcLiveUpdatedAtPublishRef.current || 0);
-        if (atMs - lastPublishedAt >= 1000) {
+        // 5s throttle — this state only drives 3 display-only memos (key count, timestamp, stale),
+        // so there's no need to re-render App.jsx every second just for diagnostics readouts.
+        if (atMs - lastPublishedAt >= 5000) {
           opcLiveUpdatedAtPublishRef.current = atMs;
           setOpcLiveUpdatedAt(atMs);
         }
+      }
+      if (atMs > 0) {
+        setLiveModeStatusReadyAt((prev) => (prev > 0 ? prev : atMs));
       }
     };
     const queueValuesUpdate = (kind, values, atMs) => {
@@ -1934,6 +2021,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         }
         const atMs =
           Number(new Date(data?.at || 0).getTime() || 0) || Date.now();
+        setLiveModeStatusReadyAt((prev) => (prev > 0 ? prev : atMs));
         if (changed && atMs > 0) {
           // Intentionally do not set App state here to avoid global rerenders on live tag ticks.
         }
@@ -1976,6 +2064,40 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       clearInterval(id);
     };
   }, [clearOpcLiveRuntimeState, isPageVisible, opcActiveTagCount, opcScopedStatusKeys, opcScopedStatusKeySetLower, opcUiEnabled]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const hasScopedKeys = Array.isArray(opcScopedStatusKeys) && opcScopedStatusKeys.length > 0;
+    const liveStatusSettled =
+      !opcUiEnabled ||
+      !hasScopedKeys ||
+      liveModeStatusReadyAt > 0 ||
+      String(opcLiveLastError || "").trim().length > 0;
+    const shouldShowLoadingToast =
+      isLiveMode &&
+      (!projectIdentityReady || !liveStatusSettled);
+    let showTimer = null;
+    if (shouldShowLoadingToast) {
+      showTimer = window.setTimeout(() => {
+        showToast("Loading live mode...", {
+          id: LIVE_MODE_LOADING_TOAST_ID,
+          type: "info",
+          duration: 0,
+        });
+        liveModeLoadingToastVisibleRef.current = true;
+      }, 120);
+    } else if (liveModeLoadingToastVisibleRef.current) {
+      dismissToast(LIVE_MODE_LOADING_TOAST_ID);
+      liveModeLoadingToastVisibleRef.current = false;
+    }
+    return () => {
+      if (showTimer) window.clearTimeout(showTimer);
+      if (!shouldShowLoadingToast && liveModeLoadingToastVisibleRef.current) {
+        dismissToast(LIVE_MODE_LOADING_TOAST_ID);
+        liveModeLoadingToastVisibleRef.current = false;
+      }
+    };
+  }, [isLiveMode, opcLiveLastError, opcScopedStatusKeys, opcUiEnabled, projectIdentityReady, liveModeStatusReadyAt]);
 
   useEffect(() => {
     if (!opcUiEnabled) return;
@@ -2774,6 +2896,57 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       }, Math.max(0, Number(delayMs) || 0));
     });
   }
+  function getLiveEquipmentWriteHint(overlayId) {
+    const key = String(overlayId || "").trim();
+    if (!key) return null;
+    const entry = liveEquipmentWriteHintRef.current?.[key];
+    if (!entry || typeof entry !== "object") return null;
+    const at = Number(entry?.at || 0);
+    if (!Number.isFinite(at) || Date.now() - at > LIVE_EQUIPMENT_WRITE_HINT_TTL_MS) return null;
+    return entry;
+  }
+  function setLiveEquipmentWriteHint(overlayId, patch = {}) {
+    const key = String(overlayId || "").trim();
+    if (!key || !patch || typeof patch !== "object") return;
+    const nextPatch = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined)
+    );
+    if (!Object.keys(nextPatch).length) return;
+    liveEquipmentWriteHintRef.current = {
+      ...(liveEquipmentWriteHintRef.current || {}),
+      [key]: {
+        ...(liveEquipmentWriteHintRef.current?.[key] || {}),
+        ...nextPatch,
+        at: Date.now(),
+      },
+    };
+    bumpLiveEquipmentFastTick(true);
+  }
+  function clearLiveEquipmentWriteHint(overlayId, fields = []) {
+    const key = String(overlayId || "").trim();
+    if (!key) return;
+    const current = liveEquipmentWriteHintRef.current?.[key];
+    if (!current || typeof current !== "object") return;
+    if (!Array.isArray(fields) || !fields.length) {
+      const next = { ...(liveEquipmentWriteHintRef.current || {}) };
+      delete next[key];
+      liveEquipmentWriteHintRef.current = next;
+      bumpLiveEquipmentFastTick(true);
+      return;
+    }
+    const nextEntry = { ...current };
+    fields.forEach((field) => {
+      delete nextEntry[String(field || "")];
+    });
+    const next = { ...(liveEquipmentWriteHintRef.current || {}) };
+    if (Object.keys(nextEntry).filter((field) => field !== "at").length) {
+      next[key] = { ...nextEntry, at: Date.now() };
+    } else {
+      delete next[key];
+    }
+    liveEquipmentWriteHintRef.current = next;
+    bumpLiveEquipmentFastTick(true);
+  }
   const findOpcConfiguredTagPathMatch = (overlay, candidates) => {
     const tagPath = normalizeTagValue(overlay?.tagPath || "");
     const rawParts = tagPath.split(".").map((x) => String(x || "").trim()).filter(Boolean);
@@ -2828,6 +3001,15 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const resolveMotorCommandTagPath = (overlay, aliases = [], options = {}) => {
     const strictOnly = options?.strict === true;
     const tagPath = String(overlay?.tagPath || "").trim();
+    const anchorPaths = Array.isArray(options?.anchorPaths) ? options.anchorPaths : [];
+    const cacheKey = JSON.stringify({
+      tagPath,
+      aliases: (Array.isArray(aliases) ? aliases : []).map((alias) => String(alias || "").trim()),
+      anchors: anchorPaths.map((anchor) => String(anchor || "").trim()),
+      strictOnly,
+    });
+    const cached = liveEquipmentCommandPathCacheRef.current.get(cacheKey);
+    if (cached) return cached;
     const parts = tagPath.split(".").filter(Boolean);
     const parents = [];
     if (parts.length > 1) parents.push(parts.slice(0, -1).join("."));
@@ -2904,8 +3086,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       findLiveTagPathMatch(candidates) ||
       findOpcConfiguredTagPathMatch(overlay, candidates) ||
       "";
-    if (strictMatch) return strictMatch;
-    const anchorPaths = Array.isArray(options?.anchorPaths) ? options.anchorPaths : [];
+    if (strictMatch) {
+      liveEquipmentCommandPathCacheRef.current.set(cacheKey, strictMatch);
+      return strictMatch;
+    }
     if (anchorPaths.length) {
       const siblingCandidates = [];
       const siblingSeen = new Set();
@@ -2939,7 +3123,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         findLiveTagPathMatch(siblingCandidates) ||
         findOpcConfiguredTagPathMatch(overlay, siblingCandidates) ||
         "";
-      if (anchoredMatch) return anchoredMatch;
+      if (anchoredMatch) {
+        liveEquipmentCommandPathCacheRef.current.set(cacheKey, anchoredMatch);
+        return anchoredMatch;
+      }
     }
     if (strictOnly) return "";
 
@@ -3015,7 +3202,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
 
     const liveKeys = Object.keys(getOpcLiveSnapshot());
     const bestLive = chooseBest(liveKeys, (k) => k);
-    if (bestLive) return bestLive;
+    if (bestLive) {
+      liveEquipmentCommandPathCacheRef.current.set(cacheKey, bestLive);
+      return bestLive;
+    }
 
     const tags = getOpcTagsForResolution();
     const configuredFulls = [];
@@ -3035,7 +3225,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       configuredFulls.push(...fullCandidates);
     }
     const bestConfigured = chooseBest(configuredFulls, (k) => k);
-    if (bestConfigured) return bestConfigured;
+    if (bestConfigured) {
+      liveEquipmentCommandPathCacheRef.current.set(cacheKey, bestConfigured);
+      return bestConfigured;
+    }
     return "";
   };
   const writeLiveEquipmentTag = async (overlay, commandTagPath, value, options = {}) => {
@@ -3104,6 +3297,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const legacyTagKey = normalizeTagValue(canonicalLegacyTagKey || configuredName);
     const uaType = normalizeUaTypeForWrite(matchedTag);
     const isPulse = options?.pulse === true;
+    const optimisticHint =
+      options?.optimisticHint && typeof options.optimisticHint === "object"
+        ? options.optimisticHint
+        : null;
     const pulseResetValue = Object.prototype.hasOwnProperty.call(options || {}, "pulseResetValue")
       ? options.pulseResetValue
       : 0;
@@ -3129,6 +3326,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       bumpLiveEquipmentFastTick(true);
     };
     try {
+      if (optimisticHint) setLiveEquipmentWriteHint(overlayId, optimisticHint);
       setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: true }));
       setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: "" }));
       await writeOpcValue({ tagKey, legacyTagKey, value, uaType });
@@ -3169,6 +3367,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       }
       toastSuccess(`Wrote ${String(value)} to ${tagKey}`);
     } catch (err) {
+      if (optimisticHint) {
+        clearLiveEquipmentWriteHint(overlayId, Object.keys(optimisticHint));
+        requestLiveEquipmentFastRefresh(overlay, [tagKey, legacyTagKey], [0, 80, 220]);
+      }
       setLiveEquipmentWriteErrorByOverlay((prev) => ({
         ...(prev || {}),
         [writeStateKey || overlayId]: err?.message || "Write failed.",
@@ -3269,6 +3471,19 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     };
     const modeStatusRaw = readLiveRaw(modeStatusPath);
     const hmiStateRaw = readLiveRaw(hmiStatePath);
+    const writeHint = getLiveEquipmentWriteHint(overlayId);
+    const parseMotorHmiStateCode = (raw) => {
+      const text = String(raw ?? "").trim();
+      if (!text) return NaN;
+      const num = Number(text);
+      if (Number.isFinite(num)) return num;
+      const lower = text.toLowerCase();
+      if (lower.includes("starting")) return 2;
+      if (lower.includes("started")) return 4;
+      if (lower.includes("stopping")) return 6;
+      if (lower.includes("stop")) return 1;
+      return NaN;
+    };
     const hmiStateLabel = (() => {
       if (hmiStateRaw == null || hmiStateRaw === "") return "";
       const text = String(hmiStateRaw || "").trim();
@@ -3315,7 +3530,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const manualActive = readLiveBool(manualStatePath);
     const autoActive = readLiveBool(autoStatePath);
     const maintenanceActive = readLiveBool(maintenanceStatePath);
-    const modeHint = String(liveEquipmentModeToggleHintRef.current?.[overlayId] || "").trim().toLowerCase();
+    const modeHint = String(writeHint?.mode || "").trim().toLowerCase();
     const activeMode =
       maintenanceActive === true
         ? "maintenance"
@@ -3332,18 +3547,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const modeBlocksStartStop = reverseDisableOnHmiControl
       ? activeMode === "auto" || activeMode === "maintenance"
       : activeMode === "manual" || activeMode === "maintenance";
-    const hmiStateCode = (() => {
-      const text = String(hmiStateRaw ?? "").trim();
-      if (!text) return NaN;
-      const num = Number(text);
-      if (Number.isFinite(num)) return num;
-      const lower = text.toLowerCase();
-      if (lower.includes("starting")) return 2;
-      if (lower.includes("started")) return 4;
-      if (lower.includes("stopping")) return 6;
-      if (lower.includes("stop")) return 1;
-      return NaN;
-    })();
+    const hmiStateCode = parseMotorHmiStateCode(hmiStateRaw);
     const startBlockedByState = hmiStateCode === 2 || hmiStateCode === 4;
     const stopBlockedByState = hmiStateCode === 1 || hmiStateCode === 6;
     const startDisabled = startBusy || modeBlocksStartStop || startBlockedByState || !startPath;
@@ -3394,18 +3598,16 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       </span>
     );
     const onSetManualMode = () => {
-      liveEquipmentModeToggleHintRef.current = {
-        ...(liveEquipmentModeToggleHintRef.current || {}),
-        [overlayId]: "manual",
-      };
-      return void triggerMotorCommand("Manual", manualPath, manualWriteValue, commandWriteOptions);
+      return void triggerMotorCommand("Manual", manualPath, manualWriteValue, {
+        ...commandWriteOptions,
+        optimisticHint: { mode: "manual" },
+      });
     };
     const onSetAutoMode = () => {
-      liveEquipmentModeToggleHintRef.current = {
-        ...(liveEquipmentModeToggleHintRef.current || {}),
-        [overlayId]: "auto",
-      };
-      return void triggerMotorCommand("Automatic", autoPath, autoWriteValue, commandWriteOptions);
+      return void triggerMotorCommand("Automatic", autoPath, autoWriteValue, {
+        ...commandWriteOptions,
+        optimisticHint: { mode: "auto" },
+      });
     };
     const maintenanceIcon = (
       <span style={iconCommon} aria-hidden="true">
@@ -3417,11 +3619,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       </span>
     );
     const onSetMaintenanceMode = () => {
-      liveEquipmentModeToggleHintRef.current = {
-        ...(liveEquipmentModeToggleHintRef.current || {}),
-        [overlayId]: "maintenance",
-      };
-      return void triggerMotorCommand("Maintenance", maintenancePath, maintenanceWriteValue, commandWriteOptions);
+      return void triggerMotorCommand("Maintenance", maintenancePath, maintenanceWriteValue, {
+        ...commandWriteOptions,
+        optimisticHint: { mode: "maintenance" },
+      });
     };
     const buttonStyle = {
       border: "1px solid color-mix(in srgb, var(--border) 86%, #2b6cff 14%)",
@@ -3699,6 +3900,14 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     };
     const modeStatusRaw = readLiveRaw(modeStatusPath);
     const hmiStateRaw = readLiveRaw(hmiStatePath);
+    const writeHint = getLiveEquipmentWriteHint(overlayId);
+    const parseDiverterHmiStateCode = (raw) => {
+      const text = String(raw ?? "").trim();
+      if (!text) return NaN;
+      const num = Number(text);
+      if (Number.isFinite(num)) return num;
+      return NaN;
+    };
     const parsedModeFromStatus = (() => {
       if (modeStatusRaw == null || modeStatusRaw === "") return "";
       const text = String(modeStatusRaw || "").trim();
@@ -3723,6 +3932,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const manualActive = readLiveBool(manualStatePath);
     const autoActive = readLiveBool(autoStatePath);
     const maintenanceActive = readLiveBool(maintenanceStatePath);
+    const modeHint = String(writeHint?.mode || "").trim().toLowerCase();
     const activeMode =
       maintenanceActive === true
         ? "maintenance"
@@ -3734,14 +3944,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
                 parsedModeFromStatus === "auto" ||
                 parsedModeFromStatus === "maintenance"
               ? parsedModeFromStatus
+              : modeHint === "manual" || modeHint === "auto" || modeHint === "maintenance"
+                ? modeHint
               : "";
-    const hmiStateCode = (() => {
-      const text = String(hmiStateRaw ?? "").trim();
-      if (!text) return NaN;
-      const num = Number(text);
-      if (Number.isFinite(num)) return num;
-      return NaN;
-    })();
+    const hmiStateCode = parseDiverterHmiStateCode(hmiStateRaw);
     const positionLabel =
       hmiStateCode === 1
         ? "Straight"
@@ -3752,7 +3958,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
             : hmiStateCode === 8
               ? "Moving Straight"
               : hmiStateCode === 16
-                ? "Moving Divert"
+              ? "Moving Divert"
                 : hmiStateCode === 32
                   ? "Fault"
                   : String(hmiStateRaw || "").trim() || "-";
@@ -3922,7 +4128,12 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
             type="button"
             style={withDisabledStyle(autoDisabled)}
             disabled={autoDisabled}
-            onClick={() => void triggerDiverterCommand("Automatic", autoPath, autoWriteValue, commandWriteOptions)}
+            onClick={() =>
+              void triggerDiverterCommand("Automatic", autoPath, autoWriteValue, {
+                ...commandWriteOptions,
+                optimisticHint: { mode: "auto" },
+              })
+            }
             title={!autoPath ? "HMI_Control tag not found" : activeMode === "auto" ? "Already in Auto mode" : autoPath}
           >
             {autoIcon}
@@ -3932,7 +4143,12 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
             type="button"
             style={withDisabledStyle(manualDisabled)}
             disabled={manualDisabled}
-            onClick={() => void triggerDiverterCommand("Manual", manualPath, manualWriteValue, commandWriteOptions)}
+            onClick={() =>
+              void triggerDiverterCommand("Manual", manualPath, manualWriteValue, {
+                ...commandWriteOptions,
+                optimisticHint: { mode: "manual" },
+              })
+            }
             title={!manualPath ? "HMI_Control tag not found" : activeMode === "manual" ? "Already in Manual mode" : manualPath}
           >
             {manualIcon}
@@ -3942,7 +4158,12 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
             type="button"
             style={withDisabledStyle(maintenanceDisabled)}
             disabled={maintenanceDisabled}
-            onClick={() => void triggerDiverterCommand("Maintenance", maintenancePath, maintenanceWriteValue, commandWriteOptions)}
+            onClick={() =>
+              void triggerDiverterCommand("Maintenance", maintenancePath, maintenanceWriteValue, {
+                ...commandWriteOptions,
+                optimisticHint: { mode: "maintenance" },
+              })
+            }
             title={!maintenancePath ? "HMI_Control tag not found" : activeMode === "maintenance" ? "Already in Maintenance mode" : maintenancePath}
           >
             {maintenanceIcon}
@@ -3959,6 +4180,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     if (!overlay) return [];
     const liveSnap = getOpcLiveSnapshot();
     const path = String(overlay.tagPath || "").trim();
+    const popupScopedCandidateTags = path ? getPopupScopedCandidateTags(path) : [];
     const eType = resolveOverlayEType(overlay);
     const rows = [];
     const seenKeys = new Set();
@@ -3978,7 +4200,9 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       if (!path) return true;
       const target = normalizeTagValue(path).toLowerCase();
       if (!target) return true;
-      const tags = Array.isArray(opcTags) ? opcTags : [];
+      const tags = popupScopedCandidateTags.length
+        ? popupScopedCandidateTags
+        : (Array.isArray(opcTags) ? opcTags : []);
       for (const t of tags) {
         const topic = normalizeTagValue(t?.topic || "");
         const group = normalizeTagValue(t?.groupName || "");
@@ -4056,7 +4280,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       const normalizedPath = normalizeTagValue(path);
       const pathLower = normalizedPath.toLowerCase();
       const pathLoose = normalizeLoose(normalizedPath);
-      (Array.isArray(opcTags) ? opcTags : []).forEach((tag) => {
+      (popupScopedCandidateTags.length ? popupScopedCandidateTags : (Array.isArray(opcTags) ? opcTags : [])).forEach((tag) => {
         const topic = normalizeTagValue(tag?.topic || "");
         const group = inferGroupName(tag);
         const member = normalizeTagValue(tag?.tagPath || tag?.name || "");
@@ -4556,8 +4780,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   };
   const renderLiveDataSection = (overlay, details, compact = false) => {
     const eType = String(resolveOverlayEType(overlay) || "").trim();
-    const isMotor = isMotorEType(eType);
-    if (isMotor) {
+    const renderTrendCard = (helperText) => {
       const graphH = compact ? 86 : 108;
       return (
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: compact ? 5 : 6 }}>
@@ -4586,11 +4809,18 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
               />
             </svg>
             <div style={{ marginTop: 4, fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
-              Placeholder trend. Add motor series data when ready.
+              {helperText}
             </div>
           </div>
         </div>
       );
+    };
+    if (isBinEType(eType)) {
+      return renderTrendCard("Placeholder trend. Add bin series data when ready.");
+    }
+    const isMotor = isMotorEType(eType);
+    if (isMotor) {
+      return renderTrendCard("Placeholder trend. Add motor series data when ready.");
     }
     const list = Array.isArray(details) ? details : [];
     return (
@@ -4640,19 +4870,15 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     };
     const overlayId = String(overlay?.id || "").trim();
     const name = readField(["bin_name", "binName", "name", "Name"]) || "-";
-    const tagPath = readField(["tag_path", "tagPath", "svg_tag_path", "svgTagPath", "path", "Path"]);
     const material = readField(["material", "Material", "product", "Product", "product_name", "productName"]);
     const currentProductName = String(getOverlayBinProductName(overlay) || material || "-");
     const capacity = readField(["capacity", "Capacity", "max_capacity", "maxCapacity", "max_qty", "maxQty"]);
     const level = readField(["level", "Level", "current_level", "currentLevel", "qty", "quantity", "Quantity"]);
-    const status = readField(["status", "Status", "state", "State"]);
     const rows = [
       { key: "Bin", value: name },
-      { key: "Tag Path", value: tagPath || "-" },
       { key: "Product", value: currentProductName || "-" },
       { key: "Level", value: level || "-" },
       { key: "Capacity", value: capacity || "-" },
-      { key: "Status", value: status || "-" },
     ];
     const productOptions = (Array.isArray(projectProductRows) ? projectProductRows : [])
       .map((p) => ({ id: getProjectRowId(p), name: getProjectProductName(p) }))
@@ -5011,10 +5237,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     return lines;
   }, [isLiveMode, liveEquipmentDockEntries, liveEquipmentDockSideById, liveEquipmentFloatingById, pan, zoom, liveEquipmentDockTick]);
 
-  const svgTagGroupMenuOptions = useMemo(() => {
+  const baseSvgTagGroupMenuOptions = useMemo(() => {
     if (isLiveMode) return [{ value: "", label: "Select tag group" }];
     const options = [{ value: "", label: "Select tag group" }];
-    const seen = new Set();
+    const seen = new Set([""]);
     (opcTags || []).forEach((tag) => {
       const topic = normalizeTagValue(tag?.topic || "Default") || "Default";
       const explicitGroup = normalizeTagValue(tag?.groupName || "");
@@ -5031,17 +5257,34 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       seen.add(dedupe);
       options.push({ value, label: group, group: topic });
     });
+    return options;
+  }, [isLiveMode, opcTags]);
 
+  const baseSvgTagGroupMenuValueSet = useMemo(
+    () =>
+      new Set(
+        baseSvgTagGroupMenuOptions
+          .map((opt) => String(opt?.value || "").trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    [baseSvgTagGroupMenuOptions]
+  );
+
+  const selectedOverlayTagGroupPath = useMemo(() => {
     const currentOverlay =
       selectedOverlayIds.length === 1 && selectedIds.length === 0
         ? svgOverlayById.get(String(selectedOverlayIds[0] || "")) || null
         : null;
-    const current = normalizeTagValue(currentOverlay?.tagPath || "");
-    if (current && !options.some((opt) => opt.value === current)) {
-      options.push({ value: current, label: current, group: "Custom" });
+    return normalizeTagValue(currentOverlay?.tagPath || "");
+  }, [selectedOverlayIds, selectedIds, svgOverlayById]);
+
+  const svgTagGroupMenuOptions = useMemo(() => {
+    const current = selectedOverlayTagGroupPath;
+    if (!current || baseSvgTagGroupMenuValueSet.has(current.toLowerCase())) {
+      return baseSvgTagGroupMenuOptions;
     }
-    return options;
-  }, [isLiveMode, opcTags, selectedOverlayIds, selectedIds, svgOverlayById]);
+    return [...baseSvgTagGroupMenuOptions, { value: current, label: current, group: "Custom" }];
+  }, [baseSvgTagGroupMenuOptions, baseSvgTagGroupMenuValueSet, selectedOverlayTagGroupPath]);
 
 
   const PAN_SPEED = 0.05; // ?? adjust this to taste
@@ -5054,11 +5297,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       `${opt?.group || ""} ${opt?.label || ""} ${opt?.value || ""}`.toLowerCase().includes(q)
     );
 
-    const currentOverlay =
-      selectedOverlayIds.length === 1 && selectedIds.length === 0
-        ? svgOverlayById.get(String(selectedOverlayIds[0] || "")) || null
-        : null;
-    const current = normalizeTagValue(currentOverlay?.tagPath || "");
+    const current = selectedOverlayTagGroupPath;
     if (current && !filtered.some((opt) => opt.value === current)) {
       const selected = svgTagGroupMenuOptions.find((opt) => opt.value === current);
       if (selected) return [selected, ...filtered];
@@ -5066,9 +5305,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     return filtered;
   }, [
     contextSvgTagQuery,
-    selectedOverlayIds,
-    selectedIds,
-    svgOverlayById,
+    selectedOverlayTagGroupPath,
     svgTagGroupMenuOptions,
   ]);
 
@@ -13527,24 +13764,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
       ? Number(viewportRect.top || 0) + Number(viewportRect.height || 0) / 2
       : (typeof window !== "undefined" ? window.innerHeight / 2 : 0);
     const lane = Number(e?.clientY || 0) > midY ? "top" : "bottom";
-    startTransition(() => {
-      bringLiveEquipmentToFront(nextId);
-      setLiveEquipmentDockSideById((prev) => ({ ...(prev || {}), [nextId]: lane }));
-      setLiveEquipmentFloatingById((prev) => {
-        const map = prev && typeof prev === "object" ? prev : {};
-        if (map[nextId]) return map;
-        const smartPos = getSmartLiveEquipmentPopupPosition(nextId);
-        if (!smartPos) return map;
-        return { ...map, [nextId]: smartPos };
-      });
-      setLiveEquipmentOverlayIds((prev) => {
-        const list = Array.isArray(prev) ? prev : [];
-        if (list.some((x) => String(x || "") === nextId)) return list;
-        const without = list.filter((x) => String(x || "") !== nextId);
-        const nextList = [...without, nextId];
-        if (nextList.length <= MAX_LIVE_EQUIPMENT_POPUPS) return nextList;
-        return nextList.slice(nextList.length - MAX_LIVE_EQUIPMENT_POPUPS);
-      });
+    bringLiveEquipmentToFront(nextId);
+    setLiveEquipmentDockSideById((prev) => ({ ...(prev || {}), [nextId]: lane }));
+    setLiveEquipmentFloatingById((prev) => {
+      const map = prev && typeof prev === "object" ? prev : {};
+      if (map[nextId]) return map;
+      const smartPos = getSmartLiveEquipmentPopupPosition(nextId);
+      if (!smartPos) return map;
+      return { ...map, [nextId]: smartPos };
+    });
+    setLiveEquipmentOverlayIds((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      if (list.some((x) => String(x || "") === nextId)) return list;
+      const without = list.filter((x) => String(x || "") !== nextId);
+      const nextList = [...without, nextId];
+      if (nextList.length <= MAX_LIVE_EQUIPMENT_POPUPS) return nextList;
+      return nextList.slice(nextList.length - MAX_LIVE_EQUIPMENT_POPUPS);
     });
   }
 
@@ -13671,7 +13906,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ||
       !!String(liveEquipmentDrawerOverlayId || "").trim();
     if (!hasPopupOpen) return undefined;
-    const POPUP_REFRESH_MIN_MS = 250;
+    const POPUP_REFRESH_MIN_MS = 500;
     const scheduleTick = () => {
       if (!liveEquipmentActiveRef.current) return;
       if (isInteractingRef.current) return;
@@ -17047,7 +17282,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
         set.add(parts.slice(i).join("."));
       }
     };
-    (Array.isArray(liveEquipmentFastStatusKeys) ? liveEquipmentFastStatusKeys : []).forEach(addKey);
     (Array.isArray(shapes) ? shapes : []).forEach((shape) => addKey(shape?.tagPath));
     (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
       addKey(overlay?.tagPath);
@@ -17078,14 +17312,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
       candidates.forEach(addKey);
     });
-    const popupKeyCount = Array.isArray(liveEquipmentFastStatusKeys)
-      ? liveEquipmentFastStatusKeys.filter(Boolean).length
-      : 0;
-    const dynamicCap = popupKeyCount
-      ? Math.max(OPC_CANVAS_KEY_HARD_CAP, popupKeyCount + 16, set.size)
-      : Math.max(OPC_CANVAS_KEY_HARD_CAP, set.size);
-    return Array.from(set).slice(0, dynamicCap);
-  }, [opcUiEnabled, shapes, svgOverlays, opcTags, liveEquipmentFastStatusKeys]);
+    return Array.from(set).slice(0, Math.max(OPC_CANVAS_KEY_HARD_CAP, set.size));
+  }, [opcUiEnabled, shapes, svgOverlays, opcTags]);
   const canvasWidgetDbValues = useMemo(
     () => (opcUiEnabled ? widgetDbValues : {}),
     [opcUiEnabled, widgetDbValues]
@@ -17212,9 +17440,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     let alive = true;
     const hasPopupPriorityKeys =
       (Array.isArray(liveEquipmentFastStatusKeys) ? liveEquipmentFastStatusKeys.length : 0) > 0;
-    const HEARTBEAT_MS = hasPopupPriorityKeys ? 1500 : 10000;
-    const KICK_DELAY_MS = hasPopupPriorityKeys ? 20 : 120;
-    const RETRY_DELAY_MS = hasPopupPriorityKeys ? 600 : 5000;
+    const HEARTBEAT_MS = hasPopupPriorityKeys ? 750 : 3000;
+    const KICK_DELAY_MS = hasPopupPriorityKeys ? 10 : 60;
+    const RETRY_DELAY_MS = hasPopupPriorityKeys ? 250 : 1500;
     const publishPriorityHints = async () => {
       if (!alive) return;
       const now = Date.now();

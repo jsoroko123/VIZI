@@ -1669,6 +1669,8 @@ export async function ensureAppSchema({ pool, createPasswordHash, defaultRolePer
       name TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL DEFAULT '',
       product_id BIGINT,
+      locked_in BOOLEAN NOT NULL DEFAULT false,
+      locked_out BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
@@ -1684,6 +1686,14 @@ export async function ensureAppSchema({ pool, createPasswordHash, defaultRolePer
   await pool.query(`
     ALTER TABLE bin
     ADD COLUMN IF NOT EXISTS product_id BIGINT;
+  `);
+  await pool.query(`
+    ALTER TABLE bin
+    ADD COLUMN IF NOT EXISTS locked_in BOOLEAN NOT NULL DEFAULT false;
+  `);
+  await pool.query(`
+    ALTER TABLE bin
+    ADD COLUMN IF NOT EXISTS locked_out BOOLEAN NOT NULL DEFAULT false;
   `);
   await pool.query(`
     ALTER TABLE bin
@@ -1907,10 +1917,27 @@ export async function ensureAppSchema({ pool, createPasswordHash, defaultRolePer
     ON CONFLICT (table_name) DO NOTHING
     `,
     [
-      JSON.stringify(["name", "product_id", "updated_at"]),
-      JSON.stringify(["name", "description", "product_id", "created_at", "updated_at"]),
+      JSON.stringify(["name", "product_id", "locked_in", "locked_out", "updated_at"]),
+      JSON.stringify(["name", "description", "product_id", "locked_in", "locked_out", "created_at", "updated_at"]),
     ]
   );
+  await pool.query(`
+    UPDATE ui_table_config
+    SET
+      list_fields = CASE
+        WHEN COALESCE(list_fields, '[]'::jsonb) ? 'locked_in'
+         AND COALESCE(list_fields, '[]'::jsonb) ? 'locked_out'
+        THEN list_fields
+        ELSE COALESCE(list_fields, '[]'::jsonb) || '["locked_in","locked_out"]'::jsonb
+      END,
+      detail_fields = CASE
+        WHEN COALESCE(detail_fields, '[]'::jsonb) ? 'locked_in'
+         AND COALESCE(detail_fields, '[]'::jsonb) ? 'locked_out'
+        THEN detail_fields
+        ELSE COALESCE(detail_fields, '[]'::jsonb) || '["locked_in","locked_out"]'::jsonb
+      END
+    WHERE table_name = 'bin';
+  `);
   await ensureFormulaSchema(pool);
   await pool.query(
     `

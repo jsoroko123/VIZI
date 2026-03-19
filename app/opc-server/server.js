@@ -411,6 +411,15 @@ async function main() {
     : Math.max(100, Math.min(globalPollMs, 250));
   const uiScopedReadsEnabled = runtime?.uiScopedReadsEnabled === true;
   const uiScopedReadsStaleMs = clampMinMs(runtime?.uiScopedReadsStaleMs, 5000, 30000);
+  const uiScopedReadsHoldMs = Math.max(
+    0,
+    Math.min(120000, Math.round(parseNonNegativeNumber(runtime?.uiScopedReadsHoldMs, 15000) || 15000))
+  );
+  const writePriorityEnabled = runtime?.writePriorityEnabled !== false;
+  const writeQuietMs = Math.max(
+    0,
+    Math.min(5000, Math.round(parseNonNegativeNumber(runtime?.writeQuietMs, 250) || 250))
+  );
   const plcs = Array.isArray(config?.plcs) && config.plcs.length
     ? config.plcs
         .map((p, idx) => ({
@@ -548,6 +557,8 @@ async function main() {
   const plcReadTransportFailureStreak = new Map();
   const plcTimeoutFailureWindow = new Map();
   const plcReconnectWarmupUntil = new Map();
+  const plcWriteInFlight = new Map();
+  const plcWriteQuietUntil = new Map();
   const isTimeoutLikeError = (err) => {
     const msg = String(err?.message || err || "").toLowerCase();
     return (
@@ -600,6 +611,7 @@ async function main() {
   let priorityKeysLastError = "";
   let priorityRefreshInFlight = false;
   let priorityRefreshLastAt = 0;
+  let priorityKeysLastNonEmptyAt = 0;
   const connectionGuardFailureWindowByPlc = new Map();
   let connectionGuardModeActive = false;
   let connectionGuardActivatedAt = 0;
@@ -818,6 +830,71 @@ async function main() {
     });
   }
 
+  function getPlcSlotKeys(plcName = "") {
+    const key = String(plcName || "").trim();
+    if (!key) return [];
+    const pool = plcConnectionPools.get(key);
+    if (Array.isArray(pool) && pool.length) {
+      return pool
+        .map((entry) => String(entry?.slotKey || "").trim())
+        .filter(Boolean);
+    }
+    return [key];
+  }
+
+  function beginPlcWriteWindow(plcName = "") {
+    if (!writePriorityEnabled) return;
+    const key = String(plcName || "").trim();
+    if (!key) return;
+    plcWriteInFlight.set(key, Math.max(0, Number(plcWriteInFlight.get(key) || 0)) + 1);
+  }
+
+  function endPlcWriteWindow(plcName = "") {
+    if (!writePriorityEnabled) return;
+    const key = String(plcName || "").trim();
+    if (!key) return;
+    const current = Math.max(0, Number(plcWriteInFlight.get(key) || 0));
+    if (current <= 1) plcWriteInFlight.delete(key);
+    else plcWriteInFlight.set(key, current - 1);
+    if (writeQuietMs > 0) {
+      plcWriteQuietUntil.set(key, Math.max(Number(plcWriteQuietUntil.get(key) || 0), Date.now() + writeQuietMs));
+    } else if (!plcWriteInFlight.has(key)) {
+      plcWriteQuietUntil.delete(key);
+    }
+  }
+
+  function getPlcWriteQuietRemainingMs(plcName = "", now = Date.now()) {
+    const key = String(plcName || "").trim();
+    if (!key) return 0;
+    const quietUntil = Math.max(0, Number(plcWriteQuietUntil.get(key) || 0));
+    if (!quietUntil) return 0;
+    const remaining = quietUntil - Number(now || Date.now());
+    if (remaining <= 0) {
+      plcWriteQuietUntil.delete(key);
+      return 0;
+    }
+    return remaining;
+  }
+
+  function isPlcReadPausedForWrite(plcName = "", now = Date.now()) {
+    if (!writePriorityEnabled) return false;
+    const key = String(plcName || "").trim();
+    if (!key) return false;
+    if (Math.max(0, Number(plcWriteInFlight.get(key) || 0)) > 0) return true;
+    return getPlcWriteQuietRemainingMs(key, now) > 0;
+  }
+
+  async function waitForPlcPollIdle(plcName = "", timeoutMs = 1000) {
+    const slotKeys = getPlcSlotKeys(plcName);
+    if (!slotKeys.length) return true;
+    const deadline = Date.now() + Math.max(50, Math.round(Number(timeoutMs) || 0));
+    while (Date.now() <= deadline) {
+      if (!slotKeys.some((slotKey) => plcPollInFlight.get(slotKey) === true)) return true;
+      await sleep(10);
+    }
+    return !slotKeys.some((slotKey) => plcPollInFlight.get(slotKey) === true);
+  }
+
   async function refreshPriorityHintsFromAi(force = false) {
     const now = Date.now();
     if (priorityRefreshInFlight) return;
@@ -840,6 +917,7 @@ async function main() {
       }
       priorityKeySetLower = next;
       priorityKeysUpdatedAt = Number(data?.updatedAt || Date.now()) || Date.now();
+      priorityKeysLastNonEmptyAt = next.size ? priorityKeysUpdatedAt : 0;
       priorityKeysSource = String(data?.source || "").trim();
       priorityKeysLastError = "";
     } catch (err) {
@@ -851,9 +929,12 @@ async function main() {
 
   function hasActivePriorityScope(now = Date.now()) {
     if (!(priorityKeySetLower instanceof Set) || !priorityKeySetLower.size) return false;
-    const updatedAt = Number(priorityKeysUpdatedAt || 0);
+    const updatedAt = Math.max(
+      Number(priorityKeysUpdatedAt || 0),
+      Number(priorityKeysLastNonEmptyAt || 0)
+    );
     if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
-    return now - updatedAt <= uiScopedReadsStaleMs;
+    return now - updatedAt <= uiScopedReadsStaleMs + uiScopedReadsHoldMs;
   }
 
   function getLegacyTagKey(tag) {
@@ -1137,37 +1218,38 @@ async function main() {
       });
       return { ok: false, status: 409, error: "OPC connection is disabled." };
     }
-    const plc = plcClients.get(tag.plcName);
+    const plcName = String(tag.plcName || "").trim();
+    const plc = plcClients.get(plcName);
     if (!plc) {
       pushIssue({
         severity: "warn",
         kind: "plc_write_not_connected",
-        plcName: tag.plcName,
+        plcName,
         tagKey: tag.tagKey,
-        message: `Write rejected. PLC ${tag.plcName} is not connected.`,
+        message: `Write rejected. PLC ${plcName} is not connected.`,
       });
-      return { ok: false, status: 503, error: `PLC ${tag.plcName} is not connected.` };
+      return { ok: false, status: 503, error: `PLC ${plcName} is not connected.` };
     }
-    if (!plcConnected.get(tag.plcName)) {
+    if (!plcConnected.get(plcName)) {
       pushIssue({
         severity: "warn",
         kind: "plc_write_reconnect_attempt",
-        plcName: tag.plcName,
+        plcName,
         tagKey: tag.tagKey,
-        message: `PLC ${tag.plcName} not connected during write. Reconnect requested.`,
+        message: `PLC ${plcName} not connected during write. Reconnect requested.`,
       });
-      void connectPlcWithRetry(tag.plcName, plc);
+      void connectPlcWithRetry(plcName, plc);
       pushIssue({
         severity: "warn",
         kind: "plc_write_not_connected",
-        plcName: tag.plcName,
+        plcName,
         tagKey: tag.tagKey,
-        message: `Write rejected. PLC ${tag.plcName} is disconnected (reconnecting in background).`,
+        message: `Write rejected. PLC ${plcName} is disconnected (reconnecting in background).`,
       });
       return {
         ok: false,
         status: 503,
-        error: `PLC ${tag.plcName} is disconnected. Reconnecting in background.`,
+        error: `PLC ${plcName} is disconnected. Reconnecting in background.`,
       };
     }
     const normalized = normalizeWriteValueForTag(tag, value);
@@ -1175,7 +1257,22 @@ async function main() {
     const writeTimeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error(`Write timeout after ${writeTimeoutMs}ms`)), writeTimeoutMs)
     );
-    await Promise.race([plc.write(tag.tagPath || tag.name, normalized), writeTimeoutPromise]);
+    beginPlcWriteWindow(plcName);
+    try {
+      const pollSettled = await waitForPlcPollIdle(plcName, Math.min(1000, Math.max(200, readTimeoutMs)));
+      if (!pollSettled) {
+        pushIssue({
+          severity: "warn",
+          kind: "plc_write_waited_for_reads",
+          plcName,
+          tagKey: tag.tagKey,
+          message: `Write waited for in-flight reads on PLC ${plcName} but a poll was still busy after timeout.`,
+        });
+      }
+      await Promise.race([plc.write(tag.tagPath || tag.name, normalized), writeTimeoutPromise]);
+    } finally {
+      endPlcWriteWindow(plcName);
+    }
     tagValues.set(tag.tagKey, normalized);
     if (tag.legacyTagKey && tag.legacyTagKey !== tag.tagKey) tagValues.set(tag.legacyTagKey, normalized);
     return { ok: true, tagKey: tag.tagKey, value: normalized };
@@ -1599,6 +1696,8 @@ async function main() {
       plcConnectFailureStreak.set(slotKey, 0);
       plcReadTransportFailureStreak.set(slotKey, 0);
       plcReconnectWarmupUntil.set(slotKey, 0);
+      plcWriteInFlight.set(p.name, 0);
+      plcWriteQuietUntil.set(p.name, 0);
       slotKeyToPlcName.set(slotKey, p.name);
       pool.push({ slotKey, plc });
     }
@@ -1861,11 +1960,21 @@ async function main() {
           priorityKeyCap,
           priorityHintKeyCount: priorityKeySetLower.size,
           priorityHintsUpdatedAt: priorityKeysUpdatedAt || null,
+          priorityHintsLastNonEmptyAt: priorityKeysLastNonEmptyAt || null,
           priorityHintsSource: priorityKeysSource || "",
           priorityHintsError: priorityKeysLastError || "",
           uiScopedReadsEnabled,
           uiScopedReadsStaleMs,
+          uiScopedReadsHoldMs,
           uiScopedReadsActive: uiScopedReadsEnabled ? hasActivePriorityScope() : false,
+          writePriorityEnabled,
+          writeQuietMs,
+          writePausedPlcCount: (Array.isArray(plcs) ? plcs : []).reduce(
+            (count, plcTarget) =>
+              count +
+              (isPlcReadPausedForWrite(String(plcTarget?.name || "").trim(), Date.now()) ? 1 : 0),
+            0
+          ),
           errorBackoffEnabled,
           errorBackoffBaseMs,
           errorBackoffMaxMs,
@@ -2134,9 +2243,13 @@ async function main() {
         return;
       }
       if (!plcConnected.get(slotKey)) return;
+      const now = Date.now();
+      if (isPlcReadPausedForWrite(plcName, now)) {
+        writeStatus();
+        return;
+      }
       if (plcPollInFlight.get(slotKey)) return;
       plcPollInFlight.set(slotKey, true);
-      const now = Date.now();
       const priorityScopeActive = hasActivePriorityScope(now);
       maybeReenableMultiRead(plcName);
       let didRead = false;
@@ -2347,6 +2460,7 @@ async function main() {
           return;
         }
         const now = Date.now();
+        if (isPlcReadPausedForWrite(plcName, now)) return;
         const lastReadAt = Number(plcLastPollAt.get(slotKey) || 0);
         // Skip heartbeat read if normal polling has already read this slot recently.
         if (lastReadAt > 0 && now - lastReadAt < Math.max(heartbeatMs, readTimeoutMs * 2)) {

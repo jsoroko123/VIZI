@@ -980,6 +980,7 @@ let pool = null;
 let trendPool = null;
 let logPool = null;
 let opcTagScaleCache = { loadedAt: 0, map: new Map() };
+let opcTagMetaCache = { loadedAt: 0, map: new Map() };
 let serviceControlLocked = false;
 
 const SESSION_COOKIE = "vizi_session";
@@ -2301,30 +2302,70 @@ async function loadOpcConfigFromStore() {
   return { ...DEFAULT_OPC_CONFIG };
 }
 
+async function loadOpcTagMetaMap() {
+  const now = Date.now();
+  if (opcTagMetaCache.map instanceof Map && now - Number(opcTagMetaCache.loadedAt || 0) <= 5000) {
+    return opcTagMetaCache.map;
+  }
+  const cfg = await loadOpcConfigFromStore();
+  const tags = Array.isArray(cfg?.tags) ? cfg.tags : [];
+  const map = new Map();
+  tags.forEach((t) => {
+    const topic = String(t?.topic || "").trim();
+    const resolvedTopic = topic || "Default";
+    const name = String(t?.name || "").trim();
+    const tagPath = String(t?.tagPath || name).trim();
+    const scaleRaw = Number(t?.scale);
+    const scale = Number.isFinite(scaleRaw) && scaleRaw !== 0 ? scaleRaw : null;
+    const trendEnabled = t?.trendEnabled === true;
+    const meta = {
+      scale,
+      trendEnabled,
+      trendMode: trendEnabled ? normalizeTrendMode(t?.trendMode) : "value",
+      trendSampleMs: trendEnabled
+        ? Math.max(1000, Number.parseInt(String(t?.trendSampleMs || ""), 10) || 0) || null
+        : null,
+    };
+    const candidates = [
+      resolvedTopic && tagPath ? `${resolvedTopic}.${tagPath}` : "",
+      resolvedTopic && name ? `${resolvedTopic}.${name}` : "",
+      topic ? "" : tagPath,
+      topic ? "" : name,
+      tagPath,
+      name,
+    ]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+    candidates.forEach((candidate) => {
+      map.set(candidate, meta);
+    });
+  });
+  opcTagMetaCache = { loadedAt: now, map };
+  return map;
+}
+
+async function getOpcTagMetaByKeys(...keys) {
+  const map = await loadOpcTagMetaMap();
+  for (const key of keys) {
+    const normalized = String(key || "").trim().toLowerCase();
+    if (!normalized) continue;
+    if (map.has(normalized)) return map.get(normalized) || null;
+  }
+  return null;
+}
+
 async function getOpcTagScaleByKeys(...keys) {
   const now = Date.now();
   if (!(opcTagScaleCache.map instanceof Map) || now - Number(opcTagScaleCache.loadedAt || 0) > 5000) {
-    const cfg = await loadOpcConfigFromStore();
-    const tags = Array.isArray(cfg?.tags) ? cfg.tags : [];
+    const metaMap = await loadOpcTagMetaMap();
     const map = new Map();
-    tags.forEach((t) => {
-      const topic = String(t?.topic || "").trim();
-      const name = String(t?.name || "").trim();
-      const path = String(t?.tagPath || name).trim();
-      const scaleRaw = Number(t?.scale);
-      if (!Number.isFinite(scaleRaw) || scaleRaw === 0) return;
-      const candidates = [
-        topic && path ? `${topic}.${path}` : "",
-        topic && name ? `${topic}.${name}` : "",
-        path,
-        name,
-      ]
-        .map((x) => String(x || "").trim())
-        .filter(Boolean);
-      candidates.forEach((c) => {
-        map.set(c.toLowerCase(), scaleRaw);
+    if (metaMap instanceof Map) {
+      metaMap.forEach((meta, key) => {
+        const scale = Number(meta?.scale);
+        if (!Number.isFinite(scale) || scale === 0) return;
+        map.set(String(key || "").trim().toLowerCase(), scale);
       });
-    });
+    }
     opcTagScaleCache = { loadedAt: now, map };
   }
   for (const key of keys) {
@@ -2343,6 +2384,7 @@ async function saveOpcConfigToStore(config) {
   );
   trendTagConfigCache = { loadedAt: 0, map: null };
   opcTagScaleCache = { loadedAt: 0, map: new Map() };
+  opcTagMetaCache = { loadedAt: 0, map: new Map() };
 }
 
 function mergeOpcConfigWithPlan(existingConfig, plan, options = {}) {
@@ -2450,43 +2492,17 @@ async function loadTrendTagConfigMap() {
     return trendTagConfigCache.map;
   }
   try {
-    let parsed = null;
-    try {
-      const { rows } = await pool.query("SELECT config FROM opc_config WHERE id = 1 LIMIT 1");
-      if (rows.length && rows[0]?.config && typeof rows[0].config === "object") {
-        parsed = rows[0].config;
-      }
-    } catch {
-      // fall back to file below
-    }
-    if (!parsed && fs.existsSync(OPC_CONFIG_PATH)) {
-      const text = fs.readFileSync(OPC_CONFIG_PATH, "utf8");
-      parsed = JSON.parse(text);
-    }
-    if (!parsed || typeof parsed !== "object") {
-      trendTagConfigCache = { loadedAt: now, map: null };
-      return null;
-    }
-    const tags = Array.isArray(parsed?.tags) ? parsed.tags : [];
+    const metaMap = await loadOpcTagMetaMap();
     const map = new Map();
-    tags.forEach((t) => {
-      if (t?.trendEnabled !== true) return;
-      const topic = String(t?.topic || "").trim();
-      const resolvedTopic = topic || "Default";
-      const name = String(t?.name || "").trim();
-      const tagPath = String(t?.tagPath || name).trim();
-      const trendMode = normalizeTrendMode(t?.trendMode);
-      const trendSampleMs = Math.max(1000, Number.parseInt(String(t?.trendSampleMs || ""), 10) || 0);
-      const cfg = { trendMode, trendSampleMs: trendSampleMs || null };
-      if (tagPath) {
-        map.set(`${resolvedTopic}.${tagPath}`, cfg);
-        if (!topic) map.set(tagPath, cfg);
-      }
-      if (name) {
-        map.set(`${resolvedTopic}.${name}`, cfg);
-        if (!topic) map.set(name, cfg);
-      }
-    });
+    if (metaMap instanceof Map) {
+      metaMap.forEach((meta, key) => {
+        if (meta?.trendEnabled !== true) return;
+        map.set(String(key || "").trim(), {
+          trendMode: meta?.trendMode || "value",
+          trendSampleMs: meta?.trendSampleMs || null,
+        });
+      });
+    }
     trendTagConfigCache = { loadedAt: now, map };
     return map;
   } catch {
@@ -3997,7 +4013,7 @@ async function verifySchemaCoverage() {
       "updated_at",
     ],
     product: ["id", "name", "description", "created_at", "updated_at"],
-    bin: ["id", "name", "description", "product_id", "created_at", "updated_at"],
+    bin: ["id", "name", "description", "product_id", "locked_in", "locked_out", "created_at", "updated_at"],
     equipment: [
       "id",
       "name",
@@ -9341,6 +9357,18 @@ function mergeRuntimeWriteMetrics(incomingRuntime, existingRuntime) {
   return { ...incoming };
 }
 
+function isCommandLikeOpcWriteTag(...keys) {
+  return keys.some((key) => {
+    const normalized = String(key || "").trim().toLowerCase();
+    if (!normalized) return false;
+    return (
+      /(^|[./])hmi_control($|[./])/.test(normalized) ||
+      /(^|[./])hmi_command($|[./])/.test(normalized) ||
+      /(^|[./])cmd($|[./])/.test(normalized)
+    );
+  });
+}
+
 async function performOpcWrite({
   tagKey,
   legacyTagKey = "",
@@ -9379,8 +9407,15 @@ async function performOpcWrite({
     }
   }
 
-  if (applyInverseScale) {
-    const scale = await getOpcTagScaleByKeys(primaryTagKey, legacyKey);
+  const commandLikeWrite = isCommandLikeOpcWriteTag(primaryTagKey, legacyKey);
+  const numericInputValue = toFiniteNumber(nextValue);
+  const tagMeta =
+    numericInputValue != null || applyInverseScale
+      ? await getOpcTagMetaByKeys(primaryTagKey, legacyKey)
+      : null;
+
+  if (applyInverseScale && numericInputValue != null && !commandLikeWrite) {
+    const scale = Number(tagMeta?.scale);
     if (Number.isFinite(Number(scale)) && Number(scale) !== 0 && Number(scale) !== 1) {
       const n = Number(nextValue);
       if (Number.isFinite(n)) {
@@ -9542,13 +9577,11 @@ async function performOpcWrite({
   scheduleOpcStatusDbPersist(nextStatus);
 
   const n = toFiniteNumber(nextValue);
-  if (n != null) {
-    const trendConfigMap = await loadTrendTagConfigMap();
-    const cfg = trendConfigMap instanceof Map ? trendConfigMap.get(primaryTagKey) : null;
-    const mode = cfg?.trendMode || "value";
+  if (n != null && tagMeta?.trendEnabled === true) {
+    const mode = tagMeta?.trendMode || "value";
     appendTrendSample(primaryTagKey, at, n, {
       mode,
-      forceMs: cfg?.trendSampleMs || OPC_TREND_FORCE_SAMPLE_MS,
+      forceMs: tagMeta?.trendSampleMs || OPC_TREND_FORCE_SAMPLE_MS,
     });
     await flushTrendBuffersIfNeeded(at);
   }

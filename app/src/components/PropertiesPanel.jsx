@@ -314,27 +314,41 @@ export default function PropertiesPanel({
     return { left, top, right, bottom };
   }, [bounds]);
 
-  const tagOptions = useMemo(() => {
-    const options = [];
-    options.push({ value: "", label: "Select tag" });
+  const baseTagOptions = useMemo(() => {
+    const options = [{ value: "", label: "Select tag" }];
+    const seen = new Set([""]);
     (opcTags || []).forEach((tag) => {
       const topic = String(tag?.topic || "Default");
       const raw = String(tag?.tagPath || tag?.name || "").trim();
       if (!raw) return;
+      const dedupe = raw.toLowerCase();
+      if (seen.has(dedupe)) return;
+      seen.add(dedupe);
       const name = String(tag?.name || raw).trim();
-      const group = topic;
-      options.push({ value: raw, label: name || raw, group });
+      options.push({ value: raw, label: name || raw, group: topic });
     });
-    if (hudFields.tagPath && !options.some((opt) => opt.value === hudFields.tagPath)) {
-      options.push({ value: hudFields.tagPath, label: hudFields.tagPath, group: "Custom" });
-    }
     return options;
-  }, [opcTags, hudFields.tagPath]);
+  }, [opcTags]);
 
-  const svgTagGroupOptions = useMemo(() => {
+  const baseTagOptionValueSet = useMemo(
+    () =>
+      new Set(
+        baseTagOptions
+          .map((opt) => String(opt?.value || "").trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    [baseTagOptions]
+  );
+
+  const tagOptions = useMemo(() => {
+    const current = String(hudFields?.tagPath || "").trim();
+    if (!current || baseTagOptionValueSet.has(current.toLowerCase())) return baseTagOptions;
+    return [...baseTagOptions, { value: current, label: current, group: "Custom" }];
+  }, [baseTagOptionValueSet, baseTagOptions, hudFields?.tagPath]);
+
+  const baseSvgTagGroupOptions = useMemo(() => {
     const options = [{ value: "", label: "Select tag group" }];
-    const seen = new Set();
-
+    const seen = new Set([""]);
     (opcTags || []).forEach((tag) => {
       const topic = String(tag?.topic || "Default").trim() || "Default";
       const groupName = inferGroupNameFromTag(tag);
@@ -345,12 +359,26 @@ export default function PropertiesPanel({
       seen.add(dedupe);
       options.push({ value, label: groupName, group: topic });
     });
-
-    if (hudFields.tagPath && !options.some((opt) => opt.value === hudFields.tagPath)) {
-      options.push({ value: hudFields.tagPath, label: hudFields.tagPath, group: "Custom" });
-    }
     return options;
-  }, [opcTags, hudFields.tagPath]);
+  }, [opcTags]);
+
+  const baseSvgTagGroupValueSet = useMemo(
+    () =>
+      new Set(
+        baseSvgTagGroupOptions
+          .map((opt) => String(opt?.value || "").trim().toLowerCase())
+          .filter(Boolean)
+      ),
+    [baseSvgTagGroupOptions]
+  );
+
+  const svgTagGroupOptions = useMemo(() => {
+    const current = String(hudFields?.tagPath || "").trim();
+    if (!current || baseSvgTagGroupValueSet.has(current.toLowerCase())) {
+      return baseSvgTagGroupOptions;
+    }
+    return [...baseSvgTagGroupOptions, { value: current, label: current, group: "Custom" }];
+  }, [baseSvgTagGroupOptions, baseSvgTagGroupValueSet, hudFields?.tagPath]);
 
   const svgBindingOptions = useMemo(() => {
     return Array.isArray(svgTagGroupOptions) ? [...svgTagGroupOptions] : [];

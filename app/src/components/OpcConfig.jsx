@@ -1044,11 +1044,6 @@ export default function OpcConfig({
     return Array.from(keys).slice(0, 800);
   }, [activeTagSection, groupedTagResult, expandedPrefixes]);
 
-  const tagDrawerStatusQueryKeys = useMemo(() => {
-    if (activeTagSection !== "tags") return [];
-    return tagDrawerStatusKeys.length ? tagDrawerStatusKeys : ["__vizi_tag_drawer_idle__"];
-  }, [activeTagSection, tagDrawerStatusKeys]);
-
   useEffect(() => {
     if (typeof onPriorityKeysChange !== "function") return undefined;
     onPriorityKeysChange(activeTagSection === "tags" ? tagDrawerStatusKeys : []);
@@ -1065,11 +1060,24 @@ export default function OpcConfig({
   useEffect(() => {
     if (pauseTemplateEditorPolling) return undefined;
     let alive = true;
+    const shouldPollTagDrawer =
+      activeTagSection !== "tags" || tagDrawerStatusKeys.length > 0;
+    if (!shouldPollTagDrawer) {
+      setLiveValues({});
+      setLiveErrors({});
+      setLiveQualities({});
+      setLiveDiagnostics({});
+      setLiveRuntime({});
+      setOpcConnected(null);
+      setOpcLastPollAt(null);
+      lastLiveErrorsRef.current = {};
+      return undefined;
+    }
     async function poll() {
       try {
         const data =
           activeTagSection === "tags"
-            ? await getOpcStatus({ keys: tagDrawerStatusQueryKeys })
+            ? await getOpcStatus({ keys: tagDrawerStatusKeys })
             : await getOpcStatus();
         if (alive) {
           setLiveValues(data?.values || {});
@@ -1158,7 +1166,7 @@ export default function OpcConfig({
       alive = false;
       clearInterval(id);
     };
-  }, [pauseTemplateEditorPolling, activeTagSection, tagDrawerStatusQueryKeys]);
+  }, [pauseTemplateEditorPolling, activeTagSection, tagDrawerStatusKeys]);
 
   const templateSourceGroups = useMemo(() => {
     const groups = new Map();
