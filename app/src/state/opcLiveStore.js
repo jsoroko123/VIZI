@@ -1,5 +1,6 @@
 const EMPTY_VALUES = Object.freeze({});
 const MIN_EMIT_INTERVAL_MS = 650;
+const FAST_EMIT_MS = 50; // used when a priority (popup) key changes
 
 let snapshot = EMPTY_VALUES;
 const listeners = new Set();
@@ -7,6 +8,18 @@ const keyedListeners = new Set();
 let emitTimer = null;
 let lastEmitAt = 0;
 let pendingChangedKeys = new Set();
+let priorityKeySet = new Set(); // keys that should trigger the fast emit path
+
+export function setPriorityKeys(keys) {
+  priorityKeySet =
+    keys instanceof Set
+      ? keys
+      : new Set(
+          (Array.isArray(keys) ? keys : [])
+            .map((k) => normalizeKeyLower(k))
+            .filter(Boolean)
+        );
+}
 
 function normalizeKey(raw) {
   const key = String(raw || "").replace(/\r?\n/g, "").trim();
@@ -71,9 +84,20 @@ function runEmitNow() {
   }
 }
 
+function hasPriorityKey() {
+  if (!priorityKeySet.size || !pendingChangedKeys.size) return false;
+  for (const k of pendingChangedKeys) {
+    if (priorityKeySet.has(k)) return true;
+  }
+  return false;
+}
+
 function scheduleEmit() {
   const now = Date.now();
-  const waitMs = Math.max(0, MIN_EMIT_INTERVAL_MS - (now - lastEmitAt));
+  // Use fast interval if any of the pending changed keys are in the priority set
+  const hasPriority = hasPriorityKey();
+  const targetInterval = hasPriority ? FAST_EMIT_MS : MIN_EMIT_INTERVAL_MS;
+  const waitMs = Math.max(0, targetInterval - (now - lastEmitAt));
   if (waitMs <= 0) {
     if (emitTimer) {
       clearTimeout(emitTimer);
@@ -81,6 +105,11 @@ function scheduleEmit() {
     }
     runEmitNow();
     return;
+  }
+  // If priority keys arrived and an existing (slower) timer is pending, replace it
+  if (hasPriority && emitTimer) {
+    clearTimeout(emitTimer);
+    emitTimer = null;
   }
   if (emitTimer) return;
   emitTimer = setTimeout(() => {

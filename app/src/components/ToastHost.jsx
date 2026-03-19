@@ -64,7 +64,7 @@ export default function ToastHost() {
       style={{
         position: "fixed",
         right: 20,
-        bottom: 22,
+        bottom: "calc(var(--vizi-toast-bottom-offset, 22px) + env(safe-area-inset-bottom, 0px))",
         zIndex: 9999,
         display: "grid",
         gap: 10,

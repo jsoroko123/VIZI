@@ -1,4 +1,5 @@
 ﻿import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { getOpcStatus } from "../api/opcApi";
 import { showToast, toastError, toastSuccess } from "../utils/toast";
 
 const DIAGNOSTICS_UI_MAX_ROWS = 500;
@@ -136,7 +137,7 @@ function defaultRuntimeConfig() {
     opcConnectionEnabled: true,
     multiReadEnabled: true,
     multiReadBatchSize: 20,
-    maxReadsPerTick: 500,
+    maxReadsPerTick: 1200,
     mqttEnabled: false,
     mqttBrokerUrl: "mqtt://localhost:1883",
     mqttClientId: "",
@@ -146,15 +147,15 @@ function defaultRuntimeConfig() {
     mqttWriteTopic: "mesora/opc/write",
     mqttQos: 0,
     mqttRetain: false,
-    readTimeoutMs: 4000,
-    readRetryCount: 2,
-    readRetryDelayMs: 100,
+    readTimeoutMs: 2500,
+    readRetryCount: 1,
+    readRetryDelayMs: 50,
     plcConnectTimeoutMs: 5000,
     plcReceiveTimeoutMs: 15000,
     errorBackoffEnabled: true,
-    errorBackoffBaseMs: 1000,
-    errorBackoffMaxMs: 15000,
-    errorBackoffThreshold: 3,
+    errorBackoffBaseMs: 500,
+    errorBackoffMaxMs: 5000,
+    errorBackoffThreshold: 5,
     pollJitterMs: 0,
     deadbandDefault: "",
     reconnectDelayMs: 1500,
@@ -162,6 +163,8 @@ function defaultRuntimeConfig() {
     heartbeatEnabled: false,
     heartbeatFailureThreshold: 4,
     heartbeatMs: 5000,
+    uiScopedReadsEnabled: false,
+    uiScopedReadsStaleMs: 30000,
     reportQueryTimeoutMs: 12000,
     reportMaxResultRows: 2000,
   };
@@ -232,6 +235,9 @@ function normalizeRuntimeConfig(value) {
     heartbeatEnabled: incoming.heartbeatEnabled !== false,
     heartbeatFailureThreshold: parseOptionalMs(incoming.heartbeatFailureThreshold) || defaults.heartbeatFailureThreshold,
     heartbeatMs: parseOptionalMs(incoming.heartbeatMs) || defaults.heartbeatMs,
+    uiScopedReadsEnabled: incoming.uiScopedReadsEnabled === true,
+    uiScopedReadsStaleMs:
+      parseOptionalMs(incoming.uiScopedReadsStaleMs) || defaults.uiScopedReadsStaleMs,
     reportQueryTimeoutMs,
     reportMaxResultRows,
   };
@@ -283,7 +289,12 @@ function parseCsv(text) {
     .filter((t) => t.name);
 }
 
-export default function OpcConfig({ embedded = false, mode = "full", onDrawerViewChange = null }) {
+export default function OpcConfig({
+  embedded = false,
+  mode = "full",
+  onDrawerViewChange = null,
+  onPriorityKeysChange = null,
+}) {
   const initialSectionTab =
     String(mode || "").trim().toLowerCase() === "diagnostics" ? "diagnostics" : "opcua";
   const [config, setConfig] = useState({
@@ -356,8 +367,13 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   const [errorLogEntries, setErrorLogEntries] = useState([]);
   const [expandedPrefixes, setExpandedPrefixes] = useState({});
   const [tagSectionTab, setTagSectionTab] = useState("tags");
-  const pauseTemplateEditorPolling =
-    mode === "tags" && String(tagSectionTab || "").trim().toLowerCase() === "templates";
+  const activeTagSection =
+    mode === "logs"
+      ? "logs"
+      : mode === "diagnostics"
+      ? "diagnostics"
+      : String(tagSectionTab || "").trim().toLowerCase();
+  const pauseTemplateEditorPolling = mode === "tags" && activeTagSection === "templates";
   const [tagSearch, setTagSearch] = useState("");
   const deferredTagSearch = useDeferredValue(tagSearch);
   const [tagRenderLimit, setTagRenderLimit] = useState(TAG_TABLE_PAGE_SIZE);
@@ -800,103 +816,6 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   useEffect(() => {
     if (pauseTemplateEditorPolling) return undefined;
     let alive = true;
-    async function poll() {
-      try {
-        const res = await fetch("/api/opc/status");
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || "Failed to load status.");
-        if (alive) {
-          setLiveValues(data.values || {});
-          const nextErrors = data.errors || {};
-          const prevErrors = lastLiveErrorsRef.current || {};
-          setLiveErrors(nextErrors);
-          setLiveQualities(data.qualities || {});
-          setLiveDiagnostics(data.diagnostics || {});
-          setLiveRuntime(data.runtime || {});
-          const now = Date.now();
-          const nextLogEntries = [];
-          Object.entries(nextErrors).forEach(([name, count]) => {
-            const key = String(name || "").trim();
-            if (!key) return;
-            const nextCount = Number.isFinite(Number(count)) ? Number(count) : count;
-            const prevCount = prevErrors[key];
-            if (prevCount === nextCount) return;
-            nextLogEntries.push({
-              id: `${now}-${key}-${nextCount}`,
-              at: now,
-              tag: key,
-              count: nextCount,
-              kind: "error",
-            });
-          });
-          Object.keys(prevErrors).forEach((name) => {
-            if (Object.prototype.hasOwnProperty.call(nextErrors, name)) return;
-            const prevCount = prevErrors[name];
-            nextLogEntries.push({
-              id: `${now}-${name}-cleared`,
-              at: now,
-              tag: String(name || "").trim(),
-              count: prevCount,
-              kind: "cleared",
-            });
-          });
-          const runtimeIssues = Array.isArray(data?.runtime?.issueLog) ? data.runtime.issueLog : [];
-          runtimeIssues.forEach((issue, idx) => {
-            const rawId = String(issue?.id || "").trim();
-            if (!rawId || seenOpcIssueIdsRef.current.has(rawId)) return;
-            const issueAtRaw = Number(issue?.at || now);
-            const issueAt = Number.isFinite(issueAtRaw) ? issueAtRaw : now;
-            const clearCutoff = Number(opcIssueClearCutoffAtRef.current || 0);
-            if (clearCutoff > 0 && issueAt <= clearCutoff) {
-              seenOpcIssueIdsRef.current.add(rawId);
-              return;
-            }
-            seenOpcIssueIdsRef.current.add(rawId);
-            const severity = String(issue?.severity || "error").trim().toLowerCase();
-            const plcName = String(issue?.plcName || "").trim();
-            const tagKey = String(issue?.tagKey || "").trim();
-            const kindText = String(issue?.kind || "opc_issue").trim();
-            const message = String(issue?.message || "").trim();
-            nextLogEntries.push({
-              id: `${rawId}-${idx}`,
-              at: issueAt,
-              tag: tagKey || plcName || kindText || "OPC",
-              count: "",
-              kind: severity === "info" ? "info" : severity === "warn" ? "warn" : "error",
-              message: message || kindText || "OPC issue",
-              source: "runtime",
-            });
-          });
-          if (nextLogEntries.length) {
-            setErrorLogEntries((prev) => {
-              const merged = [...nextLogEntries, ...prev];
-              return merged.slice(0, 500);
-            });
-          }
-          lastLiveErrorsRef.current = nextErrors;
-          setOpcConnected(
-            typeof data.connected === "boolean" ? data.connected : null
-          );
-          setOpcLastPollAt(data.lastPollAt || null);
-        }
-      } catch {
-        if (alive) {
-          setOpcConnected(false);
-          setOpcLastPollAt(null);
-        }
-      }
-    }
-    poll();
-    const id = setInterval(poll, 1000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [pauseTemplateEditorPolling]);
-
-  useEffect(() => {
-    if (pauseTemplateEditorPolling) return undefined;
-    let alive = true;
     async function pollServerDiagnostics() {
       try {
         const res = await fetch("/api/diagnostics/app");
@@ -1074,6 +993,172 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
       hasMore: renderedCount < matchedCount,
     };
   }, [tags, deferredTagSearch, tagRenderLimit]);
+
+  const tagDrawerStatusKeys = useMemo(() => {
+    if (activeTagSection !== "tags") return [];
+    const keys = new Set();
+    const addKey = (raw) => {
+      const value = String(raw || "").trim();
+      if (!value) return;
+      keys.add(value);
+    };
+    const addTagKeys = (tag) => {
+      getTagLiveKeys(tag).forEach(addKey);
+    };
+    (Array.isArray(groupedTagResult?.groups) ? groupedTagResult.groups : []).forEach((group) => {
+      const topicKey = normalizeTagName(group?.topic || "") || "No Topic";
+      const topicExpanded = expandedPrefixes[`topic:${topicKey}`] ?? true;
+      if (!topicExpanded) return;
+      const sortedGroups = [...(group?.groups || [])].sort((a, b) =>
+        String(a?.groupName || "").localeCompare(String(b?.groupName || ""))
+      );
+      const knownGroupNames = new Set(
+        sortedGroups
+          .map((entry) => String(entry?.groupName || "").trim())
+          .filter(Boolean)
+      );
+      const isGroupVisible = (groupNameRaw) => {
+        let parent = getParentGroupName(groupNameRaw);
+        while (parent) {
+          if (knownGroupNames.has(parent)) {
+            const parentExpanded =
+              expandedPrefixes[`topic:${topicKey}::group:${parent}`] ?? false;
+            if (!parentExpanded) return false;
+          }
+          parent = getParentGroupName(parent);
+        }
+        return true;
+      };
+      sortedGroups
+        .filter((entry) => isGroupVisible(entry?.groupName))
+        .forEach((tagGroup) => {
+          const groupName = tagGroup.groupName ?? "Ungrouped";
+          const groupExpanded =
+            expandedPrefixes[`topic:${topicKey}::group:${groupName}`] ?? false;
+          if (!groupExpanded) return;
+          (Array.isArray(tagGroup?.items) ? tagGroup.items : []).forEach((entry) =>
+            addTagKeys(entry?.tag)
+          );
+        });
+    });
+    return Array.from(keys).slice(0, 800);
+  }, [activeTagSection, groupedTagResult, expandedPrefixes]);
+
+  const tagDrawerStatusQueryKeys = useMemo(() => {
+    if (activeTagSection !== "tags") return [];
+    return tagDrawerStatusKeys.length ? tagDrawerStatusKeys : ["__vizi_tag_drawer_idle__"];
+  }, [activeTagSection, tagDrawerStatusKeys]);
+
+  useEffect(() => {
+    if (typeof onPriorityKeysChange !== "function") return undefined;
+    onPriorityKeysChange(activeTagSection === "tags" ? tagDrawerStatusKeys : []);
+    return undefined;
+  }, [onPriorityKeysChange, activeTagSection, tagDrawerStatusKeys]);
+
+  useEffect(
+    () => () => {
+      if (typeof onPriorityKeysChange === "function") onPriorityKeysChange([]);
+    },
+    [onPriorityKeysChange]
+  );
+
+  useEffect(() => {
+    if (pauseTemplateEditorPolling) return undefined;
+    let alive = true;
+    async function poll() {
+      try {
+        const data =
+          activeTagSection === "tags"
+            ? await getOpcStatus({ keys: tagDrawerStatusQueryKeys })
+            : await getOpcStatus();
+        if (alive) {
+          setLiveValues(data?.values || {});
+          const nextErrors = data?.errors || {};
+          const prevErrors = lastLiveErrorsRef.current || {};
+          setLiveErrors(nextErrors);
+          setLiveQualities(data?.qualities || {});
+          setLiveDiagnostics(data?.diagnostics || {});
+          setLiveRuntime(data?.runtime || {});
+          const now = Date.now();
+          const nextLogEntries = [];
+          Object.entries(nextErrors).forEach(([name, count]) => {
+            const key = String(name || "").trim();
+            if (!key) return;
+            const nextCount = Number.isFinite(Number(count)) ? Number(count) : count;
+            const prevCount = prevErrors[key];
+            if (prevCount === nextCount) return;
+            nextLogEntries.push({
+              id: `${now}-${key}-${nextCount}`,
+              at: now,
+              tag: key,
+              count: nextCount,
+              kind: "error",
+            });
+          });
+          Object.keys(prevErrors).forEach((name) => {
+            if (Object.prototype.hasOwnProperty.call(nextErrors, name)) return;
+            const prevCount = prevErrors[name];
+            nextLogEntries.push({
+              id: `${now}-${name}-cleared`,
+              at: now,
+              tag: String(name || "").trim(),
+              count: prevCount,
+              kind: "cleared",
+            });
+          });
+          const runtimeIssues = Array.isArray(data?.runtime?.issueLog) ? data.runtime.issueLog : [];
+          runtimeIssues.forEach((issue, idx) => {
+            const rawId = String(issue?.id || "").trim();
+            if (!rawId || seenOpcIssueIdsRef.current.has(rawId)) return;
+            const issueAtRaw = Number(issue?.at || now);
+            const issueAt = Number.isFinite(issueAtRaw) ? issueAtRaw : now;
+            const clearCutoff = Number(opcIssueClearCutoffAtRef.current || 0);
+            if (clearCutoff > 0 && issueAt <= clearCutoff) {
+              seenOpcIssueIdsRef.current.add(rawId);
+              return;
+            }
+            seenOpcIssueIdsRef.current.add(rawId);
+            const severity = String(issue?.severity || "error").trim().toLowerCase();
+            const plcName = String(issue?.plcName || "").trim();
+            const tagKey = String(issue?.tagKey || "").trim();
+            const kindText = String(issue?.kind || "opc_issue").trim();
+            const message = String(issue?.message || "").trim();
+            nextLogEntries.push({
+              id: `${rawId}-${idx}`,
+              at: issueAt,
+              tag: tagKey || plcName || kindText || "OPC",
+              count: "",
+              kind: severity === "info" ? "info" : severity === "warn" ? "warn" : "error",
+              message: message || kindText || "OPC issue",
+              source: "runtime",
+            });
+          });
+          if (nextLogEntries.length) {
+            setErrorLogEntries((prev) => {
+              const merged = [...nextLogEntries, ...prev];
+              return merged.slice(0, 500);
+            });
+          }
+          lastLiveErrorsRef.current = nextErrors;
+          setOpcConnected(
+            typeof data?.connected === "boolean" ? data.connected : null
+          );
+          setOpcLastPollAt(data?.lastPollAt || null);
+        }
+      } catch {
+        if (alive) {
+          setOpcConnected(false);
+          setOpcLastPollAt(null);
+        }
+      }
+    }
+    poll();
+    const id = setInterval(poll, 1000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [pauseTemplateEditorPolling, activeTagSection, tagDrawerStatusQueryKeys]);
 
   const templateSourceGroups = useMemo(() => {
     const groups = new Map();
@@ -2873,13 +2958,20 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
           <div><strong>Value Count:</strong> {formatNum(opc?.valueCount)}</div>
           <div><strong>Multi-Read:</strong> {runtime?.multiReadEnabled === false ? "Off" : "On"}</div>
           <div><strong>Batch Size:</strong> {formatNum(runtime?.multiReadBatchSize)}</div>
+          <div><strong>Priority Keys:</strong> {formatNum(runtime?.priorityHintKeyCount)}</div>
+          <div><strong>Priority Refresh:</strong> {Number.isFinite(Number(runtime?.priorityRefreshMs)) ? `${Math.round(Number(runtime.priorityRefreshMs))} ms` : "--"}</div>
+          <div><strong>Priority Source:</strong> {String(runtime?.priorityHintsSource || "").trim() || "--"}</div>
           <div><strong>Reads/Tick:</strong> {formatNum(runtime?.maxReadsPerTick)}</div>
           <div><strong>MQTT:</strong> {runtime?.mqttEnabled ? (runtime?.mqttConnected ? "Connected" : "Enabled") : "Off"}</div>
           <div><strong>Read Timeout:</strong> {Number.isFinite(Number(runtime?.readTimeoutMs)) ? `${Math.round(Number(runtime.readTimeoutMs))} ms` : "--"}</div>
           <div><strong>Retry:</strong> {formatNum(runtime?.readRetryCount)} @ {Number.isFinite(Number(runtime?.readRetryDelayMs)) ? `${Math.round(Number(runtime.readRetryDelayMs))}ms` : "--"}</div>
           <div><strong>Connect Timeout:</strong> {Number.isFinite(Number(runtime?.plcConnectTimeoutMs)) ? `${Math.round(Number(runtime.plcConnectTimeoutMs))} ms` : "--"}</div>
+          <div><strong>Connect Recv:</strong> {Number.isFinite(Number(runtime?.plcConnectReceiveTimeoutMs)) ? `${Math.round(Number(runtime.plcConnectReceiveTimeoutMs))} ms` : "--"}</div>
           <div><strong>Receive Timeout:</strong> {Number.isFinite(Number(runtime?.plcReceiveTimeoutMs)) ? `${Math.round(Number(runtime.plcReceiveTimeoutMs))} ms` : "--"}</div>
           <div><strong>Reconnect Delay:</strong> {Number.isFinite(Number(runtime?.reconnectDelayMs)) ? `${Math.round(Number(runtime.reconnectDelayMs))} ms` : "--"}</div>
+          <div><strong>Conn Guard:</strong> {runtime?.connectionGuardEnabled === false ? "Off" : (runtime?.connectionGuardModeActive ? "Active" : "Idle")}</div>
+          <div><strong>Guard Threshold:</strong> {formatNum(runtime?.connectionGuardFailureStreak)} in {Number.isFinite(Number(runtime?.connectionGuardWindowMs)) ? `${Math.round(Number(runtime.connectionGuardWindowMs) / 1000)}s` : "--"}</div>
+          <div><strong>Guard Cooldown:</strong> {Number.isFinite(Number(runtime?.connectionGuardCooldownMs)) ? `${Math.round(Number(runtime.connectionGuardCooldownMs) / 1000)}s` : "--"}</div>
           <div><strong>Heartbeat:</strong> {runtime?.heartbeatEnabled === false ? "Off" : (Number.isFinite(Number(runtime?.heartbeatMs)) ? `${Math.round(Number(runtime.heartbeatMs))} ms` : "--")}</div>
           <div><strong>Issue Count:</strong> {formatNum(runtime?.issueCount)}</div>
           <div><strong>MQTT Error:</strong> {String(runtime?.mqttLastError || "").trim() || "--"}</div>
@@ -3215,8 +3307,7 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
   });
 
   function renderTagsPanel() {
-    const activeTagTab =
-      mode === "logs" ? "logs" : mode === "diagnostics" ? "diagnostics" : tagSectionTab;
+    const activeTagTab = activeTagSection;
     const isConfigMode = mode !== "logs" && mode !== "diagnostics";
     const drawerButtonStyle = {
       display: "inline-flex",
@@ -7115,15 +7206,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                       ...normalizeRuntimeConfig(p.runtime),
                       multiReadEnabled: true,
                       multiReadBatchSize: 20,
-                      maxReadsPerTick: 500,
-                      readTimeoutMs: 4000,
-                      readRetryCount: 2,
-                      readRetryDelayMs: 100,
+                      maxReadsPerTick: 1200,
+                      readConcurrency: 8,
+                      readTimeoutMs: 2500,
+                      readRetryCount: 1,
+                      readRetryDelayMs: 50,
+                      errorBackoffBaseMs: 500,
+                      errorBackoffMaxMs: 5000,
+                      errorBackoffThreshold: 5,
                       plcConnectTimeoutMs: 5000,
                       plcReceiveTimeoutMs: 15000,
                       reconnectDelayMs: 1500,
-                      heartbeatEnabled: false,
+                      heartbeatEnabled: true,
+                      heartbeatReconnectOnFailure: true,
                       heartbeatMs: 5000,
+                      readReconnectErrorThreshold: 5,
                     },
                   }))
                 }
@@ -7141,15 +7238,21 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     runtime: {
                       ...normalizeRuntimeConfig(p.runtime),
                       multiReadEnabled: true,
-                      multiReadBatchSize: 20,
-                      maxReadsPerTick: 600,
-                      readTimeoutMs: 3500,
+                      multiReadBatchSize: 25,
+                      maxReadsPerTick: 2000,
+                      readConcurrency: 12,
+                      readTimeoutMs: 2000,
                       readRetryCount: 1,
-                      readRetryDelayMs: 60,
+                      readRetryDelayMs: 30,
+                      errorBackoffBaseMs: 300,
+                      errorBackoffMaxMs: 3000,
+                      errorBackoffThreshold: 5,
                       plcConnectTimeoutMs: 5000,
                       plcReceiveTimeoutMs: 15000,
                       reconnectDelayMs: 1500,
-                      heartbeatEnabled: false,
+                      heartbeatEnabled: true,
+                      heartbeatReconnectOnFailure: true,
+                      readReconnectErrorThreshold: 5,
                     },
                   }))
                 }
@@ -7167,23 +7270,64 @@ export default function OpcConfig({ embedded = false, mode = "full", onDrawerVie
                     runtime: {
                       ...normalizeRuntimeConfig(p.runtime),
                       multiReadEnabled: true,
-                      multiReadBatchSize: 12,
-                      maxReadsPerTick: 250,
-                      readTimeoutMs: 5000,
-                      readRetryCount: 2,
-                      readRetryDelayMs: 150,
+                      multiReadBatchSize: 15,
+                      maxReadsPerTick: 800,
+                      readConcurrency: 4,
+                      readTimeoutMs: 3000,
+                      readRetryCount: 1,
+                      readRetryDelayMs: 100,
+                      errorBackoffBaseMs: 1000,
+                      errorBackoffMaxMs: 8000,
+                      errorBackoffThreshold: 5,
                       plcConnectTimeoutMs: 7000,
                       plcReceiveTimeoutMs: 20000,
                       reconnectDelayMs: 2000,
-                      heartbeatEnabled: false,
+                      heartbeatEnabled: true,
+                      heartbeatReconnectOnFailure: true,
                       heartbeatMs: 5000,
+                      readReconnectErrorThreshold: 8,
                     },
                   }))
                 }
                 style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px", fontWeight: 600, fontSize: 12 }}
-                title="Lower PLC/network load."
+                title="Lower PLC/network load, more tolerant of slow links."
               >
                 Low Load
+              </button>
+              <button
+                type="button"
+                disabled={!opcUaEditing}
+                onClick={() =>
+                  setConfig((p) => ({
+                    ...p,
+                    runtime: {
+                      ...normalizeRuntimeConfig(p.runtime),
+                      multiReadEnabled: true,
+                      multiReadBatchSize: 15,
+                      maxReadsPerTick: 1200,
+                      readConcurrency: 3,
+                      pollJitterMs: 150,
+                      readTimeoutMs: 4000,
+                      readRetryCount: 1,
+                      readRetryDelayMs: 200,
+                      errorBackoffBaseMs: 500,
+                      errorBackoffMaxMs: 5000,
+                      errorBackoffThreshold: 5,
+                      plcConnectTimeoutMs: 8000,
+                      plcReceiveTimeoutMs: 20000,
+                      reconnectDelayMs: 3000,
+                      heartbeatEnabled: true,
+                      heartbeatReconnectOnFailure: true,
+                      heartbeatMs: 10000,
+                      heartbeatFailureThreshold: 3,
+                      readReconnectErrorThreshold: 10,
+                    },
+                  }))
+                }
+                style={{ border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px", fontWeight: 600, fontSize: 12 }}
+                title="Optimized for VPN / high-latency remote connections (50–200ms RTT)."
+              >
+                VPN / Remote
               </button>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>

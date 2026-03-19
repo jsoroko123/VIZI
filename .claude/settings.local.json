@@ -11,7 +11,13 @@
       "Bash(curl -s http://127.0.0.1:4851/health)",
       "Bash(curl -s http://127.0.0.1:4851/tags)",
       "Bash(curl -s http://127.0.0.1:4851/internal/status)",
-      "Bash(PGPASSWORD=vizi123 psql -U postgres -h localhost -d vizi_db -c \"SELECT id, updated_at, jsonb_array_length\\(COALESCE\\(\\(status->''values''\\)::jsonb, ''[]''::jsonb\\)\\) as value_count, \\(status->>''connected''\\)::text as connected FROM opc_status LIMIT 5;\")"
+      "Bash(PGPASSWORD=vizi123 psql -U postgres -h localhost -d vizi_db -c \"SELECT id, updated_at, jsonb_array_length\\(COALESCE\\(\\(status->''values''\\)::jsonb, ''[]''::jsonb\\)\\) as value_count, \\(status->>''connected''\\)::text as connected FROM opc_status LIMIT 5;\")",
+      "Bash(find /c/Projects/Vizi/app/src/state -type f -name *.js -o -name *.jsx)",
+      "Bash(npx tsc:*)",
+      "Bash(node --input-type=module --eval \":*)",
+      "Bash(\"c:/Projects/Vizi/app/opc-server/.watchdog.lock\")",
+      "Bash(ping -n 20 10.0.0.39)",
+      "Bash(npx vite:*)"
     ]
   }
 }

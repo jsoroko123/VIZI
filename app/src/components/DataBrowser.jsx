@@ -244,51 +244,61 @@ export default function DataBrowser({
     else setAlarmViewTab("all");
   }, [isAlarmTable, currentTable]);
 
-  const pageStyle = embedded
-    ? {
-        position: "relative",
-        width: "100%",
-        height: "100%",
-        background: useWhiteBackground
-          ? "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)"
-          : "var(--bg-elev)",
-        color: "var(--text)",
-        overflow: "hidden",
-      }
-    : {
-        position: "fixed",
-        inset: 0,
-        background: useWhiteBackground
-          ? "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)"
-          : "var(--bg-elev)",
-        color: "var(--text)",
-        overflow: "hidden",
-      };
-  const shellStyle = {
-    width: "100%",
-    height: "100%",
-    margin: 0,
-    padding: embedded ? "10px" : "0 0 30px",
-    boxSizing: "border-box",
-    display: "flex",
-    flexDirection: "column",
-  };
-  const cardStyle = {
-    background: embedded
-      ? "var(--bg-elev)"
-      : useWhiteBackground
-      ? "rgba(255,255,255,0.92)"
-      : "transparent",
-    border: embedded ? "1px solid var(--border)" : useWhiteBackground ? "1px solid #d2def6" : "none",
-    borderRadius: embedded ? 12 : 16,
-    padding: embedded ? 12 : 14,
-    boxShadow: embedded
-      ? "none"
-      : useWhiteBackground
-      ? "0 8px 24px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.85)"
-      : "0 20px 40px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.7)",
-    backdropFilter: embedded ? "none" : "blur(6px)",
-  };
+  const pageStyle = useMemo(
+    () =>
+      embedded
+        ? {
+            position: "relative",
+            width: "100%",
+            height: "100%",
+            background: useWhiteBackground
+              ? "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)"
+              : "var(--bg-elev)",
+            color: "var(--text)",
+            overflow: "hidden",
+          }
+        : {
+            position: "fixed",
+            inset: 0,
+            background: useWhiteBackground
+              ? "linear-gradient(180deg, #f8fbff 0%, #ffffff 100%)"
+              : "var(--bg-elev)",
+            color: "var(--text)",
+            overflow: "hidden",
+          },
+    [embedded, useWhiteBackground]
+  );
+  const shellStyle = useMemo(
+    () => ({
+      width: "100%",
+      height: "100%",
+      margin: 0,
+      padding: embedded ? "10px" : "0 0 30px",
+      boxSizing: "border-box",
+      display: "flex",
+      flexDirection: "column",
+    }),
+    [embedded]
+  );
+  const cardStyle = useMemo(
+    () => ({
+      background: embedded
+        ? "var(--bg-elev)"
+        : useWhiteBackground
+        ? "rgba(255,255,255,0.92)"
+        : "transparent",
+      border: embedded ? "1px solid var(--border)" : useWhiteBackground ? "1px solid #d2def6" : "none",
+      borderRadius: embedded ? 12 : 16,
+      padding: embedded ? 12 : 14,
+      boxShadow: embedded
+        ? "none"
+        : useWhiteBackground
+        ? "0 8px 24px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.85)"
+        : "0 20px 40px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255,255,255,0.7)",
+      backdropFilter: embedded ? "none" : "blur(6px)",
+    }),
+    [embedded, useWhiteBackground]
+  );
   const headerStyle = {
     display: "flex",
     alignItems: "center",

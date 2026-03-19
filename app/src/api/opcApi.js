@@ -93,6 +93,29 @@ export function subscribeOpcStatusStream(options = {}) {
   };
 }
 
+export function setOpcPriorityKeys(options = {}) {
+  const keys = Array.isArray(options?.keys)
+    ? Array.from(
+        new Set(
+          options.keys
+            .map((k) => String(k || "").trim())
+            .filter(Boolean)
+        )
+      )
+    : [];
+  const payload = {
+    keys,
+    screenId: String(options?.screenId || "").trim(),
+    mode: String(options?.mode || "").trim(),
+  };
+  return requestJson("/api/opc/priorities", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    fallbackError: "Failed to update OPC priority keys.",
+  });
+}
+
 export function writeOpcValue(payloadOrTagPath, maybeValue) {
   const payload =
     payloadOrTagPath && typeof payloadOrTagPath === "object"

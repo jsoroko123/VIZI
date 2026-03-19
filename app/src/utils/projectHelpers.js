@@ -39,18 +39,36 @@ export function normalizeProjectMode(value) {
   return String(value || "").trim().toLowerCase() === "live" ? "live" : "design";
 }
 
-export function readStoredProjectMode(projectId = "") {
-  if (typeof window === "undefined") return "design";
+export function getStoredProjectModeState(projectId = "") {
+  if (typeof window === "undefined") {
+    return { mode: "design", hasProjectValue: false, hasLastValue: false };
+  }
   const key = `vizi_project_mode:${String(projectId || "default")}`;
   try {
     const byProject = localStorage.getItem(key);
-    if (byProject != null) return normalizeProjectMode(byProject);
     const last = localStorage.getItem("vizi_project_mode:last");
-    if (last != null) return normalizeProjectMode(last);
+    if (byProject != null) {
+      return {
+        mode: normalizeProjectMode(byProject),
+        hasProjectValue: true,
+        hasLastValue: last != null,
+      };
+    }
+    if (last != null) {
+      return {
+        mode: normalizeProjectMode(last),
+        hasProjectValue: false,
+        hasLastValue: true,
+      };
+    }
   } catch {
     // ignore storage read errors
   }
-  return "design";
+  return { mode: "design", hasProjectValue: false, hasLastValue: false };
+}
+
+export function readStoredProjectMode(projectId = "") {
+  return getStoredProjectModeState(projectId).mode;
 }
 
 export function readStoredActiveProjectId() {

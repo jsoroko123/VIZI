@@ -150,15 +150,19 @@ function SelectRow({
     return filtered;
   }, [query, safeOptions, searchable, value]);
 
-  const hasGroups = filteredOptions?.some((opt) => opt.group);
-  const grouped = hasGroups
-    ? filteredOptions.reduce((acc, opt) => {
-        const key = opt.group || "Other";
-        if (!acc.has(key)) acc.set(key, []);
-        acc.get(key).push(opt);
-        return acc;
-      }, new Map())
-    : null;
+  const hasGroups = useMemo(() => filteredOptions?.some((opt) => opt.group), [filteredOptions]);
+  const grouped = useMemo(
+    () =>
+      hasGroups
+        ? filteredOptions.reduce((acc, opt) => {
+            const key = opt.group || "Other";
+            if (!acc.has(key)) acc.set(key, []);
+            acc.get(key).push(opt);
+            return acc;
+          }, new Map())
+        : null,
+    [hasGroups, filteredOptions]
+  );
 
   return (
     <>

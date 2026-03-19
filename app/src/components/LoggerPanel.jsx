@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toastError, toastSuccess } from "../utils/toast";
 
 const LEVELS = ["all", "error", "warn", "info", "debug"];
@@ -132,16 +132,21 @@ export default function LoggerPanel({ embedded = false, canEdit = false }) {
     [filterLevel, filterCategory, filterDataType, filterSource, filterText, filterFrom, filterTo]
   );
 
+  const loadLogsRef = useRef(loadLogs);
+  useEffect(() => {
+    loadLogsRef.current = loadLogs;
+  }, [loadLogs]);
+
   useEffect(() => {
     loadLogs(false);
   }, [loadLogs]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      loadLogs(true);
+      loadLogsRef.current(true);
     }, 2000);
     return () => window.clearInterval(timer);
-  }, [loadLogs]);
+  }, []);
 
   const hasRows = rows.length > 0;
   const list = useMemo(() => rows, [rows]);

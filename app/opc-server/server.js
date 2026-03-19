@@ -48,46 +48,60 @@ function parseEnumList(raw, enumObj, fallback = []) {
 async function loadConfig() {
   const localConfigPath = path.resolve(process.cwd(), "config.json");
   const localConfigExamplePath = path.resolve(process.cwd(), "config.example.json");
-  try {
-    const headers = OPC_SERVER_KEY ? { "x-opc-key": OPC_SERVER_KEY } : undefined;
-    const res = await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/config`, { headers });
-    if (res.ok) {
-      return await res.json();
-    }
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error || `Failed to load config (status ${res.status}).`);
-  } catch (err) {
-    const fetchError = err?.message || "Failed to load config from database.";
-    const fallbackPath = fs.existsSync(localConfigPath)
-      ? localConfigPath
-      : fs.existsSync(localConfigExamplePath)
-      ? localConfigExamplePath
-      : null;
-    if (!fallbackPath) {
-      // eslint-disable-next-line no-console
-      console.error(
-        `${fetchError}. Also no local OPC config found at ${localConfigPath} or ${localConfigExamplePath}.`
-      );
-      process.exit(1);
-    }
+  const fallbackPath = fs.existsSync(localConfigPath)
+    ? localConfigPath
+    : fs.existsSync(localConfigExamplePath)
+    ? localConfigExamplePath
+    : null;
+  let parsedFallbackConfig = null;
+  if (fallbackPath) {
     try {
-      const raw = fs.readFileSync(fallbackPath, "utf8");
-      const parsed = JSON.parse(raw);
-      // eslint-disable-next-line no-console
-      console.warn(
-        `Using local OPC config from ${fallbackPath} because AI config endpoint (${AI_SERVER_URL}) is unavailable: ${fetchError}`
-      );
-      return parsed;
-    } catch (localErr) {
+      parsedFallbackConfig = JSON.parse(fs.readFileSync(fallbackPath, "utf8"));
+    } catch (err) {
       // eslint-disable-next-line no-console
       console.error(
-        `${fetchError}. Failed to parse local OPC config at ${fallbackPath}: ${
-          localErr?.message || "unknown error"
-        }`
+        `Failed to parse local OPC config at ${fallbackPath}: ${err?.message || "unknown error"}`
       );
-      process.exit(1);
     }
   }
+  const maxAttempts = Math.max(
+    1,
+    Number.parseInt(String(process.env.OPC_CONFIG_FETCH_MAX_ATTEMPTS || "30"), 10) || 30
+  );
+  const retryBaseMs = Math.max(
+    250,
+    Number.parseInt(String(process.env.OPC_CONFIG_FETCH_RETRY_MS || "2000"), 10) || 2000
+  );
+  const headers = OPC_SERVER_KEY ? { "x-opc-key": OPC_SERVER_KEY } : undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const res = await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/config`, { headers });
+      if (res.ok) {
+        return await res.json();
+      }
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data?.error || `Failed to load config (status ${res.status}).`);
+    } catch (err) {
+      const message = `Failed to load OPC config from database (${AI_SERVER_URL}): ${err?.message || err}`;
+      if (parsedFallbackConfig) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `Using local OPC config from ${fallbackPath} because AI config endpoint is unavailable: ${err?.message || err}`
+        );
+        return parsedFallbackConfig;
+      }
+      if (attempt >= maxAttempts) {
+        // eslint-disable-next-line no-console
+        console.error(`${message}. Giving up after ${attempt} attempts.`);
+        process.exit(1);
+      }
+      const delayMs = Math.min(15000, retryBaseMs * Math.min(8, attempt));
+      // eslint-disable-next-line no-console
+      console.warn(`${message}. Retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s.`);
+      await sleep(delayMs);
+    }
+  }
+  process.exit(1);
 }
 
 function plcTypeToUa(plcType) {
@@ -174,31 +188,93 @@ async function main() {
   const config = await loadConfig();
   const runtime = config?.runtime || {};
   let opcConnectionEnabled = runtime?.opcConnectionEnabled !== false;
-  // Force conservative single-read mode for stability with PLCs that drop CIP sessions under multi-read load.
-  const multiReadEnabled = false;
+  // Multi-read bundles N tags into a single CIP request â€” dramatically faster for large tag counts.
+  // Default OFF â€” some PLCs drop CIP sessions under multi-read load. Enable via runtime.multiReadEnabled=true.
+  const multiReadConfigured = runtime?.multiReadEnabled === true;
+  let multiReadEnabled = multiReadConfigured;
   const multiReadBatchSizeRaw = Number.parseInt(String(runtime?.multiReadBatchSize ?? "20"), 10);
-  const multiReadBatchSize = Number.isFinite(multiReadBatchSizeRaw)
-    ? Math.max(1, Math.min(25, multiReadBatchSizeRaw))
+  let multiReadBatchSize = Number.isFinite(multiReadBatchSizeRaw)
+    ? Math.max(1, Math.min(50, multiReadBatchSizeRaw))
     : 20;
+  const multiReadFallbackStreakRaw = Number.parseInt(
+    String(runtime?.multiReadFallbackStreak ?? "3"),
+    10
+  );
+  let multiReadFallbackStreak = Number.isFinite(multiReadFallbackStreakRaw)
+    ? Math.max(1, Math.min(20, multiReadFallbackStreakRaw))
+    : 3;
+  const multiReadFallbackCooldownMs = parsePositiveMs(runtime?.multiReadFallbackCooldownMs, 120000);
+  const multiReadFailureWindowMs = parsePositiveMs(runtime?.multiReadFailureWindowMs, 60000);
+  let multiReadFailureStreak = 0;
+  let multiReadLastFailureAt = 0;
+  let multiReadDisabledUntilMs = 0;
   const maxReadsPerTickRaw = Number.parseInt(String(runtime?.maxReadsPerTick ?? "250"), 10);
-  const maxReadsPerTick = Number.isFinite(maxReadsPerTickRaw)
+  let maxReadsPerTick = Number.isFinite(maxReadsPerTickRaw)
     ? Math.max(10, Math.min(5000, maxReadsPerTickRaw))
     : 250;
-  const readTimeoutMs = clampMinMs(runtime?.readTimeoutMs, 3000, 4000);
-  const readRetryCountRaw = Number.parseInt(String(runtime?.readRetryCount ?? "2"), 10);
-  const readRetryCount = Number.isFinite(readRetryCountRaw)
+  // Number of individual reads to run in parallel within a single tick.
+  // These are concurrent single-tag reads (not multi-read), so they're safe for PLCs that drop under batch load.
+  // Default 6 â€” gives ~6x speedup on initial scan vs sequential. Raise to 8-12 if PLC handles it.
+  const readConcurrencyRaw = Number.parseInt(String(runtime?.readConcurrency ?? "8"), 10);
+  let readConcurrency = Number.isFinite(readConcurrencyRaw)
+    ? Math.max(1, Math.min(32, readConcurrencyRaw))
+    : 8;
+  // Number of parallel TCP/CIP connections per PLC. Each connection owns an independent tag subset
+  // and runs its own poll loop â€” the Ignition/FactoryTalk model for large tag counts (500+ tags).
+  // Default 1 (no pooling). Set to 2â€“4 to multiply throughput without stressing one CIP session.
+  const plcConnectionPoolSizeRaw = Number.parseInt(String(runtime?.plcConnectionPool ?? "1"), 10);
+  const plcConnectionPoolSize = Number.isFinite(plcConnectionPoolSizeRaw)
+    ? Math.max(1, Math.min(8, plcConnectionPoolSizeRaw))
+    : 1;
+  // ControlLogix on LAN typically responds in <50ms; 2500ms gives headroom without 4s waits on drops.
+  const readTimeoutMs = clampMinMs(runtime?.readTimeoutMs, 1500, 2500);
+  // 1 retry (2 total attempts) â€” enough for a transient blip; more just adds delay on genuine drops.
+  const readRetryCountRaw = Number.parseInt(String(runtime?.readRetryCount ?? "1"), 10);
+  let readRetryCount = Number.isFinite(readRetryCountRaw)
     ? Math.max(0, Math.min(5, readRetryCountRaw))
+    : 1;
+  const multiReadRetryCountRaw = Number.parseInt(String(runtime?.multiReadRetryCount ?? "0"), 10);
+  let multiReadRetryCount = Number.isFinite(multiReadRetryCountRaw)
+    ? Math.max(0, Math.min(5, multiReadRetryCountRaw))
+    : 0;
+  const multiReadConcurrencyRaw = Number.parseInt(
+    String(runtime?.multiReadConcurrency ?? String(Math.min(readConcurrency, 4))),
+    10
+  );
+  let multiReadConcurrency = Number.isFinite(multiReadConcurrencyRaw)
+    ? Math.max(1, Math.min(16, multiReadConcurrencyRaw))
+    : Math.min(readConcurrency, 4);
+  const initialScanBurstLimitRaw = Number.parseInt(String(runtime?.initialScanBurstLimit ?? "220"), 10);
+  let initialScanBurstLimit = Number.isFinite(initialScanBurstLimitRaw)
+    ? Math.max(20, Math.min(5000, initialScanBurstLimitRaw))
+    : 220;
+  const transportBadStreakThresholdRaw = Number.parseInt(
+    String(runtime?.transportBadStreakThreshold ?? "2"),
+    10
+  );
+  const transportBadStreakThreshold = Number.isFinite(transportBadStreakThresholdRaw)
+    ? Math.max(1, Math.min(10, transportBadStreakThresholdRaw))
     : 2;
-  const readRetryDelayMsRaw = Number.parseInt(String(runtime?.readRetryDelayMs ?? "100"), 10);
+  const adaptiveThroughputTuning = runtime?.adaptiveThroughputTuning !== false;
+  // Short delay before retry â€” network is either up or down; long delays don't help.
+  const readRetryDelayMsRaw = Number.parseInt(String(runtime?.readRetryDelayMs ?? "50"), 10);
   const readRetryDelayMs = Number.isFinite(readRetryDelayMsRaw)
     ? Math.max(0, Math.min(5000, readRetryDelayMsRaw))
-    : 100;
+    : 50;
   const plcConnectTimeoutMs = clampMinMs(runtime?.plcConnectTimeoutMs, 5000, Math.max(5000, readTimeoutMs * 2));
-  const plcReceiveTimeoutMs = clampMinMs(runtime?.plcReceiveTimeoutMs, 15000, Math.max(15000, readTimeoutMs * 4));
+  const plcReceiveTimeoutMs = clampMinMs(runtime?.plcReceiveTimeoutMs, 15000, Math.max(30000, readTimeoutMs * 6));
+  // Use a bounded timeout for connect handshakes so reconnect loops fail fast when PLC is offline.
+  const plcConnectReceiveTimeoutMs = clampMinMs(
+    runtime?.plcConnectReceiveTimeoutMs,
+    5000,
+    Math.max(10000, Math.min(plcReceiveTimeoutMs, 45000))
+  );
   const errorBackoffEnabled = runtime?.errorBackoffEnabled !== false;
-  const errorBackoffBaseMs = parsePositiveMs(runtime?.errorBackoffBaseMs, 1000);
-  const errorBackoffMaxMs = parsePositiveMs(runtime?.errorBackoffMaxMs, 15000);
-  const errorBackoffThreshold = Math.max(1, Math.round(parsePositiveNumber(runtime?.errorBackoffThreshold, 3)));
+  const errorBackoffBaseMs = parsePositiveMs(runtime?.errorBackoffBaseMs, 500);
+  // Cap at 5s so a bad tag retries every 5s max rather than freezing for 15s.
+  const errorBackoffMaxMs = parsePositiveMs(runtime?.errorBackoffMaxMs, 5000);
+  // Start backoff after 5 consecutive errors â€” give tags more attempts before slowing them down.
+  const errorBackoffThreshold = Math.max(1, Math.round(parsePositiveNumber(runtime?.errorBackoffThreshold, 5)));
   const pollJitterMs = Math.max(0, Math.round(parseNonNegativeNumber(runtime?.pollJitterMs, 0) || 0));
   const deadbandDefault = parseNonNegativeNumber(runtime?.deadbandDefault, null);
   const reconnectDelayMs = clampMinMs(runtime?.reconnectDelayMs, 1500, 1500);
@@ -212,22 +288,91 @@ async function main() {
     ? Math.max(2, Math.min(100, timeoutAutoRestartStreakRaw))
     : 8;
   const timeoutAutoRestartWindowMs = parsePositiveMs(runtime?.timeoutAutoRestartWindowMs, 180000);
-  // Heartbeat reads are currently too disruptive on some PLC/session combinations.
-  // Keep them fully disabled in the bridge and rely on the normal poll loop instead.
-  const heartbeatEnabled = false;
+  // Heartbeat: detect stale sessions when the poll loop hasn't run recently.
+  // The poll loop skips heartbeat when reads are flowing, so this only fires on true idle/drop.
+  const heartbeatEnabled = runtime?.heartbeatEnabled !== false;
   const heartbeatMs = clampMinMs(runtime?.heartbeatMs, 5000, 5000);
-  const heartbeatReconnectOnFailure = false;
+  const heartbeatReconnectOnFailure = runtime?.heartbeatReconnectOnFailure !== false;
   const heartbeatFailureThresholdRaw = Number.parseInt(String(runtime?.heartbeatFailureThreshold ?? "3"), 10);
   const heartbeatFailureThreshold = Number.isFinite(heartbeatFailureThresholdRaw)
     ? Math.max(1, Math.min(10, heartbeatFailureThresholdRaw))
     : 3;
   const readReconnectErrorThresholdRaw = Number.parseInt(
-    String(runtime?.readReconnectErrorThreshold ?? "3"),
+    String(runtime?.readReconnectErrorThreshold ?? "5"),
     10
   );
+  // Min 3 so a single bad poll tick doesn't immediately trigger a reconnect.
   const readReconnectErrorThreshold = Number.isFinite(readReconnectErrorThresholdRaw)
-    ? Math.max(8, Math.min(20, readReconnectErrorThresholdRaw))
-    : 8;
+    ? Math.max(3, Math.min(50, readReconnectErrorThresholdRaw))
+    : 5;
+  const connectionGuardImmediateOnDisconnect = runtime?.connectionGuardImmediateOnDisconnect !== false;
+  const reconnectWarmupMs = parsePositiveMs(runtime?.reconnectWarmupMs, 20000);
+  const reconnectWarmupReadsPerTickRaw = Number.parseInt(
+    String(runtime?.reconnectWarmupReadsPerTick ?? "80"),
+    10
+  );
+  const reconnectWarmupReadsPerTick = Number.isFinite(reconnectWarmupReadsPerTickRaw)
+    ? Math.max(10, Math.min(5000, reconnectWarmupReadsPerTickRaw))
+    : 80;
+  const reconnectWarmupReadConcurrencyRaw = Number.parseInt(
+    String(runtime?.reconnectWarmupReadConcurrency ?? "1"),
+    10
+  );
+  const reconnectWarmupReadConcurrency = Number.isFinite(reconnectWarmupReadConcurrencyRaw)
+    ? Math.max(1, Math.min(32, reconnectWarmupReadConcurrencyRaw))
+    : 1;
+  const reconnectWarmupMultiReadBatchSizeRaw = Number.parseInt(
+    String(runtime?.reconnectWarmupMultiReadBatchSize ?? "6"),
+    10
+  );
+  const reconnectWarmupMultiReadBatchSize = Number.isFinite(reconnectWarmupMultiReadBatchSizeRaw)
+    ? Math.max(1, Math.min(50, reconnectWarmupMultiReadBatchSizeRaw))
+    : 6;
+  const reconnectWarmupDisableMultiRead = runtime?.reconnectWarmupDisableMultiRead !== false;
+  const connectionGuardEnabled = runtime?.connectionGuardEnabled !== false;
+  const connectionGuardFailureStreakRaw = Number.parseInt(
+    String(runtime?.connectionGuardFailureStreak ?? "3"),
+    10
+  );
+  const connectionGuardFailureStreak = Number.isFinite(connectionGuardFailureStreakRaw)
+    ? Math.max(2, Math.min(50, connectionGuardFailureStreakRaw))
+    : 3;
+  const connectionGuardWindowMs = parsePositiveMs(runtime?.connectionGuardWindowMs, 120000);
+  const connectionGuardCooldownMs = parsePositiveMs(runtime?.connectionGuardCooldownMs, 180000);
+  const connectionGuardRecoverAfterMs = parsePositiveMs(runtime?.connectionGuardRecoverAfterMs, 90000);
+  const connectionGuardMaxReadsPerTickRaw = Number.parseInt(
+    String(runtime?.connectionGuardMaxReadsPerTick ?? "120"),
+    10
+  );
+  const connectionGuardMaxReadsPerTick = Number.isFinite(connectionGuardMaxReadsPerTickRaw)
+    ? Math.max(10, Math.min(5000, connectionGuardMaxReadsPerTickRaw))
+    : 120;
+  const connectionGuardReadConcurrencyRaw = Number.parseInt(
+    String(runtime?.connectionGuardReadConcurrency ?? "2"),
+    10
+  );
+  const connectionGuardReadConcurrency = Number.isFinite(connectionGuardReadConcurrencyRaw)
+    ? Math.max(1, Math.min(32, connectionGuardReadConcurrencyRaw))
+    : 2;
+  const connectionGuardMultiReadBatchSizeRaw = Number.parseInt(
+    String(runtime?.connectionGuardMultiReadBatchSize ?? "6"),
+    10
+  );
+  const connectionGuardMultiReadBatchSize = Number.isFinite(connectionGuardMultiReadBatchSizeRaw)
+    ? Math.max(1, Math.min(50, connectionGuardMultiReadBatchSizeRaw))
+    : 6;
+  const connectionGuardInitialScanBurstLimitRaw = Number.parseInt(
+    String(runtime?.connectionGuardInitialScanBurstLimit ?? "60"),
+    10
+  );
+  const connectionGuardInitialScanBurstLimit = Number.isFinite(connectionGuardInitialScanBurstLimitRaw)
+    ? Math.max(20, Math.min(5000, connectionGuardInitialScanBurstLimitRaw))
+    : 60;
+  const connectionGuardReceiveTimeoutMs = clampMinMs(
+    runtime?.connectionGuardReceiveTimeoutMs,
+    15000,
+    Math.max(plcReceiveTimeoutMs, 20000)
+  );
   const mqttEnabled = runtime?.mqttEnabled === true;
   const mqttBrokerUrl = String(runtime?.mqttBrokerUrl || "mqtt://localhost:1883").trim();
   const mqttClientId = String(runtime?.mqttClientId || "").trim();
@@ -238,7 +383,34 @@ async function main() {
   const mqttQosRaw = Number.parseInt(String(runtime?.mqttQos ?? "0"), 10);
   const mqttQos = Number.isFinite(mqttQosRaw) ? Math.max(0, Math.min(2, mqttQosRaw)) : 0;
   const mqttRetain = runtime?.mqttRetain === true;
-  const globalPollMs = clampMinMs(config?.pollMs, 500, 500);
+  const priorityRefreshMsRaw = Number.parseInt(String(runtime?.priorityRefreshMs ?? "500"), 10);
+  const priorityRefreshMs = Number.isFinite(priorityRefreshMsRaw)
+    ? Math.max(100, Math.min(30000, priorityRefreshMsRaw))
+    : 500;
+  const priorityKeyCapRaw = Number.parseInt(String(runtime?.priorityKeyCap ?? "1200"), 10);
+  const priorityKeyCap = Number.isFinite(priorityKeyCapRaw)
+    ? Math.max(100, Math.min(5000, priorityKeyCapRaw))
+    : 1200;
+  // VPN mode: disables multi-read (large fragmented CIP packets are the #1 cause of
+  // timeout-recv-data disconnects over VPN) and reduces concurrency/burst to keep the
+  // connection stable over high-latency / unreliable tunnels.
+  const vpnMode = runtime?.vpnMode === true;
+  if (vpnMode) {
+    multiReadEnabled = false;
+    multiReadBatchSize = Math.min(multiReadBatchSize, 4);
+    readConcurrency = Math.min(readConcurrency, 2);
+    maxReadsPerTick = Math.min(maxReadsPerTick, 60);
+    initialScanBurstLimit = Math.min(initialScanBurstLimit, 40);
+    console.warn("[opc-server] VPN mode active: multi-read disabled, concurrency reduced for connection stability.");
+  }
+
+  const globalPollMs = clampMinMs(config?.pollMs, 100, 500);
+  const priorityTagPollMsRaw = Number.parseInt(String(runtime?.priorityTagPollMs ?? ""), 10);
+  const priorityTagPollMs = Number.isFinite(priorityTagPollMsRaw)
+    ? Math.max(100, Math.min(1000, priorityTagPollMsRaw))
+    : Math.max(100, Math.min(globalPollMs, 250));
+  const uiScopedReadsEnabled = runtime?.uiScopedReadsEnabled === true;
+  const uiScopedReadsStaleMs = clampMinMs(runtime?.uiScopedReadsStaleMs, 5000, 30000);
   const plcs = Array.isArray(config?.plcs) && config.plcs.length
     ? config.plcs
         .map((p, idx) => ({
@@ -375,6 +547,7 @@ async function main() {
   const plcConnectFailureStreak = new Map();
   const plcReadTransportFailureStreak = new Map();
   const plcTimeoutFailureWindow = new Map();
+  const plcReconnectWarmupUntil = new Map();
   const isTimeoutLikeError = (err) => {
     const msg = String(err?.message || err || "").toLowerCase();
     return (
@@ -402,6 +575,9 @@ async function main() {
   const tagReadErrorCount = new Map();
   const tagReadDurationTotalMs = new Map();
   const tagReadDurationMaxMs = new Map();
+  const plcInitialScanNeeded = new Map(); // true when PLC just connected and full scan hasn't run yet
+  const plcConnectionPools = new Map(); // plcName â†’ Array<{slotKey, plc}>
+  const slotKeyToPlcName = new Map(); // slotKey â†’ plcName (for pool slots)
   const tagLastReadDurationMs = new Map();
   const issueLog = [];
   const issueLastKeyAt = new Map();
@@ -416,10 +592,31 @@ async function main() {
   };
   let statusPublishInFlight = false;
   let pendingStatusPayload = null;
+  let writeStatusDebounceTimer = null;
+  const WRITE_STATUS_DEBOUNCE_MS = 80; // coalesce rapid cascading calls (connect/disconnect events)
+  let priorityKeySetLower = new Set();
+  let priorityKeysUpdatedAt = 0;
+  let priorityKeysSource = "";
+  let priorityKeysLastError = "";
+  let priorityRefreshInFlight = false;
+  let priorityRefreshLastAt = 0;
+  const connectionGuardFailureWindowByPlc = new Map();
+  let connectionGuardModeActive = false;
+  let connectionGuardActivatedAt = 0;
+  let connectionGuardUntilMs = 0;
+  let connectionGuardLastFailureAt = 0;
+  let normalThroughputProfile = null;
 
   function toIssueMessage(err, fallback = "Unknown OPC issue.") {
     const text = String(err?.message || err || "").trim();
     return text || fallback;
+  }
+
+  function normalizePriorityKey(value) {
+    const raw = String(value || "").replace(/\r?\n/g, "").trim();
+    if (!raw) return "";
+    const withoutDefault = raw.replace(/^default\./i, "");
+    return withoutDefault.toLowerCase();
   }
 
   function pushIssue(event = {}) {
@@ -449,6 +646,216 @@ async function main() {
     if (issueLog.length > ISSUE_LOG_MAX) issueLog.length = ISSUE_LOG_MAX;
   }
 
+  function snapshotThroughputProfile() {
+    return {
+      maxReadsPerTick,
+      readConcurrency,
+      multiReadBatchSize,
+      multiReadConcurrency,
+      initialScanBurstLimit,
+      readRetryCount,
+      multiReadRetryCount,
+      multiReadEnabled,
+      multiReadDisabledUntilMs,
+    };
+  }
+
+  function applyReceiveTimeoutToAllPlcs(timeoutMs) {
+    if (!Number.isFinite(Number(timeoutMs)) || Number(timeoutMs) <= 0) return;
+    plcClients.forEach((client) => {
+      try {
+        client.timeoutReceive = Math.round(Number(timeoutMs));
+      } catch {
+        // ignore per-client timeout assignment failures
+      }
+    });
+  }
+
+  function activateConnectionGuard(plcName = "", reason = "", source = "") {
+    if (!connectionGuardEnabled) return;
+    const now = Date.now();
+    if (!normalThroughputProfile) {
+      normalThroughputProfile = snapshotThroughputProfile();
+    }
+    connectionGuardModeActive = true;
+    if (!connectionGuardActivatedAt) connectionGuardActivatedAt = now;
+    connectionGuardLastFailureAt = now;
+    connectionGuardUntilMs = Math.max(connectionGuardUntilMs || 0, now + connectionGuardCooldownMs);
+
+    maxReadsPerTick = Math.min(maxReadsPerTick, connectionGuardMaxReadsPerTick);
+    readConcurrency = Math.min(readConcurrency, connectionGuardReadConcurrency);
+    multiReadBatchSize = Math.min(multiReadBatchSize, connectionGuardMultiReadBatchSize);
+    multiReadConcurrency = Math.min(multiReadConcurrency, 1);
+    initialScanBurstLimit = Math.min(initialScanBurstLimit, connectionGuardInitialScanBurstLimit);
+    readRetryCount = Math.min(readRetryCount, 1);
+    multiReadRetryCount = Math.min(multiReadRetryCount, 0);
+    multiReadEnabled = false;
+    multiReadDisabledUntilMs = Math.max(
+      Number(multiReadDisabledUntilMs || 0),
+      Number(connectionGuardUntilMs || 0)
+    );
+    applyReceiveTimeoutToAllPlcs(connectionGuardReceiveTimeoutMs);
+
+    const reasonMsg = toIssueMessage(reason, "timeout/disconnect");
+    const sourceMsg = String(source || "").trim();
+    pushIssue({
+      severity: "warn",
+      kind: "opc_connection_guard_enabled",
+      plcName,
+      message:
+        `Connection guard enabled due to unstable PLC session (${sourceMsg || "unknown source"}): ${reasonMsg}. ` +
+        `Temporarily reducing read load to keep session connected.`,
+    });
+  }
+
+  function maybeRecoverConnectionGuard() {
+    if (!connectionGuardModeActive) return;
+    const now = Date.now();
+    if (now < Number(connectionGuardUntilMs || 0)) return;
+    if (now - Number(connectionGuardLastFailureAt || 0) < connectionGuardRecoverAfterMs) return;
+    if (plcs.length > 0 && !plcs.every((p) => plcConnected.get(String(p?.name || "").trim()) === true)) return;
+    if (!normalThroughputProfile) return;
+
+    maxReadsPerTick = normalThroughputProfile.maxReadsPerTick;
+    readConcurrency = normalThroughputProfile.readConcurrency;
+    multiReadBatchSize = normalThroughputProfile.multiReadBatchSize;
+    multiReadConcurrency = normalThroughputProfile.multiReadConcurrency;
+    initialScanBurstLimit = normalThroughputProfile.initialScanBurstLimit;
+    readRetryCount = normalThroughputProfile.readRetryCount;
+    multiReadRetryCount = normalThroughputProfile.multiReadRetryCount;
+    multiReadEnabled = multiReadConfigured && normalThroughputProfile.multiReadEnabled === true;
+    multiReadDisabledUntilMs = 0;
+    multiReadFailureStreak = 0;
+    multiReadLastFailureAt = 0;
+    connectionGuardModeActive = false;
+    connectionGuardActivatedAt = 0;
+    connectionGuardUntilMs = 0;
+    connectionGuardFailureWindowByPlc.clear();
+    applyReceiveTimeoutToAllPlcs(plcReceiveTimeoutMs);
+    pushIssue({
+      severity: "info",
+      kind: "opc_connection_guard_recovered",
+      message: "Connection guard disabled after sustained stable PLC connectivity.",
+    });
+  }
+
+  function recordConnectionFailure(plcName = "", reason = "", source = "") {
+    if (!connectionGuardEnabled) return;
+    if (!isTimeoutLikeError(reason)) return;
+    const now = Date.now();
+    connectionGuardLastFailureAt = now;
+    const key = String(plcName || "").trim() || "default";
+    const prev = connectionGuardFailureWindowByPlc.get(key) || { startAt: now, count: 0 };
+    const withinWindow = now - Number(prev.startAt || 0) <= connectionGuardWindowMs;
+    const next = withinWindow
+      ? { startAt: Number(prev.startAt || now), count: Number(prev.count || 0) + 1 }
+      : { startAt: now, count: 1 };
+    connectionGuardFailureWindowByPlc.set(key, next);
+    if (next.count >= connectionGuardFailureStreak) {
+      activateConnectionGuard(plcName, reason, source);
+    }
+  }
+
+  function noteMultiReadSuccess() {
+    multiReadFailureStreak = 0;
+    multiReadLastFailureAt = 0;
+  }
+
+  function noteMultiReadFailure(err, plcName = "") {
+    if (!multiReadConfigured) return;
+    const msg = String(err?.message || err || "").toLowerCase();
+    if (!msg) return;
+    const timeoutLike =
+      msg.includes("multi-read") ||
+      msg.includes("multi read") ||
+      msg.includes("timeout") ||
+      msg.includes("timeout-recv-data") ||
+      msg.includes("recv-data");
+    if (!timeoutLike) return;
+
+    const now = Date.now();
+    const withinWindow =
+      Number(multiReadLastFailureAt || 0) > 0 &&
+      now - Number(multiReadLastFailureAt || 0) <= multiReadFailureWindowMs;
+    multiReadFailureStreak = withinWindow ? Number(multiReadFailureStreak || 0) + 1 : 1;
+    multiReadLastFailureAt = now;
+
+    if (!multiReadEnabled) return;
+    if (multiReadFailureStreak < multiReadFallbackStreak) return;
+
+    multiReadEnabled = false;
+    multiReadDisabledUntilMs = now + multiReadFallbackCooldownMs;
+    pushIssue({
+      severity: "warn",
+      kind: "opc_multi_read_temporarily_disabled",
+      plcName,
+      message:
+        `Multi-read temporarily disabled after ${multiReadFailureStreak} timeout-like failures. ` +
+        `Retrying in ${Math.round(multiReadFallbackCooldownMs / 1000)}s.`,
+    });
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[opc-server] Multi-read temporarily disabled after ${multiReadFailureStreak} failures. ` +
+        `Retry in ${Math.round(multiReadFallbackCooldownMs / 1000)}s.`
+    );
+  }
+
+  function maybeReenableMultiRead(plcName = "") {
+    if (!multiReadConfigured) return;
+    if (connectionGuardModeActive) return;
+    if (multiReadEnabled) return;
+    const now = Date.now();
+    if (now < Number(multiReadDisabledUntilMs || 0)) return;
+    multiReadEnabled = true;
+    multiReadFailureStreak = 0;
+    multiReadLastFailureAt = 0;
+    multiReadDisabledUntilMs = 0;
+    pushIssue({
+      severity: "info",
+      kind: "opc_multi_read_reenabled",
+      plcName,
+      message: "Multi-read re-enabled after cooldown window.",
+    });
+  }
+
+  async function refreshPriorityHintsFromAi(force = false) {
+    const now = Date.now();
+    if (priorityRefreshInFlight) return;
+    if (!force && now - Number(priorityRefreshLastAt || 0) < priorityRefreshMs) return;
+    priorityRefreshInFlight = true;
+    priorityRefreshLastAt = now;
+    try {
+      const headers = OPC_SERVER_KEY ? { "x-opc-key": OPC_SERVER_KEY } : undefined;
+      const response = await fetch(`${AI_SERVER_URL.replace(/\/$/, "")}/api/opc/priorities`, { headers });
+      if (!response.ok) {
+        throw new Error(`Priority fetch failed (${response.status}).`);
+      }
+      const data = await response.json().catch(() => ({}));
+      const list = Array.isArray(data?.keys) ? data.keys : [];
+      const next = new Set();
+      for (let i = 0; i < list.length && next.size < priorityKeyCap; i += 1) {
+        const normalized = normalizePriorityKey(list[i]);
+        if (!normalized) continue;
+        next.add(normalized);
+      }
+      priorityKeySetLower = next;
+      priorityKeysUpdatedAt = Number(data?.updatedAt || Date.now()) || Date.now();
+      priorityKeysSource = String(data?.source || "").trim();
+      priorityKeysLastError = "";
+    } catch (err) {
+      priorityKeysLastError = toIssueMessage(err, "Failed to refresh OPC priority keys.");
+    } finally {
+      priorityRefreshInFlight = false;
+    }
+  }
+
+  function hasActivePriorityScope(now = Date.now()) {
+    if (!(priorityKeySetLower instanceof Set) || !priorityKeySetLower.size) return false;
+    const updatedAt = Number(priorityKeysUpdatedAt || 0);
+    if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
+    return now - updatedAt <= uiScopedReadsStaleMs;
+  }
+
   function getLegacyTagKey(tag) {
     const topicName = tag.topic || "";
     const name = tag.name || "";
@@ -459,6 +866,30 @@ async function main() {
     const topicName = tag.topic || "";
     const base = tag.tagPath || tag.name || "";
     return topicName ? `${topicName}.${base}` : base;
+  }
+
+  function buildPriorityLookupKeys(tag = {}) {
+    const topic = String(tag?.topic || "").trim();
+    const group = String(tag?.groupName || "").trim();
+    const name = String(tag?.name || "").trim();
+    const tagPath = String(tag?.tagPath || tag?.name || "").trim();
+    const out = new Set();
+    const add = (raw) => {
+      const normalized = normalizePriorityKey(raw);
+      if (!normalized) return;
+      out.add(normalized);
+    };
+    add(tag?.tagKey);
+    add(tag?.legacyTagKey);
+    add(tagPath);
+    add(name);
+    if (topic && tagPath) add(`${topic}.${tagPath}`);
+    if (topic && name) add(`${topic}.${name}`);
+    if (group && tagPath) add(`${group}.${tagPath}`);
+    if (group && name) add(`${group}.${name}`);
+    if (topic && group && tagPath) add(`${topic}.${group}.${tagPath}`);
+    if (topic && group && name) add(`${topic}.${group}.${name}`);
+    return out;
   }
 
   const tagsWithMeta = tags.map((t) => {
@@ -479,8 +910,78 @@ async function main() {
       samplingInterval,
       tagKey: getPathTagKey({ ...t, topic: topicName }),
       legacyTagKey: getLegacyTagKey({ ...t, topic: topicName }),
+      priorityLookupKeys: buildPriorityLookupKeys({
+        ...t,
+        topic: topicName,
+        tagKey: getPathTagKey({ ...t, topic: topicName }),
+        legacyTagKey: getLegacyTagKey({ ...t, topic: topicName }),
+      }),
     };
   });
+
+  const activeTagCount = tagsWithMeta.reduce(
+    (sum, t) => sum + (t?.muted === true ? 0 : 1),
+    0
+  );
+  if (adaptiveThroughputTuning && activeTagCount >= 600) {
+    const isVeryHighLoad = activeTagCount >= 900;
+    const before = {
+      maxReadsPerTick,
+      readConcurrency,
+      multiReadBatchSize,
+      multiReadConcurrency,
+      initialScanBurstLimit,
+      readRetryCount,
+      multiReadRetryCount,
+      multiReadFallbackStreak,
+    };
+    maxReadsPerTick = Math.min(maxReadsPerTick, isVeryHighLoad ? 260 : 320);
+    readConcurrency = Math.min(readConcurrency, isVeryHighLoad ? 4 : 6);
+    multiReadBatchSize = Math.min(multiReadBatchSize, isVeryHighLoad ? 8 : 12);
+    multiReadConcurrency = Math.min(multiReadConcurrency, isVeryHighLoad ? 3 : 4);
+    initialScanBurstLimit = Math.min(initialScanBurstLimit, isVeryHighLoad ? 120 : 180);
+    readRetryCount = Math.min(readRetryCount, 1);
+    multiReadRetryCount = Math.min(multiReadRetryCount, 0);
+    multiReadFallbackStreak = Math.min(multiReadFallbackStreak, 1);
+
+    const changes = [];
+    if (before.maxReadsPerTick !== maxReadsPerTick) {
+      changes.push(`maxReadsPerTick ${before.maxReadsPerTick}->${maxReadsPerTick}`);
+    }
+    if (before.readConcurrency !== readConcurrency) {
+      changes.push(`readConcurrency ${before.readConcurrency}->${readConcurrency}`);
+    }
+    if (before.multiReadBatchSize !== multiReadBatchSize) {
+      changes.push(`multiReadBatchSize ${before.multiReadBatchSize}->${multiReadBatchSize}`);
+    }
+    if (before.multiReadConcurrency !== multiReadConcurrency) {
+      changes.push(`multiReadConcurrency ${before.multiReadConcurrency}->${multiReadConcurrency}`);
+    }
+    if (before.initialScanBurstLimit !== initialScanBurstLimit) {
+      changes.push(`initialScanBurstLimit ${before.initialScanBurstLimit}->${initialScanBurstLimit}`);
+    }
+    if (before.readRetryCount !== readRetryCount) {
+      changes.push(`readRetryCount ${before.readRetryCount}->${readRetryCount}`);
+    }
+    if (before.multiReadRetryCount !== multiReadRetryCount) {
+      changes.push(`multiReadRetryCount ${before.multiReadRetryCount}->${multiReadRetryCount}`);
+    }
+    if (before.multiReadFallbackStreak !== multiReadFallbackStreak) {
+      changes.push(`multiReadFallbackStreak ${before.multiReadFallbackStreak}->${multiReadFallbackStreak}`);
+    }
+    if (changes.length) {
+      const message = `Applied adaptive high-tag tuning for ${activeTagCount} active tags: ${changes.join(", ")}.`;
+      // eslint-disable-next-line no-console
+      console.warn(`[opc-server] ${message}`);
+      pushIssue({
+        severity: "warn",
+        kind: "opc_adaptive_tuning",
+        message,
+      });
+    }
+  }
+
+  normalThroughputProfile = snapshotThroughputProfile();
 
   tagsWithMeta.forEach((t) => tagValues.set(t.tagKey, null));
   tagsWithMeta.forEach((t) => {
@@ -653,22 +1154,28 @@ async function main() {
         kind: "plc_write_reconnect_attempt",
         plcName: tag.plcName,
         tagKey: tag.tagKey,
-        message: `PLC ${tag.plcName} not connected during write. Attempting reconnect.`,
+        message: `PLC ${tag.plcName} not connected during write. Reconnect requested.`,
       });
-      await connectPlcWithRetry(tag.plcName, plc);
-      if (!plcConnected.get(tag.plcName)) {
-        pushIssue({
-          severity: "warn",
-          kind: "plc_write_not_connected",
-          plcName: tag.plcName,
-          tagKey: tag.tagKey,
-          message: `Write rejected. PLC ${tag.plcName} is not connected.`,
-        });
-        return { ok: false, status: 503, error: `PLC ${tag.plcName} is not connected.` };
-      }
+      void connectPlcWithRetry(tag.plcName, plc);
+      pushIssue({
+        severity: "warn",
+        kind: "plc_write_not_connected",
+        plcName: tag.plcName,
+        tagKey: tag.tagKey,
+        message: `Write rejected. PLC ${tag.plcName} is disconnected (reconnecting in background).`,
+      });
+      return {
+        ok: false,
+        status: 503,
+        error: `PLC ${tag.plcName} is disconnected. Reconnecting in background.`,
+      };
     }
     const normalized = normalizeWriteValueForTag(tag, value);
-    await plc.write(tag.tagPath || tag.name, normalized);
+    const writeTimeoutMs = readTimeoutMs * 2; // writes need one round-trip + PLC scan time
+    const writeTimeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Write timeout after ${writeTimeoutMs}ms`)), writeTimeoutMs)
+    );
+    await Promise.race([plc.write(tag.tagPath || tag.name, normalized), writeTimeoutPromise]);
     tagValues.set(tag.tagKey, normalized);
     if (tag.legacyTagKey && tag.legacyTagKey !== tag.tagKey) tagValues.set(tag.legacyTagKey, normalized);
     return { ok: true, tagKey: tag.tagKey, value: normalized };
@@ -927,15 +1434,25 @@ async function main() {
       }
       attempts += 1;
       try {
+        // Keep connect handshakes bounded; restore steady-state receive timeout after connect.
+        plc.timeoutReceive = plcConnectReceiveTimeoutMs;
         await plc.connect();
         plcConnected.set(name, true);
+        plcInitialScanNeeded.set(name, true);
         plcHeartbeatFailureStreak.set(name, 0);
         plcConnectFailureStreak.set(name, 0);
-        if (Number.isFinite(plcReceiveTimeoutMs) && plcReceiveTimeoutMs > 0) {
-          plc.timeoutReceive = plcReceiveTimeoutMs;
-        }
+        plcReadTransportFailureStreak.set(name, 0);
+        plc.timeoutReceive = plcReceiveTimeoutMs;
+        const warmupUntil = Date.now() + reconnectWarmupMs;
+        plcReconnectWarmupUntil.set(name, warmupUntil);
         // eslint-disable-next-line no-console
         console.log(`Connected to PLC ${name}`);
+        // eslint-disable-next-line no-console
+        console.log(
+          `[opc-server] PLC ${name} reconnect warmup active for ${Math.round(
+            Math.max(0, warmupUntil - Date.now()) / 1000
+          )}s.`
+        );
         pushIssue({
           severity: "info",
           kind: "plc_connected",
@@ -953,10 +1470,13 @@ async function main() {
           // ignore close failures during reconnect
         }
         const forwardOpenFailure = isForwardOpenError(err);
-        if (isTimeoutLikeError(err)) {
-          const nextReceiveTimeout = Math.min(120000, Math.max(plcReceiveTimeoutMs, Number(plc.timeoutReceive || plcReceiveTimeoutMs)) + 5000);
-          plc.timeoutReceive = nextReceiveTimeout;
+        const timeoutLike = isTimeoutLikeError(err);
+        if (timeoutLike) {
           recordTimeoutFailureAndMaybeRestart(name, err);
+          recordConnectionFailure(name, err, "connect_retry");
+          if (connectionGuardImmediateOnDisconnect) {
+            activateConnectionGuard(name, err, "connect_retry_immediate");
+          }
         }
         if (reconnectMaxAttempts && attempts >= reconnectMaxAttempts) {
           // eslint-disable-next-line no-console
@@ -969,9 +1489,15 @@ async function main() {
           });
           return;
         }
-        const retryDelayBase = forwardOpenFailure ? Math.max(10000, reconnectDelayMs * 2) : reconnectDelayMs;
-        const retryDelayCap = forwardOpenFailure ? 60000 : 30000;
+        const retryDelayBase = forwardOpenFailure
+          ? Math.max(10000, reconnectDelayMs * 2)
+          : timeoutLike
+          ? Math.max(5000, reconnectDelayMs * 2)
+          : reconnectDelayMs;
+        const retryDelayCap = forwardOpenFailure ? 60000 : timeoutLike ? 120000 : 30000;
         const retryDelay = Math.min(retryDelayCap, retryDelayBase * 2 ** Math.min(5, Math.max(0, nextStreak - 1)));
+        const retryJitterMs = Math.min(5000, Math.round(retryDelay * 0.2 * Math.random()));
+        const retryDelayWithJitter = retryDelay + retryJitterMs;
         if (forwardOpenFailure) {
           // eslint-disable-next-line no-console
           console.warn(
@@ -987,16 +1513,16 @@ async function main() {
         }
         // eslint-disable-next-line no-console
         console.warn(
-          `PLC ${name} connect failed, retrying in ${retryDelay}ms (streak ${nextStreak}, recvTimeout ${plc.timeoutReceive}ms)...`,
+          `PLC ${name} connect failed, retrying in ${retryDelayWithJitter}ms (streak ${nextStreak}, recvTimeout ${plc.timeoutReceive}ms)...`,
           err?.message || err
         );
         pushIssue({
           severity: "warn",
           kind: "plc_connect_retry",
           plcName: name,
-          message: `Connect retry in ${retryDelay}ms (streak ${nextStreak}): ${toIssueMessage(err)}`,
+          message: `Connect retry in ${retryDelayWithJitter}ms (streak ${nextStreak}): ${toIssueMessage(err)}`,
         });
-        await sleep(retryDelay);
+        await sleep(retryDelayWithJitter);
       }
     }
     };
@@ -1008,67 +1534,81 @@ async function main() {
   }
 
   plcs.forEach((p) => {
-    const plc = new PLC(p.host, {
-      processorSlot: p.slot,
-      connectTimeout: plcConnectTimeoutMs,
-    });
-    // node-logix receive timeout defaults to 15000ms; increase for slower/loaded PLC links.
-    if (Number.isFinite(plcReceiveTimeoutMs) && plcReceiveTimeoutMs > 0) {
-      plc.timeoutReceive = plcReceiveTimeoutMs;
-    }
-    plc.on("disconnect", (reason) => {
-      plcConnected.set(p.name, false);
-      const text = String(reason?.message || reason || "unknown");
-      const reconnecting = Boolean(plcReconnectInFlight.get(p.name));
-      if (reconnecting && text.toLowerCase().includes("close connection")) {
-        // Expected during reconnect transitions; avoid noisy warning spam.
-        // eslint-disable-next-line no-console
-        console.log(`PLC ${p.name} connection reset during reconnect.`);
-      } else {
-        // eslint-disable-next-line no-console
-        console.warn(`PLC ${p.name} disconnected.`, text);
-        pushIssue({
-          severity: "warn",
-          kind: "plc_disconnected",
-          plcName: p.name,
-          message: `PLC ${p.name} disconnected: ${text}`,
-        });
+    const pool = [];
+    for (let poolIdx = 0; poolIdx < plcConnectionPoolSize; poolIdx++) {
+      // Primary slot keeps the plain PLC name so all existing status/heartbeat code is unaffected.
+      const slotKey = poolIdx === 0 ? p.name : `${p.name}#${poolIdx}`;
+      const plc = new PLC(p.host, {
+        processorSlot: p.slot,
+        connectTimeout: plcConnectTimeoutMs,
+      });
+      // node-logix receive timeout defaults to 15000ms; increase for slower/loaded PLC links.
+      if (Number.isFinite(plcReceiveTimeoutMs) && plcReceiveTimeoutMs > 0) {
+        plc.timeoutReceive = plcReceiveTimeoutMs;
       }
-      if (isTimeoutLikeError(reason)) {
-        const now = Date.now();
-        const prev = plcTimeoutFailureWindow.get(p.name) || { startAt: now, count: 0 };
-        const withinWindow = now - Number(prev.startAt || 0) <= timeoutAutoRestartWindowMs;
-        const next = withinWindow
-          ? { startAt: Number(prev.startAt || now), count: Number(prev.count || 0) + 1 }
-          : { startAt: now, count: 1 };
-        plcTimeoutFailureWindow.set(p.name, next);
-        if (timeoutAutoRestartEnabled && next.count >= timeoutAutoRestartStreak) {
+      plc.on("disconnect", (reason) => {
+        plcConnected.set(slotKey, false);
+        plcInitialScanNeeded.set(slotKey, true); // ensure full scan runs on next connect
+        const text = String(reason?.message || reason || "unknown");
+        const reconnecting = Boolean(plcReconnectInFlight.get(slotKey));
+        if (reconnecting && text.toLowerCase().includes("close connection")) {
+          // Expected during reconnect transitions; avoid noisy warning spam.
           // eslint-disable-next-line no-console
-          console.error(
-            `[opc-server] PLC ${p.name} disconnect timeout streak reached ${next.count}. Restarting process...`,
-            text
-          );
-          setTimeout(() => process.exit(73), 50);
+          console.log(`PLC ${p.name} (slot ${poolIdx}) connection reset during reconnect.`);
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn(`PLC ${p.name} (slot ${poolIdx}) disconnected.`, text);
+          pushIssue({
+            severity: "warn",
+            kind: "plc_disconnected",
+            plcName: p.name,
+            message: `PLC ${p.name}${poolIdx > 0 ? ` slot ${poolIdx}` : ""} disconnected: ${text}`,
+          });
         }
-      }
-      if (opcConnectionEnabled) {
-        void connectPlcWithRetry(p.name, plc);
-      }
-    });
-    plcClients.set(p.name, plc);
-    plcConnected.set(p.name, false);
-    plcPollInFlight.set(p.name, false);
-    plcReadCursor.set(p.name, 0);
-    plcDeferredReads.set(p.name, 0);
-    plcHeartbeatFailureStreak.set(p.name, 0);
-    plcConnectFailureStreak.set(p.name, 0);
-    plcReadTransportFailureStreak.set(p.name, 0);
+        if (isTimeoutLikeError(reason)) {
+          const now = Date.now();
+          const prev = plcTimeoutFailureWindow.get(p.name) || { startAt: now, count: 0 };
+          const withinWindow = now - Number(prev.startAt || 0) <= timeoutAutoRestartWindowMs;
+          const next = withinWindow
+            ? { startAt: Number(prev.startAt || now), count: Number(prev.count || 0) + 1 }
+            : { startAt: now, count: 1 };
+          plcTimeoutFailureWindow.set(p.name, next);
+          if (timeoutAutoRestartEnabled && next.count >= timeoutAutoRestartStreak) {
+            // eslint-disable-next-line no-console
+            console.error(
+              `[opc-server] PLC ${p.name} disconnect timeout streak reached ${next.count}. Restarting process...`,
+              text
+            );
+            setTimeout(() => process.exit(73), 50);
+          }
+          recordConnectionFailure(p.name, reason, "disconnect_event");
+          if (connectionGuardImmediateOnDisconnect) {
+            activateConnectionGuard(p.name, reason, "disconnect_event_immediate");
+          }
+        }
+        if (opcConnectionEnabled) {
+          void connectPlcWithRetry(slotKey, plc);
+        }
+      });
+      plcClients.set(slotKey, plc);
+      plcConnected.set(slotKey, false);
+      plcPollInFlight.set(slotKey, false);
+      plcReadCursor.set(slotKey, 0);
+      plcDeferredReads.set(slotKey, 0);
+      plcHeartbeatFailureStreak.set(slotKey, 0);
+      plcConnectFailureStreak.set(slotKey, 0);
+      plcReadTransportFailureStreak.set(slotKey, 0);
+      plcReconnectWarmupUntil.set(slotKey, 0);
+      slotKeyToPlcName.set(slotKey, p.name);
+      pool.push({ slotKey, plc });
+    }
+    plcConnectionPools.set(p.name, pool);
   });
 
   if (opcConnectionEnabled) {
-    await Promise.all(
-      Array.from(plcClients.entries()).map(([name, plc]) => connectPlcWithRetry(name, plc))
-    );
+    Array.from(plcClients.entries()).forEach(([name, plc]) => {
+      void connectPlcWithRetry(name, plc);
+    });
   } else {
     // eslint-disable-next-line no-console
     console.log("OPC PLC connection is disabled (runtime.opcConnectionEnabled=false).");
@@ -1119,6 +1659,14 @@ async function main() {
     }
   }, 15000);
 
+  void refreshPriorityHintsFromAi(true);
+  setInterval(() => {
+    void refreshPriorityHintsFromAi();
+  }, priorityRefreshMs);
+  setInterval(() => {
+    maybeRecoverConnectionGuard();
+  }, 5000);
+
   let lastRestartSeen = 0;
   setInterval(() => {
     try {
@@ -1161,6 +1709,22 @@ async function main() {
     tagsByPlc.get(t.plcName).push(t);
   });
 
+  // Distribute tags across pool slots (round-robin by index so consecutive tags stay together
+  // in each slot for better cache locality). slotTagsMap drives the poll loops below.
+  const slotTagsMap = new Map(); // slotKey â†’ tags[]
+  tagsByPlc.forEach((plcTags, plcName) => {
+    const pool = plcConnectionPools.get(plcName) || [];
+    if (pool.length <= 1) {
+      const slotKey = pool[0]?.slotKey ?? plcName;
+      slotTagsMap.set(slotKey, plcTags);
+    } else {
+      pool.forEach(({ slotKey }, poolIdx) => {
+        const slotTags = plcTags.filter((_, i) => i % pool.length === poolIdx);
+        if (slotTags.length) slotTagsMap.set(slotKey, slotTags);
+      });
+    }
+  });
+
   async function flushStatusPublishQueue() {
     if (statusPublishInFlight) return;
     statusPublishInFlight = true;
@@ -1195,6 +1759,14 @@ async function main() {
   }
 
   function writeStatus() {
+    if (writeStatusDebounceTimer) return;
+    writeStatusDebounceTimer = setTimeout(() => {
+      writeStatusDebounceTimer = null;
+      _writeStatusNow();
+    }, WRITE_STATUS_DEBOUNCE_MS);
+  }
+
+  function _writeStatusNow() {
     try {
       const snapshot = {};
       const errors = {};
@@ -1239,7 +1811,7 @@ async function main() {
           if (tagErrors.has(t.tagKey)) errors[t.legacyTagKey] = errorCount;
         }
       });
-      const allConnected = Array.from(plcConnected.values()).every(Boolean);
+      const allConnected = plcs.every((p) => plcConnected.get(p.name) === true);
       const lastPollAt = Math.max(0, ...Array.from(plcLastPollAt.values()), 0);
       pendingStatusPayload = {
         at: Date.now(),
@@ -1252,9 +1824,19 @@ async function main() {
         diagnostics,
         runtime: {
           opcConnectionEnabled,
+          adaptiveThroughputTuning,
+          vpnMode,
+          activeTagCount,
           multiReadEnabled,
+          multiReadConfigured,
           multiReadBatchSize,
+          multiReadConcurrency,
+          multiReadRetryCount,
+          multiReadFailureStreak,
+          multiReadDisabledUntilMs: multiReadEnabled ? null : (multiReadDisabledUntilMs || null),
           maxReadsPerTick,
+          initialScanBurstLimit,
+          transportBadStreakThreshold,
           mqttEnabled: mqttState.enabled,
           mqttConnected: mqttState.connected,
           mqttBrokerUrl,
@@ -1263,9 +1845,27 @@ async function main() {
           mqttQos,
           mqttRetain,
           mqttLastError: mqttState.lastError || "",
+          plcConnectionPool: plcConnectionPoolSize,
+          readConcurrency,
           readTimeoutMs,
           readRetryCount,
           readRetryDelayMs,
+          connectionGuardImmediateOnDisconnect,
+          reconnectWarmupMs,
+          reconnectWarmupReadsPerTick,
+          reconnectWarmupReadConcurrency,
+          reconnectWarmupMultiReadBatchSize,
+          reconnectWarmupDisableMultiRead,
+          priorityRefreshMs,
+          priorityTagPollMs,
+          priorityKeyCap,
+          priorityHintKeyCount: priorityKeySetLower.size,
+          priorityHintsUpdatedAt: priorityKeysUpdatedAt || null,
+          priorityHintsSource: priorityKeysSource || "",
+          priorityHintsError: priorityKeysLastError || "",
+          uiScopedReadsEnabled,
+          uiScopedReadsStaleMs,
+          uiScopedReadsActive: uiScopedReadsEnabled ? hasActivePriorityScope() : false,
           errorBackoffEnabled,
           errorBackoffBaseMs,
           errorBackoffMaxMs,
@@ -1274,10 +1874,26 @@ async function main() {
           deadbandDefault,
           reconnectDelayMs,
           reconnectMaxAttempts,
+          connectionGuardEnabled,
+          connectionGuardModeActive,
+          connectionGuardActivatedAt: connectionGuardActivatedAt || null,
+          connectionGuardUntilMs: connectionGuardModeActive ? (connectionGuardUntilMs || null) : null,
+          connectionGuardLastFailureAt: connectionGuardLastFailureAt || null,
+          connectionGuardFailureStreak,
+          connectionGuardWindowMs,
+          connectionGuardCooldownMs,
+          connectionGuardRecoverAfterMs,
+          connectionGuardMaxReadsPerTick,
+          connectionGuardReadConcurrency,
+          connectionGuardMultiReadBatchSize,
+          connectionGuardInitialScanBurstLimit,
+          connectionGuardReceiveTimeoutMs,
+          connectionGuardFailureWindowByPlc: Object.fromEntries(connectionGuardFailureWindowByPlc.entries()),
           heartbeatEnabled,
           heartbeatReconnectOnFailure,
           heartbeatFailureThreshold,
           plcConnectTimeoutMs,
+          plcConnectReceiveTimeoutMs,
           plcReceiveTimeoutMs,
           heartbeatMs,
           lastPollAtByPlc: Object.fromEntries(plcLastPollAt.entries()),
@@ -1322,8 +1938,18 @@ async function main() {
     }
   }
 
-  tagsByPlc.forEach((plcTags, plcName) => {
-    const plc = plcClients.get(plcName);
+  slotTagsMap.forEach((slotTags, slotKey) => {
+    const plcName = slotKeyToPlcName.get(slotKey) || slotKey; // used for display/logging only
+    const plc = plcClients.get(slotKey);
+    const isPriorityTag = (tag) => {
+      if (!(priorityKeySetLower instanceof Set) || !priorityKeySetLower.size) return false;
+      const lookup = tag?.priorityLookupKeys instanceof Set ? tag.priorityLookupKeys : null;
+      if (!lookup || !lookup.size) return false;
+      for (const key of lookup) {
+        if (priorityKeySetLower.has(key)) return true;
+      }
+      return false;
+    };
     const shouldRetryReadError = (err) => {
       const msg = String(err?.message || err || "").toLowerCase();
       if (!msg) return false;
@@ -1346,11 +1972,12 @@ async function main() {
     };
     const noteTransportReadFailure = (err) => {
       if (!shouldRetryReadError(err)) return;
-      const next = Number(plcReadTransportFailureStreak.get(plcName) || 0) + 1;
-      plcReadTransportFailureStreak.set(plcName, next);
+      recordConnectionFailure(plcName, err, "read_transport");
+      const next = Number(plcReadTransportFailureStreak.get(slotKey) || 0) + 1;
+      plcReadTransportFailureStreak.set(slotKey, next);
       if (next < readReconnectErrorThreshold) return;
-      if (plcReconnectInFlight.get(plcName)) return;
-      plcConnected.set(plcName, false);
+      if (plcReconnectInFlight.get(slotKey)) return;
+      plcConnected.set(slotKey, false);
       // eslint-disable-next-line no-console
       console.warn(
         `PLC ${plcName} transport read failures reached ${next}/${readReconnectErrorThreshold}; reconnecting...`
@@ -1361,7 +1988,7 @@ async function main() {
         plcName,
         message: `Transport read failures reached ${next}/${readReconnectErrorThreshold}; reconnecting PLC.`,
       });
-      void connectPlcWithRetry(plcName, plc);
+      void connectPlcWithRetry(slotKey, plc);
     };
     async function readWithTimeout(tagPath) {
       const attempts = 1 + Math.max(0, Number(readRetryCount) || 0);
@@ -1382,7 +2009,7 @@ async function main() {
     }
 
     async function multiReadWithTimeout(tagPaths) {
-      const attempts = 1 + Math.max(0, Number(readRetryCount) || 0);
+      const attempts = 1 + Math.max(0, Number(multiReadRetryCount) || 0);
       let lastErr = null;
       for (let i = 0; i < attempts; i += 1) {
         try {
@@ -1404,10 +2031,19 @@ async function main() {
     }
 
     function baseIntervalFor(tag) {
-      return parsePositiveMs(
+      const configuredInterval = parsePositiveMs(
         tag.samplingInterval,
         parsePositiveMs(tag.pollMs, globalPollMs)
       );
+      if (!(priorityKeySetLower instanceof Set) || !priorityKeySetLower.size) return configuredInterval;
+      const lookup = tag?.priorityLookupKeys instanceof Set ? tag.priorityLookupKeys : null;
+      if (!lookup || !lookup.size) return configuredInterval;
+      for (const key of lookup) {
+        if (priorityKeySetLower.has(key)) {
+          return Math.min(configuredInterval, priorityTagPollMs);
+        }
+      }
+      return configuredInterval;
     }
 
     function markTagSuccess(tag, value, now, durationMs, baseInterval) {
@@ -1454,7 +2090,15 @@ async function main() {
       tagErrors.set(tag.tagKey, prev + 1);
       const streak = (tagErrorStreak.get(tag.tagKey) || 0) + 1;
       tagErrorStreak.set(tag.tagKey, streak);
-      tagQuality.set(tag.tagKey, "Bad");
+      const transportLike = shouldRetryReadError(err);
+      if (transportLike) {
+        tagQuality.set(
+          tag.tagKey,
+          streak >= transportBadStreakThreshold ? "Bad" : "Unknown"
+        );
+      } else {
+        tagQuality.set(tag.tagKey, "Bad");
+      }
       tagLastErrorAt.set(tag.tagKey, now);
       const errMessage = toIssueMessage(err, "Read failed.");
       tagLastErrorMessage.set(tag.tagKey, errMessage);
@@ -1480,7 +2124,8 @@ async function main() {
     const tickMs = Math.max(
       100,
       Math.min(
-        ...plcTags.map((t) => parsePositiveMs(t.samplingInterval, globalPollMs))
+        priorityTagPollMs,
+        ...slotTags.map((t) => parsePositiveMs(t.samplingInterval, globalPollMs))
       )
     );
     setInterval(async () => {
@@ -1488,14 +2133,20 @@ async function main() {
         writeStatus();
         return;
       }
-      if (!plcConnected.get(plcName)) return;
-      if (plcPollInFlight.get(plcName)) return;
-      plcPollInFlight.set(plcName, true);
+      if (!plcConnected.get(slotKey)) return;
+      if (plcPollInFlight.get(slotKey)) return;
+      plcPollInFlight.set(slotKey, true);
       const now = Date.now();
+      const priorityScopeActive = hasActivePriorityScope(now);
+      maybeReenableMultiRead(plcName);
       let didRead = false;
       try {
-        const dueForRead = [];
-        for (const tag of plcTags) {
+        let dueForRead = [];
+        for (const tag of slotTags) {
+          if (uiScopedReadsEnabled) {
+            if (!priorityScopeActive) continue;
+            if (!isPriorityTag(tag)) continue;
+          }
           const baseInterval = baseIntervalFor(tag);
           const dueAt = tagNextDueAt.get(tag.tagKey) || 0;
           if (now < dueAt) continue;
@@ -1509,122 +2160,211 @@ async function main() {
           }
           dueForRead.push({ tag, baseInterval });
         }
+        if (priorityKeySetLower.size > 0 && dueForRead.length > 1) {
+          const priorityItems = [];
+          const normalItems = [];
+          for (const item of dueForRead) {
+            if (isPriorityTag(item.tag)) priorityItems.push(item);
+            else normalItems.push(item);
+          }
+          if (priorityItems.length && normalItems.length) {
+            dueForRead = priorityItems.concat(normalItems);
+          }
+        }
+
+        // Keep initial scans bounded so high tag counts do not burst and timeout.
+        const isInitialScan = Boolean(plcInitialScanNeeded.get(slotKey));
+        if (isInitialScan) plcInitialScanNeeded.set(slotKey, false);
+        let perTickLimit = isInitialScan
+          ? Math.max(1, Math.min(initialScanBurstLimit, maxReadsPerTick))
+          : maxReadsPerTick;
+        const warmupUntil = Number(plcReconnectWarmupUntil.get(slotKey) || 0);
+        const inReconnectWarmup = warmupUntil > now;
+        if (inReconnectWarmup) {
+          perTickLimit = Math.min(perTickLimit, reconnectWarmupReadsPerTick);
+        }
+        const effectiveReadConcurrency = inReconnectWarmup
+          ? Math.max(1, Math.min(readConcurrency, reconnectWarmupReadConcurrency))
+          : readConcurrency;
+        const effectiveMultiReadBatchSize = inReconnectWarmup
+          ? Math.max(1, Math.min(multiReadBatchSize, reconnectWarmupMultiReadBatchSize))
+          : multiReadBatchSize;
+        const useMultiReadThisTick =
+          multiReadEnabled && (!inReconnectWarmup || !reconnectWarmupDisableMultiRead);
 
         let scheduled = dueForRead;
-        if (dueForRead.length > maxReadsPerTick) {
-          const cursor = Number(plcReadCursor.get(plcName) || 0) % dueForRead.length;
+        if (dueForRead.length > perTickLimit) {
+          const cursor = Number(plcReadCursor.get(slotKey) || 0) % dueForRead.length;
           const rotated = dueForRead.slice(cursor).concat(dueForRead.slice(0, cursor));
-          scheduled = rotated.slice(0, maxReadsPerTick);
-          plcReadCursor.set(plcName, (cursor + maxReadsPerTick) % dueForRead.length);
-          plcDeferredReads.set(plcName, dueForRead.length - scheduled.length);
+          scheduled = rotated.slice(0, perTickLimit);
+          plcReadCursor.set(slotKey, (cursor + perTickLimit) % dueForRead.length);
+          plcDeferredReads.set(slotKey, dueForRead.length - scheduled.length);
         } else {
-          plcReadCursor.set(plcName, 0);
-          plcDeferredReads.set(plcName, 0);
+          plcReadCursor.set(slotKey, 0);
+          plcDeferredReads.set(slotKey, 0);
         }
 
-        if (multiReadEnabled && scheduled.length > 1) {
-          for (let idx = 0; idx < scheduled.length; idx += multiReadBatchSize) {
-            const batch = scheduled.slice(idx, idx + multiReadBatchSize);
-            const tagPaths = batch.map(({ tag }) => tag.tagPath || tag.name);
-            const readStartedAt = Date.now();
-            try {
-              const responses = await multiReadWithTimeout(tagPaths);
-              const durationMs = Math.max(0, Date.now() - readStartedAt);
-              const eachDurationMs = Math.max(1, Math.round(durationMs / Math.max(1, batch.length)));
-              const responseByName = new Map();
-              (Array.isArray(responses) ? responses : []).forEach((resp) => {
-                const key = String(resp?.tag_name || "").trim();
-                if (key) responseByName.set(key, resp);
-              });
-              for (const item of batch) {
-                const path = String(item.tag.tagPath || item.tag.name).trim();
-                const resp = responseByName.get(path);
-                if (resp && Number(resp.status || 0) === 0 && resp.value != null) {
-                  markTagSuccess(item.tag, resp.value, now, eachDurationMs, item.baseInterval);
-                  didRead = true;
+        // Transport failures are counted once per tick (not once per failing batch/tag)
+        // so that concurrent workers don't multiply the streak and trigger spurious reconnects.
+        let tickTransportError = null;
+        let tickMultiReadError = null;
+
+        if (useMultiReadThisTick && scheduled.length > 1) {
+          // Split into batches then run up to multiReadConcurrency batches concurrently.
+          const batches = [];
+          for (let idx = 0; idx < scheduled.length; idx += effectiveMultiReadBatchSize) {
+            batches.push(scheduled.slice(idx, idx + effectiveMultiReadBatchSize));
+          }
+          let batchIdx = 0;
+          let anyRead = false;
+          const runBatchWorker = async () => {
+            while (batchIdx < batches.length) {
+              const batch = batches[batchIdx++];
+              const tagPaths = batch.map(({ tag }) => tag.tagPath || tag.name);
+              const readStartedAt = Date.now();
+              try {
+                const responses = await multiReadWithTimeout(tagPaths);
+                const durationMs = Math.max(0, Date.now() - readStartedAt);
+                const eachDurationMs = Math.max(1, Math.round(durationMs / Math.max(1, batch.length)));
+                const responseByName = new Map();
+                (Array.isArray(responses) ? responses : []).forEach((resp) => {
+                  const key = String(resp?.tag_name || "").trim();
+                  if (key) responseByName.set(key, resp);
+                });
+                for (const item of batch) {
+                  const path = String(item.tag.tagPath || item.tag.name).trim();
+                  const resp = responseByName.get(path);
+                  if (resp && Number(resp.status || 0) === 0 && resp.value != null) {
+                    markTagSuccess(item.tag, resp.value, now, eachDurationMs, item.baseInterval);
+                    anyRead = true;
+                  } else {
+                    const err = new Error(resp?.message || "Multi-read returned no data.");
+                    markTagError(item.tag, now, eachDurationMs, item.baseInterval, err);
+                  }
+                }
+              } catch (batchErr) {
+                if (shouldRetryReadError(batchErr)) {
+                  // Transport/session error: individual reads will all fail too (session is down).
+                  // Record once per tick â€” don't increment streak for every failing batch.
+                  tickTransportError = tickTransportError || batchErr;
+                  tickMultiReadError = tickMultiReadError || batchErr;
+                  for (const item of batch) {
+                    markTagError(item.tag, now, 0, item.baseInterval, batchErr);
+                  }
                 } else {
-                  const err = new Error(resp?.message || "Multi-read returned no data.");
-                  markTagError(item.tag, now, eachDurationMs, item.baseInterval, err);
-                }
-              }
-            } catch (batchErr) {
-              for (const item of batch) {
-                const singleStartedAt = Date.now();
-                try {
-                  const value = await readWithTimeout(item.tag.tagPath || item.tag.name);
-                  if (value == null) throw new Error("Read returned no data (null/undefined).");
-                  const singleDuration = Math.max(0, Date.now() - singleStartedAt);
-                  markTagSuccess(item.tag, value, now, singleDuration, item.baseInterval);
-                  didRead = true;
-                } catch (err) {
-                  const singleDuration = Math.max(0, Date.now() - singleStartedAt);
-                  markTagError(item.tag, now, singleDuration, item.baseInterval, err || batchErr);
-                  noteTransportReadFailure(err || batchErr);
+                  // Non-transport error (e.g. service not supported): fall back to individual reads
+                  // run concurrently so the fallback doesn't serialize 20 tags one by one.
+                  let fbIdx = 0;
+                  const runFallback = async () => {
+                    while (fbIdx < batch.length) {
+                      const item = batch[fbIdx++];
+                      const singleStartedAt = Date.now();
+                      try {
+                        const value = await readWithTimeout(item.tag.tagPath || item.tag.name);
+                        if (value == null) throw new Error("Read returned no data (null/undefined).");
+                        const singleDuration = Math.max(0, Date.now() - singleStartedAt);
+                        markTagSuccess(item.tag, value, now, singleDuration, item.baseInterval);
+                        anyRead = true;
+                      } catch (err) {
+                        const singleDuration = Math.max(0, Date.now() - singleStartedAt);
+                        if (shouldRetryReadError(err)) tickTransportError = tickTransportError || err;
+                        markTagError(item.tag, now, singleDuration, item.baseInterval, err || batchErr);
+                      }
+                    }
+                  };
+                  await Promise.all(
+                    Array.from({ length: Math.min(effectiveReadConcurrency, batch.length) }, runFallback)
+                  );
                 }
               }
             }
-          }
+          };
+          const batchWorkers = Array.from(
+            { length: Math.min(multiReadConcurrency, batches.length) },
+            runBatchWorker
+          );
+          await Promise.all(batchWorkers);
+          // Only blame multi-read if the error was NOT a full transport disconnect.
+          // Transport errors (PLC dropped, timeout-recv-data) are connection-level, not
+          // caused by multi-read, so don't disable multi-read on reconnect.
+          if (tickMultiReadError && !tickTransportError) noteMultiReadFailure(tickMultiReadError, plcName);
+          else if (anyRead) noteMultiReadSuccess();
+          if (anyRead) didRead = true;
         } else {
-          for (const item of scheduled) {
-            const readStartedAt = Date.now();
-            try {
-              const value = await readWithTimeout(item.tag.tagPath || item.tag.name);
-              if (value == null) throw new Error("Read returned no data (null/undefined).");
-              const durationMs = Math.max(0, Date.now() - readStartedAt);
-              markTagSuccess(item.tag, value, now, durationMs, item.baseInterval);
-              didRead = true;
-            } catch (err) {
-              const durationMs = Math.max(0, Date.now() - readStartedAt);
-              markTagError(item.tag, now, durationMs, item.baseInterval, err);
-              noteTransportReadFailure(err);
+          // Run individual reads concurrently up to readConcurrency at a time.
+          // This is much faster than sequential without the CIP-session instability of multiRead.
+          let schedIdx = 0;
+          let anyRead = false;
+          const runWorker = async () => {
+            while (schedIdx < scheduled.length) {
+              const item = scheduled[schedIdx++];
+              const readStartedAt = Date.now();
+              try {
+                const value = await readWithTimeout(item.tag.tagPath || item.tag.name);
+                if (value == null) throw new Error("Read returned no data (null/undefined).");
+                const durationMs = Math.max(0, Date.now() - readStartedAt);
+                markTagSuccess(item.tag, value, now, durationMs, item.baseInterval);
+                anyRead = true;
+              } catch (err) {
+                const durationMs = Math.max(0, Date.now() - readStartedAt);
+                markTagError(item.tag, now, durationMs, item.baseInterval, err);
+                if (shouldRetryReadError(err)) tickTransportError = tickTransportError || err;
+              }
             }
-          }
+          };
+          const workers = Array.from({ length: Math.min(effectiveReadConcurrency, scheduled.length) }, runWorker);
+          await Promise.all(workers);
+          if (anyRead) didRead = true;
         }
+
+        // Count at most ONE transport failure per poll tick regardless of concurrent batch count.
+        if (tickTransportError) noteTransportReadFailure(tickTransportError);
       } finally {
-        plcPollInFlight.set(plcName, false);
+        plcPollInFlight.set(slotKey, false);
       }
       if (didRead) {
-        plcLastPollAt.set(plcName, now);
-        plcHeartbeatFailureStreak.set(plcName, 0);
-        plcReadTransportFailureStreak.set(plcName, 0);
+        plcLastPollAt.set(slotKey, now);
+        plcHeartbeatFailureStreak.set(slotKey, 0);
+        plcReadTransportFailureStreak.set(slotKey, 0);
       }
       writeStatus();
     }, tickMs);
   });
 
-  plcClients.forEach((plc, plcName) => {
+  plcClients.forEach((plc, slotKey) => {
+    const plcName = slotKeyToPlcName.get(slotKey) || slotKey;
     setInterval(async () => {
       if (!heartbeatEnabled) return;
       if (!opcConnectionEnabled) {
-        plcConnected.set(plcName, false);
+        plcConnected.set(slotKey, false);
         writeStatus();
         return;
       }
       try {
-        if (plcReconnectInFlight.get(plcName)) return;
-        if (!plcConnected.get(plcName)) {
-          await connectPlcWithRetry(plcName, plc);
-          writeStatus();
+        if (plcReconnectInFlight.get(slotKey)) return;
+        if (!plcConnected.get(slotKey)) {
+          void connectPlcWithRetry(slotKey, plc);
           return;
         }
         const now = Date.now();
-        const lastReadAt = Number(plcLastPollAt.get(plcName) || 0);
-        // Skip heartbeat read if normal polling has already read this PLC recently.
+        const lastReadAt = Number(plcLastPollAt.get(slotKey) || 0);
+        // Skip heartbeat read if normal polling has already read this slot recently.
         if (lastReadAt > 0 && now - lastReadAt < Math.max(heartbeatMs, readTimeoutMs * 2)) {
           return;
         }
-        if (plcPollInFlight.get(plcName)) return;
-        const firstActiveTag = (tagsByPlc.get(plcName) || []).find((t) => t?.muted !== true);
+        if (plcPollInFlight.get(slotKey)) return;
+        const firstActiveTag = (slotTagsMap.get(slotKey) || tagsByPlc.get(plcName) || []).find((t) => t?.muted !== true);
         // If all PLC tags are muted, skip heartbeat read to reduce traffic.
         if (!firstActiveTag) return;
         const timeoutPromise = new Promise((_, reject) => {
           setTimeout(() => reject(new Error(`Heartbeat timeout after ${readTimeoutMs}ms`)), readTimeoutMs);
         });
         await Promise.race([plc.read(firstActiveTag.tagPath || firstActiveTag.name), timeoutPromise]);
-        plcHeartbeatFailureStreak.set(plcName, 0);
+        plcHeartbeatFailureStreak.set(slotKey, 0);
       } catch (err) {
-        const nextStreak = Number(plcHeartbeatFailureStreak.get(plcName) || 0) + 1;
-        plcHeartbeatFailureStreak.set(plcName, nextStreak);
+        recordConnectionFailure(plcName, err, "heartbeat");
+        const nextStreak = Number(plcHeartbeatFailureStreak.get(slotKey) || 0) + 1;
+        plcHeartbeatFailureStreak.set(slotKey, nextStreak);
         if (nextStreak < heartbeatFailureThreshold) {
           // eslint-disable-next-line no-console
           console.warn(
@@ -1640,8 +2380,8 @@ async function main() {
           return;
         }
         if (heartbeatReconnectOnFailure) {
-          plcConnected.set(plcName, false);
-          void connectPlcWithRetry(plcName, plc);
+          plcConnected.set(slotKey, false);
+          void connectPlcWithRetry(slotKey, plc);
           // eslint-disable-next-line no-console
           console.warn(`PLC ${plcName} heartbeat failed (threshold reached, reconnecting).`, err?.message || err);
           pushIssue({
@@ -1659,7 +2399,7 @@ async function main() {
             plcName,
             message: `Heartbeat failed (${nextStreak}/${heartbeatFailureThreshold}); keeping existing session: ${toIssueMessage(err)}`,
           });
-          plcHeartbeatFailureStreak.set(plcName, 0);
+          plcHeartbeatFailureStreak.set(slotKey, 0);
         }
       } finally {
         writeStatus();

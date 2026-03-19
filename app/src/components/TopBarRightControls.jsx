@@ -1,5 +1,44 @@
 import { useEffect, useMemo, useState } from "react";
 
+function ClockLabel() {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const label = useMemo(
+    () =>
+      new Date(nowMs).toLocaleString([], {
+        month: "2-digit",
+        day: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    [nowMs]
+  );
+  return (
+    <div
+      title="Current date and time"
+      style={{
+        border: "1px solid var(--border)",
+        background: "var(--bg-elev)",
+        color: "var(--text-muted)",
+        borderRadius: 999,
+        padding: "4px 10px",
+        fontSize: 11,
+        fontWeight: 700,
+        flex: "0 0 auto",
+        display: "inline-flex",
+        alignItems: "center",
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
 export default function TopBarRightControls({
   isLiveMode,
   canViewArea,
@@ -18,24 +57,6 @@ export default function TopBarRightControls({
   avatarLabel,
   compact = false,
 }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-  const nowLabel = useMemo(
-    () =>
-      new Date(nowMs).toLocaleString([], {
-        month: "2-digit",
-        day: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }),
-    [nowMs]
-  );
-
   return (
     <div
       style={{
@@ -63,23 +84,7 @@ export default function TopBarRightControls({
           scrollbarWidth: "thin",
         }}
       >
-        <div
-          title="Current date and time"
-          style={{
-            border: "1px solid var(--border)",
-            background: "var(--bg-elev)",
-            color: "var(--text-muted)",
-            borderRadius: 999,
-            padding: "4px 10px",
-            fontSize: 11,
-            fontWeight: 700,
-            flex: "0 0 auto",
-            display: "inline-flex",
-            alignItems: "center",
-          }}
-        >
-          {nowLabel}
-        </div>
+        <ClockLabel />
         {[
           { key: "theme", label: "Theme", alwaysVisible: true },
           { key: "code-gen-pro", label: "Code Gen", areaKey: "plc" },

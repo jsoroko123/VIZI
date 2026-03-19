@@ -21,7 +21,7 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5";
 const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || "64mb";
 const OPC_STATUS_STALE_MS = Math.max(
   3000,
-  Number.parseInt(String(process.env.OPC_STATUS_STALE_MS || "15000"), 10) || 15000
+  Number.parseInt(String(process.env.OPC_STATUS_STALE_MS || "5000"), 10) || 5000
 );
 const OPC_WRITE_BRIDGE_URL = String(process.env.OPC_WRITE_BRIDGE_URL || "http://127.0.0.1:4851").replace(/\/+$/, "");
 const OPC_SERVER_KEY = process.env.OPC_SERVER_KEY || "";
@@ -3354,6 +3354,18 @@ async function requireAuth(req, res, next) {
       }
     }
     if (req.path === "/api/opc/status" && req.method === "POST") {
+      const opcKey = process.env.OPC_SERVER_KEY;
+      const headerKey = String(req.headers["x-opc-key"] || "");
+      if (opcKey) {
+        if (headerKey === opcKey) return next();
+      } else {
+        const ip = req.ip || req.socket?.remoteAddress || "";
+        if (ip === "127.0.0.1" || ip === "::1" || ip.endsWith("127.0.0.1")) {
+          return next();
+        }
+      }
+    }
+    if (req.path === "/api/opc/priorities" && req.method === "GET") {
       const opcKey = process.env.OPC_SERVER_KEY;
       const headerKey = String(req.headers["x-opc-key"] || "");
       if (opcKey) {
@@ -6975,7 +6987,32 @@ app.get("/api/opc/config", async (req, res) => {
         return;
       }
       const srcTags = Array.isArray(configObj?.tags) ? configObj.tags : [];
-      const keySet = new Set(requestedKeys.map((k) => normalizeOpcStatusKey(k).toLowerCase()).filter(Boolean));
+      const requestedLowers = requestedKeys
+        .map((k) => normalizeOpcStatusKey(k).toLowerCase())
+        .filter(Boolean);
+      const keySet = new Set(requestedLowers);
+      const matchesRequestedKey = (candidateLower) => {
+        if (!candidateLower) return false;
+        if (keySet.has(candidateLower)) return true;
+        for (const requested of requestedLowers) {
+          if (!requested) continue;
+          const prefixDot = `${requested}.`;
+          const prefixSlash = `${requested}/`;
+          if (
+            candidateLower.startsWith(prefixDot) ||
+            candidateLower.startsWith(prefixSlash) ||
+            candidateLower.endsWith(`.${requested}`) ||
+            candidateLower.endsWith(`/${requested}`) ||
+            candidateLower.includes(`.${requested}.`) ||
+            candidateLower.includes(`.${requested}/`) ||
+            candidateLower.includes(`/${requested}.`) ||
+            candidateLower.includes(`/${requested}/`)
+          ) {
+            return true;
+          }
+        }
+        return false;
+      };
       const filteredTags = srcTags.filter((tag) => {
         const topic = normalizeOpcStatusKey(tag?.topic || "");
         const group = normalizeOpcStatusKey(tag?.groupName || "");
@@ -6993,7 +7030,7 @@ app.get("/api/opc/config", async (req, res) => {
         ]
           .map((x) => normalizeOpcStatusKey(x).toLowerCase())
           .filter(Boolean);
-        return candidates.some((c) => keySet.has(c));
+        return candidates.some(matchesRequestedKey);
       });
       res.json({
         ...configObj,
@@ -7442,6 +7479,17 @@ let opcStatusDbPendingStatus = null;
 const OPC_STATUS_STREAM_HEARTBEAT_MS = 15000;
 let opcStatusStreamClientSeq = 0;
 const opcStatusStreamClients = new Map();
+const OPC_PRIORITY_KEY_CAP = Math.max(
+  100,
+  Number.parseInt(String(process.env.OPC_PRIORITY_KEY_CAP || "1200"), 10) || 1200
+);
+const opcPriorityHints = {
+  keys: [],
+  updatedAt: 0,
+  screenId: "",
+  mode: "",
+  source: "",
+};
 
 function diffOpcStatusMap(prevMap, nextMap) {
   const prev = prevMap && typeof prevMap === "object" ? prevMap : {};
@@ -7762,6 +7810,47 @@ async function loadEffectiveOpcStatus() {
   }
   return effectiveStatus;
 }
+
+app.get("/api/opc/priorities", async (_req, res) => {
+  try {
+    const keys = Array.isArray(opcPriorityHints.keys) ? opcPriorityHints.keys : [];
+    res.json({
+      keys,
+      keyCount: keys.length,
+      updatedAt: Number(opcPriorityHints.updatedAt || 0) || null,
+      screenId: String(opcPriorityHints.screenId || "").trim(),
+      mode: String(opcPriorityHints.mode || "").trim(),
+      source: String(opcPriorityHints.source || "").trim(),
+    });
+  } catch (err) {
+    logOpcError("get priorities", err);
+    res.status(500).json({ error: err?.message || "Failed to load OPC priorities." });
+  }
+});
+
+app.post("/api/opc/priorities", async (req, res) => {
+  try {
+    const requestedKeys = parseOpcStatusRequestedKeys(req.body?.keys).slice(0, OPC_PRIORITY_KEY_CAP);
+    const authUser = req.user || (await getUserFromRequest(req));
+    const sourceUser = authUser
+      ? String(authUser.display_name || authUser.username || `User ${authUser.id || ""}`).trim()
+      : "";
+    opcPriorityHints.keys = requestedKeys;
+    opcPriorityHints.updatedAt = Date.now();
+    opcPriorityHints.screenId = String(req.body?.screenId || "").trim();
+    opcPriorityHints.mode = String(req.body?.mode || "").trim();
+    opcPriorityHints.source = sourceUser || "ui";
+    res.json({
+      ok: true,
+      keyCount: requestedKeys.length,
+      updatedAt: opcPriorityHints.updatedAt,
+      cap: OPC_PRIORITY_KEY_CAP,
+    });
+  } catch (err) {
+    logOpcError("set priorities", err);
+    res.status(500).json({ error: err?.message || "Failed to save OPC priorities." });
+  }
+});
 
 app.get("/api/opc/status", async (req, res) => {
   try {

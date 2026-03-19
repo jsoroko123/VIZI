@@ -1,5 +1,5 @@
 // src/App.jsx
-import { Fragment, Suspense, lazy, startTransition, useMemo, useRef, useState, useEffect, useLayoutEffect } from "react";
+import { Fragment, Suspense, lazy, startTransition, useCallback, useMemo, useRef, useState, useEffect, useLayoutEffect } from "react";
 import PropertiesPanel from "./components/PropertiesPanel";
 import CanvasSvg from "./components/CanvasSvg";
 import TopBarRightControls from "./components/TopBarRightControls";
@@ -17,6 +17,7 @@ import {
   dist2,
   distance,
   clonePoints,
+  pointsToAttr,
   closestPointOnSegment,
   bboxOfPoints,
   toggleIn,
@@ -42,6 +43,7 @@ import {
   normalizeProjectMode,
   normalizeProjectUiPreferences,
   normalizeRoleIdList,
+  getStoredProjectModeState,
   readStoredActiveProjectId,
   readStoredProjectMode,
 } from "./utils/projectHelpers";
@@ -106,6 +108,7 @@ import {
   getOpcStatus,
   getOpcTagMappings,
   getOpcTemplates,
+  setOpcPriorityKeys,
   subscribeOpcStatusStream,
   writeOpcValue,
 } from "./api/opcApi";
@@ -114,7 +117,8 @@ import {
   getOpcLiveSnapshot,
   patchOpcLiveSnapshot,
   setOpcLiveSnapshot,
-  subscribeOpcLiveKeys,
+  setPriorityKeys,
+  subscribeOpcLiveStore,
 } from "./state/opcLiveStore";
 import {
   deleteProjectById,
@@ -184,9 +188,10 @@ const PERF_DISABLE_BACKGROUND_SYNC = true;
 const PERF_DISABLE_CLIENT_LOGS = true;
 const PERF_HARD_REALTIME_MODE = false;
 const OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE = false;
-const OPC_UI_HIGH_LOAD_TAG_THRESHOLD = 120;
-const OPC_LIVE_KEY_HARD_CAP = 120;
-const OPC_CANVAS_KEY_HARD_CAP = 48;
+const OPC_UI_HIGH_LOAD_TAG_THRESHOLD = 400;
+const OPC_LIVE_KEY_HARD_CAP = 400;
+const OPC_CANVAS_KEY_HARD_CAP = 400;
+const OPC_STATUS_STREAM_KEY_LIMIT = 400;
 const LIVE_EQUIPMENT_STATUS_TAG_ALIASES = [
   "Mode_Status",
   "ModeStatus",
@@ -309,6 +314,142 @@ function renderLiveMenuIconGlyph(iconKey, size = 12) {
   );
 }
 
+// Stable empty map returned in design mode so CanvasSvg React.memo sees no change.
+const _EMPTY_MAP = new Map();
+const _shapePreviewNodeCacheBySvg = new WeakMap();
+
+function _resolveShapePreviewNodes(svg, id) {
+  if (!svg || !id) return null;
+  const key = String(id || "").trim();
+  if (!key) return null;
+  let byId = _shapePreviewNodeCacheBySvg.get(svg);
+  if (!byId) {
+    byId = new Map();
+    _shapePreviewNodeCacheBySvg.set(svg, byId);
+  }
+  const cached = byId.get(key);
+  if (cached?.group?.isConnected) return cached;
+  const esc =
+    typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function"
+      ? (v) => CSS.escape(String(v))
+      : (v) => String(v).replace(/["\\]/g, "\\$&");
+  const group = svg.querySelector(`[data-shape-id="${esc(key)}"]`);
+  if (!group) {
+    byId.delete(key);
+    return null;
+  }
+  const entry = {
+    group,
+    polylines: Array.from(group.querySelectorAll("polyline")),
+    rects: Array.from(group.querySelectorAll("rect")),
+    ellipse: group.querySelector("ellipse"),
+    texts: Array.from(group.querySelectorAll("text")),
+  };
+  byId.set(key, entry);
+  return entry;
+}
+
+// Module-level DOM mutator — no closure over component state, safe to call from useLayoutEffect.
+function _applyShapeDrawPreviewDOM(svg, id, update) {
+  if (!svg || !id || !update) return;
+  const nodes = _resolveShapePreviewNodes(svg, id);
+  if (!nodes) return;
+  if (update.points) {
+    const pts = pointsToAttr(update.points);
+    nodes.polylines.forEach((pl) => pl.setAttribute("points", pts));
+  } else if (
+    ("x" in update || "y" in update || "fontSize" in update) &&
+    !("width" in update || "height" in update)
+  ) {
+    const x = Number(update.x ?? 0);
+    const y = Number(update.y ?? 0);
+    const fontSize = Number(update.fontSize);
+    nodes.texts.forEach((textEl) => {
+      textEl.setAttribute("x", x);
+      textEl.setAttribute("y", y);
+      if (Number.isFinite(fontSize) && fontSize > 0) {
+        textEl.setAttribute("font-size", fontSize);
+      }
+    });
+  } else if ("width" in update || "height" in update || "x" in update || "y" in update) {
+    const x = Number(update.x ?? 0);
+    const y = Number(update.y ?? 0);
+    const w = Math.max(0, Number(update.width ?? 0));
+    const h = Math.max(0, Number(update.height ?? 0));
+    if (nodes.rects[0]) {
+      nodes.rects[0].setAttribute("x", x - 6); nodes.rects[0].setAttribute("y", y - 6);
+      nodes.rects[0].setAttribute("width", w + 12); nodes.rects[0].setAttribute("height", h + 12);
+    }
+    if (nodes.rects[1]) {
+      nodes.rects[1].setAttribute("x", x); nodes.rects[1].setAttribute("y", y);
+      nodes.rects[1].setAttribute("width", w); nodes.rects[1].setAttribute("height", h);
+    }
+    if (nodes.ellipse) {
+      nodes.ellipse.setAttribute("cx", x + w / 2); nodes.ellipse.setAttribute("cy", y + h / 2);
+      nodes.ellipse.setAttribute("rx", w / 2);     nodes.ellipse.setAttribute("ry", h / 2);
+    }
+  }
+}
+
+function getTagScopeCandidates(tag) {
+  const topic = normalizeTagValue(tag?.topic || "");
+  const group = normalizeTagValue(tag?.groupName || "");
+  const name = normalizeTagValue(tag?.name || "");
+  const tagPath = normalizeTagValue(tag?.tagPath || "");
+  return [
+    topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
+    topic && group && name ? `${topic}.${group}.${name}` : "",
+    topic && tagPath ? `${topic}.${tagPath}` : "",
+    topic && name ? `${topic}.${name}` : "",
+    group && tagPath ? `${group}.${tagPath}` : "",
+    group && name ? `${group}.${name}` : "",
+    tagPath,
+    name,
+  ]
+    .map((entry) => normalizeTagValue(entry || ""))
+    .filter(Boolean);
+}
+
+function buildScopedChildPrefixes(rawKeys) {
+  const out = [];
+  const seen = new Set();
+  const source =
+    rawKeys instanceof Set ? Array.from(rawKeys) : Array.isArray(rawKeys) ? rawKeys : [];
+  source.forEach((rawKey) => {
+    const key = normalizeTagValue(rawKey || "").toLowerCase();
+    if (!key) return;
+    [`${key}.`, `${key}/`].forEach((prefix) => {
+      if (seen.has(prefix)) return;
+      seen.add(prefix);
+      out.push(prefix);
+    });
+  });
+  return out;
+}
+
+function isTagCandidateInScope(rawCandidate, keySet, childPrefixes = []) {
+  const candidate = normalizeTagValue(rawCandidate || "").toLowerCase();
+  if (!candidate) return false;
+  if (keySet instanceof Set && keySet.has(candidate)) return true;
+  return childPrefixes.some((prefix) => candidate.startsWith(prefix));
+}
+
+function useStableEvent(handler) {
+  const handlerRef = useRef(handler);
+  useLayoutEffect(() => {
+    handlerRef.current = handler;
+  }, [handler]);
+  return useMemo(
+    () =>
+      (...args) => {
+        const fn = handlerRef.current;
+        if (typeof fn !== "function") return undefined;
+        return fn(...args);
+      },
+    []
+  );
+}
+
 export default function App() {
   const { user, logout, updateProfile, changePassword, refresh } = useAuth();
   const initialStoredProjectId = readStoredActiveProjectId();
@@ -382,6 +523,8 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const dragAllHistoryPushedRef = useRef(false);
   const dragPreviewNodesRef = useRef([]);
   const dragPreviewAppliedRef = useRef({ dx: NaN, dy: NaN });
+  const overlayResizePreviewRef = useRef(new Map()); // id -> { tx, ty, sx, sy }
+  const overlayResizePreviewMovedRef = useRef(false);
   const svgClientRectCacheRef = useRef(null);
   const dragPolylineSnapCacheRef = useRef({
     at: 0,
@@ -389,10 +532,51 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     dy: NaN,
     result: { dx: 0, dy: 0 },
   });
+  // Pre-computed snap point cache for polyline drawing — avoids O(n) getBBox() calls every mousemove.
+  // Rebuilt after each render when overlays or shapes change, never during the mousemove hot path.
+  const polylineSnapPointsCacheRef = useRef({
+    overlayPoints: [],
+    shapePoints: [],
+    shapeEndpoints: [],
+  });
+  const shapeResizePreviewRef = useRef({
+    active: false,
+    moved: false,
+    sx: 1,
+    sy: 1,
+    dx: 0,
+    dy: 0,
+    startBBox: null,
+    selectedIds: [],
+  });
+  const shapeResizePreviewNodesRef = useRef([]);
+  const shapeResizeSelectionBaseTransformRef = useRef("");
+  const shapeSelectionUiRef = useRef(null);
+  // Tracks the last draw preview so it can be re-applied after React re-renders (e.g. OPC updates)
+  // overwrite our direct DOM changes. Cleared when drawing ends.
+  const activeDrawPreviewRef = useRef(null);
   const [polyHandleMenu, setPolyHandleMenu] = useState(null);
 
   // SVG overlays (imported files): { id, name, inner, tx, ty, scale, fill, stroke, tagPath }
   const [svgOverlays, setSvgOverlays] = useState([]);
+  const shapeById = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(shapes) ? shapes : []).forEach((shape) => {
+      const id = String(shape?.id || "").trim();
+      if (!id) return;
+      map.set(id, shape);
+    });
+    return map;
+  }, [shapes]);
+  const svgOverlayById = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      map.set(id, overlay);
+    });
+    return map;
+  }, [svgOverlays]);
 
   // overlay resize
   const [overlayResize, setOverlayResize] = useState(null); // single: { id, anchorLocal, anchorWorld, startDist, origScaleX, origScaleY } | group: { kind:"group", anchorWorld, startDist, overlays:[{id, tx, ty, sx, sy}] }
@@ -439,6 +623,15 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [liveEquipmentOverlayIds, setLiveEquipmentOverlayIds] = useState([]);
   const [liveEquipmentOpcTick, setLiveEquipmentOpcTick] = useState(0);
   const liveEquipmentActiveRef = useRef(false);
+  const liveEquipmentTickTimerRef = useRef(0);
+  const liveEquipmentTickLastAtRef = useRef(0);
+  const liveEquipmentFastTickTimerRef = useRef(0);
+  const liveEquipmentFastTickLastAtRef = useRef(0);
+  const LIVE_EQUIPMENT_FAST_POLL_MS = 140;
+  const LIVE_EQUIPMENT_FAST_TICK_MIN_MS = 70;
+  const LIVE_EQUIPMENT_WRITE_CONFIRM_MS = 1200;
+  const LIVE_EQUIPMENT_PULSE_RESET_DELAY_MS = 120;
+  const LIVE_EQUIPMENT_WRITE_REFRESH_DELAYS_MS = [30, 120, 320, 800];
   const [liveEquipmentDockSideById, setLiveEquipmentDockSideById] = useState({});
   const [liveEquipmentFloatingById, setLiveEquipmentFloatingById] = useState({});
   const liveEquipmentFloatingByIdRef = useRef({});
@@ -478,6 +671,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [importAnchor, setImportAnchor] = useState(null);
 
   const [opcTags, setOpcTags] = useState([]);
+  const opcTagsAllRef = useRef([]);
   const [opcTemplates, setOpcTemplates] = useState([]);
   const [opcLiveValues] = useState({});
   const [opcLiveUpdatedAt, setOpcLiveUpdatedAt] = useState(0);
@@ -499,6 +693,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
 
 
   const overlayRefs = useRef(new Map()); // id -> <g> element containing imported inner
+  const overlayLocalBBoxCacheRef = useRef(new Map()); // id -> local bbox snapshot
   const svgRef = useRef(null);
   const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
   const motorHmiStateByOverlayRef = useRef(new Map());
@@ -570,22 +765,59 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [projectMode, setProjectMode] = useState(() => readStoredProjectMode(initialStoredProjectId));
   const isLiveMode = projectMode === "live";
   const liveUpdatesEnabled = isLiveMode || !designLiveUpdatesDisabled;
+  const opcUiEnabled = isLiveMode;
   const liveUiSafeMode = false;
-  const opcHighLoadUiMode = liveUpdatesEnabled && opcActiveTagCount >= OPC_UI_HIGH_LOAD_TAG_THRESHOLD;
+  const opcHighLoadUiMode = opcUiEnabled && opcActiveTagCount >= OPC_UI_HIGH_LOAD_TAG_THRESHOLD;
+  // Pre-indexed OPC tag lookup — rebuilt only when opcTags changes, not on every popup open.
+  // Replaces the O(n_tags × n_popup_overlays) scan inside addPopupOverlayCommandAndStatusKeys.
+  const opcTagIndex = useMemo(() => {
+    const byGroup = new Map();   // groupLower → tag[]
+    const byMember = new Map();  // memberLower → tag[]
+    const byGroupLoose = new Map(); // normalizeLoose(group) → tag[]
+    const normalizeLooseLocal = (v) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    for (const tag of (Array.isArray(opcTags) ? opcTags : [])) {
+      const group = normalizeTagValue(tag?.groupName || "").toLowerCase();
+      const member = normalizeTagValue(tag?.tagPath || tag?.name || "").toLowerCase();
+      const groupLoose = normalizeLooseLocal(tag?.groupName || "");
+      if (group) {
+        if (!byGroup.has(group)) byGroup.set(group, []);
+        byGroup.get(group).push(tag);
+      }
+      if (member) {
+        if (!byMember.has(member)) byMember.set(member, []);
+        byMember.get(member).push(tag);
+      }
+      if (groupLoose && groupLoose !== group) {
+        if (!byGroupLoose.has(groupLoose)) byGroupLoose.set(groupLoose, []);
+        byGroupLoose.get(groupLoose).push(tag);
+      }
+    }
+    return { byGroup, byMember, byGroupLoose };
+  }, [opcTags]);
+
   const opcScopedStatusKeys = useMemo(() => {
-    if (!liveUpdatesEnabled) return [];
+    if (!opcUiEnabled) return [];
     const keys = new Set();
-    const addKey = (raw) => {
+    const addKey = (raw, options = {}) => {
+      const withDefault = options?.withDefault !== false;
+      const withSuffix = options?.withSuffix !== false;
       const value = normalizeTagValue(raw || "");
       if (!value) return;
       const lower = value.toLowerCase();
       if (lower.startsWith("db:") || lower.startsWith("dbq:")) return;
       keys.add(value);
-      if (!lower.startsWith("default.")) keys.add(`Default.${value}`);
-      const parts = value.split(".").map((x) => String(x || "").trim()).filter(Boolean);
-      for (let i = 1; i < parts.length; i += 1) {
-        keys.add(parts.slice(i).join("."));
+      if (withDefault && !lower.startsWith("default.")) keys.add(`Default.${value}`);
+      if (withSuffix) {
+        const parts = value.split(".").map((x) => String(x || "").trim()).filter(Boolean);
+        for (let i = 1; i < parts.length; i += 1) {
+          keys.add(parts.slice(i).join("."));
+        }
       }
+    };
+    const addScopedRootKey = (raw) => {
+      const value = normalizeTagValue(raw || "");
+      if (!value) return;
+      addKey(value, { withDefault: false, withSuffix: false });
     };
     const normalizeLoose = (value) =>
       String(value || "")
@@ -594,7 +826,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const addPopupOverlayCommandAndStatusKeys = (overlay) => {
       const overlayPath = normalizeTagValue(overlay?.tagPath || "");
       if (!overlayPath) return;
-      addKey(overlayPath);
+      addScopedRootKey(overlayPath);
       const parts = overlayPath.split(".").map((x) => String(x || "").trim()).filter(Boolean);
       const parentScopes = new Set([
         overlayPath,
@@ -607,50 +839,60 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         LIVE_EQUIPMENT_STATUS_TAG_ALIASES.forEach((alias) => {
           const member = String(alias || "").trim();
           if (!member) return;
-          addKey(`${base}.${member}`);
-          addKey(`${base}/${member}`);
+          // Keep popup command/status keys exact so they don't consume the global cap
+          // with suffix variants unrelated to this overlay's live controls.
+          addKey(`${base}.${member}`, { withSuffix: false });
+          addKey(`${base}/${member}`, { withDefault: false, withSuffix: false });
         });
       });
 
       const overlayPathLower = overlayPath.toLowerCase();
       const overlayPathLoose = normalizeLoose(overlayPath);
-      const tags = Array.isArray(opcTags) ? opcTags : [];
-      for (const tag of tags) {
+      const { byGroup, byMember, byGroupLoose } = opcTagIndex;
+      const suffixDot = `.${overlayPathLower}`;
+      const prefixDot = `${overlayPathLower}.`;
+
+      // Collect candidate tags using the index — O(n_groups) instead of O(n_tags)
+      const candidateTags = new Set();
+      // Exact and suffix/prefix group matches
+      byGroup.forEach((tagList, groupLower) => {
+        if (
+          groupLower === overlayPathLower ||
+          groupLower.endsWith(suffixDot) ||
+          overlayPathLower.endsWith(`.${groupLower}`)
+        ) tagList.forEach((t) => candidateTags.add(t));
+      });
+      // Exact and suffix/prefix member matches
+      byMember.forEach((tagList, memberLower) => {
+        if (
+          memberLower === overlayPathLower ||
+          memberLower.startsWith(prefixDot) ||
+          memberLower.endsWith(suffixDot)
+        ) tagList.forEach((t) => candidateTags.add(t));
+      });
+      // Loose group matches (normalized, non-alphanumeric stripped)
+      if (overlayPathLoose) {
+        byGroupLoose.forEach((tagList, groupLoose) => {
+          if (
+            groupLoose.includes(overlayPathLoose) ||
+            overlayPathLoose.includes(groupLoose)
+          ) tagList.forEach((t) => candidateTags.add(t));
+        });
+      }
+
+      for (const tag of candidateTags) {
         const topic = normalizeTagValue(tag?.topic || "");
         const group = normalizeTagValue(tag?.groupName || "");
         const member = normalizeTagValue(tag?.tagPath || tag?.name || "");
         const name = normalizeTagValue(tag?.name || "");
-        const groupLower = group.toLowerCase();
-        const memberLower = member.toLowerCase();
-        const groupMatch =
-          !!groupLower &&
-          (groupLower === overlayPathLower ||
-            groupLower.endsWith(`.${overlayPathLower}`) ||
-            overlayPathLower.endsWith(`.${groupLower}`));
-        const memberMatch =
-          !!memberLower &&
-          (memberLower === overlayPathLower ||
-            memberLower.startsWith(`${overlayPathLower}.`) ||
-            memberLower.endsWith(`.${overlayPathLower}`));
-        const groupLoose = normalizeLoose(group);
-        const memberLoose = normalizeLoose(member || name);
-        const looseMatch =
-          !!overlayPathLoose &&
-          ((groupLoose &&
-            (groupLoose.includes(overlayPathLoose) ||
-              overlayPathLoose.includes(groupLoose))) ||
-            (memberLoose &&
-              (memberLoose.includes(overlayPathLoose) ||
-                overlayPathLoose.includes(memberLoose))));
-        if (!groupMatch && !memberMatch && !looseMatch) continue;
         const members = [member, name].filter(Boolean);
         members.forEach((rawMember) => {
           const m = normalizeTagValue(rawMember);
           if (!m) return;
-          if (topic && group) addKey(`${topic}.${group}.${m}`);
-          if (topic) addKey(`${topic}.${m}`);
-          if (group) addKey(`${group}.${m}`);
-          addKey(m);
+          if (topic && group) addKey(`${topic}.${group}.${m}`, { withSuffix: false });
+          if (topic) addKey(`${topic}.${m}`, { withSuffix: false });
+          if (group) addKey(`${group}.${m}`, { withSuffix: false });
+          addKey(m, { withSuffix: false });
         });
       }
     };
@@ -666,34 +908,34 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     prioritizedOverlays.forEach((overlay) => {
       addPopupOverlayCommandAndStatusKeys(overlay);
       if (OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE) {
-        normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlay?.tagPath).forEach(addKey);
+        normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlay?.tagPath).forEach(addScopedRootKey);
       }
-      addKey(overlay?.widget?.timerAccTag);
-      addKey(overlay?.widget?.timerPresetTag);
-      addKey(overlay?.widget?.timerDoneTag);
-      addKey(overlay?.widget?.timerEnableTag);
+      addScopedRootKey(overlay?.widget?.timerAccTag);
+      addScopedRootKey(overlay?.widget?.timerPresetTag);
+      addScopedRootKey(overlay?.widget?.timerDoneTag);
+      addScopedRootKey(overlay?.widget?.timerEnableTag);
     });
 
     (Array.isArray(shapes) ? shapes : []).forEach((shape) => {
-      addKey(shape?.tagPath);
+      addScopedRootKey(shape?.tagPath);
     });
 
     overlaysList.forEach((overlay) => {
-      addKey(overlay?.tagPath);
+      addScopedRootKey(overlay?.tagPath);
       // Keep high-cardinality trend/chart series tags off the real-time UI path.
       // They can be handled by background/trend fetches without blocking interaction.
       if (OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE) {
-        normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlay?.tagPath).forEach(addKey);
+        normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlay?.tagPath).forEach(addScopedRootKey);
       }
-      addKey(overlay?.widget?.timerAccTag);
-      addKey(overlay?.widget?.timerPresetTag);
-      addKey(overlay?.widget?.timerDoneTag);
-      addKey(overlay?.widget?.timerEnableTag);
+      addScopedRootKey(overlay?.widget?.timerAccTag);
+      addScopedRootKey(overlay?.widget?.timerPresetTag);
+      addScopedRootKey(overlay?.widget?.timerDoneTag);
+      addScopedRootKey(overlay?.widget?.timerEnableTag);
     });
 
     const out = Array.from(keys);
     return out.slice(0, OPC_LIVE_KEY_HARD_CAP);
-  }, [liveUpdatesEnabled, shapes, svgOverlays, liveEquipmentOverlayIds, opcTags]);
+  }, [opcUiEnabled, shapes, svgOverlays, liveEquipmentOverlayIds, opcTags, opcTagIndex]);
   const opcScopedStatusKeySetLower = useMemo(
     () =>
       new Set(
@@ -703,41 +945,38 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       ),
     [opcScopedStatusKeys]
   );
+  // Keep opcLiveStore's fast-emit path up to date with current scoped keys so
+  // popup tag updates skip the 650 ms debounce and emit within 50 ms instead.
+  useEffect(() => {
+    setPriorityKeys(opcScopedStatusKeySetLower);
+    return () => setPriorityKeys(new Set());
+  }, [opcScopedStatusKeySetLower]);
   const opcDerivedTags = useMemo(() => {
-    const tags = Array.isArray(opcTags) ? opcTags : [];
+    if (!opcUiEnabled) return [];
+    const tags =
+      Array.isArray(opcTagsAllRef.current) && opcTagsAllRef.current.length
+        ? opcTagsAllRef.current
+        : Array.isArray(opcTags)
+        ? opcTags
+        : [];
     if (!tags.length) return [];
     const keySet = opcScopedStatusKeySetLower;
     if (!keySet.size) return [];
+    const childPrefixes = buildScopedChildPrefixes(keySet);
     const out = [];
     const pushIfMatch = (tag) => {
-      if (!tag || out.length >= OPC_LIVE_KEY_HARD_CAP) return;
-      const topic = normalizeTagValue(tag?.topic || "");
-      const group = normalizeTagValue(tag?.groupName || "");
-      const name = normalizeTagValue(tag?.name || "");
-      const tagPath = normalizeTagValue(tag?.tagPath || "");
-      const candidates = [
-        topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
-        topic && group && name ? `${topic}.${group}.${name}` : "",
-        topic && tagPath ? `${topic}.${tagPath}` : "",
-        topic && name ? `${topic}.${name}` : "",
-        group && tagPath ? `${group}.${tagPath}` : "",
-        group && name ? `${group}.${name}` : "",
-        tagPath,
-        name,
-      ]
-        .map((entry) => normalizeTagValue(entry || ""))
-        .filter(Boolean);
-      const matched = candidates.some((candidate) => {
-        const lower = candidate.toLowerCase();
-        return keySet.has(lower);
-      });
+      if (!tag) return;
+      const candidates = getTagScopeCandidates(tag);
+      const matched = candidates.some((candidate) =>
+        isTagCandidateInScope(candidate, keySet, childPrefixes)
+      );
       if (matched) out.push(tag);
     };
-    for (let i = 0; i < tags.length && out.length < OPC_LIVE_KEY_HARD_CAP; i += 1) {
+    for (let i = 0; i < tags.length; i += 1) {
       pushIfMatch(tags[i]);
     }
     return out;
-  }, [opcTags, opcScopedStatusKeySetLower]);
+  }, [opcUiEnabled, opcTags, opcScopedStatusKeySetLower]);
   const [liveMenuCollapsed, setLiveMenuCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -829,16 +1068,47 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const lastOpcToastErrorRef = useRef("");
   const opcStatusStreamConnectedRef = useRef(false);
   const opcLiveValuesRef = useRef({});
-  const opcTagsAllRef = useRef([]);
+  const opcLiveUpdatedAtPublishRef = useRef(0);
   const opcConfigSignatureRef = useRef("");
   const opcTemplateSignatureRef = useRef("");
   const opcTagMappingsSignatureRef = useRef("");
   const opcMappingSetsSignatureRef = useRef("");
+  const opcPriorityHintsSignatureRef = useRef("");
+  const opcPriorityHintsLastSentAtRef = useRef(0);
+  const opcPriorityHintsNextAttemptAtRef = useRef(0);
   const liveActiveAlarmsSignatureRef = useRef("");
   const autoFitInitRef = useRef(false);
   const zoomHoldTimeoutRef = useRef(null);
   const zoomHoldIntervalRef = useRef(null);
   const rememberedButtonZoomRef = useRef(1);
+  const clearOpcLiveRuntimeState = useCallback(() => {
+    opcStatusFailureCountRef.current = 0;
+    opcStatusNextAttemptAtRef.current = 0;
+    opcStatusStreamConnectedRef.current = false;
+    opcPriorityHintsSignatureRef.current = "";
+    opcPriorityHintsLastSentAtRef.current = 0;
+    opcPriorityHintsNextAttemptAtRef.current = 0;
+    opcLiveValuesRef.current = {};
+    clearOpcLiveSnapshot();
+    opcLiveUpdatedAtPublishRef.current = 0;
+    setOpcLiveUpdatedAt(0);
+    setOpcLiveLastError("");
+  }, []);
+  const clearAppOpcUiState = useCallback(() => {
+    clearOpcLiveRuntimeState();
+    opcTagsAllRef.current = [];
+    opcConfigSignatureRef.current = "";
+    opcTemplateSignatureRef.current = "";
+    opcTagMappingsSignatureRef.current = "";
+    opcMappingSetsSignatureRef.current = "";
+    setOpcTags((prev) => (Array.isArray(prev) && prev.length ? [] : prev));
+    setOpcTemplates((prev) => (Array.isArray(prev) && prev.length ? [] : prev));
+    setOpcTagMappings((prev) => (Array.isArray(prev) && prev.length ? [] : prev));
+    setOpcMappingSets((prev) => (Array.isArray(prev) && prev.length ? [] : prev));
+    setWidgetDbValues((prev) =>
+      prev && typeof prev === "object" && Object.keys(prev).length ? {} : prev
+    );
+  }, [clearOpcLiveRuntimeState]);
   const isInteractingRef = useRef(false);
   const lastCursorSentRef = useRef({ at: 0, x: NaN, y: NaN });
   const cursorPublishInFlightRef = useRef(false);
@@ -870,6 +1140,12 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     () => `vizi_project_mode:${String(activeProjectId || "default")}`,
     [activeProjectId]
   );
+  const resolvePreferredProjectMode = useCallback((projectId, payloadMode) => {
+    const stored = getStoredProjectModeState(projectId);
+    if (stored.hasProjectValue) return stored.mode;
+    if (payloadMode != null) return normalizeProjectMode(payloadMode);
+    return stored.mode;
+  }, []);
   const projectDraftStorageKey = useMemo(
     () => getProjectDraftStorageKey(activeProjectId),
     [activeProjectId]
@@ -879,14 +1155,9 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const keys = opcScopedStatusKeySetLower;
     if (!keys || !keys.size) return {};
     const orderedKeys = Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : [];
-    const popupBoost = (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ? 32 : 0;
-    const dynamicCap = liveUiSafeMode
-      ? Math.min(24 + popupBoost, Math.max(10, keys.size + 2))
-      : Math.min(48 + popupBoost, Math.max(14, keys.size + 6));
     const out = {};
-    let count = 0;
     // Build scoped prefix set for matching sub-member keys (e.g. "Motor_MB_2.HMI_State" under scope "Motor_MB_2")
-    const scopedPrefixes = Array.from(keys).map((k) => `${k}.`);
+    const scopedPrefixes = Array.from(keys).flatMap((k) => [`${k}.`, `${k}/`]);
     // First pass: exact matches from orderedKeys
     for (const rawScopedKey of orderedKeys) {
       const scopedKey = normalizeTagValue(rawScopedKey || "");
@@ -906,20 +1177,14 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       }
       if (!hasValue) continue;
       out[nextKey] = nextValue;
-      count += 1;
-      if (count >= dynamicCap) break;
     }
     // Second pass: include sub-member keys (UDT members) whose prefix is in scope
-    if (count < dynamicCap) {
-      for (const sourceKey of Object.keys(source)) {
-        if (Object.prototype.hasOwnProperty.call(out, sourceKey)) continue;
-        const sourceLower = sourceKey.toLowerCase();
-        const inScope = scopedPrefixes.some((prefix) => sourceLower.startsWith(prefix));
-        if (!inScope) continue;
-        out[sourceKey] = source[sourceKey];
-        count += 1;
-        if (count >= dynamicCap) break;
-      }
+    for (const sourceKey of Object.keys(source)) {
+      if (Object.prototype.hasOwnProperty.call(out, sourceKey)) continue;
+      const sourceLower = sourceKey.toLowerCase();
+      const inScope = scopedPrefixes.some((prefix) => sourceLower.startsWith(prefix));
+      if (!inScope) continue;
+      out[sourceKey] = source[sourceKey];
     }
     return out;
   };
@@ -928,28 +1193,15 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     if (!isLiveMode) return list;
     const keys = opcScopedStatusKeySetLower;
     if (!keys || !keys.size) return [];
+    const childPrefixes = buildScopedChildPrefixes(keys);
     const out = [];
     for (let i = 0; i < list.length; i += 1) {
       const tag = list[i];
-      const topic = normalizeTagValue(tag?.topic || "");
-      const group = normalizeTagValue(tag?.groupName || "");
-      const name = normalizeTagValue(tag?.name || "");
-      const tagPath = normalizeTagValue(tag?.tagPath || "");
-      const candidates = [
-        topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
-        topic && group && name ? `${topic}.${group}.${name}` : "",
-        topic && tagPath ? `${topic}.${tagPath}` : "",
-        topic && name ? `${topic}.${name}` : "",
-        group && tagPath ? `${group}.${tagPath}` : "",
-        group && name ? `${group}.${name}` : "",
-        tagPath,
-        name,
-      ]
-        .map((entry) => normalizeTagValue(entry || "").toLowerCase())
-        .filter(Boolean);
-      if (!candidates.some((candidate) => keys.has(candidate))) continue;
+      const candidates = getTagScopeCandidates(tag);
+      if (!candidates.some((candidate) => isTagCandidateInScope(candidate, keys, childPrefixes))) {
+        continue;
+      }
       out.push(tag);
-      if (out.length >= OPC_CANVAS_KEY_HARD_CAP) break;
     }
     return out;
   };
@@ -1350,7 +1602,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   }, []);
 
   useEffect(() => {
-    if (!liveUpdatesEnabled) return undefined;
+    if (!opcUiEnabled) {
+      clearAppOpcUiState();
+      return undefined;
+    }
     let alive = true;
     let configNextAttemptAt = 0;
     const signatureForList = (rows, fields = []) => {
@@ -1382,7 +1637,19 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
           if (!alive) return;
         }
         try {
-          const data = await getOpcConfig();
+          const scopedKeys = Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : [];
+          if (!scopedKeys.length) {
+            opcTagsAllRef.current = [];
+            if (opcConfigSignatureRef.current !== "0") {
+              opcConfigSignatureRef.current = "0";
+              setOpcTags([]);
+            } else {
+              setOpcTags((prev) => (Array.isArray(prev) && prev.length ? [] : prev));
+            }
+            configNextAttemptAt = 0;
+            return;
+          }
+          const data = await getOpcConfig({ keys: scopedKeys });
           if (!alive) return;
           const tags = Array.isArray(data?.tags) ? data.tags : [];
           opcTagsAllRef.current = tags;
@@ -1402,7 +1669,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
           if (opcConfigSignatureRef.current !== nextSig) {
             opcConfigSignatureRef.current = nextSig;
             setOpcTags(tagsForUi);
-          } else if (isLiveMode) {
+          } else {
             setOpcTags((prev) => {
               const prevList = Array.isArray(prev) ? prev : [];
               if (prevList.length === tagsForUi.length) {
@@ -1474,7 +1741,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     loadTemplates();
     loadTagMappings();
     loadMappingSets();
-    const configPollMs = isPageVisible ? (isLiveMode ? 20000 : 30000) : 90000;
+    const configPollMs = isPageVisible ? 20000 : 90000;
     const metaPollMs = isPageVisible ? 120000 : 240000;
     const configId = setInterval(loadConfig, configPollMs);
     const templateId = setInterval(loadTemplates, metaPollMs);
@@ -1487,18 +1754,20 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       clearInterval(mappingId);
       clearInterval(mappingSetId);
     };
-  }, [isPageVisible, isLiveMode, liveUpdatesEnabled, opcScopedStatusKeys]);
+  }, [clearAppOpcUiState, isPageVisible, opcScopedStatusKeys, opcUiEnabled]);
 
   useEffect(() => {
-    const streamKeyLimit = 0;
+    const streamKeyLimit = Math.max(
+      1,
+      Math.min(OPC_STATUS_STREAM_KEY_LIMIT, OPC_LIVE_KEY_HARD_CAP)
+    );
     const streamKeys =
       Array.isArray(opcScopedStatusKeys) && opcScopedStatusKeys.length <= streamKeyLimit
         ? opcScopedStatusKeys
         : [];
     const shouldUseStream =
-      liveUpdatesEnabled &&
+      opcUiEnabled &&
       isPageVisible &&
-      isLiveMode &&
       streamKeys.length > 0;
     if (!shouldUseStream) {
       opcStatusStreamConnectedRef.current = false;
@@ -1506,11 +1775,13 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     }
     let alive = true;
     let flushTimer = null;
+    let flushRaf = 0;
     let pendingSnapshot = null;
     let pendingPatch = null;
     let pendingAtMs = 0;
     const flushPendingValues = () => {
       flushTimer = null;
+      flushRaf = 0;
       if (!alive) return;
       if (isInteractingRef.current) {
         if (!flushTimer) flushTimer = setTimeout(flushPendingValues, 360);
@@ -1552,8 +1823,12 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
           patchOpcLiveSnapshot(filteredPatch);
         }
       }
-      if (changed && atMs > 0) {
-        // Intentionally do not set App state here to avoid global rerenders on live tag ticks.
+      if (changed && atMs > 0 && !isInteractingRef.current) {
+        const lastPublishedAt = Number(opcLiveUpdatedAtPublishRef.current || 0);
+        if (atMs - lastPublishedAt >= 1000) {
+          opcLiveUpdatedAtPublishRef.current = atMs;
+          setOpcLiveUpdatedAt(atMs);
+        }
       }
     };
     const queueValuesUpdate = (kind, values, atMs) => {
@@ -1573,9 +1848,13 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         pendingPatch = null;
       }
       pendingAtMs = Number(atMs || 0);
-      if (!flushTimer) {
-        flushTimer = setTimeout(flushPendingValues, 250);
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        if (!flushRaf) {
+          flushRaf = window.requestAnimationFrame(flushPendingValues);
+        }
+        return;
       }
+      if (!flushTimer) flushTimer = setTimeout(flushPendingValues, 16);
     };
     const applyConnectedState = (data) => {
       const connectedFlag = typeof data?.connected === "boolean" ? data.connected : null;
@@ -1616,22 +1895,23 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       alive = false;
       opcStatusStreamConnectedRef.current = false;
       if (flushTimer) clearTimeout(flushTimer);
+      if (flushRaf && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(flushRaf);
+      }
       if (typeof unsubscribe === "function") unsubscribe();
     };
-  }, [liveUpdatesEnabled, isPageVisible, isLiveMode, opcScopedStatusKeys, opcScopedStatusKeySetLower]);
+  }, [isPageVisible, opcScopedStatusKeys, opcScopedStatusKeySetLower, opcUiEnabled]);
 
   useEffect(() => {
-    if (!liveUpdatesEnabled) return undefined;
+    if (!opcUiEnabled) {
+      clearOpcLiveRuntimeState();
+      return undefined;
+    }
     let alive = true;
     const hasScopedKeys =
       Array.isArray(opcScopedStatusKeys) && opcScopedStatusKeys.length > 0;
     if (!hasScopedKeys) {
-      const current = opcLiveValuesRef.current || {};
-      if (Object.keys(current).length) {
-        opcLiveValuesRef.current = {};
-        clearOpcLiveSnapshot();
-        setOpcLiveUpdatedAt(0);
-      }
+      clearOpcLiveRuntimeState();
       return undefined;
     }
     async function pollStatus() {
@@ -1682,9 +1962,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     pollStatus();
     const pollIntervalMs = !isPageVisible
       ? OPC_STATUS_POLL_MS_HIDDEN
-      : !isLiveMode
-        ? OPC_STATUS_POLL_MS_DESIGN
-        : opcActiveTagCount <= 64
+      : opcActiveTagCount <= 64
           ? OPC_STATUS_POLL_MS_LIVE_SMALL
           : opcActiveTagCount <= 256
             ? OPC_STATUS_POLL_MS_LIVE_MEDIUM
@@ -1697,9 +1975,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       alive = false;
       clearInterval(id);
     };
-  }, [isPageVisible, isLiveMode, liveUpdatesEnabled, opcActiveTagCount, opcScopedStatusKeys, opcScopedStatusKeySetLower]);
+  }, [clearOpcLiveRuntimeState, isPageVisible, opcActiveTagCount, opcScopedStatusKeys, opcScopedStatusKeySetLower, opcUiEnabled]);
 
   useEffect(() => {
+    if (!opcUiEnabled) return;
     const allTags = Array.isArray(opcTagsAllRef.current) ? opcTagsAllRef.current : [];
     if (!allTags.length) return;
     const next = filterOpcTagsToUiScope(allTags);
@@ -1717,7 +1996,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       }
       return next;
     });
-  }, [isLiveMode, opcScopedStatusKeySetLower]);
+  }, [isLiveMode, opcScopedStatusKeySetLower, opcUiEnabled]);
 
   useEffect(() => {
     const msg = String(opcLiveLastError || "").trim();
@@ -1731,7 +2010,12 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   }, [opcLiveLastError]);
 
   useEffect(() => {
-    if (PERF_HARD_REALTIME_MODE) return undefined;
+    if (PERF_HARD_REALTIME_MODE || !opcUiEnabled) {
+      setWidgetDbValues((prev) =>
+        prev && typeof prev === "object" && Object.keys(prev).length ? {} : prev
+      );
+      return undefined;
+    }
     let alive = true;
     const pollSessionKeepAlive = async () => {
       if (!alive) return;
@@ -1819,13 +2103,13 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     pollWidgetDbValues();
     const id = setInterval(
       pollWidgetDbValues,
-      isPageVisible ? (isLiveMode ? 4000 : 7000) : 15000
+      isPageVisible ? 4000 : 15000
     );
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [svgOverlays, isPageVisible, isLiveMode, liveUpdatesEnabled]);
+  }, [svgOverlays, isPageVisible, opcUiEnabled]);
 
   const opcTemplateMap = useMemo(() => {
     const map = new Map();
@@ -1838,11 +2122,15 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     (opcTagMappings || []).forEach((m) => {
       const key = String(m.tag_key || "").trim();
       if (!key) return;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push({
+      const row = {
         field: String(m.field ?? ""),
         state: String(m.state ?? ""),
         color: String(m.color ?? ""),
+      };
+      const keys = Array.from(new Set([key, key.toLowerCase()].filter(Boolean)));
+      keys.forEach((entryKey) => {
+        if (!map.has(entryKey)) map.set(entryKey, []);
+        map.get(entryKey).push(row);
       });
     });
     return map;
@@ -1887,9 +2175,25 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   };
 
   const tagStateColorsByPath = useMemo(() => {
+    if (!isLiveMode || liveUiSafeMode) return _EMPTY_MAP;
     const map = new Map();
-    if (liveUiSafeMode) return map;
     const live = opcLiveValues || {};
+    const getDefaultHmiStateColor = (rawValue) => {
+      const text = String(rawValue ?? "").trim();
+      if (!text) return "";
+      const lower = text.toLowerCase();
+      if (lower.includes("starting")) return "#f59e0b";
+      if (lower.includes("started") || lower.includes("running")) return "#16a34a";
+      if (lower.includes("stopping")) return "#f97316";
+      if (lower.includes("stopped") || lower.includes("stop")) return "#6b7280";
+      const num = Number(text);
+      if (!Number.isFinite(num)) return "";
+      if (num === 1) return "#6b7280";
+      if (num === 2) return "#f59e0b";
+      if (num === 4) return "#16a34a";
+      if (num === 6) return "#f97316";
+      return "";
+    };
 
     const inferGroupName = (tag) => {
       const explicit = normalizeTagValue(tag?.groupName || "");
@@ -1966,7 +2270,6 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         : normalizedSetMappings.length
         ? normalizedSetMappings
         : resolveTemplateStateMappings(templateName);
-      if (!mappings.length) return;
       const fieldName = String(tag?.name || "").trim();
       const valStr = String(value).trim();
       const valNum = Number(value);
@@ -1992,13 +2295,21 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         if (valBool !== null && stateBool !== null && valBool === stateBool) return true;
         return stateLower === valLower;
       });
-      if (match?.color) {
-        const color = String(match.color);
-        keyCandidates.forEach((k) => map.set(k, color));
+      const fallbackColor =
+        isStateTagKey(fieldName) || isStateTagKey(tagPath)
+          ? getDefaultHmiStateColor(value)
+          : "";
+      const resolvedColor = String(match?.color || fallbackColor || "").trim();
+      if (resolvedColor) {
+        const color = resolvedColor;
+        keyCandidates.forEach((k) => {
+          map.set(k, color);
+          map.set(String(k).toLowerCase(), color);
+        });
       }
     });
     return map;
-  }, [opcDerivedTags, opcLiveValues, opcTemplateMap, opcTagMappingMap, opcMappingSetMap, liveUiSafeMode]);
+  }, [isLiveMode, opcDerivedTags, opcLiveValues, opcTemplateMap, opcTagMappingMap, opcMappingSetMap, liveUiSafeMode]);
 
   const routeColorsBySvgKey = useMemo(() => {
     const map = new Map();
@@ -2127,8 +2438,8 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   }, [projectRouteRows]);
 
   const routeStrokeColorByGroupPath = useMemo(() => {
+    if (!isLiveMode || liveUiSafeMode) return _EMPTY_MAP;
     const map = new Map();
-    if (liveUiSafeMode) return map;
     const live = opcLiveValues || {};
 
     const readLiveTagValue = (tag, topic) => {
@@ -2179,11 +2490,11 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     });
 
     return map;
-  }, [opcDerivedTags, opcLiveValues, routeColorByRouteNumber, liveUiSafeMode]);
+  }, [isLiveMode, opcDerivedTags, opcLiveValues, routeColorByRouteNumber, liveUiSafeMode]);
 
   const svgLiveValuesByGroupPath = useMemo(() => {
+    if (!isLiveMode || liveUiSafeMode) return _EMPTY_MAP;
     const map = new Map();
-    if (liveUiSafeMode) return map;
     const live = opcLiveValues || {};
 
     const readLiveTagValue = (tag, topic) => {
@@ -2244,7 +2555,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     });
 
     return map;
-  }, [opcDerivedTags, opcLiveValues, opcHighLoadUiMode, liveUiSafeMode]);
+  }, [isLiveMode, opcDerivedTags, opcLiveValues, opcHighLoadUiMode, liveUiSafeMode]);
 
   const liveActiveAlarmsComputed = useMemo(() => {
     const live = opcLiveValues || {};
@@ -2362,6 +2673,107 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     if (allTags.length) return allTags;
     return Array.isArray(opcTags) ? opcTags : [];
   };
+  function bumpLiveEquipmentFastTick(force = false) {
+    if (!liveEquipmentActiveRef.current) return;
+    if (!force && isInteractingRef.current) return;
+    const now = Date.now();
+    const elapsed = now - Number(liveEquipmentFastTickLastAtRef.current || 0);
+    if (force || elapsed >= LIVE_EQUIPMENT_FAST_TICK_MIN_MS) {
+      if (liveEquipmentFastTickTimerRef.current) {
+        window.clearTimeout(liveEquipmentFastTickTimerRef.current);
+        liveEquipmentFastTickTimerRef.current = 0;
+      }
+      liveEquipmentFastTickLastAtRef.current = now;
+      startTransition(() => {
+        setLiveEquipmentOpcTick((x) => (x + 1) % 1000000);
+      });
+      return;
+    }
+    if (liveEquipmentFastTickTimerRef.current) return;
+    const waitMs = Math.max(0, LIVE_EQUIPMENT_FAST_TICK_MIN_MS - elapsed);
+    liveEquipmentFastTickTimerRef.current = window.setTimeout(() => {
+      liveEquipmentFastTickTimerRef.current = 0;
+      if (!liveEquipmentActiveRef.current || isInteractingRef.current) return;
+      liveEquipmentFastTickLastAtRef.current = Date.now();
+      startTransition(() => {
+        setLiveEquipmentOpcTick((x) => (x + 1) % 1000000);
+      });
+    }, waitMs);
+  }
+  function applyLiveEquipmentFastValues(values, options = {}) {
+    const src = values && typeof values === "object" ? values : {};
+    const patch = {};
+    Object.entries(src).forEach(([rawKey, value]) => {
+      const key = normalizeTagValue(rawKey || "");
+      if (!key) return;
+      patch[key] = value;
+      const lower = key.toLowerCase();
+      if (lower !== key) patch[lower] = value;
+    });
+    if (!Object.keys(patch).length) return false;
+    const current = opcLiveValuesRef.current || {};
+    const next = { ...current };
+    let changed = false;
+    Object.entries(patch).forEach(([key, value]) => {
+      if (value === null) {
+        if (Object.prototype.hasOwnProperty.call(next, key)) {
+          delete next[key];
+          changed = true;
+        }
+        return;
+      }
+      if (!Object.is(next[key], value)) {
+        next[key] = value;
+        changed = true;
+      }
+    });
+    if (!changed) return false;
+    opcLiveValuesRef.current = next;
+    patchOpcLiveSnapshot(patch);
+    bumpLiveEquipmentFastTick(options?.forceTick === true);
+    return true;
+  }
+  function getLiveEquipmentRefreshKeys(overlay, preferredKeys = []) {
+    const out = [];
+    const seen = new Set();
+    const addKey = (rawKey) => {
+      const key = normalizeTagValue(rawKey || "");
+      if (!key) return;
+      const lower = key.toLowerCase();
+      if (seen.has(lower)) return;
+      seen.add(lower);
+      out.push(key);
+    };
+    (Array.isArray(preferredKeys) ? preferredKeys : []).forEach(addKey);
+    (Array.isArray(liveEquipmentFastStatusKeys) ? liveEquipmentFastStatusKeys : []).forEach(addKey);
+    const overlayPath = normalizeTagValue(overlay?.tagPath || "");
+    if (overlayPath) {
+      addKey(overlayPath);
+      LIVE_EQUIPMENT_STATUS_TAG_ALIASES.forEach((alias) => {
+        const member = normalizeTagValue(alias || "");
+        if (!member) return;
+        addKey(`${overlayPath}.${member}`);
+        addKey(`${overlayPath}/${member}`);
+      });
+    }
+    return out.slice(0, 96);
+  }
+  function requestLiveEquipmentFastRefresh(overlay, preferredKeys = [], delays = LIVE_EQUIPMENT_WRITE_REFRESH_DELAYS_MS) {
+    const keys = getLiveEquipmentRefreshKeys(overlay, preferredKeys);
+    if (!keys.length) return;
+    const schedule = Array.isArray(delays) && delays.length ? delays : [0];
+    schedule.forEach((delayMs) => {
+      window.setTimeout(async () => {
+        if (!liveEquipmentActiveRef.current || !isPageVisible || !liveUpdatesEnabled) return;
+        try {
+          const data = await getOpcStatus({ keys });
+          applyLiveEquipmentFastValues(data?.values, { forceTick: true });
+        } catch {
+          // keep popup refresh opportunistic and silent
+        }
+      }, Math.max(0, Number(delayMs) || 0));
+    });
+  }
   const findOpcConfiguredTagPathMatch = (overlay, candidates) => {
     const tagPath = normalizeTagValue(overlay?.tagPath || "");
     const rawParts = tagPath.split(".").map((x) => String(x || "").trim()).filter(Boolean);
@@ -2714,21 +3126,46 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       });
       opcLiveValuesRef.current = { ...(opcLiveValuesRef.current || {}), ...patch };
       patchOpcLiveSnapshot(patch);
+      bumpLiveEquipmentFastTick(true);
     };
     try {
       setLiveEquipmentWriteBusyByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: true }));
       setLiveEquipmentWriteErrorByOverlay((prev) => ({ ...(prev || {}), [writeStateKey || overlayId]: "" }));
       await writeOpcValue({ tagKey, legacyTagKey, value, uaType });
       applyOptimisticOpcValue(value);
+      requestLiveEquipmentFastRefresh(overlay, [tagKey, legacyTagKey], [0, ...LIVE_EQUIPMENT_WRITE_REFRESH_DELAYS_MS]);
       if (isPulse) {
         window.setTimeout(async () => {
           try {
             await writeOpcValue({ tagKey, legacyTagKey, value: pulseResetValue, uaType });
             applyOptimisticOpcValue(pulseResetValue);
+            requestLiveEquipmentFastRefresh(overlay, [tagKey, legacyTagKey]);
           } catch {
             // ignore pulse reset errors
           }
-        }, 180);
+        }, LIVE_EQUIPMENT_PULSE_RESET_DELAY_MS);
+      } else {
+        // Confirmation check: if the PLC reverts the written value shortly after the write, warn the user.
+        // Pulse writes skip this because the value is intentionally reset.
+        const writtenValue = value;
+        const confirmKey = tagKey ? normalizeTagValue(tagKey).toLowerCase() : "";
+        window.setTimeout(() => {
+          if (!confirmKey) return;
+          const live = getOpcLiveSnapshot();
+          const liveRaw =
+            Object.prototype.hasOwnProperty.call(live, confirmKey)
+              ? live[confirmKey]
+              : Object.prototype.hasOwnProperty.call(live, tagKey || "")
+              ? live[tagKey]
+              : undefined;
+          if (liveRaw === undefined) return; // tag not in scope — can't confirm
+          // eslint-disable-next-line eqeqeq
+          if (liveRaw != writtenValue) {
+            toastError(
+              `Write to ${tagKey} may not have been applied — PLC reports ${String(liveRaw)}`
+            );
+          }
+        }, LIVE_EQUIPMENT_WRITE_CONFIRM_MS);
       }
       toastSuccess(`Wrote ${String(value)} to ${tagKey}`);
     } catch (err) {
@@ -4597,14 +5034,14 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
 
     const currentOverlay =
       selectedOverlayIds.length === 1 && selectedIds.length === 0
-        ? svgOverlays.find((o) => o.id === selectedOverlayIds[0]) || null
+        ? svgOverlayById.get(String(selectedOverlayIds[0] || "")) || null
         : null;
     const current = normalizeTagValue(currentOverlay?.tagPath || "");
     if (current && !options.some((opt) => opt.value === current)) {
       options.push({ value: current, label: current, group: "Custom" });
     }
     return options;
-  }, [isLiveMode, opcTags, selectedOverlayIds, selectedIds, svgOverlays]);
+  }, [isLiveMode, opcTags, selectedOverlayIds, selectedIds, svgOverlayById]);
 
 
   const PAN_SPEED = 0.05; // ?? adjust this to taste
@@ -4619,7 +5056,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
 
     const currentOverlay =
       selectedOverlayIds.length === 1 && selectedIds.length === 0
-        ? svgOverlays.find((o) => o.id === selectedOverlayIds[0]) || null
+        ? svgOverlayById.get(String(selectedOverlayIds[0] || "")) || null
         : null;
     const current = normalizeTagValue(currentOverlay?.tagPath || "");
     if (current && !filtered.some((opt) => opt.value === current)) {
@@ -4631,12 +5068,114 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     contextSvgTagQuery,
     selectedOverlayIds,
     selectedIds,
-    svgOverlays,
+    svgOverlayById,
     svgTagGroupMenuOptions,
   ]);
 
   useEffect(() => { shapesRef.current = shapes; }, [shapes]);
   useEffect(() => { overlaysRef.current = svgOverlays; }, [svgOverlays]);
+  useEffect(() => {
+    const cache = overlayLocalBBoxCacheRef.current;
+    if (!(cache instanceof Map)) return;
+    const active = new Set();
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((o) => {
+      const id = String(o?.id || "").trim();
+      if (!id) return;
+      active.add(id);
+      if (o?.bbox) {
+        cache.set(id, {
+          x: Number(o.bbox.x || 0),
+          y: Number(o.bbox.y || 0),
+          width: Number(o.bbox.width || 0),
+          height: Number(o.bbox.height || 0),
+        });
+      }
+    });
+    Array.from(cache.keys()).forEach((id) => {
+      if (!active.has(id)) cache.delete(id);
+    });
+  }, [svgOverlays]);
+  const isPointerInteractingForSnapCache = Boolean(
+    dragAll || dragHandle || overlayResize || shapeResize || marquee || canvasPanDrag || drawing
+  );
+
+  // Rebuild polyline snap point cache after renders. Runs OUTSIDE the mousemove hot path so
+  // getBBox() and transform math never block pointer events.
+  useEffect(() => {
+    if (isPointerInteractingForSnapCache) return;
+    const overlayPoints = [];
+    for (const o of overlaysRef.current || []) {
+      const key = String(o?.id || "").trim();
+      const stored = o?.bbox;
+      let bb = stored;
+      if (!bb) {
+        bb = overlayLocalBBoxCacheRef.current?.get(key) || null;
+      }
+      if (!bb) {
+        const node = overlayRefs.current?.get(key);
+        if (node) {
+          try {
+            bb = node.getBBox();
+            if (bb) {
+              overlayLocalBBoxCacheRef.current?.set(key, {
+                x: Number(bb.x || 0),
+                y: Number(bb.y || 0),
+                width: Number(bb.width || 0),
+                height: Number(bb.height || 0),
+              });
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (!bb) continue;
+      const sx = Number(o?.scaleX ?? o?.scale ?? 1) || 1;
+      const sy = Number(o?.scaleY ?? o?.scale ?? 1) || 1;
+      const wr = { x: Number(o?.tx || 0), y: Number(o?.ty || 0), w: bb.width * sx, h: bb.height * sy };
+      const cx = wr.x + wr.w / 2;
+      const cy = wr.y + wr.h / 2;
+      const eType = String(o?.eType || "").trim().toLowerCase();
+      if (eType.startsWith("bin")) {
+        overlayPoints.push({ x: wr.x + wr.w * 0.42, y: wr.y + wr.h });
+      } else {
+        overlayPoints.push(
+          { x: cx, y: wr.y },
+          { x: wr.x + wr.w, y: cy },
+          { x: cx, y: wr.y + wr.h },
+          { x: wr.x, y: cy }
+        );
+      }
+    }
+    const shapePoints = [];
+    const shapeEndpoints = [];
+    for (const s of shapesRef.current || []) {
+      if (!Array.isArray(s?.points)) continue;
+      const shapeId = String(s?.id || "");
+      if (s.points.length >= 2) {
+        const first = s.points[0];
+        const last = s.points[s.points.length - 1];
+        if (Number.isFinite(first?.x) && Number.isFinite(first?.y)) {
+          shapeEndpoints.push({ shapeId, index: 0, x: Number(first.x), y: Number(first.y) });
+        }
+        if (Number.isFinite(last?.x) && Number.isFinite(last?.y)) {
+          shapeEndpoints.push({
+            shapeId,
+            index: s.points.length - 1,
+            x: Number(last.x),
+            y: Number(last.y),
+          });
+        }
+      }
+      for (const pt of s.points) {
+        if (Number.isFinite(pt?.x) && Number.isFinite(pt?.y))
+          shapePoints.push({ x: pt.x, y: pt.y });
+      }
+    }
+    polylineSnapPointsCacheRef.current = { overlayPoints, shapePoints, shapeEndpoints };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [svgOverlays, shapes, isPointerInteractingForSnapCache]);
+
   useEffect(() => { selPolyRef.current = selectedIds; }, [selectedIds]);
   useEffect(() => { selOverRef.current = selectedOverlayIds; }, [selectedOverlayIds]);
   useEffect(() => {
@@ -5076,11 +5615,14 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         ? requestedActiveId
         : String(incoming?.[0]?.id || "");
     const active = incoming.find((s) => s.id === nextActiveId) || incoming[0];
-    if (Object.prototype.hasOwnProperty.call(data || {}, "projectMode")) {
-      setProjectMode(normalizeProjectMode(data?.projectMode));
-    } else {
-      setProjectMode(readStoredProjectMode(options?.projectId || activeProjectIdRef.current));
-    }
+    setProjectMode(
+      resolvePreferredProjectMode(
+        options?.projectId || activeProjectIdRef.current,
+        Object.prototype.hasOwnProperty.call(data || {}, "projectMode")
+          ? data?.projectMode
+          : null
+      )
+    );
     const normalizedGroups = normalizeLiveMenuGroups(data?.liveMenuGroups, incoming);
     liveMenuGroupsRef.current = normalizedGroups;
     setLiveMenuGroups(normalizedGroups);
@@ -5131,11 +5673,14 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         ? requestedActiveId
         : String(incoming?.[0]?.id || "");
     const active = incoming.find((s) => s.id === nextActiveId) || incoming[0];
-    if (Object.prototype.hasOwnProperty.call(data || {}, "projectMode")) {
-      setProjectMode(normalizeProjectMode(data?.projectMode));
-    } else {
-      setProjectMode(readStoredProjectMode(options?.projectId || activeProjectIdRef.current));
-    }
+    setProjectMode(
+      resolvePreferredProjectMode(
+        options?.projectId || activeProjectIdRef.current,
+        Object.prototype.hasOwnProperty.call(data || {}, "projectMode")
+          ? data?.projectMode
+          : null
+      )
+    );
     const normalizedGroups = normalizeLiveMenuGroups(data?.liveMenuGroups, incoming);
     liveMenuGroupsRef.current = normalizedGroups;
     setLiveMenuGroups(normalizedGroups);
@@ -6294,6 +6839,19 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       } else if (key === "v") {
         e.preventDefault();
         pasteClipboard();
+      } else if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if (key === "z" && e.shiftKey) {
+        e.preventDefault();
+        redo();
+      } else if (key === "y") {
+        e.preventDefault();
+        redo();
+      } else if (key === "d") {
+        e.preventDefault();
+        e.stopPropagation();
+        duplicateSelectedStable();
       }
     }
 
@@ -6303,8 +6861,8 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
 
   useEffect(() => {
     function onDown() {
-      if (contextMenu) setContextMenu(null);
-      if (polyHandleMenu) setPolyHandleMenu(null);
+      setContextMenu(null);
+      setPolyHandleMenu(null);
     }
     function onKey(e) {
       if (e.key === "Escape") setContextMenu(null);
@@ -6315,7 +6873,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [contextMenu]);
+  }, []);
 
   useEffect(() => {
     if (!contextMenu) {
@@ -6344,76 +6902,6 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   }, [projectName]);
 
 
-  useEffect(() => {
-    function isTypingTarget(t) {
-      if (!t) return false;
-      const tag = (t.tagName || "").toLowerCase();
-      return tag === "input" || tag === "textarea" || t.isContentEditable;
-    }
-
-    function onKeyDown(e) {
-      if (isLiveMode) return;
-      if (isTypingTarget(e.target)) return;
-
-      const isMac = navigator.platform.toLowerCase().includes("mac");
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-
-      if (!mod) return;
-
-      const k = (e.key || "").toLowerCase();
-
-      // Undo: Cmd/Ctrl+Z
-      if (k === "z" && !e.shiftKey) {
-        e.preventDefault();
-        undo();
-        return;
-      }
-
-      // Redo: Cmd/Ctrl+Shift+Z (common on Mac)
-      if (k === "z" && e.shiftKey) {
-        e.preventDefault();
-        redo();
-        return;
-      }
-
-      // Redo: Cmd/Ctrl+Y (common on Windows)
-      if (k === "y") {
-        e.preventDefault();
-        redo();
-        return;
-      }
-    }
-
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [isLiveMode]);
-
-
-  useEffect(() => {
-    function isTypingTarget(t) {
-      if (!t) return false;
-      const tag = (t.tagName || "").toLowerCase();
-      return tag === "input" || tag === "textarea" || t.isContentEditable;
-    }
-
-    function onKeyDown(e) {
-      if (isLiveMode) return;
-      if (isTypingTarget(e.target)) return;
-
-      const key = (e.key || "").toLowerCase();
-      const isMac = navigator.platform.toLowerCase().includes("mac");
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-
-      if (mod && key === "d") {
-        e.preventDefault();
-        e.stopPropagation();
-        duplicateSelectedStable();
-      }
-    }
-
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [isLiveMode]);
 
 
 
@@ -6436,6 +6924,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [showHUD, setShowHUD] = useState(false);
   const [showMainDrawer, setShowMainDrawer] = useState(false);
   const [drawerView, setDrawerView] = useState("ai");
+  const [opcDrawerPriorityHintKeys, setOpcDrawerPriorityHintKeys] = useState([]);
   const [serverDiagnosticsInitialTab, setServerDiagnosticsInitialTab] = useState("diagnostics");
   const [databaseTab, setDatabaseTab] = useState("data");
   const [showLiveMenuDrawer, setShowLiveMenuDrawer] = useState(false);
@@ -8441,7 +8930,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (selectedIds.length === 1) {
       const id = selectedIds[0];
-      const s = shapes.find((x) => x.id === id);
+      const s = shapeById.get(String(id || ""));
       if (!s) return null;
 
       if (s.type === "text") return "Text";
@@ -8453,16 +8942,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (selectedOverlayIds.length === 1) {
       const id = selectedOverlayIds[0];
-      const o = svgOverlays.find((x) => x.id === id);
+      const o = svgOverlayById.get(String(id || ""));
       if (o?.widget) return "Widget";
       return "SVG";
     }
     return null;
-  }, [isSingle, selectedIds, selectedOverlayIds, shapes, svgOverlays]);
+  }, [isSingle, selectedIds, selectedOverlayIds, shapeById, svgOverlayById]);
 
   const singleOverlay = useMemo(
-    () => svgOverlays.find((o) => o.id === singleSelectedOverlayId),
-    [svgOverlays, singleSelectedOverlayId]
+    () => svgOverlayById.get(String(singleSelectedOverlayId || "")) || null,
+    [svgOverlayById, singleSelectedOverlayId]
   );
   const singleSvgTemplateKey =
     singleOverlay?.sourceKey ||
@@ -8491,9 +8980,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     showHUD &&
     selectedIds.length === 0 &&
     selectedOverlayIds.length === 1 &&
-    !!svgOverlays.find(
-      (o) => String(o?.id || "") === String(selectedOverlayIds[0] || "") && !o?.widget
-    );
+    !!(() => {
+      const overlay = svgOverlayById.get(String(selectedOverlayIds[0] || ""));
+      return overlay && !overlay?.widget;
+    })();
 
   function isShapeSelectableByMode(shape) {
     if (!shape || typeof shape !== "object") return false;
@@ -8527,8 +9017,37 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function setOverlayRef(id, node) {
     if (!id) return;
-    if (node) overlayRefs.current.set(id, node);
-    else overlayRefs.current.delete(id);
+    const key = String(id || "").trim();
+    if (!key) return;
+    if (node) {
+      overlayRefs.current.set(key, node);
+      const overlay = svgOverlayById.get(key);
+      if (overlay?.bbox) {
+        overlayLocalBBoxCacheRef.current.set(key, {
+          x: Number(overlay.bbox.x || 0),
+          y: Number(overlay.bbox.y || 0),
+          width: Number(overlay.bbox.width || 0),
+          height: Number(overlay.bbox.height || 0),
+        });
+      } else {
+        try {
+          const bb = node.getBBox();
+          if (bb) {
+            overlayLocalBBoxCacheRef.current.set(key, {
+              x: Number(bb.x || 0),
+              y: Number(bb.y || 0),
+              width: Number(bb.width || 0),
+              height: Number(bb.height || 0),
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
+    overlayRefs.current.delete(key);
+    overlayLocalBBoxCacheRef.current.delete(key);
   }
 
   function svgPoint(evt, options = {}) {
@@ -8563,38 +9082,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
       y = (p.y - (pan?.y || 0)) / (zoom || 1);
     }
 
-    if (tool === "polyline" && !evt.altKey) {
+    if (tool === "polyline" && !evt.altKey && options?.disablePolylineSnap !== true) {
+      // Use pre-built cache — no getBBox()/DOM calls during mousemove.
       const snapRadius = POLYLINE_OVERLAY_SNAP_RADIUS_PX / (zoom || 1);
+      const cache = polylineSnapPointsCacheRef.current;
+      const allPoints = cache
+        ? [...cache.overlayPoints, ...cache.shapePoints]
+        : [];
       let best = null;
       let bestDist = Infinity;
-      for (const o of svgOverlays) {
-        const bb = overlayLocalBBox(o.id);
-        if (!bb) continue;
-        const candidates = getOverlayConnectionSnapPoints(o, bb);
-        for (const c of candidates) {
-          const dx = x - c.x;
-          const dy = y - c.y;
-          const d = Math.hypot(dx, dy);
-          if (d < bestDist) {
-            bestDist = d;
-            best = c;
-          }
-        }
-      }
-      // Also snap to existing polyline vertices for clean joins.
-      for (const s of shapesRef.current || []) {
-        if (!Array.isArray(s?.points)) continue;
-        for (const ptNode of s.points) {
-          const px = Number(ptNode?.x);
-          const py = Number(ptNode?.y);
-          if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
-          const dx = x - px;
-          const dy = y - py;
-          const d = Math.hypot(dx, dy);
-          if (d < bestDist) {
-            bestDist = d;
-            best = { x: px, y: py };
-          }
+      for (const c of allPoints) {
+        const dx = x - c.x;
+        const dy = y - c.y;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) {
+          bestDist = d;
+          best = c;
         }
       }
       if (best && bestDist <= snapRadius) {
@@ -8710,21 +9213,42 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }
 
   // ---------- Overlay bbox helpers ----------
-  function overlayLocalBBox(overlayId) {
-    // ? FIRST: use stored bbox if present (this is your kewidth/keheight box)
-    const o = svgOverlays.find((x) => x.id === overlayId);
-    if (o?.bbox) return o.bbox;
+  const overlayLocalBBox = useCallback((overlayId) => {
+    const key = String(overlayId || "").trim();
+    if (!key) return null;
+    const o = svgOverlayById.get(key);
+    if (o?.bbox) {
+      const next = {
+        x: Number(o.bbox.x || 0),
+        y: Number(o.bbox.y || 0),
+        width: Number(o.bbox.width || 0),
+        height: Number(o.bbox.height || 0),
+      };
+      overlayLocalBBoxCacheRef.current.set(key, next);
+      return next;
+    }
+
+    const cached = overlayLocalBBoxCacheRef.current.get(key);
+    if (cached) return cached;
 
     // then try live DOM bbox
-    const node = overlayRefs.current.get(overlayId);
+    const node = overlayRefs.current.get(key);
     if (node) {
       try {
-        return node.getBBox();
+        const bb = node.getBBox();
+        const next = {
+          x: Number(bb.x || 0),
+          y: Number(bb.y || 0),
+          width: Number(bb.width || 0),
+          height: Number(bb.height || 0),
+        };
+        overlayLocalBBoxCacheRef.current.set(key, next);
+        return next;
       } catch { }
     }
 
     return null;
-  }
+  }, [svgOverlayById]);
 
   function overlayScaleX(o) {
     const sx = Number(o?.scaleX);
@@ -8861,6 +9385,224 @@ const CONTENT_FIT_HEADROOM = 0.94;
     });
   }
 
+  function buildShapeResizePreviewTransform(preview) {
+    const startBBox = preview?.startBBox || { x: 0, y: 0 };
+    const sx = Number(preview?.sx);
+    const sy = Number(preview?.sy);
+    const dx = Number(preview?.dx);
+    const dy = Number(preview?.dy);
+    if (
+      !Number.isFinite(sx) ||
+      !Number.isFinite(sy) ||
+      !Number.isFinite(dx) ||
+      !Number.isFinite(dy)
+    ) {
+      return "";
+    }
+    const x0 = Number(startBBox.x || 0);
+    const y0 = Number(startBBox.y || 0);
+    return `translate(${x0 + dx} ${y0 + dy}) scale(${sx} ${sy}) translate(${-x0} ${-y0})`;
+  }
+
+  function captureShapeResizePreviewNodes(rawIds) {
+    const svg = svgRef.current;
+    if (!svg) {
+      shapeResizePreviewNodesRef.current = [];
+      return [];
+    }
+    const ids = (Array.isArray(rawIds) ? rawIds : [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean);
+    const seen = new Set();
+    const nodes = [];
+    ids.forEach((id) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const selector = `[data-shape-id="${escapeCssSelectorValue(id)}"]`;
+      const node = svg.querySelector(selector);
+      if (!node || typeof node.setAttribute !== "function") return;
+      nodes.push({
+        id,
+        node,
+        baseTransform: String(node.getAttribute("transform") || "").trim(),
+      });
+    });
+    shapeResizePreviewNodesRef.current = nodes;
+    const selectionNode = shapeSelectionUiRef.current;
+    if (selectionNode && typeof selectionNode.getAttribute === "function") {
+      shapeResizeSelectionBaseTransformRef.current = String(selectionNode.getAttribute("transform") || "").trim();
+    } else {
+      shapeResizeSelectionBaseTransformRef.current = "";
+    }
+    return nodes;
+  }
+
+  function applyShapeResizePreviewTransform(preview) {
+    const transform = buildShapeResizePreviewTransform(preview);
+    const ids = Array.isArray(preview?.selectedIds) ? preview.selectedIds : [];
+    let entries = shapeResizePreviewNodesRef.current;
+    const needsRefresh =
+      !Array.isArray(entries) ||
+      entries.length !== ids.length ||
+      entries.some((entry) => !entry?.node?.isConnected);
+    if (needsRefresh) {
+      entries = captureShapeResizePreviewNodes(ids);
+    }
+    if (!transform || !Array.isArray(entries) || !entries.length) return false;
+    entries.forEach((entry) => {
+      if (!entry?.node || typeof entry.node.setAttribute !== "function") return;
+      const base = String(entry.baseTransform || "").trim();
+      const nextTransform = base ? `${base} ${transform}` : transform;
+      entry.node.setAttribute("transform", nextTransform);
+    });
+    const selectionNode = shapeSelectionUiRef.current;
+    if (selectionNode && typeof selectionNode.setAttribute === "function") {
+      const base = String(shapeResizeSelectionBaseTransformRef.current || "").trim();
+      const nextTransform = base ? `${base} ${transform}` : transform;
+      selectionNode.setAttribute("transform", nextTransform);
+    }
+    return true;
+  }
+
+  function clearShapeResizePreviewTransform() {
+    const entries = Array.isArray(shapeResizePreviewNodesRef.current)
+      ? shapeResizePreviewNodesRef.current
+      : [];
+    entries.forEach((entry) => {
+      if (!entry?.node || !entry.node.isConnected) return;
+      const base = String(entry.baseTransform || "").trim();
+      if (base) entry.node.setAttribute("transform", base);
+      else entry.node.removeAttribute("transform");
+    });
+    const selectionNode = shapeSelectionUiRef.current;
+    if (selectionNode && selectionNode.isConnected) {
+      const base = String(shapeResizeSelectionBaseTransformRef.current || "").trim();
+      if (base) selectionNode.setAttribute("transform", base);
+      else selectionNode.removeAttribute("transform");
+    }
+    shapeResizePreviewNodesRef.current = [];
+    shapeResizeSelectionBaseTransformRef.current = "";
+    shapeResizePreviewRef.current = {
+      active: false,
+      moved: false,
+      sx: 1,
+      sy: 1,
+      dx: 0,
+      dy: 0,
+      startBBox: null,
+      selectedIds: [],
+    };
+  }
+
+  function projectShapeFromResizeSource(src, startBBox, sx, sy, dx, dy) {
+    if (!src) return null;
+    const baseX = Number(startBBox?.x || 0);
+    const baseY = Number(startBBox?.y || 0);
+    if ((src.type === "polyline" || Array.isArray(src.points)) && Array.isArray(src.points)) {
+      return {
+        id: src.id,
+        type: src.type,
+        points: src.points.map((pt) => ({
+          x: baseX + (Number(pt?.x || 0) - baseX) * sx + dx,
+          y: baseY + (Number(pt?.y || 0) - baseY) * sy + dy,
+        })),
+      };
+    }
+    if (src.type === "text") {
+      const newX = baseX + (Number(src.x || 0) - baseX) * sx + dx;
+      const newY = baseY + (Number(src.y || 0) - baseY) * sy + dy;
+      const uniform = Math.max(0.05, Math.min(sx, sy));
+      return {
+        id: src.id,
+        type: src.type,
+        x: newX,
+        y: newY,
+        fontSize: Math.max(1, Number(src.fontSize || 24) * uniform),
+      };
+    }
+    if (src.type === "rect" || src.type === "circle") {
+      const x0 = Number(src.x || 0);
+      const y0 = Number(src.y || 0);
+      const w0 = Math.max(0, Number(src.width || 0));
+      const h0 = Math.max(0, Number(src.height || 0));
+      const x1 = x0 + w0;
+      const y1 = y0 + h0;
+      let nx0 = baseX + (x0 - baseX) * sx + dx;
+      let ny0 = baseY + (y0 - baseY) * sy + dy;
+      let nx1 = baseX + (x1 - baseX) * sx + dx;
+      let ny1 = baseY + (y1 - baseY) * sy + dy;
+      if (src.type === "circle") {
+        const size = Math.max(Math.abs(nx1 - nx0), Math.abs(ny1 - ny0));
+        nx1 = nx0 + (nx1 >= nx0 ? size : -size);
+        ny1 = ny0 + (ny1 >= ny0 ? size : -size);
+      }
+      return {
+        id: src.id,
+        type: src.type,
+        x: Math.min(nx0, nx1),
+        y: Math.min(ny0, ny1),
+        width: Math.abs(nx1 - nx0),
+        height: Math.abs(ny1 - ny0),
+      };
+    }
+    return null;
+  }
+
+  // Clear preview ref when drawing ends (handles all the setDrawing(null) call sites).
+  useEffect(() => {
+    if (!drawing) activeDrawPreviewRef.current = null;
+  }, [drawing]);
+
+  // After every React commit (OPC updates, etc.) re-apply the draw preview so React doesn't
+  // overwrite our direct DOM changes with stale shapes state before the next paint.
+  // useLayoutEffect runs synchronously before paint — user never sees the jump.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    const preview = activeDrawPreviewRef.current;
+    if (preview) _applyShapeDrawPreviewDOM(svgRef.current, preview.id, preview.update);
+    const resizePreview = shapeResizePreviewRef.current;
+    if (resizePreview?.active && resizePreview?.moved) {
+      applyShapeResizePreviewTransform(resizePreview);
+    }
+  });
+
+  useLayoutEffect(() => {
+    if (shapeResize) return;
+    clearShapeResizePreviewTransform();
+  }, [shapeResize]);
+
+  // Keep overlay resize preview stable across unrelated React renders
+  // (for example live updates while a drag-resize is in progress).
+  useLayoutEffect(() => {
+    const map = overlayResizePreviewRef.current;
+    if (!(map instanceof Map) || !map.size) return;
+    for (const [rawId, value] of map.entries()) {
+      const id = String(rawId || "").trim();
+      if (!id) continue;
+      const node = overlayRefs.current?.get(id);
+      if (!node || typeof node.setAttribute !== "function") continue;
+      const tx = Number(value?.tx || 0);
+      const ty = Number(value?.ty || 0);
+      const sx = Math.max(0.05, Number(value?.sx || 1));
+      const sy = Math.max(0.05, Number(value?.sy || 1));
+      node.setAttribute("transform", `translate(${tx} ${ty}) scale(${sx} ${sy})`);
+    }
+  });
+
+  // Directly mutates SVG DOM attributes for drawing preview — no React setState, no re-renders.
+  // Stores preview in activeDrawPreviewRef so useLayoutEffect can re-apply it after any React
+  // render (e.g. OPC data arriving every 250ms) overwrites our DOM changes before the next paint.
+  function applyShapeDrawPreview(id, update) {
+    if (!id || !update) return;
+    // Sync ref (so commit reads latest geometry, not stale React state)
+    if (shapesRef.current) {
+      const idx = shapesRef.current.findIndex((s) => s.id === id);
+      if (idx >= 0) shapesRef.current[idx] = { ...shapesRef.current[idx], ...update };
+    }
+    activeDrawPreviewRef.current = { id, update };
+    _applyShapeDrawPreviewDOM(svgRef.current, id, update);
+  }
+
   function applyDragPreviewTransform(dx, dy) {
     const prev = dragPreviewAppliedRef.current || { dx: NaN, dy: NaN };
     if (
@@ -8882,6 +9624,263 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (transform) node.setAttribute("transform", transform);
       else node.removeAttribute("transform");
     }
+  }
+
+  function escapeCssSelectorValue(raw) {
+    const text = String(raw || "");
+    if (typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function") {
+      return CSS.escape(text);
+    }
+    return text.replace(/["\\]/g, "\\$&");
+  }
+
+  function resolvePreviewOverlayWorldRect(id, preview = null) {
+    const key = String(id || "").trim();
+    if (!key) return null;
+    const overlay =
+      svgOverlayById.get(key) ||
+      (Array.isArray(overlaysRef.current) ? overlaysRef.current.find((item) => String(item?.id || "").trim() === key) : null);
+    if (!overlay) return null;
+    const bbRaw =
+      preview?.bb ||
+      overlay?.bbox ||
+      overlayLocalBBoxCacheRef.current.get(key) ||
+      null;
+    if (!bbRaw) return null;
+    const bb = {
+      x: Number(bbRaw.x || 0),
+      y: Number(bbRaw.y || 0),
+      width: Number(bbRaw.width || 0),
+      height: Number(bbRaw.height || 0),
+    };
+    const tx = Number(preview?.tx);
+    const ty = Number(preview?.ty);
+    const sx = Number(preview?.sx);
+    const sy = Number(preview?.sy);
+    const resolvedTx = Number.isFinite(tx) ? tx : Number(overlay?.tx || 0);
+    const resolvedTy = Number.isFinite(ty) ? ty : Number(overlay?.ty || 0);
+    const resolvedSx = Number.isFinite(sx) && sx > 0 ? sx : overlayScaleX(overlay);
+    const resolvedSy = Number.isFinite(sy) && sy > 0 ? sy : overlayScaleY(overlay);
+    return {
+      x: resolvedTx + resolvedSx * bb.x,
+      y: resolvedTy + resolvedSy * bb.y,
+      w: resolvedSx * bb.width,
+      h: resolvedSy * bb.height,
+    };
+  }
+
+  function applyOverlaySelectionPreviewUi(id, preview = null) {
+    const key = String(id || "").trim();
+    if (!key) return;
+    const svg = svgRef.current;
+    if (!svg || typeof svg.querySelector !== "function") return;
+    const wr = resolvePreviewOverlayWorldRect(key, preview);
+    if (!wr) return;
+    const x = Number(wr.x || 0);
+    const y = Number(wr.y || 0);
+    const w = Math.max(1, Number(wr.w || 0));
+    const h = Math.max(1, Number(wr.h || 0));
+    const escId = escapeCssSelectorValue(key);
+    const rectNode = svg.querySelector(`[data-overlay-selection-box="${escId}"]`);
+    if (rectNode && typeof rectNode.setAttribute === "function") {
+      rectNode.setAttribute("x", `${x}`);
+      rectNode.setAttribute("y", `${y}`);
+      rectNode.setAttribute("width", `${w}`);
+      rectNode.setAttribute("height", `${h}`);
+    }
+    const corners = {
+      TL: { cx: x, cy: y },
+      TR: { cx: x + w, cy: y },
+      BR: { cx: x + w, cy: y + h },
+      BL: { cx: x, cy: y + h },
+    };
+    Object.entries(corners).forEach(([corner, point]) => {
+      const dotSel = `[data-overlay-selection-dot="${escapeCssSelectorValue(`${key}:${corner}`)}"]`;
+      const hitSel = `[data-overlay-selection-hit="${escapeCssSelectorValue(`${key}:${corner}`)}"]`;
+      const dotNode = svg.querySelector(dotSel);
+      if (dotNode && typeof dotNode.setAttribute === "function") {
+        dotNode.setAttribute("cx", `${point.cx}`);
+        dotNode.setAttribute("cy", `${point.cy}`);
+      }
+      const hitNode = svg.querySelector(hitSel);
+      if (hitNode && typeof hitNode.setAttribute === "function") {
+        hitNode.setAttribute("cx", `${point.cx}`);
+        hitNode.setAttribute("cy", `${point.cy}`);
+      }
+    });
+  }
+
+  function applyOverlayGroupSelectionPreviewUi(previewById = null) {
+    const ids = Array.isArray(selOverRef.current) ? selOverRef.current : [];
+    if (ids.length < 2) return;
+    const svg = svgRef.current;
+    if (!svg || typeof svg.querySelector !== "function") return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let hit = 0;
+    ids.forEach((rawId) => {
+      const id = String(rawId || "").trim();
+      if (!id) return;
+      const preview =
+        (previewById instanceof Map ? previewById.get(id) : null) ||
+        overlayResizePreviewRef.current.get(id) ||
+        null;
+      const wr = resolvePreviewOverlayWorldRect(id, preview);
+      if (!wr) return;
+      minX = Math.min(minX, Number(wr.x || 0));
+      minY = Math.min(minY, Number(wr.y || 0));
+      maxX = Math.max(maxX, Number(wr.x || 0) + Math.max(1, Number(wr.w || 0)));
+      maxY = Math.max(maxY, Number(wr.y || 0) + Math.max(1, Number(wr.h || 0)));
+      hit += 1;
+    });
+    if (!hit || !Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return;
+    }
+    const x = minX;
+    const y = minY;
+    const w = Math.max(1, maxX - minX);
+    const h = Math.max(1, maxY - minY);
+    const rectNode = svg.querySelector('[data-overlay-group-selection-box="1"]');
+    if (rectNode && typeof rectNode.setAttribute === "function") {
+      rectNode.setAttribute("x", `${x}`);
+      rectNode.setAttribute("y", `${y}`);
+      rectNode.setAttribute("width", `${w}`);
+      rectNode.setAttribute("height", `${h}`);
+    }
+    const corners = {
+      TL: { cx: x, cy: y },
+      TR: { cx: x + w, cy: y },
+      BR: { cx: x + w, cy: y + h },
+      BL: { cx: x, cy: y + h },
+    };
+    Object.entries(corners).forEach(([corner, point]) => {
+      const dotNode = svg.querySelector(`[data-overlay-group-selection-dot="${escapeCssSelectorValue(corner)}"]`);
+      if (dotNode && typeof dotNode.setAttribute === "function") {
+        dotNode.setAttribute("cx", `${point.cx}`);
+        dotNode.setAttribute("cy", `${point.cy}`);
+      }
+      const hitNode = svg.querySelector(`[data-overlay-group-selection-hit="${escapeCssSelectorValue(corner)}"]`);
+      if (hitNode && typeof hitNode.setAttribute === "function") {
+        hitNode.setAttribute("cx", `${point.cx}`);
+        hitNode.setAttribute("cy", `${point.cy}`);
+      }
+    });
+  }
+
+  function applyOverlayResizePreview(previewById) {
+    if (!(previewById instanceof Map) || !previewById.size) return;
+    const applied = overlayResizePreviewRef.current;
+    for (const [rawId, next] of previewById.entries()) {
+      const id = String(rawId || "").trim();
+      if (!id) continue;
+      const tx = Number(next?.tx || 0);
+      const ty = Number(next?.ty || 0);
+      const sx = Math.max(0.05, Number(next?.sx || 1));
+      const sy = Math.max(0.05, Number(next?.sy || 1));
+      const prev = applied.get(id);
+      if (
+        prev &&
+        Math.abs(Number(prev.tx) - tx) < 0.01 &&
+        Math.abs(Number(prev.ty) - ty) < 0.01 &&
+        Math.abs(Number(prev.sx) - sx) < 0.0001 &&
+        Math.abs(Number(prev.sy) - sy) < 0.0001
+      ) {
+        continue;
+      }
+      applied.set(id, {
+        tx,
+        ty,
+        sx,
+        sy,
+        bb: next?.bb
+          ? {
+              x: Number(next.bb.x || 0),
+              y: Number(next.bb.y || 0),
+              width: Number(next.bb.width || 0),
+              height: Number(next.bb.height || 0),
+            }
+          : undefined,
+      });
+      const node = overlayRefs.current?.get(id);
+      if (node && typeof node.setAttribute === "function") {
+        node.setAttribute("transform", `translate(${tx} ${ty}) scale(${sx} ${sy})`);
+      }
+      applyOverlaySelectionPreviewUi(id, next);
+      overlayResizePreviewMovedRef.current = true;
+    }
+    applyOverlayGroupSelectionPreviewUi(previewById);
+  }
+
+  function clearOverlayResizePreview(options = {}) {
+    const restoreFromState = options?.restoreFromState !== false;
+    const applied = overlayResizePreviewRef.current;
+    if (!(applied instanceof Map) || !applied.size) {
+      overlayResizePreviewMovedRef.current = false;
+      return;
+    }
+    if (restoreFromState) {
+      const byId = new Map(
+        (Array.isArray(overlaysRef.current) ? overlaysRef.current : []).map((overlay) => [
+          String(overlay?.id || "").trim(),
+          overlay,
+        ])
+      );
+      for (const rawId of applied.keys()) {
+        const id = String(rawId || "").trim();
+        if (!id) continue;
+        const node = overlayRefs.current?.get(id);
+        const overlay = byId.get(id);
+        if (!node || !overlay || typeof node.setAttribute !== "function") continue;
+        const tx = Number(overlay?.tx || 0);
+        const ty = Number(overlay?.ty || 0);
+        const sx = overlayScaleX(overlay);
+        const sy = overlayScaleY(overlay);
+        node.setAttribute("transform", `translate(${tx} ${ty}) scale(${sx} ${sy})`);
+        applyOverlaySelectionPreviewUi(id);
+      }
+    }
+    applied.clear();
+    applyOverlayGroupSelectionPreviewUi();
+    overlayResizePreviewMovedRef.current = false;
+  }
+
+  function commitOverlayResizePreview() {
+    const applied = overlayResizePreviewRef.current;
+    if (!(applied instanceof Map) || !applied.size) {
+      overlayResizePreviewMovedRef.current = false;
+      return false;
+    }
+    const patchById = new Map(applied);
+    setSvgOverlays((prev) => {
+      let changed = false;
+      const next = prev.map((overlay) => {
+        const id = String(overlay?.id || "").trim();
+        const patch = patchById.get(id);
+        if (!patch) return overlay;
+        const tx = Number(patch?.tx || 0);
+        const ty = Number(patch?.ty || 0);
+        const sx = Math.max(0.05, Number(patch?.sx || 1));
+        const sy = Math.max(0.05, Number(patch?.sy || 1));
+        if (
+          Math.abs(Number(overlay?.tx || 0) - tx) < 0.01 &&
+          Math.abs(Number(overlay?.ty || 0) - ty) < 0.01 &&
+          Math.abs(overlayScaleX(overlay) - sx) < 0.0001 &&
+          Math.abs(overlayScaleY(overlay) - sy) < 0.0001
+        ) {
+          return overlay;
+        }
+        changed = true;
+        return { ...overlay, tx, ty, scale: sx, scaleX: sx, scaleY: sy };
+      });
+      if (!changed) return prev;
+      overlaysRef.current = next;
+      return next;
+    });
+    applied.clear();
+    overlayResizePreviewMovedRef.current = false;
+    return true;
   }
 
   function refreshDragPreviewTargets(shapeIds = [], overlayIds = []) {
@@ -9958,33 +10957,37 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const id = drawing.id;
     const disableSnap = options?.disableSnap === true;
 
-    setShapes((prev) =>
-      prev.map((s) => {
-        if (s.id !== id) return s;
+    // Read from shapesRef (kept in sync by applyShapeDrawPreview) so we use the
+    // DOM-previewed geometry, not stale React state.
+    const currentShape = shapesRef.current?.find((s) => s.id === id);
+    if (!currentShape) return;
 
-        const fixed = s.points.slice(0, -1);
-        const lastFixed = fixed[fixed.length - 1];
-        const firstFixed = fixed[0];
-        const SNAP_DIST = 12;
-        let nextP = { x: Number(p?.x) || 0, y: Number(p?.y) || 0 };
-        if (!disableSnap) {
-          nextP = snapPointToNearestPolylineConnection(nextP, POLYLINE_CONNECTION_SNAP_THRESHOLD);
-          nextP = snapPointToNearestPolylineEndpoint(nextP, POLYLINE_ENDPOINT_SNAP_THRESHOLD, {
-            excludeShapeId: id,
-            excludeIndexes: [0, fixed.length],
-          });
-        }
-        if (firstFixed && distance(p, firstFixed) <= SNAP_DIST) {
-          nextP = { x: firstFixed.x, y: firstFixed.y };
-        }
+    const fixed = currentShape.points.slice(0, -1);
+    const lastFixed = fixed[fixed.length - 1];
+    const firstFixed = fixed[0];
+    const SNAP_DIST = 12;
+    let nextP = { x: Number(p?.x) || 0, y: Number(p?.y) || 0 };
+    if (!disableSnap) {
+      nextP = snapPointToNearestPolylineConnection(nextP, POLYLINE_CONNECTION_SNAP_THRESHOLD);
+      nextP = snapPointToNearestPolylineEndpoint(nextP, POLYLINE_ENDPOINT_SNAP_THRESHOLD, {
+        excludeShapeId: id,
+        excludeIndexes: [0, fixed.length],
+      });
+    }
+    if (firstFixed && distance(p, firstFixed) <= SNAP_DIST) {
+      nextP = { x: firstFixed.x, y: firstFixed.y };
+    }
 
-        const newFixed =
-          lastFixed && lastFixed.x === nextP.x && lastFixed.y === nextP.y ? fixed : [...fixed, nextP];
+    const newFixed =
+      lastFixed && lastFixed.x === nextP.x && lastFixed.y === nextP.y ? fixed : [...fixed, nextP];
+    const tail = newFixed[newFixed.length - 1];
+    const newPoints = [...newFixed, { x: tail.x, y: tail.y }];
 
-        const tail = newFixed[newFixed.length - 1];
-        return { ...s, points: [...newFixed, { x: tail.x, y: tail.y }] };
-      })
-    );
+    setShapes((prev) => {
+      const next = prev.map((s) => s.id === id ? { ...s, points: newPoints } : s);
+      shapesRef.current = next;
+      return next;
+    });
   }
 
   function projectPointToSegmentForSplit(pt, a, b) {
@@ -10100,36 +11103,29 @@ const CONTENT_FIT_HEADROOM = 0.94;
     // Prevent immediate background re-split pass from nudging the just-committed endpoint.
     skipNextSplitNormalizeRef.current = true;
 
-    setShapes((prev) => {
-      const finished = prev.flatMap((s) => {
-        // keep everything else (including text)
-        if (s.id !== id) return [s];
-
-        // only polylines can be finished here
-        if (s.type !== "polyline" || !Array.isArray(s.points)) return [s];
-
-        const fixed = s.points.slice(0, -1);
-        const preview = s.points[s.points.length - 1];
-        const lastFixed = fixed[fixed.length - 1];
-        const finalPoints =
-          preview &&
-          (!lastFixed ||
-            Math.hypot(
-              (Number(preview?.x) || 0) - (Number(lastFixed?.x) || 0),
-              (Number(preview?.y) || 0) - (Number(lastFixed?.y) || 0)
-            ) > 0.001)
-            ? [...fixed, { x: Number(preview?.x) || 0, y: Number(preview?.y) || 0 }]
-            : fixed;
-
-        // if too short, drop ONLY this polyline
-        if (finalPoints.length < 2) return [];
-
-        return [{ ...s, points: finalPoints }];
-      });
-      const normalized = splitConnectedPolylineSegments(finished, id);
-      shapesRef.current = normalized;
-      return normalized;
+    // Use shapesRef (DOM-preview-synced) as base — React state may be stale from preview bypass.
+    const base = shapesRef.current || [];
+    const finished = base.flatMap((s) => {
+      if (s.id !== id) return [s];
+      if (s.type !== "polyline" || !Array.isArray(s.points)) return [s];
+      const fixed = s.points.slice(0, -1);
+      const preview = s.points[s.points.length - 1];
+      const lastFixed = fixed[fixed.length - 1];
+      const finalPoints =
+        preview &&
+        (!lastFixed ||
+          Math.hypot(
+            (Number(preview?.x) || 0) - (Number(lastFixed?.x) || 0),
+            (Number(preview?.y) || 0) - (Number(lastFixed?.y) || 0)
+          ) > 0.001)
+          ? [...fixed, { x: Number(preview?.x) || 0, y: Number(preview?.y) || 0 }]
+          : fixed;
+      if (finalPoints.length < 2) return [];
+      return [{ ...s, points: finalPoints }];
     });
+    const normalized = splitConnectedPolylineSegments(finished, id);
+    shapesRef.current = normalized;
+    setShapes(normalized);
 
     setDrawing(null);
     clearSelection();
@@ -10450,6 +11446,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const anchorWorld = worldFromLocal(o, anchorLocal.x, anchorLocal.y);
 
     const startDist = Math.max(1, distance(startWorld, anchorWorld));
+    clearOverlayResizePreview({ restoreFromState: true });
     pushHistory(); // ? UNDO: start of overlay resize
     setOverlayResize({
       id,
@@ -10459,6 +11456,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       startDist,
       origScaleX: overlayScaleX(o),
       origScaleY: overlayScaleY(o),
+      baseBbox: bb,
     });
   }
 
@@ -10921,14 +11919,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function finishRectDrawing(rectId) {
     if (!rectId) return;
-    setShapes((prev) =>
-      prev.filter((s) => {
-        if (s.id !== rectId) return true;
-        const w = Math.max(0, Number(s.width ?? 0));
-        const h = Math.max(0, Number(s.height ?? 0));
-        return w >= 2 && h >= 2;
-      })
-    );
+    // Use shapesRef (DOM-preview-synced) for final geometry, then commit to React state.
+    const latest = shapesRef.current?.find((s) => s.id === rectId);
+    const w = Math.max(0, Number(latest?.width ?? 0));
+    const h = Math.max(0, Number(latest?.height ?? 0));
+    setShapes((prev) => {
+      const next = w >= 2 && h >= 2
+        ? prev.map((s) => s.id === rectId ? { ...s, x: latest.x, y: latest.y, width: w, height: h } : s)
+        : prev.filter((s) => s.id !== rectId);
+      shapesRef.current = next;
+      return next;
+    });
     setDrawing(null);
     setTool("select");
     scheduleProjectAutoSave();
@@ -10987,7 +11988,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const boxes = [];
 
     for (const id of selectedIds) {
-      const s = shapes.find((x) => x.id === id);
+      const s = shapeById.get(String(id || ""));
       if (!s) continue;
 
       // ? Polyline
@@ -11025,7 +12026,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
 
     for (const id of selectedOverlayIds) {
-      const o = svgOverlays.find((x) => x.id === id);
+      const o = svgOverlayById.get(String(id || ""));
       if (!o) continue;
       const bb = overlayLocalBBox(id);
       if (!bb) continue;
@@ -11060,7 +12061,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       w: maxX - minX,
       h: maxY - minY,
     };
-  }, [selectedIds, selectedOverlayIds, shapes, svgOverlays]);
+  }, [selectedIds, selectedOverlayIds, shapeById, svgOverlayById]);
 
 
   // ---------- Properties (ID, Tag Path, Fill, Stroke, X/Y/W/H) ----------
@@ -11116,11 +12117,27 @@ const CONTENT_FIT_HEADROOM = 0.94;
     screwAnimate: true,
     screwSpeed: "1.2",
   });
+  const commitHudFields = useCallback((nextFields) => {
+    const target = nextFields && typeof nextFields === "object" ? nextFields : {};
+    setHudFields((prev) => {
+      const prevObj = prev && typeof prev === "object" ? prev : {};
+      const nextKeys = Object.keys(target);
+      const prevKeys = Object.keys(prevObj);
+      if (nextKeys.length !== prevKeys.length) return target;
+      for (const key of nextKeys) {
+        if (prevObj[key] !== target[key]) return target;
+      }
+      return prevObj;
+    });
+  }, []);
 
 
   useEffect(() => {
+    if (dragAll || dragHandle || overlayResize || shapeResize || marquee || canvasPanDrag || drawing) {
+      return;
+    }
     if (!selectedBBox) {
-      setHudFields({
+      commitHudFields({
         id: "",
         tagPath: "",
         binBindingKey: "",
@@ -11219,7 +12236,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             ? Number(o.strokeWidth)
             : ""
         );
-        setHudFields({
+        commitHudFields({
           id: idText,
           tagPath,
           binBindingKey: String(o.binBindingKey || ""),
@@ -11292,7 +12309,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         fill = t.fill ?? "#808080";
         stroke = t.stroke ?? "#808080"; // optional if you support stroke on text
 
-        setHudFields({
+        commitHudFields({
           id: idText,
           tagPath,
           binBindingKey: "",
@@ -11356,7 +12373,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
 
 
-    setHudFields({
+    commitHudFields({
       id: idText,
       tagPath,
       binBindingKey: "",
@@ -11416,7 +12433,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
       widgetBarQueryLabelField: "",
     });
 
-  }, [selectedBBox, isSingle, singleKind, singleId, shapes, svgOverlays]);
+  }, [
+    selectedBBox,
+    isSingle,
+    singleKind,
+    singleId,
+    shapes,
+    svgOverlays,
+    commitHudFields,
+    dragAll,
+    dragHandle,
+    overlayResize,
+    shapeResize,
+    marquee,
+    canvasPanDrag,
+    drawing,
+  ]);
 
 
   function idExistsAnywhere(id) {
@@ -11523,25 +12555,42 @@ const CONTENT_FIT_HEADROOM = 0.94;
     );
     let best = null;
     let bestDist = Number.POSITIVE_INFINITY;
-    for (const s of shapesRef.current || []) {
-      if (!(String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points))) continue;
-      const shapeId = String(s?.id || "");
-      const pts = Array.isArray(s?.points) ? s.points : [];
-      if (pts.length < 2) continue;
-      const endpoints = [
-        { point: pts[0], index: 0 },
-        { point: pts[pts.length - 1], index: pts.length - 1 },
-      ];
-      for (const endpoint of endpoints) {
-        if (!endpoint?.point) continue;
-        if (shapeId && shapeId === excludeShapeId && excludeIndexes.has(Number(endpoint.index))) continue;
-        const ex = Number(endpoint.point?.x);
-        const ey = Number(endpoint.point?.y);
+    const endpointCache = polylineSnapPointsCacheRef.current;
+    const candidates = Array.isArray(endpointCache?.shapeEndpoints) ? endpointCache.shapeEndpoints : [];
+    if (candidates.length) {
+      for (const endpoint of candidates) {
+        const shapeId = String(endpoint?.shapeId || "");
+        if (shapeId && shapeId === excludeShapeId && excludeIndexes.has(Number(endpoint?.index))) continue;
+        const ex = Number(endpoint?.x);
+        const ey = Number(endpoint?.y);
         if (!Number.isFinite(ex) || !Number.isFinite(ey)) continue;
         const d = Math.hypot(worldPoint.x - ex, worldPoint.y - ey);
         if (d < bestDist) {
           bestDist = d;
           best = { x: ex, y: ey };
+        }
+      }
+    } else {
+      for (const s of shapesRef.current || []) {
+        if (!(String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points))) continue;
+        const shapeId = String(s?.id || "");
+        const pts = Array.isArray(s?.points) ? s.points : [];
+        if (pts.length < 2) continue;
+        const endpoints = [
+          { point: pts[0], index: 0 },
+          { point: pts[pts.length - 1], index: pts.length - 1 },
+        ];
+        for (const endpoint of endpoints) {
+          if (!endpoint?.point) continue;
+          if (shapeId && shapeId === excludeShapeId && excludeIndexes.has(Number(endpoint.index))) continue;
+          const ex = Number(endpoint.point?.x);
+          const ey = Number(endpoint.point?.y);
+          if (!Number.isFinite(ex) || !Number.isFinite(ey)) continue;
+          const d = Math.hypot(worldPoint.x - ex, worldPoint.y - ey);
+          if (d < bestDist) {
+            bestDist = d;
+            best = { x: ex, y: ey };
+          }
         }
       }
     }
@@ -11563,25 +12612,42 @@ const CONTENT_FIT_HEADROOM = 0.94;
     );
     let bestPoint = null;
     let bestDist = Number.POSITIVE_INFINITY;
-    for (const s of shapesRef.current || []) {
-      if (!(String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points))) continue;
-      const shapeId = String(s?.id || "");
-      const pts = Array.isArray(s?.points) ? s.points : [];
-      if (pts.length < 2) continue;
-      const endpoints = [
-        { point: pts[0], index: 0 },
-        { point: pts[pts.length - 1], index: pts.length - 1 },
-      ];
-      for (const endpoint of endpoints) {
-        if (!endpoint?.point) continue;
-        if (shapeId && shapeId === excludeShapeId && excludeIndexes.has(Number(endpoint.index))) continue;
-        const ex = Number(endpoint.point?.x);
-        const ey = Number(endpoint.point?.y);
+    const endpointCache = polylineSnapPointsCacheRef.current;
+    const candidates = Array.isArray(endpointCache?.shapeEndpoints) ? endpointCache.shapeEndpoints : [];
+    if (candidates.length) {
+      for (const endpoint of candidates) {
+        const shapeId = String(endpoint?.shapeId || "");
+        if (shapeId && shapeId === excludeShapeId && excludeIndexes.has(Number(endpoint?.index))) continue;
+        const ex = Number(endpoint?.x);
+        const ey = Number(endpoint?.y);
         if (!Number.isFinite(ex) || !Number.isFinite(ey)) continue;
         const d = Math.hypot(worldPoint.x - ex, worldPoint.y - ey);
         if (d < bestDist) {
           bestDist = d;
           bestPoint = { x: ex, y: ey };
+        }
+      }
+    } else {
+      for (const s of shapesRef.current || []) {
+        if (!(String(s?.type || "").toLowerCase() === "polyline" || Array.isArray(s?.points))) continue;
+        const shapeId = String(s?.id || "");
+        const pts = Array.isArray(s?.points) ? s.points : [];
+        if (pts.length < 2) continue;
+        const endpoints = [
+          { point: pts[0], index: 0 },
+          { point: pts[pts.length - 1], index: pts.length - 1 },
+        ];
+        for (const endpoint of endpoints) {
+          if (!endpoint?.point) continue;
+          if (shapeId && shapeId === excludeShapeId && excludeIndexes.has(Number(endpoint.index))) continue;
+          const ex = Number(endpoint.point?.x);
+          const ey = Number(endpoint.point?.y);
+          if (!Number.isFinite(ex) || !Number.isFinite(ey)) continue;
+          const d = Math.hypot(worldPoint.x - ex, worldPoint.y - ey);
+          if (d < bestDist) {
+            bestDist = d;
+            bestPoint = { x: ex, y: ey };
+          }
         }
       }
     }
@@ -12482,7 +13548,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
     });
   }
 
-  const liveEquipmentPopupWatchKeys = useMemo(() => {
+  // Track whether any live equipment popups are open so live updates can stay isolated.
+  useEffect(() => {
+    liveEquipmentActiveRef.current =
+      (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ||
+      !!String(liveEquipmentDrawerOverlayId || "").trim();
+  }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId]);
+
+  const liveEquipmentFastStatusKeys = useMemo(() => {
     const activeIds = new Set(
       [...(Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds : []), liveEquipmentDrawerOverlayId]
         .map((id) => String(id || "").trim())
@@ -12492,27 +13565,20 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const overlayById = new Map(
       (Array.isArray(svgOverlays) ? svgOverlays : []).map((overlay) => [String(overlay?.id || "").trim(), overlay])
     );
-    const pathLowers = [];
-    const pathLooses = [];
+    const pathTokens = [];
     activeIds.forEach((id) => {
-      const overlay = overlayById.get(id);
-      const path = normalizeTagValue(overlay?.tagPath || "");
-      if (!path) return;
-      const lower = path.toLowerCase();
-      const loose = lower.replace(/[^a-z0-9]/g, "");
-      if (lower) pathLowers.push(lower);
-      if (loose) pathLooses.push(loose);
+      const path = normalizeTagValue(overlayById.get(id)?.tagPath || "").toLowerCase();
+      if (path) pathTokens.push(path);
     });
-    if (!pathLowers.length && !pathLooses.length) return [];
+    if (!pathTokens.length) return [];
     const ordered = Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : [];
-    const seen = new Set();
     const out = [];
-    for (const raw of ordered) {
-      const key = normalizeTagValue(raw || "");
+    const seen = new Set();
+    for (const rawKey of ordered) {
+      const key = normalizeTagValue(rawKey || "");
       if (!key) continue;
       const lower = key.toLowerCase();
-      const loose = lower.replace(/[^a-z0-9]/g, "");
-      const pathMatch = pathLowers.some(
+      const hit = pathTokens.some(
         (token) =>
           lower === token ||
           lower.startsWith(`${token}.`) ||
@@ -12521,33 +13587,123 @@ const CONTENT_FIT_HEADROOM = 0.94;
           lower.endsWith(`.${token}`) ||
           lower.endsWith(`/${token}`)
       );
-      const looseMatch = pathLooses.some((token) => token && loose && (loose.includes(token) || token.includes(loose)));
-      if (!pathMatch && !looseMatch) continue;
+      if (!hit) continue;
       if (seen.has(lower)) continue;
       seen.add(lower);
       out.push(key);
-      if (out.length >= 72) break;
+      if (out.length >= 80) break;
     }
-    if (out.length) return out;
-    return ordered.slice(0, Math.min(32, ordered.length));
+    return out;
   }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId, svgOverlays, opcScopedStatusKeys]);
 
-  // Track whether any live equipment popups are open so live updates can stay isolated.
+  // Fast-path live refresh for open equipment popups only.
   useEffect(() => {
-    liveEquipmentActiveRef.current =
+    const hasPopupOpen =
       (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ||
       !!String(liveEquipmentDrawerOverlayId || "").trim();
-  }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId]);
-
-  // Subscribe only to popup-relevant OPC keys so unrelated tag churn never repaints popups.
-  useEffect(() => {
-    if (!liveEquipmentPopupWatchKeys.length) return undefined;
-    return subscribeOpcLiveKeys(liveEquipmentPopupWatchKeys, () => {
-      if (liveEquipmentActiveRef.current && liveEquipmentPopupWatchKeys.length) {
-        setLiveEquipmentOpcTick((x) => (x + 1) % 1000000);
-      }
+    if (!hasPopupOpen || !isLiveMode || !isPageVisible || !liveUpdatesEnabled) return undefined;
+    if (!liveEquipmentFastStatusKeys.length) return undefined;
+    let alive = true;
+    let streamConnected = false;
+    const unsubscribeStream = subscribeOpcStatusStream({
+      keys: liveEquipmentFastStatusKeys,
+      onOpen: () => {
+        streamConnected = true;
+      },
+      onError: () => {
+        streamConnected = false;
+      },
+      onMessage: (data) => {
+        if (!alive) return;
+        applyLiveEquipmentFastValues(data?.values);
+      },
     });
-  }, [liveEquipmentPopupWatchKeys]);
+    const pollFast = async () => {
+      if (!alive || !liveEquipmentActiveRef.current) return;
+      if (!isPageVisible || isInteractingRef.current) return;
+      if (streamConnected) return;
+      try {
+        const data = await getOpcStatus({ keys: liveEquipmentFastStatusKeys });
+        if (!alive) return;
+        applyLiveEquipmentFastValues(data?.values);
+      } catch {
+        // keep retrying silently
+      }
+    };
+    pollFast();
+    const pollId = window.setInterval(pollFast, LIVE_EQUIPMENT_FAST_POLL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(pollId);
+      if (liveEquipmentFastTickTimerRef.current) {
+        window.clearTimeout(liveEquipmentFastTickTimerRef.current);
+        liveEquipmentFastTickTimerRef.current = 0;
+      }
+      if (typeof unsubscribeStream === "function") unsubscribeStream();
+    };
+  }, [
+    isLiveMode,
+    isPageVisible,
+    liveUpdatesEnabled,
+    liveEquipmentOverlayIds,
+    liveEquipmentDrawerOverlayId,
+    liveEquipmentFastStatusKeys,
+  ]);
+
+  useEffect(
+    () => () => {
+      if (liveEquipmentTickTimerRef.current) {
+        window.clearTimeout(liveEquipmentTickTimerRef.current);
+        liveEquipmentTickTimerRef.current = 0;
+      }
+      if (liveEquipmentFastTickTimerRef.current) {
+        window.clearTimeout(liveEquipmentFastTickTimerRef.current);
+        liveEquipmentFastTickTimerRef.current = 0;
+      }
+    },
+    []
+  );
+
+  // While any popup is open, coalesce OPC updates into a throttled repaint tick.
+  // This guarantees automatic refresh and avoids full-App rerenders on every tag change.
+  useEffect(() => {
+    const hasPopupOpen =
+      (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ||
+      !!String(liveEquipmentDrawerOverlayId || "").trim();
+    if (!hasPopupOpen) return undefined;
+    const POPUP_REFRESH_MIN_MS = 250;
+    const scheduleTick = () => {
+      if (!liveEquipmentActiveRef.current) return;
+      if (isInteractingRef.current) return;
+      const now = Date.now();
+      const elapsed = now - Number(liveEquipmentTickLastAtRef.current || 0);
+      if (elapsed >= POPUP_REFRESH_MIN_MS) {
+        liveEquipmentTickLastAtRef.current = now;
+        startTransition(() => {
+          setLiveEquipmentOpcTick((x) => (x + 1) % 1000000);
+        });
+        return;
+      }
+      if (liveEquipmentTickTimerRef.current) return;
+      const waitMs = Math.max(0, POPUP_REFRESH_MIN_MS - elapsed);
+      liveEquipmentTickTimerRef.current = window.setTimeout(() => {
+        liveEquipmentTickTimerRef.current = 0;
+        if (!liveEquipmentActiveRef.current) return;
+        liveEquipmentTickLastAtRef.current = Date.now();
+        startTransition(() => {
+          setLiveEquipmentOpcTick((x) => (x + 1) % 1000000);
+        });
+      }, waitMs);
+    };
+    const unsubscribe = subscribeOpcLiveStore(scheduleTick);
+    return () => {
+      if (liveEquipmentTickTimerRef.current) {
+        window.clearTimeout(liveEquipmentTickTimerRef.current);
+        liveEquipmentTickTimerRef.current = 0;
+      }
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
+  }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId]);
 
   useEffect(() => {
     setLiveEquipmentOverlayIds((prev) => {
@@ -13320,7 +14476,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           const next = { x: nextX, y: Number(cur.y || 0) };
           viewportEl.scrollLeft = nextX;
           canvasViewportScrollRef.current = next;
-          enqueueCanvasUpdate("viewport-scroll-target", () => setCanvasViewportScrollTarget(next));
+          setCanvasViewportScrollTarget(next);
           return true;
         }
       }
@@ -13337,11 +14493,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     let p =
       drawing?.mode === "draw-poly"
-        ? svgPoint(e, { snapToGrid: true })
+        ? svgPoint(e, { snapToGrid: true, disablePolylineSnap: true })
         : drawing?.mode === "draw-circle" && e.altKey
         ? svgPoint(e, { snapToGrid: false, clampToCanvas: false })
         : svgPoint(e, { snapToGrid: false });
-    if (!(dragAll || dragHandle || overlayResize || shapeResize || canvasPanDrag)) {
+    if (!(dragAll || dragHandle || overlayResize || shapeResize || canvasPanDrag || drawing)) {
       publishProjectCursor(p);
     }
     const pendingDragAll = pendingDragAllRef.current;
@@ -13362,7 +14518,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
     if (marquee) {
-      enqueueCanvasUpdate("marquee", () => setMarquee((m) => (m ? { ...m, cur: p } : m)));
+      setMarquee((m) => (m ? { ...m, cur: p } : m));
       return;
     }
 
@@ -13371,12 +14527,19 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const dy = (Number(e.clientY) || 0) - Number(canvasPanDrag.startClient?.y || 0);
       const moved = Math.abs(dx) > 1 || Math.abs(dy) > 1;
       if (moved && !canvasPanDrag.moved) {
-        enqueueCanvasUpdate("canvas-pan-drag", () => setCanvasPanDrag((prev) => (prev ? { ...prev, moved: true } : prev)));
+        setCanvasPanDrag((prev) => (prev ? { ...prev, moved: true } : prev));
       }
       const nextPan = clampPanToViewport({
         x: Number(canvasPanDrag.startPan?.x || 0) + dx,
         y: Number(canvasPanDrag.startPan?.y || 0) + dy,
       });
+      const prevPan = panRef.current || { x: 0, y: 0 };
+      if (
+        Math.abs(Number(nextPan?.x || 0) - Number(prevPan?.x || 0)) < 0.01 &&
+        Math.abs(Number(nextPan?.y || 0) - Number(prevPan?.y || 0)) < 0.01
+      ) {
+        return;
+      }
       panRef.current = nextPan;
       enqueueCanvasUpdate("pan", () => setPan(nextPan));
       return;
@@ -13384,59 +14547,44 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (drawing?.mode === "draw-poly") {
       const id = drawing.id;
-      const PREVIEW_SMOOTH_ALPHA = 0.45;
+      const PREVIEW_SMOOTH_ALPHA = 0.68;
       const PREVIEW_MIN_MOVE = 0.35;
 
-      enqueueCanvasUpdate("shapes", () => setShapes((prev) =>
-        prev.map((s) => {
-          if (s.id !== id) return s;
+      // Compute snap OUTSIDE the setShapes callback — state updaters run twice in strict mode.
+      const curShape = shapesRef.current?.find((s) => s.id === id);
+      if (!curShape) return;
+      const pts0 = curShape.points;
+      const fixed0 = pts0.slice(0, -1);
+      const last0 = fixed0[fixed0.length - 1] || pts0[0];
+      const prevPreview0 = pts0[pts0.length - 1] || last0;
 
-          const pts = s.points.slice();
-          const fixed = pts.slice(0, -1);             // points excluding preview
-          const last = fixed[fixed.length - 1] || pts[0];
-          const prevPreview = pts[pts.length - 1] || last;
+      let nextP = { x: Number(p?.x || 0), y: Number(p?.y || 0) };
+      if (e.altKey && last0) nextP = constrainHV(last0, nextP);
 
-          let nextP = svgPoint(e);
+      const endpointSnap = e.altKey
+        ? { snapped: false, point: nextP }
+        : getNearestPolylineEndpointSnap(
+            nextP,
+            POLYLINE_ENDPOINT_SNAP_THRESHOLD,
+            { excludeShapeId: id, excludeIndexes: [0, pts0.length - 1] }
+          );
+      nextP = endpointSnap.point;
 
-          // ? ALT = straight line (horizontal/vertical) from last fixed point
-          if (e.altKey && last) {
-            nextP = constrainHV(last, nextP);
-          }
+      const first0 = fixed0[0];
+      if (first0 && distance(nextP, first0) <= 12) nextP = { x: first0.x, y: first0.y };
 
-          const endpointSnap = e.altKey
-            ? { snapped: false, point: nextP }
-            : getNearestPolylineEndpointSnap(
-                snapPointToNearestPolylineConnection(nextP, POLYLINE_CONNECTION_SNAP_THRESHOLD),
-                POLYLINE_ENDPOINT_SNAP_THRESHOLD,
-                {
-                  excludeShapeId: id,
-                  excludeIndexes: [0, pts.length - 1],
-                }
-              );
-          nextP = endpointSnap.point;
+      if (!e.altKey && prevPreview0 && !endpointSnap.snapped) {
+        nextP = {
+          x: prevPreview0.x + (nextP.x - prevPreview0.x) * PREVIEW_SMOOTH_ALPHA,
+          y: prevPreview0.y + (nextP.y - prevPreview0.y) * PREVIEW_SMOOTH_ALPHA,
+        };
+      }
+      if (prevPreview0 && distance(prevPreview0, nextP) < PREVIEW_MIN_MOVE) return;
 
-          const first = fixed[0];
-          const SNAP_DIST = 12;
-          if (first && distance(nextP, first) <= SNAP_DIST) {
-            nextP = { x: first.x, y: first.y };
-          }
-
-          // Smooth preview updates to reduce micro-jitter while drawing.
-          // Keep ALT constrained mode unfiltered for precise orthogonal segments.
-          if (!e.altKey && prevPreview && !endpointSnap.snapped) {
-            nextP = {
-              x: prevPreview.x + (nextP.x - prevPreview.x) * PREVIEW_SMOOTH_ALPHA,
-              y: prevPreview.y + (nextP.y - prevPreview.y) * PREVIEW_SMOOTH_ALPHA,
-            };
-          }
-          if (prevPreview && distance(prevPreview, nextP) < PREVIEW_MIN_MOVE) {
-            return s;
-          }
-
-          pts[pts.length - 1] = { x: nextP.x, y: nextP.y };
-          return { ...s, points: pts };
-        })
-      ));
+      // Direct DOM update — zero React renders during preview.
+      const newPts = pts0.slice();
+      newPts[newPts.length - 1] = { x: nextP.x, y: nextP.y };
+      applyShapeDrawPreview(id, { points: newPts });
       return;
     }
 
@@ -13451,31 +14599,57 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const d = Math.max(1, distance(p, anchorWorld));
         const ratio = d / startDist;
         const base = Array.isArray(overlayResize.overlays) ? overlayResize.overlays : [];
-        const byId = new Map(base.map((o) => [String(o.id), o]));
-        enqueueCanvasUpdate("overlays", () => setSvgOverlays((prev) => {
-          const next = prev.map((o) => {
-            const rec = byId.get(String(o.id));
-            if (!rec) return o;
-            const isConveyorScrew = isConveyorScrewOverlay(o);
-            const sxBase = Math.max(0.05, Number(rec.sx || 1) * ratio);
-            const syBase = Math.max(0.05, Number(rec.sy || 1) * ratio);
-            const uniform = Math.max(0.05, Math.max(Number(rec.sx || 1), Number(rec.sy || 1)) * ratio);
-            const sx = isConveyorScrew ? uniform : sxBase;
-            const sy = isConveyorScrew ? uniform : syBase;
-            const txRaw = anchorWorld.x + (Number(rec.tx || 0) - anchorWorld.x) * ratio;
-            const tyRaw = anchorWorld.y + (Number(rec.ty || 0) - anchorWorld.y) * ratio;
-            const bb = o?.bbox || overlayLocalBBox(o.id);
-            if (!bb) return { ...o, tx: txRaw, ty: tyRaw, scale: sx, scaleX: sx, scaleY: sy };
-            const clamped = clampOverlayTransformToCanvas(txRaw, tyRaw, sx, sy, bb);
-            return { ...o, tx: clamped.tx, ty: clamped.ty, scale: sx, scaleX: sx, scaleY: sy };
+        const currentById = new Map(
+          (Array.isArray(overlaysRef.current) ? overlaysRef.current : []).map((overlay) => [
+            String(overlay?.id || ""),
+            overlay,
+          ])
+        );
+        const previewById = new Map();
+        base.forEach((rec) => {
+          const idKey = String(rec?.id || "");
+          if (!idKey) return;
+          const current = currentById.get(idKey) || null;
+          const isConveyorScrew = isConveyorScrewOverlay(current || rec);
+          const sxBase = Math.max(0.05, Number(rec?.sx || 1) * ratio);
+          const syBase = Math.max(0.05, Number(rec?.sy || 1) * ratio);
+          const uniform = Math.max(0.05, Math.max(Number(rec?.sx || 1), Number(rec?.sy || 1)) * ratio);
+          const sx = isConveyorScrew ? uniform : sxBase;
+          const sy = isConveyorScrew ? uniform : syBase;
+          const txRaw = anchorWorld.x + (Number(rec?.tx || 0) - anchorWorld.x) * ratio;
+          const tyRaw = anchorWorld.y + (Number(rec?.ty || 0) - anchorWorld.y) * ratio;
+          const bb = rec?.bb || current?.bbox || overlayLocalBBox(idKey);
+          if (!bb) {
+            previewById.set(idKey, { tx: txRaw, ty: tyRaw, sx, sy });
+            return;
+          }
+          const clamped = clampOverlayTransformToCanvas(txRaw, tyRaw, sx, sy, bb);
+          previewById.set(idKey, {
+            tx: clamped.tx,
+            ty: clamped.ty,
+            sx,
+            sy,
+            bb: {
+              x: Number(bb.x || 0),
+              y: Number(bb.y || 0),
+              width: Number(bb.width || 0),
+              height: Number(bb.height || 0),
+            },
           });
-          overlaysRef.current = next;
-          return next;
-        }));
-        syncProjectDuringDrag();
+        });
+        if (previewById.size) applyOverlayResizePreview(previewById);
         return;
       }
-      const { id, isWidget, anchorLocal, anchorWorld, startDist, origScaleX, origScaleY } = overlayResize;
+      const {
+        id,
+        isWidget,
+        anchorLocal,
+        anchorWorld,
+        startDist,
+        origScaleX,
+        origScaleY,
+        baseBbox,
+      } = overlayResize;
       const o = svgOverlays.find((x) => x.id === id);
       if (!o) return;
 
@@ -13511,7 +14685,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
           overlaysRef.current = next;
           return next;
         }));
-        syncProjectDuringDrag();
         return;
       }
 
@@ -13524,21 +14697,25 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
       const newTxRaw = anchorWorld.x - newScaleX * anchorLocal.x;
       const newTyRaw = anchorWorld.y - newScaleY * anchorLocal.y;
-      const bb = o?.bbox || overlayLocalBBox(id);
+      const bb = baseBbox || o?.bbox || overlayLocalBBox(id);
       const clamped = bb
         ? clampOverlayTransformToCanvas(newTxRaw, newTyRaw, newScaleX, newScaleY, bb)
         : { tx: newTxRaw, ty: newTyRaw };
 
-      enqueueCanvasUpdate("overlays", () => setSvgOverlays((prev) => {
-        const next = prev.map((x) =>
-          x.id === id
-            ? { ...x, scale: newScaleX, scaleX: newScaleX, scaleY: newScaleY, tx: clamped.tx, ty: clamped.ty }
-            : x
-        );
-        overlaysRef.current = next;
-        return next;
-      }));
-      syncProjectDuringDrag();
+      applyOverlayResizePreview(new Map([[String(id), {
+        tx: clamped.tx,
+        ty: clamped.ty,
+        sx: newScaleX,
+        sy: newScaleY,
+        bb: bb
+          ? {
+              x: Number(bb.x || 0),
+              y: Number(bb.y || 0),
+              width: Number(bb.width || 0),
+              height: Number(bb.height || 0),
+            }
+          : undefined,
+      }]]));
       return;
     }
 
@@ -13569,56 +14746,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const sy = nextH / baseH;
       const dx = nextX - Number(startBBox.x || 0);
       const dy = nextY - Number(startBBox.y || 0);
-      const srcById = new Map((Array.isArray(shapeResize.originals) ? shapeResize.originals : []).map((s) => [s.id, s]));
-      enqueueCanvasUpdate("shapes", () => setShapes((prev) => {
-        const next = prev.map((s) => {
-          const src = srcById.get(s.id);
-          if (!src) return s;
-          if ((src.type === "polyline" || Array.isArray(src.points)) && Array.isArray(src.points)) {
-            return {
-              ...s,
-              points: src.points.map((pt) => ({
-                x: Number(startBBox.x || 0) + (pt.x - Number(startBBox.x || 0)) * sx + dx,
-                y: Number(startBBox.y || 0) + (pt.y - Number(startBBox.y || 0)) * sy + dy,
-              })),
-            };
-          }
-          if (src.type === "text") {
-            const newX = Number(startBBox.x || 0) + (Number(src.x || 0) - Number(startBBox.x || 0)) * sx + dx;
-            const newY = Number(startBBox.y || 0) + (Number(src.y || 0) - Number(startBBox.y || 0)) * sy + dy;
-            const uniform = Math.max(0.05, Math.min(sx, sy));
-            return { ...s, x: newX, y: newY, fontSize: Math.max(1, Number(src.fontSize || 24) * uniform) };
-          }
-          if (src.type === "rect" || src.type === "circle") {
-            const x0 = Number(src.x || 0);
-            const y0 = Number(src.y || 0);
-            const w0 = Math.max(0, Number(src.width || 0));
-            const h0 = Math.max(0, Number(src.height || 0));
-            const x1 = x0 + w0;
-            const y1 = y0 + h0;
-            let nx0 = Number(startBBox.x || 0) + (x0 - Number(startBBox.x || 0)) * sx + dx;
-            let ny0 = Number(startBBox.y || 0) + (y0 - Number(startBBox.y || 0)) * sy + dy;
-            let nx1 = Number(startBBox.x || 0) + (x1 - Number(startBBox.x || 0)) * sx + dx;
-            let ny1 = Number(startBBox.y || 0) + (y1 - Number(startBBox.y || 0)) * sy + dy;
-            if (src.type === "circle") {
-              const size = Math.max(Math.abs(nx1 - nx0), Math.abs(ny1 - ny0));
-              nx1 = nx0 + (nx1 >= nx0 ? size : -size);
-              ny1 = ny0 + (ny1 >= ny0 ? size : -size);
-            }
-            return {
-              ...s,
-              x: Math.min(nx0, nx1),
-              y: Math.min(ny0, ny1),
-              width: Math.abs(nx1 - nx0),
-              height: Math.abs(ny1 - ny0),
-            };
-          }
-          return s;
-        });
-        shapesRef.current = next;
-        return next;
-      }));
-      syncProjectDuringDrag();
+      const preview = {
+        active: true,
+        moved: true,
+        sx,
+        sy,
+        dx,
+        dy,
+        startBBox,
+        selectedIds: Array.isArray(shapeResize.selectedIds) ? shapeResize.selectedIds : [],
+      };
+      shapeResizePreviewRef.current = preview;
+      applyShapeResizePreviewTransform(preview);
       return;
     }
 
@@ -13636,17 +14775,27 @@ const CONTENT_FIT_HEADROOM = 0.94;
             excludeIndexes: [dragHandle.index],
           })
         : p;
-      enqueueCanvasUpdate("shapes", () => setShapes((prev) => {
-        const next = prev.map((s) => {
-          if (s.id !== dragHandle.id) return s;
-          const pts = s.points.slice();
+      enqueueCanvasUpdate("shape-handle", () =>
+        setShapes((prev) => {
+          const idx = prev.findIndex((s) => s.id === dragHandle.id);
+          if (idx < 0) return prev;
+          const target = prev[idx];
+          if (!Array.isArray(target?.points) || target.points.length <= dragHandle.index) return prev;
+          const pts = target.points.slice();
+          const currentPoint = pts[dragHandle.index] || { x: NaN, y: NaN };
+          if (
+            Math.abs(Number(currentPoint.x || 0) - Number(snappedPoint.x || 0)) < 0.001 &&
+            Math.abs(Number(currentPoint.y || 0) - Number(snappedPoint.y || 0)) < 0.001
+          ) {
+            return prev;
+          }
           pts[dragHandle.index] = { x: snappedPoint.x, y: snappedPoint.y };
-          return { ...s, points: pts };
-        });
-        shapesRef.current = next;
-        return next;
-      }));
-      syncProjectDuringDrag();
+          const next = prev.slice();
+          next[idx] = { ...target, points: pts };
+          shapesRef.current = next;
+          return next;
+        })
+      );
       return;
     }
 
@@ -13681,11 +14830,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const y = Math.min(sy, p.y);
       const width = Math.abs(p.x - sx);
       const height = Math.abs(p.y - sy);
-      enqueueCanvasUpdate("shapes", () => setShapes((prev) => {
-        const next = prev.map((s) => (s.id === drawing.id ? { ...s, x, y, width, height } : s));
-        shapesRef.current = next;
-        return next;
-      }));
+      applyShapeDrawPreview(drawing.id, { x, y, width, height });
       return;
     }
 
@@ -13700,11 +14845,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const y = sy - r;
       const width = r * 2;
       const height = r * 2;
-      enqueueCanvasUpdate("shapes", () => setShapes((prev) => {
-        const next = prev.map((s) => (s.id === drawing.id ? { ...s, x, y, width, height } : s));
-        shapesRef.current = next;
-        return next;
-      }));
+      applyShapeDrawPreview(drawing.id, { x, y, width, height });
       return;
     }
 
@@ -13730,6 +14871,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function onMouseUp() {
     const dragAllSnapshot = dragAll;
+    const overlayResizeSnapshot = overlayResize;
+    const shapeResizeSnapshot = shapeResize;
+    const shapeResizePreviewSnapshot = shapeResizePreviewRef.current;
+    const shapeResizeMoved = Boolean(
+      shapeResizeSnapshot &&
+      shapeResizePreviewSnapshot?.active &&
+      shapeResizePreviewSnapshot?.moved
+    );
     const dragAllPreviewSnapshot = dragAllPreviewRef.current;
     const dragAllDeltaSnapshot = dragAllLastDeltaRef.current || { dx: NaN, dy: NaN };
     const dragAllMoved =
@@ -13745,6 +14894,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const didCanvasPanMove = Boolean(canvasPanDrag?.moved);
     if (hadCanvasPanDrag) {
       setCanvasPanDrag(null);
+      clearOverlayResizePreview({ restoreFromState: true });
       if (!didCanvasPanMove) {
         if (!preserveSvgSelectionWhileHudOpen) clearSelection();
       } else {
@@ -13823,6 +14973,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       dragPreviewNodesRef.current = [];
       dragPreviewAppliedRef.current = { dx: NaN, dy: NaN };
       svgClientRectCacheRef.current = null;
+      clearOverlayResizePreview({ restoreFromState: true });
       setDragAll(null);
       setDragHandle(null);
       setOverlayResize(null);
@@ -13830,7 +14981,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
-    const movedSomething = !!(dragAllMoved || dragHandle || overlayResize || shapeResize);
+    const movedSomething = !!(dragAllMoved || dragHandle || overlayResize || shapeResizeMoved);
     if (dragAllSnapshot && dragAllMoved) {
       const dx = Number.isFinite(Number(dragAllDeltaSnapshot?.dx))
         ? Number(dragAllDeltaSnapshot.dx)
@@ -13840,6 +14991,41 @@ const CONTENT_FIT_HEADROOM = 0.94;
         : (Number.isFinite(Number(dragAllPreviewSnapshot?.dy)) ? Number(dragAllPreviewSnapshot.dy) : 0);
       applyDragAllDelta(dragAllSnapshot, dx, dy);
       syncProjectDuringDrag();
+    }
+    if (overlayResizeSnapshot) {
+      if (overlayResizePreviewMovedRef.current) {
+        const committed = commitOverlayResizePreview();
+        if (committed) syncProjectDuringDrag();
+      } else {
+        clearOverlayResizePreview({ restoreFromState: true });
+      }
+    } else {
+      clearOverlayResizePreview({ restoreFromState: false });
+    }
+    if (shapeResizeSnapshot && shapeResizeMoved) {
+      const startBBox = shapeResizeSnapshot.startBBox || { x: 0, y: 0, w: 1, h: 1 };
+      const sx = Math.max(1e-6, Number(shapeResizePreviewSnapshot?.sx || 1));
+      const sy = Math.max(1e-6, Number(shapeResizePreviewSnapshot?.sy || 1));
+      const dx = Number(shapeResizePreviewSnapshot?.dx || 0);
+      const dy = Number(shapeResizePreviewSnapshot?.dy || 0);
+      const srcById = new Map(
+        (Array.isArray(shapeResizeSnapshot.originals) ? shapeResizeSnapshot.originals : [])
+          .map((src) => [String(src?.id || ""), src])
+      );
+      if (srcById.size) {
+        setShapes((prev) => {
+          const next = prev.map((shape) => {
+            const src = srcById.get(String(shape?.id || ""));
+            if (!src) return shape;
+            const projected = projectShapeFromResizeSource(src, startBBox, sx, sy, dx, dy);
+            if (!projected) return shape;
+            return { ...shape, ...projected };
+          });
+          shapesRef.current = next;
+          return next;
+        });
+        syncProjectDuringDrag();
+      }
     }
     dragAllPreviewRef.current = { dx: 0, dy: 0 };
     applyDragPreviewTransform(0, 0);
@@ -13896,6 +15082,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
       pendingMouseMoveRef.current = null;
       canvasUpdateQueueRef.current = [];
       canvasUpdateByKeyRef.current.clear();
+      overlayResizePreviewRef.current.clear();
+      overlayResizePreviewMovedRef.current = false;
+      clearShapeResizePreviewTransform();
     };
   }, []);
 
@@ -13946,8 +15135,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     ];
 
     return (
-      <g>
+      <g data-overlay-selection-ui={o.id}>
         <rect
+          data-overlay-selection-box={o.id}
           x={x}
           y={y}
           width={w}
@@ -13961,8 +15151,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
         {corners.map((c) => (
           <g key={c.key}>
-            <circle cx={c.cx} cy={c.cy} r={3} fill="white" stroke="#2b6cff" strokeWidth={2} />
             <circle
+              data-overlay-selection-dot={`${o.id}:${c.key}`}
+              cx={c.cx}
+              cy={c.cy}
+              r={3}
+              fill="white"
+              stroke="#2b6cff"
+              strokeWidth={2}
+            />
+            <circle
+              data-overlay-selection-hit={`${o.id}:${c.key}`}
               cx={c.cx}
               cy={c.cy}
               r={16}
@@ -14093,16 +15292,26 @@ const CONTENT_FIT_HEADROOM = 0.94;
       .map((id) => {
         const o = svgOverlays.find((x) => x.id === id);
         if (!o) return null;
+        const bb = o?.bbox || overlayLocalBBox(o.id);
         return {
           id: o.id,
           tx: Number(o.tx || 0),
           ty: Number(o.ty || 0),
           sx: overlayScaleX(o),
           sy: overlayScaleY(o),
+          bb: bb
+            ? {
+                x: Number(bb.x || 0),
+                y: Number(bb.y || 0),
+                width: Number(bb.width || 0),
+                height: Number(bb.height || 0),
+              }
+            : null,
         };
       })
       .filter(Boolean);
     if (!overlays.length) return;
+    clearOverlayResizePreview({ restoreFromState: true });
     pushHistory();
     setOverlayResize({
       kind: "group",
@@ -14127,8 +15336,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
       { key: "BL", cx: x, cy: y + h },
     ];
     return (
-      <g>
+      <g data-overlay-group-selection-ui="1">
         <rect
+          data-overlay-group-selection-box="1"
           x={x}
           y={y}
           width={w}
@@ -14141,8 +15351,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
         />
         {corners.map((c) => (
           <g key={`group-resize-${c.key}`}>
-            <circle cx={c.cx} cy={c.cy} r={8} fill="white" stroke="#2b6cff" strokeWidth={2} />
             <circle
+              data-overlay-group-selection-dot={c.key}
+              cx={c.cx}
+              cy={c.cy}
+              r={8}
+              fill="white"
+              stroke="#2b6cff"
+              strokeWidth={2}
+            />
+            <circle
+              data-overlay-group-selection-hit={c.key}
               cx={c.cx}
               cy={c.cy}
               r={16}
@@ -14190,6 +15409,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
       originals.length === 1 &&
       String(originals[0]?.type || "") === "circle";
     pushHistory();
+    clearShapeResizePreviewTransform();
+    captureShapeResizePreviewNodes(ids);
+    shapeResizePreviewRef.current = {
+      active: true,
+      moved: false,
+      sx: 1,
+      sy: 1,
+      dx: 0,
+      dy: 0,
+      startBBox: { x, y, w, h },
+      selectedIds: ids,
+    };
     setShapeResize({
       corner: String(corner || "").toUpperCase(),
       anchor,
@@ -14226,7 +15457,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       { key: "BL", cx: x, cy: y + h },
     ];
     return (
-      <g>
+      <g ref={shapeSelectionUiRef}>
         <rect
           x={x}
           y={y}
@@ -14320,6 +15551,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const isLiveMobile = isLiveMode && winW > 0 && winW <= 900;
   const showDesktopTaskbar = isLiveMode && !isLiveMobile;
   const showLiveIdentityChips = !isLiveMode || winW > 900;
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const rootStyle = document.documentElement?.style;
+    if (!rootStyle) return undefined;
+    const toastBottomPx = showDesktopTaskbar ? TASKBAR_H + 12 : 22;
+    rootStyle.setProperty("--vizi-toast-bottom-offset", `${toastBottomPx}px`);
+    return () => {
+      rootStyle.removeProperty("--vizi-toast-bottom-offset");
+    };
+  }, [showDesktopTaskbar, TASKBAR_H]);
   const menuLeft = contextMenu
     ? Math.min(Math.max(12, contextMenu.x), Math.max(12, winW - menuSize.w - 12))
     : 0;
@@ -14337,7 +15578,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   );
   const contextSingleSvg =
     selectedOverlayIds.length === 1 && selectedIds.length === 0
-      ? svgOverlays.find((o) => o.id === selectedOverlayIds[0]) || null
+      ? svgOverlayById.get(String(selectedOverlayIds[0] || "")) || null
       : null;
   const contextSingleSupportsTagMenu = useMemo(() => {
     const overlay = contextSingleSvg;
@@ -14679,8 +15920,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return Math.max(10, Math.min(26, longest + 2));
   }, [taskbarVisibleScreens]);
   const opcLiveValueCount = useMemo(
-    () => Object.keys(opcLiveValues || {}).length,
-    [opcLiveValues]
+    () => Object.keys(opcLiveValuesRef.current || {}).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [opcLiveUpdatedAt]
   );
   const opcLiveUpdatedAtLabel = useMemo(() => {
     if (!Number.isFinite(Number(opcLiveUpdatedAt)) || Number(opcLiveUpdatedAt) <= 0) return "never";
@@ -15173,14 +16415,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function finishCircleDrawing(circleId) {
     if (!circleId) return;
-    setShapes((prev) =>
-      prev.filter((s) => {
-        if (s.id !== circleId) return true;
-        const w = Math.max(0, Number(s.width ?? 0));
-        const h = Math.max(0, Number(s.height ?? 0));
-        return w >= 2 && h >= 2;
-      })
-    );
+    const latest = shapesRef.current?.find((s) => s.id === circleId);
+    const w = Math.max(0, Number(latest?.width ?? 0));
+    const h = Math.max(0, Number(latest?.height ?? 0));
+    setShapes((prev) => {
+      const next = w >= 2 && h >= 2
+        ? prev.map((s) => s.id === circleId ? { ...s, x: latest.x, y: latest.y, width: w, height: h } : s)
+        : prev.filter((s) => s.id !== circleId);
+      shapesRef.current = next;
+      return next;
+    });
     setDrawing(null);
     setTool("select");
     scheduleProjectAutoSave();
@@ -15789,6 +17033,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }, [liveActiveAlarmsWithOccurred]);
   const liveAlarmMarqueeDurationSec = LIVE_ALARM_MARQUEE_DURATION_SEC;
   const canvasLiveTagKeys = useMemo(() => {
+    if (!opcUiEnabled) return [];
     const set = new Set();
     const addKey = (raw) => {
       const value = normalizeTagValue(raw || "");
@@ -15802,6 +17047,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         set.add(parts.slice(i).join("."));
       }
     };
+    (Array.isArray(liveEquipmentFastStatusKeys) ? liveEquipmentFastStatusKeys : []).forEach(addKey);
     (Array.isArray(shapes) ? shapes : []).forEach((shape) => addKey(shape?.tagPath));
     (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
       addKey(overlay?.tagPath);
@@ -15813,20 +17059,198 @@ const CONTENT_FIT_HEADROOM = 0.94;
       addKey(overlay?.widget?.timerDoneTag);
       addKey(overlay?.widget?.timerEnableTag);
     });
-    return Array.from(set).slice(0, OPC_CANVAS_KEY_HARD_CAP);
-  }, [shapes, svgOverlays]);
-  const canvasWidgetDbValues = liveUpdatesEnabled ? widgetDbValues : {};
-  const canvasOpcTags = useMemo(() => {
-    if (!liveUpdatesEnabled) return [];
-    const keys = new Set((Array.isArray(canvasLiveTagKeys) ? canvasLiveTagKeys : []).map((k) => String(k || "").toLowerCase()));
-    if (!keys.size) return [];
-    return (Array.isArray(opcTags) ? opcTags : []).filter((tag) => {
-      const path = normalizeTagValue(tag?.tagPath || "").toLowerCase();
-      const name = normalizeTagValue(tag?.name || "").toLowerCase();
-      return (path && keys.has(path)) || (name && keys.has(name));
+    const scopedKeySet = new Set(
+      Array.from(set)
+        .map((key) => normalizeTagValue(key || "").toLowerCase())
+        .filter(Boolean)
+    );
+    const childPrefixes = buildScopedChildPrefixes(scopedKeySet);
+    const tagsForCanvas =
+      Array.isArray(opcTagsAllRef.current) && opcTagsAllRef.current.length
+        ? opcTagsAllRef.current
+        : Array.isArray(opcTags)
+        ? opcTags
+        : [];
+    tagsForCanvas.forEach((tag) => {
+      const candidates = getTagScopeCandidates(tag);
+      if (!candidates.some((candidate) => isTagCandidateInScope(candidate, scopedKeySet, childPrefixes))) {
+        return;
+      }
+      candidates.forEach(addKey);
     });
-  }, [liveUpdatesEnabled, opcTags, canvasLiveTagKeys]);
-  const canvasCollaboratorCursors = liveUpdatesEnabled && !liveUiSafeMode ? projectCursors : [];
+    const popupKeyCount = Array.isArray(liveEquipmentFastStatusKeys)
+      ? liveEquipmentFastStatusKeys.filter(Boolean).length
+      : 0;
+    const dynamicCap = popupKeyCount
+      ? Math.max(OPC_CANVAS_KEY_HARD_CAP, popupKeyCount + 16, set.size)
+      : Math.max(OPC_CANVAS_KEY_HARD_CAP, set.size);
+    return Array.from(set).slice(0, dynamicCap);
+  }, [opcUiEnabled, shapes, svgOverlays, opcTags, liveEquipmentFastStatusKeys]);
+  const canvasWidgetDbValues = useMemo(
+    () => (opcUiEnabled ? widgetDbValues : {}),
+    [opcUiEnabled, widgetDbValues]
+  );
+  const canvasOpcTags = useMemo(() => {
+    if (!opcUiEnabled) return [];
+    const keys = new Set(
+      (Array.isArray(canvasLiveTagKeys) ? canvasLiveTagKeys : [])
+        .map((k) => normalizeTagValue(k || "").toLowerCase())
+        .filter(Boolean)
+    );
+    if (!keys.size) return [];
+    const childPrefixes = buildScopedChildPrefixes(keys);
+    const tagsForCanvas =
+      Array.isArray(opcTagsAllRef.current) && opcTagsAllRef.current.length
+        ? opcTagsAllRef.current
+        : Array.isArray(opcTags)
+        ? opcTags
+        : [];
+    return tagsForCanvas.filter((tag) => {
+      const candidates = getTagScopeCandidates(tag);
+      return candidates.some((candidate) => isTagCandidateInScope(candidate, keys, childPrefixes));
+    });
+  }, [opcUiEnabled, opcTags, canvasLiveTagKeys]);
+  const opcPriorityHintKeys = useMemo(() => {
+    if (!opcUiEnabled) return [];
+    const keys = new Set();
+    const drawerKeys = Array.isArray(opcDrawerPriorityHintKeys)
+      ? opcDrawerPriorityHintKeys
+      : [];
+    const addKey = (raw, options = {}) => {
+      const withDefault = options?.withDefault !== false;
+      const value = normalizeTagValue(raw || "");
+      if (!value) return;
+      const lower = value.toLowerCase();
+      if (lower.startsWith("db:") || lower.startsWith("dbq:")) return;
+      keys.add(value);
+      if (withDefault && !lower.startsWith("default.")) keys.add(`Default.${value}`);
+    };
+    const addTagCandidates = (tag) => {
+      const topic = normalizeTagValue(tag?.topic || "");
+      const group = normalizeTagValue(tag?.groupName || "");
+      const name = normalizeTagValue(tag?.name || "");
+      const tagPath = normalizeTagValue(tag?.tagPath || "");
+      const candidates = [
+        topic && group && tagPath ? `${topic}.${group}.${tagPath}` : "",
+        topic && group && name ? `${topic}.${group}.${name}` : "",
+        topic && tagPath ? `${topic}.${tagPath}` : "",
+        topic && name ? `${topic}.${name}` : "",
+        group && tagPath ? `${group}.${tagPath}` : "",
+        group && name ? `${group}.${name}` : "",
+        tagPath,
+        name,
+      ]
+        .map((entry) => normalizeTagValue(entry || ""))
+        .filter(Boolean);
+      candidates.forEach((candidate) => addKey(candidate, { withDefault: false }));
+    };
+
+    (Array.isArray(shapes) ? shapes : []).forEach((shape) =>
+      addKey(shape?.tagPath, { withDefault: false })
+    );
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const overlayPath = normalizeTagValue(overlay?.tagPath || "");
+      addKey(overlayPath, { withDefault: false });
+      addKey(overlay?.widget?.timerAccTag, { withDefault: false });
+      addKey(overlay?.widget?.timerPresetTag, { withDefault: false });
+      addKey(overlay?.widget?.timerDoneTag, { withDefault: false });
+      addKey(overlay?.widget?.timerEnableTag, { withDefault: false });
+      if (OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE) {
+        normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlayPath).forEach((entry) =>
+          addKey(entry, { withDefault: false })
+        );
+      }
+    });
+
+    const activeIds = new Set(
+      [...(Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds : []), liveEquipmentDrawerOverlayId]
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    );
+    const hasActivePopups = activeIds.size > 0;
+    if (hasActivePopups) {
+      const overlayById = new Map(
+        (Array.isArray(svgOverlays) ? svgOverlays : []).map((overlay) => [String(overlay?.id || "").trim(), overlay])
+      );
+      activeIds.forEach((id) => {
+        const overlay = overlayById.get(id);
+        const overlayPath = normalizeTagValue(overlay?.tagPath || "");
+        if (!overlayPath) return;
+        addKey(overlayPath, { withDefault: false });
+        addKey(overlay?.widget?.timerAccTag, { withDefault: false });
+        addKey(overlay?.widget?.timerPresetTag, { withDefault: false });
+        addKey(overlay?.widget?.timerDoneTag, { withDefault: false });
+        addKey(overlay?.widget?.timerEnableTag, { withDefault: false });
+        LIVE_EQUIPMENT_STATUS_TAG_ALIASES.forEach((alias) => {
+          const member = normalizeTagValue(alias || "");
+          if (!member) return;
+          addKey(`${overlayPath}.${member}`, { withDefault: false });
+          addKey(`${overlayPath}/${member}`, { withDefault: false });
+        });
+      });
+    }
+
+    (Array.isArray(liveEquipmentFastStatusKeys) ? liveEquipmentFastStatusKeys : []).forEach((key) =>
+      addKey(key, { withDefault: false })
+    );
+    drawerKeys.forEach((key) => addKey(key, { withDefault: false }));
+    (Array.isArray(canvasOpcTags) ? canvasOpcTags : []).forEach(addTagCandidates);
+
+    return Array.from(keys).slice(0, hasActivePopups ? 800 : 600);
+  }, [
+    opcUiEnabled,
+    shapes,
+    svgOverlays,
+    liveEquipmentOverlayIds,
+    liveEquipmentDrawerOverlayId,
+    liveEquipmentFastStatusKeys,
+    opcDrawerPriorityHintKeys,
+    canvasOpcTags,
+  ]);
+  useEffect(() => {
+    if (!opcUiEnabled) return undefined;
+    let alive = true;
+    const hasPopupPriorityKeys =
+      (Array.isArray(liveEquipmentFastStatusKeys) ? liveEquipmentFastStatusKeys.length : 0) > 0;
+    const HEARTBEAT_MS = hasPopupPriorityKeys ? 1500 : 10000;
+    const KICK_DELAY_MS = hasPopupPriorityKeys ? 20 : 120;
+    const RETRY_DELAY_MS = hasPopupPriorityKeys ? 600 : 5000;
+    const publishPriorityHints = async () => {
+      if (!alive) return;
+      const now = Date.now();
+      if (now < Number(opcPriorityHintsNextAttemptAtRef.current || 0)) return;
+      const keys = Array.isArray(opcPriorityHintKeys) ? opcPriorityHintKeys : [];
+      const signature = `${String(activeScreenId || "").trim()}|${keys.length}|${keys.join("||")}`;
+      const shouldHeartbeat =
+        now - Number(opcPriorityHintsLastSentAtRef.current || 0) >= HEARTBEAT_MS;
+      if (!shouldHeartbeat && signature === opcPriorityHintsSignatureRef.current) return;
+      try {
+        await setOpcPriorityKeys({
+          keys,
+          screenId: activeScreenId,
+          mode: "live",
+        });
+        if (!alive) return;
+        opcPriorityHintsSignatureRef.current = signature;
+        opcPriorityHintsLastSentAtRef.current = Date.now();
+        opcPriorityHintsNextAttemptAtRef.current = 0;
+      } catch {
+        if (!alive) return;
+        opcPriorityHintsNextAttemptAtRef.current = Date.now() + RETRY_DELAY_MS;
+      }
+    };
+    const kickId = window.setTimeout(publishPriorityHints, KICK_DELAY_MS);
+    const id = window.setInterval(publishPriorityHints, HEARTBEAT_MS);
+    return () => {
+      alive = false;
+      window.clearTimeout(kickId);
+      window.clearInterval(id);
+    };
+  }, [opcUiEnabled, activeScreenId, opcPriorityHintKeys, liveEquipmentFastStatusKeys]);
+  const canvasCollaboratorCursors = useMemo(
+    () => (liveUpdatesEnabled && !liveUiSafeMode ? projectCursors : []),
+    [liveUpdatesEnabled, liveUiSafeMode, projectCursors]
+  );
   const teamChatLiveUsers = useMemo(() => {
     const rows = Array.isArray(livePresenceUsers) ? livePresenceUsers : [];
     const byId = new Map();
@@ -15857,13 +17281,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (containsAlarm) return containsAlarm;
     return "opc_alarm_state";
   }, [databaseTablesForMenu]);
-  const projectDrawerTabs = isLiveMode
-    ? [{ key: "project", label: "Project", title: "Project Settings" }]
-    : [
-        { key: "project", label: "Project", title: "Project Settings" },
-        { key: "menu", label: "Menu", title: "Menu Config" },
-        { key: "screens", label: "Screens", title: "Manage Screens" },
-      ];
+  const projectDrawerTabs = useMemo(
+    () =>
+      isLiveMode
+        ? [{ key: "project", label: "Project", title: "Project Settings" }]
+        : [
+            { key: "project", label: "Project", title: "Project Settings" },
+            { key: "menu", label: "Menu", title: "Menu Config" },
+            { key: "screens", label: "Screens", title: "Manage Screens" },
+          ],
+    [isLiveMode]
+  );
 
   useEffect(() => {
     if (liveMenuIsExpanded) setLiveMenuHoverItemId("");
@@ -15881,6 +17309,99 @@ const CONTENT_FIT_HEADROOM = 0.94;
     Boolean(canvasPanDrag) ||
     String(drawing?.mode || "") === "draw-rect" ||
     String(drawing?.mode || "") === "draw-circle";
+  const canvasInteractionActive =
+    Boolean(dragAll) ||
+    Boolean(dragHandle) ||
+    Boolean(overlayResize) ||
+    Boolean(shapeResize) ||
+    Boolean(marquee) ||
+    Boolean(canvasPanDrag) ||
+    !!drawing;
+  const onCanvasViewportScroll = useStableEvent((next) => {
+    const x = Number(next?.x);
+    const y = Number(next?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    canvasViewportScrollRef.current = { x, y };
+  });
+  const onCanvasWheel = useStableEvent((...args) => onWheelZoom(...args));
+  const onCanvasSvgMouseDown = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onSvgMouseDown(...args);
+  });
+  const onCanvasMouseMove = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onMouseMove(...args);
+  });
+  const onCanvasMouseUp = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onMouseUp(...args);
+  });
+  const onCanvasContextMenu = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onContextMenu?.(...args);
+  });
+  const onCanvasShapeMouseDown = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onShapeMouseDown(...args);
+  });
+  const onCanvasShapeDoubleClick = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onShapeDoubleClick(...args);
+  });
+  const onCanvasEditPolylineClick = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onEditPolylineClick(...args);
+  });
+  const onCanvasHandleMouseDown = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onHandleMouseDown(...args);
+  });
+  const onCanvasHandleDoubleClick = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onHandleDoubleClick(...args);
+  });
+  const onCanvasHandleContextMenu = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onHandleContextMenu?.(...args);
+  });
+  const onCanvasSegmentMouseDown = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onSegmentMouseDown(...args);
+  });
+  const onCanvasOverlayMouseDown = useStableEvent((...args) => {
+    if (isLiveMode) {
+      if (!canInteractLiveScreens) return;
+      onLiveOverlayMouseDown(...args);
+      return;
+    }
+    if (!canEditProject) return;
+    onOverlayMouseDown(...args);
+  });
+  const onCanvasOverlayDoubleClick = useStableEvent((...args) => {
+    if (isLiveMode) {
+      if (!canInteractLiveScreens) return;
+      onLiveOverlayMouseDown(...args);
+      return;
+    }
+    if (!canEditProject) return;
+    onOverlayDoubleClick(...args);
+  });
+  const onCanvasSvgDoubleClick = useStableEvent((...args) => {
+    if (canvasReadOnly) return;
+    onSvgDoubleClick?.(...args);
+  });
+  const onCanvasWidgetDurationPresetChange = useStableEvent((...args) =>
+    onWidgetDurationPresetChange(...args)
+  );
+  const onCanvasHideTagBubble = useStableEvent((id) => {
+    setHiddenTagBubbleIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  });
+
+  // Stable render-prop wrappers — always call the latest version but never change reference.
+  // Without these, CanvasSvg's React.memo fails on every App.jsx re-render (e.g. OPC tick).
+  const stableOverlaySelectionUI = useStableEvent((...args) => overlaySelectionUI(...args));
+  const stableOverlayGroupSelectionUI = useStableEvent((...args) => overlayGroupSelectionUI(...args));
+  const stableShapeSelectionUI = useStableEvent((...args) => shapeSelectionUI(...args));
 
   useEffect(() => {
     const activeIds = new Set((liveActiveAlarms || []).map((a) => String(a?.id || "")).filter(Boolean));
@@ -16045,20 +17566,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
           theme={theme}
         liveUpdatesEnabled={liveUpdatesEnabled}
         canvasBackgroundColor={activeCanvasBackgroundColor}
+        interactionActive={canvasInteractionActive}
         viewportTopOffset={TOP_BAR_H + liveAlarmBarOffset}
         viewportLeftOffset={canvasLeftInsetPx}
         viewportBottomOffset={showDesktopTaskbar ? TASKBAR_H : 0}
         viewportScrollTarget={canvasViewportScrollTarget}
-        onViewportScroll={(next) => {
-          const x = Number(next?.x);
-          const y = Number(next?.y);
-          if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-          canvasViewportScrollRef.current = { x, y };
-        }}
+        onViewportScroll={onCanvasViewportScroll}
         liveClickable={!PERF_HARD_REALTIME_MODE && isLiveMode && canInteractLiveScreens}
         isLiveMode={isLiveMode}
           zoom={zoom}          // ? NEW
-          onWheel={onWheelZoom} // ? NEW
+          onWheel={onCanvasWheel} // ? NEW
           vbW={vbW}
           vbH={vbH}
           tool={isLiveMode ? "select" : tool}
@@ -16073,56 +17590,49 @@ const CONTENT_FIT_HEADROOM = 0.94;
         showTagPaths={showTagPaths}
         showGrid={projectIdentityReady && !isLiveMode && showGrid}
         showRulers={projectIdentityReady && !isLiveMode && showRulers}
-        onSvgMouseDown={canvasReadOnly ? () => {} : onSvgMouseDown}
-        onMouseMove={canvasReadOnly ? () => {} : onMouseMove}
-        onMouseUp={canvasReadOnly ? () => {} : onMouseUp}
-        onContextMenu={canvasReadOnly ? undefined : onContextMenu}
-        onShapeMouseDown={canvasReadOnly ? () => {} : onShapeMouseDown}
-        onShapeDoubleClick={canvasReadOnly ? () => {} : onShapeDoubleClick}
-        onEditPolylineClick={canvasReadOnly ? () => {} : onEditPolylineClick}
-        onHandleMouseDown={canvasReadOnly ? () => {} : onHandleMouseDown}
-        onHandleDoubleClick={canvasReadOnly ? () => {} : onHandleDoubleClick}
-        onHandleContextMenu={canvasReadOnly ? undefined : onHandleContextMenu}
-        onSegmentMouseDown={canvasReadOnly ? () => {} : onSegmentMouseDown}
+        onSvgMouseDown={onCanvasSvgMouseDown}
+        onMouseMove={onCanvasMouseMove}
+        onMouseUp={onCanvasMouseUp}
+        onContextMenu={onCanvasContextMenu}
+        onShapeMouseDown={onCanvasShapeMouseDown}
+        onShapeDoubleClick={onCanvasShapeDoubleClick}
+        onEditPolylineClick={onCanvasEditPolylineClick}
+        onHandleMouseDown={onCanvasHandleMouseDown}
+        onHandleDoubleClick={onCanvasHandleDoubleClick}
+        onHandleContextMenu={onCanvasHandleContextMenu}
+        onSegmentMouseDown={onCanvasSegmentMouseDown}
         setShapes={setShapes}
         svgOverlays={svgOverlays}
         setSvgOverlays={setSvgOverlays}
         selectedOverlayIds={selectedOverlayIds}
         singleSelectedOverlayId={singleSelectedOverlayId}
         setOverlayRef={setOverlayRef}
-        onOverlayMouseDown={
-          isLiveMode
-            ? (canInteractLiveScreens ? onLiveOverlayMouseDown : () => {})
-            : (canEditProject ? onOverlayMouseDown : () => {})
-        }
-        onOverlayDoubleClick={
-          isLiveMode
-            ? (canInteractLiveScreens ? onLiveOverlayMouseDown : () => {})
-            : (canEditProject ? onOverlayDoubleClick : () => {})
-        }
-        overlaySelectionUI={overlaySelectionUI}
-        overlayGroupSelectionUI={overlayGroupSelectionUI}
-        shapeSelectionUI={shapeSelectionUI}
+        onOverlayMouseDown={onCanvasOverlayMouseDown}
+        onOverlayDoubleClick={onCanvasOverlayDoubleClick}
+        overlaySelectionUI={stableOverlaySelectionUI}
+        overlayGroupSelectionUI={stableOverlayGroupSelectionUI}
+        shapeSelectionUI={stableShapeSelectionUI}
         overlayLocalBBox={overlayLocalBBox}
         marquee={marquee}
         pan={pan}
         importAnchor={importAnchor}
-        onSvgDoubleClick={canvasReadOnly ? undefined : onSvgDoubleClick}
+        onSvgDoubleClick={onCanvasSvgDoubleClick}
         tagStateColorsByPath={tagStateColorsByPath}
         routeColorsBySvgKey={routeColorsBySvgKey}
         routeStrokeColorByGroupPath={routeStrokeColorByGroupPath}
         svgLiveValuesByGroupPath={svgLiveValuesByGroupPath}
         liveTagKeys={canvasLiveTagKeys}
         opcTags={canvasOpcTags}
+        opcTemplateMap={opcTemplateMap}
+        opcTagMappingMap={opcTagMappingMap}
+        opcMappingSetMap={opcMappingSetMap}
         widgetDbValues={canvasWidgetDbValues}
         binProductLabelByOverlayId={binProductLabelByOverlayId}
         binNameLabelByOverlayId={binNameLabelByOverlayId}
         binLevelRatioByOverlayId={binLevelRatioByOverlayId}
-        onWidgetDurationPresetChange={onWidgetDurationPresetChange}
+        onWidgetDurationPresetChange={onCanvasWidgetDurationPresetChange}
         hiddenTagBubbleIds={hiddenTagBubbleIds}
-        onHideTagBubble={(id) =>
-          setHiddenTagBubbleIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
-        }
+        onHideTagBubble={onCanvasHideTagBubble}
         collaboratorCursors={canvasCollaboratorCursors}
       />
 
@@ -16861,17 +18371,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   <path d="M8 4v4M12 4v4M16 4v4" stroke="currentColor" strokeWidth="2" />
                 </svg>
                 {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Show Ruler</span> : null}
-              </button>
-              <button
-                className="top-menu-btn"
-                title={designLiveUpdatesDisabled ? "Enable Live Updates" : "Disable Live Updates"}
-                style={dockToolButtonStyle(!!designLiveUpdatesDisabled)}
-                onClick={() => setDesignLiveUpdatesDisabled((v) => !v)}
-              >
-                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
-                  <path d="M7 5h3v14H7zM14 5h3v14h-3z" stroke="currentColor" strokeWidth="2" />
-                </svg>
-                {designDockExpanded ? <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700 }}>Pause Live</span> : null}
               </button>
             </div>
           ) : null}
@@ -17735,7 +19234,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 </div>
                 {isOpcDrawerView ? (
                   <div
-                    title={opcLiveLastError || `Live values: ${opcLiveValueCount} \u2022 Last update: ${opcLiveUpdatedAtLabel}`}
+                    title={opcLiveLastError || `Live OPC values: ${opcLiveValueCount} tag${opcLiveValueCount === 1 ? "" : "s"} \u2022 Last update: ${opcLiveUpdatedAtLabel}`}
                     style={{
                       border: `1px solid ${
                         opcLiveLastError
@@ -17756,7 +19255,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                       fontWeight: 700,
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: 6,
+                      gap: 5,
                       whiteSpace: "nowrap",
                       width: "fit-content",
                     }}
@@ -17767,6 +19266,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         width: 7,
                         height: 7,
                         borderRadius: "50%",
+                        flexShrink: 0,
                         background: opcLiveLastError ? "#f04438" : opcLiveIsStale ? "#f59e0b" : "#22c55e",
                         boxShadow: opcLiveLastError
                           ? "0 0 0 2px rgba(240,68,56,0.22)"
@@ -17775,8 +19275,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
                           : "0 0 0 2px rgba(34,197,94,0.2)",
                       }}
                     />
-                    <span>OPC {opcLiveValueCount}</span>
-                    <span style={{ color: "var(--text-muted)" }}>{opcLiveUpdatedAtLabel}</span>
+                    <span>OPC</span>
+                    <span
+                      style={{
+                        background: "color-mix(in srgb, currentColor 12%, transparent)",
+                        borderRadius: 4,
+                        padding: "1px 5px",
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      {opcLiveValueCount}
+                    </span>
+                    <span aria-hidden="true" style={{ color: "var(--text-muted)", opacity: 0.5 }}>·</span>
+                    <span style={{ color: "var(--text-muted)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                      {opcLiveIsStale && !opcLiveLastError ? "stale" : opcLiveUpdatedAtLabel}
+                    </span>
                   </div>
                 ) : null}
               </div>
@@ -17824,19 +19337,37 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 </div>
               ) : drawerView === "tags" ? (
                 <div style={drawerContentShellStyle}>
-                  <OpcConfig embedded mode="tags" />
+                  <OpcConfig
+                    embedded
+                    mode="tags"
+                    onPriorityKeysChange={setOpcDrawerPriorityHintKeys}
+                  />
                 </div>
               ) : drawerView === "logs" ? (
                 <div style={drawerContentShellStyle}>
-                  <OpcConfig embedded mode="logs" onDrawerViewChange={setDrawerView} />
+                  <OpcConfig
+                    embedded
+                    mode="logs"
+                    onDrawerViewChange={setDrawerView}
+                    onPriorityKeysChange={setOpcDrawerPriorityHintKeys}
+                  />
                 </div>
               ) : drawerView === "diagnostics" ? (
                 <div style={drawerContentShellStyle}>
-                  <OpcConfig embedded mode="diagnostics" onDrawerViewChange={setDrawerView} />
+                  <OpcConfig
+                    embedded
+                    mode="diagnostics"
+                    onDrawerViewChange={setDrawerView}
+                    onPriorityKeysChange={setOpcDrawerPriorityHintKeys}
+                  />
                 </div>
               ) : drawerView === "opc" ? (
                 <div style={drawerContentShellStyle}>
-                  <OpcConfig embedded onDrawerViewChange={setDrawerView} />
+                  <OpcConfig
+                    embedded
+                    onDrawerViewChange={setDrawerView}
+                    onPriorityKeysChange={setOpcDrawerPriorityHintKeys}
+                  />
                 </div>
               ) : drawerView === "help" ? (
                 <div style={{ height: "100%", overflow: "hidden", padding: drawerContentPadding, boxSizing: "border-box" }}>
@@ -18858,16 +20389,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
                   <path d="M4 4h16v4H4zM4 10h16v10H4z" stroke="currentColor" strokeWidth="2" />
                   <path d="M8 4v4M12 4v4M16 4v4" stroke="currentColor" strokeWidth="2" />
-                </svg>
-              </button>
-              <button
-                className="top-menu-btn"
-                title={designLiveUpdatesDisabled ? "Enable Live Updates" : "Disable Live Updates"}
-                style={topMenuModeButtonStyle(!!designLiveUpdatesDisabled)}
-                onClick={() => setDesignLiveUpdatesDisabled((v) => !v)}
-              >
-                <svg width={topMenuIconSize} height={topMenuIconSize} viewBox="0 0 24 24" fill="none">
-                  <path d="M7 5h3v14H7zM14 5h3v14h-3z" stroke="currentColor" strokeWidth="2" />
                 </svg>
               </button>
                 </div>

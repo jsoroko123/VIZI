@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -rn \"StrictMode\\\\|createRoot\" c:/Projects/Vizi/app/src/main.*)",
+      "Bash(grep -n \"// .*[-=]{2,}|//.*\\(?:SECTION|BLOCK|HANDLERS|EFFECTS|HELPERS|INITIALIZATION\\)\" \"c:/Projects/Vizi/app/src/App.jsx\" -i)",
+      "Bash(grep -n \"^//.*===\\\\|^//.*---\\\\|^//.*\\\\*{3,}\" \"c:/Projects/Vizi/app/src/App.jsx\")",
+      "Bash(grep -n \"^\\\\s*//.*TODO\\\\|^\\\\s*//.*FIXME\\\\|^\\\\s*//.*XXX\\\\|^\\\\s*//.*HACK\\\\|^\\\\s*//.*BUG\" \"c:/Projects/Vizi/app/src/App.jsx\")",
+      "Bash(grep -n \"Object.assign\\\\|{.*\\\\.\\\\.\\\\..*}\" \"c:/Projects/Vizi/app/src/App.jsx\")"
+    ]
+  }
+}

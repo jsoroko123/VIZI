@@ -299,6 +299,12 @@ export default function ServerDiagnosticsPanel({ embedded = false, canEditLogs =
       avgReadMs: avgCount > 0 ? avgAccumulator / avgCount : null,
       readCycleMs,
       writes: opcStatus?.runtime?.writeMetrics || {},
+      opcRuntime: opcStatus?.runtime && typeof opcStatus.runtime === "object" ? opcStatus.runtime : {},
+      plcTargets: Array.isArray(opcStatus?.runtime?.plcTargets) ? opcStatus.runtime.plcTargets : [],
+      transportFailureStreaks: opcStatus?.runtime?.transportFailureStreakByPlc && typeof opcStatus.runtime.transportFailureStreakByPlc === "object" ? opcStatus.runtime.transportFailureStreakByPlc : {},
+      heartbeatFailureStreaks: opcStatus?.runtime?.heartbeatFailureStreakByPlc && typeof opcStatus.runtime.heartbeatFailureStreakByPlc === "object" ? opcStatus.runtime.heartbeatFailureStreakByPlc : {},
+      deferredReadsByPlc: opcStatus?.runtime?.deferredReadsByPlc && typeof opcStatus.runtime.deferredReadsByPlc === "object" ? opcStatus.runtime.deferredReadsByPlc : {},
+      recentIssues: Array.isArray(opcStatus?.runtime?.issueLog) ? opcStatus.runtime.issueLog.slice(0, 8) : [],
       dbLatencyMs: Number(dbConfig?.health?.latencyMs),
       dbCheckedAt: Number(dbConfig?.health?.checkedAt),
       appCheckedAt: Number(appDiag?.checkedAt),
@@ -657,9 +663,57 @@ export default function ServerDiagnosticsPanel({ embedded = false, canEditLogs =
           <div style={kvStyle}><strong>Read Cycle Span:</strong> {asMs(summary.readCycleMs)}</div>
           <div style={kvStyle}><strong>Last OPC Publish:</strong> {asDate(summary.opcLastAt)}</div>
           <div style={kvStyle}><strong>Last Poll:</strong> {asDate(summary.opcLastPollAt)}</div>
+          <div style={kvStyle}><strong>Multi-Read:</strong> {summary.opcRuntime.multiReadEnabled ? `On (batch ${summary.opcRuntime.multiReadBatchSize ?? "--"})` : "Off"}</div>
+          <div style={kvStyle}><strong>Concurrency:</strong> {summary.opcRuntime.readConcurrency ?? "--"}</div>
+          <div style={kvStyle}><strong>Max Reads/Tick:</strong> {summary.opcRuntime.maxReadsPerTick ?? "--"}</div>
           <div style={kvSubStyle}>Peak single read duration and cycle timing.</div>
         </div>
       </div>
+
+      {(summary.plcTargets.length > 0 || summary.recentIssues.length > 0) && (
+        <div style={panelStyle}>
+          <div style={sectionTitleStyle}>OPC Connection Details</div>
+          {summary.plcTargets.map((plc) => {
+            const name = String(plc?.name || "");
+            const connected = plc?.connected === true;
+            const connFailStreak = Number(plc?.connectFailureStreak || 0);
+            const hbFailStreak = Number(plc?.heartbeatFailureStreak || 0);
+            const transportStreak = Number(summary.transportFailureStreaks?.[name] || 0);
+            const deferred = Number(summary.deferredReadsByPlc?.[name] || 0);
+            return (
+              <div key={name} style={{ display: "grid", gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: connected ? "#12b76a" : "#f04438", display: "inline-block", flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text)" }}>{name}</span>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{String(plc?.host || "")}</span>
+                </div>
+                <div style={{ ...statGridStyle, paddingLeft: 16 }}>
+                  <div style={kvStyle}><strong>Status:</strong> {connected ? "Connected" : "Disconnected"}</div>
+                  <div style={kvStyle}><strong>Connect Failures:</strong> {connFailStreak > 0 ? <span style={{ color: "#f04438" }}>{connFailStreak}</span> : "0"}</div>
+                  <div style={kvStyle}><strong>Heartbeat Failures:</strong> {hbFailStreak > 0 ? <span style={{ color: "#f79009" }}>{hbFailStreak}</span> : "0"}</div>
+                  <div style={kvStyle}><strong>Transport Failures:</strong> {transportStreak > 0 ? <span style={{ color: "#f04438" }}>{transportStreak}</span> : "0"}</div>
+                  {deferred > 0 && <div style={kvStyle}><strong>Deferred Reads:</strong> <span style={{ color: "#f79009" }}>{deferred}</span></div>}
+                </div>
+              </div>
+            );
+          })}
+          {summary.recentIssues.length > 0 && (
+            <div style={{ display: "grid", gap: 4, marginTop: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>Recent Issues</div>
+              {summary.recentIssues.map((issue, idx) => {
+                const sev = String(issue?.severity || "info");
+                const color = sev === "error" ? "#b42318" : sev === "warn" ? "#b54708" : "var(--text-muted)";
+                return (
+                  <div key={idx} style={{ fontSize: 11, color, borderLeft: `2px solid ${color}`, paddingLeft: 6 }}>
+                    <span style={{ opacity: 0.6 }}>{asDate(issue?.at)}</span>{" "}
+                    {String(issue?.message || "")}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={panelStyle}>
         <div style={sectionTitleStyle}>PC And App Runtime</div>
