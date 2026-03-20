@@ -14,6 +14,7 @@ import InsertDriveFileRounded from "@mui/icons-material/InsertDriveFileRounded";
 import Inventory2Rounded from "@mui/icons-material/Inventory2Rounded";
 import KeyboardArrowDownRounded from "@mui/icons-material/KeyboardArrowDownRounded";
 import MonitorRounded from "@mui/icons-material/MonitorRounded";
+import NotificationsActiveRounded from "@mui/icons-material/NotificationsActiveRounded";
 import ScienceRounded from "@mui/icons-material/ScienceRounded";
 import SettingsRounded from "@mui/icons-material/SettingsRounded";
 import ShowChartRounded from "@mui/icons-material/ShowChartRounded";
@@ -38,6 +39,7 @@ const ICON_COMPONENTS = {
   Inventory2Rounded,
   KeyboardArrowDownRounded,
   MonitorRounded,
+  NotificationsActiveRounded,
   ScienceRounded,
   SettingsRounded,
   ShowChartRounded,

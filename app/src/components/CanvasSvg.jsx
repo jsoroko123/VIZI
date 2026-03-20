@@ -59,6 +59,8 @@ const LIVE_MAINTENANCE_MODE_MEMBER_ALIASES = [
   "StsMaint",
   "MaintActive",
 ];
+const BIN_LOCK_FILL_GROUP_IDS = ["Lock_Filling", "LockFill"];
+const BIN_LOCK_DISCHARGE_GROUP_IDS = ["Lock_Discharge", "LockDischarge"];
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -152,6 +154,8 @@ function CanvasSvg({
   binProductLabelByOverlayId,
   binNameLabelByOverlayId,
   binLevelRatioByOverlayId,
+  binLockedInByOverlayId,
+  binLockedOutByOverlayId,
   onWidgetDurationPresetChange,
   onTrendTagDrop,
   hiddenTagBubbleIds,
@@ -209,11 +213,6 @@ function CanvasSvg({
     },
     []
   );
-  useEffect(() => {
-    if (!liveCanvasEnabled) return;
-    if (interactionActive) return;
-    scheduleLiveRenderTick(true);
-  }, [liveCanvasEnabled, interactionActive, scheduleLiveRenderTick]);
   useEffect(
     () => () => {
       if (!liveRenderRafRef.current || typeof window === "undefined" || typeof window.cancelAnimationFrame !== "function") {
@@ -411,6 +410,208 @@ function CanvasSvg({
     }
     return raw;
   };
+  const parseCssRgbChannels = (value) => {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return null;
+    const hex = raw.replace(/^#/, "");
+    if (/^[0-9a-f]{3}$/i.test(hex)) {
+      return hex.split("").map((ch) => parseInt(ch + ch, 16));
+    }
+    if (/^[0-9a-f]{6}$/i.test(hex)) {
+      return [
+        parseInt(hex.slice(0, 2), 16),
+        parseInt(hex.slice(2, 4), 16),
+        parseInt(hex.slice(4, 6), 16),
+      ];
+    }
+    const rgbMatch = raw.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+    if (!rgbMatch) return null;
+    return rgbMatch.slice(1, 4).map((entry) => {
+      const num = Number(entry);
+      return Number.isFinite(num) ? Math.max(0, Math.min(255, num)) : 0;
+    });
+  };
+  const normalizeOverlayActiveFillColor = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (
+      lower === "none" ||
+      lower === "transparent" ||
+      lower === "#fff" ||
+      lower === "#ffffff" ||
+      lower === "white" ||
+      lower === "rgb(255,255,255)" ||
+      lower === "rgba(255,255,255,1)"
+    ) {
+      return "";
+    }
+    const channels = parseCssRgbChannels(raw);
+    if (Array.isArray(channels) && channels.length === 3) {
+      const [r, g, b] = channels;
+      if (Math.max(r, g, b) - Math.min(r, g, b) <= 24) return "";
+    }
+    return raw;
+  };
+  const matchStateMappingColor = (mappings, rawValue) => {
+    const valueText = String(rawValue ?? "").trim();
+    if (!valueText) return "";
+    const valueNum = Number(rawValue);
+    const valueLower = valueText.toLowerCase();
+    const valueBool =
+      valueLower === "true" || valueLower === "1"
+        ? true
+        : valueLower === "false" || valueLower === "0"
+        ? false
+        : null;
+    for (const mapping of Array.isArray(mappings) ? mappings : []) {
+      const color = String(mapping?.color ?? "").trim();
+      if (!color) continue;
+      const candidates = [mapping?.state, mapping?.field];
+      for (const candidateRaw of candidates) {
+        const candidateText = String(candidateRaw ?? "").trim();
+        if (!candidateText) continue;
+        const candidateLower = candidateText.toLowerCase();
+        const candidateNum = Number(candidateText);
+        if (Number.isFinite(valueNum) && Number.isFinite(candidateNum) && candidateNum === valueNum) {
+          return color;
+        }
+        const candidateBool =
+          candidateLower === "true" || candidateLower === "1"
+            ? true
+            : candidateLower === "false" || candidateLower === "0"
+            ? false
+            : null;
+        if (valueBool !== null && candidateBool !== null && candidateBool === valueBool) {
+          return color;
+        }
+        if (candidateLower === valueLower) return color;
+      }
+    }
+    return "";
+  };
+  const stateMappingsByPath = useMemo(() => {
+    const map = new Map();
+    const inferGroupName = (tag) => {
+      const explicit = normalizeTagValue(tag?.groupName || "");
+      if (explicit) return explicit;
+      const rawPath = normalizeTagValue(tag?.tagPath || tag?.name || "");
+      if (!rawPath.includes(".")) return "";
+      return normalizeTagValue(rawPath.slice(0, rawPath.indexOf(".")));
+    };
+    const resolveTemplateStateMappings = (name) => {
+      const visited = new Set();
+      const out = new Map();
+      const walk = (rawName) => {
+        const lookupName = String(rawName || "").trim();
+        if (!lookupName || visited.has(lookupName.toLowerCase())) return;
+        visited.add(lookupName.toLowerCase());
+        const template =
+          opcTemplateMap?.get?.(lookupName) ||
+          opcTemplateMap?.get?.(lookupName.toLowerCase()) ||
+          null;
+        if (!template) return;
+        if (template.parent_name) walk(template.parent_name);
+        if (Array.isArray(template.state_mappings)) {
+          template.state_mappings.forEach((mapping) => {
+            const field = String(mapping?.field ?? "").trim();
+            const state = String(mapping?.state ?? "").trim();
+            if (!field && !state) return;
+            out.set(`${field}::${state}`, {
+              field,
+              state,
+              color: String(mapping?.color ?? "").trim(),
+            });
+          });
+        }
+      };
+      walk(name);
+      return Array.from(out.values());
+    };
+    (Array.isArray(opcTags) ? opcTags : []).forEach((tag) => {
+      const tagPath = normalizeTagValue(tag?.tagPath || "");
+      const tagName = normalizeTagValue(tag?.name || "");
+      const topicName = normalizeTagValue(tag?.topic || "");
+      const groupName = inferGroupName(tag);
+      if (!(isStateTagKey(tagName) || isStateTagKey(tagPath))) return;
+      const keyCandidates = [
+        tagPath,
+        topicName && tagName ? `${topicName}.${tagName}` : "",
+        topicName && tagPath ? `${topicName}.${tagPath}` : "",
+        groupName,
+        topicName && groupName ? `${topicName}.${groupName}` : "",
+      ]
+        .map((entry) => normalizeTagValue(entry))
+        .filter(Boolean);
+      if (!keyCandidates.length) return;
+      const mappingKeys = [
+        topicName && groupName && tagName ? `${topicName}.${groupName}.${tagName}` : "",
+        topicName && groupName && tagPath ? `${topicName}.${groupName}.${tagPath}` : "",
+        groupName && tagName ? `${groupName}.${tagName}` : "",
+        groupName && tagPath ? `${groupName}.${tagPath}` : "",
+        topicName && tagName ? `${topicName}.${tagName}` : "",
+        topicName && tagPath ? `${topicName}.${tagPath}` : "",
+        tagName,
+        tagPath,
+      ]
+        .map((entry) => normalizeTagValue(entry))
+        .filter(Boolean);
+      const tagMappings = [];
+      const seen = new Set();
+      mappingKeys.forEach((key) => {
+        const rows =
+          opcTagMappingMap?.get?.(key) ||
+          opcTagMappingMap?.get?.(key.toLowerCase()) ||
+          [];
+        rows.forEach((row) => {
+          const signature = `${String(row?.field || "")}::${String(row?.state || "")}::${String(row?.color || "")}`;
+          if (seen.has(signature)) return;
+          seen.add(signature);
+          tagMappings.push({
+            field: String(row?.field ?? "").trim(),
+            state: String(row?.state ?? "").trim(),
+            color: String(row?.color ?? "").trim(),
+          });
+        });
+      });
+      const mappingSetName = String(tag?.mappingSet || "").trim();
+      const mappingSet =
+        opcMappingSetMap?.get?.(mappingSetName) ||
+        opcMappingSetMap?.get?.(mappingSetName.toLowerCase()) ||
+        null;
+      const setMappings = Array.isArray(mappingSet?.mappings)
+        ? mappingSet.mappings.map((mapping) => ({
+            field: String(mapping?.field ?? "").trim(),
+            state: String(mapping?.state ?? "").trim(),
+            color: String(mapping?.color ?? "").trim(),
+          }))
+        : [];
+      const templateMappings = resolveTemplateStateMappings(tag?.plcType);
+      const mappings = tagMappings.length
+        ? tagMappings
+        : setMappings.length
+        ? setMappings
+        : templateMappings;
+      if (!mappings.length) return;
+      keyCandidates.forEach((key) => {
+        map.set(key, mappings);
+        map.set(key.toLowerCase(), mappings);
+      });
+    });
+    return map;
+  }, [opcTags, opcTemplateMap, opcTagMappingMap, opcMappingSetMap]);
+  const getConfiguredHmiStateColor = (rawValue, rawTagPath = "") => {
+    const candidates = buildTagPathCandidates(rawTagPath);
+    for (const candidate of candidates) {
+      const mappings =
+        stateMappingsByPath.get(candidate) ||
+        stateMappingsByPath.get(String(candidate || "").toLowerCase()) ||
+        null;
+      const configuredColor = matchStateMappingColor(mappings, rawValue);
+      if (configuredColor) return configuredColor;
+    }
+    return "";
+  };
   const renderTagColorCache = new Map();
   const renderRouteColorCache = new Map();
   const renderRouteStrokeColorCache = new Map();
@@ -419,22 +620,6 @@ function CanvasSvg({
 
   const getTagColor = (tagPath) => {
     if (!isLiveMode) return "";
-    const getDefaultHmiStateColor = (rawValue) => {
-      const text = String(rawValue ?? "").trim();
-      if (!text) return "";
-      const lower = text.toLowerCase();
-      if (lower.includes("starting")) return "#f59e0b";
-      if (lower.includes("started") || lower.includes("running")) return "#16a34a";
-      if (lower.includes("stopping")) return "#f97316";
-      if (lower.includes("stopped") || lower.includes("stop")) return "#6b7280";
-      const num = Number(text);
-      if (!Number.isFinite(num)) return "";
-      if (num === 1) return "#6b7280";
-      if (num === 2) return "#f59e0b";
-      if (num === 4) return "#16a34a";
-      if (num === 6) return "#f97316";
-      return "";
-    };
     if (!effectiveTagStateColorsByPath) return "";
     const key = String(tagPath || "").replace(/\r?\n/g, "").trim();
     if (!key) return "";
@@ -478,13 +663,20 @@ function CanvasSvg({
         return resolved;
       }
     }
-    const directStateColor = getDefaultHmiStateColor(
-      getLiveMemberValueForTagPath(key, LIVE_STATE_MEMBER_ALIASES)
+    const mappedMemberCandidates = buildTagPathMemberCandidates(
+      key,
+      LIVE_STATE_MEMBER_ALIASES
     );
-    if (directStateColor) {
-      const resolved = resolveStickyColor(directStateColor);
-      renderTagColorCache.set(cacheKey, resolved);
-      return resolved;
+    for (const candidate of mappedMemberCandidates) {
+      const match =
+        effectiveTagStateColorsByPath.get(candidate) ||
+        effectiveTagStateColorsByPath.get(String(candidate || "").toLowerCase()) ||
+        "";
+      if (match) {
+        const resolved = resolveStickyColor(match);
+        renderTagColorCache.set(cacheKey, resolved);
+        return resolved;
+      }
     }
     const stateCandidates = [key, ...parts.slice(1).map((_, idx) => parts.slice(idx + 1).join("."))];
     for (const candidate of stateCandidates) {
@@ -492,7 +684,7 @@ function CanvasSvg({
         effectiveSvgLiveValuesByGroupPath?.get(candidate) ||
         effectiveSvgLiveValuesByGroupPath?.get(String(candidate || "").toLowerCase()) ||
         null;
-      const fallbackColor = getDefaultHmiStateColor(liveStateEntry?.state);
+      const fallbackColor = getConfiguredHmiStateColor(liveStateEntry?.state, candidate);
       if (fallbackColor) {
         const resolved = resolveStickyColor(fallbackColor);
         renderTagColorCache.set(cacheKey, resolved);
@@ -543,6 +735,10 @@ function CanvasSvg({
     if (direct) {
       if (cacheKey) renderRouteStrokeColorCache.set(cacheKey, direct);
       return direct;
+    }
+    if (liveCanvasEnabled) {
+      if (cacheKey) renderRouteStrokeColorCache.set(cacheKey, "");
+      return "";
     }
 
     const groupLive = getLiveValuesForOverlay(overlay);
@@ -627,6 +823,11 @@ function CanvasSvg({
   const liveResolvedRouteStrokeByPathRef = useRef(new Map());
   const liveResolvedDiverterEntryColorByIdRef = useRef(new Map());
   const liveResolvedPolylineColorByIdRef = useRef(new Map());
+  const liveResolvedPolylineSplitCarryByIdRef = useRef({});
+  const liveResolvedPolylineSplitCarrySerializedRef = useRef("");
+  const liveEmptyTagColorMapRef = useRef(new Map());
+  const liveEmptyRouteStrokeMapRef = useRef(new Map());
+  const liveEmptyGroupValuesMapRef = useRef(new Map());
   const liveDerivedVisualState = useMemo(() => {
     const fallbackTagColors =
       tagStateColorsByPath instanceof Map ? tagStateColorsByPath : new Map();
@@ -645,15 +846,15 @@ function CanvasSvg({
       tagStateColorsByPath:
         liveResolvedTagColorByPathRef.current instanceof Map && liveResolvedTagColorByPathRef.current.size
           ? liveResolvedTagColorByPathRef.current
-          : fallbackTagColors,
+          : liveEmptyTagColorMapRef.current,
       routeStrokeColorByGroupPath:
         liveResolvedRouteStrokeByPathRef.current instanceof Map && liveResolvedRouteStrokeByPathRef.current.size
           ? liveResolvedRouteStrokeByPathRef.current
-          : fallbackRouteColors,
+          : liveEmptyRouteStrokeMapRef.current,
       svgLiveValuesByGroupPath:
         liveGroupRouteStateByPathRef.current instanceof Map && liveGroupRouteStateByPathRef.current.size
           ? liveGroupRouteStateByPathRef.current
-          : fallbackGroupValues,
+          : liveEmptyGroupValuesMapRef.current,
     };
   }, [
     liveCanvasEnabled,
@@ -894,6 +1095,8 @@ function CanvasSvg({
     liveResolvedRouteStrokeByPathRef.current = new Map();
     liveResolvedDiverterEntryColorByIdRef.current = new Map();
     liveResolvedPolylineColorByIdRef.current = new Map();
+    liveResolvedPolylineSplitCarryByIdRef.current = {};
+    liveResolvedPolylineSplitCarrySerializedRef.current = "";
   }, [liveCanvasEnabled]);
   useEffect(() => {
     if (!liveCanvasEnabled) return undefined;
@@ -933,6 +1136,10 @@ function CanvasSvg({
         data?.polylineColorById && typeof data.polylineColorById === "object"
           ? data.polylineColorById
           : {};
+      const polylineSplitCarryRaw =
+        data?.polylineSplitCarryById && typeof data.polylineSplitCarryById === "object"
+          ? data.polylineSplitCarryById
+          : {};
       const resolvedValueChanged = !plainObjectMatchesMap(liveResolvedValueByPathRef.current, byPathRaw);
       const groupStateChanged = !groupStateObjectMatchesMap(liveGroupRouteStateByPathRef.current, groupRaw);
       const tagColorChanged = !plainObjectMatchesMap(liveResolvedTagColorByPathRef.current, tagColorRaw);
@@ -945,6 +1152,9 @@ function CanvasSvg({
         liveResolvedPolylineColorByIdRef.current,
         polylineRaw
       );
+      const polylineSplitCarrySerialized = JSON.stringify(polylineSplitCarryRaw);
+      const polylineSplitCarryChanged =
+        liveResolvedPolylineSplitCarrySerializedRef.current !== polylineSplitCarrySerialized;
       if (resolvedValueChanged) {
         liveResolvedValueByPathRef.current = new Map(Object.entries(byPathRaw));
         liveValueByPathRef.current = new Map();
@@ -972,13 +1182,18 @@ function CanvasSvg({
       if (polylineChanged) {
         liveResolvedPolylineColorByIdRef.current = new Map(Object.entries(polylineRaw));
       }
+      if (polylineSplitCarryChanged) {
+        liveResolvedPolylineSplitCarryByIdRef.current = polylineSplitCarryRaw;
+        liveResolvedPolylineSplitCarrySerializedRef.current = polylineSplitCarrySerialized;
+      }
       if (
         resolvedValueChanged ||
         groupStateChanged ||
         tagColorChanged ||
         routeStrokeChanged ||
         diverterChanged ||
-        polylineChanged
+        polylineChanged ||
+        polylineSplitCarryChanged
       ) {
         scheduleLiveRenderTick(false);
       }
@@ -3918,6 +4133,9 @@ function CanvasSvg({
         state: String(cached?.state || ""),
       };
     }
+    if (liveCanvasEnabled) {
+      return { routeId: "", state: "" };
+    }
 
     const candidates = [tagPath];
     const parts = tagPath.split(".").map((x) => x.trim()).filter(Boolean);
@@ -4097,10 +4315,19 @@ function CanvasSvg({
     if (parsedModeFromStatus) return parsedModeFromStatus;
     return "";
   };
-  const applyTerraBinSkinnyLevelToSvg = (innerSvg, ratioRaw) => {
+  const applyBinVisualStateToSvg = (innerSvg, options = {}) => {
     const source = String(innerSvg || "");
     if (!source.trim()) return source;
-    const ratio = Math.max(0, Math.min(1, Number(ratioRaw) || 0));
+    const ratio = Math.max(0, Math.min(1, Number(options?.ratio) || 0));
+    const showFillLock = options?.showFillLock === true;
+    const showDischargeLock = options?.showDischargeLock === true;
+    const hasBarGraph = /id=["']BarGraph["']/i.test(source);
+    const hasLockGroup =
+      /id=["']Lock_Filling["']/i.test(source) ||
+      /id=["']Lock_Discharge["']/i.test(source) ||
+      /id=["']LockFill["']/i.test(source) ||
+      /id=["']LockDischarge["']/i.test(source);
+    if (!hasBarGraph && !hasLockGroup) return source;
     try {
       const parser = new DOMParser();
       const doc = parser.parseFromString(
@@ -4109,13 +4336,30 @@ function CanvasSvg({
       );
       if (doc.querySelector("parsererror")) return source;
       const bar = doc.getElementById("BarGraph");
-      if (!bar) return source;
-      const rawY = Number(bar.getAttribute("y"));
-      const rawHeight = Number(bar.getAttribute("height"));
-      if (!Number.isFinite(rawY) || !Number.isFinite(rawHeight) || rawHeight <= 0) return source;
-      const nextHeight = rawHeight * ratio;
-      bar.setAttribute("height", String(nextHeight));
-      bar.setAttribute("y", String(rawY));
+      if (bar) {
+        const rawY = Number(bar.getAttribute("y"));
+        const rawHeight = Number(bar.getAttribute("height"));
+        if (Number.isFinite(rawY) && Number.isFinite(rawHeight) && rawHeight > 0) {
+          const nextHeight = rawHeight * ratio;
+          bar.setAttribute("height", String(nextHeight));
+          bar.setAttribute("y", String(rawY));
+        }
+      }
+      const setGroupVisible = (ids, visible) => {
+        (Array.isArray(ids) ? ids : []).forEach((id) => {
+          const node = doc.getElementById(String(id || ""));
+          if (!node) return;
+          if (visible) {
+            node.removeAttribute("display");
+            node.removeAttribute("visibility");
+          } else {
+            node.setAttribute("display", "none");
+            node.setAttribute("visibility", "hidden");
+          }
+        });
+      };
+      setGroupVisible(BIN_LOCK_FILL_GROUP_IDS, showFillLock);
+      setGroupVisible(BIN_LOCK_DISCHARGE_GROUP_IDS, showDischargeLock);
       const serializer = new XMLSerializer();
       const root = doc.documentElement;
       return Array.from(root.childNodes)
@@ -4141,14 +4385,11 @@ function CanvasSvg({
 
   const getOverlayDiverterState = (overlay) => {
     if (!isLiveMode || overlay?.widget) return "";
-    const directState = parseDiverterStateValue(
-      getLiveMemberValueForTagPath(overlay?.tagPath, LIVE_STATE_MEMBER_ALIASES)
-    );
-    if (directState) return directState;
     const groupState = parseDiverterStateValue(
       getGroupRouteStateForTagPath(overlay?.tagPath)?.state
     );
     if (groupState) return groupState;
+    if (liveCanvasEnabled) return "";
     const stateCandidates = buildOverlayMemberCandidates(overlay, LIVE_STATE_MEMBER_ALIASES);
     const raw = stateCandidates
       .map((key) => getLiveValueForExactOrSuffixKey(key))
@@ -4590,124 +4831,9 @@ function CanvasSvg({
 
   const getDirectEntryActiveColorForDiverter = (overlay, options = {}) => {
     if (!liveCanvasEnabled) return "";
-    if (!overlay || !Array.isArray(shapes) || !shapes.length) return "";
     const workerCachedColor = liveResolvedDiverterEntryColorByIdRef.current.get(String(overlay?.id || ""));
     if (workerCachedColor) return String(workerCachedColor || "");
-    const cacheKey = String(overlay?.id || "");
-    if (cacheKey) {
-      if (_diverterColorCache.has(cacheKey)) return _diverterColorCache.get(cacheKey);
-      if (_diverterVisiting.has(cacheKey)) return "";
-      _diverterVisiting.add(cacheKey);
-    }
-    const bb = overlay?.bbox || overlayLocalBBox?.(overlay.id);
-    if (!bb) {
-      if (cacheKey) { _diverterVisiting.delete(cacheKey); _diverterColorCache.set(cacheKey, ""); }
-      return "";
-    }
-    const wr = overlayWorldRect(overlay, bb);
-    const threshold = 28;
-    const excludedOverlayIds = new Set(
-      [
-        options?.excludeOverlayId,
-        ...(Array.isArray(options?.excludedOverlayIds) ? options.excludedOverlayIds : []),
-      ]
-        .map((value) => String(value || "").trim())
-        .filter(Boolean)
-    );
-    let bestColor = "";
-    let bestDistance = Number.POSITIVE_INFINITY;
-    for (const s of shapes) {
-      if (s?.type !== "polyline" || !Array.isArray(s.points) || s.points.length < 2) continue;
-      const endpoints = [s.points[0], s.points[s.points.length - 1]].filter(Boolean);
-      for (let idx = 0; idx < endpoints.length; idx += 1) {
-        const pt = endpoints[idx];
-        const dist = distancePointToRect(pt, wr);
-        if (dist > threshold || dist >= bestDistance) continue;
-        const sx = overlayScaleX(overlay);
-        const sy = overlayScaleY(overlay);
-        const localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
-        const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
-        const branch =
-          getDiverterBranchAtWorldPointByConnector(overlay, pt, bb, 40) ||
-          getDiverterBranchAtLocalPoint(localX, localY, bb);
-        if (branch !== "entry") continue;
-        const entryEndpointIndex = idx === 0 ? 0 : s.points.length - 1;
-        const oppositePt = idx === 0 ? s.points[s.points.length - 1] : s.points[0];
-        const connectedIncomingColor = normalizeActiveLineColor(
-          findConnectedSourceColorFromPolyline(
-            s,
-            entryEndpointIndex,
-            {
-              ...options,
-              excludedOverlayIds: [...excludedOverlayIds, String(overlay?.id || "")],
-            }
-          )
-        );
-        if (connectedIncomingColor) {
-          bestDistance = dist;
-          bestColor = connectedIncomingColor;
-          continue;
-        }
-        let upstreamActiveColor = "";
-        if (oppositePt && Array.isArray(svgOverlays) && svgOverlays.length) {
-          let bestUpstreamDist = Number.POSITIVE_INFINITY;
-          for (const sourceOverlay of svgOverlays) {
-            const sourceId = String(sourceOverlay?.id || "");
-            if (sourceId && sourceId === String(overlay?.id || "")) continue;
-            const sourceType = String(sourceOverlay?.eType || sourceOverlay?.name || "")
-              .trim()
-              .toLowerCase();
-            const sourceBb = overlayLocalBBox(sourceOverlay.id);
-            if (!sourceBb) continue;
-            const sourceWr = overlayWorldRect(sourceOverlay, sourceBb);
-            const sourceDist = distancePointToRect(oppositePt, sourceWr);
-            if (sourceDist > 42 || sourceDist >= bestUpstreamDist) continue;
-            let sourceColor = "";
-            if (sourceType.includes("diverter")) {
-              // Allow diverter->diverter chains by propagating only from the active output branch.
-              const sourceIncoming = normalizeActiveLineColor(
-                getDirectEntryActiveColorForDiverter(sourceOverlay, {
-                  excludedOverlayIds: [...excludedOverlayIds, sourceId],
-                })
-              );
-              if (!sourceIncoming) continue;
-              const outputBranch =
-                getDiverterOutputBranchAtWorldPoint(sourceOverlay, oppositePt, sourceBb, 42) ||
-                (() => {
-                  const sx2 = overlayScaleX(sourceOverlay);
-                  const sy2 = overlayScaleY(sourceOverlay);
-                  const lx = (Number(oppositePt?.x) - Number(sourceOverlay?.tx || 0)) / Math.max(0.0001, sx2);
-                  const ly = (Number(oppositePt?.y) - Number(sourceOverlay?.ty || 0)) / Math.max(0.0001, sy2);
-                  const localBranch = getDiverterBranchAtLocalPoint(lx, ly, sourceBb);
-                  return localBranch === "straight" || localBranch === "divert" ? localBranch : "";
-                })();
-              const activeBranch = getEffectiveDiverterState(sourceOverlay);
-              if (!(outputBranch && activeBranch && outputBranch === activeBranch)) continue;
-              sourceColor = sourceIncoming;
-            } else {
-              sourceColor = normalizeActiveLineColor(
-                getRouteColorForOverlay(sourceOverlay) ||
-                getTagColor(sourceOverlay?.tagPath) ||
-                getRouteStrokeColorForOverlay(sourceOverlay)
-              );
-            }
-            if (!sourceColor) continue;
-            bestUpstreamDist = sourceDist;
-            upstreamActiveColor = sourceColor;
-          }
-        }
-        const c = normalizeActiveLineColor(
-          upstreamActiveColor ||
-          getTagColor(s?.tagPath) ||
-          s?.stroke
-        );
-        if (!c) continue;
-        bestDistance = dist;
-        bestColor = c;
-      }
-    }
-    if (cacheKey) { _diverterVisiting.delete(cacheKey); _diverterColorCache.set(cacheKey, bestColor); }
-    return bestColor;
+    return "";
   };
 
   const getOverlayColorAtPoint = (pt, options = {}) => {
@@ -5056,29 +5182,6 @@ function CanvasSvg({
       }
       return finish(includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "");
     }
-    const startPoint = shape.points[0];
-    const startOutputMatch = getDiverterOutputMatchAtPoint(startPoint, options);
-    if (liveTopologyStressMode) {
-      if (startOutputMatch.matched) {
-        if (startOutputMatch.active) return finish(normalizeActiveLineColor(startOutputMatch.color) || "#22c55e");
-        return finish(includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "");
-      }
-      const startSourceColor = getPolylineStartSourceColor(shape, options);
-      if (startSourceColor) return finish(startSourceColor);
-      if (!activeOnly) {
-        const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
-        if (dynamicColor) return finish(dynamicColor);
-        const explicitStroke = normalizeActiveLineColor(shape?.stroke);
-        if (explicitStroke) return finish(explicitStroke);
-      }
-      return finish(includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "");
-    }
-    if (startOutputMatch.matched) {
-      if (startOutputMatch.active) return finish(normalizeActiveLineColor(startOutputMatch.color) || "#22c55e");
-      return finish(includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "");
-    }
-    const startSourceColor = getPolylineStartSourceColor(shape, options);
-    if (startSourceColor) return finish(startSourceColor);
     if (!activeOnly) {
       const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
       if (dynamicColor) return finish(dynamicColor);
@@ -5086,6 +5189,19 @@ function CanvasSvg({
       if (explicitStroke) return finish(explicitStroke);
     }
     return finish(includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "");
+  };
+
+  const getWorkerResolvedPolylineSplitCarrySegments = (shapeId) => {
+    if (!liveCanvasEnabled) return [];
+    const key = String(shapeId || "").trim();
+    if (!key) return [];
+    const byId =
+      liveResolvedPolylineSplitCarryByIdRef.current &&
+      typeof liveResolvedPolylineSplitCarryByIdRef.current === "object"
+        ? liveResolvedPolylineSplitCarryByIdRef.current
+        : {};
+    const segments = byId[key];
+    return Array.isArray(segments) ? segments : [];
   };
 
   const pointsNear = (a, b, threshold = 12) => {
@@ -6319,13 +6435,15 @@ function CanvasSvg({
         0,
         Math.min(1, Number(binLevelRatioByOverlayId?.[id]) || 0)
       );
+      const binLockedIn = binLockedInByOverlayId?.[id] === true;
+      const binLockedOut = binLockedOutByOverlayId?.[id] === true;
       const shouldReplaceBinText =
         (overlayEType === "bin" || overlayEType.startsWith("bin")) &&
         (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
 
       const tagFill = isDiverterOverlay
         ? ""
-        : normalizeActiveLineColor(getTagColor(overlay.tagPath));
+        : normalizeOverlayActiveFillColor(getTagColor(overlay.tagPath));
       const routeStroke = normalizeActiveLineColor(getRouteStrokeColorForOverlay(overlay));
       const diverterIncomingColor =
         liveCanvasEnabled && isDiverterOverlay
@@ -6381,9 +6499,19 @@ function CanvasSvg({
       }
       if (
         (overlayEType === "bin" || overlayEType.startsWith("bin")) &&
-        /id=["']BarGraph["']/i.test(String(inner || ""))
+        (
+          /id=["']BarGraph["']/i.test(String(inner || "")) ||
+          /id=["']Lock_Filling["']/i.test(String(inner || "")) ||
+          /id=["']Lock_Discharge["']/i.test(String(inner || "")) ||
+          /id=["']LockFill["']/i.test(String(inner || "")) ||
+          /id=["']LockDischarge["']/i.test(String(inner || ""))
+        )
       ) {
-        inner = applyTerraBinSkinnyLevelToSvg(inner, binLevelRatio);
+        inner = applyBinVisualStateToSvg(inner, {
+          ratio: binLevelRatio,
+          showFillLock: binLockedIn,
+          showDischargeLock: binLockedOut,
+        });
       }
       if (liveCanvasEnabled && isDiverterOverlay) {
         inner = applyDiverterModeToSvg(inner, liveDiverterMode);
@@ -6436,6 +6564,8 @@ function CanvasSvg({
     binProductLabelByOverlayId,
     binNameLabelByOverlayId,
     binLevelRatioByOverlayId,
+    binLockedInByOverlayId,
+    binLockedOutByOverlayId,
     themeStrokeDefault,
   ]);
   const staticOverlayRenderOverlays = useMemo(
@@ -7052,8 +7182,11 @@ function CanvasSvg({
         const resolvedPolylineStroke = normalizeActiveLineColor(
           getPolylineDisplayedColor(s, { includeThemeDefault: false })
         );
-        const splitCarrySegments = [];
         const activeStrokeColor = resolvedPolylineStroke;
+        const splitCarrySegments =
+          !activeStrokeColor && liveCanvasEnabled
+            ? getWorkerResolvedPolylineSplitCarrySegments(s?.id)
+            : [];
         const renderSplitCarry =
           !activeStrokeColor &&
           Array.isArray(splitCarrySegments) &&
@@ -7206,6 +7339,10 @@ function CanvasSvg({
         return null;
       }
 
+      if (isEditing) {
+        return null;
+      }
+
       const lineStyle = s.lineStyle ?? "solid";
       const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
       const arrowStart = s.arrowStart ?? "none";
@@ -7299,6 +7436,104 @@ function CanvasSvg({
     shapeById,
     selectedShapeIdSet,
     editingId,
+    selectedSegment,
+    onHandleMouseDown,
+    onHandleDoubleClick,
+    onHandleContextMenu,
+  ]);
+  const activeEditingPolylineNodes = useMemo(() => {
+    const editingKey = String(editingId || "").trim();
+    if (!editingKey) return null;
+    const s = shapeById.get(editingKey);
+    if (!s || s.type !== "polyline") return null;
+    const isSelected = selectedShapeIdSet.has(s.id);
+    const lineStyle = s.lineStyle ?? "solid";
+    const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
+    const arrowStart = s.arrowStart ?? "none";
+    const arrowEnd = s.arrowEnd ?? "none";
+    const ptsForDisplay = pointsForMarker(s.points);
+    return (
+      <g key={`active-editing-polyline-${s.id}`}>
+        {isSelected ? (
+          <polyline
+            points={pointsToAttr(ptsForDisplay)}
+            fill="none"
+            stroke="#2b6cff"
+            strokeWidth={s.strokeWidth}
+            {...styleProps}
+            strokeLinejoin={styleProps.strokeLinejoin ?? "round"}
+            strokeLinecap={styleProps.strokeLinecap ?? "round"}
+            markerStart={markerForStart(arrowStart)}
+            markerEnd={markerForEnd(arrowEnd)}
+            vectorEffect="non-scaling-stroke"
+            pointerEvents="none"
+          />
+        ) : null}
+        {selectedSegment?.id === s.id &&
+          selectedSegment.kind === "point" &&
+          Array.isArray(s.points) &&
+          (() => {
+            const idx = selectedSegment.index;
+            if (idx < 0 || idx >= s.points.length) return null;
+            const p = s.points[idx];
+            return (
+              <circle
+                cx={p.x}
+                cy={p.y}
+                r={Math.max(10, (s.strokeWidth || 3) * 3)}
+                fill="rgba(43,108,255,0.18)"
+                stroke="#2b6cff"
+                strokeWidth={2}
+                pointerEvents="none"
+              />
+            );
+          })()}
+        {Array.isArray(s.points)
+          ? s.points.map((pt, idx) => (
+              <g key={`${s.id}-overlay-h-${idx}`}>
+                <circle
+                  cx={pt.x}
+                  cy={pt.y}
+                  r={HANDLE_R}
+                  fill={
+                    selectedSegment?.id === s.id &&
+                    selectedSegment.kind === "point" &&
+                    selectedSegment.index === idx
+                      ? "#e8f0ff"
+                      : "white"
+                  }
+                  stroke="#2b6cff"
+                  strokeWidth={HANDLE_STROKE}
+                />
+                <circle cx={pt.x} cy={pt.y} r={DOT_R} fill="#2b6cff" />
+                <circle
+                  cx={pt.x}
+                  cy={pt.y}
+                  r={HIT_R}
+                  fill="transparent"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    onHandleMouseDown(e, s.id, idx);
+                  }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    onHandleDoubleClick(e, s.id, idx);
+                  }}
+                  onContextMenu={(e) => {
+                    e.stopPropagation();
+                    onHandleContextMenu?.(e, s.id, idx);
+                  }}
+                  style={{ cursor: "grab" }}
+                />
+              </g>
+            ))
+          : null}
+      </g>
+    );
+  }, [
+    editingId,
+    shapeById,
+    selectedShapeIdSet,
     selectedSegment,
     onHandleMouseDown,
     onHandleDoubleClick,
@@ -7648,7 +7883,10 @@ function CanvasSvg({
               const resolvedPolylineStroke = normalizeActiveLineColor(
                 getPolylineDisplayedColor(s, { includeThemeDefault: false })
               );
-              const splitCarrySegments = [];
+              const splitCarrySegments =
+                !resolvedPolylineStroke && liveCanvasEnabled
+                  ? getWorkerResolvedPolylineSplitCarrySegments(s?.id)
+                  : [];
               const hasSplitCarry = Array.isArray(splitCarrySegments) && splitCarrySegments.length > 0;
               const splitCarryColor = hasSplitCarry
                 ? normalizeActiveLineColor(splitCarrySegments[0]?.color)
@@ -7778,6 +8016,7 @@ function CanvasSvg({
 
               {staticOverlayNodes}
               {widgetOverlayNodes}
+            {activeEditingPolylineNodes}
             {selectedOverlayIds?.length === 1 && selectedIds?.length === 0 && selectedSingleOverlay && overlaySelectionUI
               ? (
                 <g data-drag-selected-overlay-ui="1">

@@ -234,6 +234,11 @@ const LIVE_EQUIPMENT_STATUS_TAG_ALIASES = [
   "i_CmdFaultReset",
   "HMI_EquipmentReset",
 ];
+const LIVE_CANVAS_PRIMARY_STATUS_TAG_ALIASES = [
+  "HMI_State",
+  "HMI_ModeStatus",
+  "i_RouteID",
+];
 const POLYLINE_OVERLAY_SNAP_RADIUS_PX = 7;
 const POLYLINE_CONNECTION_SNAP_THRESHOLD = 10;
 const POLYLINE_ENDPOINT_SNAP_THRESHOLD = 9;
@@ -628,7 +633,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const liveEquipmentTickLastAtRef = useRef(0);
   const liveEquipmentFastTickTimerRef = useRef(0);
   const liveEquipmentFastTickLastAtRef = useRef(0);
-  const LIVE_EQUIPMENT_FAST_POLL_MS = 400;
+  const LIVE_EQUIPMENT_FAST_POLL_MS = 150;
   const LIVE_EQUIPMENT_FAST_TICK_MIN_MS = 300;
   const LIVE_EQUIPMENT_WRITE_CONFIRM_MS = 1200;
   const LIVE_EQUIPMENT_WRITE_HINT_TTL_MS = 1400;
@@ -771,6 +776,11 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const opcMetaEnabled = true;
   const opcUiEnabled = isLiveMode;
   const liveUiSafeMode = false;
+  const liveModePrimaryScreenReady =
+    !isLiveMode ||
+    !opcUiEnabled ||
+    liveModeStatusReadyAt > 0 ||
+    String(opcLiveLastError || "").trim().length > 0;
   const opcHighLoadUiMode = opcUiEnabled && opcActiveTagCount >= OPC_UI_HIGH_LOAD_TAG_THRESHOLD;
   // Pre-indexed OPC tag lookup — rebuilt only when opcTags changes, not on every popup open.
   // Replaces the O(n_tags × n_popup_overlays) scan inside addPopupOverlayCommandAndStatusKeys.
@@ -876,6 +886,17 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       if (!value) return;
       addKey(value, { withDefault: false, withSuffix: false });
     };
+    const addCanvasOverlayStatusKeys = (overlay) => {
+      const overlayPath = normalizeTagValue(overlay?.tagPath || "");
+      if (!overlayPath) return;
+      addScopedRootKey(overlayPath);
+      LIVE_CANVAS_PRIMARY_STATUS_TAG_ALIASES.forEach((alias) => {
+        const member = normalizeTagValue(alias || "");
+        if (!member) return;
+        addKey(`${overlayPath}.${member}`, { withDefault: false, withSuffix: false });
+        addKey(`${overlayPath}/${member}`, { withDefault: false, withSuffix: false });
+      });
+    };
     const normalizeLoose = (value) =>
       String(value || "")
         .toLowerCase()
@@ -972,6 +993,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     };
 
     const overlaysList = Array.isArray(svgOverlays) ? svgOverlays : [];
+    overlaysList.forEach(addCanvasOverlayStatusKeys);
     const overlayById = new Map(
       overlaysList.map((overlay) => [String(overlay?.id || "").trim(), overlay])
     );
@@ -1019,38 +1041,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       ),
     [opcScopedStatusKeys]
   );
-  // Keep opcLiveStore's fast-emit path up to date with current scoped keys so
-  // popup tag updates skip the 650 ms debounce and emit within 50 ms instead.
-  useEffect(() => {
-    setPriorityKeys(opcScopedStatusKeySetLower);
-    return () => setPriorityKeys(new Set());
-  }, [opcScopedStatusKeySetLower]);
   const opcDerivedTags = useMemo(() => {
     if (!opcUiEnabled) return [];
-    const tags =
-      Array.isArray(opcTagsAllRef.current) && opcTagsAllRef.current.length
-        ? opcTagsAllRef.current
-        : Array.isArray(opcTags)
-        ? opcTags
-        : [];
-    if (!tags.length) return [];
-    const keySet = opcScopedStatusKeySetLower;
-    if (!keySet.size) return [];
-    const childPrefixes = buildScopedChildPrefixes(keySet);
-    const out = [];
-    const pushIfMatch = (tag) => {
-      if (!tag) return;
-      const candidates = getTagScopeCandidates(tag);
-      const matched = candidates.some((candidate) =>
-        isTagCandidateInScope(candidate, keySet, childPrefixes)
-      );
-      if (matched) out.push(tag);
-    };
-    for (let i = 0; i < tags.length; i += 1) {
-      pushIfMatch(tags[i]);
-    }
-    return out;
-  }, [opcUiEnabled, opcTags, opcScopedStatusKeySetLower]);
+    return Array.isArray(opcTags) ? opcTags : [];
+  }, [opcUiEnabled, opcTags]);
   const [liveMenuCollapsed, setLiveMenuCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -1684,6 +1678,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     }
     let alive = true;
     let configNextAttemptAt = 0;
+    const deferLiveTemplateFetches = opcUiEnabled && !liveModePrimaryScreenReady;
     const signatureForList = (rows, fields = []) => {
       const list = Array.isArray(rows) ? rows : [];
       if (!list.length) return "0";
@@ -1816,7 +1811,9 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       }
     }
     loadConfig();
-    loadTemplates();
+    if (!deferLiveTemplateFetches) {
+      loadTemplates();
+    }
     loadTagMappings();
     loadMappingSets();
     const configPollMs = opcUiEnabled
@@ -1836,7 +1833,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       clearInterval(mappingId);
       clearInterval(mappingSetId);
     };
-  }, [clearAppOpcUiState, isPageVisible, opcMetaEnabled, opcScopedStatusKeys, opcUiEnabled]);
+  }, [clearAppOpcUiState, isPageVisible, liveModePrimaryScreenReady, opcMetaEnabled, opcScopedStatusKeys, opcUiEnabled]);
 
   useEffect(() => {
     const streamKeyLimit = Math.max(
@@ -2235,7 +2232,12 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
 
   const opcTemplateMap = useMemo(() => {
     const map = new Map();
-    (opcTemplates || []).forEach((t) => map.set(t.name, t));
+    (opcTemplates || []).forEach((t) => {
+      const name = String(t?.name || "").trim();
+      if (!name) return;
+      map.set(name, t);
+      map.set(name.toLowerCase(), t);
+    });
     return map;
   }, [opcTemplates]);
 
@@ -2264,6 +2266,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       const name = String(set?.name || "").trim();
       if (!name) return;
       map.set(name, set);
+      map.set(name.toLowerCase(), set);
     });
     return map;
   }, [opcMappingSets]);
@@ -2274,7 +2277,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     function walk(n) {
       if (!n || visited.has(n)) return;
       visited.add(n);
-      const tmpl = opcTemplateMap.get(n);
+      const tmpl = opcTemplateMap.get(n) || opcTemplateMap.get(String(n || "").trim().toLowerCase());
       if (!tmpl) return;
       if (tmpl.parent_name) {
         walk(tmpl.parent_name);
@@ -2300,23 +2303,43 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     if (!isLiveMode || liveUiSafeMode) return _EMPTY_MAP;
     const map = new Map();
     const live = opcLiveValues || {};
-    const getDefaultHmiStateColor = (rawValue) => {
-      const text = String(rawValue ?? "").trim();
-      if (!text) return "";
-      const lower = text.toLowerCase();
-      if (lower.includes("starting")) return "#f59e0b";
-      if (lower.includes("started") || lower.includes("running")) return "#16a34a";
-      if (lower.includes("stopping")) return "#f97316";
-      if (lower.includes("stopped") || lower.includes("stop")) return "#6b7280";
-      const num = Number(text);
-      if (!Number.isFinite(num)) return "";
-      if (num === 1) return "#6b7280";
-      if (num === 2) return "#f59e0b";
-      if (num === 4) return "#16a34a";
-      if (num === 6) return "#f97316";
+    const matchStateMappingColor = (mappings, rawValue) => {
+      const valueText = String(rawValue ?? "").trim();
+      if (!valueText) return "";
+      const valueNum = Number(rawValue);
+      const valueLower = valueText.toLowerCase();
+      const valueBool =
+        valueLower === "true" || valueLower === "1"
+          ? true
+          : valueLower === "false" || valueLower === "0"
+          ? false
+          : null;
+      for (const mapping of Array.isArray(mappings) ? mappings : []) {
+        const color = String(mapping?.color ?? "").trim();
+        if (!color) continue;
+        const candidates = [mapping?.state, mapping?.field];
+        for (const candidateRaw of candidates) {
+          const candidateText = String(candidateRaw ?? "").trim();
+          if (!candidateText) continue;
+          const candidateLower = candidateText.toLowerCase();
+          const candidateNum = Number(candidateText);
+          if (Number.isFinite(valueNum) && Number.isFinite(candidateNum) && candidateNum === valueNum) {
+            return color;
+          }
+          const candidateBool =
+            candidateLower === "true" || candidateLower === "1"
+              ? true
+              : candidateLower === "false" || candidateLower === "0"
+              ? false
+              : null;
+          if (valueBool !== null && candidateBool !== null && candidateBool === valueBool) {
+            return color;
+          }
+          if (candidateLower === valueLower) return color;
+        }
+      }
       return "";
     };
-
     const inferGroupName = (tag) => {
       const explicit = normalizeTagValue(tag?.groupName || "");
       if (explicit) return explicit;
@@ -2369,6 +2392,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       const mappingSetName = String(tag?.mappingSet || "").trim();
       if (value == null || value === "") return;
       const mappingKeys = [
+        topicName && groupName && tagName ? `${topicName}.${groupName}.${tagName}` : "",
+        topicName && groupName && tagPath ? `${topicName}.${groupName}.${tagPath}` : "",
+        groupName && tagName ? `${groupName}.${tagName}` : "",
+        groupName && tagPath ? `${groupName}.${tagPath}` : "",
         topicName && tagName ? `${topicName}.${tagName}` : "",
         topicName && tagPath ? `${topicName}.${tagPath}` : "",
         tagName,
@@ -2376,11 +2403,21 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       ]
         .map((x) => normalizeTagValue(x))
         .filter(Boolean);
-      const tagMappings =
-        mappingKeys.map((k) => opcTagMappingMap.get(k)).find((rows) => Array.isArray(rows) && rows.length) ||
-        [];
+      const tagMappings = [];
+      const seenMappingRows = new Set();
+      mappingKeys.forEach((key) => {
+        const rows = opcTagMappingMap.get(key) || opcTagMappingMap.get(String(key || "").toLowerCase()) || [];
+        rows.forEach((row) => {
+          const signature = `${String(row?.field || "")}::${String(row?.state || "")}::${String(row?.color || "")}`;
+          if (seenMappingRows.has(signature)) return;
+          seenMappingRows.add(signature);
+          tagMappings.push(row);
+        });
+      });
       const setMappings = mappingSetName
-        ? (opcMappingSetMap.get(mappingSetName)?.mappings || [])
+        ? (opcMappingSetMap.get(mappingSetName)?.mappings ||
+            opcMappingSetMap.get(mappingSetName.toLowerCase())?.mappings ||
+            [])
         : [];
       const normalizedSetMappings = (setMappings || []).map((m) => ({
         field: String(m?.field ?? ""),
@@ -2392,36 +2429,8 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         : normalizedSetMappings.length
         ? normalizedSetMappings
         : resolveTemplateStateMappings(templateName);
-      const fieldName = String(tag?.name || "").trim();
-      const valStr = String(value).trim();
-      const valNum = Number(value);
-      const valLower = valStr.toLowerCase();
-      const valBool =
-        valLower === "true" || valLower === "1"
-          ? true
-          : valLower === "false" || valLower === "0"
-          ? false
-          : null;
-      const match = mappings.find((m) => {
-        const stateStr = String(m?.state ?? "").trim();
-        if (!stateStr) return false;
-        const stateLower = stateStr.toLowerCase();
-        const numeric = Number(stateStr);
-        if (Number.isFinite(valNum) && Number.isFinite(numeric) && numeric === valNum) return true;
-        const stateBool =
-          stateLower === "true" || stateLower === "1"
-            ? true
-            : stateLower === "false" || stateLower === "0"
-            ? false
-            : null;
-        if (valBool !== null && stateBool !== null && valBool === stateBool) return true;
-        return stateLower === valLower;
-      });
-      const fallbackColor =
-        isStateTagKey(fieldName) || isStateTagKey(tagPath)
-          ? getDefaultHmiStateColor(value)
-          : "";
-      const resolvedColor = String(match?.color || fallbackColor || "").trim();
+      const matchColor = matchStateMappingColor(mappings, value);
+      const resolvedColor = String(matchColor || "").trim();
       if (resolvedColor) {
         const color = resolvedColor;
         keyCandidates.forEach((k) => {
@@ -4397,6 +4406,22 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     normalizeTagValue(row?.bin_name ?? row?.binName ?? row?.name ?? row?.Name ?? "");
   const getProjectBinPath = (row) =>
     normalizeTagValue(row?.tag_path ?? row?.tagPath ?? row?.svg_tag_path ?? row?.svgTagPath ?? row?.path ?? row?.Path ?? "");
+  const normalizeLooseBinKey = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  const getOverlayBinLookupName = (overlay) => {
+    const rawPath = String(overlay?.tagPath || "").trim();
+    if (rawPath) {
+      const normalized = rawPath.replace(/\//g, ".");
+      const parts = normalized.split(".").map((x) => String(x || "").trim()).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1];
+      return rawPath;
+    }
+    const rawName = String(overlay?.name || "").trim();
+    if (!rawName) return "";
+    return rawName.replace(/\.svg$/i, "").trim();
+  };
   const extractBinNumber = (input) => {
     const raw = String(input || "").trim();
     if (!raw) return null;
@@ -4532,6 +4557,25 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
   };
+  const getProjectBinBooleanValue = (row, candidates = []) => {
+    if (!row || typeof row !== "object") return false;
+    for (const key of Array.isArray(candidates) ? candidates : []) {
+      if (!Object.prototype.hasOwnProperty.call(row, key)) continue;
+      const raw = row?.[key];
+      if (typeof raw === "boolean") return raw;
+      if (raw == null || String(raw).trim() === "") continue;
+      const text = String(raw).trim().toLowerCase();
+      if (["true", "t", "1", "yes", "y", "on"].includes(text)) return true;
+      if (["false", "f", "0", "no", "n", "off"].includes(text)) return false;
+      const n = Number(text);
+      if (Number.isFinite(n)) return n !== 0;
+    }
+    return false;
+  };
+  const getProjectBinLockedIn = (row) =>
+    getProjectBinBooleanValue(row, ["locked_in", "lockedIn", "Locked_In", "LockedIn"]);
+  const getProjectBinLockedOut = (row) =>
+    getProjectBinBooleanValue(row, ["locked_out", "lockedOut", "Locked_Out", "LockedOut"]);
   const getProjectBinBindingCandidates = (raw) => {
     const text = String(raw || "").trim();
     if (!text) return [];
@@ -4579,6 +4623,97 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     }
     return "";
   };
+  const projectBinLookupIndex = useMemo(() => {
+    const directByToken = new Map();
+    const looseEntries = [];
+    const rows = Array.isArray(projectBinRows) ? projectBinRows : [];
+    rows.forEach((row) => {
+      const rowKey = String(getProjectBinBindingKey(row) || "").trim().toLowerCase();
+      const rowId = String(getProjectBinRowId(row) || "").trim().toLowerCase();
+      const rowPath = String(getProjectBinPath(row) || "").trim().toLowerCase();
+      const rowName = String(getProjectBinName(row) || "").trim().toLowerCase();
+      [
+        rowKey,
+        rowId,
+        rowPath,
+        rowName,
+        rowId ? `id:${rowId}` : "",
+        rowPath ? `path:${rowPath}` : "",
+        rowName ? `name:${rowName}` : "",
+      ]
+        .filter(Boolean)
+        .forEach((token) => {
+          if (!directByToken.has(token)) directByToken.set(token, row);
+        });
+      const fields = [
+        row?.tag_path,
+        row?.tagPath,
+        row?.svg_tag_path,
+        row?.svgTagPath,
+        row?.bin_name,
+        row?.binName,
+        row?.name,
+        row?.Name,
+        row?.path,
+        row?.Path,
+      ]
+        .map((value) => normalizeTagValue(value))
+        .filter(Boolean);
+      if (!fields.length) return;
+      looseEntries.push({
+        row,
+        fieldsLower: fields.map((value) => value.toLowerCase()),
+        fieldsLoose: fields.map((value) => normalizeLooseBinKey(value)),
+      });
+    });
+    return { directByToken, looseEntries };
+  }, [projectBinRows]);
+  const resolveProjectBinRowForOverlayIndexed = (overlay) => {
+    if (!overlay) return null;
+    const bindingCandidates = getProjectBinBindingCandidates(overlay?.binBindingKey);
+    for (const candidate of bindingCandidates) {
+      const token = String(candidate || "").trim().toLowerCase();
+      if (!token) continue;
+      const direct = projectBinLookupIndex.directByToken.get(token);
+      if (direct) return direct;
+    }
+    const overlayTagPath = normalizeTagValue(overlay?.tagPath || "");
+    const overlayName = normalizeTagValue(getOverlayBinLookupName(overlay) || overlay?.name || "");
+    const pathLower = overlayTagPath.toLowerCase();
+    const nameLower = overlayName.toLowerCase();
+    const pathLoose = normalizeLooseBinKey(overlayTagPath);
+    const nameLoose = normalizeLooseBinKey(overlayName);
+    let best = null;
+    let bestScore = -1;
+    for (const entry of projectBinLookupIndex.looseEntries) {
+      let score = 0;
+      for (let i = 0; i < entry.fieldsLower.length; i += 1) {
+        const lower = entry.fieldsLower[i];
+        const loose = entry.fieldsLoose[i];
+        if (pathLower && (lower === pathLower || lower.endsWith(`.${pathLower}`) || pathLower.endsWith(`.${lower}`))) score = Math.max(score, 100);
+        if (nameLower && lower === nameLower) score = Math.max(score, 90);
+        if (pathLoose && loose && (loose === pathLoose || loose.includes(pathLoose) || pathLoose.includes(loose))) score = Math.max(score, 70);
+        if (nameLoose && loose && (loose === nameLoose || loose.includes(nameLoose) || nameLoose.includes(loose))) score = Math.max(score, 60);
+      }
+      if (score > bestScore) {
+        best = entry.row;
+        bestScore = score;
+      }
+    }
+    return bestScore > 0 ? best : null;
+  };
+  const projectBinRowByOverlayId = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const overlayId = String(overlay?.id || "").trim();
+      if (!overlayId) return;
+      const eType = String(resolveOverlayEType(overlay) || "").trim();
+      if (!isBinEType(eType)) return;
+      const row = resolveProjectBinRowForOverlayIndexed(overlay);
+      if (row) map.set(overlayId, row);
+    });
+    return map;
+  }, [svgOverlays, projectBinLookupIndex]);
   const getProjectRowId = (row) =>
     String(
       row?.id ??
@@ -4682,72 +4817,11 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   };
   const findProjectBinRowForOverlay = (overlay) => {
     if (!overlay) return null;
-    const bindingCandidates = getProjectBinBindingCandidates(overlay?.binBindingKey);
-    if (bindingCandidates.length) {
-      const candidateSet = new Set(bindingCandidates);
-      const rows = Array.isArray(projectBinRows) ? projectBinRows : [];
-      const direct = rows.find((row) => {
-        const rowKey = String(getProjectBinBindingKey(row) || "").trim().toLowerCase();
-        const rowId = getProjectBinRowId(row).toLowerCase();
-        const rowPath = getProjectBinPath(row).toLowerCase();
-        const rowName = getProjectBinName(row).toLowerCase();
-        const rowKeys = [
-          rowKey,
-          rowId,
-          rowPath,
-          rowName,
-          rowId ? `id:${rowId}` : "",
-          rowPath ? `path:${rowPath}` : "",
-          rowName ? `name:${rowName}` : "",
-        ].filter(Boolean);
-        return rowKeys.some((k) => candidateSet.has(k));
-      });
-      if (direct) return direct;
+    const overlayId = String(overlay?.id || "").trim();
+    if (overlayId && projectBinRowByOverlayId.has(overlayId)) {
+      return projectBinRowByOverlayId.get(overlayId) || null;
     }
-    const normalizeLoose = (value) =>
-      String(value || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "");
-    const overlayTagPath = normalizeTagValue(overlay?.tagPath || "");
-    const overlayName = normalizeTagValue(getOverlayPopupTagName(overlay) || overlay?.name || "");
-    const pathLower = overlayTagPath.toLowerCase();
-    const nameLower = overlayName.toLowerCase();
-    const pathLoose = normalizeLoose(overlayTagPath);
-    const nameLoose = normalizeLoose(overlayName);
-    const rows = Array.isArray(projectBinRows) ? projectBinRows : [];
-    let best = null;
-    let bestScore = -1;
-    for (const row of rows) {
-      const fields = [
-        row?.tag_path,
-        row?.tagPath,
-        row?.svg_tag_path,
-        row?.svgTagPath,
-        row?.bin_name,
-        row?.binName,
-        row?.name,
-        row?.Name,
-        row?.path,
-        row?.Path,
-      ]
-        .map((v) => normalizeTagValue(v))
-        .filter(Boolean);
-      if (!fields.length) continue;
-      let score = 0;
-      for (const raw of fields) {
-        const lower = raw.toLowerCase();
-        const loose = normalizeLoose(raw);
-        if (pathLower && (lower === pathLower || lower.endsWith(`.${pathLower}`) || pathLower.endsWith(`.${lower}`))) score = Math.max(score, 100);
-        if (nameLower && lower === nameLower) score = Math.max(score, 90);
-        if (pathLoose && loose && (loose === pathLoose || loose.includes(pathLoose) || pathLoose.includes(loose))) score = Math.max(score, 70);
-        if (nameLoose && loose && (loose === nameLoose || loose.includes(nameLoose) || nameLoose.includes(loose))) score = Math.max(score, 60);
-      }
-      if (score > bestScore) {
-        best = row;
-        bestScore = score;
-      }
-    }
-    return bestScore > 0 ? best : null;
+    return resolveProjectBinRowForOverlayIndexed(overlay);
   };
   const getOverlayBinProductName = (overlay) => {
     const row = findProjectBinRowForOverlay(overlay);
@@ -5128,6 +5202,30 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         return;
       }
       out[id] = Math.max(0, Math.min(1, level / capacity));
+    });
+    return out;
+  }, [svgOverlays, projectBinRows]);
+  const binLockedInByOverlayId = useMemo(() => {
+    const out = {};
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      const eType = String(resolveOverlayEType(overlay) || "").trim();
+      if (!isBinEType(eType)) return;
+      const row = findProjectBinRowForOverlay(overlay);
+      if (getProjectBinLockedIn(row)) out[id] = true;
+    });
+    return out;
+  }, [svgOverlays, projectBinRows]);
+  const binLockedOutByOverlayId = useMemo(() => {
+    const out = {};
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      const eType = String(resolveOverlayEType(overlay) || "").trim();
+      if (!isBinEType(eType)) return;
+      const row = findProjectBinRowForOverlay(overlay);
+      if (getProjectBinLockedOut(row)) out[id] = true;
     });
     return out;
   }, [svgOverlays, projectBinRows]);
@@ -6101,6 +6199,13 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     let alive = true;
     let inFlight = false;
 
+    if (isLiveMode && !liveModePrimaryScreenReady) {
+      setProjectEquipmentRows((prev) => (Array.isArray(prev) && prev.length ? [] : prev));
+      return () => {
+        alive = false;
+      };
+    }
+
     const filterRowsForActiveProject = (rows) => {
       const list = Array.isArray(rows) ? rows : [];
       const pid = normalizeTagValue(activeProjectId);
@@ -6236,7 +6341,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       alive = false;
       window.clearInterval(id);
     };
-  }, [activeProjectId, isLiveMode, isPageVisible]);
+  }, [activeProjectId, isLiveMode, isPageVisible, liveModePrimaryScreenReady]);
 
   useEffect(() => {
     let alive = true;
@@ -7095,6 +7200,40 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [isLiveMode]);
+
+  useEffect(() => {
+    const isTypingTarget = (target) => {
+      if (!target) return false;
+      const tag = String(target.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || target.isContentEditable;
+    };
+
+    const onKeyDown = (e) => {
+      if (isLiveMode) return;
+      if (isTypingTarget(e.target)) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+
+      const activeSegment =
+        selectedSegment &&
+        selectedSegment.kind === "point" &&
+        String(selectedSegment.id || "") &&
+        String(editingId || "") === String(selectedSegment.id || "") &&
+        selectedIds.includes(String(selectedSegment.id || ""));
+      const hasSelection =
+        (Array.isArray(selectedIds) && selectedIds.length > 0) ||
+        (Array.isArray(selectedOverlayIds) && selectedOverlayIds.length > 0);
+      if (!activeSegment && !hasSelection) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      if (activeSegment && deletePolylineVertex(selectedSegment.id, selectedSegment.index)) return;
+      deleteSelected();
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [isLiveMode, selectedSegment, editingId, selectedIds, selectedOverlayIds]);
 
   useEffect(() => {
     function onDown() {
@@ -8882,6 +9021,34 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return { x: to.x, y: from.y }; // horizontal
     }
     return { x: from.x, y: to.y }; // vertical
+  }
+
+  function constrainPolylineHandleMove(points, index, target) {
+    const pts = Array.isArray(points) ? points : [];
+    const idx = Number(index);
+    const nextPoint = {
+      x: Number(target?.x) || 0,
+      y: Number(target?.y) || 0,
+    };
+    if (!Number.isInteger(idx) || idx < 0 || idx >= pts.length) return nextPoint;
+    const anchors = [];
+    if (idx > 0) anchors.push(pts[idx - 1]);
+    if (idx < pts.length - 1) anchors.push(pts[idx + 1]);
+    const candidates = anchors
+      .filter(Boolean)
+      .map((anchor) => {
+        const constrained = constrainHV(anchor, nextPoint);
+        return {
+          point: constrained,
+          score: Math.hypot(
+            Number(constrained?.x || 0) - nextPoint.x,
+            Number(constrained?.y || 0) - nextPoint.y
+          ),
+        };
+      });
+    if (!candidates.length) return nextPoint;
+    candidates.sort((a, b) => Number(a?.score || 0) - Number(b?.score || 0));
+    return candidates[0]?.point || nextPoint;
   }
 
 
@@ -11500,6 +11667,33 @@ const CONTENT_FIT_HEADROOM = 0.94;
     );
   }
 
+  function deletePolylineVertex(id, index) {
+    const shape = (shapesRef.current || []).find((s) => String(s?.id || "") === String(id || ""));
+    if (!shape || !Array.isArray(shape?.points) || shape.points.length <= 2) return false;
+    const idx = Number(index);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= shape.points.length) return false;
+    const nextPointCount = shape.points.length - 1;
+    const nextSelectedIndex = Math.max(0, Math.min(idx, nextPointCount - 1));
+    pushHistory();
+    setShapes((prev) => {
+      const next = prev.map((s) => {
+        if (String(s?.id || "") !== String(id || "")) return s;
+        if (!Array.isArray(s?.points) || s.points.length <= 2) return s;
+        const updated = s.points.slice();
+        updated.splice(idx, 1);
+        return { ...s, points: updated };
+      });
+      shapesRef.current = next;
+      return next;
+    });
+    setSelectedIds([id]);
+    setSelectedOverlayIds([]);
+    setEditingId(id);
+    setSelectedSegment({ id, index: nextSelectedIndex, kind: "point" });
+    scheduleProjectAutoSave(80);
+    return true;
+  }
+
   // function onCanvasDoubleClick(e) {
   //   // don't set marker while drawing
   //   if (tool === "polyline") return;
@@ -11518,10 +11712,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
     e.preventDefault();
     pendingDragAllRef.current = null;
     pushHistory();
+    const shape = (shapesRef.current || []).find((s) => s?.id === id);
+    const startPoint =
+      Array.isArray(shape?.points) && shape.points[index]
+        ? {
+            x: Number(shape.points[index]?.x) || 0,
+            y: Number(shape.points[index]?.y) || 0,
+          }
+        : null;
     setSelectedIds([id]);
     setSelectedOverlayIds([]);
     setEditingId(id);
-    setDragHandle({ id, index });
+    setDragHandle({ id, index, startPoint });
     setSelectedSegment({ id, index, kind: "point" });
   }
 
@@ -11530,8 +11732,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (tool !== "select") return;
     e.stopPropagation();
     e.preventDefault();
-    removeVertex(id, index);
-    setSelectedSegment(null);
+    deletePolylineVertex(id, index);
   }
 
   function onHandleContextMenu(e, id, index) {
@@ -13906,7 +14107,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ||
       !!String(liveEquipmentDrawerOverlayId || "").trim();
     if (!hasPopupOpen) return undefined;
-    const POPUP_REFRESH_MIN_MS = 500;
+    const POPUP_REFRESH_MIN_MS = 120;
     const scheduleTick = () => {
       if (!liveEquipmentActiveRef.current) return;
       if (isInteractingRef.current) return;
@@ -15004,12 +15205,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const draggedShape = shapesRef.current.find((s) => s.id === dragHandle.id);
       const draggedPointCount = Array.isArray(draggedShape?.points) ? draggedShape.points.length : 0;
       const isEndpoint = dragHandle.index === 0 || dragHandle.index === draggedPointCount - 1;
-      const snappedPoint = isEndpoint
-        ? snapPointToNearestPolylineEndpoint(p, POLYLINE_ENDPOINT_SNAP_THRESHOLD, {
-            excludeShapeId: dragHandle.id,
-            excludeIndexes: [dragHandle.index],
-          })
+      const constrainedPoint = e.altKey
+        ? constrainPolylineHandleMove(draggedShape?.points, dragHandle.index, p)
         : p;
+      const snappedPoint =
+        !e.altKey && isEndpoint
+          ? snapPointToNearestPolylineEndpoint(constrainedPoint, POLYLINE_ENDPOINT_SNAP_THRESHOLD, {
+              excludeShapeId: dragHandle.id,
+              excludeIndexes: [dragHandle.index],
+            })
+          : constrainedPoint;
       enqueueCanvasUpdate("shape-handle", () =>
         setShapes((prev) => {
           const idx = prev.findIndex((s) => s.id === dragHandle.id);
@@ -15106,6 +15311,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function onMouseUp() {
     const dragAllSnapshot = dragAll;
+    const dragHandleSnapshot = dragHandle;
     const overlayResizeSnapshot = overlayResize;
     const shapeResizeSnapshot = shapeResize;
     const shapeResizePreviewSnapshot = shapeResizePreviewRef.current;
@@ -15124,7 +15330,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
     dragAllLastDeltaRef.current = { dx: NaN, dy: NaN };
     dragAllHistoryPushedRef.current = false;
     dragPolylineSnapCacheRef.current = { at: 0, dx: NaN, dy: NaN, result: { dx: 0, dy: 0 } };
-    const hadDragHandle = !!dragHandle;
+    const hadDragHandle = !!dragHandleSnapshot;
+    const dragHandleMoved = (() => {
+      if (!dragHandleSnapshot?.id || !Number.isInteger(Number(dragHandleSnapshot?.index))) return false;
+      const shape = (shapesRef.current || []).find((s) => String(s?.id || "") === String(dragHandleSnapshot.id || ""));
+      const point = Array.isArray(shape?.points) ? shape.points[Number(dragHandleSnapshot.index)] : null;
+      const startPoint = dragHandleSnapshot?.startPoint;
+      if (!point || !startPoint) return false;
+      return (
+        Math.abs(Number(point?.x || 0) - Number(startPoint?.x || 0)) > 0.01 ||
+        Math.abs(Number(point?.y || 0) - Number(startPoint?.y || 0)) > 0.01
+      );
+    })();
     const hadCanvasPanDrag = !!canvasPanDrag;
     const didCanvasPanMove = Boolean(canvasPanDrag?.moved);
     if (hadCanvasPanDrag) {
@@ -15216,7 +15433,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       return;
     }
 
-    const movedSomething = !!(dragAllMoved || dragHandle || overlayResize || shapeResizeMoved);
+    const movedSomething = !!(dragAllMoved || dragHandleMoved || overlayResize || shapeResizeMoved);
     if (dragAllSnapshot && dragAllMoved) {
       const dx = Number.isFinite(Number(dragAllDeltaSnapshot?.dx))
         ? Number(dragAllDeltaSnapshot.dx)
@@ -15272,10 +15489,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setDragHandle(null);
     setOverlayResize(null);
     setShapeResize(null);
-    if (hadDragHandle) {
-      setSelectedSegment(null);
-      exitEditMode();
-    }
     if (movedSomething) scheduleProjectAutoSave(80);
     if (drawing?.mode === "draw-rect" && drawing.id) finishRectDrawing(drawing.id);
     if (drawing?.mode === "draw-circle" && drawing.id) finishCircleDrawing(drawing.id);
@@ -17282,9 +17495,36 @@ const CONTENT_FIT_HEADROOM = 0.94;
         set.add(parts.slice(i).join("."));
       }
     };
+    const addExactKey = (raw) => {
+      const value = normalizeTagValue(raw || "");
+      if (!value) return;
+      const lower = value.toLowerCase();
+      if (lower.startsWith("db:") || lower.startsWith("dbq:")) return;
+      set.add(value);
+    };
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const overlayPath = normalizeTagValue(overlay?.tagPath || "");
+      if (!overlayPath) return;
+      addExactKey(overlayPath);
+      LIVE_CANVAS_PRIMARY_STATUS_TAG_ALIASES.forEach((alias) => {
+        const member = normalizeTagValue(alias || "");
+        if (!member) return;
+        addExactKey(`${overlayPath}.${member}`);
+        addExactKey(`${overlayPath}/${member}`);
+      });
+    });
     (Array.isArray(shapes) ? shapes : []).forEach((shape) => addKey(shape?.tagPath));
     (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
-      addKey(overlay?.tagPath);
+      const overlayPath = normalizeTagValue(overlay?.tagPath || "");
+      addKey(overlayPath);
+      if (overlayPath) {
+        LIVE_CANVAS_PRIMARY_STATUS_TAG_ALIASES.forEach((alias) => {
+          const member = normalizeTagValue(alias || "");
+          if (!member) return;
+          addExactKey(`${overlayPath}.${member}`);
+          addExactKey(`${overlayPath}/${member}`);
+        });
+      }
       if (OPC_INCLUDE_WIDGET_SERIES_IN_UI_SCOPE) {
         normalizeSeriesTagsValue(overlay?.widget?.seriesTags, overlay?.tagPath).forEach(addKey);
       }
@@ -17293,51 +17533,36 @@ const CONTENT_FIT_HEADROOM = 0.94;
       addKey(overlay?.widget?.timerDoneTag);
       addKey(overlay?.widget?.timerEnableTag);
     });
-    const scopedKeySet = new Set(
-      Array.from(set)
-        .map((key) => normalizeTagValue(key || "").toLowerCase())
-        .filter(Boolean)
-    );
-    const childPrefixes = buildScopedChildPrefixes(scopedKeySet);
-    const tagsForCanvas =
-      Array.isArray(opcTagsAllRef.current) && opcTagsAllRef.current.length
-        ? opcTagsAllRef.current
-        : Array.isArray(opcTags)
-        ? opcTags
-        : [];
-    tagsForCanvas.forEach((tag) => {
-      const candidates = getTagScopeCandidates(tag);
-      if (!candidates.some((candidate) => isTagCandidateInScope(candidate, scopedKeySet, childPrefixes))) {
-        return;
-      }
-      candidates.forEach(addKey);
+    (Array.isArray(opcDerivedTags) ? opcDerivedTags : []).forEach((tag) => {
+      getTagScopeCandidates(tag).forEach(addKey);
     });
-    return Array.from(set).slice(0, Math.max(OPC_CANVAS_KEY_HARD_CAP, set.size));
-  }, [opcUiEnabled, shapes, svgOverlays, opcTags]);
+    return Array.from(set).slice(0, OPC_CANVAS_KEY_HARD_CAP);
+  }, [opcUiEnabled, shapes, svgOverlays, opcDerivedTags]);
   const canvasWidgetDbValues = useMemo(
     () => (opcUiEnabled ? widgetDbValues : {}),
     [opcUiEnabled, widgetDbValues]
   );
+  const opcLivePriorityKeySetLower = useMemo(() => {
+    const keys = new Set();
+    const addKey = (raw) => {
+      const value = normalizeTagValue(raw || "").toLowerCase();
+      if (!value) return;
+      keys.add(value);
+    };
+    (Array.isArray(opcScopedStatusKeys) ? opcScopedStatusKeys : []).forEach(addKey);
+    (Array.isArray(canvasLiveTagKeys) ? canvasLiveTagKeys : []).forEach(addKey);
+    return keys;
+  }, [opcScopedStatusKeys, canvasLiveTagKeys]);
+  // Keep opcLiveStore's fast-emit path aligned with the actual on-screen canvas keys,
+  // not just popup-scoped keys, so SVG fills react as quickly as the HMI state text.
+  useEffect(() => {
+    setPriorityKeys(opcLivePriorityKeySetLower);
+    return () => setPriorityKeys(new Set());
+  }, [opcLivePriorityKeySetLower]);
   const canvasOpcTags = useMemo(() => {
     if (!opcUiEnabled) return [];
-    const keys = new Set(
-      (Array.isArray(canvasLiveTagKeys) ? canvasLiveTagKeys : [])
-        .map((k) => normalizeTagValue(k || "").toLowerCase())
-        .filter(Boolean)
-    );
-    if (!keys.size) return [];
-    const childPrefixes = buildScopedChildPrefixes(keys);
-    const tagsForCanvas =
-      Array.isArray(opcTagsAllRef.current) && opcTagsAllRef.current.length
-        ? opcTagsAllRef.current
-        : Array.isArray(opcTags)
-        ? opcTags
-        : [];
-    return tagsForCanvas.filter((tag) => {
-      const candidates = getTagScopeCandidates(tag);
-      return candidates.some((candidate) => isTagCandidateInScope(candidate, keys, childPrefixes));
-    });
-  }, [opcUiEnabled, opcTags, canvasLiveTagKeys]);
+    return Array.isArray(opcDerivedTags) ? opcDerivedTags : [];
+  }, [opcUiEnabled, opcDerivedTags]);
   const opcPriorityHintKeys = useMemo(() => {
     if (!opcUiEnabled) return [];
     const keys = new Set();
@@ -17509,6 +17734,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (containsAlarm) return containsAlarm;
     return "opc_alarm_state";
   }, [databaseTablesForMenu]);
+  const liveAlarmDrawerActive = useMemo(() => {
+    if (!showMainDrawer || drawerView !== "database") return false;
+    const target = String(alarmDatabasePath || "").trim().toLowerCase();
+    const active = String(activeDatabaseTable || "").trim().toLowerCase();
+    return Boolean(target) && active === target;
+  }, [activeDatabaseTable, alarmDatabasePath, drawerView, showMainDrawer]);
   const projectDrawerTabs = useMemo(
     () =>
       isLiveMode
@@ -17858,6 +18089,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         binProductLabelByOverlayId={binProductLabelByOverlayId}
         binNameLabelByOverlayId={binNameLabelByOverlayId}
         binLevelRatioByOverlayId={binLevelRatioByOverlayId}
+        binLockedInByOverlayId={binLockedInByOverlayId}
+        binLockedOutByOverlayId={binLockedOutByOverlayId}
         onWidgetDurationPresetChange={onCanvasWidgetDurationPresetChange}
         hiddenTagBubbleIds={hiddenTagBubbleIds}
         onHideTagBubble={onCanvasHideTagBubble}
@@ -19213,8 +19446,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           <div
             style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, color: "#f04438" }}
             onClick={() => {
-              removeVertex(polyHandleMenu.id, polyHandleMenu.index);
-              setSelectedSegment(null);
+              deletePolylineVertex(polyHandleMenu.id, polyHandleMenu.index);
               setPolyHandleMenu(null);
             }}
           >
@@ -21302,6 +21534,48 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 No live menu items configured.
               </div>
             )}
+            {canViewDataPages ? (
+              <button
+                onClick={() => openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath })}
+                data-preserve-style="true"
+                style={{
+                  width: "100%",
+                  minHeight: liveMenuIsExpanded ? (isLiveMobile ? 34 : 28) : 30,
+                  borderRadius: 10,
+                  border: `1px solid ${liveAlarmDrawerActive ? "var(--selected-border)" : "var(--border)"}`,
+                  background: liveAlarmDrawerActive ? "var(--selected-bg)" : "color-mix(in srgb, var(--bg) 88%, #2a120f 12%)",
+                  color: liveAlarmDrawerActive ? "var(--selected-text)" : "var(--text)",
+                  boxShadow: liveAlarmDrawerActive ? "var(--selected-shadow)" : "none",
+                  padding: liveMenuIsExpanded ? (isLiveMobile ? "6px 9px" : "4px 8px") : 0,
+                  fontSize: 11,
+                  fontWeight: 800,
+                  textAlign: "left",
+                  cursor: "pointer",
+                  display: "grid",
+                  gridTemplateColumns: liveMenuIsExpanded ? "22px 1fr" : "1fr",
+                  alignItems: "center",
+                  gap: liveMenuIsExpanded ? 8 : 0,
+                  marginTop: 6,
+                }}
+                title="Open Alarms"
+              >
+                <span
+                  style={{
+                    width: liveMenuIsExpanded ? 22 : 30,
+                    height: liveMenuIsExpanded ? 18 : 22,
+                    borderRadius: liveMenuIsExpanded ? 7 : 8,
+                    border: liveMenuIsExpanded ? "1px solid var(--border)" : "none",
+                    background: liveMenuIsExpanded ? "color-mix(in srgb, var(--bg-elev) 85%, transparent)" : "transparent",
+                    display: "grid",
+                    placeItems: "center",
+                    margin: liveMenuIsExpanded ? 0 : "0 auto",
+                  }}
+                >
+                  {renderLiveMenuIconGlyph("NotificationsActiveRounded", liveMenuIsExpanded ? 12 : 14)}
+                </span>
+                {liveMenuIsExpanded ? <span>Alarms</span> : null}
+              </button>
+            ) : null}
             {canViewArea("tags") ? (
               <button
                 onClick={() => openDrawer("trends")}
@@ -22920,38 +23194,36 @@ const CONTENT_FIT_HEADROOM = 0.94;
         </div>
       ) : null}
 
-      {showTeamChat ? (
-        <Suspense fallback={null}>
-          <TeamChatPanel
-            showTeamChat={showTeamChat}
-            setShowTeamChat={setShowTeamChat}
-            isLiveMode={isLiveMode}
-            canAskAi={true}
-            isLiveMobile={isLiveMobile}
-            topOffset={TOP_BAR_H + liveAlarmBarOffset}
-            leftOffset={projectDrawerInsetPx}
-            rightOffset={!isLiveMode && showRulers ? 32 : undefined}
-            bottomOffset={showDesktopTaskbar ? TASKBAR_H + 20 : (isLiveMode ? 72 : 16)}
-            desktopTopPx={teamChatDesktopTopPx}
-            desktopRightPx={teamChatDesktopRightPx}
-            liveBottomCarouselHeightPx={liveBottomCarouselHeightPx}
-            teamChatBodyRef={teamChatBodyRef}
-            teamChatLoading={teamChatLoading}
-            teamChatMessages={teamChatMessages}
-            teamChatDraft={teamChatDraft}
-            setTeamChatDraft={setTeamChatDraft}
-            teamChatSending={teamChatSending}
-            teamChatUnreadCount={teamChatUnreadCount}
-            onSend={sendTeamChatMessage}
-            onUploadL5x={uploadL5xContextFile}
-            onClearL5x={clearL5xContextDocs}
-            chatContextDocs={chatContextDocs}
-            chatContextUploading={chatContextUploading}
-            currentUserId={user?.id}
-            liveUsers={teamChatLiveUsers}
-          />
-        </Suspense>
-      ) : null}
+      <Suspense fallback={null}>
+        <TeamChatPanel
+          showTeamChat={showTeamChat}
+          setShowTeamChat={setShowTeamChat}
+          isLiveMode={isLiveMode}
+          canAskAi={true}
+          isLiveMobile={isLiveMobile}
+          topOffset={TOP_BAR_H + liveAlarmBarOffset}
+          leftOffset={projectDrawerInsetPx}
+          rightOffset={!isLiveMode && showRulers ? 32 : undefined}
+          bottomOffset={showDesktopTaskbar ? TASKBAR_H + 20 : (isLiveMode ? 72 : 16)}
+          desktopTopPx={teamChatDesktopTopPx}
+          desktopRightPx={teamChatDesktopRightPx}
+          liveBottomCarouselHeightPx={liveBottomCarouselHeightPx}
+          teamChatBodyRef={teamChatBodyRef}
+          teamChatLoading={teamChatLoading}
+          teamChatMessages={teamChatMessages}
+          teamChatDraft={teamChatDraft}
+          setTeamChatDraft={setTeamChatDraft}
+          teamChatSending={teamChatSending}
+          teamChatUnreadCount={teamChatUnreadCount}
+          onSend={sendTeamChatMessage}
+          onUploadL5x={uploadL5xContextFile}
+          onClearL5x={clearL5xContextDocs}
+          chatContextDocs={chatContextDocs}
+          chatContextUploading={chatContextUploading}
+          currentUserId={user?.id}
+          liveUsers={teamChatLiveUsers}
+        />
+      </Suspense>
 
       {!showZoom && !isLiveMode && (
         <button

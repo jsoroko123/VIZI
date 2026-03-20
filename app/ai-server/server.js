@@ -3617,12 +3617,24 @@ async function ensureDesignerTablesFromSchema(db) {
   }
 }
 
+const PRIMARY_KEY_CACHE_TTL_MS = 60_000;
+const primaryKeyCache = new Map();
+
 async function getPrimaryKey(table) {
   const tableName = String(table || "").trim();
   if (!/^[a-zA-Z0-9_]+$/.test(tableName)) return null;
+  const cacheKey = tableName.toLowerCase();
+  const cached = primaryKeyCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - Number(cached.at || 0) <= PRIMARY_KEY_CACHE_TTL_MS) {
+    return cached.value ?? null;
+  }
   const regclassRes = await pool.query("SELECT to_regclass($1) AS oid", [`public.${tableName}`]);
   const oid = regclassRes.rows?.[0]?.oid;
-  if (!oid) return null;
+  if (!oid) {
+    primaryKeyCache.set(cacheKey, { value: null, at: now });
+    return null;
+  }
   const sql = `
     SELECT a.attname AS column
     FROM pg_index i
@@ -3633,7 +3645,10 @@ async function getPrimaryKey(table) {
   `;
   const res = await pool.query(sql, [oid]);
   const pk = res.rows[0]?.column || null;
-  if (!pk) return null;
+  if (!pk) {
+    primaryKeyCache.set(cacheKey, { value: null, at: now });
+    return null;
+  }
   const check = await pool.query(
     `
     SELECT 1
@@ -3643,7 +3658,9 @@ async function getPrimaryKey(table) {
     `,
     [tableName, pk]
   );
-  return check.rows.length ? pk : null;
+  const resolved = check.rows.length ? pk : null;
+  primaryKeyCache.set(cacheKey, { value: resolved, at: now });
+  return resolved;
 }
 
 async function getPrimaryKeyConstraintInfo(db, table) {
@@ -9408,6 +9425,9 @@ async function performOpcWrite({
   }
 
   const commandLikeWrite = isCommandLikeOpcWriteTag(primaryTagKey, legacyKey);
+  let preBridgeMs = 0;
+  let bridgeRoundTripMs = 0;
+  let bridgeWriteTimings = null;
   const numericInputValue = toFiniteNumber(nextValue);
   const tagMeta =
     numericInputValue != null || applyInverseScale
@@ -9436,6 +9456,8 @@ async function performOpcWrite({
     const headers = { "content-type": "application/json" };
     if (OPC_SERVER_KEY) headers["x-opc-key"] = OPC_SERVER_KEY;
     let bridgeRes;
+    const bridgeStartedAt = Date.now();
+    preBridgeMs = Math.max(0, bridgeStartedAt - writeStartedAt);
     try {
       bridgeRes = await fetch(`${OPC_WRITE_BRIDGE_URL}/internal/write`, {
         method: "POST",
@@ -9447,6 +9469,7 @@ async function performOpcWrite({
           uaType: normalizedUaType,
         }),
       });
+      bridgeRoundTripMs = Math.max(0, Date.now() - bridgeStartedAt);
     } catch (err) {
       logOpcError("write bridge unavailable", err, {
         bridgeUrl: OPC_WRITE_BRIDGE_URL,
@@ -9465,6 +9488,8 @@ async function performOpcWrite({
       throw new Error(String(bridgeData?.error || "PLC write failed."));
     }
     const bridgeData = await bridgeRes.json().catch(() => ({}));
+    bridgeWriteTimings =
+      bridgeData?.timings && typeof bridgeData.timings === "object" ? bridgeData.timings : null;
     if (Object.prototype.hasOwnProperty.call(bridgeData || {}, "value")) {
       nextValue = bridgeData.value;
     }
@@ -9548,6 +9573,7 @@ async function performOpcWrite({
   const runtimeWriteTotalMs =
     Math.max(0, Number.parseInt(String(prevWriteMetrics?.totalMs || 0), 10) || 0) +
     writeDurationMs;
+  const postBridgeMs = Math.max(0, writeDurationMs - preBridgeMs - bridgeRoundTripMs);
   nextStatus.runtime.writeMetrics = {
     count: runtimeWriteCount,
     totalMs: runtimeWriteTotalMs,
@@ -9558,6 +9584,16 @@ async function performOpcWrite({
     ),
     lastMs: writeDurationMs,
     lastAt: at,
+    lastTagKey: primaryTagKey,
+    lastCommandLike: commandLikeWrite,
+    lastPreBridgeMs: preBridgeMs,
+    lastBridgeRoundTripMs: bridgeRoundTripMs,
+    lastPostBridgeMs: postBridgeMs,
+    lastBridgeWaitForReadIdleMs: Math.max(0, Number(bridgeWriteTimings?.waitForReadIdleMs || 0)),
+    lastBridgePlcWriteMs: Math.max(0, Number(bridgeWriteTimings?.plcWriteMs || 0)),
+    lastBridgeTotalMs: Math.max(0, Number(bridgeWriteTimings?.totalMs || 0)),
+    lastBridgePollSettled: bridgeWriteTimings?.pollSettled !== false,
+    lastBridgeSlotKey: String(bridgeWriteTimings?.slotKey || ""),
   };
 
   if (nextStatus?.diagnostics?.[primaryTagKey] && typeof nextStatus.diagnostics[primaryTagKey] === "object") {
@@ -9586,7 +9622,19 @@ async function performOpcWrite({
     await flushTrendBuffersIfNeeded(at);
   }
 
-  return { ok: true, at, tagKey: primaryTagKey, value: nextValue };
+  return {
+    ok: true,
+    at,
+    tagKey: primaryTagKey,
+    value: nextValue,
+    timings: {
+      totalMs: writeDurationMs,
+      preBridgeMs,
+      bridgeRoundTripMs,
+      postBridgeMs,
+      bridge: bridgeWriteTimings,
+    },
+  };
 }
 
 function normalizeAutomationRuleRow(row) {
@@ -12685,43 +12733,11 @@ app.put("/api/db/:table/:id", async (req, res) => {
           return;
         }
         const productId = Number(text);
-        const candidateTables = ["product"];
-        let productExists = false;
-        for (const candidateRaw of candidateTables) {
-          const candidate = String(candidateRaw || "").trim();
-          if (!candidate || !/^[a-zA-Z0-9_]+$/.test(candidate)) continue;
-          const tableExists = await pool.query(
-            `
-            SELECT 1
-            FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = $1
-            LIMIT 1
-            `,
-            [candidate]
-          );
-          if (!tableExists.rows.length) continue;
-          const candidatePk = (await getPrimaryKey(candidate)) || "id";
-          if (!/^[a-zA-Z0-9_]+$/.test(candidatePk)) continue;
-          const pkColumnExists = await pool.query(
-            `
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
-            LIMIT 1
-            `,
-            [candidate, candidatePk]
-          );
-          if (!pkColumnExists.rows.length) continue;
-          const { rows: productRows } = await pool.query(
-            `SELECT 1 FROM ${safeIdent(candidate)} WHERE ${safeIdent(candidatePk)} = $1 LIMIT 1`,
-            [productId]
-          );
-          if (productRows.length) {
-            productExists = true;
-            break;
-          }
-        }
-        if (!productExists) {
+        const { rows: productRows } = await pool.query(
+          `SELECT 1 FROM product WHERE id = $1 LIMIT 1`,
+          [productId]
+        );
+        if (!productRows.length) {
           res.status(400).json({ error: `Product id ${productId} does not exist.` });
           return;
         }

@@ -228,8 +228,8 @@ async function main() {
     : 1;
   // ControlLogix on LAN typically responds in <50ms; 2500ms gives headroom without 4s waits on drops.
   const readTimeoutMs = clampMinMs(runtime?.readTimeoutMs, 1500, 2500);
-  // 1 retry (2 total attempts) â€” enough for a transient blip; more just adds delay on genuine drops.
-  const readRetryCountRaw = Number.parseInt(String(runtime?.readRetryCount ?? "1"), 10);
+  // Default 0 retries â€” retries can stall write-priority commands behind a long PLC read.
+  const readRetryCountRaw = Number.parseInt(String(runtime?.readRetryCount ?? "0"), 10);
   let readRetryCount = Number.isFinite(readRetryCountRaw)
     ? Math.max(0, Math.min(5, readRetryCountRaw))
     : 1;
@@ -605,6 +605,22 @@ async function main() {
   let pendingStatusPayload = null;
   let writeStatusDebounceTimer = null;
   const WRITE_STATUS_DEBOUNCE_MS = 80; // coalesce rapid cascading calls (connect/disconnect events)
+  const runtimeWriteMetrics = {
+    count: 0,
+    totalMs: 0,
+    avgMs: 0,
+    maxMs: 0,
+    lastMs: 0,
+    lastAt: null,
+    lastTagKey: "",
+    lastPlcName: "",
+    lastSlotKey: "",
+    lastWaitForReadIdleMs: 0,
+    lastPlcWriteMs: 0,
+    lastPollSettled: true,
+    lastCommandLike: false,
+    lastOk: true,
+  };
   let priorityKeySetLower = new Set();
   let priorityKeysUpdatedAt = 0;
   let priorityKeysSource = "";
@@ -629,6 +645,18 @@ async function main() {
     if (!raw) return "";
     const withoutDefault = raw.replace(/^default\./i, "");
     return withoutDefault.toLowerCase();
+  }
+
+  function isCommandLikeWriteTag(...keys) {
+    return keys.some((key) => {
+      const normalized = String(key || "").trim().toLowerCase();
+      if (!normalized) return false;
+      return (
+        /(^|[./])hmi_control($|[./])/.test(normalized) ||
+        /(^|[./])hmi_command($|[./])/.test(normalized) ||
+        /(^|[./])cmd($|[./])/.test(normalized)
+      );
+    });
   }
 
   function pushIssue(event = {}) {
@@ -893,6 +921,76 @@ async function main() {
       await sleep(10);
     }
     return !slotKeys.some((slotKey) => plcPollInFlight.get(slotKey) === true);
+  }
+
+  async function waitForSlotPollIdle(slotKey = "", timeoutMs = 1000) {
+    const key = String(slotKey || "").trim();
+    if (!key) return true;
+    const deadline = Date.now() + Math.max(50, Math.round(Number(timeoutMs) || 0));
+    while (Date.now() <= deadline) {
+      if (plcPollInFlight.get(key) !== true) return true;
+      await sleep(10);
+    }
+    return plcPollInFlight.get(key) !== true;
+  }
+
+  function selectPlcWriteClient(plcName = "") {
+    const key = String(plcName || "").trim();
+    if (!key) return null;
+    const pool = plcConnectionPools.get(key);
+    const candidates =
+      Array.isArray(pool) && pool.length
+        ? pool
+        : [{ slotKey: key, plc: plcClients.get(key) }];
+    const normalized = candidates
+      .map((entry) => {
+        const slotKey = String(entry?.slotKey || "").trim();
+        const plc = entry?.plc || plcClients.get(slotKey);
+        if (!slotKey || !plc) return null;
+        return {
+          slotKey,
+          plc,
+          connected: plcConnected.get(slotKey) === true,
+          pollInFlight: plcPollInFlight.get(slotKey) === true,
+          deferredReads: Math.max(0, Number(plcDeferredReads.get(slotKey) || 0)),
+          lastPollAt: Math.max(0, Number(plcLastPollAt.get(slotKey) || 0)),
+        };
+      })
+      .filter(Boolean);
+    if (!normalized.length) return null;
+    const connected = normalized.filter((entry) => entry.connected);
+    const ranked = (connected.length ? connected : normalized).sort((a, b) => {
+      if (a.pollInFlight !== b.pollInFlight) return a.pollInFlight ? 1 : -1;
+      if (a.deferredReads !== b.deferredReads) return a.deferredReads - b.deferredReads;
+      if (a.lastPollAt !== b.lastPollAt) return a.lastPollAt - b.lastPollAt;
+      return a.slotKey.localeCompare(b.slotKey);
+    });
+    return ranked[0] || null;
+  }
+
+  function recordRuntimeWriteMetrics({
+    plcName = "",
+    tagKey = "",
+    slotKey = "",
+    commandLike = false,
+    ok = true,
+    timings = null,
+  } = {}) {
+    const totalMs = Math.max(0, Number(timings?.totalMs || 0));
+    runtimeWriteMetrics.count += 1;
+    runtimeWriteMetrics.totalMs += totalMs;
+    runtimeWriteMetrics.avgMs = Math.round(runtimeWriteMetrics.totalMs / Math.max(1, runtimeWriteMetrics.count));
+    runtimeWriteMetrics.maxMs = Math.max(runtimeWriteMetrics.maxMs, totalMs);
+    runtimeWriteMetrics.lastMs = totalMs;
+    runtimeWriteMetrics.lastAt = Date.now();
+    runtimeWriteMetrics.lastTagKey = String(tagKey || "").trim();
+    runtimeWriteMetrics.lastPlcName = String(plcName || "").trim();
+    runtimeWriteMetrics.lastSlotKey = String(slotKey || "").trim();
+    runtimeWriteMetrics.lastWaitForReadIdleMs = Math.max(0, Number(timings?.waitForReadIdleMs || 0));
+    runtimeWriteMetrics.lastPlcWriteMs = Math.max(0, Number(timings?.plcWriteMs || 0));
+    runtimeWriteMetrics.lastPollSettled = timings?.pollSettled !== false;
+    runtimeWriteMetrics.lastCommandLike = commandLike === true;
+    runtimeWriteMetrics.lastOk = ok !== false;
   }
 
   async function refreshPriorityHintsFromAi(force = false) {
@@ -1219,7 +1317,9 @@ async function main() {
       return { ok: false, status: 409, error: "OPC connection is disabled." };
     }
     const plcName = String(tag.plcName || "").trim();
-    const plc = plcClients.get(plcName);
+    const writeClient = selectPlcWriteClient(plcName);
+    const writeSlotKey = String(writeClient?.slotKey || plcName).trim();
+    const plc = writeClient?.plc || null;
     if (!plc) {
       pushIssue({
         severity: "warn",
@@ -1230,21 +1330,21 @@ async function main() {
       });
       return { ok: false, status: 503, error: `PLC ${plcName} is not connected.` };
     }
-    if (!plcConnected.get(plcName)) {
+    if (!plcConnected.get(writeSlotKey)) {
       pushIssue({
         severity: "warn",
         kind: "plc_write_reconnect_attempt",
         plcName,
         tagKey: tag.tagKey,
-        message: `PLC ${plcName} not connected during write. Reconnect requested.`,
+        message: `PLC ${plcName} slot ${writeSlotKey} not connected during write. Reconnect requested.`,
       });
-      void connectPlcWithRetry(plcName, plc);
+      void connectPlcWithRetry(writeSlotKey, plc);
       pushIssue({
         severity: "warn",
         kind: "plc_write_not_connected",
         plcName,
         tagKey: tag.tagKey,
-        message: `Write rejected. PLC ${plcName} is disconnected (reconnecting in background).`,
+        message: `Write rejected. PLC ${plcName} slot ${writeSlotKey} is disconnected (reconnecting in background).`,
       });
       return {
         ok: false,
@@ -1253,29 +1353,70 @@ async function main() {
       };
     }
     const normalized = normalizeWriteValueForTag(tag, value);
+    const commandLikeWrite = isCommandLikeWriteTag(tag.tagKey, tag.legacyTagKey, tag.tagPath, tag.name);
     const writeTimeoutMs = readTimeoutMs * 2; // writes need one round-trip + PLC scan time
+    const writeStartedAt = Date.now();
+    const timings = {
+      slotKey: writeSlotKey,
+      waitForReadIdleMs: 0,
+      plcWriteMs: 0,
+      totalMs: 0,
+      pollSettled: true,
+      commandLikeWrite,
+    };
     const writeTimeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error(`Write timeout after ${writeTimeoutMs}ms`)), writeTimeoutMs)
     );
+    let writeSucceeded = false;
     beginPlcWriteWindow(plcName);
     try {
-      const pollSettled = await waitForPlcPollIdle(plcName, Math.min(1000, Math.max(200, readTimeoutMs)));
+      const pollIdleWaitMs = commandLikeWrite
+        ? Math.max(75, Math.min(250, Math.round(readTimeoutMs * 0.1)))
+        : Math.min(
+            2500,
+            Math.max(500, readTimeoutMs + Math.max(0, Number(readRetryDelayMs) || 0))
+          );
+      const waitStartedAt = Date.now();
+      const pollSettled = await waitForSlotPollIdle(writeSlotKey, pollIdleWaitMs);
+      timings.waitForReadIdleMs = Math.max(0, Date.now() - waitStartedAt);
+      timings.pollSettled = pollSettled;
       if (!pollSettled) {
         pushIssue({
           severity: "warn",
           kind: "plc_write_waited_for_reads",
           plcName,
           tagKey: tag.tagKey,
-          message: `Write waited for in-flight reads on PLC ${plcName} but a poll was still busy after timeout.`,
+          message: `Write waited ${timings.waitForReadIdleMs}ms for in-flight reads on PLC ${plcName} slot ${writeSlotKey} but a poll was still busy after timeout.`,
         });
       }
+      const plcWriteStartedAt = Date.now();
       await Promise.race([plc.write(tag.tagPath || tag.name, normalized), writeTimeoutPromise]);
+      timings.plcWriteMs = Math.max(0, Date.now() - plcWriteStartedAt);
+      writeSucceeded = true;
     } finally {
+      timings.totalMs = Math.max(0, Date.now() - writeStartedAt);
       endPlcWriteWindow(plcName);
+      recordRuntimeWriteMetrics({
+        plcName,
+        tagKey: tag.tagKey,
+        slotKey: writeSlotKey,
+        commandLike: commandLikeWrite,
+        ok: writeSucceeded,
+        timings,
+      });
     }
     tagValues.set(tag.tagKey, normalized);
     if (tag.legacyTagKey && tag.legacyTagKey !== tag.tagKey) tagValues.set(tag.legacyTagKey, normalized);
-    return { ok: true, tagKey: tag.tagKey, value: normalized };
+    if (timings.totalMs >= 1500 || timings.waitForReadIdleMs >= 500 || timings.plcWriteMs >= 1500) {
+      pushIssue({
+        severity: "warn",
+        kind: "plc_write_slow",
+        plcName,
+        tagKey: tag.tagKey,
+        message: `Slow PLC write on ${plcName} slot ${writeSlotKey}: total ${timings.totalMs}ms, wait ${timings.waitForReadIdleMs}ms, plc.write ${timings.plcWriteMs}ms.`,
+      });
+    }
+    return { ok: true, tagKey: tag.tagKey, value: normalized, timings };
   }
 
   function parseMqttWriteMessage(topic, payloadBuffer) {
@@ -1434,6 +1575,7 @@ async function main() {
             slot: Number.isFinite(Number(p?.slot)) ? Number(p.slot) : 0,
             connected: plcConnected.get(String(p?.name || "").trim()) === true,
           })),
+          writeMetrics: { ...runtimeWriteMetrics },
         },
       });
       return;
@@ -1969,6 +2111,7 @@ async function main() {
           uiScopedReadsActive: uiScopedReadsEnabled ? hasActivePriorityScope() : false,
           writePriorityEnabled,
           writeQuietMs,
+          writeMetrics: { ...runtimeWriteMetrics },
           writePausedPlcCount: (Array.isArray(plcs) ? plcs : []).reduce(
             (count, plcTarget) =>
               count +
