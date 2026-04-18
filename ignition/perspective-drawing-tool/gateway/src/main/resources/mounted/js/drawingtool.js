@@ -13637,6 +13637,7 @@ var MesoraDrawingToolBundle = (() => {
     canvasBackgroundColor,
     liveClickable = false,
     isLiveMode = false,
+    perspectiveClientStore = null,
     preserveAspectRatioMode = "xMinYMin meet",
     forceStaticVisuals = false,
     viewportTopOffset = 0,
@@ -13644,9 +13645,11 @@ var MesoraDrawingToolBundle = (() => {
     viewportScrollTarget = null,
     onViewportScroll = null
   }) {
+    var _a;
     const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
     const liveCanvasEnabled = Boolean(liveUpdatesEnabled && renderLiveVisuals);
     const widgetInteractionEnabled = Boolean(isLiveMode || liveClickable);
+    const EmbeddedPerspectiveView = typeof window !== "undefined" ? ((_a = window.PerspectiveClient) == null ? void 0 : _a.View) || null : null;
     const watchedLiveKeys = useMemo(() => {
       const source = liveCanvasEnabled && Array.isArray(liveTagKeys) ? liveTagKeys : [];
       const seen = /* @__PURE__ */ new Set();
@@ -13826,8 +13829,8 @@ var MesoraDrawingToolBundle = (() => {
     useEffect(() => {
       if (!wrapRef.current) return;
       const ro = new ResizeObserver((entries) => {
-        var _a;
-        const r = (_a = entries[0]) == null ? void 0 : _a.contentRect;
+        var _a2;
+        const r = (_a2 = entries[0]) == null ? void 0 : _a2.contentRect;
         if (!r) return;
         setSize({ w: r.width, h: r.height });
       });
@@ -13897,14 +13900,14 @@ var MesoraDrawingToolBundle = (() => {
       return raw;
     };
     const matchStateMappingColor = (mappings, rawValue) => {
-      var _a;
+      var _a2;
       const valueText = String(rawValue != null ? rawValue : "").trim();
       if (!valueText) return "";
       const valueNum = Number(rawValue);
       const valueLower = valueText.toLowerCase();
       const valueBool = valueLower === "true" || valueLower === "1" ? true : valueLower === "false" || valueLower === "0" ? false : null;
       for (const mapping of Array.isArray(mappings) ? mappings : []) {
-        const color2 = String((_a = mapping == null ? void 0 : mapping.color) != null ? _a : "").trim();
+        const color2 = String((_a2 = mapping == null ? void 0 : mapping.color) != null ? _a2 : "").trim();
         if (!color2) continue;
         const candidates = [mapping == null ? void 0 : mapping.state, mapping == null ? void 0 : mapping.field, mapping == null ? void 0 : mapping.value, mapping == null ? void 0 : mapping.input, mapping == null ? void 0 : mapping.key];
         for (const candidateRaw of candidates) {
@@ -13937,17 +13940,17 @@ var MesoraDrawingToolBundle = (() => {
         const visited = /* @__PURE__ */ new Set();
         const out = /* @__PURE__ */ new Map();
         const walk = (rawName) => {
-          var _a, _b;
+          var _a2, _b;
           const lookupName = String(rawName || "").trim();
           if (!lookupName || visited.has(lookupName.toLowerCase())) return;
           visited.add(lookupName.toLowerCase());
-          const template = ((_a = opcTemplateMap == null ? void 0 : opcTemplateMap.get) == null ? void 0 : _a.call(opcTemplateMap, lookupName)) || ((_b = opcTemplateMap == null ? void 0 : opcTemplateMap.get) == null ? void 0 : _b.call(opcTemplateMap, lookupName.toLowerCase())) || null;
+          const template = ((_a2 = opcTemplateMap == null ? void 0 : opcTemplateMap.get) == null ? void 0 : _a2.call(opcTemplateMap, lookupName)) || ((_b = opcTemplateMap == null ? void 0 : opcTemplateMap.get) == null ? void 0 : _b.call(opcTemplateMap, lookupName.toLowerCase())) || null;
           if (!template) return;
           if (template.parent_name) walk(template.parent_name);
           if (Array.isArray(template.state_mappings)) {
             template.state_mappings.forEach((mapping) => {
-              var _a2, _b2, _c;
-              const field = String((_a2 = mapping == null ? void 0 : mapping.field) != null ? _a2 : "").trim();
+              var _a3, _b2, _c;
+              const field = String((_a3 = mapping == null ? void 0 : mapping.field) != null ? _a3 : "").trim();
               const state = String((_b2 = mapping == null ? void 0 : mapping.state) != null ? _b2 : "").trim();
               if (!field && !state) return;
               out.set(`${field}::${state}`, {
@@ -13962,7 +13965,7 @@ var MesoraDrawingToolBundle = (() => {
         return Array.from(out.values());
       };
       (Array.isArray(opcTags) ? opcTags : []).forEach((tag) => {
-        var _a, _b;
+        var _a2, _b;
         const tagPath = normalizeTagValue((tag == null ? void 0 : tag.tagPath) || "");
         const tagName = normalizeTagValue((tag == null ? void 0 : tag.name) || "");
         const topicName = normalizeTagValue((tag == null ? void 0 : tag.topic) || "");
@@ -13989,26 +13992,26 @@ var MesoraDrawingToolBundle = (() => {
         const tagMappings = [];
         const seen = /* @__PURE__ */ new Set();
         mappingKeys.forEach((key) => {
-          var _a2, _b2;
-          const rows = ((_a2 = opcTagMappingMap == null ? void 0 : opcTagMappingMap.get) == null ? void 0 : _a2.call(opcTagMappingMap, key)) || ((_b2 = opcTagMappingMap == null ? void 0 : opcTagMappingMap.get) == null ? void 0 : _b2.call(opcTagMappingMap, key.toLowerCase())) || [];
+          var _a3, _b2;
+          const rows = ((_a3 = opcTagMappingMap == null ? void 0 : opcTagMappingMap.get) == null ? void 0 : _a3.call(opcTagMappingMap, key)) || ((_b2 = opcTagMappingMap == null ? void 0 : opcTagMappingMap.get) == null ? void 0 : _b2.call(opcTagMappingMap, key.toLowerCase())) || [];
           rows.forEach((row) => {
-            var _a3, _b3, _c;
+            var _a4, _b3, _c;
             const signature = `${String((row == null ? void 0 : row.field) || "")}::${String((row == null ? void 0 : row.state) || "")}::${String((row == null ? void 0 : row.color) || "")}`;
             if (seen.has(signature)) return;
             seen.add(signature);
             tagMappings.push({
-              field: String((_a3 = row == null ? void 0 : row.field) != null ? _a3 : "").trim(),
+              field: String((_a4 = row == null ? void 0 : row.field) != null ? _a4 : "").trim(),
               state: String((_b3 = row == null ? void 0 : row.state) != null ? _b3 : "").trim(),
               color: String((_c = row == null ? void 0 : row.color) != null ? _c : "").trim()
             });
           });
         });
         const mappingSetName = String((tag == null ? void 0 : tag.mappingSet) || "").trim();
-        const mappingSet = ((_a = opcMappingSetMap == null ? void 0 : opcMappingSetMap.get) == null ? void 0 : _a.call(opcMappingSetMap, mappingSetName)) || ((_b = opcMappingSetMap == null ? void 0 : opcMappingSetMap.get) == null ? void 0 : _b.call(opcMappingSetMap, mappingSetName.toLowerCase())) || null;
+        const mappingSet = ((_a2 = opcMappingSetMap == null ? void 0 : opcMappingSetMap.get) == null ? void 0 : _a2.call(opcMappingSetMap, mappingSetName)) || ((_b = opcMappingSetMap == null ? void 0 : opcMappingSetMap.get) == null ? void 0 : _b.call(opcMappingSetMap, mappingSetName.toLowerCase())) || null;
         const setMappings = Array.isArray(mappingSet == null ? void 0 : mappingSet.mappings) ? mappingSet.mappings.map((mapping) => {
-          var _a2, _b2, _c;
+          var _a3, _b2, _c;
           return {
-            field: String((_a2 = mapping == null ? void 0 : mapping.field) != null ? _a2 : "").trim(),
+            field: String((_a3 = mapping == null ? void 0 : mapping.field) != null ? _a3 : "").trim(),
             state: String((_b2 = mapping == null ? void 0 : mapping.state) != null ? _b2 : "").trim(),
             color: String((_c = mapping == null ? void 0 : mapping.color) != null ? _c : "").trim()
           };
@@ -14038,8 +14041,8 @@ var MesoraDrawingToolBundle = (() => {
     const renderOverlayLiveValueCache = /* @__PURE__ */ new Map();
     const renderPolylineDisplayedColorCache = /* @__PURE__ */ new Map();
     const getOverlayFillBinding2 = (overlay) => {
-      var _a;
-      const direct = (_a = overlay == null ? void 0 : overlay.bindings) == null ? void 0 : _a.fill;
+      var _a2;
+      const direct = (_a2 = overlay == null ? void 0 : overlay.bindings) == null ? void 0 : _a2.fill;
       if (direct && typeof direct === "object" && !Array.isArray(direct)) {
         return direct;
       }
@@ -14050,31 +14053,31 @@ var MesoraDrawingToolBundle = (() => {
       return null;
     };
     const getOverlayFillBindingTagPath2 = (overlay) => {
-      var _a, _b, _c, _d;
+      var _a2, _b, _c, _d;
       const binding = getOverlayFillBinding2(overlay);
       return String(
-        (_d = (_c = (_b = (_a = binding == null ? void 0 : binding.tagPath) != null ? _a : binding == null ? void 0 : binding.path) != null ? _b : binding == null ? void 0 : binding.sourcePath) != null ? _c : overlay == null ? void 0 : overlay.tagPath) != null ? _d : ""
+        (_d = (_c = (_b = (_a2 = binding == null ? void 0 : binding.tagPath) != null ? _a2 : binding == null ? void 0 : binding.path) != null ? _b : binding == null ? void 0 : binding.sourcePath) != null ? _c : overlay == null ? void 0 : overlay.tagPath) != null ? _d : ""
       ).trim();
     };
     const getOverlayFillBindingMappings = (overlay) => {
-      var _a;
+      var _a2;
       const binding = getOverlayFillBinding2(overlay);
       if (!binding) return [];
-      return Array.isArray((_a = binding == null ? void 0 : binding.transform) == null ? void 0 : _a.mappings) ? binding.transform.mappings : Array.isArray(binding == null ? void 0 : binding.mappings) ? binding.mappings : [];
+      return Array.isArray((_a2 = binding == null ? void 0 : binding.transform) == null ? void 0 : _a2.mappings) ? binding.transform.mappings : Array.isArray(binding == null ? void 0 : binding.mappings) ? binding.mappings : [];
     };
     const getOverlayFillBindingFallbackColor = (overlay) => {
-      var _a, _b, _c, _d;
+      var _a2, _b, _c, _d;
       const binding = getOverlayFillBinding2(overlay);
       return String(
-        (_d = (_c = (_b = (_a = binding == null ? void 0 : binding.transform) == null ? void 0 : _a.fallbackColor) != null ? _b : binding == null ? void 0 : binding.fallbackColor) != null ? _c : overlay == null ? void 0 : overlay.fill) != null ? _d : ""
+        (_d = (_c = (_b = (_a2 = binding == null ? void 0 : binding.transform) == null ? void 0 : _a2.fallbackColor) != null ? _b : binding == null ? void 0 : binding.fallbackColor) != null ? _c : overlay == null ? void 0 : overlay.fill) != null ? _d : ""
       ).trim();
     };
     const readIgnitionTagValueForPath = (rawTagPath) => {
-      var _a, _b;
+      var _a2, _b;
       const key = String(rawTagPath || "").trim();
       if (!key) return void 0;
       if (ignitionTagValuesByPath instanceof Map) {
-        return (_a = ignitionTagValuesByPath.get(key)) != null ? _a : ignitionTagValuesByPath.get(key.toLowerCase());
+        return (_a2 = ignitionTagValuesByPath.get(key)) != null ? _a2 : ignitionTagValuesByPath.get(key.toLowerCase());
       }
       if (ignitionTagValuesByPath && typeof ignitionTagValuesByPath === "object") {
         return (_b = ignitionTagValuesByPath[key]) != null ? _b : ignitionTagValuesByPath[key.toLowerCase()];
@@ -14255,6 +14258,7 @@ var MesoraDrawingToolBundle = (() => {
       return resolved;
     };
     const getOverlayGroupLabel = (overlay) => {
+      if (overlay == null ? void 0 : overlay.embeddedView) return "";
       const raw = String((overlay == null ? void 0 : overlay.tagPath) || "").replace(/\r?\n/g, "").trim();
       if (!raw) return "";
       const parts = raw.split(".").map((x) => x.trim()).filter(Boolean);
@@ -14359,22 +14363,22 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [setOverlayRef, onOverlayMouseDown, onOverlayDoubleClick]);
     const applyOverlayNodeRef = useCallback((id, node) => {
-      var _a, _b;
-      (_b = (_a = overlayHandlerRefs.current).setOverlayRef) == null ? void 0 : _b.call(_a, id, node);
+      var _a2, _b;
+      (_b = (_a2 = overlayHandlerRefs.current).setOverlayRef) == null ? void 0 : _b.call(_a2, id, node);
     }, []);
     const handleOverlayMouseDown = useCallback(
       (event, overlay) => {
-        var _a, _b;
+        var _a2, _b;
         if (widgetInteractionEnabled && (overlay == null ? void 0 : overlay.widget)) return;
-        (_b = (_a = overlayHandlerRefs.current).onOverlayMouseDown) == null ? void 0 : _b.call(_a, event, overlay == null ? void 0 : overlay.id);
+        (_b = (_a2 = overlayHandlerRefs.current).onOverlayMouseDown) == null ? void 0 : _b.call(_a2, event, overlay == null ? void 0 : overlay.id);
       },
       [widgetInteractionEnabled]
     );
     const handleOverlayDoubleClick = useCallback(
       (event, overlay, options = {}) => {
-        var _a, _b;
+        var _a2, _b;
         if (!options.force && widgetInteractionEnabled && (overlay == null ? void 0 : overlay.widget)) return;
-        (_b = (_a = overlayHandlerRefs.current).onOverlayDoubleClick) == null ? void 0 : _b.call(_a, event, overlay == null ? void 0 : overlay.id);
+        (_b = (_a2 = overlayHandlerRefs.current).onOverlayDoubleClick) == null ? void 0 : _b.call(_a2, event, overlay == null ? void 0 : overlay.id);
       },
       [widgetInteractionEnabled]
     );
@@ -14488,7 +14492,7 @@ var MesoraDrawingToolBundle = (() => {
           }))
         })),
         overlays: (Array.isArray(svgOverlays) ? svgOverlays : []).filter((overlay) => !(overlay == null ? void 0 : overlay.widget) && (overlay == null ? void 0 : overlay.bbox)).map((overlay) => {
-          var _a, _b, _c, _d;
+          var _a2, _b, _c, _d;
           return {
             id: String((overlay == null ? void 0 : overlay.id) || "").trim(),
             tagPath: String((overlay == null ? void 0 : overlay.tagPath) || "").trim(),
@@ -14501,7 +14505,7 @@ var MesoraDrawingToolBundle = (() => {
             scaleX: Number.isFinite(Number(overlay == null ? void 0 : overlay.scaleX)) ? Number(overlay.scaleX) : null,
             scaleY: Number.isFinite(Number(overlay == null ? void 0 : overlay.scaleY)) ? Number(overlay.scaleY) : null,
             bbox: (overlay == null ? void 0 : overlay.bbox) ? {
-              x: Number((_a = overlay.bbox) == null ? void 0 : _a.x) || 0,
+              x: Number((_a2 = overlay.bbox) == null ? void 0 : _a2.x) || 0,
               y: Number((_b = overlay.bbox) == null ? void 0 : _b.y) || 0,
               width: Number((_c = overlay.bbox) == null ? void 0 : _c.width) || 0,
               height: Number((_d = overlay.bbox) == null ? void 0 : _d.height) || 0
@@ -14829,7 +14833,7 @@ var MesoraDrawingToolBundle = (() => {
       return getLiveValueForTagPath(tagPath);
     };
     const getTextShapeValueForShape = (shape) => {
-      var _a, _b, _c, _d, _e, _f, _g, _h;
+      var _a2, _b, _c, _d, _e, _f, _g, _h;
       const tagPath = String((shape == null ? void 0 : shape.tagPath) || "").trim();
       if (!tagPath) return String((shape == null ? void 0 : shape.text) || "");
       const ignitionValue = readIgnitionTagValueForPath(tagPath);
@@ -14838,7 +14842,7 @@ var MesoraDrawingToolBundle = (() => {
         return String((shape == null ? void 0 : shape.text) || "");
       }
       const rawText = rawValue != null && typeof rawValue === "object" ? String(
-        (_f = (_e = (_d = (_c = (_b = (_a = rawValue == null ? void 0 : rawValue.value) != null ? _a : rawValue == null ? void 0 : rawValue.v) != null ? _b : rawValue == null ? void 0 : rawValue.state) != null ? _c : rawValue == null ? void 0 : rawValue.State) != null ? _d : rawValue == null ? void 0 : rawValue.rawValue) != null ? _e : rawValue == null ? void 0 : rawValue.raw) != null ? _f : ""
+        (_f = (_e = (_d = (_c = (_b = (_a2 = rawValue == null ? void 0 : rawValue.value) != null ? _a2 : rawValue == null ? void 0 : rawValue.v) != null ? _b : rawValue == null ? void 0 : rawValue.state) != null ? _c : rawValue == null ? void 0 : rawValue.State) != null ? _d : rawValue == null ? void 0 : rawValue.rawValue) != null ? _e : rawValue == null ? void 0 : rawValue.raw) != null ? _f : ""
       ).trim() : String(rawValue).trim();
       if (!rawText) {
         return String((shape == null ? void 0 : shape.text) || "");
@@ -15206,9 +15210,9 @@ var MesoraDrawingToolBundle = (() => {
     );
     const parseWidgetSeriesTagsCacheRef = useRef(/* @__PURE__ */ new Map());
     const parseWidgetSeriesTags = useCallback((overlay) => {
-      var _a;
+      var _a2;
       const widget = (overlay == null ? void 0 : overlay.widget) || {};
-      const cacheKey = `${String((overlay == null ? void 0 : overlay.tagPath) || "")}|${String((widget == null ? void 0 : widget.kind) || "")}|${JSON.stringify((_a = widget == null ? void 0 : widget.seriesTags) != null ? _a : "")}`;
+      const cacheKey = `${String((overlay == null ? void 0 : overlay.tagPath) || "")}|${String((widget == null ? void 0 : widget.kind) || "")}|${JSON.stringify((_a2 = widget == null ? void 0 : widget.seriesTags) != null ? _a2 : "")}`;
       const cached = parseWidgetSeriesTagsCacheRef.current.get(cacheKey);
       if (cached) return cached;
       const out = [];
@@ -15257,12 +15261,12 @@ var MesoraDrawingToolBundle = (() => {
       const keep = /* @__PURE__ */ new Set();
       const lineKindSet = /* @__PURE__ */ new Set(["linechart", "line_chart", "line-chart"]);
       (svgOverlays || []).forEach((o) => {
-        var _a, _b, _c;
+        var _a2, _b, _c;
         if (!(o == null ? void 0 : o.widget)) return;
         const id = String(o.id || "");
         if (!id) return;
         keep.add(id);
-        const kind = String(((_a = o == null ? void 0 : o.widget) == null ? void 0 : _a.kind) || "").trim().toLowerCase();
+        const kind = String(((_a2 = o == null ? void 0 : o.widget) == null ? void 0 : _a2.kind) || "").trim().toLowerCase();
         const seriesForValue = parseWidgetSeriesTags(o).filter(
           (tp) => !String(tp || "").trim().toLowerCase().startsWith("db:")
         );
@@ -15407,9 +15411,9 @@ var MesoraDrawingToolBundle = (() => {
         if (typeof document !== "undefined" && document.hidden) return;
         const overlays = Array.isArray(svgOverlays) ? svgOverlays : [];
         const targets = overlays.filter((o) => {
-          var _a;
+          var _a2;
           if (!(o == null ? void 0 : o.widget)) return false;
-          const kind = String(((_a = o == null ? void 0 : o.widget) == null ? void 0 : _a.kind) || "").trim();
+          const kind = String(((_a2 = o == null ? void 0 : o.widget) == null ? void 0 : _a2.kind) || "").trim();
           if (!chartKinds.has(kind)) return false;
           const tagPaths = parseWidgetSeriesTags(o);
           const trendTagPaths = tagPaths.filter((tp) => !String(tp).toLowerCase().startsWith("db:"));
@@ -15506,8 +15510,8 @@ var MesoraDrawingToolBundle = (() => {
         if (typeof document !== "undefined" && document.hidden) return;
         const overlays = Array.isArray(svgOverlays) ? svgOverlays : [];
         const targets = overlays.filter((o) => {
-          var _a;
-          const kind = String(((_a = o == null ? void 0 : o.widget) == null ? void 0 : _a.kind) || "").trim();
+          var _a2;
+          const kind = String(((_a2 = o == null ? void 0 : o.widget) == null ? void 0 : _a2.kind) || "").trim();
           if (kind !== "barChart") return false;
           return !!getBarDataSource(o);
         });
@@ -15653,8 +15657,8 @@ var MesoraDrawingToolBundle = (() => {
       }
       let alive = true;
       const weatherOverlays = (Array.isArray(svgOverlays) ? svgOverlays : []).filter((o) => {
-        var _a;
-        const kind = String(((_a = o == null ? void 0 : o.widget) == null ? void 0 : _a.kind) || "").trim().toLowerCase();
+        var _a2;
+        const kind = String(((_a2 = o == null ? void 0 : o.widget) == null ? void 0 : _a2.kind) || "").trim().toLowerCase();
         return kind === "weather";
       });
       if (!weatherOverlays.length) {
@@ -15666,10 +15670,10 @@ var MesoraDrawingToolBundle = (() => {
       const applyCached = () => {
         const next = {};
         weatherOverlays.forEach((overlay) => {
-          var _a, _b, _c;
+          var _a2, _b, _c;
           const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
           if (!overlayId) return;
-          const title = String(((_a = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a.title) || "").trim();
+          const title = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.title) || "").trim();
           const location = String(((_b = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _b.location) || title || "").trim();
           if (!location) return;
           const unitRaw = String(((_c = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _c.unit) || "F").trim().toUpperCase();
@@ -15686,10 +15690,10 @@ var MesoraDrawingToolBundle = (() => {
       };
       applyCached();
       const fetchOne = async (overlay) => {
-        var _a, _b, _c, _d;
+        var _a2, _b, _c, _d;
         const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
         if (!overlayId) return;
-        const title = String(((_a = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a.title) || "").trim();
+        const title = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.title) || "").trim();
         const locationRaw = String(((_b = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _b.location) || title || "Chicago, IL").trim();
         const unitRaw = String(((_c = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _c.unit) || "F").trim().toUpperCase();
         const unit = unitRaw === "C" ? "celsius" : "fahrenheit";
@@ -15771,9 +15775,9 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [svgOverlays, liveUpdatesEnabled, disableWidgetBackgroundWork]);
     const renderWidgetOverlay = (overlay) => {
-      var _a, _b, _c, _d, _e, _f;
+      var _a2, _b, _c, _d, _e, _f;
       if (!(overlay == null ? void 0 : overlay.widget)) return null;
-      const kind = String(((_a = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a.kind) || "").trim();
+      const kind = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.kind) || "").trim();
       const cfg = (overlay == null ? void 0 : overlay.widget) || {};
       const rawVal = getWidgetValueForOverlay(overlay);
       const n = toNumberOrNull(rawVal);
@@ -15898,9 +15902,9 @@ var MesoraDrawingToolBundle = (() => {
         return Math.max(min, Math.min(max, explicitTitleFontSize));
       };
       const openWidgetProperties = (event) => {
-        var _a2, _b2;
+        var _a3, _b2;
         if (isLiveMode) return;
-        (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+        (_a3 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a3.call(event);
         (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
         handleOverlayDoubleClick(event, overlay, { force: true });
       };
@@ -17099,15 +17103,15 @@ var MesoraDrawingToolBundle = (() => {
             padding: 10,
             callbacks: {
               title: (items) => {
-                var _a2;
-                const idx = (_a2 = items == null ? void 0 : items[0]) == null ? void 0 : _a2.dataIndex;
+                var _a3;
+                const idx = (_a3 = items == null ? void 0 : items[0]) == null ? void 0 : _a3.dataIndex;
                 if (kind === "barChart") return String((labels == null ? void 0 : labels[idx]) || `Row ${Number(idx) + 1}`);
                 const ts = axisTimeline == null ? void 0 : axisTimeline[idx];
                 return formatTooltipTime(ts);
               },
               label: (ctx) => {
-                var _a2, _b2;
-                const name = String(((_a2 = ctx == null ? void 0 : ctx.dataset) == null ? void 0 : _a2.label) || "Value");
+                var _a3, _b2;
+                const name = String(((_a3 = ctx == null ? void 0 : ctx.dataset) == null ? void 0 : _a3.label) || "Value");
                 return `${name} ${formatNum((_b2 = ctx == null ? void 0 : ctx.parsed) == null ? void 0 : _b2.y) || "--"}`;
               }
             }
@@ -17676,14 +17680,14 @@ var MesoraDrawingToolBundle = (() => {
       return "";
     };
     const getOverlayDiverterState = (overlay) => {
-      var _a;
+      var _a2;
       if (overlay == null ? void 0 : overlay.widget) return "";
       const directIgnitionState = parseDiverterStateValue(readIgnitionTagValueForPath(overlay == null ? void 0 : overlay.tagPath));
       if (directIgnitionState) return directIgnitionState;
       const boundState = parseDiverterStateValue(readOverlayFillBindingValue(overlay));
       if (boundState) return boundState;
       const groupState = parseDiverterStateValue(
-        (_a = getGroupRouteStateForTagPath(overlay == null ? void 0 : overlay.tagPath)) == null ? void 0 : _a.state
+        (_a2 = getGroupRouteStateForTagPath(overlay == null ? void 0 : overlay.tagPath)) == null ? void 0 : _a2.state
       );
       if (groupState) return groupState;
       const stateCandidates = buildOverlayMemberCandidates(overlay, LIVE_STATE_MEMBER_ALIASES);
@@ -18054,8 +18058,8 @@ var MesoraDrawingToolBundle = (() => {
         const body = doc.getElementById("body");
         if (body) {
           const gradientId = Array.from(root.querySelectorAll("linearGradient[id]")).map((node) => {
-            var _a;
-            return String(((_a = node == null ? void 0 : node.getAttribute) == null ? void 0 : _a.call(node, "id")) || "").trim();
+            var _a2;
+            return String(((_a2 = node == null ? void 0 : node.getAttribute) == null ? void 0 : _a2.call(node, "id")) || "").trim();
           }).find(Boolean) || "";
           if (gradientId) {
             body.setAttribute("fill", `url(#${gradientId})`);
@@ -18704,7 +18708,7 @@ var MesoraDrawingToolBundle = (() => {
       return Math.sqrt(bestDist2);
     };
     const findSplitTouchCandidates = (shape, threshold = 30) => {
-      var _a, _b;
+      var _a2, _b;
       if ((shape == null ? void 0 : shape.type) !== "polyline" || !Array.isArray(shape.points) || shape.points.length < 2) return null;
       const shapeId = String((shape == null ? void 0 : shape.id) || "");
       const pts = shape.points;
@@ -18739,7 +18743,7 @@ var MesoraDrawingToolBundle = (() => {
               sourcePolylineId: otherId,
               segmentIndex: i,
               t: proj.t,
-              touchPoint: { x: Number((_a = proj.point) == null ? void 0 : _a.x) || 0, y: Number((_b = proj.point) == null ? void 0 : _b.y) || 0 },
+              touchPoint: { x: Number((_a2 = proj.point) == null ? void 0 : _a2.x) || 0, y: Number((_b = proj.point) == null ? void 0 : _b.y) || 0 },
               score: proj.dist2
             });
           }
@@ -18825,7 +18829,7 @@ var MesoraDrawingToolBundle = (() => {
         prefix.push(prefix[prefix.length - 1] + len);
       }
       const collect = (maxDistPx) => {
-        var _a, _b, _c, _d, _e, _f;
+        var _a2, _b, _c, _d, _e, _f;
         const candidates2 = [];
         const maxDist2 = maxDistPx * maxDistPx;
         for (const other of Array.isArray(shapes) ? shapes : []) {
@@ -18846,7 +18850,7 @@ var MesoraDrawingToolBundle = (() => {
               const proj = projectPointToSegment(tp, pts[i], pts[i + 1]);
               if (proj.dist2 > maxDist2) continue;
               const segLen = Math.hypot(
-                (Number((_a = pts[i + 1]) == null ? void 0 : _a.x) || 0) - (Number((_b = pts[i]) == null ? void 0 : _b.x) || 0),
+                (Number((_a2 = pts[i + 1]) == null ? void 0 : _a2.x) || 0) - (Number((_b = pts[i]) == null ? void 0 : _b.x) || 0),
                 (Number((_c = pts[i + 1]) == null ? void 0 : _c.y) || 0) - (Number((_d = pts[i]) == null ? void 0 : _d.y) || 0)
               );
               const downstreamProgress = prefix[i] + segLen * (Number(proj.t) || 0);
@@ -18874,7 +18878,7 @@ var MesoraDrawingToolBundle = (() => {
       return candidates;
     };
     const resolveInheritedTrunkCarryColor = (shape, options = {}, visited = /* @__PURE__ */ new Set(), depth = 0) => {
-      var _a;
+      var _a2;
       if (depth > 24) return "";
       const shapeId = String((shape == null ? void 0 : shape.id) || "");
       if (!shapeId || visited.has(shapeId)) return "";
@@ -18884,7 +18888,7 @@ var MesoraDrawingToolBundle = (() => {
       nextVisited.add(shapeId);
       const ownDirect = getDirectSplitCarryCandidates(shape, options);
       if (ownDirect.length) {
-        const c = normalizeActiveLineColor((_a = ownDirect[0]) == null ? void 0 : _a.color);
+        const c = normalizeActiveLineColor((_a2 = ownDirect[0]) == null ? void 0 : _a2.color);
         if (c) return c;
       }
       let best = "";
@@ -18923,7 +18927,7 @@ var MesoraDrawingToolBundle = (() => {
       return normalizeActiveLineColor(best);
     };
     const resolveConnectedTrunkCarryColor = (shape, options = {}) => {
-      var _a;
+      var _a2;
       const seedMeta = getPolylineFlowMeta(shape);
       if (!(seedMeta == null ? void 0 : seedMeta.isTrunkLike)) return "";
       const seedId = String((shape == null ? void 0 : shape.id) || "");
@@ -18971,11 +18975,11 @@ var MesoraDrawingToolBundle = (() => {
       let bestColor = "";
       let bestProgress = Number.POSITIVE_INFINITY;
       const pickProgress = (cand, meta) => {
-        var _a2;
+        var _a3;
         if (!cand) return Number.POSITIVE_INFINITY;
         const p = Number(cand.downstreamProgress);
         if (Number.isFinite(p)) return p;
-        const x = Number((_a2 = cand == null ? void 0 : cand.touchPoint) == null ? void 0 : _a2.x) || 0;
+        const x = Number((_a3 = cand == null ? void 0 : cand.touchPoint) == null ? void 0 : _a3.x) || 0;
         return (meta == null ? void 0 : meta.downstreamIsEnd) ? x : -x;
       };
       for (const id of connected) {
@@ -18983,7 +18987,7 @@ var MesoraDrawingToolBundle = (() => {
         if (!rec) continue;
         const local = getDirectSplitCarryCandidates(rec.shape, options);
         if (!local.length) continue;
-        const color2 = normalizeActiveLineColor((_a = local[0]) == null ? void 0 : _a.color);
+        const color2 = normalizeActiveLineColor((_a2 = local[0]) == null ? void 0 : _a2.color);
         if (!color2) continue;
         const progress = pickProgress(local[0], rec.meta);
         if (progress < bestProgress) {
@@ -18994,7 +18998,7 @@ var MesoraDrawingToolBundle = (() => {
       return normalizeActiveLineColor(bestColor);
     };
     const resolveCollinearTrunkBandCarryColor = (shape, options = {}) => {
-      var _a;
+      var _a2;
       const targetMeta = getPolylineFlowMeta(shape);
       if (!(targetMeta == null ? void 0 : targetMeta.isTrunkLike)) return "";
       const targetPts = targetMeta.pts;
@@ -19009,7 +19013,7 @@ var MesoraDrawingToolBundle = (() => {
         if (!(otherMeta == null ? void 0 : otherMeta.isTrunkLike)) continue;
         const local = getDirectSplitCarryCandidates(other, options);
         if (!local.length) continue;
-        const color2 = normalizeActiveLineColor((_a = local[0]) == null ? void 0 : _a.color);
+        const color2 = normalizeActiveLineColor((_a2 = local[0]) == null ? void 0 : _a2.color);
         if (!color2) continue;
         const otherPts = otherMeta.pts;
         const otherMinY = Math.min(...otherPts.map((p) => Number(p == null ? void 0 : p.y) || 0));
@@ -19028,7 +19032,7 @@ var MesoraDrawingToolBundle = (() => {
       return normalizeActiveLineColor(bestColor);
     };
     const getPolylineSplitCarrySegments = (shape, options = {}) => {
-      var _a;
+      var _a2;
       if (liveTopologyStressMode) return [];
       const meta = getPolylineFlowMeta(shape);
       if (!(meta == null ? void 0 : meta.isTrunkLike)) return [];
@@ -19078,11 +19082,11 @@ var MesoraDrawingToolBundle = (() => {
         return Array.from(connected2).map((id) => trunkById.get(id)).filter(Boolean);
       };
       const buildOrderedCarryFromTouch = (orderedPoints, touch) => {
-        var _a2, _b;
+        var _a3, _b;
         if (!Array.isArray(orderedPoints) || orderedPoints.length < 2 || !touch) return [];
         const seg = Math.max(0, Math.min(orderedPoints.length - 2, Number(touch.segmentIndex) || 0));
         const out = [
-          { x: Number((_a2 = touch.touchPoint) == null ? void 0 : _a2.x) || 0, y: Number((_b = touch.touchPoint) == null ? void 0 : _b.y) || 0 },
+          { x: Number((_a3 = touch.touchPoint) == null ? void 0 : _a3.x) || 0, y: Number((_b = touch.touchPoint) == null ? void 0 : _b.y) || 0 },
           ...orderedPoints.slice(seg + 1)
         ];
         const compact = [];
@@ -19149,7 +19153,7 @@ var MesoraDrawingToolBundle = (() => {
       const first = sortByFlow[0];
       const chainColor = normalizeActiveLineColor(first == null ? void 0 : first.color);
       if (!chainColor) return [];
-      const startX = Number((_a = first == null ? void 0 : first.touchPoint) == null ? void 0 : _a.x) || 0;
+      const startX = Number((_a2 = first == null ? void 0 : first.touchPoint) == null ? void 0 : _a2.x) || 0;
       const points = trimOrderedPointsFromStartX(meta.orderedPoints, startX, meta.downstreamIsEnd);
       if (!points.length) return [];
       return [{ color: chainColor, points }];
@@ -19264,12 +19268,12 @@ var MesoraDrawingToolBundle = (() => {
           const shapeSet = new Set(selectedShapeIds);
           setShapes(
             (prev) => prev.map((s) => {
-              var _a, _b;
+              var _a2, _b;
               if (!shapeSet.has(s.id)) return s;
               if (s.type === "text") {
                 return {
                   ...s,
-                  x: Number((_a = s.x) != null ? _a : 0) + dx,
+                  x: Number((_a2 = s.x) != null ? _a2 : 0) + dx,
                   y: Number((_b = s.y) != null ? _b : 0) + dy
                 };
               }
@@ -19294,13 +19298,13 @@ var MesoraDrawingToolBundle = (() => {
         }
       };
       const handleKeyDown = (e) => {
-        var _a, _b, _c, _d;
+        var _a2, _b, _c, _d;
         const selectedShapeIds = Array.isArray(nudgeSelectedIdsRef.current) ? nudgeSelectedIdsRef.current : [];
         const selectedOverlayIdsNow = Array.isArray(nudgeSelectedOverlayIdsRef.current) ? nudgeSelectedOverlayIdsRef.current : [];
         const hasShapeSel = selectedShapeIds.length > 0;
         const hasOverlaySel = selectedOverlayIdsNow.length > 0;
         if (!hasShapeSel && !hasOverlaySel) return;
-        const tag = (((_a = e.target) == null ? void 0 : _a.tagName) || "").toLowerCase();
+        const tag = (((_a2 = e.target) == null ? void 0 : _a2.tagName) || "").toLowerCase();
         if (tag === "input" || tag === "textarea" || ((_b = e.target) == null ? void 0 : _b.isContentEditable)) return;
         let dx = 0;
         let dy = 0;
@@ -19408,9 +19412,9 @@ var MesoraDrawingToolBundle = (() => {
             MozUserSelect: "none"
           },
           onDoubleClick: (e) => {
-            var _a;
+            var _a2;
             const target = e.target;
-            const hit = (_a = target == null ? void 0 : target.closest) == null ? void 0 : _a.call(target, "[data-overlay-id]");
+            const hit = (_a2 = target == null ? void 0 : target.closest) == null ? void 0 : _a2.call(target, "[data-overlay-id]");
             if (hit) {
               const id = hit.getAttribute("data-overlay-id");
               if (id) {
@@ -19663,12 +19667,12 @@ var MesoraDrawingToolBundle = (() => {
       const out = /* @__PURE__ */ new Map();
       const list = Array.isArray(overlayRenderOverlays) ? overlayRenderOverlays : [];
       list.forEach((overlay) => {
-        var _a;
+        var _a2;
         const id = String((overlay == null ? void 0 : overlay.id) || "").trim();
         if (!id) return;
         if (overlay == null ? void 0 : overlay.widget) {
           const bb = (overlay == null ? void 0 : overlay.bbox) || { x: 0, y: 0, width: 320, height: 180 };
-          const widgetKind = String(((_a = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a.kind) || "").trim();
+          const widgetKind = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.kind) || "").trim();
           const suppressFrame = widgetKind === "pushButton" || widgetKind === "onOffButton";
           out.set(id, {
             widgetFrame: suppressFrame ? null : {
@@ -19677,6 +19681,18 @@ var MesoraDrawingToolBundle = (() => {
               w: Math.max(80, Number(bb.width) || 320),
               h: Math.max(60, Number(bb.height) || 180),
               isCountdownBar: widgetKind === "countdownBar"
+            }
+          });
+          return;
+        }
+        if (overlay == null ? void 0 : overlay.embeddedView) {
+          const bb = (overlay == null ? void 0 : overlay.bbox) || { x: 0, y: 0, width: 360, height: 220 };
+          out.set(id, {
+            embeddedViewFrame: {
+              x: Number(bb.x) || 0,
+              y: Number(bb.y) || 0,
+              w: Math.max(140, Number(bb.width) || 360),
+              h: Math.max(90, Number(bb.height) || 220)
             }
           });
           return;
@@ -19832,11 +19848,15 @@ var MesoraDrawingToolBundle = (() => {
       themeStrokeDefault
     ]);
     const staticOverlayRenderOverlays = useMemo(
-      () => overlayRenderOverlays.filter((overlay) => !(overlay == null ? void 0 : overlay.widget)),
+      () => overlayRenderOverlays.filter((overlay) => !(overlay == null ? void 0 : overlay.widget) && !(overlay == null ? void 0 : overlay.embeddedView)),
       [overlayRenderOverlays]
     );
     const widgetOverlayRenderOverlays = useMemo(
       () => overlayRenderOverlays.filter((overlay) => !!(overlay == null ? void 0 : overlay.widget)),
+      [overlayRenderOverlays]
+    );
+    const embeddedViewOverlayRenderOverlays = useMemo(
+      () => overlayRenderOverlays.filter((overlay) => !!(overlay == null ? void 0 : overlay.embeddedView)),
       [overlayRenderOverlays]
     );
     const selectedSingleOverlay = useMemo(
@@ -19845,7 +19865,7 @@ var MesoraDrawingToolBundle = (() => {
     );
     const staticOverlayNodes = useMemo(
       () => staticOverlayRenderOverlays.map((o) => {
-        var _a;
+        var _a2;
         const overlayVisual = overlayVisualById.get(String((o == null ? void 0 : o.id) || "").trim());
         const overlayCursor = isLiveMode ? "pointer" : tool === "select" ? "move" : "crosshair";
         return /* @__PURE__ */ jsxs(
@@ -19877,7 +19897,7 @@ var MesoraDrawingToolBundle = (() => {
                         strokeWidth: Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0 ? Number(o.strokeWidth) : void 0,
                         pointerEvents: "visiblePainted"
                       },
-                      children: /* @__PURE__ */ jsx("g", { dangerouslySetInnerHTML: { __html: (_a = overlayVisual == null ? void 0 : overlayVisual.inner) != null ? _a : String(o.inner || "") } })
+                      children: /* @__PURE__ */ jsx("g", { dangerouslySetInnerHTML: { __html: (_a2 = overlayVisual == null ? void 0 : overlayVisual.inner) != null ? _a2 : String(o.inner || "") } })
                     }
                   )
                 }
@@ -20010,19 +20030,167 @@ var MesoraDrawingToolBundle = (() => {
       viewportScale,
       theme
     ]);
+    const embeddedViewOverlayNodes = useMemo(() => {
+      return embeddedViewOverlayRenderOverlays.map((o) => {
+        var _a2;
+        const overlayVisual = overlayVisualById.get(String((o == null ? void 0 : o.id) || "").trim());
+        const overlayCursor = isLiveMode ? "default" : tool === "select" ? "move" : "crosshair";
+        const embeddedBounds = (o == null ? void 0 : o.bbox) || { x: 0, y: 0, width: 360, height: 220 };
+        const embeddedConfig = (o == null ? void 0 : o.embeddedView) || {};
+        const viewPath = String((embeddedConfig == null ? void 0 : embeddedConfig.viewPath) || "").trim();
+        const paramsJson = String((_a2 = embeddedConfig == null ? void 0 : embeddedConfig.paramsJson) != null ? _a2 : "{}").trim();
+        const runtimeInteractive = (embeddedConfig == null ? void 0 : embeddedConfig.runtimeInteractive) !== false;
+        const interactionEnabled = isLiveMode ? runtimeInteractive : false;
+        const showDesignHitbox = !isLiveMode;
+        const mountPath = `EV${String((o == null ? void 0 : o.id) || "").replace(/[^a-zA-Z0-9_-]+/g, "")}`;
+        let parsedParams = {};
+        let paramsError = "";
+        if (paramsJson) {
+          try {
+            const nextValue = JSON.parse(paramsJson);
+            if (nextValue != null && typeof nextValue === "object" && !Array.isArray(nextValue)) {
+              parsedParams = nextValue;
+            } else {
+              paramsError = "Params must be a JSON object.";
+            }
+          } catch (error) {
+            paramsError = String((error == null ? void 0 : error.message) || "Invalid params JSON.");
+          }
+        }
+        const showPerspectiveView = Boolean(EmbeddedPerspectiveView) && Boolean(perspectiveClientStore) && Boolean(viewPath) && !paramsError;
+        const placeholderTitle = String((o == null ? void 0 : o.name) || "Embedded View").trim() || "Embedded View";
+        return /* @__PURE__ */ jsx(
+          "g",
+          {
+            "data-overlay-id": o.id,
+            onDoubleClickCapture: (e) => handleOverlayDoubleClick(e, o, { force: true }),
+            onDoubleClick: (e) => handleOverlayDoubleClick(e, o, { force: true }),
+            children: /* @__PURE__ */ jsxs(
+              "g",
+              {
+                ref: (node) => applyOverlayNodeRef(o.id, node),
+                transform: `translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`,
+                onMouseDown: !isLiveMode ? (e) => handleOverlayMouseDown(e, o) : void 0,
+                onDoubleClick: (e) => handleOverlayDoubleClick(e, o, { force: true }),
+                style: {
+                  cursor: overlayCursor,
+                  pointerEvents: "all"
+                },
+                children: [
+                  (overlayVisual == null ? void 0 : overlayVisual.embeddedViewFrame) ? /* @__PURE__ */ jsx(
+                    "rect",
+                    {
+                      x: overlayVisual.embeddedViewFrame.x,
+                      y: overlayVisual.embeddedViewFrame.y,
+                      width: overlayVisual.embeddedViewFrame.w,
+                      height: overlayVisual.embeddedViewFrame.h,
+                      rx: 12,
+                      fill: "rgba(15, 23, 42, 0.86)",
+                      stroke: "rgba(71, 85, 105, 0.92)",
+                      strokeWidth: 2
+                    }
+                  ) : null,
+                  /* @__PURE__ */ jsx(
+                    "foreignObject",
+                    {
+                      x: Number(embeddedBounds.x) || 0,
+                      y: Number(embeddedBounds.y) || 0,
+                      width: Math.max(1, Number(embeddedBounds.width) || 360),
+                      height: Math.max(1, Number(embeddedBounds.height) || 220),
+                      style: { pointerEvents: interactionEnabled ? "auto" : "none" },
+                      children: /* @__PURE__ */ jsx(
+                        "div",
+                        {
+                          xmlns: "http://www.w3.org/1999/xhtml",
+                          style: {
+                            width: "100%",
+                            height: "100%",
+                            boxSizing: "border-box",
+                            overflow: "hidden",
+                            borderRadius: "12px",
+                            pointerEvents: interactionEnabled ? "auto" : "none",
+                            background: "rgba(15, 23, 42, 0.2)"
+                          },
+                          children: showPerspectiveView ? /* @__PURE__ */ jsx("div", { className: "view-parent", style: { width: "100%", height: "100%" }, children: /* @__PURE__ */ jsx(
+                            EmbeddedPerspectiveView,
+                            {
+                              store: perspectiveClientStore,
+                              resourcePath: viewPath,
+                              mountPath,
+                              params: parsedParams,
+                              useDefaultWidth: false,
+                              useDefaultHeight: false
+                            },
+                            `${mountPath}:${viewPath}:${paramsJson}`
+                          ) }) : /* @__PURE__ */ jsx(
+                            "div",
+                            {
+                              style: {
+                                width: "100%",
+                                height: "100%",
+                                display: "grid",
+                                placeItems: "center",
+                                padding: "16px",
+                                boxSizing: "border-box",
+                                textAlign: "center",
+                                color: "#e2e8f0",
+                                background: "linear-gradient(180deg, rgba(15, 23, 42, 0.92) 0%, rgba(2, 6, 23, 0.92) 100%)"
+                              },
+                              children: /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 8, maxWidth: "100%" }, children: [
+                                /* @__PURE__ */ jsx("div", { style: { fontSize: 16, fontWeight: 800 }, children: placeholderTitle }),
+                                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, lineHeight: 1.5, color: "rgba(226, 232, 240, 0.74)" }, children: paramsError ? paramsError : viewPath ? viewPath : "Set View Path in properties to load a Perspective view here." })
+                              ] })
+                            }
+                          )
+                        }
+                      )
+                    }
+                  ),
+                  showDesignHitbox ? /* @__PURE__ */ jsx(
+                    "rect",
+                    {
+                      x: Number(embeddedBounds.x) || 0,
+                      y: Number(embeddedBounds.y) || 0,
+                      width: Math.max(1, Number(embeddedBounds.width) || 360),
+                      height: Math.max(1, Number(embeddedBounds.height) || 220),
+                      fill: "transparent",
+                      pointerEvents: "all",
+                      style: { cursor: overlayCursor },
+                      onMouseDown: (e) => handleOverlayMouseDown(e, o),
+                      onDoubleClick: (e) => handleOverlayDoubleClick(e, o, { force: true })
+                    }
+                  ) : null
+                ]
+              }
+            )
+          },
+          o.id
+        );
+      });
+    }, [
+      embeddedViewOverlayRenderOverlays,
+      overlayVisualById,
+      isLiveMode,
+      tool,
+      handleOverlayDoubleClick,
+      applyOverlayNodeRef,
+      handleOverlayMouseDown,
+      EmbeddedPerspectiveView,
+      perspectiveClientStore
+    ]);
     const tagBubbleLayer = useMemo(() => {
       if (!showTagPaths || interactionActive) return null;
       const includeLiveOverlayLines = renderLiveVisuals;
       return /* @__PURE__ */ jsxs("g", { children: [
         shapes.map((s) => {
-          var _a, _b, _c, _d, _e, _f;
+          var _a2, _b, _c, _d, _e, _f;
           const text = String(s.tagPath || "").trim();
           if (!text) return null;
           if (hiddenBubbleSet.has(s.id)) return null;
           const lines = [text];
           const yOffset = 0;
           if (s.type === "text") {
-            const x = Number((_a = s.x) != null ? _a : 0);
+            const x = Number((_a2 = s.x) != null ? _a2 : 0);
             const anchorY = Number((_b = s.y) != null ? _b : 0);
             return renderTagBubble({
               key: `tag-${s.id}`,
@@ -20061,6 +20229,7 @@ var MesoraDrawingToolBundle = (() => {
           return null;
         }),
         overlayRenderOverlays.map((o) => {
+          if (o == null ? void 0 : o.embeddedView) return null;
           if (hiddenBubbleSet.has(o.id)) return null;
           const text = getOverlayGroupLabel(o);
           const lines = [];
@@ -20194,10 +20363,10 @@ var MesoraDrawingToolBundle = (() => {
         return null;
       }
       return /* @__PURE__ */ jsx("g", { children: overlayRenderOverlays.map((o) => {
-        var _a, _b;
+        var _a2, _b;
         const overlayTagPath = String((o == null ? void 0 : o.tagPath) || "").trim();
         const overlayEType = String((o == null ? void 0 : o.eType) || (o == null ? void 0 : o.name) || "").trim();
-        const widgetKind = String(((_a = o == null ? void 0 : o.widget) == null ? void 0 : _a.kind) || "").trim().toLowerCase();
+        const widgetKind = String(((_a2 = o == null ? void 0 : o.widget) == null ? void 0 : _a2.kind) || "").trim().toLowerCase();
         const widgetBarMode = String(((_b = o == null ? void 0 : o.widget) == null ? void 0 : _b.barSourceMode) || "table").trim().toLowerCase();
         const widgetUsesSeriesTags = widgetKind === "linechart" || widgetKind === "line_chart" || widgetKind === "line-chart" || (widgetKind === "barchart" || widgetKind === "bar_chart" || widgetKind === "bar-chart") && widgetBarMode === "tags";
         const widgetSeriesTags = widgetUsesSeriesTags ? parseWidgetSeriesTags(o).filter((tp) => !String(tp || "").toLowerCase().startsWith("db:")) : [];
@@ -20303,7 +20472,7 @@ var MesoraDrawingToolBundle = (() => {
     }, [tool, setSelectedIds, setSelectedOverlayIds, onContextMenu]);
     const staticShapeNodes = useMemo(
       () => (Array.isArray(shapes) ? shapes : []).map((s) => {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v;
+        var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v;
         const dynamicColor = getTagColor(s.tagPath);
         if (s.type === "text") {
           const isInline = inlineEditId === s.id;
@@ -20342,7 +20511,7 @@ var MesoraDrawingToolBundle = (() => {
           ] }, s.id);
         }
         if (s.type === "rect") {
-          const rx = Number((_a = s.x) != null ? _a : 0);
+          const rx = Number((_a2 = s.x) != null ? _a2 : 0);
           const ry = Number((_b = s.y) != null ? _b : 0);
           const rw = Math.max(0, Number((_c = s.width) != null ? _c : 0));
           const rh = Math.max(0, Number((_d = s.height) != null ? _d : 0));
@@ -20467,7 +20636,7 @@ var MesoraDrawingToolBundle = (() => {
             }
           ),
           renderSplitCarry ? /* @__PURE__ */ jsx(Fragment2, { children: splitCarrySegments.map((segment, idx) => {
-            var _a2, _b2;
+            var _a3, _b2;
             const segStroke = normalizeActiveLineColor(segment == null ? void 0 : segment.color);
             if (!segStroke) return null;
             return /* @__PURE__ */ jsx(
@@ -20478,7 +20647,7 @@ var MesoraDrawingToolBundle = (() => {
                 stroke: segStroke,
                 strokeWidth: s.strokeWidth,
                 ...styleProps,
-                strokeLinejoin: (_a2 = styleProps.strokeLinejoin) != null ? _a2 : "round",
+                strokeLinejoin: (_a3 = styleProps.strokeLinejoin) != null ? _a3 : "round",
                 strokeLinecap: (_b2 = styleProps.strokeLinecap) != null ? _b2 : "round",
                 vectorEffect: "non-scaling-stroke",
                 pointerEvents: "none"
@@ -20521,7 +20690,7 @@ var MesoraDrawingToolBundle = (() => {
       }
       if (!activeIds.length) return null;
       return activeIds.map((activeId) => {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s;
+        var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s;
         const s = shapeById.get(activeId);
         if (!s) return null;
         const isSelected = selectedIdSet.has(s.id);
@@ -20529,7 +20698,7 @@ var MesoraDrawingToolBundle = (() => {
         if (!isSelected && !isEditing) return null;
         if (s.type === "rect") {
           if (!isSelected) return null;
-          const rx = Number((_a = s.x) != null ? _a : 0);
+          const rx = Number((_a2 = s.x) != null ? _a2 : 0);
           const ry = Number((_b = s.y) != null ? _b : 0);
           const rw = Math.max(0, Number((_c = s.width) != null ? _c : 0));
           const rh = Math.max(0, Number((_d = s.height) != null ? _d : 0));
@@ -20721,13 +20890,13 @@ var MesoraDrawingToolBundle = (() => {
       onSegmentMouseDown
     ]);
     const activeEditingPolylineNodes = useMemo(() => {
-      var _a, _b, _c, _d, _e;
+      var _a2, _b, _c, _d, _e;
       const editingKey = String(editingId || "").trim();
       if (!editingKey) return null;
       const s = shapeById.get(editingKey);
       if (!s || s.type !== "polyline") return null;
       const isSelected = selectedShapeIdSet.has(s.id);
-      const lineStyle = (_a = s.lineStyle) != null ? _a : "solid";
+      const lineStyle = (_a2 = s.lineStyle) != null ? _a2 : "solid";
       const styleProps = strokeStyleProps(lineStyle, s.strokeWidth);
       const arrowStart = (_b = s.arrowStart) != null ? _b : "none";
       const arrowEnd = (_c = s.arrowEnd) != null ? _c : "none";
@@ -20945,9 +21114,9 @@ var MesoraDrawingToolBundle = (() => {
                             onMouseMove: useWindowPointerTracking ? void 0 : onMouseMove,
                             onMouseUp: useWindowPointerTracking ? void 0 : onMouseUp,
                             onDoubleClick: (e) => {
-                              var _a;
+                              var _a2;
                               const target = e.target;
-                              const hit = (_a = target == null ? void 0 : target.closest) == null ? void 0 : _a.call(target, "[data-overlay-id]");
+                              const hit = (_a2 = target == null ? void 0 : target.closest) == null ? void 0 : _a2.call(target, "[data-overlay-id]");
                               if (hit) {
                                 const id = hit.getAttribute("data-overlay-id");
                                 if (id) {
@@ -21101,7 +21270,7 @@ var MesoraDrawingToolBundle = (() => {
                                           );
                                         }
                                         if (s.type === "rect") {
-                                          const rx = Number((_a = s.x) != null ? _a : 0);
+                                          const rx = Number((_a2 = s.x) != null ? _a2 : 0);
                                           const ry = Number((_b = s.y) != null ? _b : 0);
                                           const rw = Math.max(0, Number((_c = s.width) != null ? _c : 0));
                                           const rh = Math.max(0, Number((_d = s.height) != null ? _d : 0));
@@ -21285,7 +21454,7 @@ var MesoraDrawingToolBundle = (() => {
                                                 stroke: segStroke,
                                                 strokeWidth: s.strokeWidth,
                                                 ...styleProps,
-                                                strokeLinejoin: (_a2 = styleProps.strokeLinejoin) != null ? _a2 : "round",
+                                                strokeLinejoin: (_a3 = styleProps.strokeLinejoin) != null ? _a3 : "round",
                                                 strokeLinecap: (_b2 = styleProps.strokeLinecap) != null ? _b2 : "round",
                                                 vectorEffect: "non-scaling-stroke",
                                                 pointerEvents: "none"
@@ -21335,6 +21504,7 @@ var MesoraDrawingToolBundle = (() => {
                                   }
                                 ),
                                 staticOverlayNodes,
+                                embeddedViewOverlayNodes,
                                 widgetOverlayNodes,
                                 activeEditingPolylineNodes,
                                 (selectedOverlayIds == null ? void 0 : selectedOverlayIds.length) === 1 && (selectedIds == null ? void 0 : selectedIds.length) === 0 && selectedSingleOverlay && overlaySelectionUI ? /* @__PURE__ */ jsx("g", { "data-drag-selected-overlay-ui": "1", children: overlaySelectionUI(selectedSingleOverlay, z) }) : null,
@@ -23098,6 +23268,66 @@ var MesoraDrawingToolBundle = (() => {
       }
     );
   }
+  function PropertyTextArea({ disabled = false, label, onCommit, placeholder = "", rows = 5, value = "" }) {
+    const [draft, setDraft] = useState(value == null ? "" : String(value));
+    useEffect(() => {
+      setDraft(value == null ? "" : String(value));
+    }, [value]);
+    const commit = useCallback(() => {
+      if (disabled || typeof onCommit !== "function") {
+        return;
+      }
+      onCommit(draft);
+    }, [disabled, draft, onCommit]);
+    return /* @__PURE__ */ jsxs(
+      "label",
+      {
+        style: { display: "grid", gap: 5 },
+        onMouseDown: stopInteractivePropagation,
+        onClick: stopInteractivePropagation,
+        onDoubleClick: stopInteractivePropagation,
+        children: [
+          /* @__PURE__ */ jsx("span", { style: { fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }, children: label }),
+          /* @__PURE__ */ jsx(
+            "textarea",
+            {
+              value: draft,
+              disabled,
+              placeholder,
+              rows,
+              onChange: (event) => {
+                setDraft(event.target.value);
+              },
+              onBlur: commit,
+              onFocus: stopInteractivePropagation,
+              onPointerDown: stopInteractivePropagation,
+              onMouseDown: stopInteractivePropagation,
+              onMouseUp: stopInteractivePropagation,
+              onClick: stopInteractivePropagation,
+              onDoubleClick: stopInteractivePropagation,
+              onKeyDown: stopInteractivePropagation,
+              onKeyUp: stopInteractivePropagation,
+              style: {
+                width: "100%",
+                minHeight: Math.max(84, rows * 18),
+                boxSizing: "border-box",
+                borderRadius: 10,
+                border: "1px solid rgba(71, 85, 105, 0.9)",
+                background: disabled ? "rgba(15, 23, 42, 0.55)" : "rgba(15, 23, 42, 0.92)",
+                color: "#f8fafc",
+                padding: "10px",
+                fontSize: 12,
+                fontWeight: 600,
+                lineHeight: 1.45,
+                resize: "vertical",
+                opacity: disabled ? 0.78 : 1
+              }
+            }
+          )
+        ]
+      }
+    );
+  }
   function EditorDropdownField({
     disabled = false,
     helperText = "",
@@ -23968,6 +24198,7 @@ var MesoraDrawingToolBundle = (() => {
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(/* @__PURE__ */ new Map());
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
+    const perspectiveClientStore = getPerspectiveClientStore(props);
     const hostSize = resolveCanvasHostSize(props);
     const viewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, hostSize));
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
@@ -25167,6 +25398,42 @@ var MesoraDrawingToolBundle = (() => {
       setHelpOpen(false);
       setWidgetOpen((current) => !current);
     }, []);
+    const handleAddEmbeddedView = useCallback(() => {
+      const width = Math.min(520, Math.max(300, Number(viewBox.width || DEFAULT_CANVAS_WIDTH) * 0.3));
+      const height = Math.min(320, Math.max(180, Number(viewBox.height || DEFAULT_CANVAS_HEIGHT) * 0.18));
+      const id = createId("embedded-view");
+      const nextOverlay = {
+        id,
+        name: "Embedded View",
+        tx: Number(viewBox.x || 0) + (Number(viewBox.width || DEFAULT_CANVAS_WIDTH) - width) / 2,
+        ty: Number(viewBox.y || 0) + (Number(viewBox.height || DEFAULT_CANVAS_HEIGHT) - height) / 2,
+        scale: 1,
+        fill: "",
+        stroke: "",
+        strokeMode: "preserve",
+        tagPath: "",
+        eType: "EmbeddedView",
+        eTypeAuto: false,
+        bbox: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        embeddedView: {
+          viewPath: "",
+          paramsJson: "{}",
+          runtimeInteractive: true
+        }
+      };
+      updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
+      setSelectedOverlayIds([id]);
+      setSelectedIds([]);
+      setImportOpen(false);
+      setWidgetOpen(false);
+      setHelpOpen(false);
+      setPropertiesSelectionKey(`overlay:${id}`);
+    }, [setPropertiesSelectionKey, updateSvgOverlays, viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
     const handleHelpToggle = useCallback(() => {
       setImportOpen(false);
       setWidgetOpen(false);
@@ -25399,7 +25666,7 @@ var MesoraDrawingToolBundle = (() => {
       openPropertiesForSelection(`overlay:${overlayId}`);
     }, [openPropertiesForSelection, overlaysSelectable, tool]);
     const openOverlayPopup = useCallback((overlay) => {
-      if (!overlay || overlay.widget) {
+      if (!overlay || overlay.widget || overlay.embeddedView) {
         return false;
       }
       const viewPath = resolveOverlayPopupViewPath(overlay);
@@ -25451,7 +25718,7 @@ var MesoraDrawingToolBundle = (() => {
         return;
       }
       const overlay = overlaysRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === overlayId);
-      if (!overlay || overlay.widget) {
+      if (!overlay || overlay.widget || overlay.embeddedView) {
         return;
       }
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
@@ -25909,6 +26176,18 @@ var MesoraDrawingToolBundle = (() => {
       },
       [selectedOverlay]
     );
+    const selectedOverlayIsEmbeddedView = useMemo(
+      () => Boolean(selectedOverlay == null ? void 0 : selectedOverlay.embeddedView),
+      [selectedOverlay]
+    );
+    const selectedOverlayEmbeddedView = useMemo(
+      () => isPlainObject(selectedOverlay == null ? void 0 : selectedOverlay.embeddedView) ? selectedOverlay.embeddedView : EMPTY_MAP,
+      [selectedOverlay]
+    );
+    const selectedOverlayEmbeddedViewInteractive = useMemo(
+      () => (selectedOverlayEmbeddedView == null ? void 0 : selectedOverlayEmbeddedView.runtimeInteractive) !== false,
+      [selectedOverlayEmbeddedView]
+    );
     const selectedOverlayWidgetSupportsWrite = useMemo(
       () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
       [selectedOverlayWidgetKind]
@@ -25921,6 +26200,25 @@ var MesoraDrawingToolBundle = (() => {
       () => resolveWidgetOpcServer(selectedOverlay == null ? void 0 : selectedOverlay.widget),
       [selectedOverlay]
     );
+    const selectedOverlayEmbeddedViewParamsError = useMemo(() => {
+      var _a2;
+      if (!selectedOverlayIsEmbeddedView) {
+        return "";
+      }
+      const raw = String((_a2 = selectedOverlayEmbeddedView == null ? void 0 : selectedOverlayEmbeddedView.paramsJson) != null ? _a2 : "{}").trim();
+      if (!raw) {
+        return "";
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return "Params must be a JSON object.";
+        }
+        return "";
+      } catch (error) {
+        return String((error == null ? void 0 : error.message) || "Invalid JSON.");
+      }
+    }, [selectedOverlayEmbeddedView, selectedOverlayIsEmbeddedView]);
     const propertyTargetBounds = selectedOverlayBounds || selectedShapeBounds || selectedBBox;
     const floatingPropertyPanelStyle = useMemo(() => {
       if (!propertiesVisible || !propertyTargetBounds) {
@@ -26301,6 +26599,15 @@ var MesoraDrawingToolBundle = (() => {
         }
       }));
     }, [updateSelectedOverlay]);
+    const commitSelectedOverlayEmbeddedViewField = useCallback((field, rawValue) => {
+      updateSelectedOverlay((overlay) => ({
+        ...overlay,
+        embeddedView: {
+          ...isPlainObject(overlay == null ? void 0 : overlay.embeddedView) ? overlay.embeddedView : {},
+          [field]: rawValue
+        }
+      }));
+    }, [updateSelectedOverlay]);
     const commitSelectedOverlayTagPath = useCallback((rawValue) => {
       updateSelectedOverlay((overlay) => {
         if (overlay == null ? void 0 : overlay.widget) {
@@ -26462,7 +26769,7 @@ var MesoraDrawingToolBundle = (() => {
     })() : "";
     const svgLibraryReady = svgCatalogFiles.length > 0;
     const normalizableSvgCount = useMemo(
-      () => coerceArray(svgOverlays).filter((overlay) => overlay && !overlay.widget).length,
+      () => coerceArray(svgOverlays).filter((overlay) => overlay && !overlay.widget && !overlay.embeddedView).length,
       [svgOverlays]
     );
     const svgLibraryStatusText = !svgLibraryEnabled ? "SVG library disabled" : svgLibraryError ? svgLibraryError : svgLibraryReady ? `${svgCatalogFiles.length} SVG templates ready` : "Loading SVG templates...";
@@ -26732,6 +27039,7 @@ var MesoraDrawingToolBundle = (() => {
           canvasBackgroundColor,
           liveClickable,
           isLiveMode,
+          perspectiveClientStore,
           preserveAspectRatioMode: "xMinYMin slice",
           forceStaticVisuals: !editorVisible,
           viewportTopOffset: 0,
@@ -26902,6 +27210,7 @@ var MesoraDrawingToolBundle = (() => {
                   children: /* @__PURE__ */ jsx("span", { children: "Widgets" })
                 }
               ),
+              /* @__PURE__ */ jsx(DockButton, { onClick: handleAddEmbeddedView, children: /* @__PURE__ */ jsx("span", { children: "Embedded View" }) }),
               /* @__PURE__ */ jsxs(
                 "div",
                 {
@@ -27059,7 +27368,13 @@ var MesoraDrawingToolBundle = (() => {
                   paddingRight: 2
                 },
                 children: /* @__PURE__ */ jsx(PropertySection, { children: selectedOverlay ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                  /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: selectedOverlay.widget ? "Widget" : "SVG Overlay" }),
+                  /* @__PURE__ */ jsx(
+                    PropertyReadout,
+                    {
+                      label: "Type",
+                      value: selectedOverlayIsEmbeddedView ? "Embedded View" : selectedOverlay.widget ? "Widget" : "SVG Overlay"
+                    }
+                  ),
                   /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedOverlay.id }),
                   selectedOverlay.widget ? /* @__PURE__ */ jsx(
                     PropertyReadout,
@@ -27078,6 +27393,52 @@ var MesoraDrawingToolBundle = (() => {
                       }
                     }
                   ),
+                  selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "View Path",
+                        value: (selectedOverlayEmbeddedView == null ? void 0 : selectedOverlayEmbeddedView.viewPath) || "",
+                        placeholder: "Views/MyEmbeddedView",
+                        onCommit: (value) => {
+                          commitSelectedOverlayEmbeddedViewField("viewPath", String(value != null ? value : "").trim());
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsx(
+                      PropertyTextArea,
+                      {
+                        label: "View Params JSON",
+                        value: (selectedOverlayEmbeddedView == null ? void 0 : selectedOverlayEmbeddedView.paramsJson) || "{}",
+                        placeholder: '{"tagPath":"[default]MyTag"}',
+                        rows: 5,
+                        onCommit: (value) => {
+                          commitSelectedOverlayEmbeddedViewField("paramsJson", String(value != null ? value : ""));
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsx(
+                      EditorDropdownField,
+                      {
+                        label: "Runtime Interaction",
+                        value: selectedOverlayEmbeddedViewInteractive ? "enabled" : "disabled",
+                        options: [
+                          { label: "Enabled", value: "enabled" },
+                          { label: "Disabled", value: "disabled" }
+                        ],
+                        onChange: (value) => {
+                          commitSelectedOverlayEmbeddedViewField("runtimeInteractive", value !== "disabled");
+                        }
+                      }
+                    ),
+                    selectedOverlayEmbeddedViewParamsError ? /* @__PURE__ */ jsx(
+                      PropertyReadout,
+                      {
+                        label: "Params Status",
+                        value: selectedOverlayEmbeddedViewParamsError
+                      }
+                    ) : null
+                  ] }) : null,
                   selectedOverlay.widget && selectedOverlayWidgetSupportsWrite ? /* @__PURE__ */ jsx(
                     EditorDropdownField,
                     {
@@ -27096,7 +27457,7 @@ var MesoraDrawingToolBundle = (() => {
                       }
                     }
                   ) : null,
-                  selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                  !selectedOverlayIsEmbeddedView && selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
                     /* @__PURE__ */ jsx(
                       PropertyField,
                       {
@@ -27118,7 +27479,7 @@ var MesoraDrawingToolBundle = (() => {
                         }
                       }
                     )
-                  ] }) : /* @__PURE__ */ jsx(
+                  ] }) : !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsx(
                     PropertyTagPathField,
                     {
                       label: "Tag Path",
@@ -27130,8 +27491,8 @@ var MesoraDrawingToolBundle = (() => {
                         commitSelectedOverlayTagPath(value);
                       }
                     }
-                  ),
-                  /* @__PURE__ */ jsx(
+                  ) : null,
+                  !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsx(
                     PropertyField,
                     {
                       label: "EType",
@@ -27140,7 +27501,7 @@ var MesoraDrawingToolBundle = (() => {
                         commitSelectedOverlayText("eType", value);
                       }
                     }
-                  ),
+                  ) : null,
                   selectedOverlay.widget ? /* @__PURE__ */ jsxs(Fragment2, { children: [
                     /* @__PURE__ */ jsx(
                       PropertyField,
@@ -27243,48 +27604,50 @@ var MesoraDrawingToolBundle = (() => {
                       }
                     )
                   ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                  !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Scale",
+                          value: formatPanelNumber(selectedOverlay.scale || 1),
+                          onCommit: (value) => {
+                            commitSelectedOverlayNumber("scale", value, { min: 0.05 });
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Stroke Width",
+                          value: formatPanelNumber(selectedOverlay.strokeWidth || 0),
+                          onCommit: (value) => {
+                            commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
+                          }
+                        }
+                      )
+                    ] }),
                     /* @__PURE__ */ jsx(
                       PropertyField,
                       {
-                        label: "Scale",
-                        value: formatPanelNumber(selectedOverlay.scale || 1),
+                        label: "Fill",
+                        value: selectedOverlay.fill || "",
                         onCommit: (value) => {
-                          commitSelectedOverlayNumber("scale", value, { min: 0.05 });
+                          commitSelectedOverlayFill(value);
                         }
                       }
                     ),
                     /* @__PURE__ */ jsx(
                       PropertyField,
                       {
-                        label: "Stroke Width",
-                        value: formatPanelNumber(selectedOverlay.strokeWidth || 0),
+                        label: "Stroke",
+                        value: selectedOverlay.stroke || "",
                         onCommit: (value) => {
-                          commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
+                          commitSelectedOverlayText("stroke", value);
                         }
                       }
                     )
-                  ] }),
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Fill",
-                      value: selectedOverlay.fill || "",
-                      onCommit: (value) => {
-                        commitSelectedOverlayFill(value);
-                      }
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Stroke",
-                      value: selectedOverlay.stroke || "",
-                      onCommit: (value) => {
-                        commitSelectedOverlayText("stroke", value);
-                      }
-                    }
-                  )
+                  ] }) : null
                 ] }) : selectedShape ? /* @__PURE__ */ jsxs(Fragment2, { children: [
                   /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: selectedShapeLabel }),
                   /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedShape.id }),

@@ -1181,6 +1181,67 @@ function PropertyField({ disabled = false, label, onCommit, placeholder = "", va
     );
 }
 
+function PropertyTextArea({ disabled = false, label, onCommit, placeholder = "", rows = 5, value = "" }) {
+    const [draft, setDraft] = useState(value == null ? "" : String(value));
+
+    useEffect(() => {
+        setDraft(value == null ? "" : String(value));
+    }, [value]);
+
+    const commit = useCallback(() => {
+        if (disabled || typeof onCommit !== "function") {
+            return;
+        }
+        onCommit(draft);
+    }, [disabled, draft, onCommit]);
+
+    return (
+        <label
+            style={{ display: "grid", gap: 5 }}
+            onMouseDown={stopInteractivePropagation}
+            onClick={stopInteractivePropagation}
+            onDoubleClick={stopInteractivePropagation}
+        >
+            <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }}>
+                {label}
+            </span>
+            <textarea
+                value={draft}
+                disabled={disabled}
+                placeholder={placeholder}
+                rows={rows}
+                onChange={(event) => {
+                    setDraft(event.target.value);
+                }}
+                onBlur={commit}
+                onFocus={stopInteractivePropagation}
+                onPointerDown={stopInteractivePropagation}
+                onMouseDown={stopInteractivePropagation}
+                onMouseUp={stopInteractivePropagation}
+                onClick={stopInteractivePropagation}
+                onDoubleClick={stopInteractivePropagation}
+                onKeyDown={stopInteractivePropagation}
+                onKeyUp={stopInteractivePropagation}
+                style={{
+                    width: "100%",
+                    minHeight: Math.max(84, rows * 18),
+                    boxSizing: "border-box",
+                    borderRadius: 10,
+                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                    background: disabled ? "rgba(15, 23, 42, 0.55)" : "rgba(15, 23, 42, 0.92)",
+                    color: "#f8fafc",
+                    padding: "10px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    lineHeight: 1.45,
+                    resize: "vertical",
+                    opacity: disabled ? 0.78 : 1
+                }}
+            />
+        </label>
+    );
+}
+
 function EditorDropdownField({
     disabled = false,
     helperText = "",
@@ -2078,6 +2139,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(new Map());
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
+    const perspectiveClientStore = getPerspectiveClientStore(props);
     const hostSize = resolveCanvasHostSize(props);
     const viewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, hostSize));
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
@@ -3474,6 +3536,44 @@ export default function PerspectiveViziCanvasBridge(props) {
         setWidgetOpen((current) => !current);
     }, []);
 
+    const handleAddEmbeddedView = useCallback(() => {
+        const width = Math.min(520, Math.max(300, Number(viewBox.width || DEFAULT_CANVAS_WIDTH) * 0.3));
+        const height = Math.min(320, Math.max(180, Number(viewBox.height || DEFAULT_CANVAS_HEIGHT) * 0.18));
+        const id = createId("embedded-view");
+        const nextOverlay = {
+            id,
+            name: "Embedded View",
+            tx: Number(viewBox.x || 0) + ((Number(viewBox.width || DEFAULT_CANVAS_WIDTH) - width) / 2),
+            ty: Number(viewBox.y || 0) + ((Number(viewBox.height || DEFAULT_CANVAS_HEIGHT) - height) / 2),
+            scale: 1,
+            fill: "",
+            stroke: "",
+            strokeMode: "preserve",
+            tagPath: "",
+            eType: "EmbeddedView",
+            eTypeAuto: false,
+            bbox: {
+                x: 0,
+                y: 0,
+                width,
+                height
+            },
+            embeddedView: {
+                viewPath: "",
+                paramsJson: "{}",
+                runtimeInteractive: true
+            }
+        };
+
+        updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
+        setSelectedOverlayIds([id]);
+        setSelectedIds([]);
+        setImportOpen(false);
+        setWidgetOpen(false);
+        setHelpOpen(false);
+        setPropertiesSelectionKey(`overlay:${id}`);
+    }, [setPropertiesSelectionKey, updateSvgOverlays, viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
+
     const handleHelpToggle = useCallback(() => {
         setImportOpen(false);
         setWidgetOpen(false);
@@ -3727,7 +3827,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [openPropertiesForSelection, overlaysSelectable, tool]);
 
     const openOverlayPopup = useCallback((overlay) => {
-        if (!overlay || overlay.widget) {
+        if (!overlay || overlay.widget || overlay.embeddedView) {
             return false;
         }
 
@@ -3792,7 +3892,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         const overlay = overlaysRef.current.find((item) => String(item?.id || "") === overlayId);
-        if (!overlay || overlay.widget) {
+        if (!overlay || overlay.widget || overlay.embeddedView) {
             return;
         }
 
@@ -4289,6 +4389,18 @@ export default function PerspectiveViziCanvasBridge(props) {
         () => String(selectedOverlay?.widget?.kind || "").trim().toLowerCase(),
         [selectedOverlay]
     );
+    const selectedOverlayIsEmbeddedView = useMemo(
+        () => Boolean(selectedOverlay?.embeddedView),
+        [selectedOverlay]
+    );
+    const selectedOverlayEmbeddedView = useMemo(
+        () => (isPlainObject(selectedOverlay?.embeddedView) ? selectedOverlay.embeddedView : EMPTY_MAP),
+        [selectedOverlay]
+    );
+    const selectedOverlayEmbeddedViewInteractive = useMemo(
+        () => selectedOverlayEmbeddedView?.runtimeInteractive !== false,
+        [selectedOverlayEmbeddedView]
+    );
     const selectedOverlayWidgetSupportsWrite = useMemo(
         () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
         [selectedOverlayWidgetKind]
@@ -4301,6 +4413,24 @@ export default function PerspectiveViziCanvasBridge(props) {
         () => resolveWidgetOpcServer(selectedOverlay?.widget),
         [selectedOverlay]
     );
+    const selectedOverlayEmbeddedViewParamsError = useMemo(() => {
+        if (!selectedOverlayIsEmbeddedView) {
+            return "";
+        }
+        const raw = String(selectedOverlayEmbeddedView?.paramsJson ?? "{}").trim();
+        if (!raw) {
+            return "";
+        }
+        try {
+            const parsed = JSON.parse(raw);
+            if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+                return "Params must be a JSON object.";
+            }
+            return "";
+        } catch (error) {
+            return String(error?.message || "Invalid JSON.");
+        }
+    }, [selectedOverlayEmbeddedView, selectedOverlayIsEmbeddedView]);
     const propertyTargetBounds = selectedOverlayBounds || selectedShapeBounds || selectedBBox;
 
     const floatingPropertyPanelStyle = useMemo(() => {
@@ -4710,6 +4840,16 @@ export default function PerspectiveViziCanvasBridge(props) {
         }));
     }, [updateSelectedOverlay]);
 
+    const commitSelectedOverlayEmbeddedViewField = useCallback((field, rawValue) => {
+        updateSelectedOverlay((overlay) => ({
+            ...overlay,
+            embeddedView: {
+                ...(isPlainObject(overlay?.embeddedView) ? overlay.embeddedView : {}),
+                [field]: rawValue
+            }
+        }));
+    }, [updateSelectedOverlay]);
+
     const commitSelectedOverlayTagPath = useCallback((rawValue) => {
         updateSelectedOverlay((overlay) => {
             if (overlay?.widget) {
@@ -4889,7 +5029,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const svgLibraryReady = svgCatalogFiles.length > 0;
     const normalizableSvgCount = useMemo(
-        () => coerceArray(svgOverlays).filter((overlay) => overlay && !overlay.widget).length,
+        () => coerceArray(svgOverlays).filter((overlay) => overlay && !overlay.widget && !overlay.embeddedView).length,
         [svgOverlays]
     );
     const svgLibraryStatusText = !svgLibraryEnabled
@@ -5205,6 +5345,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 canvasBackgroundColor={canvasBackgroundColor}
                 liveClickable={liveClickable}
                 isLiveMode={isLiveMode}
+                perspectiveClientStore={perspectiveClientStore}
                 preserveAspectRatioMode="xMinYMin slice"
                 forceStaticVisuals={!editorVisible}
                 viewportTopOffset={0}
@@ -5368,6 +5509,9 @@ export default function PerspectiveViziCanvasBridge(props) {
                             >
                                 <span>Widgets</span>
                             </DockButton>
+                            <DockButton onClick={handleAddEmbeddedView}>
+                                <span>Embedded View</span>
+                            </DockButton>
                             <div
                                 style={{
                                     display: "grid",
@@ -5519,7 +5663,16 @@ export default function PerspectiveViziCanvasBridge(props) {
                     <PropertySection>
                         {selectedOverlay ? (
                             <>
-                                <PropertyReadout label="Type" value={selectedOverlay.widget ? "Widget" : "SVG Overlay"} />
+                                <PropertyReadout
+                                    label="Type"
+                                    value={
+                                        selectedOverlayIsEmbeddedView
+                                            ? "Embedded View"
+                                            : selectedOverlay.widget
+                                                ? "Widget"
+                                                : "SVG Overlay"
+                                    }
+                                />
                                 <PropertyReadout label="ID" value={selectedOverlay.id} />
                                 {selectedOverlay.widget ? (
                                     <PropertyReadout
@@ -5534,6 +5687,44 @@ export default function PerspectiveViziCanvasBridge(props) {
                                         commitSelectedOverlayText("name", value);
                                     }}
                                 />
+                                {selectedOverlayIsEmbeddedView ? (
+                                    <>
+                                        <PropertyField
+                                            label="View Path"
+                                            value={selectedOverlayEmbeddedView?.viewPath || ""}
+                                            placeholder="Views/MyEmbeddedView"
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayEmbeddedViewField("viewPath", String(value ?? "").trim());
+                                            }}
+                                        />
+                                        <PropertyTextArea
+                                            label="View Params JSON"
+                                            value={selectedOverlayEmbeddedView?.paramsJson || "{}"}
+                                            placeholder='{"tagPath":"[default]MyTag"}'
+                                            rows={5}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayEmbeddedViewField("paramsJson", String(value ?? ""));
+                                            }}
+                                        />
+                                        <EditorDropdownField
+                                            label="Runtime Interaction"
+                                            value={selectedOverlayEmbeddedViewInteractive ? "enabled" : "disabled"}
+                                            options={[
+                                                { label: "Enabled", value: "enabled" },
+                                                { label: "Disabled", value: "disabled" }
+                                            ]}
+                                            onChange={(value) => {
+                                                commitSelectedOverlayEmbeddedViewField("runtimeInteractive", value !== "disabled");
+                                            }}
+                                        />
+                                        {selectedOverlayEmbeddedViewParamsError ? (
+                                            <PropertyReadout
+                                                label="Params Status"
+                                                value={selectedOverlayEmbeddedViewParamsError}
+                                            />
+                                        ) : null}
+                                    </>
+                                ) : null}
                                 {selectedOverlay.widget && selectedOverlayWidgetSupportsWrite ? (
                                     <EditorDropdownField
                                         label="Write Target"
@@ -5551,7 +5742,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                                         }}
                                     />
                                 ) : null}
-                                {selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? (
+                                {!selectedOverlayIsEmbeddedView && selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? (
                                     <>
                                         <PropertyField
                                             label="OPC Item Path"
@@ -5569,7 +5760,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                                             }}
                                         />
                                     </>
-                                ) : (
+                                ) : !selectedOverlayIsEmbeddedView ? (
                                     <PropertyTagPathField
                                         label="Tag Path"
                                         value={selectedOverlay.tagPath || ""}
@@ -5580,14 +5771,16 @@ export default function PerspectiveViziCanvasBridge(props) {
                                             commitSelectedOverlayTagPath(value);
                                         }}
                                     />
-                                )}
-                                <PropertyField
-                                    label="EType"
-                                    value={selectedOverlay.eType || ""}
-                                    onCommit={(value) => {
-                                        commitSelectedOverlayText("eType", value);
-                                    }}
-                                />
+                                ) : null}
+                                {!selectedOverlayIsEmbeddedView ? (
+                                    <PropertyField
+                                        label="EType"
+                                        value={selectedOverlay.eType || ""}
+                                        onCommit={(value) => {
+                                            commitSelectedOverlayText("eType", value);
+                                        }}
+                                    />
+                                ) : null}
                                 {selectedOverlay.widget ? (
                                     <>
                                         <PropertyField
@@ -5674,36 +5867,40 @@ export default function PerspectiveViziCanvasBridge(props) {
                                         }}
                                     />
                                 </div>
-                                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
-                                    <PropertyField
-                                        label="Scale"
-                                        value={formatPanelNumber(selectedOverlay.scale || 1)}
-                                        onCommit={(value) => {
-                                            commitSelectedOverlayNumber("scale", value, { min: 0.05 });
-                                        }}
-                                    />
-                                    <PropertyField
-                                        label="Stroke Width"
-                                        value={formatPanelNumber(selectedOverlay.strokeWidth || 0)}
-                                        onCommit={(value) => {
-                                            commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
-                                        }}
-                                    />
-                                </div>
-                                <PropertyField
-                                    label="Fill"
-                                    value={selectedOverlay.fill || ""}
-                                    onCommit={(value) => {
-                                        commitSelectedOverlayFill(value);
-                                    }}
-                                />
-                                <PropertyField
-                                    label="Stroke"
-                                    value={selectedOverlay.stroke || ""}
-                                    onCommit={(value) => {
-                                        commitSelectedOverlayText("stroke", value);
-                                    }}
-                                />
+                                {!selectedOverlayIsEmbeddedView ? (
+                                    <>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="Scale"
+                                                value={formatPanelNumber(selectedOverlay.scale || 1)}
+                                                onCommit={(value) => {
+                                                    commitSelectedOverlayNumber("scale", value, { min: 0.05 });
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Stroke Width"
+                                                value={formatPanelNumber(selectedOverlay.strokeWidth || 0)}
+                                                onCommit={(value) => {
+                                                    commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
+                                                }}
+                                            />
+                                        </div>
+                                        <PropertyField
+                                            label="Fill"
+                                            value={selectedOverlay.fill || ""}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayFill(value);
+                                            }}
+                                        />
+                                        <PropertyField
+                                            label="Stroke"
+                                            value={selectedOverlay.stroke || ""}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayText("stroke", value);
+                                            }}
+                                        />
+                                    </>
+                                ) : null}
                             </>
                         ) : selectedShape ? (
                             <>

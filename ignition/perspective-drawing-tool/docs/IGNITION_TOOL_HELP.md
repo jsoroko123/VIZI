@@ -38,6 +38,13 @@ This guide covers the Vizi drawing tool inside Ignition Perspective Designer.
 - Widgets support `Ignition Tag` or `Direct OPC` write targets when applicable.
 - `Push Button` and `On Off Button` support titles, title font size, press value, and release value.
 
+## Embedded Views
+
+- `Embedded View` adds a real Perspective view container onto the canvas.
+- Set `View Path` to something like `Views/MyView`.
+- `View Params JSON` passes parameters into the embedded view.
+- `Runtime Interaction` controls whether the embedded view is clickable in preview and live mode.
+
 ## Text Tag Readouts
 
 - Text items can bind directly to an Ignition tag with `Tag Path`.

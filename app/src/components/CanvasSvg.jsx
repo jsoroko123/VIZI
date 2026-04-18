@@ -179,6 +179,7 @@ function CanvasSvg({
   canvasBackgroundColor,
   liveClickable = false,
   isLiveMode = false,
+  perspectiveClientStore = null,
   preserveAspectRatioMode = "xMinYMin meet",
   forceStaticVisuals = false,
   viewportTopOffset = 0,
@@ -189,6 +190,8 @@ function CanvasSvg({
   const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
   const liveCanvasEnabled = Boolean(liveUpdatesEnabled && renderLiveVisuals);
   const widgetInteractionEnabled = Boolean(isLiveMode || liveClickable);
+  const EmbeddedPerspectiveView =
+    typeof window !== "undefined" ? window.PerspectiveClient?.View || null : null;
   const watchedLiveKeys = useMemo(() => {
     const source = liveCanvasEnabled && Array.isArray(liveTagKeys) ? liveTagKeys : [];
     const seen = new Set();
@@ -893,6 +896,7 @@ function CanvasSvg({
   };
 
   const getOverlayGroupLabel = (overlay) => {
+    if (overlay?.embeddedView) return "";
     const raw = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
     if (!raw) return "";
     const parts = raw.split(".").map((x) => x.trim()).filter(Boolean);
@@ -7026,6 +7030,19 @@ function CanvasSvg({
         return;
       }
 
+      if (overlay?.embeddedView) {
+        const bb = overlay?.bbox || { x: 0, y: 0, width: 360, height: 220 };
+        out.set(id, {
+          embeddedViewFrame: {
+            x: Number(bb.x) || 0,
+            y: Number(bb.y) || 0,
+            w: Math.max(140, Number(bb.width) || 360),
+            h: Math.max(90, Number(bb.height) || 220),
+          },
+        });
+        return;
+      }
+
       const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
       const isDiverterOverlay = overlayEType.includes("diverter");
       if (!renderLiveVisuals) {
@@ -7228,11 +7245,15 @@ function CanvasSvg({
     themeStrokeDefault,
   ]);
   const staticOverlayRenderOverlays = useMemo(
-    () => overlayRenderOverlays.filter((overlay) => !overlay?.widget),
+    () => overlayRenderOverlays.filter((overlay) => !overlay?.widget && !overlay?.embeddedView),
     [overlayRenderOverlays]
   );
   const widgetOverlayRenderOverlays = useMemo(
     () => overlayRenderOverlays.filter((overlay) => !!overlay?.widget),
+    [overlayRenderOverlays]
+  );
+  const embeddedViewOverlayRenderOverlays = useMemo(
+    () => overlayRenderOverlays.filter((overlay) => !!overlay?.embeddedView),
     [overlayRenderOverlays]
   );
   const selectedSingleOverlay = useMemo(
@@ -7408,6 +7429,159 @@ function CanvasSvg({
     viewportScale,
     theme,
   ]);
+  const embeddedViewOverlayNodes = useMemo(() => {
+    return embeddedViewOverlayRenderOverlays.map((o) => {
+      const overlayVisual = overlayVisualById.get(String(o?.id || "").trim());
+      const overlayCursor = isLiveMode
+        ? "default"
+        : (tool === "select" ? "move" : "crosshair");
+      const embeddedBounds = o?.bbox || { x: 0, y: 0, width: 360, height: 220 };
+      const embeddedConfig = o?.embeddedView || {};
+      const viewPath = String(embeddedConfig?.viewPath || "").trim();
+      const paramsJson = String(embeddedConfig?.paramsJson ?? "{}").trim();
+      const runtimeInteractive = embeddedConfig?.runtimeInteractive !== false;
+      const interactionEnabled = isLiveMode ? runtimeInteractive : false;
+      const showDesignHitbox = !isLiveMode;
+      const mountPath = `EV${String(o?.id || "").replace(/[^a-zA-Z0-9_-]+/g, "")}`;
+
+      let parsedParams = {};
+      let paramsError = "";
+      if (paramsJson) {
+        try {
+          const nextValue = JSON.parse(paramsJson);
+          if (nextValue != null && typeof nextValue === "object" && !Array.isArray(nextValue)) {
+            parsedParams = nextValue;
+          } else {
+            paramsError = "Params must be a JSON object.";
+          }
+        } catch (error) {
+          paramsError = String(error?.message || "Invalid params JSON.");
+        }
+      }
+
+      const showPerspectiveView =
+        Boolean(EmbeddedPerspectiveView)
+        && Boolean(perspectiveClientStore)
+        && Boolean(viewPath)
+        && !paramsError;
+      const placeholderTitle = String(o?.name || "Embedded View").trim() || "Embedded View";
+
+      return (
+        <g
+          key={o.id}
+          data-overlay-id={o.id}
+          onDoubleClickCapture={(e) => handleOverlayDoubleClick(e, o, { force: true })}
+          onDoubleClick={(e) => handleOverlayDoubleClick(e, o, { force: true })}
+        >
+          <g
+            ref={(node) => applyOverlayNodeRef(o.id, node)}
+            transform={`translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`}
+            onMouseDown={!isLiveMode ? (e) => handleOverlayMouseDown(e, o) : undefined}
+            onDoubleClick={(e) => handleOverlayDoubleClick(e, o, { force: true })}
+            style={{
+              cursor: overlayCursor,
+              pointerEvents: "all",
+            }}
+          >
+            {overlayVisual?.embeddedViewFrame ? (
+              <rect
+                x={overlayVisual.embeddedViewFrame.x}
+                y={overlayVisual.embeddedViewFrame.y}
+                width={overlayVisual.embeddedViewFrame.w}
+                height={overlayVisual.embeddedViewFrame.h}
+                rx={12}
+                fill="rgba(15, 23, 42, 0.86)"
+                stroke="rgba(71, 85, 105, 0.92)"
+                strokeWidth={2}
+              />
+            ) : null}
+            <foreignObject
+              x={Number(embeddedBounds.x) || 0}
+              y={Number(embeddedBounds.y) || 0}
+              width={Math.max(1, Number(embeddedBounds.width) || 360)}
+              height={Math.max(1, Number(embeddedBounds.height) || 220)}
+              style={{ pointerEvents: interactionEnabled ? "auto" : "none" }}
+            >
+              <div
+                xmlns="http://www.w3.org/1999/xhtml"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  boxSizing: "border-box",
+                  overflow: "hidden",
+                  borderRadius: "12px",
+                  pointerEvents: interactionEnabled ? "auto" : "none",
+                  background: "rgba(15, 23, 42, 0.2)",
+                }}
+              >
+                {showPerspectiveView ? (
+                  <div className="view-parent" style={{ width: "100%", height: "100%" }}>
+                    <EmbeddedPerspectiveView
+                      store={perspectiveClientStore}
+                      resourcePath={viewPath}
+                      key={`${mountPath}:${viewPath}:${paramsJson}`}
+                      mountPath={mountPath}
+                      params={parsedParams}
+                      useDefaultWidth={false}
+                      useDefaultHeight={false}
+                    />
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      display: "grid",
+                      placeItems: "center",
+                      padding: "16px",
+                      boxSizing: "border-box",
+                      textAlign: "center",
+                      color: "#e2e8f0",
+                      background: "linear-gradient(180deg, rgba(15, 23, 42, 0.92) 0%, rgba(2, 6, 23, 0.92) 100%)",
+                    }}
+                  >
+                    <div style={{ display: "grid", gap: 8, maxWidth: "100%" }}>
+                      <div style={{ fontSize: 16, fontWeight: 800 }}>{placeholderTitle}</div>
+                      <div style={{ fontSize: 12, lineHeight: 1.5, color: "rgba(226, 232, 240, 0.74)" }}>
+                        {paramsError
+                          ? paramsError
+                          : viewPath
+                            ? viewPath
+                            : "Set View Path in properties to load a Perspective view here."}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </foreignObject>
+            {showDesignHitbox ? (
+              <rect
+                x={Number(embeddedBounds.x) || 0}
+                y={Number(embeddedBounds.y) || 0}
+                width={Math.max(1, Number(embeddedBounds.width) || 360)}
+                height={Math.max(1, Number(embeddedBounds.height) || 220)}
+                fill="transparent"
+                pointerEvents="all"
+                style={{ cursor: overlayCursor }}
+                onMouseDown={(e) => handleOverlayMouseDown(e, o)}
+                onDoubleClick={(e) => handleOverlayDoubleClick(e, o, { force: true })}
+              />
+            ) : null}
+          </g>
+        </g>
+      );
+    });
+  }, [
+    embeddedViewOverlayRenderOverlays,
+    overlayVisualById,
+    isLiveMode,
+    tool,
+    handleOverlayDoubleClick,
+    applyOverlayNodeRef,
+    handleOverlayMouseDown,
+    EmbeddedPerspectiveView,
+    perspectiveClientStore,
+  ]);
   const tagBubbleLayer = useMemo(() => {
     if (!showTagPaths || interactionActive) return null;
     const includeLiveOverlayLines = renderLiveVisuals;
@@ -7459,6 +7633,7 @@ function CanvasSvg({
           return null;
         })}
         {overlayRenderOverlays.map((o) => {
+          if (o?.embeddedView) return null;
           if (hiddenBubbleSet.has(o.id)) return null;
           const text = getOverlayGroupLabel(o);
           const lines = [];
@@ -8808,6 +8983,7 @@ function CanvasSvg({
             </g>{/* end delegated shapes container */}
 
               {staticOverlayNodes}
+              {embeddedViewOverlayNodes}
               {widgetOverlayNodes}
             {activeEditingPolylineNodes}
             {selectedOverlayIds?.length === 1 && selectedIds?.length === 0 && selectedSingleOverlay && overlaySelectionUI
