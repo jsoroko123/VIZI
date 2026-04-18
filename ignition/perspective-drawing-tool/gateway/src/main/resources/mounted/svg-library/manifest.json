@@ -1,0 +1,372 @@
+[
+  {
+    "key": "./assets/SVG_Files/Agitator.svg",
+    "name": "Agitator.svg",
+    "url": "/res/mesora-drawing/svg-library/Agitator.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/airlock.svg",
+    "name": "airlock.svg",
+    "url": "/res/mesora-drawing/svg-library/airlock.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Aplitter.svg",
+    "name": "Aplitter.svg",
+    "url": "/res/mesora-drawing/svg-library/Aplitter.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Aspirator.svg",
+    "name": "Aspirator.svg",
+    "url": "/res/mesora-drawing/svg-library/Aspirator.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Aspirator2.svg",
+    "name": "Aspirator2.svg",
+    "url": "/res/mesora-drawing/svg-library/Aspirator2.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/AutoManual.svg",
+    "name": "AutoManual.svg",
+    "url": "/res/mesora-drawing/svg-library/AutoManual.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Bins/Terra_Bin_Skinny.svg",
+    "name": "Terra_Bin_Skinny.svg",
+    "url": "/res/mesora-drawing/svg-library/Bins/Terra_Bin_Skinny.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Bins/Terra_Bin_withLevels.svg",
+    "name": "Terra_Bin_withLevels.svg",
+    "url": "/res/mesora-drawing/svg-library/Bins/Terra_Bin_withLevels.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Bins/Terra_BinBottom_Cone.svg",
+    "name": "Terra_BinBottom_Cone.svg",
+    "url": "/res/mesora-drawing/svg-library/Bins/Terra_BinBottom_Cone.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Bins/Terra_SurgeBin_Skinny.svg",
+    "name": "Terra_SurgeBin_Skinny.svg",
+    "url": "/res/mesora-drawing/svg-library/Bins/Terra_SurgeBin_Skinny.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/BinVibro.svg",
+    "name": "BinVibro.svg",
+    "url": "/res/mesora-drawing/svg-library/BinVibro.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/BlowerSimple.svg",
+    "name": "BlowerSimple.svg",
+    "url": "/res/mesora-drawing/svg-library/BlowerSimple.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/BranFinisher.svg",
+    "name": "BranFinisher.svg",
+    "url": "/res/mesora-drawing/svg-library/BranFinisher.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Cervo_NoHopper.svg",
+    "name": "Cervo_NoHopper.svg",
+    "url": "/res/mesora-drawing/svg-library/Cervo_NoHopper.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Cervo.svg",
+    "name": "Cervo.svg",
+    "url": "/res/mesora-drawing/svg-library/Cervo.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/CombiCleaner.svg",
+    "name": "CombiCleaner.svg",
+    "url": "/res/mesora-drawing/svg-library/CombiCleaner.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/ConveyorPaddle.svg",
+    "name": "ConveyorPaddle.svg",
+    "url": "/res/mesora-drawing/svg-library/ConveyorPaddle.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/ConveyorScrew.svg",
+    "name": "ConveyorScrew.svg",
+    "url": "/res/mesora-drawing/svg-library/ConveyorScrew.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Cyclone.svg",
+    "name": "Cyclone.svg",
+    "url": "/res/mesora-drawing/svg-library/Cyclone.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/CycloneAirlock.svg",
+    "name": "CycloneAirlock.svg",
+    "url": "/res/mesora-drawing/svg-library/CycloneAirlock.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Dampener.svg",
+    "name": "Dampener.svg",
+    "url": "/res/mesora-drawing/svg-library/Dampener.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Dampi.svg",
+    "name": "Dampi.svg",
+    "url": "/res/mesora-drawing/svg-library/Dampi.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Densi.svg",
+    "name": "Densi.svg",
+    "url": "/res/mesora-drawing/svg-library/Densi.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Destoner.svg",
+    "name": "Destoner.svg",
+    "url": "/res/mesora-drawing/svg-library/Destoner.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Detatcher.svg",
+    "name": "Detatcher.svg",
+    "url": "/res/mesora-drawing/svg-library/Detatcher.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Doswa.svg",
+    "name": "Doswa.svg",
+    "url": "/res/mesora-drawing/svg-library/Doswa.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/fan.svg",
+    "name": "fan.svg",
+    "url": "/res/mesora-drawing/svg-library/fan.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/FanPnuematic.svg",
+    "name": "FanPnuematic.svg",
+    "url": "/res/mesora-drawing/svg-library/FanPnuematic.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/FilterBinTop.svg",
+    "name": "FilterBinTop.svg",
+    "url": "/res/mesora-drawing/svg-library/FilterBinTop.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/FilterCleaning.svg",
+    "name": "FilterCleaning.svg",
+    "url": "/res/mesora-drawing/svg-library/FilterCleaning.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/FilterCleaningFlatBottom.svg",
+    "name": "FilterCleaningFlatBottom.svg",
+    "url": "/res/mesora-drawing/svg-library/FilterCleaningFlatBottom.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/FilterFeeder_WithHopper.svg",
+    "name": "FilterFeeder_WithHopper.svg",
+    "url": "/res/mesora-drawing/svg-library/FilterFeeder_WithHopper.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Floba.svg",
+    "name": "Floba.svg",
+    "url": "/res/mesora-drawing/svg-library/Floba.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Gate_Discharge.svg",
+    "name": "Gate_Discharge.svg",
+    "url": "/res/mesora-drawing/svg-library/Gate_Discharge.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Hopper_Convey.svg",
+    "name": "Hopper_Convey.svg",
+    "url": "/res/mesora-drawing/svg-library/Hopper_Convey.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/ImpactFlour.svg",
+    "name": "ImpactFlour.svg",
+    "url": "/res/mesora-drawing/svg-library/ImpactFlour.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Level_Sensor.svg",
+    "name": "Level_Sensor.svg",
+    "url": "/res/mesora-drawing/svg-library/Level_Sensor.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Library/Library_Universal_Elements 2.svg",
+    "name": "Library_Universal_Elements 2.svg",
+    "url": "/res/mesora-drawing/svg-library/Library/Library_Universal_Elements%202.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Library/MIL1.svg",
+    "name": "MIL1.svg",
+    "url": "/res/mesora-drawing/svg-library/Library/MIL1.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Library/New_Symbol_Style_Universal_2017 2.svg",
+    "name": "New_Symbol_Style_Universal_2017 2.svg",
+    "url": "/res/mesora-drawing/svg-library/Library/New_Symbol_Style_Universal_2017%202.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/MagnetSmall_Static.svg",
+    "name": "MagnetSmall_Static.svg",
+    "url": "/res/mesora-drawing/svg-library/MagnetSmall_Static.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/MANB.svg",
+    "name": "MANB.svg",
+    "url": "/res/mesora-drawing/svg-library/MANB.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Matador.svg",
+    "name": "Matador.svg",
+    "url": "/res/mesora-drawing/svg-library/Matador.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/MicroFeeder_WithHopper.svg",
+    "name": "MicroFeeder_WithHopper.svg",
+    "url": "/res/mesora-drawing/svg-library/MicroFeeder_WithHopper.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/MWBG.svg",
+    "name": "MWBG.svg",
+    "url": "/res/mesora-drawing/svg-library/MWBG.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Purifier.svg",
+    "name": "Purifier.svg",
+    "url": "/res/mesora-drawing/svg-library/Purifier.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/RollstandDoubleHigh.svg",
+    "name": "RollstandDoubleHigh.svg",
+    "url": "/res/mesora-drawing/svg-library/RollstandDoubleHigh.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/RollstandSingleHigh.svg",
+    "name": "RollstandSingleHigh.svg",
+    "url": "/res/mesora-drawing/svg-library/RollstandSingleHigh.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Scourer.svg",
+    "name": "Scourer.svg",
+    "url": "/res/mesora-drawing/svg-library/Scourer.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Sifter3Bay_Simple.svg",
+    "name": "Sifter3Bay_Simple.svg",
+    "url": "/res/mesora-drawing/svg-library/Sifter3Bay_Simple.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Sifter4Bay_Simple.svg",
+    "name": "Sifter4Bay_Simple.svg",
+    "url": "/res/mesora-drawing/svg-library/Sifter4Bay_Simple.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/SifterStack_Simple.svg",
+    "name": "SifterStack_Simple.svg",
+    "url": "/res/mesora-drawing/svg-library/SifterStack_Simple.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/SlideGate.svg",
+    "name": "SlideGate.svg",
+    "url": "/res/mesora-drawing/svg-library/SlideGate.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Small Bin.svg",
+    "name": "Small Bin.svg",
+    "url": "/res/mesora-drawing/svg-library/Small%20Bin.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Sortex_2Channel.svg",
+    "name": "Sortex_2Channel.svg",
+    "url": "/res/mesora-drawing/svg-library/Sortex_2Channel.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Sortex_3Channel.svg",
+    "name": "Sortex_3Channel.svg",
+    "url": "/res/mesora-drawing/svg-library/Sortex_3Channel.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/SpeedSwitch.svg",
+    "name": "SpeedSwitch.svg",
+    "url": "/res/mesora-drawing/svg-library/SpeedSwitch.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Splitter.svg",
+    "name": "Splitter.svg",
+    "url": "/res/mesora-drawing/svg-library/Splitter.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Splitter3Way.svg",
+    "name": "Splitter3Way.svg",
+    "url": "/res/mesora-drawing/svg-library/Splitter3Way.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Sterilator.svg",
+    "name": "Sterilator.svg",
+    "url": "/res/mesora-drawing/svg-library/Sterilator.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Switch_Level.svg",
+    "name": "Switch_Level.svg",
+    "url": "/res/mesora-drawing/svg-library/Switch_Level.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Switch_LightCurtainRcv.svg",
+    "name": "Switch_LightCurtainRcv.svg",
+    "url": "/res/mesora-drawing/svg-library/Switch_LightCurtainRcv.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Switch_LightCurtainTrans.svg",
+    "name": "Switch_LightCurtainTrans.svg",
+    "url": "/res/mesora-drawing/svg-library/Switch_LightCurtainTrans.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Switch_OverFlow.svg",
+    "name": "Switch_OverFlow.svg",
+    "url": "/res/mesora-drawing/svg-library/Switch_OverFlow.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Switch_Pressure.svg",
+    "name": "Switch_Pressure.svg",
+    "url": "/res/mesora-drawing/svg-library/Switch_Pressure.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/test.svg",
+    "name": "test.svg",
+    "url": "/res/mesora-drawing/svg-library/test.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Turbolizer.svg",
+    "name": "Turbolizer.svg",
+    "url": "/res/mesora-drawing/svg-library/Turbolizer.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/TwoWay_AspirationFlap.svg",
+    "name": "TwoWay_AspirationFlap.svg",
+    "url": "/res/mesora-drawing/svg-library/TwoWay_AspirationFlap.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/TwoWay_Diverter_Mirrored.svg",
+    "name": "TwoWay_Diverter_Mirrored.svg",
+    "url": "/res/mesora-drawing/svg-library/TwoWay_Diverter_Mirrored.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/TwoWay_Diverter.svg",
+    "name": "TwoWay_Diverter.svg",
+    "url": "/res/mesora-drawing/svg-library/TwoWay_Diverter.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/TwoWay_Flap.svg",
+    "name": "TwoWay_Flap.svg",
+    "url": "/res/mesora-drawing/svg-library/TwoWay_Flap.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/ValveShutOff.svg",
+    "name": "ValveShutOff.svg",
+    "url": "/res/mesora-drawing/svg-library/ValveShutOff.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/VibroSymbol.svg",
+    "name": "VibroSymbol.svg",
+    "url": "/res/mesora-drawing/svg-library/VibroSymbol.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/WheatSterilizer.svg",
+    "name": "WheatSterilizer.svg",
+    "url": "/res/mesora-drawing/svg-library/WheatSterilizer.svg"
+  }
+]

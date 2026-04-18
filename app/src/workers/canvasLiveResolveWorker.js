@@ -12,6 +12,11 @@ let sceneState = {
   tagMappingEntries: [],
   mappingSetEntries: [],
 };
+let latestResolveId = 0;
+let latestResolveIndex = null;
+let latestResolveScene = null;
+let fullResolveTimer = null;
+const FULL_RESOLVE_THROTTLE_MS = 120;
 
 function normalizeKey(raw) {
   return String(raw || "").replace(/\r?\n/g, "").trim();
@@ -702,6 +707,7 @@ function resolveLiveVisualState(index, scene) {
 
   const diverterCache = new Map();
   const diverterVisiting = new Set();
+  let prepassPolylineColorById = Object.create(null);
   let connectedSourceColorAtPoint = () => "";
 
   const connectedColorFromPolyline = (shape, entryEndpointIndex, options = {}, visited = new Set(), depth = 0) => {
@@ -870,6 +876,28 @@ function resolveLiveVisualState(index, scene) {
     return { point, t, dist2: dx * dx + dy * dy };
   };
 
+  const segmentIntersectionPoint = (a1, a2, b1, b2) => {
+    const p = { x: Number(a1?.x) || 0, y: Number(a1?.y) || 0 };
+    const p2 = { x: Number(a2?.x) || 0, y: Number(a2?.y) || 0 };
+    const q = { x: Number(b1?.x) || 0, y: Number(b1?.y) || 0 };
+    const q2 = { x: Number(b2?.x) || 0, y: Number(b2?.y) || 0 };
+    const r = { x: p2.x - p.x, y: p2.y - p.y };
+    const s = { x: q2.x - q.x, y: q2.y - q.y };
+    const cross = (u, v) => Number(u?.x || 0) * Number(v?.y || 0) - Number(u?.y || 0) * Number(v?.x || 0);
+    const qp = { x: q.x - p.x, y: q.y - p.y };
+    const rxs = cross(r, s);
+    if (Math.abs(rxs) <= 1e-9) return null;
+    const t = cross(qp, s) / rxs;
+    const u = cross(qp, r) / rxs;
+    if (t < -1e-6 || t > 1 + 1e-6 || u < -1e-6 || u > 1 + 1e-6) return null;
+    return {
+      x: p.x + r.x * t,
+      y: p.y + r.y * t,
+      tOnFirst: t,
+      tOnSecond: u,
+    };
+  };
+
   const distancePointToPolyline = (pt, polylinePoints) => {
     if (!pt || !Array.isArray(polylinePoints) || polylinePoints.length < 2) {
       return Number.POSITIVE_INFINITY;
@@ -895,15 +923,16 @@ function resolveLiveVisualState(index, scene) {
     const ySpan = Math.max(0, maxY - minY);
     const startPt = pts[0];
     const endPt = pts[pts.length - 1];
-    const downstreamIsEnd =
-      (Number(endPt?.x) || 0) > (Number(startPt?.x) || 0) ||
-      ((Number(endPt?.x) || 0) === (Number(startPt?.x) || 0) &&
-        (Number(endPt?.y) || 0) >= (Number(startPt?.y) || 0));
+    const axisDx = (Number(endPt?.x) || 0) - (Number(startPt?.x) || 0);
+    const axisDy = (Number(endPt?.y) || 0) - (Number(startPt?.y) || 0);
+    const axisLen = Math.hypot(axisDx, axisDy) || 1;
     return {
       pts,
-      downstreamIsEnd,
-      orderedPoints: downstreamIsEnd ? pts : [...pts].reverse(),
+      downstreamIsEnd: true,
+      orderedPoints: pts,
       isTrunkLike: xSpan >= 24 && xSpan >= ySpan * 1.5,
+      dirX: axisDx / axisLen,
+      dirY: axisDy / axisLen,
     };
   };
 
@@ -980,6 +1009,8 @@ function resolveLiveVisualState(index, scene) {
     if (!shape || shape?.type !== "polyline" || !Array.isArray(shape.points) || !shape.points.length) {
       return "";
     }
+    const prepassColor = normalizeActiveColor(prepassPolylineColorById[String(shape?.id || "")]);
+    if (prepassColor) return prepassColor;
     const dynamic = normalizeActiveColor(tagColorFor(shape?.tagPath));
     if (dynamic) return dynamic;
     const explicitStroke = normalizeActiveColor(shape?.stroke);
@@ -991,6 +1022,10 @@ function resolveLiveVisualState(index, scene) {
     if (startOverlayColor) return startOverlayColor;
     const endOverlayColor = normalizeActiveColor(endPt ? connectedSourceColorAtPoint(endPt, options) : "");
     if (endOverlayColor) return endOverlayColor;
+    const nearStartColor = normalizeActiveColor(startPt ? overlayColorNearPoint(startPt, 18, options) : "");
+    if (nearStartColor) return nearStartColor;
+    const nearEndColor = normalizeActiveColor(endPt ? overlayColorNearPoint(endPt, 18, options) : "");
+    if (nearEndColor) return nearEndColor;
 
     const startConnectedColor = normalizeActiveColor(
       connectedColorFromPolyline(shape, Math.max(1, shape.points.length - 1), options)
@@ -1005,7 +1040,7 @@ function resolveLiveVisualState(index, scene) {
     for (let i = 0; i < pts.length; i += 1) {
       const p = pts[i];
       const color = normalizeActiveColor(
-        overlayColorNearPoint(p, 14, options)
+        connectedSourceColorAtPoint(p, options) || overlayColorNearPoint(p, 14, options)
       );
       if (color) return color;
       if (i < pts.length - 1) {
@@ -1014,11 +1049,49 @@ function resolveLiveVisualState(index, scene) {
           x: ((Number(p?.x) || 0) + (Number(n?.x) || 0)) / 2,
           y: ((Number(p?.y) || 0) + (Number(n?.y) || 0)) / 2,
         };
-        const midColor = normalizeActiveColor(overlayColorNearPoint(mid, 14, options));
+        const midColor = normalizeActiveColor(
+          connectedSourceColorAtPoint(mid, options) || overlayColorNearPoint(mid, 14, options)
+        );
         if (midColor) return midColor;
       }
     }
     return "";
+  };
+
+  let activeBranchEndpointSeeds = null;
+  const getActiveBranchEndpointSeeds = (options = {}) => {
+    if (Array.isArray(activeBranchEndpointSeeds)) return activeBranchEndpointSeeds;
+    const seeds = [];
+    for (const other of shapes) {
+      if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
+      const otherId = String(other?.id || "");
+      if (!otherId) continue;
+      const otherMeta = polylineFlowMetaFor(other);
+      if (otherMeta?.isTrunkLike) continue;
+      const color = normalizeActiveColor(branchStartColorFor(other, options));
+      if (!color) continue;
+      const points = other.points;
+      const startPt = points[0];
+      const endPt = points[points.length - 1];
+      if (startPt) {
+        seeds.push({
+          sourcePolylineId: otherId,
+          endpointKey: `${otherId}:start`,
+          point: { x: Number(startPt?.x) || 0, y: Number(startPt?.y) || 0 },
+          color,
+        });
+      }
+      if (endPt) {
+        seeds.push({
+          sourcePolylineId: otherId,
+          endpointKey: `${otherId}:end`,
+          point: { x: Number(endPt?.x) || 0, y: Number(endPt?.y) || 0 },
+          color,
+        });
+      }
+    }
+    activeBranchEndpointSeeds = seeds;
+    return seeds;
   };
 
   const directSplitCarryCandidatesFor = (shape, options = {}) => {
@@ -1032,51 +1105,37 @@ function resolveLiveVisualState(index, scene) {
       const len = Math.hypot((Number(b?.x) || 0) - (Number(a?.x) || 0), (Number(b?.y) || 0) - (Number(a?.y) || 0));
       prefix.push(prefix[prefix.length - 1] + len);
     }
-
-    const collect = (maxDistPx) => {
-      const candidates = [];
-      const maxDist2 = maxDistPx * maxDistPx;
-      for (const other of shapes) {
-        if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
-        const otherId = String(other?.id || "");
-        if (!otherId || otherId === String(shape?.id || "")) continue;
-        const otherMeta = polylineFlowMetaFor(other);
-        if (otherMeta?.isTrunkLike) continue;
-        const startPt = other.points[0];
-        const endPt = other.points[other.points.length - 1];
-        if (!startPt || !endPt) continue;
-        const color = branchStartColorFor(other, options);
-        if (!color) continue;
-        const testPoints = [endPt, startPt];
-        let bestTouch = null;
-        for (const tp of testPoints) {
-          for (let i = 0; i < pts.length - 1; i += 1) {
-            const proj = projectPointToSegment(tp, pts[i], pts[i + 1]);
-            if (proj.dist2 > maxDist2) continue;
-            const segLen = Math.hypot(
-              (Number(pts[i + 1]?.x) || 0) - (Number(pts[i]?.x) || 0),
-              (Number(pts[i + 1]?.y) || 0) - (Number(pts[i]?.y) || 0)
-            );
-            const downstreamProgress = prefix[i] + segLen * (Number(proj.t) || 0);
-            const next = {
-              sourcePolylineId: otherId,
-              segmentIndex: i,
-              t: proj.t,
-              touchPoint: { x: Number(proj.point?.x) || 0, y: Number(proj.point?.y) || 0 },
-              color,
-              score: proj.dist2,
-              downstreamProgress,
-            };
-            if (!bestTouch || Number(next.score || 0) < Number(bestTouch.score || 0)) bestTouch = next;
-          }
+    const candidates = [];
+    const maxDist2 = 20 * 20;
+    for (const seed of getActiveBranchEndpointSeeds(options)) {
+      if (!seed?.point) continue;
+      let bestTouch = null;
+      for (let i = 0; i < pts.length - 1; i += 1) {
+        const trunkA = pts[i];
+        const trunkB = pts[i + 1];
+        const proj = projectPointToSegment(seed.point, trunkA, trunkB);
+        if (proj.dist2 > maxDist2) continue;
+        const segLen = Math.hypot(
+          (Number(trunkB?.x) || 0) - (Number(trunkA?.x) || 0),
+          (Number(trunkB?.y) || 0) - (Number(trunkA?.y) || 0)
+        );
+        const downstreamProgress = prefix[i] + segLen * (Number(proj.t) || 0);
+        const next = {
+          sourcePolylineId: seed.sourcePolylineId,
+          endpointKey: seed.endpointKey,
+          segmentIndex: i,
+          t: proj.t,
+          touchPoint: { x: Number(proj.point?.x) || 0, y: Number(proj.point?.y) || 0 },
+          color: seed.color,
+          score: proj.dist2,
+          downstreamProgress,
+        };
+        if (!bestTouch || Number(next.score || 0) < Number(bestTouch.score || 0)) {
+          bestTouch = next;
         }
-        if (bestTouch) candidates.push(bestTouch);
       }
-      return candidates;
-    };
-
-    let candidates = collect(16);
-    if (!candidates.length) candidates = collect(140);
+      if (bestTouch) candidates.push(bestTouch);
+    }
     candidates.sort(
       (a, b) =>
         Number(a.downstreamProgress || 0) - Number(b.downstreamProgress || 0) ||
@@ -1084,290 +1143,87 @@ function resolveLiveVisualState(index, scene) {
     );
     return candidates;
   };
-
-  const strictTrunkConnectionThreshold = 18;
-
-  const directedTrunkConnectionDistance = (upstreamShape, downstreamShape) => {
-    const upstreamMeta = polylineFlowMetaFor(upstreamShape);
-    const downstreamMeta = polylineFlowMetaFor(downstreamShape);
-    if (!upstreamMeta?.isTrunkLike || !downstreamMeta?.isTrunkLike) return Number.POSITIVE_INFINITY;
-    const upstreamEnd = upstreamMeta.orderedPoints[upstreamMeta.orderedPoints.length - 1];
-    const downstreamStart = downstreamMeta.orderedPoints[0];
-    if (!upstreamEnd || !downstreamStart) return Number.POSITIVE_INFINITY;
-    let best = Math.hypot(
-      (Number(upstreamEnd?.x) || 0) - (Number(downstreamStart?.x) || 0),
-      (Number(upstreamEnd?.y) || 0) - (Number(downstreamStart?.y) || 0)
-    );
-    const upstreamTail = upstreamMeta.orderedPoints.slice(Math.max(0, upstreamMeta.orderedPoints.length - 2));
-    const downstreamHead = downstreamMeta.orderedPoints.slice(0, Math.min(2, downstreamMeta.orderedPoints.length));
-    if (upstreamTail.length >= 2) {
-      best = Math.min(best, distancePointToPolyline(downstreamStart, upstreamTail));
-    }
-    if (downstreamHead.length >= 2) {
-      best = Math.min(best, distancePointToPolyline(upstreamEnd, downstreamHead));
-    }
-    return best <= strictTrunkConnectionThreshold ? best : Number.POSITIVE_INFINITY;
-  };
-
-  const upstreamConnectedTrunkCache = new Map();
-  const getUpstreamConnectedTrunksFor = (shape) => {
-    const shapeId = String(shape?.id || "").trim();
-    if (!shapeId) return [];
-    if (upstreamConnectedTrunkCache.has(shapeId)) return upstreamConnectedTrunkCache.get(shapeId);
-    const matches = [];
-    for (const candidate of shapes) {
-      if (candidate?.type !== "polyline") continue;
-      const candidateId = String(candidate?.id || "").trim();
-      if (!candidateId || candidateId === shapeId) continue;
-      const distance = directedTrunkConnectionDistance(candidate, shape);
-      if (!Number.isFinite(distance)) continue;
-      matches.push({ shape: candidate, distance });
-    }
-    matches.sort((a, b) => Number(a.distance || 0) - Number(b.distance || 0));
-    upstreamConnectedTrunkCache.set(shapeId, matches);
-    return matches;
-  };
-
-  const splitCarryActivationCache = new Map();
-  const resolvePolylineSplitCarryActivation = (shape, options = {}, visited = new Set()) => {
-    const shapeId = String(shape?.id || "").trim();
-    if (!shapeId) return null;
-    if (visited.has(shapeId)) return null;
-    if (splitCarryActivationCache.has(shapeId)) return splitCarryActivationCache.get(shapeId);
-    const meta = polylineFlowMetaFor(shape);
-    if (!meta?.isTrunkLike) {
-      splitCarryActivationCache.set(shapeId, null);
+  const projectCarryFromEndpointToTrunk = (endpoint, meta, color) => {
+    if (!endpoint || !meta?.isTrunkLike || !Array.isArray(meta?.orderedPoints) || meta.orderedPoints.length < 2) {
       return null;
     }
-    const nextVisited = new Set(visited);
-    nextVisited.add(shapeId);
-    let best = null;
-
-    const localCandidates = directSplitCarryCandidatesFor(shape, options);
-    if (localCandidates.length) {
-      const first = [...localCandidates].sort(
-        (a, b) =>
-          Number(a?.downstreamProgress || 0) - Number(b?.downstreamProgress || 0) ||
-          Number(a?.score || 0) - Number(b?.score || 0)
-      )[0];
-      const color = normalizeActiveColor(first?.color);
-      if (color) {
-        best = {
-          color,
-          startProgress: Math.max(0, Number(first?.downstreamProgress || 0)),
-          source: "local",
-          distance: Number(first?.score || 0),
-        };
-      }
-    }
-
-    const upstreamMatches = getUpstreamConnectedTrunksFor(shape);
-    for (const match of upstreamMatches) {
-      const upstreamActive = resolvePolylineSplitCarryActivation(match.shape, options, nextVisited);
-      const upstreamColor = normalizeActiveColor(upstreamActive?.color);
-      if (!upstreamColor) continue;
-      const candidate = {
-        color: upstreamColor,
-        startProgress: 0,
-        source: "upstream",
-        distance: Number(match.distance || 0),
+    let bestTouch = null;
+    const maxDist2 = 16 * 16;
+    const orderedPoints = meta.orderedPoints;
+    for (let i = 0; i < orderedPoints.length - 1; i += 1) {
+      const proj = projectPointToSegment(endpoint, orderedPoints[i], orderedPoints[i + 1]);
+      if (proj.dist2 > maxDist2) continue;
+      const next = {
+        segmentIndex: i,
+        t: proj.t,
+        touchPoint: { x: Number(proj.point?.x) || 0, y: Number(proj.point?.y) || 0 },
+        color,
+        score: proj.dist2,
       };
-      if (
-        !best ||
-        Number(candidate.startProgress || 0) < Number(best.startProgress || 0) ||
-        (Number(candidate.startProgress || 0) === Number(best.startProgress || 0) &&
-          Number(candidate.distance || 0) < Number(best.distance || 0))
-      ) {
-        best = candidate;
+      if (!bestTouch || Number(next.score || 0) < Number(bestTouch.score || 0)) {
+        bestTouch = next;
       }
     }
-
-    splitCarryActivationCache.set(shapeId, best);
-    return best;
+    return bestTouch;
   };
 
-  const resolveInheritedTrunkCarryColor = (shape, options = {}, visited = new Set(), depth = 0) => {
-    if (depth > 24) return "";
-    const shapeId = String(shape?.id || "");
-    if (!shapeId || visited.has(shapeId)) return "";
-    const meta = polylineFlowMetaFor(shape);
-    if (!meta?.isTrunkLike) return "";
-    const nextVisited = new Set(visited);
-    nextVisited.add(shapeId);
-
-    const ownDirect = directSplitCarryCandidatesFor(shape, options);
-    if (ownDirect.length) {
-      const color = normalizeActiveColor(ownDirect[0]?.color);
-      if (color) return color;
-    }
-
-    let best = "";
-    let bestDistance = Number.POSITIVE_INFINITY;
-    const shapeEndpoints = [meta.pts[0], meta.pts[meta.pts.length - 1]].filter(Boolean);
-    for (const other of shapes) {
-      if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
-      const otherId = String(other?.id || "");
-      if (!otherId || otherId === shapeId || nextVisited.has(otherId)) continue;
-      const otherMeta = polylineFlowMetaFor(other);
-      if (!otherMeta?.isTrunkLike) continue;
-      const otherEndpoints = [otherMeta.pts[0], otherMeta.pts[otherMeta.pts.length - 1]].filter(Boolean);
-      let connectDist = Number.POSITIVE_INFINITY;
-      for (const a of shapeEndpoints) {
-        for (const b of otherEndpoints) {
-          const d = Math.hypot((Number(a?.x) || 0) - (Number(b?.x) || 0), (Number(a?.y) || 0) - (Number(b?.y) || 0));
-          if (d < connectDist) connectDist = d;
-        }
-      }
-      for (const b of otherEndpoints) {
-        const d = distancePointToPolyline(b, meta.pts);
-        if (d < connectDist) connectDist = d;
-      }
-      for (const a of shapeEndpoints) {
-        const d = distancePointToPolyline(a, otherMeta.pts);
-        if (d < connectDist) connectDist = d;
-      }
-      if (connectDist > 260) continue;
-      const color = resolveInheritedTrunkCarryColor(other, options, nextVisited, depth + 1);
-      if (!color) continue;
-      if (connectDist < bestDistance) {
-        bestDistance = connectDist;
-        best = color;
-      }
-    }
-    return normalizeActiveColor(best);
-  };
-
-  const resolveConnectedTrunkCarryColor = (shape, options = {}) => {
-    const seedMeta = polylineFlowMetaFor(shape);
-    if (!seedMeta?.isTrunkLike) return "";
-    const seedId = String(shape?.id || "");
-    if (!seedId) return "";
-    const trunkById = new Map();
-    for (const candidate of shapes) {
-      if (candidate?.type !== "polyline") continue;
-      const id = String(candidate?.id || "");
+  const buildPolylineSplitCarryMap = (options = {}) => {
+    const trunkRecords = [];
+    const trunkMetaById = new Map();
+    for (const shape of shapes) {
+      if (shape?.type !== "polyline" || !Array.isArray(shape.points) || shape.points.length < 2) continue;
+      const id = String(shape?.id || "");
       if (!id) continue;
-      const meta = polylineFlowMetaFor(candidate);
+      const meta = polylineFlowMetaFor(shape);
       if (!meta?.isTrunkLike) continue;
-      trunkById.set(id, { shape: candidate, meta });
+      const record = { id, shape, meta };
+      trunkRecords.push(record);
+      trunkMetaById.set(id, record);
     }
-    if (!trunkById.has(seedId)) return "";
 
-    const connected = new Set([seedId]);
-    const queue = [seedId];
+    const carriesById = {};
+    const activeIds = new Set();
+    const queue = [];
+
+    for (const record of trunkRecords) {
+      const local = directSplitCarryCandidatesFor(record.shape, options);
+      if (!Array.isArray(local) || !local.length) continue;
+      const first = local[0];
+      const color = normalizeActiveColor(first?.color);
+      if (!color) continue;
+      const points = buildOrderedCarryFromTouch(record.meta.orderedPoints, first);
+      if (!points.length) continue;
+      carriesById[record.id] = [{ color, points }];
+      activeIds.add(record.id);
+      queue.push({
+        trunkId: record.id,
+        color,
+        endpoint: points[points.length - 1],
+      });
+    }
+
     while (queue.length) {
-      const curId = queue.shift();
-      const cur = trunkById.get(curId);
-      if (!cur) continue;
-      const curEndpoints = [cur.meta.pts[0], cur.meta.pts[cur.meta.pts.length - 1]].filter(Boolean);
-      for (const [otherId, other] of trunkById.entries()) {
-        if (connected.has(otherId) || otherId === curId) continue;
-        const otherEndpoints = [other.meta.pts[0], other.meta.pts[other.meta.pts.length - 1]].filter(Boolean);
-        let connectDist = Number.POSITIVE_INFINITY;
-        for (const a of curEndpoints) {
-          for (const b of otherEndpoints) {
-            const d = Math.hypot((Number(a?.x) || 0) - (Number(b?.x) || 0), (Number(a?.y) || 0) - (Number(b?.y) || 0));
-            if (d < connectDist) connectDist = d;
-          }
-        }
-        for (const a of curEndpoints) {
-          const d = distancePointToPolyline(a, other.meta.pts);
-          if (d < connectDist) connectDist = d;
-        }
-        for (const b of otherEndpoints) {
-          const d = distancePointToPolyline(b, cur.meta.pts);
-          if (d < connectDist) connectDist = d;
-        }
-        if (connectDist > 260) continue;
-        connected.add(otherId);
-        queue.push(otherId);
+      const current = queue.shift();
+      const sourceEndpoint = current?.endpoint;
+      const sourceColor = normalizeActiveColor(current?.color);
+      if (!sourceEndpoint || !sourceColor) continue;
+      for (const record of trunkRecords) {
+        if (activeIds.has(record.id)) continue;
+        const touch = projectCarryFromEndpointToTrunk(sourceEndpoint, record.meta, sourceColor);
+        if (!touch) continue;
+        const points = buildOrderedCarryFromTouch(record.meta.orderedPoints, touch);
+        if (!points.length) continue;
+        carriesById[record.id] = [{ color: sourceColor, points }];
+        activeIds.add(record.id);
+        queue.push({
+          trunkId: record.id,
+          color: sourceColor,
+          endpoint: points[points.length - 1],
+        });
       }
     }
 
-    let bestColor = "";
-    let bestProgress = Number.POSITIVE_INFINITY;
-    const pickProgress = (candidate, meta) => {
-      if (!candidate) return Number.POSITIVE_INFINITY;
-      const progress = Number(candidate.downstreamProgress);
-      if (Number.isFinite(progress)) return progress;
-      const x = Number(candidate?.touchPoint?.x) || 0;
-      return meta?.downstreamIsEnd ? x : -x;
-    };
-
-    for (const id of connected) {
-      const rec = trunkById.get(id);
-      if (!rec) continue;
-      const local = directSplitCarryCandidatesFor(rec.shape, options);
-      if (!local.length) continue;
-      const color = normalizeActiveColor(local[0]?.color);
-      if (!color) continue;
-      const progress = pickProgress(local[0], rec.meta);
-      if (progress < bestProgress) {
-        bestProgress = progress;
-        bestColor = color;
-      }
-    }
-    return normalizeActiveColor(bestColor);
-  };
-
-  const resolveCollinearTrunkBandCarryColor = (shape, options = {}) => {
-    const targetMeta = polylineFlowMetaFor(shape);
-    if (!targetMeta?.isTrunkLike) return "";
-    const targetPts = targetMeta.pts;
-    const targetMinY = Math.min(...targetPts.map((p) => Number(p?.y) || 0));
-    const targetMaxY = Math.max(...targetPts.map((p) => Number(p?.y) || 0));
-    const targetMidY = (targetMinY + targetMaxY) / 2;
-
-    let bestColor = "";
-    let bestDx = Number.POSITIVE_INFINITY;
-    for (const other of shapes) {
-      if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
-      const otherMeta = polylineFlowMetaFor(other);
-      if (!otherMeta?.isTrunkLike) continue;
-      const local = directSplitCarryCandidatesFor(other, options);
-      if (!local.length) continue;
-      const color = normalizeActiveColor(local[0]?.color);
-      if (!color) continue;
-
-      const otherPts = otherMeta.pts;
-      const otherMinY = Math.min(...otherPts.map((p) => Number(p?.y) || 0));
-      const otherMaxY = Math.max(...otherPts.map((p) => Number(p?.y) || 0));
-      const otherMidY = (otherMinY + otherMaxY) / 2;
-      const dy = Math.abs(otherMidY - targetMidY);
-      if (dy > 24) continue;
-
-      const targetMinX = Math.min(...targetPts.map((p) => Number(p?.x) || 0));
-      const otherMinX = Math.min(...otherPts.map((p) => Number(p?.x) || 0));
-      const dx = Math.abs(otherMinX - targetMinX);
-      if (dx < bestDx) {
-        bestDx = dx;
-        bestColor = color;
-      }
-    }
-    return normalizeActiveColor(bestColor);
-  };
-
-  const polylineSplitCarrySegmentsFor = (shape, options = {}) => {
-    const meta = polylineFlowMetaFor(shape);
-    if (!meta?.isTrunkLike) return [];
-    const localCandidates = directSplitCarryCandidatesFor(shape, options);
-    if (localCandidates.length) {
-      const first = [...localCandidates].sort(
-        (a, b) =>
-          Number(a?.downstreamProgress || 0) - Number(b?.downstreamProgress || 0) ||
-          Number(a?.score || 0) - Number(b?.score || 0)
-      )[0];
-      const localColor = normalizeActiveColor(first?.color);
-      const localPoints = buildOrderedCarryFromTouch(meta.orderedPoints, first);
-      if (localColor && localPoints.length) {
-        return [{ color: localColor, points: localPoints }];
-      }
-    }
-    const activation = resolvePolylineSplitCarryActivation(shape, options);
-    const chainColor = normalizeActiveColor(activation?.color);
-    if (!chainColor) return [];
-    const points = trimOrderedPointsFromProgress(meta.orderedPoints, activation?.startProgress || 0);
-    return points.length ? [{ color: chainColor, points }] : [];
+    return carriesById;
   };
 
   const byTagPath = {};
@@ -1396,24 +1252,46 @@ function resolveLiveVisualState(index, scene) {
   const polylineSplitCarryById = {};
   shapes.forEach((shape) => {
     const shapeId = String(shape.id || "");
-    const startPoint = shape.points[0];
-    const startOutputMatch = diverterOutputMatchAtPoint(startPoint, {});
-    if (startOutputMatch.matched) {
-      polylineColorById[shapeId] = startOutputMatch.active
-        ? normalizeActiveColor(startOutputMatch.color) || "#22c55e"
-        : "";
+    if (!shapeId) return;
+    const points = Array.isArray(shape.points) ? shape.points : [];
+    const startPoint = points[0] || null;
+    const endPoint = points.length ? points[points.length - 1] : null;
+    const endpointOutputMatches = [
+      startPoint ? diverterOutputMatchAtPoint(startPoint, {}) : null,
+      endPoint ? diverterOutputMatchAtPoint(endPoint, {}) : null,
+    ].filter(Boolean);
+    const activeOutputMatch = endpointOutputMatches.find((match) => match?.matched && match?.active);
+    if (activeOutputMatch) {
+      prepassPolylineColorById[shapeId] =
+        normalizeActiveColor(activeOutputMatch.color) || "#22c55e";
       return;
     }
-    const directStartColor = connectedSourceColorAtPoint(startPoint, {});
-    polylineColorById[shapeId] =
-      directStartColor === null
+    if (endpointOutputMatches.some((match) => match?.matched)) {
+      prepassPolylineColorById[shapeId] = "";
+      return;
+    }
+    const directStartColor = startPoint ? connectedSourceColorAtPoint(startPoint, {}) : "";
+    const directEndColor = endPoint ? connectedSourceColorAtPoint(endPoint, {}) : "";
+    const connectedFromStart = normalizeActiveColor(
+      directStartColor ||
+        connectedColorFromPolyline(shape, Math.max(1, points.length - 1), {})
+    );
+    const connectedFromEnd = normalizeActiveColor(
+      directEndColor ||
+        connectedColorFromPolyline(shape, 0, {})
+    );
+    prepassPolylineColorById[shapeId] =
+      directStartColor === null && directEndColor === null
         ? ""
-        : normalizeActiveColor(
-            directStartColor ||
-              connectedColorFromPolyline(shape, Math.max(1, shape.points.length - 1), {})
-          );
+        : connectedFromStart || connectedFromEnd || "";
+  });
+  const resolvedPolylineSplitCarryById = buildPolylineSplitCarryMap({});
+  shapes.forEach((shape) => {
+    const shapeId = String(shape.id || "");
+    const startPoint = shape.points[0];
+    polylineColorById[shapeId] = normalizeActiveColor(prepassPolylineColorById[shapeId]);
     if (polylineColorById[shapeId]) return;
-    const splitCarry = polylineSplitCarrySegmentsFor(shape, {});
+    const splitCarry = resolvedPolylineSplitCarryById[shapeId];
     if (!Array.isArray(splitCarry) || !splitCarry.length) return;
     polylineSplitCarryById[shapeId] = splitCarry
       .map((segment) => ({
@@ -1441,17 +1319,126 @@ function resolveLiveVisualState(index, scene) {
   };
 }
 
+function resolveBasicLiveVisualState(index, scene) {
+  const { tagColorMap, routeStrokeMap, groupLiveMap, routeColorsMap, stateMappingsByPath } = buildDerivedVisualState(index, scene);
+  const byTagPath = {};
+  const groupByTagPath = {};
+  const tagColorByPath = {};
+  const routeStrokeByPath = {};
+  const groupStateFor = (rawTagPath) => {
+    const tagPath = normalizeKey(rawTagPath);
+    if (!tagPath) return { routeId: "", state: "" };
+    const direct = groupLiveMap.get(tagPath) || groupLiveMap.get(tagPath.toLowerCase()) || null;
+    return direct
+      ? { routeId: String(direct?.routeId || ""), state: String(direct?.state || "") }
+      : resolveGroupRouteState(index, tagPath);
+  };
+  const tagColorFor = (rawTagPath) => {
+    const tagPath = normalizeKey(rawTagPath);
+    if (!tagPath) return "";
+    const direct = tagColorMap.get(tagPath) || tagColorMap.get(tagPath.toLowerCase()) || "";
+    if (direct) return normalizeActiveColor(direct) || direct;
+    const parts = tagPath.split(".").map((x) => x.trim()).filter(Boolean);
+    for (let i = 1; i < parts.length; i += 1) {
+      const suffix = parts.slice(i).join(".");
+      const match = tagColorMap.get(suffix) || tagColorMap.get(suffix.toLowerCase()) || "";
+      if (match) return normalizeActiveColor(match) || match;
+    }
+    const mappedStateCandidates = buildCandidates(tagPath);
+    const directStateValue = getLiveMemberValueForTagPath(index, tagPath, LIVE_STATE_MEMBER_ALIASES);
+    for (const candidate of mappedStateCandidates) {
+      const mappings =
+        stateMappingsByPath.get(candidate) ||
+        stateMappingsByPath.get(candidate.toLowerCase()) ||
+        null;
+      const mappedColor = matchStateMappingColor(mappings, directStateValue);
+      if (mappedColor) return normalizeActiveColor(mappedColor) || mappedColor;
+    }
+    const groupStateValue = groupStateFor(tagPath)?.state;
+    for (const candidate of mappedStateCandidates) {
+      const mappings =
+        stateMappingsByPath.get(candidate) ||
+        stateMappingsByPath.get(candidate.toLowerCase()) ||
+        null;
+      const mappedColor = matchStateMappingColor(mappings, groupStateValue);
+      if (mappedColor) return normalizeActiveColor(mappedColor) || mappedColor;
+    }
+    return "";
+  };
+  const routeStrokeForTagPath = (rawTagPath) => {
+    const key = normalizeKey(rawTagPath);
+    if (key) {
+      const direct = routeStrokeMap.get(key) || routeStrokeMap.get(key.toLowerCase()) || "";
+      if (direct) return direct;
+    }
+    const routeId = normalizeKey(groupStateFor(rawTagPath)?.routeId);
+    if (!routeId) return "";
+    const routeColor = routeColorsMap.get(routeId) || routeColorsMap.get(routeId.toLowerCase()) || "";
+    return routeColor || (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(routeId) ? routeId : "");
+  };
+  (Array.isArray(scene?.tagPaths) ? scene.tagPaths : []).forEach((tagPath) => {
+    const key = normalizeKey(tagPath);
+    if (!key) return;
+    const lower = key.toLowerCase();
+    byTagPath[lower] = resolveValueByTagPath(index, key);
+    const groupState = groupStateFor(key);
+    groupByTagPath[lower] = {
+      routeId: String(groupState?.routeId || ""),
+      state: String(groupState?.state || ""),
+    };
+    tagColorByPath[lower] = tagColorFor(key);
+    routeStrokeByPath[lower] = routeStrokeForTagPath(key);
+  });
+  return {
+    byTagPath,
+    groupByTagPath,
+    tagColorByPath,
+    routeStrokeByPath,
+    diverterEntryColorById: {},
+    polylineColorById: {},
+    polylineSplitCarryById: {},
+  };
+}
+
+function scheduleFullResolve(delay = FULL_RESOLVE_THROTTLE_MS) {
+  if (fullResolveTimer) return;
+  fullResolveTimer = setTimeout(() => {
+    fullResolveTimer = null;
+    const id = Number(latestResolveId || 0);
+    const index = latestResolveIndex;
+    const scene = latestResolveScene || sceneState;
+    if (!id || !index || !scene) return;
+    const resolved = resolveLiveVisualState(index, scene);
+    if (id === latestResolveId) {
+      self.postMessage({ type: "resolved", phase: "full", id, ...resolved });
+      return;
+    }
+    scheduleFullResolve(0);
+  }, Math.max(0, Number(delay) || 0));
+}
+
 self.onmessage = (event) => {
   const payload = event?.data || {};
   const type = String(payload?.type || "");
   if (type === "setScene") {
     sceneState = normalizeScene(payload?.scene);
+    latestResolveScene = sceneState;
+    if (fullResolveTimer) {
+      clearTimeout(fullResolveTimer);
+      fullResolveTimer = null;
+    }
+    if (latestResolveIndex) scheduleFullResolve(0);
     return;
   }
   if (type !== "resolve") return;
   const id = Number(payload?.id || 0);
   const liveValues = payload?.liveValues && typeof payload.liveValues === "object" ? payload.liveValues : {};
   const index = createLiveIndex(liveValues);
-  const resolved = resolveLiveVisualState(index, sceneState);
-  self.postMessage({ type: "resolved", id, ...resolved });
+  const scene = sceneState;
+  latestResolveId = Math.max(latestResolveId, id);
+  latestResolveIndex = index;
+  latestResolveScene = scene;
+  const basicResolved = resolveBasicLiveVisualState(index, scene);
+  self.postMessage({ type: "resolved", phase: "basic", id, ...basicResolved });
+  scheduleFullResolve(FULL_RESOLVE_THROTTLE_MS);
 };

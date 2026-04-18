@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.18235318in"
+  height="0.12352929in"
+  viewBox="0 0 4.6317711 3.1376438"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="100"
+  keheight="67.742"
+  eType="Detatcher"
+>
+  <defs>
+    <linearGradient id="detShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8eaed" />
+      <stop offset="100%" stop-color="#bcc1c8" />
+    </linearGradient>
+    <linearGradient id="detCoreFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d6dbe1" />
+      <stop offset="100%" stop-color="#9ea6b0" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
+    <path
+      id="body"
+      d="M0.10 0.10H1.86V0.60H0.10ZM0.10 0.66H4.54V2.46H0.10ZM2.80 2.50H4.54V3.00H2.80Z"
+      fill="url(#detShellFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M0.30 1.10H4.34" fill="none" stroke="#848b95" stroke-width="0.08" />
+    <path d="M0.30 1.42H4.34" fill="none" stroke="#848b95" stroke-width="0.08" />
+
+    <rect x="1.52" y="0.92" width="1.36" height="1.28" rx="0.10" fill="url(#detCoreFill)" stroke-width="0.10" />
+    <path d="M1.76 1.56H2.64" fill="none" stroke="#616973" stroke-width="0.10" />
+  </g>
+</svg>

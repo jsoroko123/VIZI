@@ -22,6 +22,9 @@ export default function ImportModal({
   svgLibrary, // ✅ NEW
   loadSvgRaw,
   docked = false,
+  absoluteDocked = false,
+  appearance = "default",
+  attached = false,
   dockLeft = 0,
   dockTop = 0,
   dockBottom = 0,
@@ -56,14 +59,30 @@ export default function ImportModal({
     };
   }, []);
 
+  const darkDrawer = appearance === "ignition-drawer";
+  const panelBg = darkDrawer
+    ? "linear-gradient(180deg, rgba(6, 12, 28, 0.99) 0%, rgba(10, 18, 36, 0.98) 100%)"
+    : "var(--bg-elev, rgba(15, 23, 42, 0.98))";
+  const softBg = darkDrawer
+    ? "rgba(11, 18, 34, 0.96)"
+    : "var(--bg-soft, rgba(15, 23, 42, 0.92))";
+  const borderColor = darkDrawer
+    ? "rgba(87, 104, 143, 0.78)"
+    : "var(--border, rgba(71, 85, 105, 0.9))";
+  const textColor = darkDrawer ? "#eef4ff" : "var(--text, #f8fafc)";
+  const mutedColor = darkDrawer ? "rgba(200, 214, 236, 0.74)" : "var(--text-muted, rgba(226, 232, 240, 0.72))";
+  const rowBg = darkDrawer ? "rgba(13, 22, 40, 0.95)" : softBg;
+  const rowBorder = darkDrawer ? "rgba(124, 144, 180, 0.65)" : borderColor;
+
   const closeBtnStyle = {
-    border: "1px solid var(--border)",
-    background: "var(--bg-elev)",
+    border: `1px solid ${borderColor}`,
+    background: softBg,
     borderRadius: 10,
     padding: "4px 8px",
     cursor: "pointer",
     lineHeight: 1,
-    color: "var(--text)",
+    color: textColor,
+    fontWeight: 700,
   };
 
   const grouped = useMemo(() => {
@@ -197,8 +216,9 @@ export default function ImportModal({
 
   return (
     <div
+      data-vizi-import-drawer={docked ? "1" : undefined}
       style={{
-        position: "fixed",
+        position: docked && absoluteDocked ? "absolute" : "fixed",
         ...(docked
           ? {
               left: Math.max(0, Number(dockLeft) || 0),
@@ -226,10 +246,12 @@ export default function ImportModal({
           height: docked ? "100%" : undefined,
           minHeight: docked ? "100%" : "min(520px, 80vh)",
           maxHeight: docked ? "100%" : "min(520px, 80vh)",
-          background: "var(--bg-elev)",
-          borderRadius: docked ? 0 : 16,
-          border: "1px solid var(--border)",
-          boxShadow: docked ? "24px 0 40px rgba(0,0,0,0.28)" : "0 14px 50px rgba(0,0,0,0.22)",
+          background: panelBg,
+          borderRadius: docked ? (attached ? "0 18px 18px 0" : 18) : 16,
+          border: `1px solid ${borderColor}`,
+          boxShadow: docked
+            ? (attached ? "18px 14px 36px rgba(2, 6, 23, 0.28)" : "24px 0 40px rgba(0,0,0,0.28)")
+            : "0 14px 50px rgba(0,0,0,0.22)",
           position: "relative",
           overflow: "hidden",
         }}
@@ -254,19 +276,19 @@ export default function ImportModal({
             position: "sticky",
             top: 0,
             zIndex: 2,
-            background: "var(--bg-elev)",
+            background: panelBg,
             padding: 16,
-            borderBottom: "1px solid var(--border)",
+            borderBottom: `1px solid ${borderColor}`,
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-            <div style={{ fontWeight: 800 }}>Import SVG</div>
+            <div style={{ fontWeight: 800, fontSize: 16, color: textColor, letterSpacing: "0.01em" }}>Import SVG</div>
             <button title="Close" onClick={() => setImportOpen(false)} style={closeBtnStyle}>
               X
             </button>
           </div>
 
-          <div style={{ marginTop: 6, color: "var(--text-muted)", fontSize: 13, fontWeight: 800 }}>
+          <div style={{ marginTop: 6, color: mutedColor, fontSize: 13, fontWeight: 800 }}>
             SVG Templates
           </div>
 
@@ -278,13 +300,15 @@ export default function ImportModal({
                 placeholder="Search..."
                 style={{
                   width: "100%",
-                  border: "1px solid var(--border)",
-                  background: "var(--bg-elev)",
+                  border: `1px solid ${borderColor}`,
+                  background: softBg,
                   borderRadius: 12,
                   padding: "8px 30px 8px 10px",
-                  color: "var(--text)",
+                  color: textColor,
                   outline: "none",
-                  fontSize: 12,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  boxShadow: darkDrawer ? "inset 0 1px 0 rgba(255,255,255,0.04)" : "none",
                   boxSizing: "border-box",
                 }}
               />
@@ -301,11 +325,11 @@ export default function ImportModal({
                     width: 20,
                     height: 20,
                     borderRadius: 8,
-                    border: "1px solid var(--border)",
-                    background: "var(--bg-elev)",
+                    border: `1px solid ${borderColor}`,
+                    background: softBg,
                     cursor: "pointer",
                     lineHeight: 1,
-                    color: "var(--text)",
+                    color: textColor,
                     padding: 0,
                   }}
                 >
@@ -317,17 +341,17 @@ export default function ImportModal({
         </div>
 
         <div style={{ padding: "12px 18px 16px 14px" }}>
-          <div style={{ marginTop: 0, display: "grid", gap: 8, color: "var(--text-muted)" }}>
+          <div style={{ marginTop: 0, display: "grid", gap: 8, color: mutedColor }}>
             {list.length === 0 ? (
-              <div style={{ color: "var(--text-muted)" }}>
+              <div style={{ color: mutedColor, fontSize: 13 }}>
                 No SVGs found. Put files in <b>src/assets/SVG Files</b>.
               </div>
             ) : grouped.length === 0 ? (
-              <div style={{ color: "var(--text-muted)" }}>No matches.</div>
+              <div style={{ color: mutedColor, fontSize: 13 }}>No matches.</div>
             ) : (
               grouped.map((group) => (
                 <div key={group.folder} style={{ display: "grid", gap: 8 }}>
-                  <div style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 800, padding: "2px 2px" }}>
+                  <div style={{ color: mutedColor, fontSize: 11, fontWeight: 800, padding: "2px 2px" }}>
                     {group.folder}
                   </div>
 
@@ -343,16 +367,18 @@ export default function ImportModal({
                       onMouseMove={onItemMove}
                       onMouseLeave={onItemLeave}
                       style={{
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "8px 10px",
-                        borderRadius: 12,
-                        border: "1px solid var(--border)",
-                        background: "var(--bg-elev)",
-                        cursor: "pointer",
-                        color: "var(--text)",
-                        fontSize: 12,
-                      }}
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    border: `1px solid ${rowBorder}`,
+                    background: rowBg,
+                    cursor: "pointer",
+                    color: textColor,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    boxShadow: darkDrawer ? "inset 0 1px 0 rgba(255,255,255,0.03)" : "none",
+                  }}
                       title={f.key}
                     >
                       {f.name}
@@ -375,8 +401,8 @@ export default function ImportModal({
               width: tipW,
               height: tipH,
               zIndex: 9999,
-              background: "color-mix(in srgb, var(--bg-elev) 96%, transparent)",
-              border: "1px solid var(--border)",
+              background: "color-mix(in srgb, rgba(15, 23, 42, 0.98) 96%, transparent)",
+              border: `1px solid ${borderColor}`,
               borderRadius: 14,
               boxShadow: "0 14px 50px rgba(0,0,0,0.18)",
               padding: 10,
@@ -386,22 +412,22 @@ export default function ImportModal({
               gap: 8,
             }}
           >
-            <div style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div style={{ fontSize: 11, color: mutedColor, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {hoverKey.split("/").pop()}
             </div>
 
             <div
               style={{
-                border: "1px solid var(--border)",
+                border: `1px solid ${borderColor}`,
                 borderRadius: 12,
-                background: "var(--bg-elev)",
+                background: panelBg,
                 display: "grid",
                 placeItems: "center",
                 overflow: "hidden",
               }}
             >
               {previewLoading ? (
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Loading...</div>
+                <div style={{ fontSize: 11, color: mutedColor }}>Loading...</div>
               ) : preview?.inner ? (
                 <svg
                   width="190"
@@ -411,7 +437,7 @@ export default function ImportModal({
                   dangerouslySetInnerHTML={{ __html: preview.inner }}
                 />
               ) : (
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>No preview</div>
+                <div style={{ fontSize: 11, color: mutedColor }}>No preview</div>
               )}
             </div>
           </div>

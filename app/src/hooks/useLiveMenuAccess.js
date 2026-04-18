@@ -1,21 +1,20 @@
 import { useCallback } from "react";
-import { normalizeRoleIdList } from "../utils/projectHelpers";
+import { getLiveMenuPageDefinition, normalizeRoleIdList } from "../utils/projectHelpers";
 
 export function useLiveMenuAccess({
-  canViewDataPages,
-  canViewScreenPages,
-  canViewReportsPages,
+  canViewArea,
   currentUserRoleIds,
 }) {
   const canAccessLiveMenuItem = useCallback(
     (item) => {
       const type = String(item?.type || "").toLowerCase();
-      const areaAllowed =
+      const areaKey =
         type === "data"
-          ? canViewDataPages
-          : type === "reports"
-          ? canViewReportsPages
-          : canViewScreenPages;
+          ? "database"
+          : type === "page"
+          ? String(getLiveMenuPageDefinition(item?.pageKey)?.areaKey || "").trim()
+          : "project";
+      const areaAllowed = areaKey ? canViewArea(areaKey) : false;
       if (!areaAllowed) return false;
       const restricted = Boolean(item?.restricted);
       if (!restricted) return true;
@@ -26,7 +25,7 @@ export function useLiveMenuAccess({
       }
       return false;
     },
-    [canViewDataPages, canViewReportsPages, canViewScreenPages, currentUserRoleIds]
+    [canViewArea, currentUserRoleIds]
   );
 
   const isLiveMenuItemRoleRestricted = useCallback(

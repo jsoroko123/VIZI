@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.17345126in"
+  height="0.28477412in"
+  viewBox="0 0 4.4056623 7.2332627"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="60.908"
+  keheight="100"
+  eType="BranFinisher"
+>
+  <defs>
+    <linearGradient id="branBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="branCoreFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d6dbe1" />
+      <stop offset="100%" stop-color="#9ca4ae" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
+    <path
+      id="body"
+      d="M0.30 0.30H4.10V6.96H3.54V4.18L2.20 6.26L0.86 4.18V6.96H0.30Z"
+      fill="url(#branBodyFill)"
+      stroke-width="0.14"
+    />
+
+    <rect x="0.66" y="0.74" width="3.08" height="2.08" rx="0.14" fill="#cfd4da" stroke-width="0.10" />
+    <path d="M0.86 1.30H3.54" fill="none" stroke="#8c929b" stroke-width="0.08" />
+    <path d="M0.86 1.80H3.54" fill="none" stroke="#8c929b" stroke-width="0.08" />
+    <path d="M0.86 2.30H3.54" fill="none" stroke="#8c929b" stroke-width="0.08" />
+
+    <path d="M1.34 3.20H3.06L2.74 4.16H1.66Z" fill="url(#branCoreFill)" stroke-width="0.10" />
+    <path d="M1.76 4.16H2.64" fill="none" stroke="#68707a" stroke-width="0.10" />
+
+    <circle cx="2.20" cy="5.24" r="0.26" fill="#9da5af" stroke-width="0.10" />
+  </g>
+</svg>

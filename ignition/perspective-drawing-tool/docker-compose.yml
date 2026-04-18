@@ -1,0 +1,28 @@
+services:
+  gateway:
+    build:
+      context: .
+      args:
+        IGNITION_VERSION: 8.3.4
+    ports:
+      - "9088:8088"
+      - "9043:8043"
+    volumes:
+      - gateway-data:/usr/local/bin/ignition/data
+    environment:
+      ACCEPT_IGNITION_EULA: "Y"
+      GATEWAY_ADMIN_USERNAME: admin
+      GATEWAY_ADMIN_PASSWORD: mesora-dev-password
+      IGNITION_EDITION: standard
+      TZ: America/Chicago
+    command: >
+      -n mesora-drawing-dev
+      -a localhost
+      -h 9088
+      -s 9043
+      --
+      wrapper.java.initmemory=512
+      -Dignition.allowunsignedmodules=true
+
+volumes:
+  gateway-data:

@@ -10,6 +10,7 @@ export const LIVE_MENU_ICON_KEY_ALIASES = {
   grid: "AppsRounded",
   screen: "MonitorRounded",
   database: "StorageRounded",
+  alarm: "NotificationsActiveRounded",
   table: "TableChartRounded",
   chart: "ShowChartRounded",
   trend: "TimelineRounded",
@@ -26,6 +27,63 @@ export const LIVE_MENU_ICON_KEY_ALIASES = {
   factory: "BusinessRounded",
 };
 
+export const LIVE_MENU_PAGE_DEFINITIONS = Object.freeze({
+  alarms: Object.freeze({
+    pageKey: "alarms",
+    label: "Alarms",
+    icon: "NotificationsActiveRounded",
+    areaKey: "database",
+  }),
+  trends: Object.freeze({
+    pageKey: "trends",
+    label: "Trends",
+    icon: "TimelineRounded",
+    areaKey: "tags",
+  }),
+  reports: Object.freeze({
+    pageKey: "reports",
+    label: "Reports",
+    icon: "DescriptionRounded",
+    areaKey: "reports",
+  }),
+  tags: Object.freeze({
+    pageKey: "tags",
+    label: "Tags",
+    icon: "SellRounded",
+    areaKey: "tags",
+  }),
+  opc: Object.freeze({
+    pageKey: "opc",
+    label: "OPC",
+    icon: "HubRounded",
+    areaKey: "opc",
+  }),
+  server: Object.freeze({
+    pageKey: "server",
+    label: "Server",
+    icon: "DnsRounded",
+    areaKey: "server",
+  }),
+  plc: Object.freeze({
+    pageKey: "plc",
+    label: "PLC",
+    icon: "DeveloperBoardRounded",
+    areaKey: "plc",
+  }),
+  ai: Object.freeze({
+    pageKey: "ai",
+    label: "AI",
+    icon: "AutoAwesomeRounded",
+    areaKey: "ai",
+  }),
+  help: Object.freeze({
+    pageKey: "help",
+    label: "Help",
+    icon: "HelpOutlineRounded",
+    areaKey: "help",
+  }),
+});
+
 export function normalizeLiveMenuIcon(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -33,6 +91,17 @@ export function normalizeLiveMenuIcon(value) {
   if (legacy) return legacy;
   if (!/^[A-Za-z][A-Za-z0-9]*$/.test(raw)) return "";
   return raw;
+}
+
+export function normalizeLiveMenuPageKey(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  return Object.prototype.hasOwnProperty.call(LIVE_MENU_PAGE_DEFINITIONS, raw) ? raw : "";
+}
+
+export function getLiveMenuPageDefinition(value) {
+  const key = normalizeLiveMenuPageKey(value);
+  return key ? LIVE_MENU_PAGE_DEFINITIONS[key] || null : null;
 }
 
 export function normalizeProjectMode(value) {
@@ -173,11 +242,17 @@ export function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
       const items = (Array.isArray(group?.items) ? group.items : [])
         .map((item) => {
           const rawType = String(item?.type || "").toLowerCase();
-          const type =
-            rawType === "data"
-              ? "data"
+          const normalizedPageKey =
+            rawType === "page"
+              ? normalizeLiveMenuPageKey(item?.pageKey) || "reports"
               : rawType === "reports"
               ? "reports"
+              : normalizeLiveMenuPageKey(rawType);
+          const type =
+            normalizedPageKey
+              ? "page"
+              : rawType === "data"
+              ? "data"
               : "screen";
           if (type === "screen") {
             const screenId = String(item?.screenId || "").trim();
@@ -192,10 +267,11 @@ export function normalizeLiveMenuGroups(rawGroups, sourceScreens) {
               allowedRoleIds: normalizeRoleIdList(item?.allowedRoleIds),
             };
           }
-          if (type === "reports") {
+          if (type === "page") {
             return {
               id: String(item?.id || `live-item-${uid()}`),
-              type: "reports",
+              type: "page",
+              pageKey: normalizedPageKey,
               label: String(item?.label || "").trim(),
               icon: normalizeLiveMenuIcon(item?.icon),
               restricted: Boolean(item?.restricted),

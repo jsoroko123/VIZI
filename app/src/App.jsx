@@ -32,14 +32,17 @@ import { clearProjectDraft, getProjectDraftStorageKey } from "./utils/projectDra
 import {
   DEFAULT_CANVAS_BG_DARK,
   DEFAULT_CANVAS_BG_LIGHT,
+  LIVE_MENU_PAGE_DEFINITIONS,
   LIVE_MENU_EXPANDED_WIDTH_DEFAULT,
   LIVE_MENU_EXPANDED_WIDTH_KEY,
   LIVE_MENU_EXPANDED_WIDTH_MAX,
   LIVE_MENU_EXPANDED_WIDTH_MIN,
   defaultLiveMenuGroupsFromScreens,
+  getLiveMenuPageDefinition,
   normalizeLiveMenuGroups,
   normalizeProjectCanvasBackground,
   normalizeLiveMenuIcon,
+  normalizeLiveMenuPageKey,
   normalizeProjectMode,
   normalizeProjectUiPreferences,
   normalizeRoleIdList,
@@ -118,6 +121,7 @@ import {
   patchOpcLiveSnapshot,
   setOpcLiveSnapshot,
   setPriorityKeys,
+  subscribeOpcLiveKeys,
   subscribeOpcLiveStore,
 } from "./state/opcLiveStore";
 import {
@@ -141,6 +145,8 @@ import {
   MaterialFallbackIcon,
   MaterialKeyboardArrowDownRoundedIcon,
 } from "./utils/materialIconsRuntime";
+
+const LIVE_MENU_PAGE_OPTIONS = Object.freeze(Object.values(LIVE_MENU_PAGE_DEFINITIONS));
 
 const HelpPanel = lazy(() => import("./components/HelpPanel"));
 const OpcConfig = lazy(() => import("./components/OpcConfig"));
@@ -485,7 +491,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [shapes, setShapes] = useState([]); // polyline | rect | circle | text
 
   // Multi-selection
-  const [selectedIds, setSelectedIds] = useState([]); // polyline ids
+  const [selectedIds, setSelectedIds] = useState([]); // shape ids
   const [selectedOverlayIds, setSelectedOverlayIds] = useState([]); // overlay ids
   const [selectionMode, setSelectionMode] = useState("all"); // "all" | "svg" | "polyline"
 
@@ -633,17 +639,22 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const liveEquipmentTickLastAtRef = useRef(0);
   const liveEquipmentFastTickTimerRef = useRef(0);
   const liveEquipmentFastTickLastAtRef = useRef(0);
-  const LIVE_EQUIPMENT_FAST_POLL_MS = 150;
   const LIVE_EQUIPMENT_FAST_TICK_MIN_MS = 300;
   const LIVE_EQUIPMENT_WRITE_CONFIRM_MS = 1200;
   const LIVE_EQUIPMENT_WRITE_HINT_TTL_MS = 1400;
   const LIVE_EQUIPMENT_PULSE_RESET_DELAY_MS = 250;
   const LIVE_EQUIPMENT_WRITE_REFRESH_DELAYS_MS = [30, 120, 320, 800];
+  const liveEquipmentRefreshTimersRef = useRef(new Map());
   const [liveEquipmentDockSideById, setLiveEquipmentDockSideById] = useState({});
   const [liveEquipmentFloatingById, setLiveEquipmentFloatingById] = useState({});
   const liveEquipmentFloatingByIdRef = useRef({});
   const [liveEquipmentConnectFxById, setLiveEquipmentConnectFxById] = useState({});
   const [liveEquipmentLiveDataCollapsedByOverlay, setLiveEquipmentLiveDataCollapsedByOverlay] = useState({});
+  const [liveEquipmentNotesCollapsedByOverlay, setLiveEquipmentNotesCollapsedByOverlay] = useState({});
+  const [liveEquipmentNotesDraftByOverlay, setLiveEquipmentNotesDraftByOverlay] = useState({});
+  const [liveEquipmentNotesSaveBusyByOverlay, setLiveEquipmentNotesSaveBusyByOverlay] = useState({});
+  const [liveEquipmentNotesSaveErrorByOverlay, setLiveEquipmentNotesSaveErrorByOverlay] = useState({});
+  const [liveEquipmentNotesSaveStatusByOverlay, setLiveEquipmentNotesSaveStatusByOverlay] = useState({});
   const MAX_LIVE_EQUIPMENT_POPUPS = 120;
   const prevLiveEquipmentOverlayIdsRef = useRef([]);
   const liveEquipmentConnectFxTimersRef = useRef(new Map());
@@ -2889,20 +2900,53 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     }
     return out.slice(0, 96);
   }
+  function clearLiveEquipmentRefreshTimers(predicate = null) {
+    const timers = liveEquipmentRefreshTimersRef.current;
+    if (!(timers instanceof Map) || !timers.size) return;
+    timers.forEach((entry, timerKey) => {
+      if (typeof predicate === "function" && !predicate(entry, timerKey)) return;
+      try {
+        window.clearTimeout(entry?.timerId);
+      } catch {
+        // ignore
+      }
+      timers.delete(timerKey);
+    });
+  }
   function requestLiveEquipmentFastRefresh(overlay, preferredKeys = [], delays = LIVE_EQUIPMENT_WRITE_REFRESH_DELAYS_MS) {
     const keys = getLiveEquipmentRefreshKeys(overlay, preferredKeys);
     if (!keys.length) return;
+    const overlayId =
+      String(overlay?.id || "").trim() ||
+      String(normalizeTagValue(overlay?.tagPath || "")).trim() ||
+      "__popup__";
     const schedule = Array.isArray(delays) && delays.length ? delays : [0];
     schedule.forEach((delayMs) => {
-      window.setTimeout(async () => {
+      const normalizedDelay = Math.max(0, Number(delayMs) || 0);
+      const timerKey = `${overlayId}::${normalizedDelay}`;
+      const existing = liveEquipmentRefreshTimersRef.current.get(timerKey);
+      if (existing?.keys instanceof Set) {
+        keys.forEach((key) => existing.keys.add(key));
+        return;
+      }
+      const queuedKeys = new Set(keys);
+      const timerId = window.setTimeout(async () => {
+        liveEquipmentRefreshTimersRef.current.delete(timerKey);
         if (!liveEquipmentActiveRef.current || !isPageVisible || !liveUpdatesEnabled) return;
         try {
-          const data = await getOpcStatus({ keys });
+          const nextKeys = Array.from(queuedKeys).slice(0, 96);
+          if (!nextKeys.length) return;
+          const data = await getOpcStatus({ keys: nextKeys });
           applyLiveEquipmentFastValues(data?.values, { forceTick: true });
         } catch {
           // keep popup refresh opportunistic and silent
         }
-      }, Math.max(0, Number(delayMs) || 0));
+      }, normalizedDelay);
+      liveEquipmentRefreshTimersRef.current.set(timerKey, {
+        overlayId,
+        keys: queuedKeys,
+        timerId,
+      });
     });
   }
   function getLiveEquipmentWriteHint(overlayId) {
@@ -4342,43 +4386,68 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     if (!rawName) return "Equipment";
     return rawName.replace(/\.svg$/i, "").trim() || "Equipment";
   };
-  const getOverlayEquipmentDescription = (overlay) => {
-    const path = normalizeTagValue(overlay?.tagPath || "");
-    if (!path) return "";
-    const pathLower = path.toLowerCase();
-    const normalizeLoose = (value) =>
-      String(value || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "");
-    const pathLoose = normalizeLoose(path);
-    const rows = Array.isArray(projectEquipmentRows) ? projectEquipmentRows : [];
-    for (const row of rows) {
-      const description = String(
-        row?.description ?? row?.Description ?? row?.equipment_description ?? row?.equipmentDescription ?? ""
-      ).trim();
-      if (!description) continue;
-      const keys = [
-        row?.tag_path,
-        row?.tagPath,
-        row?.svg_tag_path,
-        row?.svgTagPath,
-        row?.path,
-        row?.Path,
-        row?.name,
-        row?.Name,
-      ]
-        .map((v) => normalizeTagValue(v))
-        .filter(Boolean);
-      const matched = keys.some((k) => {
-        const kl = k.toLowerCase();
-        if (kl === pathLower || kl.endsWith(`.${pathLower}`) || pathLower.endsWith(`.${kl}`)) return true;
-        const loose = normalizeLoose(k);
-        return !!(loose && pathLoose && (loose.includes(pathLoose) || pathLoose.includes(loose)));
-      });
-      if (matched) return description;
+  const normalizeLooseEquipmentKey = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  const getProjectEquipmentMatchKeys = (row) =>
+    [
+      row?.tag_path,
+      row?.tagPath,
+      row?.svg_tag_path,
+      row?.svgTagPath,
+      row?.path,
+      row?.Path,
+      row?.name,
+      row?.Name,
+    ]
+      .map((value) => normalizeTagValue(value))
+      .filter(Boolean);
+  const readProjectEquipmentField = (row, keys = []) => {
+    for (const key of Array.isArray(keys) ? keys : []) {
+      if (!Object.prototype.hasOwnProperty.call(row || {}, key)) continue;
+      const value = row?.[key];
+      if (value == null) return "";
+      return String(value);
     }
     return "";
   };
+  const findProjectEquipmentRowForOverlay = (overlay) => {
+    const path = normalizeTagValue(overlay?.tagPath || "");
+    if (!path) return null;
+    const pathLower = path.toLowerCase();
+    const pathLoose = normalizeLooseEquipmentKey(path);
+    const rows = Array.isArray(projectEquipmentRows) ? projectEquipmentRows : [];
+    for (const row of rows) {
+      const keys = getProjectEquipmentMatchKeys(row);
+      const matched = keys.some((key) => {
+        const keyLower = key.toLowerCase();
+        if (keyLower === pathLower || keyLower.endsWith(`.${pathLower}`) || pathLower.endsWith(`.${keyLower}`)) {
+          return true;
+        }
+        const loose = normalizeLooseEquipmentKey(key);
+        return !!(loose && pathLoose && (loose.includes(pathLoose) || pathLoose.includes(loose)));
+      });
+      if (matched) return row;
+    }
+    return null;
+  };
+  const getOverlayEquipmentDescription = (overlay) => {
+    const row = findProjectEquipmentRowForOverlay(overlay);
+    return readProjectEquipmentField(row, [
+      "description",
+      "Description",
+      "equipment_description",
+      "equipmentDescription",
+    ]).trim();
+  };
+  const getOverlayEquipmentNotes = (overlay) =>
+    readProjectEquipmentField(findProjectEquipmentRowForOverlay(overlay), [
+      "notes",
+      "Notes",
+      "equipment_notes",
+      "equipmentNotes",
+    ]);
   const getProjectBinBindingKey = (row) => {
     const id = String(
       row?.id ??
@@ -4739,6 +4808,190 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     });
     return map;
   }, [projectProductRows]);
+  const saveLiveEquipmentNotes = async (overlay) => {
+    const overlayId = String(overlay?.id || "").trim();
+    const overlayPath = normalizeTagValue(overlay?.tagPath || "");
+    const row = findProjectEquipmentRowForOverlay(overlay);
+    let rowId = getProjectRowId(row);
+    let currentRow = row;
+    if (!overlayId) return;
+    const nextNotes = String(
+      Object.prototype.hasOwnProperty.call(liveEquipmentNotesDraftByOverlay || {}, overlayId)
+        ? liveEquipmentNotesDraftByOverlay?.[overlayId]
+        : getOverlayEquipmentNotes(overlay)
+    ).replace(/\r\n/g, "\n");
+    setLiveEquipmentNotesSaveBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: true }));
+    setLiveEquipmentNotesSaveErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+    setLiveEquipmentNotesSaveStatusByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+    try {
+      let updatedRow = null;
+      if (!rowId) {
+        const createPayload = {
+          name: String(getOverlayPopupTitle(overlay) || getOverlayPopupTagName(overlay) || "Equipment").trim() || "Equipment",
+          description: String(getOverlayEquipmentDescription(overlay) || "").trim(),
+          notes: nextNotes,
+          tag_path: overlayPath || null,
+        };
+        const createData = await insertTableRow("equipment", createPayload);
+        updatedRow =
+          createData?.row && typeof createData.row === "object"
+            ? createData.row
+            : createPayload;
+        rowId = getProjectRowId(updatedRow);
+        currentRow = updatedRow;
+        setProjectEquipmentRows((prev) => {
+          const list = Array.isArray(prev) ? prev : [];
+          if (!rowId) return [...list, updatedRow];
+          const nextList = list.filter((entry) => String(getProjectRowId(entry)) !== rowId);
+          return [...nextList, updatedRow];
+        });
+      } else {
+        const data = await updateTableRow("equipment", rowId, { notes: nextNotes });
+        updatedRow =
+          data?.row && typeof data.row === "object"
+            ? data.row
+            : { ...(currentRow || {}), notes: nextNotes };
+        setProjectEquipmentRows((prev) =>
+          (Array.isArray(prev) ? prev : []).map((entry) =>
+            String(getProjectRowId(entry)) === rowId
+              ? { ...entry, ...updatedRow, notes: nextNotes }
+              : entry
+          )
+        );
+      }
+      setLiveEquipmentNotesDraftByOverlay((prev) => ({ ...(prev || {}), [overlayId]: nextNotes }));
+      setLiveEquipmentNotesSaveStatusByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "Saved" }));
+    } catch (err) {
+      setLiveEquipmentNotesSaveErrorByOverlay((prev) => ({
+        ...(prev || {}),
+        [overlayId]: err?.message || "Failed to save notes.",
+      }));
+    } finally {
+      setLiveEquipmentNotesSaveBusyByOverlay((prev) => ({ ...(prev || {}), [overlayId]: false }));
+    }
+  };
+  const renderLiveEquipmentNotesSection = (overlay, compact = false) => {
+    const overlayId = String(overlay?.id || "").trim();
+    if (!overlayId) return null;
+    const row = findProjectEquipmentRowForOverlay(overlay);
+    const rowId = getProjectRowId(row);
+    const currentNotes = String(getOverlayEquipmentNotes(overlay) || "");
+    const draftNotes = Object.prototype.hasOwnProperty.call(liveEquipmentNotesDraftByOverlay || {}, overlayId)
+      ? String(liveEquipmentNotesDraftByOverlay?.[overlayId] ?? "")
+      : currentNotes;
+    const collapsed = liveEquipmentNotesCollapsedByOverlay?.[overlayId] !== false;
+    const saveBusy = liveEquipmentNotesSaveBusyByOverlay?.[overlayId] === true;
+    const saveError = String(liveEquipmentNotesSaveErrorByOverlay?.[overlayId] || "").trim();
+    const saveStatus = String(liveEquipmentNotesSaveStatusByOverlay?.[overlayId] || "").trim();
+    const normalizedDraft = draftNotes.replace(/\r\n/g, "\n");
+    const normalizedCurrent = currentNotes.replace(/\r\n/g, "\n");
+    const hasChanges = normalizedDraft !== normalizedCurrent;
+    const previewText = (normalizedCurrent || normalizedDraft).replace(/\s+/g, " ").trim();
+    const hasNotes = !!previewText;
+    const previewLabel = hasNotes
+      ? `${previewText.slice(0, compact ? 68 : 120)}${previewText.length > (compact ? 68 : 120) ? "..." : ""}`
+      : "No notes yet.";
+    return (
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: compact ? 5 : 6, display: "grid", gap: 6 }}>
+        <button
+          type="button"
+          onClick={() =>
+            setLiveEquipmentNotesCollapsedByOverlay((prev) => ({
+              ...(prev || {}),
+              [overlayId]: !collapsed,
+            }))
+          }
+          style={{
+            border: "1px solid var(--border)",
+            background: "var(--bg)",
+            color: "var(--text)",
+            borderRadius: 8,
+            padding: compact ? "6px 8px" : "7px 9px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            cursor: "pointer",
+            fontSize: compact ? 10 : 11,
+            fontWeight: 700,
+          }}
+          aria-expanded={!collapsed}
+        >
+          <span>{collapsed ? "Show Notes" : "Hide Notes"}</span>
+          <span style={{ color: "var(--text-muted)", fontWeight: 600 }}>
+            {hasNotes ? "Saved note" : "Add note"}
+          </span>
+        </button>
+        {collapsed ? (
+          <div style={{ fontSize: compact ? 10 : 11, color: "var(--text-muted)", lineHeight: 1.4 }}>
+            {previewLabel}
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 6 }}>
+            <textarea
+              value={draftNotes}
+              onChange={(e) => {
+                const nextValue = String(e.target.value || "");
+                setLiveEquipmentNotesDraftByOverlay((prev) => ({ ...(prev || {}), [overlayId]: nextValue }));
+                if (liveEquipmentNotesSaveErrorByOverlay?.[overlayId]) {
+                  setLiveEquipmentNotesSaveErrorByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+                }
+                if (liveEquipmentNotesSaveStatusByOverlay?.[overlayId]) {
+                  setLiveEquipmentNotesSaveStatusByOverlay((prev) => ({ ...(prev || {}), [overlayId]: "" }));
+                }
+              }}
+              placeholder={rowId ? "Add equipment notes..." : "Add equipment notes. Saving will create a record for this popup."}
+              disabled={saveBusy}
+              style={{
+                width: "100%",
+                minHeight: compact ? 72 : 92,
+                resize: "vertical",
+                border: "1px solid var(--border)",
+                background: "var(--bg-elev)",
+                color: "var(--text)",
+                borderRadius: 8,
+                padding: "8px 10px",
+                fontSize: compact ? 10 : 11,
+                lineHeight: 1.45,
+                boxSizing: "border-box",
+              }}
+            />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
+                {rowId ? (hasChanges ? "Unsaved changes." : "Notes saved to equipment record.") : "Saving will create an equipment note record."}
+              </div>
+              <button
+                type="button"
+                onClick={() => void saveLiveEquipmentNotes(overlay)}
+                disabled={saveBusy || !hasChanges}
+                style={{
+                  border: "1px solid var(--accent)",
+                  background: "var(--accent)",
+                  color: "var(--accent-text)",
+                  borderRadius: 7,
+                  height: compact ? 24 : 28,
+                  minWidth: compact ? 80 : 94,
+                  padding: compact ? "0 10px" : "0 12px",
+                  fontSize: compact ? 10 : 11,
+                  fontWeight: 700,
+                  cursor: saveBusy || !hasChanges ? "not-allowed" : "pointer",
+                  opacity: saveBusy || !hasChanges ? 0.7 : 1,
+                }}
+              >
+                {saveBusy ? "Saving..." : "Save Notes"}
+              </button>
+            </div>
+            {saveError ? (
+              <div style={{ fontSize: compact ? 9 : 10, color: "var(--danger)" }}>{saveError}</div>
+            ) : null}
+            {!saveError && saveStatus ? (
+              <div style={{ fontSize: compact ? 9 : 10, color: "var(--success, #16a34a)" }}>{saveStatus}</div>
+            ) : null}
+          </div>
+        )}
+      </div>
+    );
+  };
   const saveBinProductAssignment = async (overlay, row, nextProductIdRaw) => {
     const overlayId = String(overlay?.id || "").trim();
     const rowId = getProjectBinRowId(row) || getBinRowIdFromBindingKey(overlay?.binBindingKey);
@@ -8023,7 +8276,6 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   };
   const canViewScreenPages = canViewArea("project");
   const canViewDataPages = canViewArea("database");
-  const canViewReportsPages = canViewArea("reports");
   const canEditProject = canEditArea("project");
   const isOpcDrawerView =
     drawerView === "opc" || drawerView === "logs" || drawerView === "diagnostics";
@@ -8049,9 +8301,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     );
   }, [user]);
   const { canAccessLiveMenuItem, isLiveMenuItemRoleRestricted } = useLiveMenuAccess({
-    canViewDataPages,
-    canViewScreenPages,
-    canViewReportsPages,
+    canViewArea,
     currentUserRoleIds,
   });
   const canOpenLiveMenuItem = (item) => {
@@ -9822,13 +10072,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
     ids.forEach((id) => {
       if (seen.has(id)) return;
       seen.add(id);
-      const selector = `[data-shape-id="${escapeCssSelectorValue(id)}"]`;
-      const node = svg.querySelector(selector);
-      if (!node || typeof node.setAttribute !== "function") return;
-      nodes.push({
-        id,
-        node,
-        baseTransform: String(node.getAttribute("transform") || "").trim(),
+      const selectors = [
+        `[data-shape-id="${escapeCssSelectorValue(id)}"]`,
+        `[data-active-shape-id="${escapeCssSelectorValue(id)}"]`,
+      ];
+      selectors.forEach((selector, idx) => {
+        const node = svg.querySelector(selector);
+        if (!node || typeof node.setAttribute !== "function") return;
+        nodes.push({
+          id: idx === 0 ? id : `${id}:active`,
+          node,
+          baseTransform: String(node.getAttribute("transform") || "").trim(),
+        });
       });
     });
     shapeResizePreviewNodesRef.current = nodes;
@@ -10306,12 +10561,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (!key) continue;
       const node = svg.querySelector(`[data-shape-id="${escapeCss(key)}"]`);
       if (node) targets.push(node);
+      const activeNode = svg.querySelector(`[data-active-shape-id="${escapeCss(key)}"]`);
+      if (activeNode) targets.push(activeNode);
     }
     for (const id of Array.isArray(overlayIds) ? overlayIds : []) {
       const key = String(id || "").trim();
       if (!key) continue;
       const node = svg.querySelector(`[data-overlay-id="${escapeCss(key)}"]`);
       if (node) targets.push(node);
+    }
+    if (Array.isArray(overlayIds) && overlayIds.length > 0 && (!Array.isArray(shapeIds) || shapeIds.length === 0)) {
+      const overlayUiNode = svg.querySelector('[data-drag-selected-overlay-ui="1"]');
+      if (overlayUiNode) targets.push(overlayUiNode);
+    }
+    if (Array.isArray(shapeIds) && shapeIds.length > 0 && (!Array.isArray(overlayIds) || overlayIds.length === 0)) {
+      const shapeUiNode = svg.querySelector('[data-drag-selected-shape-ui="1"]');
+      if (shapeUiNode) targets.push(shapeUiNode);
     }
     dragPreviewNodesRef.current = targets;
   }
@@ -13395,15 +13660,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
     let next = inner;
     next = next.replace(/stroke-width\s*=\s*['"][^'"]*['"]/gi, `stroke-width="${value}"`);
     next = next.replace(/stroke-width\s*:\s*[^;\"']+/gi, `stroke-width:${value}`);
+    next = next.replace(/vector-effect\s*=\s*['"][^'"]*['"]/gi, `vector-effect="non-scaling-stroke"`);
+    next = next.replace(/vector-effect\s*:\s*[^;\"']+/gi, `vector-effect:non-scaling-stroke`);
 
     next = next.replace(
       /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*?)(\/?)>/gi,
       (match, tag, attrs, selfClose) => {
-        const hasStroke = /stroke\s*=|stroke\s*:/i.test(attrs);
         const strokeIsNone = /stroke\s*=\s*['"]\s*none\s*['"]|stroke\s*:\s*none/i.test(attrs);
-        if (!hasStroke || strokeIsNone) return match;
-        if (/stroke-width\s*=|stroke-width\s*:/i.test(attrs)) return match;
-        return `<${tag}${attrs} stroke-width="${value}"${selfClose}>`;
+        if (strokeIsNone) return match;
+        let nextAttrs = String(attrs || "");
+        if (!/stroke-width\s*=|stroke-width\s*:/i.test(nextAttrs)) {
+          nextAttrs += ` stroke-width="${value}"`;
+        }
+        if (!/vector-effect\s*=|vector-effect\s*:/i.test(nextAttrs)) {
+          nextAttrs += ` vector-effect="non-scaling-stroke"`;
+        }
+        return `<${tag}${nextAttrs}${selfClose}>`;
       }
     );
 
@@ -14032,62 +14304,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return out;
   }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId, svgOverlays, opcScopedStatusKeys]);
 
-  // Fast-path live refresh for open equipment popups only.
   useEffect(() => {
-    const hasPopupOpen =
-      (Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds.length : 0) > 0 ||
-      !!String(liveEquipmentDrawerOverlayId || "").trim();
-    if (!hasPopupOpen || !isLiveMode || !isPageVisible || !liveUpdatesEnabled) return undefined;
-    if (!liveEquipmentFastStatusKeys.length) return undefined;
-    let alive = true;
-    let streamConnected = false;
-    const unsubscribeStream = subscribeOpcStatusStream({
-      keys: liveEquipmentFastStatusKeys,
-      onOpen: () => {
-        streamConnected = true;
-      },
-      onError: () => {
-        streamConnected = false;
-      },
-      onMessage: (data) => {
-        if (!alive) return;
-        applyLiveEquipmentFastValues(data?.values);
-      },
+    const activeIds = new Set(
+      [...(Array.isArray(liveEquipmentOverlayIds) ? liveEquipmentOverlayIds : []), liveEquipmentDrawerOverlayId]
+        .map((id) => String(id || "").trim())
+        .filter(Boolean)
+    );
+    clearLiveEquipmentRefreshTimers((entry) => {
+      const overlayId = String(entry?.overlayId || "").trim();
+      return !!overlayId && overlayId !== "__popup__" && !activeIds.has(overlayId);
     });
-    const pollFast = async () => {
-      if (!alive || !liveEquipmentActiveRef.current) return;
-      if (!isPageVisible || isInteractingRef.current) return;
-      if (streamConnected) return;
-      try {
-        const data = await getOpcStatus({ keys: liveEquipmentFastStatusKeys });
-        if (!alive) return;
-        applyLiveEquipmentFastValues(data?.values);
-      } catch {
-        // keep retrying silently
-      }
-    };
-    pollFast();
-    const pollId = window.setInterval(pollFast, LIVE_EQUIPMENT_FAST_POLL_MS);
-    return () => {
-      alive = false;
-      window.clearInterval(pollId);
-      if (liveEquipmentFastTickTimerRef.current) {
-        window.clearTimeout(liveEquipmentFastTickTimerRef.current);
-        liveEquipmentFastTickTimerRef.current = 0;
-      }
-      if (typeof unsubscribeStream === "function") unsubscribeStream();
-    };
-  }, [
-    isLiveMode,
-    isPageVisible,
-    liveUpdatesEnabled,
-    liveEquipmentOverlayIds,
-    liveEquipmentDrawerOverlayId,
-    liveEquipmentFastStatusKeys,
-  ]);
+  }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId]);
 
   useEffect(
     () => () => {
+      clearLiveEquipmentRefreshTimers();
       if (liveEquipmentTickTimerRef.current) {
         window.clearTimeout(liveEquipmentTickTimerRef.current);
         liveEquipmentTickTimerRef.current = 0;
@@ -14131,7 +14362,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
         });
       }, waitMs);
     };
-    const unsubscribe = subscribeOpcLiveStore(scheduleTick);
+    const unsubscribe = liveEquipmentFastStatusKeys.length
+      ? subscribeOpcLiveKeys(liveEquipmentFastStatusKeys, scheduleTick)
+      : subscribeOpcLiveStore(scheduleTick);
     return () => {
       if (liveEquipmentTickTimerRef.current) {
         window.clearTimeout(liveEquipmentTickTimerRef.current);
@@ -14139,7 +14372,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
       if (typeof unsubscribe === "function") unsubscribe();
     };
-  }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId]);
+  }, [liveEquipmentOverlayIds, liveEquipmentDrawerOverlayId, liveEquipmentFastStatusKeys]);
 
   useEffect(() => {
     setLiveEquipmentOverlayIds((prev) => {
@@ -14378,6 +14611,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         if (!nextPointer || !activeDrag) return;
         const dx = nextPointer.clientX - activeDrag.startX;
         const dy = nextPointer.clientY - activeDrag.startY;
+        const prevX = Number(activeDrag.latestX);
+        const prevY = Number(activeDrag.latestY);
         const clamped = clampLiveEquipmentFloatingPosition(
           activeDrag.id,
           activeDrag.originX + dx,
@@ -14394,6 +14629,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
         if (cardEl) {
           cardEl.style.left = `${clamped.x}px`;
           cardEl.style.top = `${clamped.y}px`;
+        }
+        if (clamped.x !== prevX || clamped.y !== prevY) {
+          setLiveEquipmentDockTick((v) => (v + 1) % 1000000);
         }
       });
     };
@@ -15934,6 +16172,30 @@ const CONTENT_FIT_HEADROOM = 0.94;
     );
   }
 
+  function mixedSelectionUI() {
+    if (!selectedBBox || !selectedIds.length || !selectedOverlayIds.length) return null;
+    const x = Number(selectedBBox.x || 0);
+    const y = Number(selectedBBox.y || 0);
+    const w = Math.max(1, Number(selectedBBox.w || 0));
+    const h = Math.max(1, Number(selectedBBox.h || 0));
+    return (
+      <g data-mixed-selection-ui="1">
+        <rect
+          data-mixed-selection-box="1"
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          fill="none"
+          stroke="#2b6cff"
+          strokeWidth={2}
+          strokeDasharray="10 6"
+          pointerEvents="none"
+        />
+      </g>
+    );
+  }
+
   const inlineEditPos = useMemo(() => {
     if (!inlineEdit?.id || !svgRef.current) return null;
     if (inlineEdit?.kind === "overlay") {
@@ -16221,6 +16483,20 @@ const CONTENT_FIT_HEADROOM = 0.94;
         .filter((group) => group.items.length > 0),
     [liveMenuGroupsForRender]
   );
+  const configuredLiveMenuPageKeys = useMemo(() => {
+    const keys = new Set();
+    for (const group of Array.isArray(liveMenuGroupsForRender) ? liveMenuGroupsForRender : []) {
+      for (const item of Array.isArray(group?.items) ? group.items : []) {
+        const type = String(item?.type || "").trim().toLowerCase();
+        if (type !== "page") continue;
+        const pageKey = normalizeLiveMenuPageKey(item?.pageKey);
+        if (pageKey) keys.add(pageKey);
+      }
+    }
+    return keys;
+  }, [liveMenuGroupsForRender]);
+  const hasConfiguredAlarmMenuItem = configuredLiveMenuPageKeys.has("alarms");
+  const hasConfiguredTrendMenuItem = configuredLiveMenuPageKeys.has("trends");
   const leftMenuGroupsVisible = useMemo(
     () =>
       liveMenuGroupsVisible
@@ -16228,7 +16504,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           ...group,
           items: (Array.isArray(group?.items) ? group.items : []).filter((item) => {
             const t = String(item?.type || "").trim().toLowerCase();
-            return t === "data" || t === "reports";
+            return t === "data" || t === "page";
           }),
         }))
         .filter((group) => group.items.length > 0),
@@ -16252,6 +16528,23 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!m) return "";
     return decodeURIComponent(String(m[1] || "")).trim();
   }, [databaseEmbeddedPath]);
+  const alarmDatabasePath = useMemo(() => {
+    const list = Array.isArray(databaseTablesForMenu) ? databaseTablesForMenu : [];
+    const lowered = list.map((t) => String(t || "").trim()).filter(Boolean);
+    const exactOpcAlarmState = lowered.find((t) => t.toLowerCase() === "opc_alarm_state");
+    if (exactOpcAlarmState) return exactOpcAlarmState;
+    const exactAlarms = lowered.find((t) => t.toLowerCase() === "alarms");
+    if (exactAlarms) return exactAlarms;
+    const containsAlarm = lowered.find((t) => t.toLowerCase().includes("alarm"));
+    if (containsAlarm) return containsAlarm;
+    return "opc_alarm_state";
+  }, [databaseTablesForMenu]);
+  const liveAlarmDrawerActive = useMemo(() => {
+    if (!showMainDrawer || drawerView !== "database") return false;
+    const target = String(alarmDatabasePath || "").trim().toLowerCase();
+    const active = String(activeDatabaseTable || "").trim().toLowerCase();
+    return Boolean(target) && active === target;
+  }, [activeDatabaseTable, alarmDatabasePath, drawerView, showMainDrawer]);
   const routeInfoById = useMemo(() => {
     const rows = Array.isArray(projectRouteRows) ? projectRouteRows : [];
     const map = new Map();
@@ -16286,6 +16579,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const items = Array.isArray(group?.items) ? group.items : [];
       for (const item of items) {
         const isData = item?.type === "data";
+        const isPage = item?.type === "page";
         if (isData) {
           const configuredTable = String(item?.dataTable || "").trim();
           const isActiveData =
@@ -16295,19 +16589,27 @@ const CONTENT_FIT_HEADROOM = 0.94;
           if (!isActiveData) continue;
           return resolveLiveMenuItemLabel(item, null);
         }
+        if (isPage && isLiveMenuPageActive(item?.pageKey)) {
+          return resolveLiveMenuItemLabel(item, null);
+        }
         const screenId = String(item?.screenId || "");
         if (!screenId || screenId !== String(activeScreenId || "")) continue;
         const screen = screens.find((s) => String(s?.id || "") === screenId) || null;
         return resolveLiveMenuItemLabel(item, screen);
       }
     }
+    if (!hasConfiguredAlarmMenuItem && liveAlarmDrawerActive) return "Alarms";
+    if (!hasConfiguredTrendMenuItem && showMainDrawer && drawerView === "trends") return "Trends";
     return fallback;
   }, [
     activeDatabaseTable,
     activeScreen?.name,
     activeScreenId,
     drawerView,
+    hasConfiguredAlarmMenuItem,
+    hasConfiguredTrendMenuItem,
     isLiveMode,
+    liveAlarmDrawerActive,
     leftMenuGroupsVisible,
     resolveLiveMenuItemLabel,
     screenName,
@@ -16354,19 +16656,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
     for (const screen of taskbarVisibleScreens) {
       const id = String(screen?.id || "").trim();
       if (!id) continue;
-      const groupName = String(taskbarScreenGroupNameById.get(id) || "Ungrouped");
+      const groupName = String(taskbarScreenGroupNameById.get(id) || "").trim();
+      if (!groupName) continue;
       if (!byGroup.has(groupName)) byGroup.set(groupName, []);
       byGroup.get(groupName).push(screen);
     }
     return Array.from(byGroup.entries()).map(([groupName, items]) => ({ groupName, items }));
   }, [taskbarVisibleScreens, taskbarScreenGroupNameById]);
   const taskbarButtonWidthCh = useMemo(() => {
-    const labels = taskbarVisibleScreens.map((screen, index) =>
+    const labels = taskbarScreenGroups.flatMap((group) =>
+      (Array.isArray(group?.items) ? group.items : []).map((screen, index) =>
       String(screen?.name || "").trim() || `Screen ${index + 1}`
+      )
     );
     const longest = labels.reduce((m, x) => Math.max(m, String(x || "").length), 0);
     return Math.max(10, Math.min(26, longest + 2));
-  }, [taskbarVisibleScreens]);
+  }, [taskbarScreenGroups]);
   const opcLiveValueCount = useMemo(
     () => Object.keys(opcLiveValuesRef.current || {}).length,
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -17099,7 +17404,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const normalizedType = (() => {
       const next = String(type || "").toLowerCase();
       if (next === "data") return "data";
-      if (next === "reports") return "reports";
+      if (next === "page" || normalizeLiveMenuPageKey(next)) return "page";
       return "screen";
     })();
     setLiveMenuGroups((prev) => {
@@ -17117,10 +17422,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 restricted: false,
                 allowedRoleIds: [],
               }
-            : normalizedType === "reports"
+            : normalizedType === "page"
             ? {
                 id: `live-item-${uid()}`,
-                type: "reports",
+                type: "page",
+                pageKey: "reports",
                 label: "",
                 icon: "DescriptionRounded",
                 restricted: false,
@@ -17157,7 +17463,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             const nextType = (() => {
               const next = String(patch?.type || item.type || "").toLowerCase();
               if (next === "data") return "data";
-              if (next === "reports") return "reports";
+              if (next === "page" || normalizeLiveMenuPageKey(next)) return "page";
               return "screen";
             })();
             if (nextType === "data") {
@@ -17171,10 +17477,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 allowedRoleIds: normalizeRoleIdList(patch?.allowedRoleIds ?? item?.allowedRoleIds),
               };
             }
-            if (nextType === "reports") {
+            if (nextType === "page") {
+              const fallbackPageKey = normalizeLiveMenuPageKey(item?.pageKey) || "reports";
               return {
                 id: item.id,
-                type: "reports",
+                type: "page",
+                pageKey: normalizeLiveMenuPageKey(patch?.pageKey) || fallbackPageKey,
                 label: String(patch?.label ?? item.label ?? "").trim(),
                 icon: normalizeLiveMenuIcon(patch?.icon ?? item?.icon),
                 restricted: Boolean(patch?.restricted ?? item?.restricted),
@@ -17256,14 +17564,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const explicit = normalizeLiveMenuIcon(item?.icon);
     if (explicit) return explicit;
     if (type === "data") return "StorageRounded";
-    if (type === "reports") return "DescriptionRounded";
+    if (type === "page") return String(getLiveMenuPageDefinition(item?.pageKey)?.icon || "DescriptionRounded");
     return "MonitorRounded";
   }
 
   function resolveLiveMenuItemLabel(item, screen = null) {
     const type = String(item?.type || "").trim().toLowerCase();
     const isData = type === "data";
-    const isReports = type === "reports";
+    const isPage = type === "page";
     if (isData) {
       const configuredTable = String(item?.dataTable || "").trim();
       return (
@@ -17272,8 +17580,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         "Data"
       );
     }
-    if (isReports) {
-      return String(item?.label || "").trim() || "Reports";
+    if (isPage) {
+      return String(item?.label || "").trim() || String(getLiveMenuPageDefinition(item?.pageKey)?.label || "Page");
     }
     const targetScreen =
       screen ||
@@ -17287,6 +17595,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (screenNameLabel) return screenNameLabel;
     if (routeName) return routeName;
     return "Screen";
+  }
+
+  function isLiveMenuPageActive(pageKey) {
+    const normalizedPageKey = normalizeLiveMenuPageKey(pageKey);
+    if (!normalizedPageKey || !showMainDrawer) return false;
+    if (normalizedPageKey === "alarms") return liveAlarmDrawerActive;
+    if (normalizedPageKey === "trends") return drawerView === "trends";
+    if (normalizedPageKey === "reports") return drawerView === "reports";
+    if (normalizedPageKey === "tags") return drawerView === "tags";
+    if (normalizedPageKey === "opc") return drawerView === "opc";
+    if (normalizedPageKey === "server") return drawerView === "server";
+    if (normalizedPageKey === "plc") return drawerView === "plc" || drawerView === "code-gen-pro";
+    if (normalizedPageKey === "ai") return drawerView === "ai";
+    if (normalizedPageKey === "help") return drawerView === "help";
+    return false;
   }
 
   function activateLiveMenuItem(item) {
@@ -17313,8 +17636,44 @@ const CONTENT_FIT_HEADROOM = 0.94;
       openDrawer("database", { forceDatabaseDataTab: true });
       return;
     }
-    if (itemType === "reports") {
-      openDrawer("reports");
+    if (itemType === "page") {
+      const pageKey = normalizeLiveMenuPageKey(item?.pageKey);
+      if (pageKey === "alarms") {
+        openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath });
+        return;
+      }
+      if (pageKey === "trends") {
+        openDrawer("trends");
+        return;
+      }
+      if (pageKey === "reports") {
+        openDrawer("reports");
+        return;
+      }
+      if (pageKey === "tags") {
+        openDrawer("tags");
+        return;
+      }
+      if (pageKey === "opc") {
+        openDrawer("opc");
+        return;
+      }
+      if (pageKey === "server") {
+        openDrawer("server");
+        return;
+      }
+      if (pageKey === "plc") {
+        openDrawer("plc");
+        return;
+      }
+      if (pageKey === "ai") {
+        openDrawer("ai");
+        return;
+      }
+      if (pageKey === "help") {
+        openDrawer("help");
+        return;
+      }
       return;
     }
     const screenId = String(item.screenId || "");
@@ -17723,23 +18082,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const projectSettingsDirty = hasUnsavedProjectSettingsDraft();
   const securitySettingsDirty = hasUnsavedSecurityDraft();
   const useLightLiveDataSurface = isLiveMode && databaseDataOnlyMode && theme !== "dark";
-  const alarmDatabasePath = useMemo(() => {
-    const list = Array.isArray(databaseTablesForMenu) ? databaseTablesForMenu : [];
-    const lowered = list.map((t) => String(t || "").trim()).filter(Boolean);
-    const exactOpcAlarmState = lowered.find((t) => t.toLowerCase() === "opc_alarm_state");
-    if (exactOpcAlarmState) return exactOpcAlarmState;
-    const exactAlarms = lowered.find((t) => t.toLowerCase() === "alarms");
-    if (exactAlarms) return exactAlarms;
-    const containsAlarm = lowered.find((t) => t.toLowerCase().includes("alarm"));
-    if (containsAlarm) return containsAlarm;
-    return "opc_alarm_state";
-  }, [databaseTablesForMenu]);
-  const liveAlarmDrawerActive = useMemo(() => {
-    if (!showMainDrawer || drawerView !== "database") return false;
-    const target = String(alarmDatabasePath || "").trim().toLowerCase();
-    const active = String(activeDatabaseTable || "").trim().toLowerCase();
-    return Boolean(target) && active === target;
-  }, [activeDatabaseTable, alarmDatabasePath, drawerView, showMainDrawer]);
   const projectDrawerTabs = useMemo(
     () =>
       isLiveMode
@@ -17861,6 +18203,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   const stableOverlaySelectionUI = useStableEvent((...args) => overlaySelectionUI(...args));
   const stableOverlayGroupSelectionUI = useStableEvent((...args) => overlayGroupSelectionUI(...args));
   const stableShapeSelectionUI = useStableEvent((...args) => shapeSelectionUI(...args));
+  const stableMixedSelectionUI = useStableEvent((...args) => mixedSelectionUI(...args));
 
   useEffect(() => {
     const activeIds = new Set((liveActiveAlarms || []).map((a) => String(a?.id || "")).filter(Boolean));
@@ -18071,6 +18414,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         overlaySelectionUI={stableOverlaySelectionUI}
         overlayGroupSelectionUI={stableOverlayGroupSelectionUI}
         shapeSelectionUI={stableShapeSelectionUI}
+        mixedSelectionUI={stableMixedSelectionUI}
         overlayLocalBBox={overlayLocalBBox}
         marquee={marquee}
         pan={pan}
@@ -18213,6 +18557,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
+                {renderLiveEquipmentNotesSection(overlay, false)}
                 {renderLiveDataSection(overlay, details, false)}
                 {renderLiveMotorControls(overlay, false)}
                 {renderLiveDiverterControls(overlay, false)}
@@ -18334,6 +18679,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
+                {renderLiveEquipmentNotesSection(overlay, true)}
                 <div style={{ minHeight: 0, overflow: "visible", display: "grid", gap: 6, alignContent: "start" }}>
                 {renderLiveDataSection(overlay, details, true)}
                 </div>
@@ -18444,8 +18790,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Description: {getOverlayEquipmentDescription(overlay) || "-"}
                 </div>
+                {renderLiveEquipmentNotesSection(overlay, true)}
                 <div style={{ minHeight: 0, overflow: "visible", display: "grid", gap: 6, alignContent: "start" }}>
-                {renderLiveDataSection(overlay, details, true)}
+                  {renderLiveDataSection(overlay, details, true)}
                 </div>
                 <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 6 }}>
                 {renderLiveMotorControls(overlay, true)}
@@ -20934,7 +21281,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
               liveMenuMobileItems.map(({ groupName, item }, idx) => {
                 const itemType = String(item?.type || "").trim().toLowerCase();
                 const isData = itemType === "data";
-                const isReports = itemType === "reports";
+                const isPage = itemType === "page";
                 const screen = itemType === "screen" ? screens.find((s) => s.id === item.screenId) || null : null;
                 const label = resolveLiveMenuItemLabel(item, screen);
                 const active = isData
@@ -20943,8 +21290,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                     (String(item?.dataTable || "").trim()
                       ? String(item?.dataTable || "").trim() === activeDatabaseTable
                       : true)
-                  : isReports
-                  ? showMainDrawer && drawerView === "reports"
+                  : isPage
+                  ? isLiveMenuPageActive(item?.pageKey)
                   : String(item?.screenId || "") === String(activeScreenId);
                 const locked = !canOpenLiveMenuItem(item);
                 const iconKey = getLiveMenuItemIconKey(item, itemType);
@@ -21319,7 +21666,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   {!groupCollapsed && group.items.map((item) => {
                     const itemType = String(item?.type || "").trim().toLowerCase();
                     const isData = itemType === "data";
-                    const isReports = itemType === "reports";
+                    const isPage = itemType === "page";
                     const isScreen = itemType === "screen";
                     const screen = isScreen ? screens.find((s) => s.id === item.screenId) || null : null;
                     const label = resolveLiveMenuItemLabel(item, screen);
@@ -21329,8 +21676,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                         (String(item.dataTable || "").trim()
                           ? String(item.dataTable || "").trim() === activeDatabaseTable
                           : true)
-                      : isReports
-                      ? showMainDrawer && drawerView === "reports"
+                      : isPage
+                      ? isLiveMenuPageActive(item?.pageKey)
                       : String(item.screenId || "") === String(activeScreenId);
                     const locked = !canOpenLiveMenuItem(item);
                     const iconKey = getLiveMenuItemIconKey(item, itemType);
@@ -21534,7 +21881,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 No live menu items configured.
               </div>
             )}
-            {canViewDataPages ? (
+            {!hasConfiguredAlarmMenuItem && canViewDataPages ? (
               <button
                 onClick={() => openDrawer("database", { forceDatabaseDataTab: true, databasePath: alarmDatabasePath })}
                 data-preserve-style="true"
@@ -21576,7 +21923,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 {liveMenuIsExpanded ? <span>Alarms</span> : null}
               </button>
             ) : null}
-            {canViewArea("tags") ? (
+            {!hasConfiguredTrendMenuItem && canViewArea("tags") ? (
               <button
                 onClick={() => openDrawer("trends")}
                 data-preserve-style="true"
@@ -22302,7 +22649,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   </button>
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                  Build grouped live menu entries from canvas screens, data tables, or reports.
+                  Build grouped live menu entries from canvas screens, data tables, or builder-backed pages and forms.
                 </div>
                 <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
                   Menu changes save automatically.
@@ -22362,11 +22709,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
                           + Data
                         </button>
                         <button
-                          onClick={() => addLiveMenuItem(group.id, "reports")}
+                          onClick={() => addLiveMenuItem(group.id, "page")}
                           style={{ ...topMenuTextButtonStyle, fontSize: 11, padding: "6px 8px" }}
-                          title="Add Reports Item"
+                          title="Add Page Item"
                         >
-                          + Reports
+                          + Page
                         </button>
                       </div>
                       <div style={{ display: "grid", gap: 6 }}>
@@ -22407,7 +22754,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
                             >
                               <option value="screen">Canvas</option>
                               <option value="data">Data</option>
-                              <option value="reports">Reports</option>
+                              <option value="page">Page</option>
                             </select>
                             <div style={{ position: "relative" }} data-live-menu-icon-picker="1">
                               <button
@@ -22587,21 +22934,26 @@ const CONTENT_FIT_HEADROOM = 0.94;
                                   <option value="">No tables</option>
                                 )}
                               </select>
-                            ) : item.type === "reports" ? (
-                              <div
+                            ) : item.type === "page" ? (
+                              <select
+                                value={normalizeLiveMenuPageKey(item.pageKey) || "reports"}
+                                onChange={(e) => updateLiveMenuItem(group.id, item.id, { pageKey: e.target.value })}
                                 style={{
                                   border: "1px solid var(--border)",
                                   background: "var(--bg)",
-                                  color: "var(--text-muted)",
+                                  color: "var(--text)",
                                   borderRadius: 6,
                                   padding: "5px 6px",
                                   fontSize: 11,
-                                  fontWeight: 700,
+                                  fontWeight: 600,
                                 }}
-                                title="Opens Reports drawer"
                               >
-                                Reports Page
-                              </div>
+                                {LIVE_MENU_PAGE_OPTIONS.map((page) => (
+                                  <option key={`menu-page-option-${page.pageKey}`} value={page.pageKey}>
+                                    {page.label}
+                                  </option>
+                                ))}
+                              </select>
                             ) : (
                               <select
                                 value={item.screenId || ""}

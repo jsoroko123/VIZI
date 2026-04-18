@@ -1,0 +1,4861 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import CanvasSvg from "../../../../app/src/components/CanvasSvg.jsx";
+import ImportModal from "../../../../app/src/components/ImportModal.jsx";
+import { stripOuterSvg } from "../../../../app/src/utils/svgSanitize.js";
+
+const MODULE_ID = "com.mesora.perspective.drawing";
+const MODULE_URL_ALIAS = "mesora-drawing";
+const MODULE_RESOURCE_BASE = "/res/mesora-drawing";
+const MODULE_DATA_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/ignition-tags`,
+    `/main/data/${MODULE_URL_ALIAS}/ignition-tags`,
+    `/data/${MODULE_ID}/ignition-tags`,
+    `/main/data/${MODULE_ID}/ignition-tags`
+];
+const MODULE_TAG_VALUE_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/ignition-tag-values`,
+    `/main/data/${MODULE_URL_ALIAS}/ignition-tag-values`,
+    `/data/${MODULE_ID}/ignition-tag-values`,
+    `/main/data/${MODULE_ID}/ignition-tag-values`
+];
+const SVG_LIBRARY_MANIFEST_URL = `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`;
+const SVG_RAW_CACHE_MAX = 80;
+const DEFAULT_FILL = "#CCCCCC";
+const DEFAULT_STROKE = "#808080";
+const NORMALIZED_SVG_STROKE_WIDTH = 1.5;
+const DEFAULT_IGNITION_FILL_MAP = Object.freeze([
+    Object.freeze({ value: "1", color: "#ef4444" }),
+    Object.freeze({ value: "2", color: "#f59e0b" }),
+    Object.freeze({ value: "3", color: "#22c55e" }),
+    Object.freeze({ value: "4", color: "#f59e0b" }),
+    Object.freeze({ value: "5", color: "#ef4444" }),
+    Object.freeze({ value: "6", color: "#f97316" }),
+    Object.freeze({ value: "16", color: "#7f1d1d" })
+]);
+const DEFAULT_CANVAS_WIDTH = 1668;
+const DEFAULT_CANVAS_HEIGHT = 1401;
+const CANVAS_RULER_SIZE = 24;
+const PROPERTY_PANEL_WIDTH = 300;
+const TOOLBAR_WIDTH = 220;
+const COLLAPSED_TOOLBAR_WIDTH = 116;
+const TOOLBAR_INSET = 16;
+const TOOLBAR_DRAWER_GAP = -6;
+const SVG_DRAWER_MIN_WIDTH = 300;
+const SVG_DRAWER_PREFERRED_WIDTH = 348;
+const EMPTY_MAP = Object.freeze({});
+const EMPTY_ARRAY = Object.freeze([]);
+const NOOP = () => {};
+
+function isPlainObject(value) {
+    return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function getComponentPropSource(componentProps) {
+    const nested = componentProps?.props;
+    if (isPlainObject(nested)) {
+        return nested;
+    }
+    return isPlainObject(componentProps) ? componentProps : {};
+}
+
+function coerceArray(value) {
+    return Array.isArray(value) ? value : [];
+}
+
+function normalizeIgnitionTagEntries(payload) {
+    const rawEntries = coerceArray(payload?.tags ?? payload);
+    const seen = new Set();
+    const out = [];
+
+    rawEntries.forEach((entry) => {
+        const path = String(entry?.path || "").trim();
+        if (!path) {
+            return;
+        }
+
+        const key = path.toLowerCase();
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+
+        const provider = String(entry?.provider || "").trim()
+            || ((path.match(/^\[([^\]]+)\]/)?.[1] || "").trim());
+
+        out.push({
+            path,
+            provider: provider || "Tags",
+            name: String(entry?.name || "").trim() || path,
+            objectType: String(entry?.objectType || "").trim(),
+            hasChildren: Boolean(entry?.hasChildren)
+        });
+    });
+
+    out.sort((left, right) => {
+        const providerCompare = String(left.provider || "").localeCompare(String(right.provider || ""), undefined, { sensitivity: "base" });
+        if (providerCompare !== 0) {
+            return providerCompare;
+        }
+        return String(left.path || "").localeCompare(String(right.path || ""), undefined, { sensitivity: "base" });
+    });
+
+    return out;
+}
+
+function cloneDefaultIgnitionFillMappings(source = DEFAULT_IGNITION_FILL_MAP) {
+    return coerceArray(source)
+        .map((entry) => {
+            const value = String(entry?.value ?? "").trim();
+            const color = String(entry?.color ?? "").trim();
+            if (!value || !color) {
+                return null;
+            }
+            return { value, color };
+        })
+        .filter(Boolean);
+}
+
+function normalizeIgnitionFillBindingMappings(value) {
+    const normalized = coerceArray(value)
+        .map((entry) => {
+            const color = String(entry?.color ?? "").trim();
+            const mappingValue = String(
+                entry?.value
+                ?? entry?.state
+                ?? entry?.field
+                ?? entry?.input
+                ?? ""
+            ).trim();
+            if (!mappingValue || !color) {
+                return null;
+            }
+            return {
+                value: mappingValue,
+                color
+            };
+        })
+        .filter(Boolean);
+
+    return normalized.length ? normalized : cloneDefaultIgnitionFillMappings();
+}
+
+function updateSvgInnerStrokeWidth(inner, strokeWidth) {
+    if (!inner) return inner;
+    const sw = Number.parseFloat(strokeWidth);
+    if (!Number.isFinite(sw) || sw <= 0) return inner;
+    const value = String(sw);
+
+    let next = String(inner);
+    next = next.replace(/stroke-width\s*=\s*['"][^'"]*['"]/gi, `stroke-width="${value}"`);
+    next = next.replace(/stroke-width\s*:\s*[^;\"']+/gi, `stroke-width:${value}`);
+    next = next.replace(/vector-effect\s*=\s*['"][^'"]*['"]/gi, 'vector-effect="non-scaling-stroke"');
+    next = next.replace(/vector-effect\s*:\s*[^;\"']+/gi, "vector-effect:non-scaling-stroke");
+
+    next = next.replace(
+        /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*?)(\/?)>/gi,
+        (match, tag, attrs, selfClose) => {
+            const strokeIsNone = /stroke\s*=\s*['"]\s*none\s*['"]|stroke\s*:\s*none/i.test(attrs);
+            if (strokeIsNone) return match;
+
+            let nextAttrs = String(attrs || "");
+
+            if (!/stroke-width\s*=|stroke-width\s*:/i.test(nextAttrs)) {
+                nextAttrs += ` stroke-width="${value}"`;
+            }
+
+            if (!/vector-effect\s*=|vector-effect\s*:/i.test(nextAttrs)) {
+                nextAttrs += ' vector-effect="non-scaling-stroke"';
+            }
+
+            return `<${tag}${nextAttrs}${selfClose}>`;
+        }
+    );
+
+    return next;
+}
+
+function getOverlayFillBinding(overlay) {
+    const direct = overlay?.bindings?.fill;
+    if (isPlainObject(direct)) {
+        return direct;
+    }
+    const legacy = overlay?.fillBinding;
+    if (isPlainObject(legacy)) {
+        return legacy;
+    }
+    return null;
+}
+
+function getOverlayFillBindingTagPath(overlay) {
+    const binding = getOverlayFillBinding(overlay);
+    const tagPath = String(
+        binding?.tagPath
+        ?? binding?.path
+        ?? binding?.sourcePath
+        ?? overlay?.tagPath
+        ?? ""
+    ).trim();
+    return tagPath;
+}
+
+function isDiverterOverlay(overlay) {
+    return String(overlay?.eType || "").trim().toLowerCase().includes("diverter");
+}
+
+function createIgnitionFillBinding(tagPath, fallbackColor, existingBinding = null) {
+    const normalizedTagPath = String(tagPath || "").trim();
+    const nextFallbackColor = String(fallbackColor || DEFAULT_FILL).trim() || DEFAULT_FILL;
+    const nextMappings = normalizeIgnitionFillBindingMappings(
+        existingBinding?.transform?.mappings
+        ?? existingBinding?.mappings
+    );
+
+    return {
+        type: "tag",
+        source: "ignition",
+        property: "fill",
+        tagPath: normalizedTagPath,
+        transform: {
+            type: "map",
+            inputType: "value",
+            mappings: nextMappings,
+            fallbackColor: nextFallbackColor
+        }
+    };
+}
+
+function applyOverlayIgnitionFillBinding(overlay, rawTagPath) {
+    const nextTagPath = String(rawTagPath ?? "").trim();
+    const currentBindings = isPlainObject(overlay?.bindings) ? overlay.bindings : {};
+    const isDiverter = isDiverterOverlay(overlay);
+
+    if (!nextTagPath) {
+        const { fill: _removedFillBinding, ...restBindings } = currentBindings;
+        return {
+            ...overlay,
+            tagPath: "",
+            bindings: Object.keys(restBindings).length ? restBindings : undefined
+        };
+    }
+
+    if (isDiverter) {
+        const { fill: _removedFillBinding, ...restBindings } = currentBindings;
+        return {
+            ...overlay,
+            tagPath: nextTagPath,
+            bindings: Object.keys(restBindings).length ? restBindings : undefined
+        };
+    }
+
+    const existingBinding = getOverlayFillBinding(overlay);
+    const fallbackColor = String(
+        existingBinding?.transform?.fallbackColor
+        ?? overlay?.fill
+        ?? DEFAULT_FILL
+    ).trim() || DEFAULT_FILL;
+
+    return {
+        ...overlay,
+        tagPath: nextTagPath,
+        bindings: {
+            ...currentBindings,
+            fill: createIgnitionFillBinding(nextTagPath, fallbackColor, existingBinding)
+        }
+    };
+}
+
+function applyOverlayFillFallbackColor(overlay, rawFill) {
+    const nextFill = String(rawFill ?? "").trim();
+    const existingBinding = getOverlayFillBinding(overlay);
+
+    if (!existingBinding) {
+        return {
+            ...overlay,
+            fill: nextFill
+        };
+    }
+
+    const currentBindings = isPlainObject(overlay?.bindings) ? overlay.bindings : {};
+    return {
+        ...overlay,
+        fill: nextFill,
+        bindings: {
+            ...currentBindings,
+            fill: createIgnitionFillBinding(
+                getOverlayFillBindingTagPath(overlay),
+                nextFill || DEFAULT_FILL,
+                existingBinding
+            )
+        }
+    };
+}
+
+function normalizeIgnitionTagValues(payload) {
+    const out = new Map();
+
+    coerceArray(payload?.values ?? payload).forEach((entry) => {
+        const path = String(entry?.path ?? "").trim();
+        if (!path) {
+            return;
+        }
+        out.set(path, entry?.value ?? null);
+        out.set(path.toLowerCase(), entry?.value ?? null);
+    });
+
+    return out;
+}
+
+function toPositiveNumber(value) {
+    const next = Number(value);
+    return Number.isFinite(next) && next > 0 ? next : null;
+}
+
+function readDefaultSizeCandidate(candidate) {
+    if (!candidate) {
+        return null;
+    }
+
+    try {
+        if (typeof candidate.readObject === "function") {
+            const readObjectValue = candidate.readObject("defaultSize", null);
+            const width = toPositiveNumber(readObjectValue?.width);
+            const height = toPositiveNumber(readObjectValue?.height);
+            if (width && height) {
+                return { width, height };
+            }
+        }
+    } catch (_error) {
+    }
+
+    try {
+        if (typeof candidate.read === "function") {
+            const readValue = candidate.read("defaultSize", null);
+            const width = toPositiveNumber(readValue?.width);
+            const height = toPositiveNumber(readValue?.height);
+            if (width && height) {
+                return { width, height };
+            }
+        }
+    } catch (_error) {
+    }
+
+    const width = toPositiveNumber(candidate?.defaultSize?.width ?? candidate?.width);
+    const height = toPositiveNumber(candidate?.defaultSize?.height ?? candidate?.height);
+    if (width && height) {
+        return { width, height };
+    }
+
+    return null;
+}
+
+function escapeAttributeValue(value) {
+    const raw = String(value || "");
+    if (!raw) {
+        return "";
+    }
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+        return CSS.escape(raw);
+    }
+    return raw
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"');
+}
+
+function readMeasuredComponentSize(componentProps) {
+    if (typeof document === "undefined" || typeof document.querySelectorAll !== "function") {
+        return null;
+    }
+
+    const nestedProps = getComponentPropSource(componentProps);
+    const componentPaths = [
+        componentProps?.store?.path,
+        nestedProps?.store?.path
+    ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+
+    let bestRect = null;
+    let bestArea = -1;
+
+    componentPaths.forEach((path) => {
+        const selector = `[data-component-path="${escapeAttributeValue(path)}"]`;
+        document.querySelectorAll(selector).forEach((node) => {
+            if (!node || typeof node.getBoundingClientRect !== "function") {
+                return;
+            }
+            const rect = node.getBoundingClientRect();
+            const width = toPositiveNumber(rect.width);
+            const height = toPositiveNumber(rect.height);
+            if (!width || !height) {
+                return;
+            }
+            const area = width * height;
+            if (area > bestArea) {
+                bestArea = area;
+                bestRect = { width, height };
+            }
+        });
+    });
+
+    return bestRect;
+}
+
+function resolveCanvasHostSize(componentProps) {
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const measuredSize = readMeasuredComponentSize(componentProps);
+    if (measuredSize) {
+        return measuredSize;
+    }
+    const candidates = [
+        componentProps?.store?.view?.page?.rootView?.props,
+        nestedProps?.store?.view?.page?.rootView?.props,
+        componentProps?.store?.view?.page?.props,
+        nestedProps?.store?.view?.page?.props,
+        componentProps?.store?.view?.page?.rootView,
+        nestedProps?.store?.view?.page?.rootView,
+        globalClient?.store?.view?.page?.rootView?.props,
+        globalClient?.store?.view?.page?.props,
+        globalClient?.store?.view?.page?.rootView
+    ];
+
+    for (const candidate of candidates) {
+        const resolved = readDefaultSizeCandidate(candidate);
+        if (resolved) {
+            return resolved;
+        }
+    }
+
+    return {
+        width: DEFAULT_CANVAS_WIDTH,
+        height: DEFAULT_CANVAS_HEIGHT
+    };
+}
+
+function normalizeViewBox(documentValue, fallbackSize = null) {
+    const fallbackWidth = toPositiveNumber(fallbackSize?.width) || DEFAULT_CANVAS_WIDTH;
+    const fallbackHeight = toPositiveNumber(fallbackSize?.height) || DEFAULT_CANVAS_HEIGHT;
+    const viewBox = documentValue && documentValue.viewBox;
+    if (typeof viewBox === "string" && viewBox.trim()) {
+        const trimmed = viewBox.trim();
+        if (fallbackSize && trimmed === "0 0 1200 800") {
+            return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+        }
+        return trimmed;
+    }
+    if (isPlainObject(viewBox)) {
+        const x = Number(viewBox.x) || 0;
+        const y = Number(viewBox.y) || 0;
+        const width = Number(viewBox.width) || 100;
+        const height = Number(viewBox.height) || 100;
+        if (fallbackSize && x === 0 && y === 0 && width === 1200 && height === 800) {
+            return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+        }
+        return `${x} ${y} ${width} ${height}`;
+    }
+    return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+}
+
+function parseViewBoxParts(raw) {
+    const parts = String(raw || "")
+        .trim()
+        .split(/\s+/)
+        .map((value) => Number(value));
+
+    if (parts.length === 4 && parts.every(Number.isFinite)) {
+        return {
+            x: parts[0],
+            y: parts[1],
+            width: Math.max(1, parts[2]),
+            height: Math.max(1, parts[3])
+        };
+    }
+
+    return {
+        x: 0,
+        y: 0,
+        width: DEFAULT_CANVAS_WIDTH,
+        height: DEFAULT_CANVAS_HEIGHT
+    };
+}
+
+function getModelValue(props, key, fallback) {
+    const source = getComponentPropSource(props);
+    const direct = source[key];
+    if (direct !== undefined) {
+        return direct;
+    }
+    if (isPlainObject(source.model) && source.model[key] !== undefined) {
+        return source.model[key];
+    }
+    return fallback;
+}
+
+function detectPerspectivePreviewMode(props) {
+    const nestedProps = getComponentPropSource(props);
+    const parentStore = props?.store?.view?.page?.parent;
+    const nestedParentStore = nestedProps?.store?.view?.page?.parent;
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+
+    if (typeof parentStore?.isPreviewing === "boolean") {
+        return parentStore.isPreviewing;
+    }
+
+    if (typeof props?.store?.isPreviewing === "boolean") {
+        return props.store.isPreviewing;
+    }
+
+    if (typeof nestedParentStore?.isPreviewing === "boolean") {
+        return nestedParentStore.isPreviewing;
+    }
+
+    if (typeof nestedProps?.store?.isPreviewing === "boolean") {
+        return nestedProps.store.isPreviewing;
+    }
+
+    if (typeof globalClient?.isPreviewing === "boolean") {
+        return globalClient.isPreviewing;
+    }
+
+    if (typeof globalClient?.store?.isPreviewing === "boolean") {
+        return globalClient.store.isPreviewing;
+    }
+
+    if (typeof globalDesigner?.isPreviewing === "boolean") {
+        return globalDesigner.isPreviewing;
+    }
+
+    if (typeof globalDesigner?.store?.isPreviewing === "boolean") {
+        return globalDesigner.store.isPreviewing;
+    }
+
+    if (typeof props?.eventsEnabled === "boolean") {
+        return props.eventsEnabled;
+    }
+
+    if (typeof nestedProps?.eventsEnabled === "boolean") {
+        return nestedProps.eventsEnabled;
+    }
+
+    if (globalDesigner || parentStore?.isDesigner === true || props?.store?.isDesigner === true) {
+        return false;
+    }
+
+    return true;
+}
+
+function getPersistedArrayValue(props, key, fallback = EMPTY_ARRAY) {
+    const source = getComponentPropSource(props);
+    const direct = source?.[key];
+    const modelValue = isPlainObject(source?.model) ? source.model[key] : undefined;
+
+    if (Array.isArray(direct) && direct.length > 0) {
+        return direct;
+    }
+    if (Array.isArray(modelValue) && modelValue.length > 0) {
+        return modelValue;
+    }
+    if (Array.isArray(direct)) {
+        return direct;
+    }
+    if (Array.isArray(modelValue)) {
+        return modelValue;
+    }
+    return fallback;
+}
+
+function isSvgMarkup(value) {
+    return typeof value === "string" && value.includes("<svg");
+}
+
+function parseLen(value) {
+    if (value == null) {
+        return null;
+    }
+    const next = Number.parseFloat(String(value).trim());
+    return Number.isFinite(next) ? next : null;
+}
+
+function inferETypeFromFileKey(fileKey) {
+    const raw = String(fileKey || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const leaf = raw.split("/").pop() || raw;
+    return leaf.replace(/\.svg$/i, "").trim();
+}
+
+function extractSvgEType(rawSvg, fileKey = "") {
+    try {
+        const doc = new DOMParser().parseFromString(rawSvg, "image/svg+xml");
+        const svg = doc.querySelector("svg");
+        if (svg) {
+            const direct =
+                String(svg.getAttribute("eType") || "").trim()
+                || String(svg.getAttribute("etype") || "").trim()
+                || String(svg.getAttribute("data-etype") || "").trim();
+            if (direct) {
+                return direct;
+            }
+        }
+    } catch (_error) {
+    }
+    return inferETypeFromFileKey(fileKey);
+}
+
+function extractKeySize(rawSvg) {
+    try {
+        const doc = new DOMParser().parseFromString(rawSvg, "image/svg+xml");
+        const svg = doc.querySelector("svg");
+        if (!svg) {
+            return null;
+        }
+
+        const rootWidth = parseLen(svg.getAttribute("kewidth"));
+        const rootHeight = parseLen(svg.getAttribute("keheight"));
+        if (rootWidth > 0 && rootHeight > 0) {
+            return { w: rootWidth, h: rootHeight };
+        }
+
+        const keyedNode = svg.querySelector("[kewidth][keheight]");
+        if (keyedNode) {
+            const keyedWidth = parseLen(keyedNode.getAttribute("kewidth"));
+            const keyedHeight = parseLen(keyedNode.getAttribute("keheight"));
+            if (keyedWidth > 0 && keyedHeight > 0) {
+                return { w: keyedWidth, h: keyedHeight };
+            }
+        }
+
+        const widthAttr = parseLen(svg.getAttribute("width"));
+        const heightAttr = parseLen(svg.getAttribute("height"));
+        if (widthAttr > 0 && heightAttr > 0) {
+            return { w: widthAttr, h: heightAttr };
+        }
+
+        const viewBox = svg.getAttribute("viewBox");
+        if (viewBox) {
+            const parts = viewBox.trim().split(/[\s,]+/).map(Number);
+            if (parts.length === 4 && Number.isFinite(parts[2]) && Number.isFinite(parts[3]) && parts[2] > 0 && parts[3] > 0) {
+                return { w: parts[2], h: parts[3] };
+            }
+        }
+    } catch (_error) {
+    }
+
+    return null;
+}
+
+function createId(prefix = "id") {
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function normalizeSvgCatalogEntries(value) {
+    return (Array.isArray(value) ? value : [])
+        .map((entry) => {
+            const key = String(entry?.key || "").trim();
+            const name = String(entry?.name || key.split("/").pop() || "").trim();
+            const url = String(entry?.url || "").trim();
+            if (!key || !name || !url) {
+                return null;
+            }
+            return { key, name, url };
+        })
+        .filter(Boolean);
+}
+
+function writeComponentProp(props, path, value) {
+    const candidatePaths = path.startsWith("model.") ? [path] : [path, `model.${path}`];
+    const writers = [];
+
+    if (props?.store?.props && typeof props.store.props.write === "function") {
+        writers.push(props.store.props.write.bind(props.store.props));
+    }
+    if (props?.store && typeof props.store.write === "function") {
+        writers.push(props.store.write.bind(props.store));
+    }
+
+    let wrote = false;
+    writers.forEach((writePath) => {
+        candidatePaths.forEach((candidatePath) => {
+            try {
+                writePath(candidatePath, value);
+                wrote = true;
+            } catch (_error) {
+            }
+        });
+    });
+
+    return wrote;
+}
+
+function pointsEqual(left, right) {
+    return Math.abs(Number(left?.x || 0) - Number(right?.x || 0)) < 0.001
+        && Math.abs(Number(left?.y || 0) - Number(right?.y || 0)) < 0.001;
+}
+
+function clonePoints(points) {
+    return (Array.isArray(points) ? points : []).map((point) => ({
+        x: Number(point?.x || 0),
+        y: Number(point?.y || 0)
+    }));
+}
+
+function buildShapeSnapshot(shape) {
+    if (!shape || typeof shape !== "object") {
+        return null;
+    }
+    if (shape.type === "text") {
+        return {
+            id: String(shape.id || ""),
+            kind: "text",
+            x: Number(shape.x || 0),
+            y: Number(shape.y || 0)
+        };
+    }
+    if (Array.isArray(shape.points)) {
+        return {
+            id: String(shape.id || ""),
+            kind: "polyline",
+            points: clonePoints(shape.points)
+        };
+    }
+    return {
+        id: String(shape.id || ""),
+        kind: String(shape.type || "shape"),
+        x: Number(shape.x || 0),
+        y: Number(shape.y || 0),
+        width: Number(shape.width || 0),
+        height: Number(shape.height || 0)
+    };
+}
+
+function applyShapeSnapshotDelta(shape, snapshot, dx, dy) {
+    if (!shape || !snapshot) {
+        return shape;
+    }
+    if (snapshot.kind === "text") {
+        return {
+            ...shape,
+            x: snapshot.x + dx,
+            y: snapshot.y + dy
+        };
+    }
+    if (snapshot.kind === "polyline") {
+        return {
+            ...shape,
+            points: snapshot.points.map((point) => ({
+                x: point.x + dx,
+                y: point.y + dy
+            }))
+        };
+    }
+    return {
+        ...shape,
+        x: snapshot.x + dx,
+        y: snapshot.y + dy,
+        width: snapshot.width,
+        height: snapshot.height
+    };
+}
+
+function buildOverlayDragSnapshot(overlay) {
+    if (!overlay || typeof overlay !== "object") {
+        return null;
+    }
+    return {
+        id: String(overlay.id || ""),
+        tx: Number(overlay.tx || 0),
+        ty: Number(overlay.ty || 0)
+    };
+}
+
+function buildShapeResizeSnapshot(shape) {
+    if (!shape || typeof shape !== "object") {
+        return null;
+    }
+    return {
+        id: String(shape.id || ""),
+        type: String(shape.type || ""),
+        x: Number(shape.x || 0),
+        y: Number(shape.y || 0),
+        width: Number(shape.width || 0),
+        height: Number(shape.height || 0),
+        fontSize: Number(shape.fontSize || 24),
+        points: Array.isArray(shape.points) ? clonePoints(shape.points) : null
+    };
+}
+
+function applyShapeResizeSnapshot(shape, snapshot, startBounds, nextBounds) {
+    if (!shape || !snapshot || !startBounds || !nextBounds) {
+        return shape;
+    }
+
+    const baseWidth = Math.max(1, Number(startBounds.width || 0));
+    const baseHeight = Math.max(1, Number(startBounds.height || 0));
+    const scaleX = Math.max(0.0001, Number(nextBounds.width || 0) / baseWidth);
+    const scaleY = Math.max(0.0001, Number(nextBounds.height || 0) / baseHeight);
+    const nextX = Number(nextBounds.x || 0) + (Number(snapshot.x || 0) - Number(startBounds.x || 0)) * scaleX;
+    const nextY = Number(nextBounds.y || 0) + (Number(snapshot.y || 0) - Number(startBounds.y || 0)) * scaleY;
+
+    if (Array.isArray(snapshot.points)) {
+        return {
+            ...shape,
+            points: snapshot.points.map((point) => ({
+                x: Number(nextBounds.x || 0) + (Number(point.x || 0) - Number(startBounds.x || 0)) * scaleX,
+                y: Number(nextBounds.y || 0) + (Number(point.y || 0) - Number(startBounds.y || 0)) * scaleY
+            }))
+        };
+    }
+
+    if (snapshot.type === "text") {
+        return {
+            ...shape,
+            x: nextX,
+            y: nextY,
+            fontSize: Math.max(8, Number(snapshot.fontSize || 24) * ((scaleX + scaleY) / 2))
+        };
+    }
+
+    return {
+        ...shape,
+        x: nextX,
+        y: nextY,
+        width: Math.max(1, Number(snapshot.width || 0) * scaleX),
+        height: Math.max(1, Number(snapshot.height || 0) * scaleY)
+    };
+}
+
+function dist2(left, right) {
+    const dx = Number(left?.x || 0) - Number(right?.x || 0);
+    const dy = Number(left?.y || 0) - Number(right?.y || 0);
+    return dx * dx + dy * dy;
+}
+
+function closestPointOnSegment(point, start, end) {
+    const ax = Number(start?.x || 0);
+    const ay = Number(start?.y || 0);
+    const bx = Number(end?.x || 0);
+    const by = Number(end?.y || 0);
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 1e-9) {
+        return { x: ax, y: ay };
+    }
+    const px = Number(point?.x || 0);
+    const py = Number(point?.y || 0);
+    const t = clamp((((px - ax) * dx) + ((py - ay) * dy)) / lengthSquared, 0, 1);
+    return {
+        x: ax + t * dx,
+        y: ay + t * dy
+    };
+}
+
+function resizeCursorForCorner(corner) {
+    const key = String(corner || "").toUpperCase();
+    return key === "TR" || key === "BL" ? "nesw-resize" : "nwse-resize";
+}
+
+function cloneDeepValue(value) {
+    if (typeof globalThis.structuredClone === "function") {
+        return globalThis.structuredClone(value);
+    }
+    return JSON.parse(JSON.stringify(value));
+}
+
+function DockSection({ children, title }) {
+    return (
+        <div style={{ display: "grid", gap: 8 }}>
+            <div
+                style={{
+                    fontSize: 10,
+                    fontWeight: 800,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "rgba(226, 232, 240, 0.72)"
+                }}
+            >
+                {title}
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+                {children}
+            </div>
+        </div>
+    );
+}
+
+function DockButton({ active = false, children, disabled = false, onClick }) {
+    return (
+        <button
+            type="button"
+            disabled={disabled}
+            onClick={onClick}
+            style={{
+                width: "100%",
+                border: active ? "1px solid rgba(96, 165, 250, 0.8)" : "1px solid rgba(71, 85, 105, 0.9)",
+                background: active ? "linear-gradient(180deg, #4f8cff 0%, #3567f3 100%)" : "rgba(15, 23, 42, 0.9)",
+                color: "#f8fafc",
+                borderRadius: 12,
+                padding: "10px 12px",
+                minHeight: 40,
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                cursor: disabled ? "default" : "pointer",
+                fontSize: 13,
+                fontWeight: 700,
+                boxShadow: active ? "0 10px 24px rgba(37, 99, 235, 0.28)" : "none",
+                opacity: disabled ? 0.58 : 1
+            }}
+        >
+            {children}
+        </button>
+    );
+}
+
+function isInteractiveEditorTarget(target) {
+    if (!target || typeof target !== "object") {
+        return false;
+    }
+    const tag = String(target.tagName || "").toLowerCase();
+    if (
+        tag === "input"
+        || tag === "textarea"
+        || tag === "select"
+        || tag === "button"
+        || target.isContentEditable === true
+    ) {
+        return true;
+    }
+    return typeof target.closest === "function"
+        && Boolean(target.closest("[data-vizi-properties-panel='1'], [data-vizi-import-drawer='1'], [data-vizi-dropdown='1'], [data-vizi-dropdown-menu='1']"));
+}
+
+function stopInteractivePropagation(event) {
+    event?.stopPropagation?.();
+}
+
+function PropertySection({ children, title }) {
+    return (
+        <div style={{ display: "grid", gap: 10 }}>
+            {title ? (
+                <div
+                    style={{
+                        fontSize: 10,
+                        fontWeight: 800,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        color: "rgba(226, 232, 240, 0.72)"
+                    }}
+                >
+                    {title}
+                </div>
+            ) : null}
+            <div style={{ display: "grid", gap: 10 }}>
+                {children}
+            </div>
+        </div>
+    );
+}
+
+function PropertyField({ disabled = false, label, onCommit, placeholder = "", value = "" }) {
+    const [draft, setDraft] = useState(value == null ? "" : String(value));
+
+    useEffect(() => {
+        setDraft(value == null ? "" : String(value));
+    }, [value]);
+
+    const commit = useCallback(() => {
+        if (disabled || typeof onCommit !== "function") {
+            return;
+        }
+        onCommit(draft);
+    }, [disabled, draft, onCommit]);
+
+    return (
+        <label
+            style={{ display: "grid", gap: 5 }}
+            onMouseDown={stopInteractivePropagation}
+            onClick={stopInteractivePropagation}
+            onDoubleClick={stopInteractivePropagation}
+        >
+            <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }}>
+                {label}
+            </span>
+            <input
+                type="text"
+                value={draft}
+                disabled={disabled}
+                placeholder={placeholder}
+                onChange={(event) => {
+                    setDraft(event.target.value);
+                }}
+                onBlur={commit}
+                onFocus={stopInteractivePropagation}
+                onPointerDown={stopInteractivePropagation}
+                onMouseDown={stopInteractivePropagation}
+                onMouseUp={stopInteractivePropagation}
+                onClick={stopInteractivePropagation}
+                onDoubleClick={stopInteractivePropagation}
+                onKeyDown={(event) => {
+                    stopInteractivePropagation(event);
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        commit();
+                        event.currentTarget.blur();
+                    }
+                }}
+                onKeyUp={stopInteractivePropagation}
+                style={{
+                    width: "100%",
+                    height: 36,
+                    boxSizing: "border-box",
+                    borderRadius: 10,
+                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                    background: disabled ? "rgba(15, 23, 42, 0.55)" : "rgba(15, 23, 42, 0.92)",
+                    color: "#f8fafc",
+                    padding: "0 10px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    opacity: disabled ? 0.78 : 1
+                }}
+            />
+        </label>
+    );
+}
+
+function EditorDropdownField({
+    disabled = false,
+    helperText = "",
+    helperTone = "muted",
+    label,
+    onChange,
+    placeholder = "Select...",
+    sections = EMPTY_ARRAY,
+    value = ""
+}) {
+    const rootRef = useRef(null);
+    const [open, setOpen] = useState(false);
+    const normalizedValue = value == null ? "" : String(value);
+    const normalizedSections = coerceArray(sections)
+        .map((section) => ({
+            label: String(section?.label || "").trim(),
+            items: coerceArray(section?.items)
+                .map((item) => {
+                    const itemValue = String(item?.value ?? "");
+                    const itemLabel = String(item?.label || itemValue).trim();
+                    if (!itemLabel) {
+                        return null;
+                    }
+                    return {
+                        value: itemValue,
+                        label: itemLabel
+                    };
+                })
+                .filter(Boolean)
+        }))
+        .filter((section) => section.items.length > 0);
+
+    const selectedItem = normalizedSections
+        .flatMap((section) => section.items)
+        .find((item) => item.value === normalizedValue);
+    const displayLabel = selectedItem?.label || placeholder;
+
+    useEffect(() => {
+        if (!open) {
+            return undefined;
+        }
+        const handleWindowPointerDown = (event) => {
+            const root = rootRef.current;
+            if (root && root.contains(event.target)) {
+                return;
+            }
+            setOpen(false);
+        };
+        window.addEventListener("pointerdown", handleWindowPointerDown, true);
+        return () => {
+            window.removeEventListener("pointerdown", handleWindowPointerDown, true);
+        };
+    }, [open]);
+
+    return (
+        <div
+            ref={rootRef}
+            data-vizi-dropdown="1"
+            style={{ display: "grid", gap: 5 }}
+            onMouseDown={stopInteractivePropagation}
+            onClick={stopInteractivePropagation}
+            onDoubleClick={stopInteractivePropagation}
+        >
+            <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }}>
+                {label}
+            </span>
+            <div style={{ position: "relative" }}>
+                <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={(event) => {
+                        stopInteractivePropagation(event);
+                        if (!disabled) {
+                            setOpen((current) => !current);
+                        }
+                    }}
+                    onPointerDown={stopInteractivePropagation}
+                    onMouseDown={stopInteractivePropagation}
+                    onMouseUp={stopInteractivePropagation}
+                    onDoubleClick={stopInteractivePropagation}
+                    style={{
+                        width: "100%",
+                        minHeight: 36,
+                        boxSizing: "border-box",
+                        borderRadius: 10,
+                        border: "1px solid rgba(71, 85, 105, 0.9)",
+                        background: disabled ? "rgba(15, 23, 42, 0.55)" : "rgba(15, 23, 42, 0.92)",
+                        color: "#f8fafc",
+                        padding: "8px 10px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        cursor: disabled ? "default" : "pointer",
+                        opacity: disabled ? 0.78 : 1,
+                        textAlign: "left"
+                    }}
+                >
+                    <span
+                        style={{
+                            minWidth: 0,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap"
+                        }}
+                    >
+                        {displayLabel}
+                    </span>
+                    <span style={{ color: "rgba(226, 232, 240, 0.72)", fontSize: 11 }}>
+                        {open ? "▲" : "▼"}
+                    </span>
+                </button>
+
+                {open && !disabled ? (
+                    <div
+                        data-vizi-dropdown-menu="1"
+                        style={{
+                            marginTop: 6,
+                            overflowY: "auto",
+                            maxHeight: 220,
+                            padding: 8,
+                            borderRadius: 12,
+                            border: "1px solid rgba(71, 85, 105, 0.92)",
+                            background: "rgba(2, 6, 23, 0.98)",
+                            boxShadow: "0 20px 40px rgba(2, 6, 23, 0.38)",
+                            display: "grid",
+                            gap: 6
+                        }}
+                        onPointerDown={stopInteractivePropagation}
+                        onMouseDown={stopInteractivePropagation}
+                        onMouseUp={stopInteractivePropagation}
+                        onClick={stopInteractivePropagation}
+                        onDoubleClick={stopInteractivePropagation}
+                    >
+                        {normalizedSections.map((section, sectionIndex) => (
+                            <div key={`${section.label || "section"}-${sectionIndex}`} style={{ display: "grid", gap: 4 }}>
+                                {section.label ? (
+                                    <div
+                                        style={{
+                                            padding: "2px 6px 4px",
+                                            fontSize: 10,
+                                            fontWeight: 800,
+                                            letterSpacing: "0.08em",
+                                            textTransform: "uppercase",
+                                            color: "rgba(148, 163, 184, 0.88)"
+                                        }}
+                                    >
+                                        {section.label}
+                                    </div>
+                                ) : null}
+                                {section.items.map((item) => {
+                                    const active = item.value === normalizedValue;
+                                    return (
+                                        <button
+                                            key={`${section.label || "option"}-${item.value}-${item.label}`}
+                                            type="button"
+                                            onClick={(event) => {
+                                                stopInteractivePropagation(event);
+                                                setOpen(false);
+                                                if (typeof onChange === "function") {
+                                                    onChange(item.value);
+                                                }
+                                            }}
+                                            onPointerDown={stopInteractivePropagation}
+                                            onMouseDown={stopInteractivePropagation}
+                                            onMouseUp={stopInteractivePropagation}
+                                            style={{
+                                                width: "100%",
+                                                border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
+                                                background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
+                                                color: "#f8fafc",
+                                                borderRadius: 10,
+                                                padding: "8px 10px",
+                                                fontSize: 12,
+                                                fontWeight: active ? 700 : 600,
+                                                textAlign: "left",
+                                                cursor: "pointer"
+                                            }}
+                                        >
+                                            {item.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        ))}
+                    </div>
+                ) : null}
+            </div>
+            {helperText ? (
+                <div
+                    style={{
+                        fontSize: 10,
+                        lineHeight: 1.4,
+                        color: helperTone === "error" ? "#fecaca" : "rgba(226, 232, 240, 0.68)"
+                    }}
+                >
+                    {helperText}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function PropertyTagPathField({
+    disabled = false,
+    error = "",
+    label,
+    loading = false,
+    onCommit,
+    options = EMPTY_ARRAY,
+    value = ""
+}) {
+    const currentValue = value == null ? "" : String(value);
+    const groupedOptions = coerceArray(options).reduce((acc, option) => {
+        const provider = String(option?.provider || "Tags").trim() || "Tags";
+        if (!acc[provider]) {
+            acc[provider] = [];
+        }
+        acc[provider].push(option);
+        return acc;
+    }, {});
+    const hasCurrentOption = coerceArray(options).some((option) => String(option?.path || "").trim() === currentValue);
+    const sections = [
+        {
+            items: [
+                { value: "", label: "No tag" },
+                ...(!hasCurrentOption && currentValue
+                    ? [{ value: currentValue, label: `${currentValue} (current)` }]
+                    : [])
+            ]
+        },
+        ...Object.keys(groupedOptions).map((provider) => ({
+            label: provider,
+            items: groupedOptions[provider].map((option) => ({
+                value: option.path,
+                label: option.path
+            }))
+        }))
+    ];
+    const helperText = error
+        ? error
+        : loading
+            ? "Loading Ignition tags..."
+            : `${coerceArray(options).length} Ignition tags available`;
+
+    return (
+        <EditorDropdownField
+            label={label}
+            value={currentValue}
+            disabled={disabled || (loading && !options.length)}
+            sections={sections}
+            placeholder="Select tag..."
+            helperText={helperText}
+            helperTone={error ? "error" : "muted"}
+            onChange={(nextValue) => {
+                if (typeof onCommit === "function") {
+                    onCommit(nextValue);
+                }
+            }}
+        />
+    );
+}
+
+function PropertyReadout({ label, value = "" }) {
+    return (
+        <div style={{ display: "grid", gap: 5 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }}>
+                {label}
+            </span>
+            <div
+                style={{
+                    minHeight: 36,
+                    boxSizing: "border-box",
+                    borderRadius: 10,
+                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                    background: "rgba(15, 23, 42, 0.55)",
+                    color: "#cbd5e1",
+                    padding: "8px 10px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center"
+                }}
+            >
+                {value == null || value === "" ? "None" : String(value)}
+            </div>
+        </div>
+    );
+}
+
+function formatPanelNumber(value) {
+    const next = Number(value);
+    if (!Number.isFinite(next)) {
+        return "";
+    }
+    if (Math.abs(next - Math.round(next)) < 0.001) {
+        return String(Math.round(next));
+    }
+    return String(Math.round(next * 100) / 100);
+}
+
+function parsePanelNumber(value) {
+    const next = Number.parseFloat(String(value ?? "").trim());
+    return Number.isFinite(next) ? next : null;
+}
+
+function getShapeBounds(shape) {
+    if (!shape || typeof shape !== "object") {
+        return null;
+    }
+    if (Array.isArray(shape.points)) {
+        const points = clonePoints(shape.points);
+        if (!points.length) {
+            return null;
+        }
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        points.forEach((point) => {
+            minX = Math.min(minX, Number(point.x || 0));
+            minY = Math.min(minY, Number(point.y || 0));
+            maxX = Math.max(maxX, Number(point.x || 0));
+            maxY = Math.max(maxY, Number(point.y || 0));
+        });
+        return {
+            x: minX,
+            y: minY,
+            width: Math.max(1, maxX - minX),
+            height: Math.max(1, maxY - minY)
+        };
+    }
+    return {
+        x: Number(shape.x || 0),
+        y: Number(shape.y || 0),
+        width: Math.max(0, Number(shape.width || 0)),
+        height: Math.max(0, Number(shape.height || 0))
+    };
+}
+
+function getOverlayBounds(overlay) {
+    const bbox = overlay?.bbox;
+    if (!bbox || typeof bbox !== "object") {
+        return null;
+    }
+    const scale = Math.max(0.0001, Math.abs(Number(overlay?.scale || 1)));
+    return {
+        x: Number(overlay?.tx || 0) + scale * Number(bbox.x || 0),
+        y: Number(overlay?.ty || 0) + scale * Number(bbox.y || 0),
+        width: Math.max(1, scale * Number(bbox.width || 0)),
+        height: Math.max(1, scale * Number(bbox.height || 0))
+    };
+}
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function toggleIn(list, id) {
+    const key = String(id || "").trim();
+    const source = coerceArray(list).map((value) => String(value || "").trim()).filter(Boolean);
+    if (!key) {
+        return source;
+    }
+    return source.includes(key)
+        ? source.filter((value) => value !== key)
+        : [...source, key];
+}
+
+function rectFromPoints(start, end) {
+    const startX = Number(start?.x || 0);
+    const startY = Number(start?.y || 0);
+    const endX = Number(end?.x || 0);
+    const endY = Number(end?.y || 0);
+    return {
+        x: Math.min(startX, endX),
+        y: Math.min(startY, endY),
+        width: Math.abs(endX - startX),
+        height: Math.abs(endY - startY)
+    };
+}
+
+function rectsIntersect(left, right) {
+    if (!left || !right) {
+        return false;
+    }
+    return (
+        Number(left.x || 0) <= Number(right.x || 0) + Number(right.width || 0)
+        && Number(left.x || 0) + Number(left.width || 0) >= Number(right.x || 0)
+        && Number(left.y || 0) <= Number(right.y || 0) + Number(right.height || 0)
+        && Number(left.y || 0) + Number(left.height || 0) >= Number(right.y || 0)
+    );
+}
+
+function unionBounds(bounds) {
+    const items = (Array.isArray(bounds) ? bounds : []).filter(Boolean);
+    if (!items.length) {
+        return null;
+    }
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    items.forEach((item) => {
+        minX = Math.min(minX, Number(item.x || 0));
+        minY = Math.min(minY, Number(item.y || 0));
+        maxX = Math.max(maxX, Number(item.x || 0) + Number(item.width || 0));
+        maxY = Math.max(maxY, Number(item.y || 0) + Number(item.height || 0));
+    });
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+        return null;
+    }
+
+    return {
+        x: minX,
+        y: minY,
+        width: Math.max(1, maxX - minX),
+        height: Math.max(1, maxY - minY)
+    };
+}
+
+function overlayScale(overlay) {
+    return Math.max(0.0001, Math.abs(Number(overlay?.scale || 1)));
+}
+
+function worldFromLocal(overlay, x, y) {
+    const scale = overlayScale(overlay);
+    return {
+        x: Number(overlay?.tx || 0) + scale * Number(x || 0),
+        y: Number(overlay?.ty || 0) + scale * Number(y || 0)
+    };
+}
+
+function distance(left, right) {
+    const dx = Number(left?.x || 0) - Number(right?.x || 0);
+    const dy = Number(left?.y || 0) - Number(right?.y || 0);
+    return Math.hypot(dx, dy);
+}
+
+export default function PerspectiveViziCanvasBridge(props) {
+    const rootRef = useRef(null);
+    const svgRef = useRef(null);
+    const svgRawCacheRef = useRef(new Map());
+    const sourceDocument = isPlainObject(props.document) ? props.document : {};
+    const hostSize = resolveCanvasHostSize(props);
+    const viewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, hostSize));
+    const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
+    const externalOverlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
+    const externalSelectedIds = getModelValue(props, "selectedIds", EMPTY_ARRAY);
+    const externalSelectedOverlayIds = getModelValue(props, "selectedOverlayIds", EMPTY_ARRAY);
+    const externalTool = String(getModelValue(props, "tool", "select") || "select");
+    const externalShowGrid = Boolean(getModelValue(props, "showGrid", false));
+    const externalGridSizeRaw = Number(getModelValue(props, "gridSize", 20));
+    const externalGridSize = Number.isFinite(externalGridSizeRaw) && externalGridSizeRaw > 0
+        ? externalGridSizeRaw
+        : 20;
+    const externalToolbarCollapsed = Boolean(getModelValue(props, "toolbarCollapsed", false));
+    const externalShowRulers = Boolean(getModelValue(props, "showRulers", false));
+    const externalShowTagPaths = Boolean(getModelValue(props, "showTagPaths", false));
+    const externalSelectionMode = String(getModelValue(props, "selectionMode", "all") || "all");
+    const externalStrokeNormalizeWidthRaw = Number(getModelValue(props, "strokeNormalizeWidth", NORMALIZED_SVG_STROKE_WIDTH));
+    const externalStrokeNormalizeWidth = Number.isFinite(externalStrokeNormalizeWidthRaw) && externalStrokeNormalizeWidthRaw > 0
+        ? externalStrokeNormalizeWidthRaw
+        : NORMALIZED_SVG_STROKE_WIDTH;
+    const svgLibraryEnabled = Boolean(getModelValue(props, "svgLibraryEnabled", true));
+    const externalShapesKey = JSON.stringify(coerceArray(externalShapes));
+    const externalOverlaysKey = JSON.stringify(coerceArray(externalOverlays));
+    const externalSelectedIdsKey = JSON.stringify(coerceArray(externalSelectedIds));
+    const externalSelectedOverlayIdsKey = JSON.stringify(coerceArray(externalSelectedOverlayIds));
+    const [shapes, setShapesState] = useState(coerceArray(externalShapes));
+    const [svgOverlays, setSvgOverlaysState] = useState(coerceArray(externalOverlays));
+    const [selectedIds, setSelectedIds] = useState(coerceArray(externalSelectedIds));
+    const [selectedOverlayIds, setSelectedOverlayIds] = useState(coerceArray(externalSelectedOverlayIds));
+    const [tool, setToolState] = useState(externalTool);
+    const [showGrid, setShowGridState] = useState(externalShowGrid);
+    const [toolbarCollapsed, setToolbarCollapsedState] = useState(externalToolbarCollapsed);
+    const [showRulers, setShowRulersState] = useState(externalShowRulers);
+    const [showTagPaths, setShowTagPathsState] = useState(externalShowTagPaths);
+    const [selectionMode, setSelectionModeState] = useState(externalSelectionMode);
+    const [strokeNormalizeWidthDraft, setStrokeNormalizeWidthDraft] = useState(formatPanelNumber(externalStrokeNormalizeWidth));
+    const [drawing, setDrawing] = useState(null);
+    const [dragState, setDragState] = useState(null);
+    const [marquee, setMarquee] = useState(null);
+    const [editingId, setEditingId] = useState(null);
+    const [selectedSegment, setSelectedSegment] = useState(null);
+    const [dragHandle, setDragHandle] = useState(null);
+    const [shapeResize, setShapeResize] = useState(null);
+    const [overlayResize, setOverlayResize] = useState(null);
+    const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY);
+    const [svgLibraryError, setSvgLibraryError] = useState("");
+    const [ignitionTagOptions, setIgnitionTagOptions] = useState(EMPTY_ARRAY);
+    const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => new Map());
+    const [ignitionTagsError, setIgnitionTagsError] = useState("");
+    const [ignitionTagsLoading, setIgnitionTagsLoading] = useState(false);
+    const [importOpen, setImportOpen] = useState(false);
+    const [propertiesSelectionKey, setPropertiesSelectionKey] = useState("");
+    const [rootSize, setRootSize] = useState({
+        width: DEFAULT_CANVAS_WIDTH,
+        height: DEFAULT_CANVAS_HEIGHT
+    });
+    const shapesRef = useRef(coerceArray(externalShapes));
+    const overlaysRef = useRef(coerceArray(externalOverlays));
+    const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
+    const historyRef = useRef({ past: [], future: [], current: null });
+    const historyRestoreRef = useRef(false);
+
+    useEffect(() => {
+        shapesRef.current = shapes;
+    }, [shapes]);
+
+    useEffect(() => {
+        overlaysRef.current = svgOverlays;
+    }, [svgOverlays]);
+
+    useEffect(() => {
+        const node = rootRef.current;
+        if (!node || typeof node.getBoundingClientRect !== "function") {
+            return undefined;
+        }
+
+        const updateRootSize = () => {
+            const rect = node.getBoundingClientRect();
+            const width = toPositiveNumber(rect?.width) || DEFAULT_CANVAS_WIDTH;
+            const height = toPositiveNumber(rect?.height) || DEFAULT_CANVAS_HEIGHT;
+            setRootSize((previous) => (
+                previous.width === width && previous.height === height
+                    ? previous
+                    : { width, height }
+            ));
+        };
+
+        updateRootSize();
+
+        if (typeof ResizeObserver === "function") {
+            const observer = new ResizeObserver(() => {
+                updateRootSize();
+            });
+            observer.observe(node);
+            return () => observer.disconnect();
+        }
+
+        if (typeof window !== "undefined") {
+            window.addEventListener("resize", updateRootSize);
+            return () => window.removeEventListener("resize", updateRootSize);
+        }
+
+        return undefined;
+    }, []);
+
+    useEffect(() => {
+        const next = coerceArray(externalShapes);
+        shapesRef.current = next;
+        setShapesState(next);
+    }, [externalShapesKey]);
+
+    useEffect(() => {
+        const next = coerceArray(externalOverlays);
+        overlaysRef.current = next;
+        setSvgOverlaysState(next);
+    }, [externalOverlaysKey]);
+
+    useEffect(() => {
+        setSelectedIds(coerceArray(externalSelectedIds));
+    }, [externalSelectedIdsKey]);
+
+    useEffect(() => {
+        setSelectedOverlayIds(coerceArray(externalSelectedOverlayIds));
+    }, [externalSelectedOverlayIdsKey]);
+
+    useEffect(() => {
+        setToolState(externalTool);
+    }, [externalTool]);
+
+    useEffect(() => {
+        setShowGridState(externalShowGrid);
+    }, [externalShowGrid]);
+
+    useEffect(() => {
+        setShowRulersState(externalShowRulers);
+    }, [externalShowRulers]);
+
+    useEffect(() => {
+        setShowTagPathsState(externalShowTagPaths);
+    }, [externalShowTagPaths]);
+
+    useEffect(() => {
+        setToolbarCollapsedState(externalToolbarCollapsed);
+    }, [externalToolbarCollapsed]);
+
+    useEffect(() => {
+        setStrokeNormalizeWidthDraft(formatPanelNumber(externalStrokeNormalizeWidth));
+    }, [externalStrokeNormalizeWidth]);
+
+    useEffect(() => {
+        setSelectionModeState(externalSelectionMode);
+    }, [externalSelectionMode]);
+
+    const overlayFillBindingPaths = useMemo(() => {
+        const seen = new Set();
+        const out = [];
+
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const candidates = [
+                getOverlayFillBindingTagPath(overlay),
+                String(overlay?.tagPath || "").trim()
+            ];
+
+            candidates.forEach((path) => {
+                const key = String(path || "").toLowerCase();
+                if (!path || seen.has(key)) {
+                    return;
+                }
+                seen.add(key);
+                out.push(path);
+            });
+        });
+
+        return out;
+    }, [svgOverlays]);
+    const overlayFillBindingPathsKey = JSON.stringify(overlayFillBindingPaths);
+
+    useEffect(() => {
+        let cancelled = false;
+        setIgnitionTagsLoading(true);
+        setIgnitionTagsError("");
+
+        const loadIgnitionTags = async () => {
+            let lastError = "Failed to load Ignition tags.";
+
+            for (const routePath of MODULE_DATA_ROUTE_CANDIDATES) {
+                try {
+                    const response = await fetch(routePath, {
+                        cache: "no-store",
+                        credentials: "same-origin"
+                    });
+                    if (!response.ok) {
+                        lastError = `Failed to load Ignition tags (${response.status}).`;
+                        continue;
+                    }
+
+                    const payload = await response.json();
+                    if (cancelled) {
+                        return;
+                    }
+
+                    setIgnitionTagOptions(normalizeIgnitionTagEntries(payload));
+                    setIgnitionTagsError(String(payload?.error || "").trim());
+                    setIgnitionTagsLoading(false);
+                    return;
+                } catch (error) {
+                    lastError = String(error?.message || "Failed to load Ignition tags.");
+                }
+            }
+
+            if (!cancelled) {
+                setIgnitionTagOptions(EMPTY_ARRAY);
+                setIgnitionTagsError(lastError);
+                setIgnitionTagsLoading(false);
+            }
+        };
+
+        loadIgnitionTags();
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!overlayFillBindingPaths.length) {
+            setIgnitionTagValuesByPath((previous) => (previous.size ? new Map() : previous));
+            return undefined;
+        }
+
+        let cancelled = false;
+        let timerId = 0;
+        const queryValue = encodeURIComponent(JSON.stringify(overlayFillBindingPaths));
+
+        const loadIgnitionTagValues = async () => {
+            for (const routePath of MODULE_TAG_VALUE_ROUTE_CANDIDATES) {
+                try {
+                    const response = await fetch(`${routePath}?paths=${queryValue}`, {
+                        cache: "no-store",
+                        credentials: "same-origin"
+                    });
+                    if (!response.ok) {
+                        continue;
+                    }
+
+                    const payload = await response.json();
+                    if (cancelled) {
+                        return;
+                    }
+
+                    setIgnitionTagValuesByPath(normalizeIgnitionTagValues(payload));
+                    return;
+                } catch (_error) {
+                }
+            }
+
+            if (!cancelled) {
+                setIgnitionTagValuesByPath(new Map());
+            }
+        };
+
+        loadIgnitionTagValues();
+
+        if (typeof window !== "undefined" && typeof window.setInterval === "function") {
+            timerId = window.setInterval(loadIgnitionTagValues, 1000);
+        }
+
+        return () => {
+            cancelled = true;
+            if (timerId && typeof window !== "undefined" && typeof window.clearInterval === "function") {
+                window.clearInterval(timerId);
+            }
+        };
+    }, [overlayFillBindingPathsKey]);
+
+    const persistValue = useCallback(
+        (path, value) => {
+            writeComponentProp(props, path, value);
+        },
+        [props]
+    );
+
+    const persistShapes = useCallback(
+        (nextShapes) => {
+            persistValue("shapes", nextShapes);
+        },
+        [persistValue]
+    );
+
+    const persistSvgOverlays = useCallback(
+        (nextOverlays) => {
+            persistValue("svgOverlays", nextOverlays);
+        },
+        [persistValue]
+    );
+
+    const updateShapes = useCallback(
+        (updater, options = {}) => {
+            const nextShapes = coerceArray(
+                typeof updater === "function" ? updater(shapesRef.current) : updater
+            );
+            shapesRef.current = nextShapes;
+            setShapesState(nextShapes);
+            if (options.persist) {
+                persistShapes(nextShapes);
+            }
+            return nextShapes;
+        },
+        [persistShapes]
+    );
+
+    const updateSvgOverlays = useCallback(
+        (updater, options = {}) => {
+            const nextOverlays = coerceArray(
+                typeof updater === "function" ? updater(overlaysRef.current) : updater
+            );
+            overlaysRef.current = nextOverlays;
+            setSvgOverlaysState(nextOverlays);
+            if (options.persist) {
+                persistSvgOverlays(nextOverlays);
+            }
+            return nextOverlays;
+        },
+        [persistSvgOverlays]
+    );
+
+    const setTool = useCallback((nextTool) => {
+        const value = String(nextTool || "select");
+        setToolState(value);
+        persistValue("tool", value);
+    }, [persistValue]);
+
+    const setShowGrid = useCallback((nextValue) => {
+        const value = Boolean(nextValue);
+        setShowGridState(value);
+        persistValue("showGrid", value);
+    }, [persistValue]);
+
+    const setToolbarCollapsed = useCallback((nextValue) => {
+        const value = Boolean(nextValue);
+        setToolbarCollapsedState(value);
+        persistValue("toolbarCollapsed", value);
+        if (value) {
+            setImportOpen(false);
+        }
+    }, [persistValue]);
+
+    const setShowRulers = useCallback((nextValue) => {
+        const value = Boolean(nextValue);
+        setShowRulersState(value);
+        persistValue("showRulers", value);
+    }, [persistValue]);
+
+    const setShowTagPaths = useCallback((nextValue) => {
+        const value = Boolean(nextValue);
+        setShowTagPathsState(value);
+        persistValue("showTagPaths", value);
+    }, [persistValue]);
+
+    const setSelectionMode = useCallback((nextMode) => {
+        const value = String(nextMode || "all");
+        setSelectionModeState(value);
+        persistValue("selectionMode", value);
+    }, [persistValue]);
+
+    const resolvedStrokeNormalizeWidth = useMemo(() => {
+        const parsed = parsePanelNumber(strokeNormalizeWidthDraft);
+        return parsed != null && parsed > 0 ? parsed : NORMALIZED_SVG_STROKE_WIDTH;
+    }, [strokeNormalizeWidthDraft]);
+
+    const commitStrokeNormalizeWidth = useCallback(() => {
+        const value = resolvedStrokeNormalizeWidth;
+        setStrokeNormalizeWidthDraft(formatPanelNumber(value));
+        persistValue("strokeNormalizeWidth", value);
+        return value;
+    }, [persistValue, resolvedStrokeNormalizeWidth]);
+
+    const normalizeAllSvgStrokeWidths = useCallback(() => {
+        const strokeWidth = commitStrokeNormalizeWidth();
+        updateSvgOverlays(
+            (previous) => coerceArray(previous).map((overlay) => {
+                if (!overlay || overlay.widget) {
+                    return overlay;
+                }
+                return {
+                    ...overlay,
+                    strokeWidth,
+                    inner: updateSvgInnerStrokeWidth(overlay.inner, strokeWidth)
+                };
+            }),
+            { persist: true }
+        );
+    }, [commitStrokeNormalizeWidth, updateSvgOverlays]);
+
+    const makeHistorySnapshot = useCallback(() => ({
+        shapes: cloneDeepValue(shapesRef.current),
+        svgOverlays: cloneDeepValue(overlaysRef.current),
+        selectedIds: cloneDeepValue(selectedIds),
+        selectedOverlayIds: cloneDeepValue(selectedOverlayIds),
+        tool: String(tool || "select"),
+        editingId: editingId ? String(editingId) : null,
+        selectedSegment: selectedSegment ? cloneDeepValue(selectedSegment) : null
+    }), [editingId, selectedIds, selectedOverlayIds, selectedSegment, tool]);
+
+    const applyHistorySnapshot = useCallback((snapshot) => {
+        if (!snapshot || typeof snapshot !== "object") {
+            return;
+        }
+
+        historyRestoreRef.current = true;
+        const nextShapes = coerceArray(snapshot.shapes).map((shape) => cloneDeepValue(shape));
+        const nextOverlays = coerceArray(snapshot.svgOverlays).map((overlay) => cloneDeepValue(overlay));
+        shapesRef.current = nextShapes;
+        overlaysRef.current = nextOverlays;
+        setShapesState(nextShapes);
+        setSvgOverlaysState(nextOverlays);
+        persistShapes(nextShapes);
+        persistSvgOverlays(nextOverlays);
+        setSelectedIds(coerceArray(snapshot.selectedIds));
+        setSelectedOverlayIds(coerceArray(snapshot.selectedOverlayIds));
+        setToolState(String(snapshot.tool || "select"));
+        persistValue("tool", String(snapshot.tool || "select"));
+        setEditingId(snapshot.editingId ? String(snapshot.editingId) : null);
+        setSelectedSegment(snapshot.selectedSegment ? cloneDeepValue(snapshot.selectedSegment) : null);
+        setDrawing(null);
+        setDragState(null);
+        setDragHandle(null);
+        setShapeResize(null);
+        setOverlayResize(null);
+        setMarquee(null);
+        queueMicrotask(() => {
+            historyRestoreRef.current = false;
+        });
+    }, [persistShapes, persistSvgOverlays, persistValue]);
+
+    const undo = useCallback(() => {
+        const history = historyRef.current;
+        if (!history.past.length) {
+            return;
+        }
+        const previous = history.past.pop();
+        if (history.current) {
+            history.future.push(cloneDeepValue(history.current));
+        }
+        history.current = cloneDeepValue(previous);
+        applyHistorySnapshot(previous);
+    }, [applyHistorySnapshot]);
+
+    const redo = useCallback(() => {
+        const history = historyRef.current;
+        if (!history.future.length) {
+            return;
+        }
+        const next = history.future.pop();
+        if (history.current) {
+            history.past.push(cloneDeepValue(history.current));
+        }
+        history.current = cloneDeepValue(next);
+        applyHistorySnapshot(next);
+    }, [applyHistorySnapshot]);
+
+    useEffect(() => {
+        if (!svgLibraryEnabled) {
+            setSvgCatalogFiles(EMPTY_ARRAY);
+            setSvgLibraryError("");
+            setImportOpen(false);
+            return undefined;
+        }
+
+        let cancelled = false;
+        setSvgLibraryError("");
+
+        fetch(SVG_LIBRARY_MANIFEST_URL, { cache: "no-store" })
+            .then((response) => {
+                if (!response.ok) {
+                    throw new Error(`Failed to load SVG catalog (${response.status}).`);
+                }
+                return response.json();
+            })
+            .then((payload) => {
+                if (!cancelled) {
+                    setSvgCatalogFiles(normalizeSvgCatalogEntries(payload));
+                }
+            })
+            .catch((error) => {
+                if (!cancelled) {
+                    setSvgCatalogFiles(EMPTY_ARRAY);
+                    setSvgLibraryError(String(error?.message || "Failed to load SVG catalog."));
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [svgLibraryEnabled]);
+
+    const svgLibraryMap = useMemo(() => {
+        const out = {};
+        svgCatalogFiles.forEach((entry) => {
+            out[entry.key] = entry.url;
+        });
+        return out;
+    }, [svgCatalogFiles]);
+
+    const readSvgRaw = useCallback(async (entry, options = {}) => {
+        if (entry == null) {
+            return null;
+        }
+
+        const forceFresh = options?.forceFresh === true;
+        let value = typeof entry === "function" ? await entry() : entry;
+        if (value && typeof value === "object" && typeof value.default === "string") {
+            value = value.default;
+        }
+        if (typeof value !== "string") {
+            return null;
+        }
+        if (isSvgMarkup(value)) {
+            return value;
+        }
+
+        const url = value.trim();
+        if (!url) {
+            return null;
+        }
+
+        const cache = svgRawCacheRef.current;
+        if (!forceFresh && cache.has(url)) {
+            const cached = cache.get(url);
+            cache.delete(url);
+            cache.set(url, cached);
+            return cached;
+        }
+
+        const requestUrl = forceFresh
+            ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`
+            : url;
+        const response = await fetch(requestUrl, forceFresh ? { cache: "no-store" } : undefined);
+        if (!response.ok) {
+            throw new Error(`Failed to load SVG (${response.status}).`);
+        }
+        const raw = await response.text();
+
+        if (cache.has(url)) {
+            cache.delete(url);
+        }
+        cache.set(url, raw);
+        while (cache.size > SVG_RAW_CACHE_MAX) {
+            const oldest = cache.keys().next().value;
+            cache.delete(oldest);
+        }
+
+        return raw;
+    }, []);
+
+    const readSvgRawByKey = useCallback(
+        async (fileKey, options = {}) => readSvgRaw(svgLibraryMap[fileKey], options),
+        [readSvgRaw, svgLibraryMap]
+    );
+
+    const svgFiles = useMemo(
+        () => svgCatalogFiles
+            .map((entry) => ({ key: entry.key, name: entry.name }))
+            .sort((left, right) => left.name.localeCompare(right.name)),
+        [svgCatalogFiles]
+    );
+
+    const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
+    const pan = getModelValue(props, "pan", { x: 0, y: 0 });
+    const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
+    const previewActive = detectPerspectivePreviewMode(props);
+    const editorVisible = !previewActive;
+    const isLiveMode = previewActive;
+    const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
+    const theme = String(getModelValue(props, "theme", "light") || "light");
+    const canvasBackgroundColor = String(
+        getModelValue(
+            props,
+            "canvasBackgroundColor",
+            getModelValue(props, "backgroundColor", "#0f172a")
+        ) || "#0f172a"
+    );
+
+    const pointFromEvent = useCallback((event) => {
+        const svg = svgRef.current;
+        if (!svg) {
+            return { x: viewBox.width / 2, y: viewBox.height / 2 };
+        }
+
+        let svgX;
+        let svgY;
+        try {
+            if (typeof svg.createSVGPoint === "function") {
+                const point = svg.createSVGPoint();
+                point.x = Number(event?.clientX || 0);
+                point.y = Number(event?.clientY || 0);
+                const ctm = svg.getScreenCTM?.();
+                if (ctm && typeof ctm.inverse === "function") {
+                    const localPoint = point.matrixTransform(ctm.inverse());
+                    svgX = Number(localPoint?.x);
+                    svgY = Number(localPoint?.y);
+                }
+            }
+        } catch (_error) {
+        }
+
+        if (!Number.isFinite(svgX) || !Number.isFinite(svgY)) {
+            const rect = svg.getBoundingClientRect?.();
+            if (!rect || rect.width <= 0 || rect.height <= 0) {
+                return { x: viewBox.width / 2, y: viewBox.height / 2 };
+            }
+            svgX = (((Number(event?.clientX || 0) - Number(rect.left || 0)) / rect.width) * viewBox.width);
+            svgY = (((Number(event?.clientY || 0) - Number(rect.top || 0)) / rect.height) * viewBox.height);
+        }
+
+        const nextX = (svgX - Number(pan?.x || 0)) / zoom;
+        const nextY = (svgY - Number(pan?.y || 0)) / zoom;
+
+        return {
+            x: Math.max(0, Math.min(viewBox.width, nextX)),
+            y: Math.max(0, Math.min(viewBox.height, nextY))
+        };
+    }, [pan, viewBox.height, viewBox.width, zoom]);
+
+    const constrainHV = useCallback((from, to) => {
+        const dx = Number(to?.x || 0) - Number(from?.x || 0);
+        const dy = Number(to?.y || 0) - Number(from?.y || 0);
+        if (Math.abs(dx) >= Math.abs(dy)) {
+            return {
+                x: Number(to?.x || 0),
+                y: Number(from?.y || 0)
+            };
+        }
+        return {
+            x: Number(from?.x || 0),
+            y: Number(to?.y || 0)
+        };
+    }, []);
+
+    const constrainTo45DegreeAngle = useCallback((from, to) => {
+        const startX = Number(from?.x || 0);
+        const startY = Number(from?.y || 0);
+        const dx = Number(to?.x || 0) - startX;
+        const dy = Number(to?.y || 0) - startY;
+        const distanceToTarget = Math.hypot(dx, dy);
+        if (!Number.isFinite(distanceToTarget) || distanceToTarget <= 0.0001) {
+            return {
+                x: startX,
+                y: startY
+            };
+        }
+
+        const rawAngle = Math.atan2(dy, dx);
+        const snappedAngle = Math.round(rawAngle / (Math.PI / 4)) * (Math.PI / 4);
+        return {
+            x: startX + distanceToTarget * Math.cos(snappedAngle),
+            y: startY + distanceToTarget * Math.sin(snappedAngle)
+        };
+    }, []);
+
+    const snapPointToGrid = useCallback((point) => {
+        const grid = Math.max(0.1, Number(externalGridSize) || 20);
+        const nextX = Math.round(Number(point?.x || 0) / grid) * grid;
+        const nextY = Math.round(Number(point?.y || 0) / grid) * grid;
+        return {
+            x: Math.max(0, Math.min(viewBox.width, nextX)),
+            y: Math.max(0, Math.min(viewBox.height, nextY))
+        };
+    }, [externalGridSize, viewBox.height, viewBox.width]);
+
+    const maybeConstrainPolylinePoint = useCallback((id, point, event) => {
+        let nextPoint = {
+            x: Number(point?.x || 0),
+            y: Number(point?.y || 0)
+        };
+        const useStraightConstraint = Boolean(event?.altKey);
+        const useGridConstraint = Boolean(event?.shiftKey) && !useStraightConstraint;
+        const useAngleConstraint = Boolean((event?.ctrlKey || event?.metaKey) && !useStraightConstraint && !useGridConstraint);
+
+        if (useGridConstraint) {
+            nextPoint = snapPointToGrid(nextPoint);
+        }
+
+        if (!useStraightConstraint && !useAngleConstraint) {
+            return nextPoint;
+        }
+
+        const activeShape = shapesRef.current.find((shape) => String(shape?.id || "") === String(id || ""));
+        if (!activeShape || !Array.isArray(activeShape.points) || activeShape.points.length < 2) {
+            return nextPoint;
+        }
+
+        const fixed = clonePoints(activeShape.points).slice(0, -1);
+        const lastFixed = fixed[fixed.length - 1];
+        if (!lastFixed) {
+            return nextPoint;
+        }
+        if (useStraightConstraint) {
+            return constrainHV(lastFixed, nextPoint);
+        }
+        return constrainTo45DegreeAngle(lastFixed, nextPoint);
+    }, [constrainHV, constrainTo45DegreeAngle, snapPointToGrid]);
+
+    const isShapeSelectableByMode = useCallback((shape) => {
+        if (!shape || typeof shape !== "object") {
+            return false;
+        }
+        if (selectionMode === "all") {
+            return true;
+        }
+        if (selectionMode === "svg") {
+            return false;
+        }
+        return String(shape?.type || "").trim().toLowerCase() === "polyline" || Array.isArray(shape?.points);
+    }, [selectionMode]);
+
+    const overlaysSelectable = selectionMode !== "polyline";
+    const clearSelection = useCallback(() => {
+        setSelectedIds([]);
+        setSelectedOverlayIds([]);
+        setSelectedSegment(null);
+        setEditingId(null);
+    }, []);
+
+    useEffect(() => {
+        if (!editingId) {
+            return;
+        }
+        const stillExists = shapes.some((shape) => String(shape?.id || "") === String(editingId || ""));
+        if (!stillExists) {
+            setEditingId(null);
+            setSelectedSegment(null);
+        }
+    }, [editingId, shapes]);
+
+    useEffect(() => {
+        if (!editingId) {
+            return;
+        }
+        const stillSelected = selectedIds.some((id) => String(id || "") === String(editingId || ""));
+        if (!stillSelected) {
+            setEditingId(null);
+            setSelectedSegment(null);
+        }
+    }, [editingId, selectedIds]);
+
+    const historyDocumentKey = useMemo(
+        () => JSON.stringify({
+            shapes,
+            svgOverlays,
+            tool
+        }),
+        [shapes, svgOverlays, tool]
+    );
+
+    useEffect(() => {
+        if (drawing || dragState || dragHandle || shapeResize || overlayResize || marquee) {
+            return;
+        }
+        const snapshot = makeHistorySnapshot();
+        const history = historyRef.current;
+        if (historyRestoreRef.current) {
+            history.current = cloneDeepValue(snapshot);
+            return;
+        }
+        if (!history.current) {
+            history.current = cloneDeepValue(snapshot);
+            return;
+        }
+        const currentKey = JSON.stringify({
+            shapes: history.current.shapes,
+            svgOverlays: history.current.svgOverlays,
+            tool: history.current.tool
+        });
+        if (currentKey === historyDocumentKey) {
+            history.current = {
+                ...cloneDeepValue(snapshot),
+                shapes: history.current.shapes,
+                svgOverlays: history.current.svgOverlays,
+                tool: history.current.tool
+            };
+            return;
+        }
+        history.past.push(cloneDeepValue(history.current));
+        if (history.past.length > 100) {
+            history.past.shift();
+        }
+        history.future = [];
+        history.current = cloneDeepValue(snapshot);
+    }, [dragHandle, dragState, drawing, historyDocumentKey, makeHistorySnapshot, marquee, overlayResize, shapeResize]);
+
+    const overlayLocalBBox = useCallback((overlayId) => {
+        const overlay = overlaysRef.current.find((item) => String(item?.id || "") === String(overlayId || ""));
+        const bbox = overlay?.bbox;
+        if (!bbox || typeof bbox !== "object") {
+            return null;
+        }
+
+        const x = Number(bbox.x || bbox.left || 0);
+        const y = Number(bbox.y || bbox.top || 0);
+        const width = Number(bbox.width || bbox.w || 0);
+        const height = Number(bbox.height || bbox.h || 0);
+
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+
+        return {
+            x: Number.isFinite(x) ? x : 0,
+            y: Number.isFinite(y) ? y : 0,
+            width,
+            height
+        };
+    }, []);
+
+    const selectedShapeItems = useMemo(
+        () => shapes.filter((shape) => selectedIds.includes(String(shape?.id || ""))),
+        [selectedIds, shapes]
+    );
+
+    const selectedOverlayItems = useMemo(
+        () => svgOverlays.filter((overlay) => selectedOverlayIds.includes(String(overlay?.id || ""))),
+        [selectedOverlayIds, svgOverlays]
+    );
+
+    const selectedBBox = useMemo(
+        () => unionBounds([
+            ...selectedShapeItems.map((shape) => getShapeBounds(shape)),
+            ...selectedOverlayItems.map((overlay) => getOverlayBounds(overlay))
+        ]),
+        [selectedOverlayItems, selectedShapeItems]
+    );
+
+    const selectedShape = useMemo(() => {
+        if (selectedIds.length !== 1 || selectedOverlayIds.length !== 0) {
+            return null;
+        }
+        return shapes.find((shape) => String(shape?.id || "") === String(selectedIds[0] || "")) || null;
+    }, [selectedIds, selectedOverlayIds.length, shapes]);
+
+    const selectedOverlay = useMemo(() => {
+        if (selectedOverlayIds.length !== 1 || selectedIds.length !== 0) {
+            return null;
+        }
+        return svgOverlays.find((overlay) => String(overlay?.id || "") === String(selectedOverlayIds[0] || "")) || null;
+    }, [selectedIds.length, selectedOverlayIds, svgOverlays]);
+
+    const singleSelectionKey = useMemo(() => {
+        if (selectedOverlay) {
+            return `overlay:${String(selectedOverlay.id || "")}`;
+        }
+        if (selectedShape) {
+            return `shape:${String(selectedShape.id || "")}`;
+        }
+        return "";
+    }, [selectedOverlay, selectedShape]);
+
+    const propertiesVisible = editorVisible
+        && Boolean(singleSelectionKey)
+        && propertiesSelectionKey === singleSelectionKey;
+
+    const finishPolyline = useCallback(() => {
+        if (drawing?.kind !== "polyline") {
+            return;
+        }
+        const activeShape = shapesRef.current.find((shape) => String(shape?.id || "") === String(drawing.id || ""));
+        if (!activeShape) {
+            setDrawing(null);
+            return;
+        }
+        let nextPoints = clonePoints(activeShape.points);
+        if (nextPoints.length >= 2 && pointsEqual(nextPoints[nextPoints.length - 1], nextPoints[nextPoints.length - 2])) {
+            nextPoints = nextPoints.slice(0, -1);
+        }
+        if (nextPoints.length < 2) {
+            updateShapes(
+                (previous) => previous.filter((shape) => String(shape?.id || "") !== String(drawing.id || "")),
+                { persist: true }
+            );
+            setSelectedIds([]);
+        } else {
+            updateShapes(
+                (previous) => previous.map((shape) => (
+                    String(shape?.id || "") === String(drawing.id || "")
+                        ? { ...shape, points: nextPoints }
+                        : shape
+                )),
+                { persist: true }
+            );
+        }
+        setDrawing(null);
+        setSelectedSegment(null);
+        setEditingId(null);
+    }, [drawing, updateShapes]);
+
+    const openPropertiesForSelection = useCallback((key) => {
+        const nextKey = String(key || "").trim();
+        if (!nextKey) {
+            return;
+        }
+        setPropertiesSelectionKey(nextKey);
+    }, []);
+
+    const closePropertiesPanel = useCallback(() => {
+        setPropertiesSelectionKey("");
+    }, []);
+
+    const appendPolylinePoint = useCallback((id, point) => {
+        const shapeId = String(id || "");
+        if (!shapeId) {
+            return;
+        }
+
+        updateShapes((previous) => previous.map((shape) => {
+            if (String(shape?.id || "") !== shapeId || !Array.isArray(shape?.points)) {
+                return shape;
+            }
+
+            const points = clonePoints(shape.points);
+            const fixed = points.slice(0, Math.max(0, points.length - 1));
+            const lastFixed = fixed[fixed.length - 1];
+            const nextPoint = {
+                x: Number(point?.x) || 0,
+                y: Number(point?.y) || 0
+            };
+
+            const nextFixed =
+                lastFixed && pointsEqual(lastFixed, nextPoint)
+                    ? fixed
+                    : [...fixed, nextPoint];
+            const tail = nextFixed[nextFixed.length - 1];
+
+            if (!tail) {
+                return shape;
+            }
+
+            return {
+                ...shape,
+                points: [...nextFixed, { x: tail.x, y: tail.y }]
+            };
+        }), { persist: true });
+    }, [updateShapes]);
+
+    const commitPolylinePreviewPoint = useCallback((id, point, options = {}) => {
+        const shapeId = String(id || "");
+        if (!shapeId) {
+            return;
+        }
+
+        updateShapes((previous) => previous.map((shape) => {
+            if (String(shape?.id || "") !== shapeId || !Array.isArray(shape?.points) || !shape.points.length) {
+                return shape;
+            }
+
+            const points = clonePoints(shape.points);
+            points[points.length - 1] = {
+                x: Number(point?.x) || 0,
+                y: Number(point?.y) || 0
+            };
+
+            return {
+                ...shape,
+                points
+            };
+        }), { persist: Boolean(options.persist) });
+    }, [updateShapes]);
+
+    const finishActivePolylineAt = useCallback((id, point, event) => {
+        const shapeId = String(id || "");
+        if (!shapeId) {
+            return;
+        }
+        const finalPoint = maybeConstrainPolylinePoint(shapeId, point, event);
+        commitPolylinePreviewPoint(shapeId, finalPoint, { persist: false });
+        finishPolyline();
+    }, [commitPolylinePreviewPoint, finishPolyline, maybeConstrainPolylinePoint]);
+
+    const startOrAppendPolylineAt = useCallback((point, event) => {
+        if (drawing?.kind === "polyline" && drawing.id) {
+            if (Number(event?.detail || 0) >= 2) {
+                finishActivePolylineAt(drawing.id, point, event);
+                return;
+            }
+            appendPolylinePoint(drawing.id, maybeConstrainPolylinePoint(drawing.id, point, event));
+            return;
+        }
+
+        const startPoint = maybeConstrainPolylinePoint("", point, event);
+        const id = createId("polyline");
+        updateShapes((previous) => [
+            ...previous,
+            {
+                id,
+                type: "polyline",
+                points: [startPoint, startPoint],
+                stroke: DEFAULT_STROKE,
+                strokeWidth: 3,
+                fill: "none",
+                lineStyle: "solid",
+                tagPath: ""
+            }
+        ], { persist: false });
+        setSelectedIds([id]);
+        setSelectedOverlayIds([]);
+        setEditingId(null);
+        setSelectedSegment(null);
+        setDrawing({ kind: "polyline", id, start: startPoint });
+    }, [appendPolylinePoint, drawing, finishActivePolylineAt, maybeConstrainPolylinePoint, updateShapes]);
+
+    const deleteSelected = useCallback(() => {
+        const shapeIds = coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean);
+        const overlayIds = coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean);
+        if (!shapeIds.length && !overlayIds.length) {
+            return;
+        }
+
+        if (shapeIds.length) {
+            updateShapes(
+                (previous) => previous.filter((shape) => !shapeIds.includes(String(shape?.id || ""))),
+                { persist: true }
+            );
+        }
+
+        if (overlayIds.length) {
+            updateSvgOverlays(
+                (previous) => previous.filter((overlay) => !overlayIds.includes(String(overlay?.id || ""))),
+                { persist: true }
+            );
+        }
+
+        setSelectedIds([]);
+        setSelectedOverlayIds([]);
+        setSelectedSegment(null);
+        if (editingId && shapeIds.includes(String(editingId || ""))) {
+            setEditingId(null);
+        }
+    }, [editingId, selectedIds, selectedOverlayIds, updateShapes, updateSvgOverlays]);
+
+    const cancelPolyline = useCallback(() => {
+        if (drawing?.kind !== "polyline" || !drawing?.id) {
+            return;
+        }
+        updateShapes(
+            (previous) => previous.filter((shape) => String(shape?.id || "") !== String(drawing.id || "")),
+            { persist: true }
+        );
+        setDrawing(null);
+        clearSelection();
+        setTool("select");
+    }, [clearSelection, drawing, setTool, updateShapes]);
+
+    const removeCurrentPolylineSegment = useCallback(() => {
+        if (drawing?.kind !== "polyline" || !drawing?.id) {
+            return false;
+        }
+
+        const shapeId = String(drawing.id || "");
+        let handled = false;
+        let cancelled = false;
+
+        updateShapes((previous) => previous.flatMap((shape) => {
+            if (String(shape?.id || "") !== shapeId || !Array.isArray(shape?.points) || !shape.points.length) {
+                return [shape];
+            }
+
+            const points = clonePoints(shape.points);
+            const fixedPoints = points.slice(0, Math.max(0, points.length - 1));
+
+            if (fixedPoints.length <= 1) {
+                handled = true;
+                cancelled = true;
+                return [];
+            }
+
+            const nextFixedPoints = fixedPoints.slice(0, -1);
+            const tail = nextFixedPoints[nextFixedPoints.length - 1];
+            if (!tail) {
+                handled = true;
+                cancelled = true;
+                return [];
+            }
+
+            handled = true;
+            return [{
+                ...shape,
+                points: [...nextFixedPoints, { x: tail.x, y: tail.y }]
+            }];
+        }), { persist: true });
+
+        if (!handled) {
+            return false;
+        }
+
+        setSelectedSegment(null);
+        setEditingId(null);
+
+        if (cancelled) {
+            setDrawing(null);
+            setSelectedIds([]);
+            setSelectedOverlayIds([]);
+            return true;
+        }
+
+        setSelectedIds([shapeId]);
+        setSelectedOverlayIds([]);
+        return true;
+    }, [drawing, updateShapes]);
+
+    const copySelection = useCallback(() => {
+        const shapeIds = new Set(coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean));
+        const overlayIds = new Set(coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean));
+        const shapesCopy = shapesRef.current
+            .filter((shape) => shapeIds.has(String(shape?.id || "")))
+            .map((shape) => cloneDeepValue(shape));
+        const overlaysCopy = overlaysRef.current
+            .filter((overlay) => overlayIds.has(String(overlay?.id || "")))
+            .map((overlay) => cloneDeepValue(overlay));
+        if (!shapesCopy.length && !overlaysCopy.length) {
+            return;
+        }
+        clipboardRef.current = {
+            shapes: shapesCopy,
+            overlays: overlaysCopy,
+            pasteCount: 0
+        };
+    }, [selectedIds, selectedOverlayIds]);
+
+    const pasteClipboard = useCallback(() => {
+        const clipboard = clipboardRef.current;
+        const shapeCopies = coerceArray(clipboard?.shapes);
+        const overlayCopies = coerceArray(clipboard?.overlays);
+        if (!shapeCopies.length && !overlayCopies.length) {
+            return;
+        }
+
+        const pasteCount = Number(clipboard?.pasteCount || 0) + 1;
+        const dx = 20 * pasteCount;
+        const dy = 20 * pasteCount;
+        const nextShapeIds = [];
+        const nextOverlayIds = [];
+
+        const nextShapes = shapeCopies.map((shape) => {
+            const id = createId("shape");
+            nextShapeIds.push(id);
+            if (Array.isArray(shape?.points)) {
+                return {
+                    ...cloneDeepValue(shape),
+                    id,
+                    points: clonePoints(shape.points).map((point) => ({
+                        x: Number(point.x || 0) + dx,
+                        y: Number(point.y || 0) + dy
+                    }))
+                };
+            }
+            return {
+                ...cloneDeepValue(shape),
+                id,
+                x: Number(shape?.x || 0) + dx,
+                y: Number(shape?.y || 0) + dy
+            };
+        });
+
+        const nextOverlays = overlayCopies.map((overlay) => {
+            const id = createId("overlay");
+            nextOverlayIds.push(id);
+            return {
+                ...cloneDeepValue(overlay),
+                id,
+                tx: Number(overlay?.tx || 0) + dx,
+                ty: Number(overlay?.ty || 0) + dy
+            };
+        });
+
+        if (nextShapes.length) {
+            updateShapes((previous) => [...previous, ...nextShapes], { persist: true });
+        }
+        if (nextOverlays.length) {
+            updateSvgOverlays((previous) => [...previous, ...nextOverlays], { persist: true });
+        }
+        clipboardRef.current = {
+            shapes: shapeCopies,
+            overlays: overlayCopies,
+            pasteCount
+        };
+        setSelectedIds(nextShapeIds);
+        setSelectedOverlayIds(nextOverlayIds);
+        setEditingId(null);
+        setSelectedSegment(null);
+        setTool("select");
+    }, [setTool, updateShapes, updateSvgOverlays]);
+
+    const duplicateSelected = useCallback(() => {
+        copySelection();
+        pasteClipboard();
+    }, [copySelection, pasteClipboard]);
+
+    const beginSelectionDrag = useCallback((start, shapeIds = EMPTY_ARRAY, overlayIds = EMPTY_ARRAY) => {
+        const shapeSnapshotsById = {};
+        coerceArray(shapeIds).forEach((shapeId) => {
+            const shape = shapesRef.current.find((item) => String(item?.id || "") === String(shapeId || ""));
+            const snapshot = buildShapeSnapshot(shape);
+            if (snapshot?.id) {
+                shapeSnapshotsById[snapshot.id] = snapshot;
+            }
+        });
+
+        const overlaySnapshotsById = {};
+        coerceArray(overlayIds).forEach((overlayId) => {
+            const overlay = overlaysRef.current.find((item) => String(item?.id || "") === String(overlayId || ""));
+            const snapshot = buildOverlayDragSnapshot(overlay);
+            if (snapshot?.id) {
+                overlaySnapshotsById[snapshot.id] = snapshot;
+            }
+        });
+
+        if (!Object.keys(shapeSnapshotsById).length && !Object.keys(overlaySnapshotsById).length) {
+            return;
+        }
+
+        setDragState({
+            start,
+            shapeSnapshotsById,
+            overlaySnapshotsById
+        });
+    }, []);
+
+    const insertPointOnPolyline = useCallback((id, point) => {
+        updateShapes((previous) => previous.map((shape) => {
+            if (String(shape?.id || "") !== String(id || "") || !Array.isArray(shape?.points) || shape.points.length < 2) {
+                return shape;
+            }
+
+            const points = clonePoints(shape.points);
+            let best = { index: 0, distanceSquared: Number.POSITIVE_INFINITY, point: null };
+
+            for (let index = 0; index < points.length - 1; index += 1) {
+                const candidate = closestPointOnSegment(point, points[index], points[index + 1]);
+                const candidateDistanceSquared = dist2(point, candidate);
+                if (candidateDistanceSquared < best.distanceSquared) {
+                    best = {
+                        index,
+                        distanceSquared: candidateDistanceSquared,
+                        point: candidate
+                    };
+                }
+            }
+
+            if (!best.point) {
+                return shape;
+            }
+
+            const nextPoints = points.slice(0, best.index + 1)
+                .concat([{ x: best.point.x, y: best.point.y }], points.slice(best.index + 1));
+            return {
+                ...shape,
+                points: nextPoints
+            };
+        }), { persist: true });
+    }, [updateShapes]);
+
+    const deletePolylineVertex = useCallback((id, index) => {
+        const shape = shapesRef.current.find((item) => String(item?.id || "") === String(id || ""));
+        if (!shape || !Array.isArray(shape?.points) || shape.points.length <= 2) {
+            return false;
+        }
+
+        const numericIndex = Number(index);
+        if (!Number.isInteger(numericIndex) || numericIndex < 0 || numericIndex >= shape.points.length) {
+            return false;
+        }
+
+        updateShapes((previous) => previous.map((item) => {
+            if (String(item?.id || "") !== String(id || "") || !Array.isArray(item?.points) || item.points.length <= 2) {
+                return item;
+            }
+            const nextPoints = clonePoints(item.points);
+            nextPoints.splice(numericIndex, 1);
+            return {
+                ...item,
+                points: nextPoints
+            };
+        }), { persist: true });
+
+        const nextIndex = Math.max(0, Math.min(numericIndex, shape.points.length - 2));
+        setSelectedIds([String(id || "")]);
+        setSelectedOverlayIds([]);
+        setEditingId(String(id || ""));
+        setSelectedSegment({ id: String(id || ""), index: nextIndex, kind: "point" });
+        return true;
+    }, [updateShapes]);
+
+    const handleImportToggle = useCallback(() => {
+        if (!svgLibraryEnabled || !svgCatalogFiles.length) {
+            return;
+        }
+        setImportOpen((current) => !current);
+    }, [svgCatalogFiles.length, svgLibraryEnabled]);
+
+    const onPickSvg = useCallback(async (fileKey) => {
+        const raw = await readSvgRawByKey(fileKey, { forceFresh: false });
+        if (typeof raw !== "string") {
+            return;
+        }
+        const parsed = stripOuterSvg(raw);
+        if (!parsed?.inner) {
+            return;
+        }
+
+        const keySize = extractKeySize(raw);
+        const parsedEType = extractSvgEType(raw, fileKey);
+        const baseViewBox = parsed.vb;
+        let localViewBox = keySize
+            ? { x: 0, y: 0, w: keySize.w, h: keySize.h }
+            : baseViewBox;
+
+        if (!localViewBox || !Number.isFinite(localViewBox.w) || !Number.isFinite(localViewBox.h) || localViewBox.w <= 0 || localViewBox.h <= 0) {
+            localViewBox = { x: 0, y: 0, w: 100, h: 100 };
+        }
+
+        let inner = parsed.inner;
+        if (keySize && baseViewBox?.w > 0 && baseViewBox?.h > 0) {
+            const scaleX = keySize.w / baseViewBox.w;
+            const scaleY = keySize.h / baseViewBox.h;
+            inner = `
+      <g transform="translate(${-baseViewBox.x},${-baseViewBox.y}) scale(${scaleX},${scaleY})">
+        ${parsed.inner}
+      </g>
+    `;
+        }
+
+        const srcWidth = Math.max(localViewBox.w, 1);
+        const srcHeight = Math.max(localViewBox.h, 1);
+        const fitScale = Math.min(
+            Math.max(1, viewBox.width - 80) / srcWidth,
+            Math.max(1, viewBox.height - 80) / srcHeight
+        );
+        const scale = keySize ? 1 : Math.max(0.2, Math.min(350 / srcWidth, fitScale));
+        const srcCenterX = localViewBox.x + (localViewBox.w / 2);
+        const srcCenterY = localViewBox.y + (localViewBox.h / 2);
+        const anchor = {
+            x: viewBox.x + (viewBox.width / 2),
+            y: viewBox.y + (viewBox.height / 2)
+        };
+        const id = createId("overlay");
+        const nextOverlay = {
+            id,
+            sourceKey: fileKey,
+            name: fileKey.split("/").pop() || fileKey,
+            inner,
+            tx: anchor.x - (scale * srcCenterX),
+            ty: anchor.y - (scale * srcCenterY),
+            scale,
+            fill: DEFAULT_FILL,
+            stroke: DEFAULT_STROKE,
+            strokeMode: "preserve",
+            tagPath: "",
+            eType: parsedEType,
+            eTypeAuto: true,
+            bbox: {
+                x: localViewBox.x,
+                y: localViewBox.y,
+                width: localViewBox.w,
+                height: localViewBox.h
+            }
+        };
+
+        updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
+        setSelectedOverlayIds([id]);
+        setSelectedIds([]);
+        setImportOpen(false);
+    }, [readSvgRawByKey, updateSvgOverlays, viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
+
+    const handleSvgMouseDown = useCallback((event) => {
+        if (event?.button && event.button !== 0) {
+            return;
+        }
+        if (event?.defaultPrevented) {
+            return;
+        }
+
+        const point = pointFromEvent(event);
+
+        if (tool === "select") {
+            setSelectedSegment(null);
+            setEditingId(null);
+            setDragState(null);
+            setDragHandle(null);
+            setShapeResize(null);
+            setOverlayResize(null);
+            if (!event?.shiftKey) {
+                clearSelection();
+            }
+            setMarquee({
+                start: point,
+                cur: point,
+                additive: Boolean(event?.shiftKey),
+                baseShapeIds: coerceArray(selectedIds),
+                baseOverlayIds: coerceArray(selectedOverlayIds)
+            });
+            return;
+        }
+
+        if (tool === "text") {
+            const id = createId("text");
+            updateShapes((previous) => [
+                ...previous,
+                {
+                    id,
+                    type: "text",
+                    x: point.x,
+                    y: point.y,
+                    text: "Text",
+                    fontSize: 24,
+                    fill: DEFAULT_STROKE,
+                    fontFamily: "system-ui",
+                    fontWeight: "400",
+                    anchor: "start",
+                    tagPath: ""
+                }
+            ], { persist: true });
+            setSelectedIds([id]);
+            setSelectedOverlayIds([]);
+            setEditingId(null);
+            setSelectedSegment(null);
+            return;
+        }
+
+        if (tool === "rect" || tool === "circle") {
+            const id = createId(tool);
+            updateShapes((previous) => [
+                ...previous,
+                {
+                    id,
+                    type: tool,
+                    x: point.x,
+                    y: point.y,
+                    width: 0,
+                    height: 0,
+                    stroke: DEFAULT_STROKE,
+                    strokeWidth: 3,
+                    fill: "transparent",
+                    lineStyle: "solid",
+                    tagPath: ""
+                }
+            ], { persist: false });
+            setSelectedIds([id]);
+            setSelectedOverlayIds([]);
+            setEditingId(null);
+            setSelectedSegment(null);
+            setDrawing({ kind: tool, id, start: point });
+            return;
+        }
+
+        if (tool === "polyline") {
+            startOrAppendPolylineAt(point, event);
+        }
+    }, [clearSelection, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool, updateShapes]);
+
+    const handleShapeMouseDown = useCallback((event, id) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (tool === "polyline") {
+            startOrAppendPolylineAt(pointFromEvent(event), event);
+            return;
+        }
+        closePropertiesPanel();
+        const shapeId = String(id || "");
+        const shape = shapesRef.current.find((item) => String(item?.id || "") === shapeId);
+
+        if (!shape || !isShapeSelectableByMode(shape)) {
+            return;
+        }
+
+        if (tool !== "select") {
+            return;
+        }
+
+        if (event?.shiftKey) {
+            setSelectedIds((previous) => toggleIn(previous, shapeId));
+            setSelectedSegment(null);
+            if (editingId === shapeId) {
+                setEditingId(null);
+            }
+            return;
+        }
+
+        if (editingId === shapeId) {
+            setSelectedIds([shapeId]);
+            setSelectedOverlayIds([]);
+            return;
+        }
+
+        const alreadySelected = selectedIds.includes(shapeId);
+        const dragShapeIds = alreadySelected ? coerceArray(selectedIds) : [shapeId];
+        const dragOverlayIds = alreadySelected ? coerceArray(selectedOverlayIds) : EMPTY_ARRAY;
+
+        setSelectedIds(dragShapeIds);
+        setSelectedOverlayIds(dragOverlayIds);
+        setSelectedSegment(null);
+        if (!alreadySelected) {
+            setEditingId(null);
+            return;
+        }
+
+        beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
+    }, [beginSelectionDrag, closePropertiesPanel, editingId, isShapeSelectableByMode, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
+
+    const handleOverlayMouseDown = useCallback((event, id) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (tool === "polyline") {
+            startOrAppendPolylineAt(pointFromEvent(event), event);
+            return;
+        }
+        closePropertiesPanel();
+        if (!overlaysSelectable) {
+            return;
+        }
+        const overlayId = String(id || "");
+        const overlay = overlaysRef.current.find((item) => String(item?.id || "") === overlayId);
+        if (!overlay) {
+            return;
+        }
+
+        if (tool !== "select") {
+            return;
+        }
+
+        if (event?.shiftKey) {
+            setSelectedOverlayIds((previous) => toggleIn(previous, overlayId));
+            setSelectedSegment(null);
+            setEditingId(null);
+            return;
+        }
+
+        const alreadySelected = selectedOverlayIds.includes(overlayId);
+        const dragOverlayIds = alreadySelected ? coerceArray(selectedOverlayIds) : [overlayId];
+        const dragShapeIds = alreadySelected ? coerceArray(selectedIds) : EMPTY_ARRAY;
+
+        setSelectedOverlayIds(dragOverlayIds);
+        setSelectedIds(dragShapeIds);
+        setSelectedSegment(null);
+        setEditingId(null);
+        if (!alreadySelected) {
+            return;
+        }
+
+        beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
+    }, [beginSelectionDrag, closePropertiesPanel, overlaysSelectable, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
+
+    const handleShapeDoubleClick = useCallback((event, id) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        const shapeId = String(id || "");
+        const shape = shapesRef.current.find((item) => String(item?.id || "") === shapeId);
+        if (tool === "polyline" && drawing?.kind === "polyline" && String(drawing.id || "") === shapeId) {
+            finishActivePolylineAt(shapeId, pointFromEvent(event), event);
+            return;
+        }
+        if (!shape || !isShapeSelectableByMode(shape) || tool !== "select") {
+            return;
+        }
+        setSelectedIds([shapeId]);
+        setSelectedOverlayIds([]);
+        if (Array.isArray(shape?.points) || String(shape?.type || "").toLowerCase() === "polyline") {
+            setEditingId(shapeId);
+            setSelectedSegment(null);
+        } else {
+            setEditingId(null);
+            setSelectedSegment(null);
+        }
+        openPropertiesForSelection(`shape:${shapeId}`);
+    }, [drawing, finishActivePolylineAt, isShapeSelectableByMode, openPropertiesForSelection, pointFromEvent, tool]);
+
+    const handleOverlayDoubleClick = useCallback((event, id) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (!overlaysSelectable || tool !== "select") {
+            return;
+        }
+        const overlayId = String(id || "");
+        const overlay = overlaysRef.current.find((item) => String(item?.id || "") === overlayId);
+        if (!overlay) {
+            return;
+        }
+        setSelectedOverlayIds([overlayId]);
+        setSelectedIds([]);
+        setEditingId(null);
+        setSelectedSegment(null);
+        openPropertiesForSelection(`overlay:${overlayId}`);
+    }, [openPropertiesForSelection, overlaysSelectable, tool]);
+
+    const handleEditPolylineClick = useCallback((event, id) => {
+        const shapeId = String(id || "");
+        if (tool === "polyline" && drawing?.kind === "polyline" && String(drawing.id || "") === shapeId) {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            finishActivePolylineAt(shapeId, pointFromEvent(event), event);
+            return;
+        }
+        if (tool !== "select" || String(editingId || "") !== shapeId) {
+            return;
+        }
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        insertPointOnPolyline(shapeId, pointFromEvent(event));
+        setSelectedIds([shapeId]);
+        setSelectedOverlayIds([]);
+        setSelectedSegment(null);
+    }, [drawing, editingId, finishActivePolylineAt, insertPointOnPolyline, pointFromEvent, tool]);
+
+    const handleSegmentMouseDown = useCallback((event, id, index) => {
+        if (tool === "polyline" && drawing?.kind === "polyline" && String(drawing.id || "") === String(id || "")) {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            appendPolylinePoint(id, maybeConstrainPolylinePoint(id, pointFromEvent(event), event));
+            return;
+        }
+
+        if (tool !== "select") {
+            return;
+        }
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        const shapeId = String(id || "");
+        if (event?.altKey) {
+            insertPointOnPolyline(shapeId, pointFromEvent(event));
+            setSelectedIds([shapeId]);
+            setSelectedOverlayIds([]);
+            setEditingId(shapeId);
+            setSelectedSegment(null);
+            return;
+        }
+        setSelectedIds([shapeId]);
+        setSelectedOverlayIds([]);
+        setEditingId(shapeId);
+        setSelectedSegment({ id: shapeId, index: Number(index || 0), kind: "point" });
+    }, [appendPolylinePoint, drawing, insertPointOnPolyline, maybeConstrainPolylinePoint, pointFromEvent, tool]);
+
+    const handlePolylineHandleMouseDown = useCallback((event, id, index) => {
+        if (tool !== "select") {
+            return;
+        }
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        const shapeId = String(id || "");
+        setSelectedIds([shapeId]);
+        setSelectedOverlayIds([]);
+        setEditingId(shapeId);
+        setSelectedSegment({ id: shapeId, index: Number(index || 0), kind: "point" });
+        setDragHandle({ id: shapeId, index: Number(index || 0) });
+        setDragState(null);
+        setMarquee(null);
+    }, [tool]);
+
+    const handlePolylineHandleDoubleClick = useCallback((event, id, index) => {
+        if (tool !== "select") {
+            return;
+        }
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        deletePolylineVertex(id, index);
+    }, [deletePolylineVertex, tool]);
+
+    const handleOverlayHandleDown = useCallback((event, id, corner) => {
+        if (tool !== "select" || !overlaysSelectable) {
+            return;
+        }
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+
+        const overlayId = String(id || "");
+        const overlay = overlaysRef.current.find((item) => String(item?.id || "") === overlayId);
+        const bbox = overlayLocalBBox(overlayId);
+        if (!overlay || !bbox) {
+            return;
+        }
+
+        const topLeft = { x: bbox.x, y: bbox.y };
+        const topRight = { x: bbox.x + bbox.width, y: bbox.y };
+        const bottomRight = { x: bbox.x + bbox.width, y: bbox.y + bbox.height };
+        const bottomLeft = { x: bbox.x, y: bbox.y + bbox.height };
+        const corners = { TL: topLeft, TR: topRight, BR: bottomRight, BL: bottomLeft };
+        const oppositeCorners = { TL: bottomRight, TR: bottomLeft, BR: topLeft, BL: topRight };
+        const key = String(corner || "").toUpperCase();
+        const anchorLocal = oppositeCorners[key];
+        const startLocal = corners[key];
+        if (!anchorLocal || !startLocal) {
+            return;
+        }
+
+        const anchorWorld = worldFromLocal(overlay, anchorLocal.x, anchorLocal.y);
+        const startWorld = worldFromLocal(overlay, startLocal.x, startLocal.y);
+        setSelectedOverlayIds([overlayId]);
+        setSelectedIds([]);
+        setEditingId(null);
+        setSelectedSegment(null);
+        setOverlayResize({
+            kind: "single",
+            id: overlayId,
+            anchorLocal,
+            anchorWorld,
+            startDist: Math.max(1, distance(startWorld, anchorWorld)),
+            originalScale: overlayScale(overlay),
+            bbox
+        });
+        setDragState(null);
+        setMarquee(null);
+    }, [overlayLocalBBox, overlaysSelectable, tool]);
+
+    const handleShapeResizeHandleDown = useCallback((event, corner) => {
+        if (tool !== "select" || !selectedBBox || !selectedIds.length || selectedOverlayIds.length) {
+            return;
+        }
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+
+        const bounds = {
+            x: Number(selectedBBox.x || 0),
+            y: Number(selectedBBox.y || 0),
+            width: Math.max(1, Number(selectedBBox.width || 0)),
+            height: Math.max(1, Number(selectedBBox.height || 0))
+        };
+        const topLeft = { x: bounds.x, y: bounds.y };
+        const topRight = { x: bounds.x + bounds.width, y: bounds.y };
+        const bottomRight = { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+        const bottomLeft = { x: bounds.x, y: bounds.y + bounds.height };
+        const oppositeCorners = { TL: bottomRight, TR: bottomLeft, BR: topLeft, BL: topRight };
+        const anchor = oppositeCorners[String(corner || "").toUpperCase()];
+        if (!anchor) {
+            return;
+        }
+
+        const originalsById = {};
+        coerceArray(selectedIds).forEach((shapeId) => {
+            const shape = shapesRef.current.find((item) => String(item?.id || "") === String(shapeId || ""));
+            const snapshot = buildShapeResizeSnapshot(shape);
+            if (snapshot?.id) {
+                originalsById[snapshot.id] = snapshot;
+            }
+        });
+
+        if (!Object.keys(originalsById).length) {
+            return;
+        }
+
+        setShapeResize({
+            corner: String(corner || "").toUpperCase(),
+            anchor,
+            startBounds: bounds,
+            originalsById
+        });
+        setDragState(null);
+        setMarquee(null);
+    }, [selectedBBox, selectedIds, selectedOverlayIds.length, tool]);
+
+    const handleOverlayGroupHandleDown = useCallback((event, corner) => {
+        if (tool !== "select" || selectedIds.length > 0 || selectedOverlayIds.length < 2 || !selectedBBox) {
+            return;
+        }
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+
+        const bounds = {
+            x: Number(selectedBBox.x || 0),
+            y: Number(selectedBBox.y || 0),
+            width: Math.max(1, Number(selectedBBox.width || 0)),
+            height: Math.max(1, Number(selectedBBox.height || 0))
+        };
+        const topLeft = { x: bounds.x, y: bounds.y };
+        const topRight = { x: bounds.x + bounds.width, y: bounds.y };
+        const bottomRight = { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+        const bottomLeft = { x: bounds.x, y: bounds.y + bounds.height };
+        const corners = { TL: topLeft, TR: topRight, BR: bottomRight, BL: bottomLeft };
+        const oppositeCorners = { TL: bottomRight, TR: bottomLeft, BR: topLeft, BL: topRight };
+        const key = String(corner || "").toUpperCase();
+        const anchorWorld = oppositeCorners[key];
+        const startWorld = corners[key];
+        if (!anchorWorld || !startWorld) {
+            return;
+        }
+
+        const originalsById = {};
+        selectedOverlayIds.forEach((overlayId) => {
+            const overlay = overlaysRef.current.find((item) => String(item?.id || "") === String(overlayId || ""));
+            if (!overlay) {
+                return;
+            }
+            const bbox = overlayLocalBBox(overlayId);
+            if (!bbox) {
+                return;
+            }
+            originalsById[String(overlayId || "")] = {
+                id: String(overlayId || ""),
+                tx: Number(overlay.tx || 0),
+                ty: Number(overlay.ty || 0),
+                scale: overlayScale(overlay),
+                bbox
+            };
+        });
+
+        if (!Object.keys(originalsById).length) {
+            return;
+        }
+
+        setOverlayResize({
+            kind: "group",
+            anchorWorld,
+            startDist: Math.max(1, distance(startWorld, anchorWorld)),
+            originalsById
+        });
+        setDragState(null);
+        setMarquee(null);
+    }, [overlayLocalBBox, selectedBBox, selectedIds.length, selectedOverlayIds, tool]);
+
+    const handleMouseMove = useCallback((event) => {
+        const point = pointFromEvent(event);
+
+        if (dragHandle?.id) {
+            updateShapes((previous) => previous.map((shape) => {
+                if (String(shape?.id || "") !== String(dragHandle.id || "") || !Array.isArray(shape?.points)) {
+                    return shape;
+                }
+                const nextPoints = clonePoints(shape.points);
+                if (dragHandle.index < 0 || dragHandle.index >= nextPoints.length) {
+                    return shape;
+                }
+                nextPoints[dragHandle.index] = point;
+                return {
+                    ...shape,
+                    points: nextPoints
+                };
+            }), { persist: false });
+            return;
+        }
+
+        if (shapeResize?.startBounds && shapeResize?.anchor) {
+            const nextBounds = rectFromPoints(shapeResize.anchor, point);
+            updateShapes((previous) => previous.map((shape) => {
+                const snapshot = shapeResize.originalsById[String(shape?.id || "")];
+                return snapshot
+                    ? applyShapeResizeSnapshot(shape, snapshot, shapeResize.startBounds, nextBounds)
+                    : shape;
+            }), { persist: false });
+            return;
+        }
+
+        if (overlayResize?.kind === "single") {
+            const ratio = clamp(distance(point, overlayResize.anchorWorld) / Math.max(1, overlayResize.startDist), 0.05, 100);
+            updateSvgOverlays((previous) => previous.map((overlay) => {
+                if (String(overlay?.id || "") !== String(overlayResize.id || "")) {
+                    return overlay;
+                }
+                const scale = Math.max(0.0001, Number(overlayResize.originalScale || 1) * ratio);
+                return {
+                    ...overlay,
+                    scale,
+                    tx: Number(overlayResize.anchorWorld?.x || 0) - scale * Number(overlayResize.anchorLocal?.x || 0),
+                    ty: Number(overlayResize.anchorWorld?.y || 0) - scale * Number(overlayResize.anchorLocal?.y || 0)
+                };
+            }), { persist: false });
+            return;
+        }
+
+        if (overlayResize?.kind === "group") {
+            const ratio = clamp(distance(point, overlayResize.anchorWorld) / Math.max(1, overlayResize.startDist), 0.05, 100);
+            updateSvgOverlays((previous) => previous.map((overlay) => {
+                const snapshot = overlayResize.originalsById[String(overlay?.id || "")];
+                if (!snapshot?.bbox) {
+                    return overlay;
+                }
+
+                const nextScale = Math.max(0.0001, Number(snapshot.scale || 1) * ratio);
+                const startTopLeft = {
+                    x: Number(snapshot.tx || 0) + Number(snapshot.scale || 1) * Number(snapshot.bbox.x || 0),
+                    y: Number(snapshot.ty || 0) + Number(snapshot.scale || 1) * Number(snapshot.bbox.y || 0)
+                };
+                const nextTopLeft = {
+                    x: Number(overlayResize.anchorWorld?.x || 0) + (startTopLeft.x - Number(overlayResize.anchorWorld?.x || 0)) * ratio,
+                    y: Number(overlayResize.anchorWorld?.y || 0) + (startTopLeft.y - Number(overlayResize.anchorWorld?.y || 0)) * ratio
+                };
+
+                return {
+                    ...overlay,
+                    scale: nextScale,
+                    tx: nextTopLeft.x - nextScale * Number(snapshot.bbox.x || 0),
+                    ty: nextTopLeft.y - nextScale * Number(snapshot.bbox.y || 0)
+                };
+            }), { persist: false });
+            return;
+        }
+
+        if (dragState?.start) {
+            const dx = point.x - Number(dragState.start?.x || 0);
+            const dy = point.y - Number(dragState.start?.y || 0);
+            if (Object.keys(dragState.shapeSnapshotsById || {}).length) {
+                updateShapes((previous) => previous.map((shape) => {
+                    const snapshot = dragState.shapeSnapshotsById[String(shape?.id || "")];
+                    return snapshot ? applyShapeSnapshotDelta(shape, snapshot, dx, dy) : shape;
+                }), { persist: false });
+            }
+            updateSvgOverlays((previous) => previous.map((overlay) => {
+                const snapshot = dragState.overlaySnapshotsById[String(overlay?.id || "")];
+                if (!snapshot) {
+                    return overlay;
+                }
+                return {
+                    ...overlay,
+                    tx: snapshot.tx + dx,
+                    ty: snapshot.ty + dy
+                };
+            }), { persist: false });
+            return;
+        }
+
+        if (marquee?.start) {
+            setMarquee((current) => current ? { ...current, cur: point } : current);
+            return;
+        }
+
+        if (drawing?.kind === "rect" || drawing?.kind === "circle") {
+            updateShapes((previous) => previous.map((shape) => {
+                if (String(shape?.id || "") !== String(drawing.id || "")) {
+                    return shape;
+                }
+                return {
+                    ...shape,
+                    x: Math.min(Number(drawing.start?.x || 0), point.x),
+                    y: Math.min(Number(drawing.start?.y || 0), point.y),
+                    width: Math.abs(point.x - Number(drawing.start?.x || 0)),
+                    height: Math.abs(point.y - Number(drawing.start?.y || 0))
+                };
+            }), { persist: false });
+            return;
+        }
+
+        if (drawing?.kind === "polyline") {
+            updateShapes((previous) => previous.map((shape) => {
+                if (String(shape?.id || "") !== String(drawing.id || "")) {
+                    return shape;
+                }
+                const points = clonePoints(shape.points);
+                if (!points.length) {
+                    return shape;
+                }
+                points[points.length - 1] = maybeConstrainPolylinePoint(drawing.id, point, event);
+                return { ...shape, points };
+            }), { persist: false });
+        }
+    }, [dragHandle, dragState, drawing, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, shapeResize, updateShapes, updateSvgOverlays]);
+
+    const handleMouseUp = useCallback(() => {
+        if (dragHandle?.id) {
+            persistShapes(shapesRef.current);
+            setDragHandle(null);
+            return;
+        }
+
+        if (shapeResize?.startBounds) {
+            persistShapes(shapesRef.current);
+            setShapeResize(null);
+            return;
+        }
+
+        if (overlayResize?.kind) {
+            persistSvgOverlays(overlaysRef.current);
+            setOverlayResize(null);
+            return;
+        }
+
+        if (dragState?.start) {
+            if (Object.keys(dragState.shapeSnapshotsById || {}).length) {
+                persistShapes(shapesRef.current);
+            }
+            if (Object.keys(dragState.overlaySnapshotsById || {}).length) {
+                persistSvgOverlays(overlaysRef.current);
+            }
+            setDragState(null);
+            return;
+        }
+
+        if (marquee?.start) {
+            const bounds = rectFromPoints(marquee.start, marquee.cur);
+            const hitShapeIds = shapesRef.current
+                .filter((shape) => isShapeSelectableByMode(shape) && rectsIntersect(bounds, getShapeBounds(shape)))
+                .map((shape) => String(shape?.id || ""));
+            const hitOverlayIds = overlaysSelectable
+                ? overlaysRef.current
+                    .filter((overlay) => rectsIntersect(bounds, getOverlayBounds(overlay)))
+                    .map((overlay) => String(overlay?.id || ""))
+                : EMPTY_ARRAY;
+
+            setSelectedIds(
+                marquee.additive
+                    ? Array.from(new Set([...coerceArray(marquee.baseShapeIds), ...hitShapeIds]))
+                    : hitShapeIds
+            );
+            setSelectedOverlayIds(
+                marquee.additive
+                    ? Array.from(new Set([...coerceArray(marquee.baseOverlayIds), ...hitOverlayIds]))
+                    : hitOverlayIds
+            );
+            setMarquee(null);
+            return;
+        }
+
+        if (drawing?.kind === "rect" || drawing?.kind === "circle") {
+            persistShapes(shapesRef.current);
+            setDrawing(null);
+        }
+    }, [dragHandle, dragState, drawing, isShapeSelectableByMode, marquee, overlayResize, overlaysSelectable, persistShapes, persistSvgOverlays, shapeResize]);
+
+    const handleSvgDoubleClick = useCallback((event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (drawing?.kind === "polyline" && drawing.id) {
+            finishActivePolylineAt(drawing.id, pointFromEvent(event), event);
+            return;
+        }
+        finishPolyline();
+    }, [drawing, finishActivePolylineAt, finishPolyline, pointFromEvent]);
+
+    const handleCanvasContextMenu = useCallback((event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+
+        if (tool === "polyline" && drawing?.kind === "polyline" && drawing.id) {
+            removeCurrentPolylineSegment();
+        }
+    }, [drawing, removeCurrentPolylineSegment, tool]);
+
+    const worldToPanelPoint = useCallback((worldX, worldY) => {
+        const svg = svgRef.current;
+        const root = rootRef.current;
+        if (!svg || !root || typeof svg.createSVGPoint !== "function" || typeof root.getBoundingClientRect !== "function") {
+            return null;
+        }
+        try {
+            const point = svg.createSVGPoint();
+            point.x = Number(pan?.x || 0) + Number(worldX || 0) * zoom;
+            point.y = Number(pan?.y || 0) + Number(worldY || 0) * zoom;
+            const ctm = svg.getScreenCTM?.();
+            if (!ctm) {
+                return null;
+            }
+            const screenPoint = point.matrixTransform(ctm);
+            const rootRect = root.getBoundingClientRect();
+            return {
+                x: Number(screenPoint?.x || 0) - Number(rootRect.left || 0),
+                y: Number(screenPoint?.y || 0) - Number(rootRect.top || 0)
+            };
+        } catch (_error) {
+            return null;
+        }
+    }, [pan, zoom]);
+
+    const activateTool = useCallback((nextTool) => {
+        if (drawing?.kind === "polyline" && nextTool !== "polyline") {
+            finishPolyline();
+        } else if (drawing && drawing.kind !== nextTool) {
+            setDrawing(null);
+        }
+        setDragState(null);
+        setDragHandle(null);
+        setShapeResize(null);
+        setOverlayResize(null);
+        setMarquee(null);
+        setSelectedSegment(null);
+        if (nextTool !== "select") {
+            setEditingId(null);
+        }
+        setTool(nextTool);
+    }, [drawing, finishPolyline, setTool]);
+
+    const selectedShapeBounds = useMemo(() => getShapeBounds(selectedShape), [selectedShape]);
+    const selectedOverlayBounds = useMemo(() => getOverlayBounds(selectedOverlay), [selectedOverlay]);
+    const propertyTargetBounds = selectedOverlayBounds || selectedShapeBounds || selectedBBox;
+
+    const floatingPropertyPanelStyle = useMemo(() => {
+        if (!propertiesVisible || !propertyTargetBounds) {
+            return null;
+        }
+
+        const topLeft = worldToPanelPoint(
+            Number(propertyTargetBounds.x || 0),
+            Number(propertyTargetBounds.y || 0)
+        );
+        const topRight = worldToPanelPoint(
+            Number(propertyTargetBounds.x || 0) + Number(propertyTargetBounds.width || 0),
+            Number(propertyTargetBounds.y || 0)
+        );
+
+        const rootWidth = Number(rootSize?.width || DEFAULT_CANVAS_WIDTH);
+        const rootHeight = Number(rootSize?.height || DEFAULT_CANVAS_HEIGHT);
+        const rulerInset = showRulers ? CANVAS_RULER_SIZE : 0;
+
+        const fallbackLeft = rootWidth - PROPERTY_PANEL_WIDTH - 16;
+        const fallbackTop = 16 + rulerInset;
+        const anchorLeft = Number(topLeft?.x || fallbackLeft);
+        const anchorRight = Number(topRight?.x || (anchorLeft + 120));
+        const anchorTop = Number(topLeft?.y || fallbackTop);
+
+        const preferredLeft = anchorRight + 12;
+        const maxLeft = Math.max(16, rootWidth - PROPERTY_PANEL_WIDTH - 16);
+        const left = preferredLeft <= maxLeft
+            ? preferredLeft
+            : clamp(anchorLeft - PROPERTY_PANEL_WIDTH - 12, 16, maxLeft);
+        const top = clamp(anchorTop, 16 + rulerInset, Math.max(16 + rulerInset, rootHeight - 220));
+
+        return {
+            position: "absolute",
+            left,
+            top,
+            zIndex: 70,
+            width: PROPERTY_PANEL_WIDTH,
+            maxWidth: `calc(100% - ${left + 16}px)`,
+            maxHeight: `calc(100% - ${top + 16}px)`,
+            overflowY: "auto",
+            display: "grid",
+            gap: 12,
+            padding: 14,
+            borderRadius: 18,
+            border: "1px solid rgba(51, 65, 85, 0.95)",
+            background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
+            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+        };
+    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers]);
+
+    const fixedPropertyPanelStyle = useMemo(() => {
+        if (!floatingPropertyPanelStyle) {
+            return null;
+        }
+        const rootRect = rootRef.current?.getBoundingClientRect?.();
+        if (!rootRect) {
+            return null;
+        }
+        const viewportWidth = typeof window !== "undefined" ? window.innerWidth : Number(rootRect.width || 0);
+        const viewportHeight = typeof window !== "undefined" ? window.innerHeight : Number(rootRect.height || 0);
+        const left = Number(rootRect.left || 0) + Number(floatingPropertyPanelStyle.left || 0);
+        const top = Number(rootRect.top || 0) + Number(floatingPropertyPanelStyle.top || 0);
+        return {
+            ...floatingPropertyPanelStyle,
+            position: "fixed",
+            left,
+            top,
+            maxWidth: Math.max(180, viewportWidth - left - 16),
+            maxHeight: Math.max(180, viewportHeight - top - 16)
+        };
+    }, [floatingPropertyPanelStyle, rootSize]);
+
+    const overlaySelectionUI = useCallback((overlay) => {
+        const bounds = getOverlayBounds(overlay);
+        if (!bounds) {
+            return null;
+        }
+
+        const x = Number(bounds.x || 0);
+        const y = Number(bounds.y || 0);
+        const width = Math.max(1, Number(bounds.width || 0));
+        const height = Math.max(1, Number(bounds.height || 0));
+        const corners = [
+            { key: "TL", cx: x, cy: y },
+            { key: "TR", cx: x + width, cy: y },
+            { key: "BR", cx: x + width, cy: y + height },
+            { key: "BL", cx: x, cy: y + height }
+        ];
+
+        return (
+            <g data-overlay-selection-ui={String(overlay?.id || "")}>
+                <rect
+                    x={x}
+                    y={y}
+                    width={width}
+                    height={height}
+                    fill="none"
+                    stroke="#2b6cff"
+                    strokeWidth={2}
+                    strokeDasharray="6 4"
+                    pointerEvents="none"
+                />
+                {corners.map((corner) => (
+                    <g key={`${String(overlay?.id || "")}-${corner.key}`}>
+                        <circle
+                            cx={corner.cx}
+                            cy={corner.cy}
+                            r={6}
+                            fill="white"
+                            stroke="#2b6cff"
+                            strokeWidth={2}
+                        />
+                        <circle
+                            cx={corner.cx}
+                            cy={corner.cy}
+                            r={14}
+                            fill="transparent"
+                            style={{ cursor: resizeCursorForCorner(corner.key) }}
+                            onMouseDown={(event) => handleOverlayHandleDown(event, overlay?.id, corner.key)}
+                        />
+                    </g>
+                ))}
+            </g>
+        );
+    }, [handleOverlayHandleDown]);
+
+    const overlayGroupSelectionUI = useCallback(() => {
+        if (!selectedBBox || selectedIds.length > 0 || selectedOverlayIds.length < 2) {
+            return null;
+        }
+
+        const x = Number(selectedBBox.x || 0);
+        const y = Number(selectedBBox.y || 0);
+        const width = Math.max(1, Number(selectedBBox.width || 0));
+        const height = Math.max(1, Number(selectedBBox.height || 0));
+        const corners = [
+            { key: "TL", cx: x, cy: y },
+            { key: "TR", cx: x + width, cy: y },
+            { key: "BR", cx: x + width, cy: y + height },
+            { key: "BL", cx: x, cy: y + height }
+        ];
+
+        return (
+            <g data-overlay-group-selection-ui="1">
+                <rect
+                    x={x}
+                    y={y}
+                    width={width}
+                    height={height}
+                    fill="none"
+                    stroke="#2b6cff"
+                    strokeWidth={2}
+                    strokeDasharray="8 5"
+                    pointerEvents="none"
+                />
+                {corners.map((corner) => (
+                    <g key={`overlay-group-${corner.key}`}>
+                        <circle
+                            cx={corner.cx}
+                            cy={corner.cy}
+                            r={6}
+                            fill="white"
+                            stroke="#2b6cff"
+                            strokeWidth={2}
+                        />
+                        <circle
+                            cx={corner.cx}
+                            cy={corner.cy}
+                            r={14}
+                            fill="transparent"
+                            style={{ cursor: resizeCursorForCorner(corner.key) }}
+                            onMouseDown={(event) => handleOverlayGroupHandleDown(event, corner.key)}
+                        />
+                    </g>
+                ))}
+            </g>
+        );
+    }, [handleOverlayGroupHandleDown, selectedBBox, selectedIds.length, selectedOverlayIds.length]);
+
+    const shapeSelectionUI = useCallback(() => {
+        if (!selectedBBox || !selectedIds.length || selectedOverlayIds.length) {
+            return null;
+        }
+
+        if (
+            selectedIds.length === 1
+            && selectedShape
+            && Array.isArray(selectedShape?.points)
+            && String(editingId || "") === String(selectedShape?.id || "")
+        ) {
+            return null;
+        }
+
+        const x = Number(selectedBBox.x || 0);
+        const y = Number(selectedBBox.y || 0);
+        const width = Math.max(1, Number(selectedBBox.width || 0));
+        const height = Math.max(1, Number(selectedBBox.height || 0));
+        const corners = [
+            { key: "TL", cx: x, cy: y },
+            { key: "TR", cx: x + width, cy: y },
+            { key: "BR", cx: x + width, cy: y + height },
+            { key: "BL", cx: x, cy: y + height }
+        ];
+
+        return (
+            <g data-shape-selection-ui="1">
+                <rect
+                    x={x}
+                    y={y}
+                    width={width}
+                    height={height}
+                    fill="none"
+                    stroke="#2b6cff"
+                    strokeWidth={2}
+                    strokeDasharray="6 4"
+                    pointerEvents="none"
+                />
+                {corners.map((corner) => (
+                    <g key={`shape-selection-${corner.key}`}>
+                        <circle
+                            cx={corner.cx}
+                            cy={corner.cy}
+                            r={6}
+                            fill="white"
+                            stroke="#2b6cff"
+                            strokeWidth={2}
+                        />
+                        <circle
+                            cx={corner.cx}
+                            cy={corner.cy}
+                            r={14}
+                            fill="transparent"
+                            style={{ cursor: resizeCursorForCorner(corner.key) }}
+                            onMouseDown={(event) => handleShapeResizeHandleDown(event, corner.key)}
+                        />
+                    </g>
+                ))}
+            </g>
+        );
+    }, [editingId, handleShapeResizeHandleDown, selectedBBox, selectedIds.length, selectedOverlayIds.length, selectedShape]);
+
+    const mixedSelectionUI = useCallback(() => {
+        if (!selectedBBox || !selectedIds.length || !selectedOverlayIds.length) {
+            return null;
+        }
+
+        return (
+            <g data-mixed-selection-ui="1">
+                <rect
+                    x={Number(selectedBBox.x || 0)}
+                    y={Number(selectedBBox.y || 0)}
+                    width={Math.max(1, Number(selectedBBox.width || 0))}
+                    height={Math.max(1, Number(selectedBBox.height || 0))}
+                    fill="none"
+                    stroke="#2b6cff"
+                    strokeWidth={2}
+                    strokeDasharray="10 6"
+                    pointerEvents="none"
+                />
+            </g>
+        );
+    }, [selectedBBox, selectedIds.length, selectedOverlayIds.length]);
+
+    const updateSelectedShape = useCallback((updater) => {
+        if (!selectedShape) {
+            return;
+        }
+        updateShapes((previous) => previous.map((shape) => (
+            String(shape?.id || "") === String(selectedShape.id || "")
+                ? updater(shape)
+                : shape
+        )), { persist: true });
+    }, [selectedShape, updateShapes]);
+
+    const updateSelectedOverlay = useCallback((updater) => {
+        if (!selectedOverlay) {
+            return;
+        }
+        updateSvgOverlays((previous) => previous.map((overlay) => (
+            String(overlay?.id || "") === String(selectedOverlay.id || "")
+                ? updater(overlay)
+                : overlay
+        )), { persist: true });
+    }, [selectedOverlay, updateSvgOverlays]);
+
+    const commitSelectedShapeText = useCallback((field, rawValue) => {
+        updateSelectedShape((shape) => ({
+            ...shape,
+            [field]: String(rawValue ?? "")
+        }));
+    }, [updateSelectedShape]);
+
+    const commitSelectedShapeNumber = useCallback((field, rawValue, options = {}) => {
+        const next = parsePanelNumber(rawValue);
+        if (next == null) {
+            return;
+        }
+        const value = options.min != null ? Math.max(options.min, next) : next;
+        updateSelectedShape((shape) => ({
+            ...shape,
+            [field]: value
+        }));
+    }, [updateSelectedShape]);
+
+    const commitSelectedShapePosition = useCallback((axis, rawValue) => {
+        const next = parsePanelNumber(rawValue);
+        if (next == null) {
+            return;
+        }
+        updateSelectedShape((shape) => {
+            if (Array.isArray(shape?.points)) {
+                const bounds = getShapeBounds(shape);
+                if (!bounds) {
+                    return shape;
+                }
+                const dx = axis === "x" ? next - Number(bounds.x || 0) : 0;
+                const dy = axis === "y" ? next - Number(bounds.y || 0) : 0;
+                return {
+                    ...shape,
+                    points: clonePoints(shape.points).map((point) => ({
+                        x: Number(point.x || 0) + dx,
+                        y: Number(point.y || 0) + dy
+                    }))
+                };
+            }
+            return {
+                ...shape,
+                [axis]: next
+            };
+        });
+    }, [updateSelectedShape]);
+
+    const commitSelectedShapeBoundsDimension = useCallback((axis, rawValue) => {
+        const next = parsePanelNumber(rawValue);
+        if (next == null) {
+            return;
+        }
+        updateSelectedShape((shape) => {
+            if (!Array.isArray(shape?.points)) {
+                return shape;
+            }
+            const startBounds = getShapeBounds(shape);
+            if (!startBounds) {
+                return shape;
+            }
+            const snapshot = buildShapeResizeSnapshot(shape);
+            if (!snapshot) {
+                return shape;
+            }
+            const nextBounds = {
+                ...startBounds,
+                [axis]: Math.max(1, next)
+            };
+            return applyShapeResizeSnapshot(shape, snapshot, startBounds, nextBounds);
+        });
+    }, [updateSelectedShape]);
+
+    const commitSelectedOverlayText = useCallback((field, rawValue) => {
+        updateSelectedOverlay((overlay) => ({
+            ...overlay,
+            [field]: String(rawValue ?? "")
+        }));
+    }, [updateSelectedOverlay]);
+
+    const commitSelectedOverlayTagPath = useCallback((rawValue) => {
+        updateSelectedOverlay((overlay) => applyOverlayIgnitionFillBinding(overlay, rawValue));
+    }, [updateSelectedOverlay]);
+
+    const commitSelectedOverlayFill = useCallback((rawValue) => {
+        updateSelectedOverlay((overlay) => applyOverlayFillFallbackColor(overlay, rawValue));
+    }, [updateSelectedOverlay]);
+
+    const commitSelectedOverlayNumber = useCallback((field, rawValue, options = {}) => {
+        const next = parsePanelNumber(rawValue);
+        if (next == null) {
+            return;
+        }
+        const value = options.min != null ? Math.max(options.min, next) : next;
+        updateSelectedOverlay((overlay) => ({
+            ...overlay,
+            [field]: value
+        }));
+    }, [updateSelectedOverlay]);
+
+    const commitSelectedOverlayPosition = useCallback((axis, rawValue) => {
+        const next = parsePanelNumber(rawValue);
+        if (next == null) {
+            return;
+        }
+        updateSelectedOverlay((overlay) => {
+            const bbox = overlay?.bbox;
+            if (!bbox || typeof bbox !== "object") {
+                return overlay;
+            }
+            const scale = Math.max(0.0001, Math.abs(Number(overlay?.scale || 1)));
+            return axis === "x"
+                ? { ...overlay, tx: next - scale * Number(bbox.x || 0) }
+                : { ...overlay, ty: next - scale * Number(bbox.y || 0) };
+        });
+    }, [updateSelectedOverlay]);
+
+    const commitSelectedOverlayDimension = useCallback((axis, rawValue) => {
+        const next = parsePanelNumber(rawValue);
+        if (next == null) {
+            return;
+        }
+        updateSelectedOverlay((overlay) => {
+            const bbox = overlay?.bbox;
+            if (!bbox || typeof bbox !== "object") {
+                return overlay;
+            }
+            const baseSize = Math.max(1, Number(axis === "width" ? bbox.width : bbox.height) || 0);
+            const nextScale = Math.max(0.05, next / baseSize);
+            const currentBounds = getOverlayBounds(overlay);
+            if (!currentBounds) {
+                return overlay;
+            }
+            return {
+                ...overlay,
+                scale: nextScale,
+                tx: Number(currentBounds.x || 0) - nextScale * Number(bbox.x || 0),
+                ty: Number(currentBounds.y || 0) - nextScale * Number(bbox.y || 0)
+            };
+        });
+    }, [updateSelectedOverlay]);
+
+    const selectedShapeLabel = selectedShape
+        ? (() => {
+            const rawType = String(selectedShape?.type || "").toLowerCase();
+            if (rawType === "polyline") {
+                return "Line";
+            }
+            if (rawType === "rect") {
+                return "Rectangle";
+            }
+            if (rawType === "circle") {
+                return "Circle";
+            }
+            if (rawType === "text") {
+                return "Text";
+            }
+            return "Shape";
+        })()
+        : "";
+
+    const svgLibraryReady = svgCatalogFiles.length > 0;
+    const normalizableSvgCount = useMemo(
+        () => coerceArray(svgOverlays).filter((overlay) => overlay && !overlay.widget).length,
+        [svgOverlays]
+    );
+    const svgLibraryStatusText = !svgLibraryEnabled
+        ? "SVG library disabled"
+        : svgLibraryError
+            ? svgLibraryError
+            : svgLibraryReady
+                ? `${svgCatalogFiles.length} SVG templates ready`
+                : "Loading SVG templates...";
+
+    const svgDrawerLayout = useMemo(() => {
+        const maxPanelWidth = Math.max(0, Number(rootSize?.width || DEFAULT_CANVAS_WIDTH) - (TOOLBAR_INSET * 2));
+        const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+        const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
+        const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
+
+        if (availableBesideToolbar >= SVG_DRAWER_MIN_WIDTH) {
+            return {
+                left: preferredLeft,
+                top: TOOLBAR_INSET,
+                bottom: TOOLBAR_INSET,
+                width: Math.min(SVG_DRAWER_PREFERRED_WIDTH, availableBesideToolbar)
+            };
+        }
+
+        return {
+            left: TOOLBAR_INSET,
+            top: TOOLBAR_INSET,
+            bottom: TOOLBAR_INSET,
+            width: Math.max(260, Math.min(SVG_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
+        };
+    }, [rootSize, toolbarCollapsed]);
+    useEffect(() => {
+        const onKeyDown = (event) => {
+            if (!editorVisible) {
+                return;
+            }
+            if (isInteractiveEditorTarget(event.target)) {
+                return;
+            }
+            if (event.altKey || event.ctrlKey || event.metaKey) {
+                return;
+            }
+            if (!event.shiftKey || event.key !== "Delete") {
+                return;
+            }
+
+            const activeSegment =
+                selectedSegment
+                && selectedSegment.kind === "point"
+                && String(selectedSegment.id || "")
+                && String(editingId || "") === String(selectedSegment.id || "")
+                && selectedIds.includes(String(selectedSegment.id || ""));
+            const hasActiveSelection =
+                (Array.isArray(selectedIds) && selectedIds.length > 0)
+                || (Array.isArray(selectedOverlayIds) && selectedOverlayIds.length > 0);
+            if (!activeSegment && !hasActiveSelection) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            if (activeSegment && deletePolylineVertex(selectedSegment.id, selectedSegment.index)) {
+                return;
+            }
+            deleteSelected();
+        };
+
+        window.addEventListener("keydown", onKeyDown, true);
+        return () => window.removeEventListener("keydown", onKeyDown, true);
+    }, [deletePolylineVertex, deleteSelected, editingId, editorVisible, selectedIds, selectedOverlayIds, selectedSegment]);
+
+    useEffect(() => {
+        const onKeyDown = (event) => {
+            if (!editorVisible) {
+                return;
+            }
+            if (isInteractiveEditorTarget(event.target)) {
+                return;
+            }
+
+            const key = String(event.key || "").toLowerCase();
+            const alternate = event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
+            const consumeShortcutEvent = () => {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation?.();
+            };
+
+            if (alternate) {
+                if (key === "c") {
+                    consumeShortcutEvent();
+                    copySelection();
+                    return;
+                }
+                if (key === "v") {
+                    consumeShortcutEvent();
+                    pasteClipboard();
+                    return;
+                }
+                if (key === "z") {
+                    consumeShortcutEvent();
+                    undo();
+                    return;
+                }
+                if (key === "y") {
+                    consumeShortcutEvent();
+                    redo();
+                    return;
+                }
+                if (key === "d" || String(event.code || "") === "KeyD") {
+                    consumeShortcutEvent();
+                    duplicateSelected();
+                    return;
+                }
+                return;
+            }
+
+            if (event.altKey) {
+                return;
+            }
+
+            if (event.key === "Escape") {
+                event.preventDefault();
+                if (drawing?.kind === "polyline") {
+                    cancelPolyline();
+                    return;
+                }
+                setEditingId(null);
+                setSelectedSegment(null);
+                return;
+            }
+
+            if (event.key === "Enter" && drawing?.kind === "polyline") {
+                event.preventDefault();
+                finishPolyline();
+            }
+        };
+
+        window.addEventListener("keydown", onKeyDown, true);
+        return () => window.removeEventListener("keydown", onKeyDown, true);
+    }, [cancelPolyline, copySelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, undo]);
+
+    useEffect(() => {
+        const onKeyUp = (event) => {
+            if (!editorVisible || isInteractiveEditorTarget(event.target)) {
+                return;
+            }
+            const key = String(event.key || "").toLowerCase();
+            const alternate = event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
+            if (!alternate) {
+                return;
+            }
+            if (key === "c" || key === "v" || key === "z" || key === "y" || key === "d" || String(event.code || "") === "KeyD") {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation?.();
+            }
+        };
+
+        window.addEventListener("keyup", onKeyUp, true);
+        return () => window.removeEventListener("keyup", onKeyUp, true);
+    }, [editorVisible]);
+
+    useEffect(() => {
+        if (editorVisible) {
+            return;
+        }
+        setImportOpen(false);
+        setDragState(null);
+        setDragHandle(null);
+        setShapeResize(null);
+        setOverlayResize(null);
+        setMarquee(null);
+        setSelectedSegment(null);
+        setEditingId(null);
+        setDrawing(null);
+        clearSelection();
+    }, [clearSelection, editorVisible]);
+
+    return (
+        <div ref={rootRef} style={{ position: "relative", width: "100%", height: "100%" }}>
+            <CanvasSvg
+                svgRef={svgRef}
+                zoom={zoom}
+                pan={isPlainObject(pan) ? pan : { x: 0, y: 0 }}
+                onWheel={NOOP}
+                marquee={editorVisible ? marquee : null}
+                tool={editorVisible ? tool : "select"}
+                shapes={shapes}
+                setShapes={(updater) => updateShapes(updater, { persist: true })}
+                selectedIds={editorVisible ? selectedIds : EMPTY_ARRAY}
+                setSelectedIds={editorVisible ? setSelectedIds : NOOP}
+                setSelectedOverlayIds={editorVisible ? setSelectedOverlayIds : NOOP}
+                inlineEditId={null}
+                selectedSegment={editorVisible ? selectedSegment : null}
+                editingId={editorVisible ? editingId : null}
+                showTagPaths={editorVisible && showTagPaths}
+                showGrid={editorVisible && showGrid}
+                showRulers={editorVisible && showRulers}
+                useWindowPointerTracking={false}
+                onSvgMouseDown={editorVisible ? handleSvgMouseDown : NOOP}
+                onMouseMove={editorVisible ? handleMouseMove : NOOP}
+                onMouseUp={editorVisible ? handleMouseUp : NOOP}
+                onContextMenu={editorVisible ? handleCanvasContextMenu : NOOP}
+                onShapeMouseDown={editorVisible ? handleShapeMouseDown : NOOP}
+                onShapeDoubleClick={editorVisible ? handleShapeDoubleClick : NOOP}
+                onEditPolylineClick={editorVisible ? handleEditPolylineClick : NOOP}
+                onHandleMouseDown={editorVisible ? handlePolylineHandleMouseDown : NOOP}
+                onHandleDoubleClick={editorVisible ? handlePolylineHandleDoubleClick : NOOP}
+                onHandleContextMenu={NOOP}
+                onSegmentMouseDown={editorVisible ? handleSegmentMouseDown : NOOP}
+                vbW={viewBox.width}
+                vbH={viewBox.height}
+                svgOverlays={svgOverlays}
+                setSvgOverlays={(updater) => updateSvgOverlays(updater, { persist: true })}
+                selectedOverlayIds={editorVisible ? selectedOverlayIds : EMPTY_ARRAY}
+                singleSelectedOverlayId={editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null}
+                setOverlayRef={NOOP}
+                onOverlayMouseDown={editorVisible ? handleOverlayMouseDown : NOOP}
+                onOverlayDoubleClick={editorVisible ? handleOverlayDoubleClick : NOOP}
+                overlaySelectionUI={editorVisible ? overlaySelectionUI : null}
+                overlayGroupSelectionUI={editorVisible ? overlayGroupSelectionUI : null}
+                shapeSelectionUI={editorVisible ? shapeSelectionUI : null}
+                mixedSelectionUI={editorVisible ? mixedSelectionUI : null}
+                overlayLocalBBox={overlayLocalBBox}
+                importAnchor={null}
+                onCanvasDoubleClick={NOOP}
+                tagStateColorsByPath={EMPTY_MAP}
+                routeColorsBySvgKey={EMPTY_MAP}
+                routeStrokeColorByGroupPath={EMPTY_MAP}
+                svgLiveValuesByGroupPath={EMPTY_MAP}
+                ignitionTagValuesByPath={ignitionTagValuesByPath}
+                liveTagKeys={coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY))}
+                opcTags={coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY))}
+                opcTemplateMap={EMPTY_MAP}
+                opcTagMappingMap={EMPTY_MAP}
+                opcMappingSetMap={EMPTY_MAP}
+                widgetDbValues={EMPTY_MAP}
+                binProductLabelByOverlayId={EMPTY_MAP}
+                binNameLabelByOverlayId={EMPTY_MAP}
+                binLevelRatioByOverlayId={EMPTY_MAP}
+                binLockedInByOverlayId={EMPTY_MAP}
+                binLockedOutByOverlayId={EMPTY_MAP}
+                onWidgetDurationPresetChange={NOOP}
+                onTrendTagDrop={NOOP}
+                hiddenTagBubbleIds={EMPTY_ARRAY}
+                onHideTagBubble={NOOP}
+                onSvgDoubleClick={editorVisible ? handleSvgDoubleClick : NOOP}
+                collaboratorCursors={EMPTY_ARRAY}
+                liveUpdatesEnabled={liveUpdatesEnabled}
+                interactionActive={editorVisible && (
+                    Boolean(drawing)
+                    || Boolean(dragState)
+                    || Boolean(dragHandle)
+                    || Boolean(shapeResize)
+                    || Boolean(overlayResize)
+                    || Boolean(marquee)
+                )}
+                theme={theme}
+                canvasBackgroundColor={canvasBackgroundColor}
+                liveClickable={liveClickable}
+                isLiveMode={isLiveMode}
+                preserveAspectRatioMode="xMinYMin slice"
+                forceStaticVisuals={!editorVisible}
+                viewportTopOffset={0}
+                viewportLeftOffset={0}
+                viewportScrollTarget={null}
+                onViewportScroll={NOOP}
+            />
+
+            {editorVisible ? (
+                toolbarCollapsed ? (
+                    <div
+                        style={{
+                            position: "absolute",
+                            top: TOOLBAR_INSET,
+                            left: TOOLBAR_INSET,
+                            zIndex: 60,
+                            width: COLLAPSED_TOOLBAR_WIDTH,
+                            maxWidth: `min(${COLLAPSED_TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
+                            display: "grid",
+                            gap: 8,
+                            padding: 10,
+                            borderRadius: 18,
+                            border: "1px solid rgba(51, 65, 85, 0.95)",
+                            background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
+                            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+                        }}
+                    >
+                        <button
+                            type="button"
+                            onClick={() => setToolbarCollapsed(false)}
+                            style={{
+                                width: "100%",
+                                minHeight: 38,
+                                borderRadius: 12,
+                                border: "1px solid rgba(71, 85, 105, 0.9)",
+                                background: "rgba(15, 23, 42, 0.9)",
+                                color: "#f8fafc",
+                                cursor: "pointer",
+                                fontSize: 12,
+                                fontWeight: 800,
+                                letterSpacing: "0.04em"
+                            }}
+                        >
+                            Show Tools
+                        </button>
+                    </div>
+                ) : (
+                    <div
+                        style={{
+                            position: "absolute",
+                            top: TOOLBAR_INSET,
+                            left: TOOLBAR_INSET,
+                            zIndex: 60,
+                            width: TOOLBAR_WIDTH,
+                            maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
+                            display: "grid",
+                            gap: 12,
+                            padding: 14,
+                            borderRadius: 18,
+                            border: "1px solid rgba(51, 65, 85, 0.95)",
+                            background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
+                            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+                        }}
+                    >
+                        <div
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 12
+                            }}
+                        >
+                            <div
+                                style={{
+                                    fontSize: 11,
+                                    fontWeight: 800,
+                                    letterSpacing: "0.12em",
+                                    textTransform: "uppercase",
+                                    color: "rgba(226, 232, 240, 0.76)"
+                                }}
+                            >
+                                Tools
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setToolbarCollapsed(true)}
+                                style={{
+                                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                                    background: "rgba(15, 23, 42, 0.88)",
+                                    color: "#f8fafc",
+                                    minWidth: 28,
+                                    height: 28,
+                                    padding: "0 8px",
+                                    borderRadius: 999,
+                                    fontSize: 14,
+                                    fontWeight: 700,
+                                    cursor: "pointer"
+                                }}
+                            >
+                                _
+                            </button>
+                        </div>
+
+                        <DockSection title="Draw">
+                            <DockButton active={tool === "select"} onClick={() => activateTool("select")}>
+                                <span>Move</span>
+                            </DockButton>
+
+                            <EditorDropdownField
+                                label="Selection"
+                                value={selectionMode}
+                                sections={[
+                                    {
+                                        items: [
+                                            { value: "all", label: "All objects" },
+                                            { value: "svg", label: "SVG only" },
+                                            { value: "polyline", label: "Polylines only" }
+                                        ]
+                                    }
+                                ]}
+                                onChange={(nextValue) => {
+                                    setSelectionMode(nextValue);
+                                    clearSelection();
+                                }}
+                            />
+
+                            <DockButton active={tool === "polyline"} onClick={() => activateTool("polyline")}>
+                                <span>Polyline</span>
+                            </DockButton>
+                            <DockButton active={tool === "rect"} onClick={() => activateTool("rect")}>
+                                <span>Rectangle</span>
+                            </DockButton>
+                            <DockButton active={tool === "circle"} onClick={() => activateTool("circle")}>
+                                <span>Circle</span>
+                            </DockButton>
+                            <DockButton active={tool === "text"} onClick={() => activateTool("text")}>
+                                <span>Text</span>
+                            </DockButton>
+                        </DockSection>
+
+                        <div style={{ height: 1, background: "rgba(71, 85, 105, 0.7)" }} />
+
+                        <DockSection title="Assets">
+                            <DockButton
+                                active={importOpen}
+                                disabled={!svgLibraryReady}
+                                onClick={handleImportToggle}
+                            >
+                                <span>SVG Library</span>
+                            </DockButton>
+                            <div
+                                style={{
+                                    display: "grid",
+                                    gridTemplateColumns: "minmax(0, 1fr) 78px",
+                                    gap: 8,
+                                    alignItems: "stretch"
+                                }}
+                            >
+                                <DockButton
+                                    disabled={!normalizableSvgCount}
+                                    onClick={normalizeAllSvgStrokeWidths}
+                                >
+                                    <span>Match Stroke Sizes</span>
+                                </DockButton>
+                                <input
+                                    type="number"
+                                    min="0.1"
+                                    step="0.1"
+                                    value={strokeNormalizeWidthDraft}
+                                    placeholder={formatPanelNumber(NORMALIZED_SVG_STROKE_WIDTH)}
+                                    onChange={(event) => {
+                                        setStrokeNormalizeWidthDraft(event.target.value);
+                                    }}
+                                    onBlur={commitStrokeNormalizeWidth}
+                                    onFocus={stopInteractivePropagation}
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onMouseUp={stopInteractivePropagation}
+                                    onClick={stopInteractivePropagation}
+                                    onDoubleClick={stopInteractivePropagation}
+                                    onKeyDown={(event) => {
+                                        stopInteractivePropagation(event);
+                                        if (event.key === "Enter") {
+                                            event.preventDefault();
+                                            commitStrokeNormalizeWidth();
+                                            event.currentTarget.blur();
+                                        }
+                                    }}
+                                    onKeyUp={stopInteractivePropagation}
+                                    style={{
+                                        width: "100%",
+                                        minHeight: 40,
+                                        boxSizing: "border-box",
+                                        borderRadius: 12,
+                                        border: "1px solid rgba(71, 85, 105, 0.9)",
+                                        background: "rgba(15, 23, 42, 0.92)",
+                                        color: "#f8fafc",
+                                        padding: "0 10px",
+                                        fontSize: 12,
+                                        fontWeight: 700,
+                                        textAlign: "center"
+                                    }}
+                                />
+                            </div>
+                            <div
+                                style={{
+                                    fontSize: 11,
+                                    lineHeight: 1.45,
+                                    color: svgLibraryError ? "#fecaca" : "rgba(226, 232, 240, 0.72)"
+                                }}
+                            >
+                                {svgLibraryStatusText}
+                                {!svgLibraryError && normalizableSvgCount ? (
+                                    <div>{`${normalizableSvgCount} SVGs -> ${formatPanelNumber(resolvedStrokeNormalizeWidth)}px stroke`}</div>
+                                ) : null}
+                            </div>
+                        </DockSection>
+
+                        <div style={{ height: 1, background: "rgba(71, 85, 105, 0.7)" }} />
+
+                        <DockSection title="Display">
+                            <DockButton active={showTagPaths} onClick={() => setShowTagPaths(!showTagPaths)}>
+                                <span>Show TagPaths</span>
+                            </DockButton>
+                            <DockButton active={showGrid} onClick={() => setShowGrid(!showGrid)}>
+                                <span>Show Grid</span>
+                            </DockButton>
+                        </DockSection>
+                    </div>
+                )
+            ) : null}
+
+            {editorVisible && propertiesVisible && floatingPropertyPanelStyle ? (
+                <div
+                    data-vizi-properties-panel="1"
+                    style={floatingPropertyPanelStyle}
+                    onPointerDown={stopInteractivePropagation}
+                    onMouseDown={stopInteractivePropagation}
+                    onMouseUp={stopInteractivePropagation}
+                    onClick={stopInteractivePropagation}
+                    onDoubleClick={stopInteractivePropagation}
+                    onKeyDown={stopInteractivePropagation}
+                    onKeyUp={stopInteractivePropagation}
+                    onContextMenu={stopInteractivePropagation}
+                >
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 12
+                        }}
+                    >
+                        <div
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 800,
+                                letterSpacing: "0.12em",
+                                textTransform: "uppercase",
+                                color: "rgba(226, 232, 240, 0.76)"
+                            }}
+                        >
+                            Properties
+                        </div>
+                        <button
+                            type="button"
+                            onClick={closePropertiesPanel}
+                            style={{
+                                border: "1px solid rgba(71, 85, 105, 0.9)",
+                                background: "rgba(15, 23, 42, 0.88)",
+                                color: "#f8fafc",
+                                width: 28,
+                                height: 28,
+                                borderRadius: 999,
+                                fontSize: 14,
+                                fontWeight: 700,
+                                cursor: "pointer"
+                            }}
+                        >
+                            x
+                        </button>
+                    </div>
+                    <PropertySection>
+                        {selectedOverlay ? (
+                            <>
+                                <PropertyReadout label="Type" value="SVG Overlay" />
+                                <PropertyReadout label="ID" value={selectedOverlay.id} />
+                                <PropertyField
+                                    label="Name"
+                                    value={selectedOverlay.name || ""}
+                                    onCommit={(value) => {
+                                        commitSelectedOverlayText("name", value);
+                                    }}
+                                />
+                                <PropertyTagPathField
+                                    label="Tag Path"
+                                    value={selectedOverlay.tagPath || ""}
+                                    options={ignitionTagOptions}
+                                    loading={ignitionTagsLoading}
+                                    error={ignitionTagsError}
+                                    onCommit={(value) => {
+                                        commitSelectedOverlayTagPath(value);
+                                    }}
+                                />
+                                <PropertyField
+                                    label="EType"
+                                    value={selectedOverlay.eType || ""}
+                                    onCommit={(value) => {
+                                        commitSelectedOverlayText("eType", value);
+                                    }}
+                                />
+                                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                    <PropertyField
+                                        label="X"
+                                        value={formatPanelNumber(selectedOverlayBounds?.x)}
+                                        onCommit={(value) => {
+                                            commitSelectedOverlayPosition("x", value);
+                                        }}
+                                    />
+                                    <PropertyField
+                                        label="Y"
+                                        value={formatPanelNumber(selectedOverlayBounds?.y)}
+                                        onCommit={(value) => {
+                                            commitSelectedOverlayPosition("y", value);
+                                        }}
+                                    />
+                                </div>
+                                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                    <PropertyField
+                                        label="Width"
+                                        value={formatPanelNumber(selectedOverlayBounds?.width)}
+                                        onCommit={(value) => {
+                                            commitSelectedOverlayDimension("width", value);
+                                        }}
+                                    />
+                                    <PropertyField
+                                        label="Height"
+                                        value={formatPanelNumber(selectedOverlayBounds?.height)}
+                                        onCommit={(value) => {
+                                            commitSelectedOverlayDimension("height", value);
+                                        }}
+                                    />
+                                </div>
+                                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                    <PropertyField
+                                        label="Scale"
+                                        value={formatPanelNumber(selectedOverlay.scale || 1)}
+                                        onCommit={(value) => {
+                                            commitSelectedOverlayNumber("scale", value, { min: 0.05 });
+                                        }}
+                                    />
+                                    <PropertyField
+                                        label="Stroke Width"
+                                        value={formatPanelNumber(selectedOverlay.strokeWidth || 0)}
+                                        onCommit={(value) => {
+                                            commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
+                                        }}
+                                    />
+                                </div>
+                                <PropertyField
+                                    label="Fill"
+                                    value={selectedOverlay.fill || ""}
+                                    onCommit={(value) => {
+                                        commitSelectedOverlayFill(value);
+                                    }}
+                                />
+                                <PropertyField
+                                    label="Stroke"
+                                    value={selectedOverlay.stroke || ""}
+                                    onCommit={(value) => {
+                                        commitSelectedOverlayText("stroke", value);
+                                    }}
+                                />
+                            </>
+                        ) : selectedShape ? (
+                            <>
+                                <PropertyReadout label="Type" value={selectedShapeLabel} />
+                                <PropertyReadout label="ID" value={selectedShape.id} />
+                                <PropertyTagPathField
+                                    label="Tag Path"
+                                    value={selectedShape.tagPath || ""}
+                                    options={ignitionTagOptions}
+                                    loading={ignitionTagsLoading}
+                                    error={ignitionTagsError}
+                                    onCommit={(value) => {
+                                        commitSelectedShapeText("tagPath", value);
+                                    }}
+                                />
+                                {String(selectedShape?.type || "").toLowerCase() === "text" ? (
+                                    <>
+                                        <PropertyField
+                                            label="Text"
+                                            value={selectedShape.text || ""}
+                                            onCommit={(value) => {
+                                                commitSelectedShapeText("text", value);
+                                            }}
+                                        />
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="X"
+                                                value={formatPanelNumber(selectedShape.x)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapePosition("x", value);
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Y"
+                                                value={formatPanelNumber(selectedShape.y)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapePosition("y", value);
+                                                }}
+                                            />
+                                        </div>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="Font Size"
+                                                value={formatPanelNumber(selectedShape.fontSize || 24)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeNumber("fontSize", value, { min: 1 });
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Fill"
+                                                value={selectedShape.fill || ""}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeText("fill", value);
+                                                }}
+                                            />
+                                        </div>
+                                    </>
+                                ) : Array.isArray(selectedShape?.points) ? (
+                                    <>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="X"
+                                                value={formatPanelNumber(selectedShapeBounds?.x)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapePosition("x", value);
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Y"
+                                                value={formatPanelNumber(selectedShapeBounds?.y)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapePosition("y", value);
+                                                }}
+                                            />
+                                        </div>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="Width"
+                                                value={formatPanelNumber(selectedShapeBounds?.width)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeBoundsDimension("width", value);
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Height"
+                                                value={formatPanelNumber(selectedShapeBounds?.height)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeBoundsDimension("height", value);
+                                                }}
+                                            />
+                                        </div>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="Stroke"
+                                                value={selectedShape.stroke || ""}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeText("stroke", value);
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Stroke Width"
+                                                value={formatPanelNumber(selectedShape.strokeWidth || 0)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
+                                                }}
+                                            />
+                                        </div>
+                                        <PropertyReadout
+                                            label="Points"
+                                            value={String(coerceArray(selectedShape.points).length)}
+                                        />
+                                    </>
+                                ) : (
+                                    <>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="X"
+                                                value={formatPanelNumber(selectedShape.x)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapePosition("x", value);
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Y"
+                                                value={formatPanelNumber(selectedShape.y)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapePosition("y", value);
+                                                }}
+                                            />
+                                        </div>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="Width"
+                                                value={formatPanelNumber(selectedShape.width || 0)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeNumber("width", value, { min: 0 });
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Height"
+                                                value={formatPanelNumber(selectedShape.height || 0)}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeNumber("height", value, { min: 0 });
+                                                }}
+                                            />
+                                        </div>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="Fill"
+                                                value={selectedShape.fill || ""}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeText("fill", value);
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Stroke"
+                                                value={selectedShape.stroke || ""}
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeText("stroke", value);
+                                                }}
+                                            />
+                                        </div>
+                                        <PropertyField
+                                            label="Stroke Width"
+                                            value={formatPanelNumber(selectedShape.strokeWidth || 0)}
+                                            onCommit={(value) => {
+                                                commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
+                                            }}
+                                        />
+                                    </>
+                                )}
+                            </>
+                        ) : (
+                            <>
+                                <PropertyReadout
+                                    label="Selection"
+                                    value={`${selectedOverlayIds.length} SVGs, ${selectedIds.length} shapes`}
+                                />
+                                <div
+                                    style={{
+                                        fontSize: 12,
+                                        lineHeight: 1.5,
+                                        color: "rgba(226, 232, 240, 0.72)"
+                                    }}
+                                >
+                                    Select a single SVG or shape to edit its properties.
+                                </div>
+                            </>
+                        )}
+                    </PropertySection>
+                </div>
+            ) : null}
+
+            {editorVisible && svgLibraryEnabled && importOpen ? (
+                <div
+                    style={{
+                        "--bg-elev": "rgba(15, 23, 42, 0.98)",
+                        "--bg-soft": "rgba(15, 23, 42, 0.92)",
+                        "--border": "rgba(71, 85, 105, 0.9)",
+                        "--text": "#f8fafc",
+                        "--text-muted": "rgba(226, 232, 240, 0.72)"
+                    }}
+                >
+                    <ImportModal
+                        importOpen={importOpen}
+                        setImportOpen={setImportOpen}
+                        svgFiles={svgFiles}
+                        svgLibrary={svgLibraryMap}
+                        loadSvgRaw={readSvgRawByKey}
+                        onPickSvg={onPickSvg}
+                        docked
+                        absoluteDocked
+                        appearance="ignition-drawer"
+                        attached
+                        dockLeft={svgDrawerLayout.left}
+                        dockTop={svgDrawerLayout.top}
+                        dockBottom={svgDrawerLayout.bottom}
+                        dockWidth={svgDrawerLayout.width}
+                    />
+                </div>
+            ) : null}
+        </div>
+    );
+}

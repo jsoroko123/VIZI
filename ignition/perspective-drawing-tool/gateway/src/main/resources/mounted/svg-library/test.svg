@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+
+<svg
+   width="24.066992mm"
+   height="101.12058mm"
+   viewBox="0 0 24.066992 101.12058"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg" kewidth="23.8" keheight="100" eType="test">
+  
+  <defs
+     id="defs1">
+    
+    
+  </defs>
+  <g
+     id="layer1"
+     transform="translate(-50.816078,-59.859928)">
+    <rect
+       style="fill:#b2b2b2;stroke:#808080;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"
+       id="rect3"
+       width="22.066992"
+       height="99.120583"
+       x="51.816078"
+       y="-159.98051"
+       transform="scale(1,-1)" />
+  </g>
+</svg>

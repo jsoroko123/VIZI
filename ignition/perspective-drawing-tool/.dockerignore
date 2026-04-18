@@ -1,0 +1,10 @@
+.gradle
+private
+sign.props
+build/checksum
+build/moduleContent
+build/buildResult.json
+build/*.unsigned.modl
+common/build
+designer/build
+gateway/build

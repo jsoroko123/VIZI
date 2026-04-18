@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.39807197in"
+  height="0.7125693in"
+  viewBox="0 0 10.111029 18.09926"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="55.864"
+  keheight="100"
+  eType="Aspirator2"
+>
+  <defs>
+    <linearGradient id="asp2BodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="asp2HeadFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dbe0e5" />
+      <stop offset="100%" stop-color="#9ea6b0" />
+    </linearGradient>
+    <linearGradient id="asp2ConeFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d4d9de" />
+      <stop offset="100%" stop-color="#9aa2ac" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2.02 0.88H8.26L7.48 2.56H1.38Z" fill="url(#asp2HeadFill)" stroke-width="0.20" />
+    <rect x="0.86" y="1.22" width="0.88" height="0.92" rx="0.12" fill="#c8cdd4" stroke-width="0.14" />
+    <rect x="7.94" y="1.22" width="1.02" height="0.92" rx="0.12" fill="#c8cdd4" stroke-width="0.14" />
+
+    <rect x="1.64" y="2.56" width="5.30" height="8.86" rx="0.34" fill="url(#asp2BodyFill)" stroke-width="0.20" />
+    <path d="M2.02 3.72H6.56" fill="none" stroke="#89909a" stroke-width="0.11" />
+    <path d="M2.02 4.78H6.56" fill="none" stroke="#89909a" stroke-width="0.11" />
+    <path d="M2.02 5.84H6.56" fill="none" stroke="#89909a" stroke-width="0.11" />
+
+    <path
+      id="body"
+      d="M1.76 11.42H6.80L5.96 14.72H3.56L2.54 15.92H2.22L1.76 15.38Z"
+      fill="url(#asp2ConeFill)"
+      stroke-width="0.20"
+    />
+
+    <rect x="2.46" y="15.90" width="3.06" height="0.98" rx="0.16" fill="#c6ccd3" stroke-width="0.14" />
+    <rect x="2.84" y="16.84" width="2.30" height="0.98" rx="0.14" fill="#9ea6b0" stroke-width="0.14" />
+
+    <circle cx="4.30" cy="7.70" r="0.98" fill="#dee2e7" stroke="#8d949d" stroke-width="0.14" />
+    <path d="M4.30 7.02V8.36" fill="none" stroke="#5c636c" stroke-width="0.14" />
+    <path d="M3.62 7.70H4.98" fill="none" stroke="#5c636c" stroke-width="0.14" />
+  </g>
+</svg>

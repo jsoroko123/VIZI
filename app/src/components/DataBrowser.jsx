@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toastError, toastSuccess } from "../utils/toast";
 import { showConfirmDialog } from "../utils/confirmDialog";
 import SearchableSelect from "./SearchableSelect";
+
+const DATA_LIST_VIEW_MODE_KEY = "vizi_data_list_view_mode";
+
+function normalizeListViewMode(value) {
+  return String(value || "").trim().toLowerCase() === "card" ? "card" : "table";
+}
 
 export default function DataBrowser({
   embedded = false,
@@ -51,7 +57,9 @@ export default function DataBrowser({
   const [fkFallbackOptions, setFkFallbackOptions] = useState({});
   const [formEnabled, setFormEnabled] = useState(false);
   const [alarmViewTab, setAlarmViewTab] = useState("active");
-  const [rowsTruncated, setRowsTruncated] = useState(false);
+  const [rowsLoading, setRowsLoading] = useState(false);
+  const [rowsLoadingMore, setRowsLoadingMore] = useState(false);
+  const [rowsHasMore, setRowsHasMore] = useState(false);
   const [childRelations, setChildRelations] = useState([]);
   const [childRelationPickByTable, setChildRelationPickByTable] = useState({});
   const [childRelationBusyByTable, setChildRelationBusyByTable] = useState({});
@@ -76,6 +84,20 @@ export default function DataBrowser({
   const [formulaBomSavingAll, setFormulaBomSavingAll] = useState(false);
   const [listFieldEditMode, setListFieldEditMode] = useState(false);
   const [listFieldSavedSignature, setListFieldSavedSignature] = useState("");
+  const rowListViewportRef = useRef(null);
+  const rowsRef = useRef([]);
+  const rowsOffsetRef = useRef(0);
+  const rowsHasMoreRef = useRef(false);
+  const rowsLoadingMoreRef = useRef(false);
+  const rowsRequestIdRef = useRef(0);
+  const [listViewMode, setListViewMode] = useState(() => {
+    if (typeof window === "undefined") return "table";
+    try {
+      return normalizeListViewMode(window.localStorage.getItem(DATA_LIST_VIEW_MODE_KEY));
+    } catch {
+      return "table";
+    }
+  });
   const TABLE_FETCH_BATCH = 200;
   const TABLE_FETCH_MAX = 10000;
 
@@ -189,6 +211,10 @@ export default function DataBrowser({
     if (alarmViewTab === "shelved" && hasAlarmShelvedColumn) return (rows || []).filter((r) => isRowShelvedAlarm(r));
     return rows || [];
   }, [rows, hasAlarmActiveColumn, hasAlarmShelvedColumn, alarmViewTab]);
+  const visibleListFields = useMemo(() => {
+    if (!displayedRows.length) return [];
+    return getVisibleFields(displayedRows[0] || {});
+  }, [displayedRows, listFields, tableColumnOrder, primaryKey]);
   const detailRenderOrder = useMemo(() => {
     const all = (columns || []).map((c) => String(c?.column_name || "")).filter(Boolean);
     if (!detailFieldOrder.length) return all;
@@ -243,6 +269,15 @@ export default function DataBrowser({
     if (isAlarmTable) setAlarmViewTab("active");
     else setAlarmViewTab("all");
   }, [isAlarmTable, currentTable]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(DATA_LIST_VIEW_MODE_KEY, normalizeListViewMode(listViewMode));
+    } catch {
+      // ignore storage failures
+    }
+  }, [listViewMode]);
 
   const pageStyle = useMemo(
     () =>
@@ -381,6 +416,31 @@ export default function DataBrowser({
     fontWeight: 800,
     cursor: "pointer",
   };
+  const listViewToggleGroupStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    padding: 4,
+    border: useWhiteBackground ? "1px solid #d7e5fb" : "1px solid var(--border)",
+    borderRadius: 10,
+    background: useWhiteBackground ? "#f6f9ff" : "var(--bg-soft)",
+  };
+  const listViewToggleButtonStyle = (active) => ({
+    border: active ? "1px solid var(--accent)" : "1px solid transparent",
+    background: active
+      ? "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)"
+      : "transparent",
+    color: active ? "var(--accent-text)" : "var(--text-muted)",
+    borderRadius: 8,
+    padding: "5px 8px",
+    fontSize: 11,
+    fontWeight: 800,
+    cursor: "pointer",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    boxShadow: active ? "0 8px 18px color-mix(in srgb, var(--accent) 22%, transparent)" : "none",
+  });
   const formFieldBackground = useWhiteBackground ? "#ffffff" : "var(--bg-elev)";
   const formFieldDisabledBackground = useWhiteBackground ? "#f3f6fc" : "var(--bg-soft)";
   const formFieldBorder = useWhiteBackground ? "#cfdcf6" : "var(--border)";
@@ -494,10 +554,16 @@ export default function DataBrowser({
 
   useEffect(() => {
     async function loadMeta() {
-      if (!currentTable) return;
       setError("");
       setColumns([]);
       setRows([]);
+      rowsRef.current = [];
+      rowsOffsetRef.current = 0;
+      rowsHasMoreRef.current = false;
+      rowsLoadingMoreRef.current = false;
+      setRowsHasMore(false);
+      setRowsLoading(Boolean(currentTable));
+      setRowsLoadingMore(false);
       setPrimaryKey(null);
       setListFields([]);
       setTableColumnOrder([]);
@@ -509,6 +575,7 @@ export default function DataBrowser({
       setFkFallbackOptions({});
       setFormDraft({});
       setFormEnabled(false);
+      if (!currentTable) return;
       try {
         const res = await fetch(`/api/db/${currentTable}/meta`);
         const data = await res.json();
@@ -530,53 +597,131 @@ export default function DataBrowser({
     loadMeta();
   }, [currentTable]);
 
-  async function fetchRowsSnapshot() {
-    if (!currentTable) return { rows: [] };
+  async function fetchRowsPage(tableName, offset = 0) {
+    if (!tableName) return { data: {}, rawRows: [], filteredRows: [], hasMore: false, nextOffset: 0 };
     const projectParam =
-      currentTable === "route" && activeProjectId
+      tableName === "route" && activeProjectId
         ? `&project_id=${encodeURIComponent(activeProjectId)}`
         : "";
-    let offset = 0;
-    let allRows = [];
-    let lastPayload = {};
-    while (offset < TABLE_FETCH_MAX) {
-      const res = await fetch(
-        `/api/db/${currentTable}?limit=${TABLE_FETCH_BATCH}&offset=${offset}${projectParam}`
-      );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
-      const chunk = Array.isArray(data.rows) ? data.rows : [];
-      allRows = allRows.concat(chunk);
-      lastPayload = data;
-      if (chunk.length < TABLE_FETCH_BATCH) break;
-      offset += TABLE_FETCH_BATCH;
+    const res = await fetch(
+      `/api/db/${encodeURIComponent(tableName)}?limit=${TABLE_FETCH_BATCH}&offset=${offset}${projectParam}`
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || "Failed to load rows.");
+    const rawRows = Array.isArray(data?.rows) ? data.rows : [];
+    return {
+      data,
+      rawRows,
+      filteredRows: applyEmbeddedRouteFilter(rawRows),
+      hasMore: rawRows.length === TABLE_FETCH_BATCH,
+      nextOffset: offset + rawRows.length,
+    };
+  }
+
+  async function loadRowsPage({ reset = false } = {}) {
+    const tableName = String(currentTable || "").trim();
+    if (!tableName) {
+      rowsRef.current = [];
+      rowsOffsetRef.current = 0;
+      rowsHasMoreRef.current = false;
+      rowsLoadingMoreRef.current = false;
+      setRows([]);
+      setRowsHasMore(false);
+      setRowsLoading(false);
+      setRowsLoadingMore(false);
+      return { rows: [] };
     }
-    const truncated = allRows.length >= TABLE_FETCH_MAX;
-    setRowsTruncated(truncated);
-    return { ...lastPayload, rows: allRows };
+    if (!reset && (rowsLoading || rowsLoadingMoreRef.current || !rowsHasMoreRef.current)) return null;
+
+    const requestId = reset ? rowsRequestIdRef.current + 1 : rowsRequestIdRef.current;
+    if (reset) rowsRequestIdRef.current = requestId;
+    const activeRequestId = rowsRequestIdRef.current;
+
+    if (reset) {
+      rowsRef.current = [];
+      rowsOffsetRef.current = 0;
+      rowsHasMoreRef.current = false;
+      rowsLoadingMoreRef.current = false;
+      setRows([]);
+      setRowsHasMore(false);
+      setRowsLoading(true);
+      setRowsLoadingMore(false);
+      const viewport = rowListViewportRef.current;
+      if (viewport) viewport.scrollTop = 0;
+    } else {
+      rowsLoadingMoreRef.current = true;
+      setRowsLoadingMore(true);
+    }
+
+    try {
+      let nextRows = reset ? [] : rowsRef.current.slice();
+      let nextOffset = reset ? 0 : rowsOffsetRef.current;
+      let hasMore = false;
+      let lastPayload = {};
+      let addedVisibleRows = 0;
+      do {
+        const page = await fetchRowsPage(tableName, nextOffset);
+        if (rowsRequestIdRef.current !== activeRequestId) return null;
+        lastPayload = page.data;
+        nextOffset = page.nextOffset;
+        hasMore = page.hasMore;
+        if (page.filteredRows.length) {
+          nextRows = nextRows.concat(page.filteredRows);
+          addedVisibleRows += page.filteredRows.length;
+        }
+      } while (showJobsRouteContext && hasMore && addedVisibleRows === 0);
+
+      if (rowsRequestIdRef.current !== activeRequestId) return null;
+
+      rowsRef.current = nextRows;
+      rowsOffsetRef.current = nextOffset;
+      rowsHasMoreRef.current = hasMore;
+      setRows(nextRows);
+      setRowsHasMore(hasMore);
+
+      if (lastPayload.primaryKey) setPrimaryKey(lastPayload.primaryKey);
+      if (reset) {
+        if (Array.isArray(lastPayload.listFields)) {
+          setListFields(lastPayload.listFields);
+          setTableColumnOrder(lastPayload.listFields);
+          setListFieldSavedSignature(JSON.stringify(lastPayload.listFields));
+        }
+        if (Array.isArray(lastPayload.detailFields)) {
+          setDetailFieldOrder(lastPayload.detailFields);
+        }
+      }
+
+      return { ...lastPayload, rows: nextRows };
+    } finally {
+      if (rowsRequestIdRef.current === activeRequestId) {
+        rowsLoadingMoreRef.current = false;
+        setRowsLoading(false);
+        setRowsLoadingMore(false);
+      }
+    }
   }
 
   useEffect(() => {
     async function loadRows() {
       if (!currentTable) return;
       try {
-        const data = await fetchRowsSnapshot();
-        setRows(applyEmbeddedRouteFilter(data.rows || []));
-        if (data.primaryKey) setPrimaryKey(data.primaryKey);
-        if (Array.isArray(data.listFields)) {
-          setListFields(data.listFields);
-          setTableColumnOrder(data.listFields);
-          setListFieldSavedSignature(JSON.stringify(data.listFields));
-        }
-        if (Array.isArray(data.detailFields)) {
-          setDetailFieldOrder(data.detailFields);
-        }
+        await loadRowsPage({ reset: true });
       } catch (err) {
         setError(err?.message || "Failed to load rows.");
       }
     }
-    loadRows();
+    void loadRows();
   }, [currentTable, activeProjectId, showJobsRouteContext, normalizedEmbeddedRouteId]);
+
+  useEffect(() => {
+    const viewport = rowListViewportRef.current;
+    if (!viewport || !currentTable || rowsLoading || rowsLoadingMore || !rowsHasMore) return;
+    if (viewport.scrollHeight <= viewport.clientHeight + 24) {
+      void loadRowsPage({ reset: false }).catch((err) => {
+        setError(err?.message || "Failed to load more rows.");
+      });
+    }
+  }, [currentTable, displayedRows.length, rowsHasMore, rowsLoading, rowsLoadingMore, listViewMode, alarmViewTab]);
 
   useEffect(() => {
     let alive = true;
@@ -750,19 +895,26 @@ export default function DataBrowser({
   async function reloadRows() {
     if (!currentTable) return;
     try {
-      const data = await fetchRowsSnapshot();
-      setRows(applyEmbeddedRouteFilter(data.rows || []));
-      if (data.primaryKey) setPrimaryKey(data.primaryKey);
-      if (Array.isArray(data.listFields)) {
-        setListFields(data.listFields);
-        setTableColumnOrder(data.listFields);
-        setListFieldSavedSignature(JSON.stringify(data.listFields));
-      }
-      if (Array.isArray(data.detailFields)) {
-        setDetailFieldOrder(data.detailFields);
-      }
+      await loadRowsPage({ reset: true });
     } catch (err) {
       setError(err?.message || "Failed to load rows.");
+    }
+  }
+
+  async function loadMoreRows() {
+    if (!currentTable || rowsLoading || rowsLoadingMoreRef.current || !rowsHasMoreRef.current) return;
+    try {
+      await loadRowsPage({ reset: false });
+    } catch (err) {
+      setError(err?.message || "Failed to load more rows.");
+    }
+  }
+
+  function handleRowsViewportScroll(target) {
+    if (!target || rowsLoading || rowsLoadingMore || !rowsHasMore) return;
+    const remaining = target.scrollHeight - (target.scrollTop + target.clientHeight);
+    if (remaining <= 160) {
+      void loadMoreRows();
     }
   }
 
@@ -3094,7 +3246,7 @@ export default function DataBrowser({
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: currentTable && !isAlarmTable ? "minmax(0, 1fr) auto" : "minmax(0, 1fr)",
+                    gridTemplateColumns: currentTable ? "minmax(0, 1fr) auto" : "minmax(0, 1fr)",
                     alignItems: "center",
                     width: "100%",
                     gap: 10,
@@ -3153,82 +3305,116 @@ export default function DataBrowser({
                   ) : (
                     <div style={{ width: "100%" }} />
                   )}
-                  {currentTable && !isAlarmTable ? (
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <button
-                        onClick={() => {
-                          navigateData(`/data/${currentTable}/new`);
-                        }}
-                        title="New row"
-                        aria-label="New row"
-                        style={{
-                          ...iconActionButton,
-                          border: "1px solid var(--accent)",
-                          background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
-                          color: "var(--accent-text)",
-                        }}
-                      >
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                          <path d="M12 5v14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-                          <path d="M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-                        </svg>
-                      </button>
-                      {columns.length > 0 && !hideListFieldControls ? (
+                  {currentTable ? (
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <div style={listViewToggleGroupStyle}>
+                        <button
+                          type="button"
+                          onClick={() => setListViewMode("table")}
+                          aria-pressed={listViewMode === "table"}
+                          title="Table view"
+                          style={listViewToggleButtonStyle(listViewMode === "table")}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <rect x="4" y="5" width="16" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" />
+                            <path d="M4 10h16M9 5v14M15 5v14" stroke="currentColor" strokeWidth="1.8" />
+                          </svg>
+                          <span>Table</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setListViewMode("card")}
+                          aria-pressed={listViewMode === "card"}
+                          title="Card view"
+                          style={listViewToggleButtonStyle(listViewMode === "card")}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <rect x="4" y="5" width="7" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                            <rect x="13" y="5" width="7" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                            <rect x="4" y="13" width="7" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                            <rect x="13" y="13" width="7" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                          </svg>
+                          <span>Cards</span>
+                        </button>
+                      </div>
+                      {!isAlarmTable ? (
                         <>
                           <button
                             onClick={() => {
-                              if (listFieldEditMode) {
-                                void (async () => {
-                                  if (listFieldDirty) {
-                                    const ok = await saveListFields();
-                                    if (!ok) return;
-                                  }
-                                  setListFieldEditMode(false);
-                                  setDragListField("");
-                                })();
-                              } else {
-                                setListFieldEditMode(true);
-                              }
+                              navigateData(`/data/${currentTable}/new`);
                             }}
-                            title={listFieldEditMode ? "Done editing list fields" : "Edit list fields"}
-                            aria-label={listFieldEditMode ? "Done editing list fields" : "Edit list fields"}
-                            style={{ ...iconActionButton }}
-                          >
-                            {listFieldEditMode ? (
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                                <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                                <path d="M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                              </svg>
-                            ) : (
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                                <path d="M12 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-                              </svg>
-                            )}
-                          </button>
-                          <button
-                            onClick={async () => {
-                              const ok = await saveListFields();
-                              if (ok) setListFieldEditMode(false);
-                            }}
-                            disabled={!listFieldEditMode || !listFieldDirty}
-                            title="Save list fields and order"
-                            aria-label="Save list fields and order"
+                            title="New row"
+                            aria-label="New row"
                             style={{
                               ...iconActionButton,
                               border: "1px solid var(--accent)",
                               background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
                               color: "var(--accent-text)",
-                              opacity: listFieldEditMode && listFieldDirty ? 1 : 0.5,
-                              cursor: listFieldEditMode && listFieldDirty ? "pointer" : "not-allowed",
                             }}
                           >
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" stroke="currentColor" strokeWidth="2" />
-                              <path d="M17 21v-8H7v8" stroke="currentColor" strokeWidth="2" />
-                              <path d="M7 3v5h8" stroke="currentColor" strokeWidth="2" />
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                              <path d="M12 5v14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                              <path d="M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
                             </svg>
                           </button>
+                          {columns.length > 0 && !hideListFieldControls ? (
+                            <>
+                              <button
+                                onClick={() => {
+                                  if (listFieldEditMode) {
+                                    void (async () => {
+                                      if (listFieldDirty) {
+                                        const ok = await saveListFields();
+                                        if (!ok) return;
+                                      }
+                                      setListFieldEditMode(false);
+                                      setDragListField("");
+                                    })();
+                                  } else {
+                                    setListFieldEditMode(true);
+                                  }
+                                }}
+                                title={listFieldEditMode ? "Done editing list fields" : "Edit list fields"}
+                                aria-label={listFieldEditMode ? "Done editing list fields" : "Edit list fields"}
+                                style={{ ...iconActionButton }}
+                              >
+                                {listFieldEditMode ? (
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                    <path d="M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                  </svg>
+                                ) : (
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <path d="M12 20h9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+                                  </svg>
+                                )}
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  const ok = await saveListFields();
+                                  if (ok) setListFieldEditMode(false);
+                                }}
+                                disabled={!listFieldEditMode || !listFieldDirty}
+                                title="Save list fields and order"
+                                aria-label="Save list fields and order"
+                                style={{
+                                  ...iconActionButton,
+                                  border: "1px solid var(--accent)",
+                                  background: "linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%)",
+                                  color: "var(--accent-text)",
+                                  opacity: listFieldEditMode && listFieldDirty ? 1 : 0.5,
+                                  cursor: listFieldEditMode && listFieldDirty ? "pointer" : "not-allowed",
+                                }}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" stroke="currentColor" strokeWidth="2" />
+                                  <path d="M17 21v-8H7v8" stroke="currentColor" strokeWidth="2" />
+                                  <path d="M7 3v5h8" stroke="currentColor" strokeWidth="2" />
+                                </svg>
+                              </button>
+                            </>
+                          ) : null}
                         </>
                       ) : null}
                     </div>
@@ -3344,26 +3530,162 @@ export default function DataBrowser({
                       </div>
                     </div>
                   )}
-                  {rowsTruncated ? (
-                    <div
-                      style={{
-                        marginBottom: 8,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: "var(--text-muted)",
-                      }}
-                    >
-                      Showing first {TABLE_FETCH_MAX} rows.
-                    </div>
-                  ) : null}
-                  <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
-                    {displayedRows.length === 0 ? (
+                  <div
+                    ref={rowListViewportRef}
+                    onScroll={(e) => handleRowsViewportScroll(e.currentTarget)}
+                    style={{ overflow: "auto", flex: 1, minHeight: 0 }}
+                  >
+                    {rowsLoading && !rows.length ? (
+                      <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Loading rows...</div>
+                    ) : displayedRows.length === 0 ? (
                       <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
-                        {hasAlarmActiveColumn && alarmViewTab === "active"
+                        {rowsHasMore || rowsLoadingMore
+                          ? "Loading matching rows..."
+                          : hasAlarmActiveColumn && alarmViewTab === "active"
                           ? "No active alarms."
                           : hasAlarmShelvedColumn && alarmViewTab === "shelved"
                           ? "No shelved alarms."
                           : "No rows."}
+                      </div>
+                    ) : listViewMode === "card" ? (
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+                          gap: 10,
+                          alignContent: "start",
+                          paddingBottom: 4,
+                        }}
+                      >
+                        {displayedRows.map((r, i) => {
+                          const rowId = primaryKey ? r[primaryKey] : i;
+                          const rowKey =
+                            rowId == null || String(rowId).trim() === "" ? String(i) : String(rowId);
+                          const rowFields = visibleListFields.length ? visibleListFields : getVisibleFields(r || {});
+                          const isSelected = !isNewDetail && String(selectedId ?? "") === rowKey;
+                          return (
+                            <article
+                              key={`${rowKey}-${i}`}
+                              onClick={() => navigateData(`/data/${currentTable}/${rowId}`)}
+                              style={{
+                                border: isSelected
+                                  ? "1px solid var(--accent)"
+                                  : useWhiteBackground
+                                  ? "1px solid #d7e5fb"
+                                  : "1px solid var(--border)",
+                                background: isSelected
+                                  ? useWhiteBackground
+                                    ? "#eef4ff"
+                                    : "color-mix(in srgb, var(--accent) 12%, var(--bg-soft))"
+                                  : useWhiteBackground
+                                  ? "#ffffff"
+                                  : "var(--bg-soft)",
+                                borderRadius: 14,
+                                padding: 12,
+                                display: "grid",
+                                gap: 10,
+                                cursor: "pointer",
+                                boxShadow: isSelected
+                                  ? "0 10px 24px color-mix(in srgb, var(--accent) 18%, transparent)"
+                                  : "none",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "flex-start",
+                                  justifyContent: "space-between",
+                                  gap: 10,
+                                }}
+                              >
+                                <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
+                                  <div
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 800,
+                                      letterSpacing: "0.08em",
+                                      textTransform: "uppercase",
+                                      color: "var(--text-muted)",
+                                    }}
+                                  >
+                                    {primaryKey ? labelize(primaryKey) : "Record"}
+                                  </div>
+                                  <div
+                                    style={{
+                                      fontSize: 13,
+                                      fontWeight: 800,
+                                      color: "var(--text)",
+                                      overflowWrap: "anywhere",
+                                    }}
+                                  >
+                                    {rowKey}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigateData(`/data/${currentTable}/${rowId}`);
+                                  }}
+                                  style={{
+                                    border: "1px solid var(--border)",
+                                    background: useWhiteBackground ? "#f6f9ff" : "var(--bg-elev)",
+                                    color: "var(--text)",
+                                    borderRadius: 8,
+                                    padding: "4px 8px",
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  View
+                                </button>
+                              </div>
+                              <div style={{ display: "grid", gap: 8 }}>
+                                {rowFields.map((f) => {
+                                  const formatted = formatValue(f, r?.[f]);
+                                  const hasValue = String(formatted || "").trim() !== "";
+                                  return (
+                                    <div
+                                      key={`${rowKey}-${f}`}
+                                      style={{
+                                        display: "grid",
+                                        gridTemplateColumns: "minmax(92px, auto) minmax(0, 1fr)",
+                                        gap: 8,
+                                        alignItems: "start",
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          fontSize: 10,
+                                          fontWeight: 800,
+                                          letterSpacing: "0.08em",
+                                          textTransform: "uppercase",
+                                          color: "var(--text-muted)",
+                                          paddingTop: 2,
+                                        }}
+                                      >
+                                        {labelize(f)}
+                                      </div>
+                                      <div
+                                        style={{
+                                          fontSize: 12,
+                                          fontWeight: 600,
+                                          color: hasValue ? "var(--text)" : "var(--text-muted)",
+                                          overflowWrap: "anywhere",
+                                          minWidth: 0,
+                                        }}
+                                      >
+                                        {hasValue ? formatted : "\u2014"}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </article>
+                          );
+                        })}
                       </div>
                     ) : (
                       <table
@@ -3376,7 +3698,7 @@ export default function DataBrowser({
                       >
                         <thead>
                           <tr>
-                            {getVisibleFields(displayedRows[0] || {}).map((f) => (
+                            {visibleListFields.map((f) => (
                               <th
                                 key={`head-${f}`}
                                 draggable={listFieldEditMode}
@@ -3396,7 +3718,9 @@ export default function DataBrowser({
                                   if (!listFieldEditMode) return;
                                   if (!dragColumn || dragColumn === f) return;
                                   e.preventDefault();
-                                  const current = getVisibleFields(displayedRows[0] || {});
+                                  const current = visibleListFields.length
+                                    ? visibleListFields.slice()
+                                    : getVisibleFields(displayedRows[0] || {});
                                   const from = current.indexOf(dragColumn);
                                   const to = current.indexOf(f);
                                   if (from < 0 || to < 0) return;
@@ -3445,7 +3769,7 @@ export default function DataBrowser({
                         <tbody>
                           {displayedRows.map((r, i) => {
                             const rowId = primaryKey ? r[primaryKey] : i;
-                            const visibleFields = getVisibleFields(r || {});
+                            const rowFields = visibleListFields.length ? visibleListFields : getVisibleFields(r || {});
                             return (
                               <tr
                                 key={`${rowId}-${i}`}
@@ -3459,7 +3783,7 @@ export default function DataBrowser({
                                   cursor: "pointer",
                                 }}
                               >
-                                {visibleFields.map((f) => (
+                                {rowFields.map((f) => (
                                   <td
                                     key={`${rowId}-${f}`}
                                     style={{
@@ -3470,7 +3794,7 @@ export default function DataBrowser({
                                       maxWidth: 200,
                                       textOverflow: "ellipsis",
                                       overflow: "hidden",
-                                    width: visibleFields[0] === f ? 100 : undefined,
+                                      width: rowFields[0] === f ? 100 : undefined,
                                     }}
                                   >
                                     {formatValue(f, r?.[f])}
@@ -3510,6 +3834,40 @@ export default function DataBrowser({
                         </tbody>
                       </table>
                     )}
+                    {currentTable ? (
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 10,
+                          padding: displayedRows.length ? "12px 0 4px" : "10px 0 2px",
+                        }}
+                      >
+                        {rowsLoadingMore ? (
+                          <div style={{ color: "var(--text-muted)", fontSize: 12, fontWeight: 600 }}>
+                            Loading more rows...
+                          </div>
+                        ) : rowsHasMore ? (
+                          <button
+                            type="button"
+                            onClick={() => void loadMoreRows()}
+                            style={{
+                              ...ghostButton,
+                              padding: "6px 10px",
+                              fontSize: 11,
+                              fontWeight: 700,
+                            }}
+                          >
+                            Load More
+                          </button>
+                        ) : displayedRows.length ? (
+                          <div style={{ color: "var(--text-muted)", fontSize: 11 }}>
+                            Loaded {rows.length} row{rows.length === 1 ? "" : "s"}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </>
               )}

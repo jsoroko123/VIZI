@@ -1,0 +1,8 @@
+*.class
+.gradle
+build/
+**/build/
+**/out/
+.idea/
+sign.props
+private/

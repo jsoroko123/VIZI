@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.033233885in"
+  height="0.048045088in"
+  viewBox="0 0 0.84414071 1.2203451"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="69.172"
+  keheight="100"
+  eType="TwoWay_AspirationFlap"
+>
+  <defs>
+    <linearGradient id="aspFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e6e8eb" />
+      <stop offset="100%" stop-color="#bfc3c8" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#2d3035" stroke-linecap="round" stroke-linejoin="round">
+    <rect id="body" x="0.05" y="0.05" width="0.74" height="1.12" fill="url(#aspFill)" stroke-width="0.05" />
+    <path id="path1" d="M0.18 1.05L0.66 0.21" fill="none" stroke="#3f444b" stroke-width="0.08" />
+    <circle id="path2" cx="0.42" cy="0.63" r="0.06" fill="#24282d" stroke-width="0.05" />
+  </g>
+</svg>

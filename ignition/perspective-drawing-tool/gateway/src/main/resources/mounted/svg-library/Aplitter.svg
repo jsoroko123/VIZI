@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.039999999in"
+  height="0.020091536in"
+  viewBox="0 0 1.016 0.51032498"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="100"
+  keheight="50.229"
+  eType="Aplitter"
+>
+  <defs>
+    <linearGradient id="aplitterBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e6e8eb" />
+      <stop offset="100%" stop-color="#b9bec5" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#2c2f34" stroke-linecap="round" stroke-linejoin="round">
+    <rect id="body" x="0.02" y="0.02" width="0.976" height="0.470" rx="0.04" fill="url(#aplitterBodyFill)" stroke-width="0.04" />
+    <path d="M0.08 0.09H0.93V0.17H0.08Z" fill="#4e545d" stroke="none" />
+    <path d="M0.50 0.17V0.44" fill="none" stroke="#747b85" stroke-width="0.03" />
+    <path d="M0.08 0.25H0.46V0.43H0.08Z" fill="#d8dbe1" stroke="#868d97" stroke-width="0.02" />
+    <path d="M0.54 0.25H0.93V0.43H0.54Z" fill="#d8dbe1" stroke="#868d97" stroke-width="0.02" />
+  </g>
+</svg>

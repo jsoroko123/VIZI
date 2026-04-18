@@ -1,0 +1,211 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "document": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {
+        "viewBox": "0 0 1668 1401",
+        "elements": [
+          {
+            "id": "background",
+            "type": "rect",
+            "x": 0,
+            "y": 0,
+            "width": 1668,
+            "height": 1401,
+            "fill": "#0f172a"
+          },
+          {
+            "id": "title",
+            "type": "text",
+            "x": 48,
+            "y": 72,
+            "text": "Vizi Drawing Tool",
+            "fontSize": 40,
+            "fontWeight": 700,
+            "fill": "#f8fafc"
+          },
+          {
+            "id": "tank-shell",
+            "type": "rect",
+            "x": 84,
+            "y": 160,
+            "width": 240,
+            "height": 360,
+            "rx": 24,
+            "ry": 24,
+            "fill": "#1f2937",
+            "stroke": "#475569",
+            "strokeWidth": 4
+          },
+          {
+            "id": "tank-fill",
+            "type": "rect",
+            "x": 104,
+            "y": 260,
+            "width": 200,
+            "height": 180,
+            "fill": "#22c55e",
+            "bindings": {
+              "fill": "tank.fillColor"
+            }
+          },
+          {
+            "id": "tank-label",
+            "type": "text",
+            "x": 204,
+            "y": 236,
+            "text": "Tank 1",
+            "textAnchor": "middle",
+            "fontSize": 24,
+            "fontWeight": 600,
+            "fill": "#e2e8f0",
+            "bindings": {
+              "text": "tank.label"
+            }
+          },
+          {
+            "id": "tank-value",
+            "type": "text",
+            "x": 204,
+            "y": 600,
+            "text": "0%",
+            "textAnchor": "middle",
+            "fontSize": 34,
+            "fontWeight": 700,
+            "fill": "#38bdf8",
+            "bindings": {
+              "text": "tank.percent"
+            }
+          }
+        ]
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {
+        "tank": {
+          "fillColor": "#22c55e",
+          "label": "Tank 1",
+          "percent": "73%"
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {
+        "tool": "select",
+        "zoom": 1,
+        "pan": {
+          "x": 0,
+          "y": 0
+        },
+        "shapes": [],
+        "svgOverlays": []
+      }
+    },
+    "shapes": {
+      "type": "array",
+      "default": []
+    },
+    "svgOverlays": {
+      "type": "array",
+      "default": []
+    },
+    "zoom": {
+      "type": "number",
+      "default": 1
+    },
+    "pan": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    "tool": {
+      "type": "string",
+      "default": "select"
+    },
+    "forceViziCanvas": {
+      "type": "boolean",
+      "default": false
+    },
+    "svgLibraryEnabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "backgroundColor": {
+      "type": "string",
+      "format": "color",
+      "default": "#0f172a"
+    },
+    "showGrid": {
+      "type": "boolean",
+      "default": false
+    },
+    "gridSize": {
+      "type": "number",
+      "default": 20
+    },
+    "toolbarCollapsed": {
+      "type": "boolean",
+      "default": false
+    },
+    "preserveAspectRatio": {
+      "type": "string",
+      "default": "xMinYMin slice"
+    },
+    "panZoomEnabled": {
+      "type": "boolean",
+      "default": false
+    },
+    "showRulers": {
+      "type": "boolean",
+      "default": false
+    },
+    "showTagPaths": {
+      "type": "boolean",
+      "default": false
+    },
+    "selectionMode": {
+      "type": "string",
+      "default": "all"
+    },
+    "strokeNormalizeWidth": {
+      "type": "number",
+      "default": 1.5
+    },
+    "liveUpdatesEnabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "liveClickable": {
+      "type": "boolean",
+      "default": false
+    },
+    "theme": {
+      "type": "string",
+      "default": "light"
+    },
+    "liveTagKeys": {
+      "type": "array",
+      "default": []
+    },
+    "opcTags": {
+      "type": "array",
+      "default": []
+    },
+    "style": {
+      "$ref": "urn:ignition-schema:schemas/style-properties.schema.json",
+      "default": {
+        "classes": ""
+      }
+    }
+  }
+}

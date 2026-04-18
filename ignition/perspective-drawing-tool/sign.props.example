@@ -1,0 +1,7 @@
+# Rename this file to sign.props and replace the example values with your real signing information.
+key.file=./private/mykeys.pfx
+key.pass=change-me
+
+cert.file=./private/certificates.p7b
+cert.alias=change-me
+cert.pass=change-me

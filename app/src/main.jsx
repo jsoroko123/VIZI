@@ -13,6 +13,7 @@ const AiConfigPanel = lazy(() => import("./components/AiConfigPanel.jsx"));
 const DataBrowser = lazy(() => import("./components/DataBrowser.jsx"));
 const ReportDesigner = lazy(() => import("./components/ReportDesigner.jsx"));
 const OpcConfig = lazy(() => import("./components/OpcConfig.jsx"));
+const TruckLoadoutPage = lazy(() => import("./components/TruckLoadoutPage.jsx"));
 
 const THEME_KEY = "vizi_theme";
 
@@ -118,6 +119,14 @@ const appTree = (
             element={
               <RequireAuth>
                 <OpcConfig />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/truck-loadout"
+            element={
+              <RequireAuth>
+                <TruckLoadoutPage />
               </RequireAuth>
             }
           />

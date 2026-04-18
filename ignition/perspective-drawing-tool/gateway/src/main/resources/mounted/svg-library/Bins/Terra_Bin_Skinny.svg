@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+  width="0.081721775in"
+  height="0.39372551in"
+  viewBox="0 0 2.0757333 10.000627"
+  version="1.1"
+  id="svg1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="52"
+  keheight="250"
+  eType="Bin"
+>
+  <defs id="defs1">
+    <linearGradient id="binShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#eef1f4" />
+      <stop offset="100%" stop-color="#9ea6b0" />
+    </linearGradient>
+    <linearGradient id="binPanelFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f5f7fa" />
+      <stop offset="100%" stop-color="#c0c6ce" />
+    </linearGradient>
+    <linearGradient id="binLevelFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#b6cff2" />
+      <stop offset="100%" stop-color="#4f77a5" />
+    </linearGradient>
+    <linearGradient id="binStripeFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#c5ccd4" />
+      <stop offset="100%" stop-color="#f2f4f7" />
+    </linearGradient>
+  </defs>
+
+  <g id="layer1" transform="translate(-17.857236,-13.152202)">
+    <path
+      id="Bin"
+      d="m 17.907236,13.202202 v 9.900628 h 1.975733 v -9.900628 z"
+      style="fill:url(#binShellFill);fill-opacity:1;stroke:#2c2e32;stroke-width:0.1;stroke-dasharray:none;stroke-opacity:1;fill-rule:nonzero"
+    />
+    <path
+      d="m 18.02,13.30 v 9.70 h 0.24 v -9.70 z"
+      style="fill:url(#binStripeFill);fill-opacity:0.85;stroke:none"
+    />
+    <path
+      d="m 19.62,13.30 v 9.70 h 0.17 v -9.70 z"
+      style="fill:#8c95a0;fill-opacity:0.45;stroke:none"
+    />
+    <path
+      d="m 17.96,14.28 h 1.88"
+      style="fill:none;stroke:#7d8792;stroke-width:0.05;stroke-linecap:round"
+    />
+    <path
+      d="m 17.96,22.25 h 1.88"
+      style="fill:none;stroke:#7d8792;stroke-width:0.05;stroke-linecap:round"
+    />
+
+    <path
+      id="BinNumberBorder"
+      d="m 18.097049,13.408033 v 0.687684 h 1.598512 v -0.687684 z"
+      style="fill:url(#binPanelFill);fill-opacity:1;stroke:#2c2e32;stroke-width:0.07;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+    />
+
+    <text
+      id="Bin_Label"
+      x="18.87985"
+      y="13.797148"
+      text-anchor="middle"
+      dominant-baseline="middle"
+      style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:0.529167px;font-family:Arial;-inkscape-font-specification:'Arial Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;dominant-baseline:middle;text-anchor:middle;fill:#2b2d31;stroke:none"
+    >
+      <tspan id="tspan4" x="18.87985" y="13.797148">BinNo</tspan>
+    </text>
+
+    <g id="Lock_Filling" transform="matrix(1.152,0,0,1.152,-7.6945633,-2.7666223)">
+      <path
+        id="path9"
+        d="m 22.337451,14.146201 v 0.328644 h 0.395773 v -0.328644 z"
+        style="fill:url(#binPanelFill);stroke:#2c2e32;stroke-width:0.05;stroke-linejoin:round;stroke-dasharray:none"
+      />
+      <path
+        id="path10"
+        d="m 22.53562,13.943853 c -0.06843,-9e-5 -0.124399,0.05175 -0.126039,0.116737 -1.2e-5,9e-4 -1.2e-5,0.0019 0,0.0028 v 0.08333 h 0.251613 v -0.07775 c 2e-4,-0.0019 3.56e-4,-0.0037 4.65e-4,-0.0056 -1.43e-4,-9e-4 -2.99e-4,-0.0019 -4.65e-4,-0.0028 -0.0016,-0.06482 -0.05733,-0.116588 -0.125574,-0.116737 z"
+        style="fill:url(#binPanelFill);fill-opacity:1;stroke:#2c2e32;stroke-width:0.05;stroke-dasharray:none;stroke-opacity:1"
+      />
+      <path
+        id="path13"
+        d="m 22.534591,14.24222 a 0.03266522,0.03253341 0 0 0 -0.03247,0.03264 0.03266522,0.03253341 0 0 0 0.03247,0.03265 0.03266522,0.03253341 0 0 0 0.03282,-0.03265 0.03266522,0.03253341 0 0 0 -0.03282,-0.03264 z"
+        style="fill:#4d535c;fill-opacity:1;stroke:#2c2e32;stroke-width:0.0347073;stroke-linejoin:round"
+      />
+      <path
+        id="path12"
+        d="m 22.535613,14.288088 v 0.07794"
+        style="fill:#ffffff;fill-opacity:1;stroke:#2c2e32;stroke-width:0.0499999;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+      />
+    </g>
+
+    <g id="Lock_Discharge" transform="matrix(1.152,0,0,1.152,-7.6945633,6.2771736)">
+      <path
+        id="path14"
+        d="m 22.337451,14.146201 v 0.328644 h 0.395773 v -0.328644 z"
+        style="fill:url(#binPanelFill);stroke:#2c2e32;stroke-width:0.05;stroke-linejoin:round;stroke-dasharray:none"
+      />
+      <path
+        id="path15"
+        d="m 22.53562,13.943853 c -0.06843,-9e-5 -0.124399,0.05175 -0.126039,0.116737 -1.2e-5,9e-4 -1.2e-5,0.0019 0,0.0028 v 0.08333 h 0.251613 v -0.07775 c 2e-4,-0.0019 3.56e-4,-0.0037 4.65e-4,-0.0056 -1.43e-4,-9e-4 -2.99e-4,-0.0019 -4.65e-4,-0.0028 -0.0016,-0.06482 -0.05733,-0.116588 -0.125574,-0.116737 z"
+        style="fill:url(#binPanelFill);fill-opacity:1;stroke:#2c2e32;stroke-width:0.05;stroke-dasharray:none;stroke-opacity:1"
+      />
+      <path
+        id="path16"
+        d="m 22.534591,14.24222 a 0.03266522,0.03253341 0 0 0 -0.03247,0.03264 0.03266522,0.03253341 0 0 0 0.03247,0.03265 0.03266522,0.03253341 0 0 0 0.03282,-0.03265 0.03266522,0.03253341 0 0 0 -0.03282,-0.03264 z"
+        style="fill:#4d535c;fill-opacity:1;stroke:#2c2e32;stroke-width:0.0347073;stroke-linejoin:round"
+      />
+      <path
+        id="path17"
+        d="m 22.535613,14.288088 v 0.07794"
+        style="fill:#ffffff;fill-opacity:1;stroke:#2c2e32;stroke-width:0.0499999;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+      />
+    </g>
+
+    <text
+      id="Product_Type"
+      x="18.25465"
+      y="14.378081"
+      dominant-baseline="start"
+      text-anchor="start"
+      style="font-style:normal;font-variant:normal;font-weight:700;font-stretch:normal;font-size:0.529167px;font-family:Arial;-inkscape-font-specification:'Arial Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;writing-mode:vertical-lr;text-orientation:upright;text-anchor:start;fill:#2b2d31;stroke:none"
+    >
+      <tspan id="tspan37" x="18.25465" y="14.378081">Product</tspan>
+    </text>
+
+    <g id="Level" transform="matrix(0.99122423,0,0,1.2084452,0.15524492,-3.9421802)">
+      <rect
+        id="BarGraphFrame"
+        width="0.43131301"
+        height="7.1140532"
+        x="19.296278"
+        y="-22.200907"
+        transform="scale(1,-1)"
+        style="fill:url(#binPanelFill);fill-rule:nonzero;stroke:#2c2e32;stroke-width:0.04;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+      />
+      <rect
+        id="BarGraph"
+        width="0.43131301"
+        height="7.1140532"
+        x="19.296276"
+        y="-22.200907"
+        transform="scale(1,-1)"
+        style="fill:url(#binLevelFill);fill-opacity:1;fill-rule:nonzero;stroke:#3f3f3f;stroke-width:0;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+      />
+    </g>
+  </g>
+</svg>

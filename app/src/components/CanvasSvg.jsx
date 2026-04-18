@@ -1,7 +1,13 @@
 // src/components/CanvasSvg.jsx
 import { useEffect, useCallback, useMemo, useRef, useState, memo } from "react";
 import { GRID, pointsToAttr, bboxOfPoints } from "../utils/geometry";
-import { getOpcLiveSnapshot, getOpcLiveValuesForKeys, subscribeOpcLiveKeys } from "../state/opcLiveStore";
+import { writeOpcValue } from "../api/opcApi";
+import {
+  getOpcLiveSnapshot,
+  getOpcLiveValuesForKeys,
+  patchOpcLiveSnapshot,
+  subscribeOpcLiveKeys,
+} from "../state/opcLiveStore";
 import { normalizeTagValue } from "../utils/appDataTransforms";
 import { isRouteIdTagKey, isStateTagKey } from "../utils/appUiHelpers";
 import {
@@ -138,6 +144,7 @@ function CanvasSvg({
   overlaySelectionUI,
   overlayGroupSelectionUI,
   shapeSelectionUI,
+  mixedSelectionUI,
   overlayLocalBBox,
   importAnchor,
   onCanvasDoubleClick,
@@ -145,6 +152,7 @@ function CanvasSvg({
   routeColorsBySvgKey,
   routeStrokeColorByGroupPath,
   svgLiveValuesByGroupPath,
+  ignitionTagValuesByPath,
   liveTagKeys,
   opcTags,
   opcTemplateMap,
@@ -168,12 +176,15 @@ function CanvasSvg({
   canvasBackgroundColor,
   liveClickable = false,
   isLiveMode = false,
+  preserveAspectRatioMode = "xMinYMin meet",
+  forceStaticVisuals = false,
   viewportTopOffset = 0,
   viewportLeftOffset = 0,
   viewportScrollTarget = null,
   onViewportScroll = null,
 }) {
-  const liveCanvasEnabled = Boolean(liveUpdatesEnabled && isLiveMode);
+  const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
+  const liveCanvasEnabled = Boolean(liveUpdatesEnabled && renderLiveVisuals);
   const watchedLiveKeys = useMemo(() => {
     const source = liveCanvasEnabled && Array.isArray(liveTagKeys) ? liveTagKeys : [];
     const seen = new Set();
@@ -467,7 +478,7 @@ function CanvasSvg({
     for (const mapping of Array.isArray(mappings) ? mappings : []) {
       const color = String(mapping?.color ?? "").trim();
       if (!color) continue;
-      const candidates = [mapping?.state, mapping?.field];
+      const candidates = [mapping?.state, mapping?.field, mapping?.value, mapping?.input, mapping?.key];
       for (const candidateRaw of candidates) {
         const candidateText = String(candidateRaw ?? "").trim();
         if (!candidateText) continue;
@@ -618,8 +629,105 @@ function CanvasSvg({
   const renderOverlayLiveValueCache = new Map();
   const renderPolylineDisplayedColorCache = new Map();
 
+  const getOverlayFillBinding = (overlay) => {
+    const direct = overlay?.bindings?.fill;
+    if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+      return direct;
+    }
+    const legacy = overlay?.fillBinding;
+    if (legacy && typeof legacy === "object" && !Array.isArray(legacy)) {
+      return legacy;
+    }
+    return null;
+  };
+  const getOverlayFillBindingTagPath = (overlay) => {
+    const binding = getOverlayFillBinding(overlay);
+    return String(
+      binding?.tagPath ??
+      binding?.path ??
+      binding?.sourcePath ??
+      overlay?.tagPath ??
+      ""
+    ).trim();
+  };
+  const getOverlayFillBindingMappings = (overlay) => {
+    const binding = getOverlayFillBinding(overlay);
+    if (!binding) return [];
+    return Array.isArray(binding?.transform?.mappings)
+      ? binding.transform.mappings
+      : Array.isArray(binding?.mappings)
+      ? binding.mappings
+      : [];
+  };
+  const getOverlayFillBindingFallbackColor = (overlay) => {
+    const binding = getOverlayFillBinding(overlay);
+    return String(
+      binding?.transform?.fallbackColor ??
+      binding?.fallbackColor ??
+      overlay?.fill ??
+      ""
+    ).trim();
+  };
+  const readIgnitionTagValueForPath = (rawTagPath) => {
+    const key = String(rawTagPath || "").trim();
+    if (!key) return undefined;
+    if (ignitionTagValuesByPath instanceof Map) {
+      return ignitionTagValuesByPath.get(key) ?? ignitionTagValuesByPath.get(key.toLowerCase());
+    }
+    if (ignitionTagValuesByPath && typeof ignitionTagValuesByPath === "object") {
+      return ignitionTagValuesByPath[key] ?? ignitionTagValuesByPath[key.toLowerCase()];
+    }
+    return undefined;
+  };
+  const readOverlayFillBindingValue = (overlay) => {
+    const key = getOverlayFillBindingTagPath(overlay);
+    return readIgnitionTagValueForPath(key);
+  };
+  const getOverlayBoundFillColor = (overlay) => {
+    if (String(overlay?.eType || "").trim().toLowerCase().includes("diverter")) return "";
+    const binding = getOverlayFillBinding(overlay);
+    if (!binding) return "";
+    const rawValue = readOverlayFillBindingValue(overlay);
+    const fallbackColor = getOverlayFillBindingFallbackColor(overlay);
+    if (rawValue == null || String(rawValue).trim() === "") {
+      return fallbackColor;
+    }
+    return matchStateMappingColor(getOverlayFillBindingMappings(overlay), rawValue) || fallbackColor;
+  };
+  const getOverlayBoundActiveFillColor = (overlay) => {
+    if (String(overlay?.eType || "").trim().toLowerCase().includes("diverter")) return "";
+    const binding = getOverlayFillBinding(overlay);
+    if (!binding) return "";
+    const rawValue = readOverlayFillBindingValue(overlay);
+    if (rawValue == null || String(rawValue).trim() === "") {
+      return "";
+    }
+    return normalizeActiveLineColor(
+      matchStateMappingColor(getOverlayFillBindingMappings(overlay), rawValue)
+    );
+  };
+  const getOverlayDisplayedFlowFillColor = (overlay) => {
+    if (String(overlay?.eType || "").trim().toLowerCase().includes("diverter")) return "";
+    return normalizeOverlayActiveFillColor(
+      getOverlayBoundFillColor(overlay) ||
+      overlay?.fill ||
+      ""
+    );
+  };
+  const readLookupValue = (lookup, rawKey) => {
+    const key = String(rawKey || "").trim();
+    if (!key || !lookup) return "";
+    if (lookup instanceof Map) {
+      return lookup.get(key) || lookup.get(key.toLowerCase()) || "";
+    }
+    if (typeof lookup === "object") {
+      return lookup[key] || lookup[key.toLowerCase()] || "";
+    }
+    return "";
+  };
+
   const getTagColor = (tagPath) => {
-    if (!isLiveMode) return "";
+    if (!renderLiveVisuals) return "";
     if (!effectiveTagStateColorsByPath) return "";
     const key = String(tagPath || "").replace(/\r?\n/g, "").trim();
     if (!key) return "";
@@ -707,10 +815,8 @@ function CanvasSvg({
       if (!key) return "";
       const base = (key.split("/").pop() || "").trim();
       return (
-        routeColorsBySvgKey.get(key) ||
-        routeColorsBySvgKey.get(key.toLowerCase()) ||
-        (base ? routeColorsBySvgKey.get(base) : "") ||
-        (base ? routeColorsBySvgKey.get(base.toLowerCase()) : "") ||
+        readLookupValue(routeColorsBySvgKey, key) ||
+        (base ? readLookupValue(routeColorsBySvgKey, base) : "") ||
         ""
       );
     };
@@ -720,7 +826,7 @@ function CanvasSvg({
   };
 
   const getRouteStrokeColorForOverlay = (overlay) => {
-    if (!isLiveMode) return "";
+    if (!renderLiveVisuals) return "";
     if (!effectiveRouteStrokeColorByGroupPath) return "";
     const key = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
     const cacheKey = key.toLowerCase();
@@ -728,8 +834,8 @@ function CanvasSvg({
       return renderRouteStrokeColorCache.get(cacheKey);
     }
     const direct = (
-      effectiveRouteStrokeColorByGroupPath.get(key) ||
-      effectiveRouteStrokeColorByGroupPath.get(cacheKey) ||
+      readLookupValue(effectiveRouteStrokeColorByGroupPath, key) ||
+      readLookupValue(effectiveRouteStrokeColorByGroupPath, cacheKey) ||
       ""
     );
     if (direct) {
@@ -747,8 +853,8 @@ function CanvasSvg({
     if (!routeId) return "";
     const routeIdLower = routeId.toLowerCase();
     const routeColor = routeColorsBySvgKey
-      ? routeColorsBySvgKey.get(routeId) ||
-        routeColorsBySvgKey.get(routeIdLower) ||
+      ? readLookupValue(routeColorsBySvgKey, routeId) ||
+        readLookupValue(routeColorsBySvgKey, routeIdLower) ||
         ""
       : "";
     const normalizedColor = String(routeColor || "").trim();
@@ -765,7 +871,7 @@ function CanvasSvg({
   };
 
   const getLiveValuesForOverlay = (overlay) => {
-    if (!isLiveMode) return null;
+    if (!renderLiveVisuals) return null;
     if (!effectiveSvgLiveValuesByGroupPath) return null;
     const key = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
     if (!key) return null;
@@ -929,7 +1035,7 @@ function CanvasSvg({
   );
   const overlayCount = Array.isArray(svgOverlays) ? svgOverlays.length : 0;
   const liveTopologyStressMode =
-    isLiveMode &&
+    renderLiveVisuals &&
     (
       watchedLiveKeys.length >= 24 ||
       polylineCount >= 80 ||
@@ -941,10 +1047,10 @@ function CanvasSvg({
   // Do NOT disable in live mode — charts must load data and sparklines must accumulate.
   const disableWidgetBackgroundWork =
     !liveUpdatesEnabled || opcTagCount >= 120 ||
-    (!isLiveMode && shapeCount + overlayCount >= 20);
+    (!renderLiveVisuals && shapeCount + overlayCount >= 20);
   // In live mode OPC values already flow at 220ms via the subscription, so the sample tick
   // should be slower to avoid stacking re-renders on top of the subscription renders.
-  const widgetLiveSampleIntervalMs = isLiveMode ? 2000 : 450;
+  const widgetLiveSampleIntervalMs = renderLiveVisuals ? 2000 : 450;
   const liveResolveWorkerRef = useRef(null);
   const liveResolveRequestIdRef = useRef(0);
   const syncLiveInputSnapshot = useCallback((nextValues) => {
@@ -1113,6 +1219,8 @@ function CanvasSvg({
     const onMessage = (event) => {
       const data = event?.data || {};
       if (String(data?.type || "") !== "resolved") return;
+      const phase = String(data?.phase || "full").toLowerCase();
+      const isBasicPhase = phase === "basic";
       const id = Number(data?.id || 0);
       if (!id || id !== Number(liveResolveRequestIdRef.current || 0)) return;
       const byPathRaw = data?.byTagPath && typeof data.byTagPath === "object" ? data.byTagPath : {};
@@ -1176,13 +1284,13 @@ function CanvasSvg({
       if (routeStrokeChanged) {
         liveResolvedRouteStrokeByPathRef.current = new Map(Object.entries(routeStrokeRaw));
       }
-      if (diverterChanged) {
+      if (!isBasicPhase && diverterChanged) {
         liveResolvedDiverterEntryColorByIdRef.current = new Map(Object.entries(diverterEntryRaw));
       }
-      if (polylineChanged) {
+      if (!isBasicPhase && polylineChanged) {
         liveResolvedPolylineColorByIdRef.current = new Map(Object.entries(polylineRaw));
       }
-      if (polylineSplitCarryChanged) {
+      if (!isBasicPhase && polylineSplitCarryChanged) {
         liveResolvedPolylineSplitCarryByIdRef.current = polylineSplitCarryRaw;
         liveResolvedPolylineSplitCarrySerializedRef.current = polylineSplitCarrySerialized;
       }
@@ -1191,9 +1299,9 @@ function CanvasSvg({
         groupStateChanged ||
         tagColorChanged ||
         routeStrokeChanged ||
-        diverterChanged ||
-        polylineChanged ||
-        polylineSplitCarryChanged
+        (!isBasicPhase && diverterChanged) ||
+        (!isBasicPhase && polylineChanged) ||
+        (!isBasicPhase && polylineSplitCarryChanged)
       ) {
         scheduleLiveRenderTick(false);
       }
@@ -1468,6 +1576,7 @@ function CanvasSvg({
   const [widgetPressByOverlay, setWidgetPressByOverlay] = useState({});
   const [weatherByOverlayId, setWeatherByOverlayId] = useState({});
   const widgetPulseTimersRef = useRef(new Map());
+  const widgetWriteChainRef = useRef(new Map());
   const weatherCacheRef = useRef(new Map());
   const trendLiveKeyListRef = useRef([]);
   const trendTagCandidateCacheRef = useRef(new Map());
@@ -1555,40 +1664,123 @@ function CanvasSvg({
     if (lower.startsWith("db:") || lower.startsWith("dbq:")) return "";
     return tagPath;
   };
+  const getWidgetOptimisticWriteKeys = useCallback(
+    (overlay) => {
+      const tagPath = normalizeTagValue(getWritableWidgetTagPath(overlay));
+      if (!tagPath) return [];
+      const out = [];
+      const seen = new Set();
+      const addKey = (rawKey) => {
+        const key = normalizeTagValue(rawKey || "");
+        if (!key) return;
+        const lower = key.toLowerCase();
+        if (seen.has(lower)) return;
+        seen.add(lower);
+        out.push(key);
+      };
+      addKey(tagPath);
+      const cacheKey = tagPath.toLowerCase();
+      const resolvedKey = liveResolvedKeyByPathRef.current.get(cacheKey);
+      if (resolvedKey && resolvedKey !== "__miss__") addKey(resolvedKey);
+      const lowerTagPath = tagPath.toLowerCase();
+      const dotSuffix = `.${lowerTagPath}`;
+      const slashSuffix = `/${lowerTagPath}`;
+      const matchesTagPath = (rawKey) => {
+        const key = normalizeTagValue(rawKey || "");
+        if (!key) return false;
+        const lower = key.toLowerCase();
+        return lower === lowerTagPath || lower.endsWith(dotSuffix) || lower.endsWith(slashSuffix);
+      };
+      (Array.isArray(watchedLiveKeys) ? watchedLiveKeys : []).forEach((key) => {
+        if (matchesTagPath(key)) addKey(key);
+      });
+      Object.keys(getOpcLiveSnapshot() || {}).forEach((key) => {
+        if (matchesTagPath(key)) addKey(key);
+      });
+      return out;
+    },
+    [watchedLiveKeys]
+  );
+  const applyOptimisticWidgetWrite = useCallback(
+    (overlay, nextValue) => {
+      const keys = getWidgetOptimisticWriteKeys(overlay);
+      if (!keys.length) return;
+      const patch = {};
+      keys.forEach((rawKey) => {
+        const key = normalizeTagValue(rawKey || "");
+        if (!key) return;
+        patch[key] = nextValue;
+        const lower = key.toLowerCase();
+        if (lower !== key) patch[lower] = nextValue;
+      });
+      if (!Object.keys(patch).length) return;
+      const currentLiveValues =
+        opcLiveValuesRef.current && typeof opcLiveValuesRef.current === "object"
+          ? opcLiveValuesRef.current
+          : {};
+      const nextLiveValues = { ...currentLiveValues };
+      let changed = false;
+      Object.entries(patch).forEach(([key, value]) => {
+        if (Object.is(nextLiveValues[key], value)) return;
+        nextLiveValues[key] = value;
+        changed = true;
+      });
+      if (changed) {
+        opcLiveValuesRef.current = nextLiveValues;
+        syncLiveInputSnapshot(nextLiveValues);
+        requestWorkerResolve(nextLiveValues);
+        scheduleLiveRenderTick(true);
+      }
+      patchOpcLiveSnapshot(patch);
+    },
+    [
+      getWidgetOptimisticWriteKeys,
+      requestWorkerResolve,
+      scheduleLiveRenderTick,
+      syncLiveInputSnapshot,
+    ]
+  );
 
   const submitWidgetWrite = async (overlay, writeValue) => {
     const overlayId = String(overlay?.id || "").trim();
     const tagPath = getWritableWidgetTagPath(overlay);
     if (!overlayId || !tagPath) return;
-    setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
-    setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
-    try {
-      const payloadValue = coerceWidgetWriteValue(writeValue);
-      const res = await fetch("/api/opc/write", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+    const payloadValue = coerceWidgetWriteValue(writeValue);
+    const runWrite = async () => {
+      setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
+      setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
+      try {
+        const data = await writeOpcValue({
           tagKey: tagPath,
           legacyTagKey: tagPath,
           value: payloadValue,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || "Write failed.");
-      const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value")
-        ? data.value
-        : payloadValue;
-      setWidgetWriteDraftByOverlay((prev) => ({
-        ...prev,
-        [overlayId]: String(nextValue ?? ""),
-      }));
-    } catch (err) {
-      setWidgetWriteErrorByOverlay((prev) => ({
-        ...prev,
-        [overlayId]: err?.message || "Write failed.",
-      }));
+        });
+        const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value")
+          ? data.value
+          : payloadValue;
+        applyOptimisticWidgetWrite(overlay, nextValue);
+        setWidgetWriteDraftByOverlay((prev) => ({
+          ...prev,
+          [overlayId]: String(nextValue ?? ""),
+        }));
+      } catch (err) {
+        setWidgetWriteErrorByOverlay((prev) => ({
+          ...prev,
+          [overlayId]: err?.message || "Write failed.",
+        }));
+      } finally {
+        setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: false }));
+      }
+    };
+    const previous = widgetWriteChainRef.current.get(overlayId) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(runWrite);
+    widgetWriteChainRef.current.set(overlayId, next);
+    try {
+      await next;
     } finally {
-      setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: false }));
+      if (widgetWriteChainRef.current.get(overlayId) === next) {
+        widgetWriteChainRef.current.delete(overlayId);
+      }
     }
   };
 
@@ -4122,7 +4314,7 @@ function CanvasSvg({
   };
 
   const getGroupRouteStateForTagPath = (rawTagPath) => {
-    if (!isLiveMode) return { routeId: "", state: "" };
+    if (!renderLiveVisuals) return { routeId: "", state: "" };
     const tagPath = String(rawTagPath || "").replace(/\r?\n/g, "").trim();
     if (!tagPath) return { routeId: "", state: "" };
     const cacheKey = tagPath.toLowerCase();
@@ -4267,7 +4459,7 @@ function CanvasSvg({
   };
 
   const getOverlayModeState = (overlay) => {
-    if (!isLiveMode || overlay?.widget) return "";
+    if (!renderLiveVisuals || overlay?.widget) return "";
     const modeStatusCandidates = buildOverlayMemberCandidates(overlay, LIVE_MODE_STATUS_MEMBER_ALIASES);
     const manualCandidates = buildOverlayMemberCandidates(overlay, LIVE_MANUAL_MODE_MEMBER_ALIASES);
     const autoCandidates = buildOverlayMemberCandidates(overlay, LIVE_AUTO_MODE_MEMBER_ALIASES);
@@ -4373,7 +4565,12 @@ function CanvasSvg({
   const parseDiverterStateValue = (raw) => {
     if (raw == null || raw === "") return "";
     const text = String(raw || "").trim();
+    if (!text) return "";
     const lower = text.toLowerCase();
+    if (lower.includes("fault")) return "";
+    if (lower.includes("no position")) return "";
+    if (lower.includes("moving straight")) return "straight";
+    if (lower.includes("moving divert")) return "divert";
     if (lower.includes("straight")) return "straight";
     if (lower.includes("divert")) return "divert";
     const num = Number(text);
@@ -4384,12 +4581,15 @@ function CanvasSvg({
   };
 
   const getOverlayDiverterState = (overlay) => {
-    if (!isLiveMode || overlay?.widget) return "";
+    if (overlay?.widget) return "";
+    const directIgnitionState = parseDiverterStateValue(readIgnitionTagValueForPath(overlay?.tagPath));
+    if (directIgnitionState) return directIgnitionState;
+    const boundState = parseDiverterStateValue(readOverlayFillBindingValue(overlay));
+    if (boundState) return boundState;
     const groupState = parseDiverterStateValue(
       getGroupRouteStateForTagPath(overlay?.tagPath)?.state
     );
     if (groupState) return groupState;
-    if (liveCanvasEnabled) return "";
     const stateCandidates = buildOverlayMemberCandidates(overlay, LIVE_STATE_MEMBER_ALIASES);
     const raw = stateCandidates
       .map((key) => getLiveValueForExactOrSuffixKey(key))
@@ -4628,6 +4828,96 @@ function CanvasSvg({
     return out;
   };
 
+  const applyOverlayPaintOverrides = (inner, { fillColor = "", strokeColor = "", strokeWidth } = {}) => {
+    if (!inner) return inner;
+    const nextFill = String(fillColor || "").trim();
+    const nextStroke = String(strokeColor || "").trim();
+    const nextStrokeWidth =
+      Number.isFinite(Number(strokeWidth)) && Number(strokeWidth) >= 0
+        ? Number(strokeWidth)
+        : null;
+    if (!nextFill && !nextStroke && nextStrokeWidth == null) {
+      return inner;
+    }
+
+    const isProtectedFill = (value) => {
+      const v = String(value || "").trim().toLowerCase();
+      return !v || v === "none" || v === "transparent";
+    };
+    const isProtectedStroke = (value) => {
+      const v = String(value || "").trim().toLowerCase();
+      return !v || v === "none" || v === "transparent";
+    };
+
+    let out = String(inner);
+
+    if (nextFill) {
+      const shouldRecolorPrimaryElement = (elementStart) => {
+        const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+        const elementId = String(idMatch?.[2] || "").trim().toLowerCase();
+        if (!elementId) {
+          return false;
+        }
+        return /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine)$/i.test(elementId);
+      };
+      out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, _tag, end) => {
+        if (!shouldRecolorPrimaryElement(start)) {
+          return match;
+        }
+        let next = String(start || "");
+        if (/\bfill\s*=/.test(next)) {
+          next = next.replace(/\bfill\s*=\s*(["'])([^"']*)\1/gi, (fillMatch, quote, fillValue) => (
+            isProtectedFill(fillValue) ? fillMatch : `fill=${quote}${nextFill}${quote}`
+          ));
+        } else {
+          next += ` fill="${nextFill}"`;
+        }
+        next = next.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (styleMatch, quote, styleBody) => {
+          let cleaned = String(styleBody || "").replace(
+            /fill\s*:\s*([^;]+)(;?)/gi,
+            (fillStyleMatch, fillValue, suffix) => (
+              isProtectedFill(fillValue) ? fillStyleMatch : `fill:${nextFill}${suffix || ";"}`
+            )
+          );
+          return `style=${quote}${cleaned}${quote}`;
+        });
+        return `${next}${end}`;
+      });
+    }
+
+    if (nextStroke) {
+      out = out.replace(/\bstroke\s*=\s*(["'])([^"']*)\1/gi, (match, quote, strokeValue) => (
+        isProtectedStroke(strokeValue) ? match : `stroke=${quote}${nextStroke}${quote}`
+      ));
+    }
+
+    if (nextStrokeWidth != null) {
+      out = out.replace(/\bstroke-width\s*=\s*(["'])([^"']*)\1/gi, `stroke-width="${
+        nextStrokeWidth
+      }"`);
+    }
+
+    out = out.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (match, quote, styleBody) => {
+      let next = String(styleBody || "");
+      if (nextFill) {
+        next = next.replace(/fill\s*:\s*([^;]+)(;?)/gi, (fillMatch, fillValue, suffix) => (
+          isProtectedFill(fillValue) ? fillMatch : `fill:${nextFill}${suffix || ";"}`
+        ));
+      }
+      if (nextStroke) {
+        next = next.replace(/stroke\s*:\s*([^;]+)(;?)/gi, (strokeMatch, strokeValue, suffix) => (
+          isProtectedStroke(strokeValue) ? strokeMatch : `stroke:${nextStroke}${suffix || ";"}`
+        ));
+      }
+      if (nextStrokeWidth != null) {
+        next = next.replace(/stroke-width\s*:\s*([^;]+)(;?)/gi, `stroke-width:${nextStrokeWidth}$2`);
+      }
+      return `style=${quote}${next}${quote}`;
+    });
+
+    return out;
+  };
+
   const forceSvgStrokeColor = (inner, color) => {
     if (!inner || !color) return inner;
     const isProtectedStroke = (value) => {
@@ -4723,6 +5013,8 @@ function CanvasSvg({
   };
 
   const DIVERTER_POSITION_COLOR = "#22c55e";
+  const DIVERTER_NEUTRAL_STROKE = "#2c2f34";
+  const DIVERTER_NEUTRAL_FILL = "#ffffff";
 
   const getEffectiveOverlayFlowColor = (overlay, overlayEType, entryColor = "") => {
     const incomingEntryColor = normalizeActiveLineColor(entryColor);
@@ -4732,28 +5024,89 @@ function CanvasSvg({
     return normalizeActiveLineColor(
       getRouteColorForOverlay(overlay) ||
       getTagColor(overlay?.tagPath) ||
+      getOverlayBoundActiveFillColor(overlay) ||
+      getOverlayDisplayedFlowFillColor(overlay) ||
       getRouteStrokeColorForOverlay(overlay)
     );
   };
 
   const applyDiverterFlowColorToSvg = (inner, color, modeRaw) => {
     if (!inner) return inner;
-    let out = String(inner || "");
-    const mode = parseDiverterStateValue(modeRaw);
-    const hasIncomingFlow = !!normalizeActiveLineColor(color);
-    ["entryPath", "straightPath", "divertPath"].forEach((id) => {
-      out = recolorSvgElementFillOnlyById(out, id, "#ffffff");
-    });
-    if (!hasIncomingFlow || (mode !== "straight" && mode !== "divert")) return out;
-    out = recolorSvgElementFillOnlyById(out, "entryPath", DIVERTER_POSITION_COLOR);
-    if (mode === "straight" || mode === "divert") {
-      out = recolorSvgElementFillOnlyById(
-        out,
-        mode === "divert" ? "divertPath" : "straightPath",
-        DIVERTER_POSITION_COLOR
-      );
+    try {
+      const wrapped = `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`;
+      const doc = new DOMParser().parseFromString(wrapped, "image/svg+xml");
+      if (doc.querySelector("parsererror")) return inner;
+      const root = doc.documentElement;
+      if (!root) return inner;
+
+      const mode = parseDiverterStateValue(modeRaw);
+      const flowColor = normalizeActiveLineColor(color);
+      const activeBranchId =
+        mode === "divert" ? "divertPath" : mode === "straight" ? "straightPath" : "";
+
+      const body = doc.getElementById("body");
+      if (body) {
+        const gradientId =
+          Array.from(root.querySelectorAll("linearGradient[id]"))
+            .map((node) => String(node?.getAttribute?.("id") || "").trim())
+            .find(Boolean) || "";
+        if (gradientId) {
+          body.setAttribute("fill", `url(#${gradientId})`);
+        }
+        body.setAttribute("stroke", DIVERTER_NEUTRAL_STROKE);
+      }
+
+      ["entryPath", "straightPath", "divertPath"].forEach((id) => {
+        const node = doc.getElementById(id);
+        if (!node) return;
+        node.setAttribute("fill", DIVERTER_NEUTRAL_FILL);
+        node.setAttribute("stroke", "none");
+      });
+
+      const straightPath = doc.getElementById("straightPath");
+      const divertPath = doc.getElementById("divertPath");
+      if (straightPath) {
+        if (mode === "straight") {
+          straightPath.removeAttribute("display");
+          straightPath.removeAttribute("visibility");
+        } else if (mode === "divert") {
+          straightPath.setAttribute("display", "none");
+          straightPath.setAttribute("visibility", "hidden");
+        }
+      }
+      if (divertPath) {
+        if (mode === "divert") {
+          divertPath.removeAttribute("display");
+          divertPath.removeAttribute("visibility");
+        } else if (mode === "straight") {
+          divertPath.setAttribute("display", "none");
+          divertPath.setAttribute("visibility", "hidden");
+        }
+      }
+
+      if (flowColor) {
+        const entryNode = doc.getElementById("entryPath");
+        if (entryNode) {
+          entryNode.setAttribute("fill", flowColor || DIVERTER_POSITION_COLOR);
+          entryNode.setAttribute("stroke", "none");
+        }
+      }
+
+      if (activeBranchId && flowColor) {
+        const node = doc.getElementById(activeBranchId);
+        if (node) {
+          node.setAttribute("fill", flowColor || DIVERTER_POSITION_COLOR);
+          node.setAttribute("stroke", "none");
+        }
+      }
+
+      const serializer = new XMLSerializer();
+      return Array.from(root.childNodes)
+        .map((node) => serializer.serializeToString(node))
+        .join("");
+    } catch {
+      return inner;
     }
-    return out;
   };
 
   const renderWidgetOverlayRef = useRef(null);
@@ -4829,11 +5182,104 @@ function CanvasSvg({
   const _diverterColorCache = new Map();
   const _diverterVisiting = new Set();
 
+  const getDiverterEntryConnectorWorldPoint = (overlay, bb) => {
+    if (!overlay || !bb) return null;
+    const sx = overlayScaleX(overlay);
+    const sy = overlayScaleY(overlay);
+    const bx = Number(bb?.x) || 0;
+    const by = Number(bb?.y) || 0;
+    const bw = Math.max(0.0001, Number(bb?.width) || 1);
+    const bh = Math.max(0.0001, Number(bb?.height) || 1);
+    return {
+      x: Number(overlay?.tx || 0) + sx * (bx + bw * 0.12),
+      y: Number(overlay?.ty || 0) + sy * (by + bh * 0.25),
+    };
+  };
+
   const getDirectEntryActiveColorForDiverter = (overlay, options = {}) => {
-    if (!liveCanvasEnabled) return "";
-    const workerCachedColor = liveResolvedDiverterEntryColorByIdRef.current.get(String(overlay?.id || ""));
-    if (workerCachedColor) return String(workerCachedColor || "");
-    return "";
+    const overlayId = String(overlay?.id || "").trim();
+    const cacheKey = `${overlayId}::${String(options?.excludeOverlayId || "")}::${
+      Array.isArray(options?.excludedOverlayIds)
+        ? options.excludedOverlayIds.map((entry) => String(entry || "")).join("|")
+        : ""
+    }`;
+    if (_diverterColorCache.has(cacheKey)) {
+      return _diverterColorCache.get(cacheKey);
+    }
+    if (_diverterVisiting.has(cacheKey)) {
+      return "";
+    }
+    _diverterVisiting.add(cacheKey);
+    try {
+      if (liveCanvasEnabled) {
+        const workerCachedColor = liveResolvedDiverterEntryColorByIdRef.current.get(overlayId);
+        if (workerCachedColor) {
+          const resolved = String(workerCachedColor || "");
+          _diverterColorCache.set(cacheKey, resolved);
+          return resolved;
+        }
+      }
+      const bb = overlayLocalBBox(overlay?.id);
+      const entryPoint = getDiverterEntryConnectorWorldPoint(overlay, bb);
+      if (!entryPoint) {
+        _diverterColorCache.set(cacheKey, "");
+        return "";
+      }
+      const directOverlayColor = normalizeActiveLineColor(
+        getNonDiverterStartSourceColorAtPoint(entryPoint, options)
+      );
+      if (directOverlayColor) {
+        _diverterColorCache.set(cacheKey, directOverlayColor);
+        return directOverlayColor;
+      }
+      for (const other of Array.isArray(shapes) ? shapes : []) {
+        if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
+        const startPoint = other.points[0];
+        const endPoint = other.points[other.points.length - 1];
+        if (pointsNear(entryPoint, startPoint)) {
+          const displayedColor = normalizeActiveLineColor(
+            getPolylineDisplayedColor(other, {
+              includeThemeDefault: false,
+              allowExplicitStroke: true,
+              excludeOverlayId: overlayId,
+            })
+          );
+          if (displayedColor) {
+            _diverterColorCache.set(cacheKey, displayedColor);
+            return displayedColor;
+          }
+          const resolved = normalizeActiveLineColor(findConnectedSourceColorFromPolyline(other, 0, options));
+          if (resolved) {
+            _diverterColorCache.set(cacheKey, resolved);
+            return resolved;
+          }
+        }
+        if (pointsNear(entryPoint, endPoint)) {
+          const displayedColor = normalizeActiveLineColor(
+            getPolylineDisplayedColor(other, {
+              includeThemeDefault: false,
+              allowExplicitStroke: true,
+              excludeOverlayId: overlayId,
+            })
+          );
+          if (displayedColor) {
+            _diverterColorCache.set(cacheKey, displayedColor);
+            return displayedColor;
+          }
+          const resolved = normalizeActiveLineColor(
+            findConnectedSourceColorFromPolyline(other, other.points.length - 1, options)
+          );
+          if (resolved) {
+            _diverterColorCache.set(cacheKey, resolved);
+            return resolved;
+          }
+        }
+      }
+      _diverterColorCache.set(cacheKey, "");
+      return "";
+    } finally {
+      _diverterVisiting.delete(cacheKey);
+    }
   };
 
   const getOverlayColorAtPoint = (pt, options = {}) => {
@@ -5054,8 +5500,7 @@ function CanvasSvg({
   };
 
   const getConnectedOverlaySourceColorAtPoint = (pt, options = {}) => {
-    if (!liveCanvasEnabled) return "";
-    if (!pt) return undefined;
+    if (!pt) return "";
     const diverterMatch = getDiverterOutputMatchAtPoint(pt, options);
     if (diverterMatch.matched) {
       return diverterMatch.active
@@ -5078,7 +5523,6 @@ function CanvasSvg({
     visited = new Set(),
     depth = 0
   ) => {
-    if (!liveCanvasEnabled) return "";
     if (shape?.type !== "polyline" || !Array.isArray(shape.points) || shape.points.length < 2) return "";
     if (depth > 16) return "";
     const shapeId = String(shape?.id || "");
@@ -5118,7 +5562,6 @@ function CanvasSvg({
   };
 
   const getPolylineStartSourceColor = (shape, options = {}) => {
-    if (!liveCanvasEnabled) return "";
     if (shape?.type !== "polyline" || !Array.isArray(shape.points) || !shape.points.length) return "";
     const startPoint = shape.points[0];
     const directStartColor = getConnectedOverlaySourceColorAtPoint(startPoint, options);
@@ -5150,9 +5593,11 @@ function CanvasSvg({
     if (shape?.type !== "polyline" || !Array.isArray(shape.points) || !shape.points.length) return "";
     const includeThemeDefault = options?.includeThemeDefault !== false;
     const activeOnly = options?.includeThemeDefault === false;
+    const allowExplicitStroke = options?.allowExplicitStroke === true;
     const cacheKey = [
       String(shape?.id || ""),
       includeThemeDefault ? "1" : "0",
+      allowExplicitStroke ? "1" : "0",
       String(options?.excludeOverlayId || ""),
       Array.isArray(options?.excludedOverlayIds)
         ? options.excludedOverlayIds.map((entry) => String(entry || "")).join("|")
@@ -5174,17 +5619,21 @@ function CanvasSvg({
       return finish(workerResolvedColor);
     }
     if (!liveCanvasEnabled) {
-      if (!activeOnly) {
-        const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
-        if (dynamicColor) return finish(dynamicColor);
+      const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
+      if (dynamicColor) return finish(dynamicColor);
+      const connectedStartColor = normalizeActiveLineColor(getPolylineStartSourceColor(shape, options));
+      if (connectedStartColor) return finish(connectedStartColor);
+      if (!activeOnly || allowExplicitStroke) {
         const explicitStroke = normalizeActiveLineColor(shape?.stroke);
         if (explicitStroke) return finish(explicitStroke);
       }
       return finish(includeThemeDefault ? (isDarkTheme ? "#ffffff" : themeStrokeDefault) : "");
     }
-    if (!activeOnly) {
-      const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
-      if (dynamicColor) return finish(dynamicColor);
+    const dynamicColor = normalizeActiveLineColor(getTagColor(shape.tagPath));
+    if (dynamicColor) return finish(dynamicColor);
+    const connectedStartColor = normalizeActiveLineColor(getPolylineStartSourceColor(shape, options));
+    if (connectedStartColor) return finish(connectedStartColor);
+    if (!activeOnly || allowExplicitStroke) {
       const explicitStroke = normalizeActiveLineColor(shape?.stroke);
       if (explicitStroke) return finish(explicitStroke);
     }
@@ -5822,16 +6271,50 @@ function CanvasSvg({
     return [{ color: chainColor, points }];
   };
 
-
-  const innerW = Math.max(0, (size.w || 0) - rulerSize);
-  const innerH = Math.max(0, (size.h || 0) - rulerSize);
+  const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
+  const edgeReserve = showRulers ? SCROLLBAR_RESERVE : 0;
+  const viewportW = Math.max(1, Number(size.w || 0));
+  const viewportH = Math.max(1, Number(size.h || 0));
+  const stageW = Math.max(1, viewportW);
+  const stageH = Math.max(1, viewportH);
+  const innerW = Math.max(0, viewportW - rulerSize - edgeReserve);
+  const innerH = Math.max(0, viewportH - rulerSize - edgeReserve);
   const vbWidth = Math.max(1, Number(vbW) || 1);
   const vbHeight = Math.max(1, Number(vbH) || 1);
-  // Keep canvas coordinates in a true 1:1 world-to-pixel mapping.
-  // Avoid auto stretch-to-fit scaling that makes content oversized on ultrawide displays.
-  const viewportScale = 1;
-  const viewportOffsetX = 0;
-  const viewportOffsetY = 0;
+  const preserveAspectRatioRaw = String(preserveAspectRatioMode || "xMinYMin meet").trim() || "xMinYMin meet";
+  const preserveAspectRatioLower = preserveAspectRatioRaw.toLowerCase();
+  const preserveAspectRatioParts = preserveAspectRatioRaw.split(/\s+/).filter(Boolean);
+  const preserveAlignToken = preserveAspectRatioParts[0] || "xMinYMin";
+  const preserveMeetOrSliceToken = preserveAspectRatioParts[1] || "meet";
+  const preserveAlignX = /xmax/i.test(preserveAlignToken) ? "max" : /xmid/i.test(preserveAlignToken) ? "mid" : "min";
+  const preserveAlignY = /ymax/i.test(preserveAlignToken) ? "max" : /ymid/i.test(preserveAlignToken) ? "mid" : "min";
+  const preserveIsNone = preserveAspectRatioLower === "none";
+  const uniformViewportScale = preserveIsNone
+    ? null
+    : preserveMeetOrSliceToken.toLowerCase() === "slice"
+    ? Math.max(innerW / vbWidth, innerH / vbHeight)
+    : Math.min(innerW / vbWidth, innerH / vbHeight);
+  const renderedViewportWidth = preserveIsNone ? innerW : vbWidth * Math.max(1e-9, uniformViewportScale || 1);
+  const renderedViewportHeight = preserveIsNone ? innerH : vbHeight * Math.max(1e-9, uniformViewportScale || 1);
+  const viewportOffsetX =
+    preserveIsNone
+      ? 0
+      : preserveAlignX === "max"
+      ? innerW - renderedViewportWidth
+      : preserveAlignX === "mid"
+      ? (innerW - renderedViewportWidth) / 2
+      : 0;
+  const viewportOffsetY =
+    preserveIsNone
+      ? 0
+      : preserveAlignY === "max"
+      ? innerH - renderedViewportHeight
+      : preserveAlignY === "mid"
+      ? (innerH - renderedViewportHeight) / 2
+      : 0;
+  const viewportScaleX = preserveIsNone ? innerW / vbWidth : Math.max(1e-9, uniformViewportScale || 1);
+  const viewportScaleY = preserveIsNone ? innerH / vbHeight : Math.max(1e-9, uniformViewportScale || 1);
+  const viewportScale = Math.max(viewportScaleX, viewportScaleY);
 
   // current transform values (WORLD -> SCREEN)
   const z = zoom || 1;
@@ -5840,13 +6323,13 @@ function CanvasSvg({
 
   // SCREEN(px) -> WORLD(units)
   const screenToWorldX = (sx) =>
-    ((sx - viewportOffsetX) / Math.max(1e-9, viewportScale) - panX) / z;
+    ((sx - viewportOffsetX) / Math.max(1e-9, viewportScaleX) - panX) / z;
   const screenToWorldY = (sy) =>
-    ((sy - viewportOffsetY) / Math.max(1e-9, viewportScale) - panY) / z;
+    ((sy - viewportOffsetY) / Math.max(1e-9, viewportScaleY) - panY) / z;
 
   // WORLD(units) -> SCREEN(px)
-  const worldToScreenX = (wx) => (wx * z + panX) * viewportScale + viewportOffsetX;
-  const worldToScreenY = (wy) => (wy * z + panY) * viewportScale + viewportOffsetY;
+  const worldToScreenX = (wx) => (wx * z + panX) * viewportScaleX + viewportOffsetX;
+  const worldToScreenY = (wy) => (wy * z + panY) * viewportScaleY + viewportOffsetY;
 
   // choose a nice step so tick spacing stays visually consistent
   function niceStep(target) {
@@ -5911,7 +6394,7 @@ function CanvasSvg({
     for (let y = startY; y <= endY; y += GRID) d += `M ${startX} ${y} L ${endX} ${y} `;
 
     return d.trim();
-  }, [innerW, innerH, panX, panY, z, viewportScale, viewportOffsetX, viewportOffsetY]);
+  }, [innerW, innerH, panX, panY, z, viewportScaleX, viewportScaleY, viewportOffsetX, viewportOffsetY]);
 
   /* =========================================================
      KEYBOARD NUDGE (ARROWS)
@@ -6315,18 +6798,9 @@ function CanvasSvg({
   };
 
   const htmlChartLayers = [];
-  const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
-  const edgeReserve = showRulers ? 0 : SCROLLBAR_RESERVE;
-  const viewportW = Math.max(1, Number(size.w || 0));
-  const viewportH = Math.max(1, Number(size.h || 0));
-  const stageW = Math.max(
-    viewportW,
-    vbWidth + rulerSize + edgeReserve
-  );
-  const stageH = Math.max(viewportH, vbHeight + rulerSize + edgeReserve);
   const selectedOverlayAlwaysIncludeIds =
-    isLiveMode && Array.isArray(selectedOverlayIds) ? selectedOverlayIds : [];
-  const selectedOverlayAlwaysIncludeKey = isLiveMode
+    renderLiveVisuals && Array.isArray(selectedOverlayIds) ? selectedOverlayIds : [];
+  const selectedOverlayAlwaysIncludeKey = renderLiveVisuals
     ? selectedOverlayAlwaysIncludeIds.map((id) => String(id || "").trim()).filter(Boolean).join("|")
     : "";
   const overlayRenderOverlays = useMemo(() => {
@@ -6381,6 +6855,10 @@ function CanvasSvg({
     panX,
     panY,
     z,
+    viewportScaleX,
+    viewportScaleY,
+    viewportOffsetX,
+    viewportOffsetY,
   ]);
   const overlayVisualById = useMemo(() => {
     const out = new Map();
@@ -6403,19 +6881,46 @@ function CanvasSvg({
         return;
       }
 
-      if (!isLiveMode) {
+      const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
+      const isDiverterOverlay = overlayEType.includes("diverter");
+      if (!renderLiveVisuals) {
+        const overlayFill = String(getOverlayBoundFillColor(overlay) || overlay?.fill || "").trim();
+        const overlayStroke = String(overlay?.stroke || "").trim();
+        const overlayStrokeWidth =
+          Number.isFinite(Number(overlay?.strokeWidth)) && Number(overlay.strokeWidth) > 0
+            ? Number(overlay.strokeWidth)
+            : undefined;
+        if (isDiverterOverlay) {
+          const diverterMode = getEffectiveDiverterState(overlay);
+          const diverterFlowColor = normalizeActiveLineColor(
+            getDirectEntryActiveColorForDiverter(overlay, {
+              excludedOverlayIds: [id],
+            })
+          );
+          let inner = String(overlay?.inner || "");
+          inner = applyDiverterModeToSvg(inner, diverterMode);
+          inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, diverterMode);
+          out.set(id, {
+            inner,
+            className: undefined,
+            style: {
+              pointerEvents: "visiblePainted",
+            },
+            isConveyorScrew: false,
+          });
+          return;
+        }
         out.set(id, {
-          inner: String(overlay?.inner || ""),
+          inner: applyOverlayPaintOverrides(String(overlay?.inner || ""), {
+            fillColor: overlayFill,
+            strokeColor: overlayStroke,
+            strokeWidth: overlayStrokeWidth,
+          }),
           className: undefined,
           style: {
-            fill: overlay.fill || "none",
-            stroke:
-              String(overlay?.stroke || "").trim() ||
-              themeStrokeDefault,
-            strokeWidth:
-              Number.isFinite(Number(overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0
-                ? Number(overlay.strokeWidth)
-                : undefined,
+            fill: overlayFill || "none",
+            stroke: overlayStroke || themeStrokeDefault,
+            strokeWidth: overlayStrokeWidth,
             pointerEvents: "visiblePainted",
           },
           isConveyorScrew: false,
@@ -6423,8 +6928,6 @@ function CanvasSvg({
         return;
       }
 
-      const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
-      const isDiverterOverlay = overlayEType.includes("diverter");
       const dynamicBinProductLabel = String(
         binProductLabelByOverlayId?.[id] || ""
       ).trim();
@@ -6441,12 +6944,13 @@ function CanvasSvg({
         (overlayEType === "bin" || overlayEType.startsWith("bin")) &&
         (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
 
+      const boundFill = String(getOverlayBoundFillColor(overlay) || "").trim();
       const tagFill = isDiverterOverlay
         ? ""
-        : normalizeOverlayActiveFillColor(getTagColor(overlay.tagPath));
+        : normalizeOverlayActiveFillColor(boundFill || getTagColor(overlay.tagPath));
       const routeStroke = normalizeActiveLineColor(getRouteStrokeColorForOverlay(overlay));
       const diverterIncomingColor =
-        liveCanvasEnabled && isDiverterOverlay
+        isDiverterOverlay
           ? normalizeActiveLineColor(
               getDirectEntryActiveColorForDiverter(overlay, {
                 excludedOverlayIds: [id],
@@ -6456,15 +6960,11 @@ function CanvasSvg({
       const connectedPolylineColor = isDiverterOverlay
         ? diverterIncomingColor
         : "";
-      const diverterFlowColor =
-        isDiverterOverlay && !diverterIncomingColor
-          ? ""
-          : String(connectedPolylineColor || "").trim() ||
-            String(routeStroke || "").trim() ||
-            connectedPolylineColor ||
-            "";
+      const diverterFlowColor = isDiverterOverlay
+        ? String(connectedPolylineColor || "").trim()
+        : "";
       const liveDiverterMode =
-        liveCanvasEnabled && isDiverterOverlay
+        isDiverterOverlay
           ? getEffectiveDiverterState(overlay)
           : "";
       const isFaultSimulated = Boolean(overlay.faultSimulated);
@@ -6473,6 +6973,13 @@ function CanvasSvg({
         compactEType.includes("conveyorscrew") ||
         (compactEType.includes("conveyor") && compactEType.includes("screw"));
       const faultColor = "#ff3b30";
+      const overlayFill = String(overlay?.fill || "").trim();
+      const overlayStroke = String(overlay?.stroke || "").trim();
+      const overlayStrokeWidth =
+        Number.isFinite(Number(overlay?.strokeWidth)) && Number(overlay.strokeWidth) > 0
+          ? Number(overlay.strokeWidth)
+          : undefined;
+      const effectiveStrokeColor = isDiverterOverlay ? "" : routeStroke || overlayStroke || themeStrokeDefault;
 
       if (tagFill) {
         const key = String(overlay.tagPath || overlay.id || "");
@@ -6483,7 +6990,9 @@ function CanvasSvg({
       }
 
       const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
-      let inner = tagFill
+      let inner = isDiverterOverlay
+        ? overlay.inner
+        : tagFill
         ? overrideSvgColors(overlay.inner, tagFill)
         : routeStroke
         ? overrideSvgStrokeOnly(overlay.inner)
@@ -6513,7 +7022,7 @@ function CanvasSvg({
           showDischargeLock: binLockedOut,
         });
       }
-      if (liveCanvasEnabled && isDiverterOverlay) {
+      if (isDiverterOverlay) {
         inner = applyDiverterModeToSvg(inner, liveDiverterMode);
       }
       if (isFaultSimulated) {
@@ -6521,10 +7030,17 @@ function CanvasSvg({
           .replace(/fill=['"][^'"]*['"]/gi, `fill="${faultColor}"`)
           .replace(/fill:\s*[^;\"']+/gi, `fill:${faultColor}`);
       }
-      if (!routeStroke) {
-        inner = forceSvgStrokeColor(inner, themeStrokeDefault);
+      if (!isDiverterOverlay) {
+        inner = applyOverlayPaintOverrides(inner, {
+          fillColor: tagFill ? "" : overlayFill,
+          strokeColor: routeStroke ? "" : overlayStroke,
+          strokeWidth: overlayStrokeWidth,
+        });
       }
-      if (liveCanvasEnabled && isDiverterOverlay) {
+      if (!isDiverterOverlay && !routeStroke) {
+        inner = forceSvgStrokeColor(inner, effectiveStrokeColor);
+      }
+      if (isDiverterOverlay) {
         inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode);
       }
 
@@ -6537,12 +7053,9 @@ function CanvasSvg({
               pointerEvents: "visiblePainted",
             }
           : {
-              fill: isFaultSimulated ? faultColor : tagFill || overlay.fill || "none",
-              stroke: routeStroke || themeStrokeDefault,
-              strokeWidth:
-                Number.isFinite(Number(overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0
-                  ? Number(overlay.strokeWidth)
-                  : undefined,
+              fill: isFaultSimulated ? faultColor : tagFill || overlayFill || "none",
+              stroke: effectiveStrokeColor,
+              strokeWidth: overlayStrokeWidth,
               pointerEvents: "visiblePainted",
             },
         isConveyorScrew,
@@ -6554,13 +7067,14 @@ function CanvasSvg({
     return out;
   }, [
     overlayRenderOverlays,
-    isLiveMode,
+    renderLiveVisuals,
     liveRenderTick,
     liveTopologyStressMode,
     effectiveTagStateColorsByPath,
     effectiveRouteStrokeColorByGroupPath,
     routeColorsBySvgKey,
     effectiveSvgLiveValuesByGroupPath,
+    ignitionTagValuesByPath,
     binProductLabelByOverlayId,
     binNameLabelByOverlayId,
     binLevelRatioByOverlayId,
@@ -6733,7 +7247,7 @@ function CanvasSvg({
   ]);
   const tagBubbleLayer = useMemo(() => {
     if (!showTagPaths || interactionActive) return null;
-    const includeLiveOverlayLines = isLiveMode;
+    const includeLiveOverlayLines = renderLiveVisuals;
     return (
       <g>
         {shapes.map((s) => {
@@ -6817,7 +7331,7 @@ function CanvasSvg({
   }, [
     showTagPaths,
     interactionActive,
-    isLiveMode,
+    renderLiveVisuals,
     shapes,
     hiddenBubbleSet,
     overlayRenderOverlays,
@@ -6829,7 +7343,7 @@ function CanvasSvg({
     onHideTagBubble,
   ]);
   const overlayModeBadgeLayer = useMemo(() => {
-    if (!isLiveMode || interactionActive || !overlayRenderOverlays.length) {
+    if (!renderLiveVisuals || interactionActive || !overlayRenderOverlays.length) {
       return null;
     }
     return (
@@ -6904,7 +7418,7 @@ function CanvasSvg({
       </g>
     );
   }, [
-    isLiveMode,
+    renderLiveVisuals,
     interactionActive,
     overlayRenderOverlays,
     liveRenderTick,
@@ -6914,7 +7428,7 @@ function CanvasSvg({
     inv,
   ]);
   const overlayIndicatorLayer = useMemo(() => {
-    if (isLiveMode || liveTopologyStressMode || interactionActive || !overlayRenderOverlays.length) {
+    if (renderLiveVisuals || liveTopologyStressMode || interactionActive || !overlayRenderOverlays.length) {
       return null;
     }
     return (
@@ -7242,6 +7756,8 @@ function CanvasSvg({
       }),
     [
       shapes,
+      svgOverlays,
+      ignitionTagValuesByPath,
       inlineEditId,
       theme,
       isDarkTheme,
@@ -7288,6 +7804,7 @@ function CanvasSvg({
         return (
           <rect
             key={`active-shape-${s.id}`}
+            data-active-shape-id={s.id}
             x={rx}
             y={ry}
             width={rw}
@@ -7319,6 +7836,7 @@ function CanvasSvg({
         return (
           <ellipse
             key={`active-shape-${s.id}`}
+            data-active-shape-id={s.id}
             cx={cx}
             cy={cy}
             rx={erx}
@@ -7348,19 +7866,18 @@ function CanvasSvg({
       const arrowStart = s.arrowStart ?? "none";
       const arrowEnd = s.arrowEnd ?? "none";
       const ptsForDisplay = pointsForMarker(s.points);
+      const selectionHaloWidth = Math.max((Number(s.strokeWidth) || 3) + 6, (Number(s.strokeWidth) || 3) * 2.5);
       return (
-        <g key={`active-shape-${s.id}`}>
+        <g key={`active-shape-${s.id}`} data-active-shape-id={s.id}>
           {isSelected ? (
             <polyline
               points={pointsToAttr(ptsForDisplay)}
               fill="none"
-              stroke="#2b6cff"
-              strokeWidth={s.strokeWidth}
+              stroke="rgba(43,108,255,0.45)"
+              strokeWidth={selectionHaloWidth}
               {...styleProps}
               strokeLinejoin={styleProps.strokeLinejoin ?? "round"}
               strokeLinecap={styleProps.strokeLinecap ?? "round"}
-              markerStart={markerForStart(arrowStart)}
-              markerEnd={markerForEnd(arrowEnd)}
               vectorEffect="non-scaling-stroke"
               pointerEvents="none"
             />
@@ -7386,6 +7903,33 @@ function CanvasSvg({
                     />
                   );
                 })()}
+              {Array.isArray(s.points)
+                ? s.points.slice(0, -1).map((pt, idx) => {
+                    const nextPt = s.points[idx + 1];
+                    if (!nextPt) return null;
+                    return (
+                      <line
+                        key={`${s.id}-segment-hit-${idx}`}
+                        x1={pt.x}
+                        y1={pt.y}
+                        x2={nextPt.x}
+                        y2={nextPt.y}
+                        stroke="transparent"
+                        strokeWidth={Math.max(18, (s.strokeWidth || 3) * 5)}
+                        strokeLinecap="round"
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          onSegmentMouseDown?.(e, s.id, idx);
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          onEditPolylineClick?.(e, s.id);
+                        }}
+                        style={{ cursor: "pointer" }}
+                      />
+                    );
+                  })
+                : null}
               {Array.isArray(s.points)
                 ? s.points.map((pt, idx) => (
                     <g key={`${s.id}-h-${idx}`}>
@@ -7435,11 +7979,24 @@ function CanvasSvg({
     selectedIds,
     shapeById,
     selectedShapeIdSet,
+    svgOverlays,
+    ignitionTagValuesByPath,
     editingId,
     selectedSegment,
+    theme,
+    isDarkTheme,
+    themeStrokeDefault,
+    isLiveMode,
+    liveTopologyStressMode,
+    liveRenderTick,
+    effectiveTagStateColorsByPath,
+    effectiveRouteStrokeColorByGroupPath,
+    effectiveSvgLiveValuesByGroupPath,
+    onEditPolylineClick,
     onHandleMouseDown,
     onHandleDoubleClick,
     onHandleContextMenu,
+    onSegmentMouseDown,
   ]);
   const activeEditingPolylineNodes = useMemo(() => {
     const editingKey = String(editingId || "").trim();
@@ -7452,19 +8009,18 @@ function CanvasSvg({
     const arrowStart = s.arrowStart ?? "none";
     const arrowEnd = s.arrowEnd ?? "none";
     const ptsForDisplay = pointsForMarker(s.points);
+    const selectionHaloWidth = Math.max((Number(s.strokeWidth) || 3) + 6, (Number(s.strokeWidth) || 3) * 2.5);
     return (
       <g key={`active-editing-polyline-${s.id}`}>
         {isSelected ? (
           <polyline
             points={pointsToAttr(ptsForDisplay)}
             fill="none"
-            stroke="#2b6cff"
-            strokeWidth={s.strokeWidth}
+            stroke="rgba(43,108,255,0.45)"
+            strokeWidth={selectionHaloWidth}
             {...styleProps}
             strokeLinejoin={styleProps.strokeLinejoin ?? "round"}
             strokeLinecap={styleProps.strokeLinecap ?? "round"}
-            markerStart={markerForStart(arrowStart)}
-            markerEnd={markerForEnd(arrowEnd)}
             vectorEffect="non-scaling-stroke"
             pointerEvents="none"
           />
@@ -7488,6 +8044,33 @@ function CanvasSvg({
               />
             );
           })()}
+        {Array.isArray(s.points)
+          ? s.points.slice(0, -1).map((pt, idx) => {
+              const nextPt = s.points[idx + 1];
+              if (!nextPt) return null;
+              return (
+                <line
+                  key={`${s.id}-active-segment-hit-${idx}`}
+                  x1={pt.x}
+                  y1={pt.y}
+                  x2={nextPt.x}
+                  y2={nextPt.y}
+                  stroke="transparent"
+                  strokeWidth={Math.max(18, (s.strokeWidth || 3) * 5)}
+                  strokeLinecap="round"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    onSegmentMouseDown?.(e, s.id, idx);
+                  }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    onEditPolylineClick?.(e, s.id);
+                  }}
+                  style={{ cursor: "pointer" }}
+                />
+              );
+            })
+          : null}
         {Array.isArray(s.points)
           ? s.points.map((pt, idx) => (
               <g key={`${s.id}-overlay-h-${idx}`}>
@@ -7534,10 +8117,23 @@ function CanvasSvg({
     editingId,
     shapeById,
     selectedShapeIdSet,
+    svgOverlays,
+    ignitionTagValuesByPath,
     selectedSegment,
+    theme,
+    isDarkTheme,
+    themeStrokeDefault,
+    isLiveMode,
+    liveTopologyStressMode,
+    liveRenderTick,
+    effectiveTagStateColorsByPath,
+    effectiveRouteStrokeColorByGroupPath,
+    effectiveSvgLiveValuesByGroupPath,
+    onEditPolylineClick,
     onHandleMouseDown,
     onHandleDoubleClick,
     onHandleContextMenu,
+    onSegmentMouseDown,
   ]);
 
   return (
@@ -7599,21 +8195,27 @@ function CanvasSvg({
           top: rulerSize,
           right: rulerSize + edgeReserve,
           bottom: edgeReserve,
+          overflow: "hidden",
+          background: canvasBackgroundColor || "var(--canvas-bg)",
         }}
       >
         <svg
-          width={vbWidth}
-          height={vbHeight}
+          width="100%"
+          height="100%"
           viewBox={vb}
-          preserveAspectRatio="xMinYMin meet"
+          preserveAspectRatio={preserveAspectRatioMode}
           data-canvas-zoom-root="true"
           ref={svgRef}
           tabIndex={0}
           style={{
-            position: "relative",
+            position: "absolute",
+            inset: 0,
             zIndex: 1,
             display: "block",
-            background: canvasBackgroundColor || "var(--canvas-bg)",
+            width: "100%",
+            height: "100%",
+            minWidth: "100%",
+            minHeight: "100%",
             outline: "none",
             cursor: isCrosshair ? "crosshair" : "default",
           }}
@@ -7933,6 +8535,33 @@ function CanvasSvg({
                             );
                           })()
                         )}
+                      {Array.isArray(s.points)
+                        ? s.points.slice(0, -1).map((pt, idx) => {
+                            const nextPt = s.points[idx + 1];
+                            if (!nextPt) return null;
+                            return (
+                              <line
+                                key={`${s.id}-segment-hit-${idx}`}
+                                x1={pt.x}
+                                y1={pt.y}
+                                x2={nextPt.x}
+                                y2={nextPt.y}
+                                stroke="transparent"
+                                strokeWidth={Math.max(18, (s.strokeWidth || 3) * 5)}
+                                strokeLinecap="round"
+                                onMouseDown={(e) => {
+                                  e.stopPropagation();
+                                  onSegmentMouseDown?.(e, s.id, idx);
+                                }}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  onEditPolylineClick?.(e, s.id);
+                                }}
+                                style={{ cursor: "pointer" }}
+                              />
+                            );
+                          })
+                        : null}
                     </>
                   )}
 
@@ -8038,6 +8667,13 @@ function CanvasSvg({
                 </g>
               )
               : null}
+            {selectedIds?.length > 0 && selectedOverlayIds?.length > 0 && mixedSelectionUI
+              ? (
+                <g data-drag-selected-mixed-ui="1">
+                  {mixedSelectionUI(z)}
+                </g>
+              )
+              : null}
 
             {smoothedCollabCursors.length > 0 && (
               <g pointerEvents="none">
@@ -8120,13 +8756,15 @@ function CanvasSvg({
           ))}
         </div>
         <svg
-          width={vbWidth}
-          height={vbHeight}
+          width="100%"
+          height="100%"
           viewBox={vb}
-          preserveAspectRatio="xMinYMin meet"
+          preserveAspectRatio={preserveAspectRatioMode}
           style={{
             position: "absolute",
             inset: 0,
+            width: "100%",
+            height: "100%",
             pointerEvents: "none",
             overflow: "hidden",
             zIndex: 3,
@@ -8137,13 +8775,15 @@ function CanvasSvg({
         </svg>
         {showTagPaths ? (
           <svg
-            width={vbWidth}
-            height={vbHeight}
+            width="100%"
+            height="100%"
             viewBox={vb}
-            preserveAspectRatio="xMinYMin meet"
+            preserveAspectRatio={preserveAspectRatioMode}
             style={{
               position: "absolute",
               inset: 0,
+              width: "100%",
+              height: "100%",
               pointerEvents: onHideTagBubble ? "auto" : "none",
               overflow: "hidden",
               zIndex: 4,
