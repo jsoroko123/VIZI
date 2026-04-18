@@ -303,6 +303,134 @@ var MesoraDrawingToolBundle = (() => {
     return key === "state" || key === "stcode" || key === "status" || key === "stat" || key === "hmistate";
   }
 
+  // ../../app/src/utils/widgetTemplates.js
+  var DEFAULT_WIDGET_WRITE_MODE = "ignition";
+  var DEFAULT_WIDGET_OPC_SERVER = "Ignition OPC UA Server";
+  function resolveWidgetWriteMode(widget, tagPath = "") {
+    var _a, _b, _c;
+    const explicit = String(
+      (_c = (_b = (_a = widget == null ? void 0 : widget.writeMode) != null ? _a : widget == null ? void 0 : widget.writeTarget) != null ? _b : widget == null ? void 0 : widget.tagSource) != null ? _c : ""
+    ).trim().toLowerCase();
+    if (explicit === "opc" || explicit === "ignition") {
+      return explicit;
+    }
+    const normalizedTagPath = String(tagPath || "").trim();
+    if (normalizedTagPath.startsWith("[")) {
+      return "ignition";
+    }
+    return normalizedTagPath ? "opc" : DEFAULT_WIDGET_WRITE_MODE;
+  }
+  function resolveWidgetOpcServer(widget) {
+    var _a, _b, _c;
+    const explicit = String(
+      (_c = (_b = (_a = widget == null ? void 0 : widget.opcServer) != null ? _a : widget == null ? void 0 : widget.opcServerName) != null ? _b : widget == null ? void 0 : widget.serverName) != null ? _c : ""
+    ).trim();
+    return explicit || DEFAULT_WIDGET_OPC_SERVER;
+  }
+  function widgetTemplate(widgetKey) {
+    const templates = {
+      lineChart: {
+        name: "Widget-LineChart.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Line Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><line x1="36" y1="42" x2="36" y2="142" stroke="#475569" stroke-width="2"/><polyline points="42,130 92,108 136,118 180,84 232,98 286,60" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+      },
+      barChart: {
+        name: "Widget-BarChart.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Bar Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><rect x="58" y="96" width="30" height="46" rx="4" fill="#22c55e"/><rect x="104" y="76" width="30" height="66" rx="4" fill="#38bdf8"/><rect x="150" y="52" width="30" height="90" rx="4" fill="#f59e0b"/><rect x="196" y="88" width="30" height="54" rx="4" fill="#a78bfa"/><rect x="242" y="66" width="30" height="76" rx="4" fill="#fb7185"/></svg>`
+      },
+      areaChart: {
+        name: "Widget-AreaChart.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Area Chart</text><line x1="36" y1="142" x2="292" y2="142" stroke="#475569" stroke-width="2"/><path d="M42,128 L90,102 L138,114 L186,80 L234,96 L286,70 L286,142 L42,142 Z" fill="#22c55e55" stroke="#22c55e" stroke-width="3"/></svg>`
+      },
+      gauge: {
+        name: "Widget-Gauge.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 180"><rect x="1" y="1" width="258" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Gauge</text><path d="M46 132a84 84 0 0 1 168 0" fill="none" stroke="#334155" stroke-width="16" stroke-linecap="round"/><path d="M46 132a84 84 0 0 1 126 -72" fill="none" stroke="#22c55e" stroke-width="16" stroke-linecap="round"/><line x1="130" y1="132" x2="192" y2="88" stroke="#e2e8f0" stroke-width="4" stroke-linecap="round"/><circle cx="130" cy="132" r="6" fill="#e2e8f0"/></svg>`
+      },
+      weather: {
+        name: "Widget-Weather.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Weather</text><circle cx="66" cy="84" r="22" fill="#fbbf24"/><path d="M112 108h118a22 22 0 0 0 0-44 29 29 0 0 0-55-10 24 24 0 0 0-36 20 18 18 0 0 0-27 34z" fill="#cbd5e1"/><text x="20" y="150" fill="#e2e8f0" font-size="32" font-family="system-ui" font-weight="800">72</text><text x="86" y="150" fill="#93c5fd" font-size="14" font-family="system-ui" font-weight="700">F</text><text x="132" y="150" fill="#94a3b8" font-size="12" font-family="system-ui">Partly Cloudy</text></svg>`
+      },
+      kpi: {
+        name: "Widget-KPI.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 140"><rect x="1" y="1" width="238" height="138" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">KPI</text><text x="20" y="84" fill="#22c55e" font-size="42" font-family="system-ui" font-weight="700">98.7%</text><text x="20" y="112" fill="#94a3b8" font-size="12" font-family="system-ui">Target: 95%</text></svg>`
+      },
+      displayBox: {
+        name: "Widget-DisplayBox.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Display Box</text><text x="20" y="92" fill="#22c55e" font-size="40" font-family="system-ui" font-weight="700">123.4</text><text x="214" y="92" fill="#93c5fd" font-size="16" font-family="system-ui" font-weight="700">psi</text><rect x="20" y="122" width="194" height="30" rx="8" fill="#111827" stroke="#334155"/><rect x="222" y="122" width="78" height="30" rx="8" fill="#2b6cff"/><text x="242" y="141" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="700">Write</text></svg>`
+      },
+      countdownBar: {
+        name: "Widget-CountdownBar.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72"><rect x="12" y="8" width="296" height="14" rx="7" fill="#111827" stroke="#334155"/><rect x="12" y="8" width="168" height="14" rx="7" fill="#2b6cff"/><text x="12" y="40" fill="#94a3b8" font-size="12" font-family="system-ui" font-weight="700">Countdown</text><text x="160" y="20" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">4.0s</text></svg>`
+      },
+      pushButton: {
+        name: "Widget-PushButton.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 150"><rect x="1" y="1" width="258" height="148" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Push Button</text><rect x="34" y="52" width="192" height="70" rx="12" fill="#1e293b" stroke="#334155"/><rect x="40" y="58" width="180" height="58" rx="10" fill="#2563eb"/><text x="130" y="94" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">PRESS</text></svg>`
+      },
+      onOffButton: {
+        name: "Widget-OnOffButton.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 160"><rect x="1" y="1" width="278" height="158" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">On/Off Button</text><rect x="34" y="52" width="212" height="74" rx="14" fill="#111827" stroke="#334155"/><rect x="40" y="58" width="98" height="62" rx="10" fill="#16a34a"/><rect x="142" y="58" width="98" height="62" rx="10" fill="#334155"/><text x="89" y="96" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">ON</text><text x="191" y="96" text-anchor="middle" fill="#cbd5e1" font-size="16" font-family="system-ui" font-weight="800">OFF</text></svg>`
+      },
+      statusTable: {
+        name: "Widget-StatusTable.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 190"><rect x="1" y="1" width="338" height="188" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Status Table</text><rect x="16" y="40" width="308" height="28" rx="6" fill="#1e293b"/><text x="28" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Tag</text><text x="170" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">State</text><text x="252" y="58" fill="#94a3b8" font-size="11" font-family="system-ui">Quality</text><rect x="16" y="74" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="108" width="308" height="30" rx="6" fill="#111827"/><rect x="16" y="142" width="308" height="30" rx="6" fill="#111827"/></svg>`
+      }
+    };
+    return templates[widgetKey] || templates.lineChart;
+  }
+  function defaultWidgetSettings(widgetKey) {
+    const kind = String(widgetKey || "").trim();
+    const base = {
+      kind: kind || "lineChart",
+      title: "",
+      titleFontSize: "",
+      writeMode: DEFAULT_WIDGET_WRITE_MODE,
+      opcServer: DEFAULT_WIDGET_OPC_SERVER,
+      writeValue: 1,
+      releaseValue: 0,
+      onValue: 1,
+      offValue: 0,
+      min: 0,
+      max: 100,
+      decimals: 0,
+      unit: "",
+      historyPoints: 40,
+      rowCount: 4,
+      rangeFrom: null,
+      rangeTo: null,
+      windowMinutes: 60,
+      durationPreset: "1h",
+      maxPoints: 500,
+      lineTension: 0.34,
+      showPoints: true,
+      showLegend: true,
+      showGrid: true,
+      markSpots: true,
+      markerSize: 4.2,
+      lineWidth: 2.4,
+      lineStyle: "smooth",
+      yAxisSide: "left",
+      seriesTags: [],
+      axisMode: "auto",
+      barSourceMode: "table",
+      barTable: "",
+      barField: "",
+      barLabelField: "",
+      barQuery: "",
+      barQueryValueField: "",
+      barQueryLabelField: ""
+    };
+    if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
+    if (kind === "kpi") return { ...base, historyPoints: 10 };
+    if (kind === "displayBox") return { ...base, historyPoints: 10 };
+    if (kind === "weather") return { ...base, historyPoints: 10, decimals: 1, unit: "F" };
+    if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
+    if (kind === "pushButton") return { ...base, historyPoints: 10, decimals: 0 };
+    if (kind === "onOffButton") return { ...base, historyPoints: 10, decimals: 0 };
+    if (kind === "gauge") return { ...base, min: 0, max: 100, historyPoints: 16 };
+    if (kind === "barChart") return { ...base, historyPoints: 20 };
+    if (kind === "areaChart") return { ...base, historyPoints: 40 };
+    return base;
+  }
+
   // ../../app/node_modules/@kurkle/color/dist/color.esm.js
   function round(v) {
     return v + 0.5 | 0;
@@ -13483,6 +13611,8 @@ var MesoraDrawingToolBundle = (() => {
     routeStrokeColorByGroupPath,
     svgLiveValuesByGroupPath,
     ignitionTagValuesByPath,
+    writeIgnitionTagValue = null,
+    writeIgnitionOpcValue = null,
     liveTagKeys,
     opcTags,
     opcTemplateMap,
@@ -13516,6 +13646,7 @@ var MesoraDrawingToolBundle = (() => {
   }) {
     const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
     const liveCanvasEnabled = Boolean(liveUpdatesEnabled && renderLiveVisuals);
+    const widgetInteractionEnabled = Boolean(isLiveMode || liveClickable);
     const watchedLiveKeys = useMemo(() => {
       const source = liveCanvasEnabled && Array.isArray(liveTagKeys) ? liveTagKeys : [];
       const seen = /* @__PURE__ */ new Set();
@@ -14234,18 +14365,18 @@ var MesoraDrawingToolBundle = (() => {
     const handleOverlayMouseDown = useCallback(
       (event, overlay) => {
         var _a, _b;
-        if (liveClickable && (overlay == null ? void 0 : overlay.widget)) return;
+        if (widgetInteractionEnabled && (overlay == null ? void 0 : overlay.widget)) return;
         (_b = (_a = overlayHandlerRefs.current).onOverlayMouseDown) == null ? void 0 : _b.call(_a, event, overlay == null ? void 0 : overlay.id);
       },
-      [liveClickable]
+      [widgetInteractionEnabled]
     );
     const handleOverlayDoubleClick = useCallback(
       (event, overlay, options = {}) => {
         var _a, _b;
-        if (!options.force && liveClickable && (overlay == null ? void 0 : overlay.widget)) return;
+        if (!options.force && widgetInteractionEnabled && (overlay == null ? void 0 : overlay.widget)) return;
         (_b = (_a = overlayHandlerRefs.current).onOverlayDoubleClick) == null ? void 0 : _b.call(_a, event, overlay == null ? void 0 : overlay.id);
       },
-      [liveClickable]
+      [widgetInteractionEnabled]
     );
     const opcTagCount = Array.isArray(opcTags) ? opcTags.length : 0;
     const shapeCount = Array.isArray(shapes) ? shapes.length : 0;
@@ -14688,12 +14819,42 @@ var MesoraDrawingToolBundle = (() => {
       if (!(overlay == null ? void 0 : overlay.widget)) return "";
       const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
       if (!tagPath) return "";
+      const ignitionValue = readIgnitionTagValueForPath(tagPath);
+      if (ignitionValue !== void 0) return ignitionValue;
       if (tagPath.toLowerCase().startsWith("db:")) {
         const id = String((overlay == null ? void 0 : overlay.id) || "");
         const v = widgetDbValues && Object.prototype.hasOwnProperty.call(widgetDbValues, id) ? widgetDbValues[id] : "";
         return v == null ? "" : v;
       }
       return getLiveValueForTagPath(tagPath);
+    };
+    const getTextShapeValueForShape = (shape) => {
+      var _a, _b, _c, _d, _e, _f, _g, _h;
+      const tagPath = String((shape == null ? void 0 : shape.tagPath) || "").trim();
+      if (!tagPath) return String((shape == null ? void 0 : shape.text) || "");
+      const ignitionValue = readIgnitionTagValueForPath(tagPath);
+      const rawValue = ignitionValue !== void 0 ? ignitionValue : getLiveValueForTagPath(tagPath);
+      if (rawValue == null || rawValue === "") {
+        return String((shape == null ? void 0 : shape.text) || "");
+      }
+      const rawText = rawValue != null && typeof rawValue === "object" ? String(
+        (_f = (_e = (_d = (_c = (_b = (_a = rawValue == null ? void 0 : rawValue.value) != null ? _a : rawValue == null ? void 0 : rawValue.v) != null ? _b : rawValue == null ? void 0 : rawValue.state) != null ? _c : rawValue == null ? void 0 : rawValue.State) != null ? _d : rawValue == null ? void 0 : rawValue.rawValue) != null ? _e : rawValue == null ? void 0 : rawValue.raw) != null ? _f : ""
+      ).trim() : String(rawValue).trim();
+      if (!rawText) {
+        return String((shape == null ? void 0 : shape.text) || "");
+      }
+      const scaleFactorRaw = Number.parseFloat(String((_g = shape == null ? void 0 : shape.scaleFactor) != null ? _g : "").trim());
+      const scaleFactor = Number.isFinite(scaleFactorRaw) ? scaleFactorRaw : 1;
+      const decimalsRaw = Number.parseInt(String((_h = shape == null ? void 0 : shape.decimals) != null ? _h : "").trim(), 10);
+      const decimals = Number.isInteger(decimalsRaw) ? Math.max(0, Math.min(6, decimalsRaw)) : null;
+      const unit = String((shape == null ? void 0 : shape.unit) || "").trim();
+      const numericValue = Number(rawText);
+      let displayValue = rawText;
+      if (Number.isFinite(numericValue)) {
+        const scaledValue = numericValue * scaleFactor;
+        displayValue = decimals == null ? String(scaledValue) : scaledValue.toFixed(decimals);
+      }
+      return unit ? `${displayValue} ${unit}` : displayValue;
     };
     const toNumberOrNull = (value) => {
       if (value == null) return null;
@@ -14809,6 +14970,10 @@ var MesoraDrawingToolBundle = (() => {
       if (lower.startsWith("db:") || lower.startsWith("dbq:")) return "";
       return tagPath;
     };
+    const getMissingWidgetWriteTargetMessage = (overlay) => {
+      const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, overlay == null ? void 0 : overlay.tagPath);
+      return writeMode === "opc" ? "Configure OPC item path to enable write." : "Configure Ignition tag path to enable write.";
+    };
     const getWidgetOptimisticWriteKeys = useCallback(
       (overlay) => {
         const tagPath = normalizeTagValue(getWritableWidgetTagPath(overlay));
@@ -14887,17 +15052,23 @@ var MesoraDrawingToolBundle = (() => {
       const tagPath = getWritableWidgetTagPath(overlay);
       if (!overlayId || !tagPath) return;
       const payloadValue = coerceWidgetWriteValue(writeValue);
+      const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, tagPath);
+      const isIgnitionTarget = writeMode === "ignition";
+      const isDirectOpcTarget = writeMode === "opc";
+      const opcServerName = resolveWidgetOpcServer(overlay == null ? void 0 : overlay.widget);
       const runWrite = async () => {
         setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
         setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
         try {
-          const data = await writeOpcValue({
+          const data = isIgnitionTarget && typeof writeIgnitionTagValue === "function" ? await writeIgnitionTagValue(tagPath, payloadValue) : isDirectOpcTarget && typeof writeIgnitionOpcValue === "function" ? await writeIgnitionOpcValue(tagPath, payloadValue, opcServerName) : await writeOpcValue({
             tagKey: tagPath,
             legacyTagKey: tagPath,
             value: payloadValue
           });
           const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value") ? data.value : payloadValue;
-          applyOptimisticWidgetWrite(overlay, nextValue);
+          if (!isIgnitionTarget) {
+            applyOptimisticWidgetWrite(overlay, nextValue);
+          }
           setWidgetWriteDraftByOverlay((prev) => ({
             ...prev,
             [overlayId]: String(nextValue != null ? nextValue : "")
@@ -15600,7 +15771,7 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [svgOverlays, liveUpdatesEnabled, disableWidgetBackgroundWork]);
     const renderWidgetOverlay = (overlay) => {
-      var _a, _b, _c, _d, _e;
+      var _a, _b, _c, _d, _e, _f;
       if (!(overlay == null ? void 0 : overlay.widget)) return null;
       const kind = String(((_a = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a.kind) || "").trim();
       const cfg = (overlay == null ? void 0 : overlay.widget) || {};
@@ -15720,10 +15891,24 @@ var MesoraDrawingToolBundle = (() => {
       const dense = w < 160 || h < 100;
       const widgetScale = Math.max(0.68, Math.min(1.15, Math.min(w, h) / 220));
       const scaledFont = (base, min = 7, max = 40) => Math.max(min, Math.min(max, Math.round(Number(base || 0) * widgetScale)));
+      const explicitTitleFontSizeRaw = Number.parseFloat(String((_b = cfg == null ? void 0 : cfg.titleFontSize) != null ? _b : "").trim());
+      const explicitTitleFontSize = Number.isFinite(explicitTitleFontSizeRaw) && explicitTitleFontSizeRaw > 0 ? explicitTitleFontSizeRaw : null;
+      const resolveWidgetTitleFontSize = (fallback, min = 7, max = 40) => {
+        if (explicitTitleFontSize == null) return fallback;
+        return Math.max(min, Math.min(max, explicitTitleFontSize));
+      };
+      const openWidgetProperties = (event) => {
+        var _a2, _b2;
+        if (isLiveMode) return;
+        (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+        (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
+        handleOverlayDoubleClick(event, overlay, { force: true });
+      };
+      const widgetSurfaceCursor = isLiveMode ? widgetInteractionEnabled ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
       const headH = dense ? 20 : compact ? 24 : 28;
       const pad = dense ? 6 : compact ? 8 : 10;
       const cardTitle = title || "";
-      const titleSize = dense ? 8 : compact ? 9 : 10;
+      const titleSize = resolveWidgetTitleFontSize(dense ? 8 : compact ? 9 : 10, 7, 40);
       const valueSize = scaledFont(dense ? 12 : compact ? 16 : 19, 9, 36);
       const valueColor = "var(--text)";
       const accent = "#2b8cff";
@@ -15822,8 +16007,8 @@ var MesoraDrawingToolBundle = (() => {
         ) : 1;
         const gaugeKey = `g-${overlay.id}-${kind}-${gaugeW}x${gaugeH}-z${viewScale2.toFixed(3)}-s${overlayScale3.toFixed(3)}-vp${viewportDprBoost2.toFixed(3)}`;
         const rootStyle2 = typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
-        const borderColor = ((_b = rootStyle2 == null ? void 0 : rootStyle2.getPropertyValue("--border")) == null ? void 0 : _b.trim()) || "#334155";
-        const textColor2 = ((_c = rootStyle2 == null ? void 0 : rootStyle2.getPropertyValue("--text")) == null ? void 0 : _c.trim()) || "#e2e8f0";
+        const borderColor = ((_c = rootStyle2 == null ? void 0 : rootStyle2.getPropertyValue("--border")) == null ? void 0 : _c.trim()) || "#334155";
+        const textColor2 = ((_d = rootStyle2 == null ? void 0 : rootStyle2.getPropertyValue("--text")) == null ? void 0 : _d.trim()) || "#e2e8f0";
         const gaugeData = {
           datasets: [
             {
@@ -15974,7 +16159,11 @@ var MesoraDrawingToolBundle = (() => {
         const barW = Math.max(24, w - countdownPad * 2);
         const labelText = cardTitle;
         const showLabel = h >= 52 && Boolean(labelText);
-        const labelFont = scaledFont(dense ? 11 : 14, 10, 24);
+        const labelFont = resolveWidgetTitleFontSize(
+          scaledFont(dense ? 11 : 14, 10, 24),
+          10,
+          40
+        );
         const topInset = Math.max(4, Math.round(h * 0.06));
         const bottomInset = Math.max(4, Math.round(h * 0.08));
         const gapAfterLabel = showLabel ? Math.max(2, Math.round(h * 0.03)) : 0;
@@ -16028,7 +16217,7 @@ var MesoraDrawingToolBundle = (() => {
         const tagPath = getWritableWidgetTagPath(overlay);
         const canWrite = Boolean(tagPath);
         const initialDraft = displayN != null ? String(Number(displayN)) : rawVal !== "" ? String(rawVal) : "";
-        const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId) ? String((_d = widgetWriteDraftByOverlay[overlayId]) != null ? _d : "") : initialDraft;
+        const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId) ? String((_e = widgetWriteDraftByOverlay[overlayId]) != null ? _e : "") : initialDraft;
         const writeBusy = (widgetWriteBusyByOverlay == null ? void 0 : widgetWriteBusyByOverlay[overlayId]) === true;
         const writeError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
         const inputH = dense ? 22 : 26;
@@ -16061,31 +16250,34 @@ var MesoraDrawingToolBundle = (() => {
               y: controlsY,
               width: controlsW,
               height: inputH,
-              style: { pointerEvents: liveClickable ? "auto" : "none" },
+              style: { pointerEvents: widgetInteractionEnabled ? "auto" : "none" },
               children: /* @__PURE__ */ jsxs(
                 "div",
                 {
                   xmlns: "http://www.w3.org/1999/xhtml",
+                  onDoubleClickCapture: openWidgetProperties,
                   style: {
                     display: "grid",
                     gridTemplateColumns: `${Math.max(20, controlsW - btnW - 6)}px ${btnW}px`,
                     gap: 6,
                     width: "100%",
                     height: "100%",
-                    pointerEvents: liveClickable ? "auto" : "none"
+                    pointerEvents: widgetInteractionEnabled ? "auto" : "none",
+                    cursor: widgetSurfaceCursor
                   },
                   children: [
                     /* @__PURE__ */ jsx(
                       "input",
                       {
                         "data-widget-control": "true",
+                        onDoubleClick: openWidgetProperties,
                         value: writeDraft,
                         onMouseDown: (e) => {
-                          if (!liveClickable) return;
+                          if (!widgetInteractionEnabled) return;
                           e.stopPropagation();
                         },
                         onChange: (e) => {
-                          if (!liveClickable) return;
+                          if (!widgetInteractionEnabled) return;
                           const nextVal = e.target.value;
                           setWidgetWriteDraftByOverlay((prev) => ({ ...prev, [overlayId]: nextVal }));
                           if (widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) {
@@ -16093,13 +16285,13 @@ var MesoraDrawingToolBundle = (() => {
                           }
                         },
                         onKeyDown: (e) => {
-                          if (!liveClickable) return;
+                          if (!widgetInteractionEnabled) return;
                           if (e.key !== "Enter" || writeBusy || !canWrite) return;
                           e.preventDefault();
                           submitWidgetWrite(overlay, writeDraft);
                         },
                         placeholder: canWrite ? "Write value" : "Bind OPC tag to write",
-                        disabled: !liveClickable || !canWrite || writeBusy,
+                        disabled: !widgetInteractionEnabled || !canWrite || writeBusy,
                         style: {
                           width: "100%",
                           height: "100%",
@@ -16109,7 +16301,8 @@ var MesoraDrawingToolBundle = (() => {
                           borderRadius: 7,
                           padding: "0 8px",
                           fontSize: dense ? 11 : 12,
-                          boxSizing: "border-box"
+                          boxSizing: "border-box",
+                          cursor: widgetSurfaceCursor
                         }
                       }
                     ),
@@ -16117,15 +16310,16 @@ var MesoraDrawingToolBundle = (() => {
                       "button",
                       {
                         "data-widget-control": "true",
+                        onDoubleClick: openWidgetProperties,
                         onMouseDown: (e) => {
-                          if (!liveClickable) return;
+                          if (!widgetInteractionEnabled) return;
                           e.stopPropagation();
                         },
                         onClick: () => {
-                          if (!liveClickable) return;
+                          if (!widgetInteractionEnabled) return;
                           submitWidgetWrite(overlay, writeDraft);
                         },
-                        disabled: !liveClickable || !canWrite || writeBusy,
+                        disabled: !widgetInteractionEnabled || !canWrite || writeBusy,
                         style: {
                           width: "100%",
                           height: "100%",
@@ -16135,7 +16329,7 @@ var MesoraDrawingToolBundle = (() => {
                           borderRadius: 7,
                           fontSize: dense ? 10 : 11,
                           fontWeight: 700,
-                          cursor: !liveClickable || !canWrite || writeBusy ? "default" : "pointer",
+                          cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : !canWrite || writeBusy ? "default" : "pointer",
                           opacity: !canWrite || writeBusy ? 0.7 : 1
                         },
                         children: writeBusy ? "..." : "Write"
@@ -16155,17 +16349,23 @@ var MesoraDrawingToolBundle = (() => {
         const canWrite = Boolean(tagPath);
         const writeBusy = (widgetWriteBusyByOverlay == null ? void 0 : widgetWriteBusyByOverlay[overlayId]) === true;
         const writeError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
+        const pressValue = Object.prototype.hasOwnProperty.call(cfg || {}, "writeValue") ? cfg.writeValue : 1;
+        const releaseValue = Object.prototype.hasOwnProperty.call(cfg || {}, "releaseValue") ? cfg.releaseValue : 0;
         const pressed = toBooleanLike(rawVal);
         const localPressed = (widgetPressByOverlay == null ? void 0 : widgetPressByOverlay[overlayId]) === true;
         const visualPressed = localPressed || pressed;
-        const titleText = cardTitle;
-        const titleFont = scaledFont(dense ? 11 : 13, 10, 22);
+        const titleText = cardTitle || "Push Button";
+        const titleFont = resolveWidgetTitleFontSize(
+          scaledFont(dense ? 11 : 13, 9, 20),
+          9,
+          40
+        );
         const contentPadX = Math.max(6, Math.min(14, Math.round(w * 0.06)));
         const topInset = Math.max(4, Math.round(h * 0.06));
         const bottomInset = Math.max(4, Math.round(h * 0.08));
-        const showTitle = h >= 50 && Boolean(titleText);
+        const showTitle = Boolean(titleText);
         const titleY = y + topInset + titleFont;
-        const contentTop = showTitle ? titleY + Math.max(2, Math.round(h * 0.03)) : y + topInset;
+        const contentTop = showTitle ? titleY + Math.max(8, Math.round(h * 0.08)) : y + topInset;
         const buttonW = Math.max(40, Math.round(w - contentPadX * 2));
         const buttonH = Math.max(18, Math.round(y + h - bottomInset - contentTop));
         const buttonX = x + contentPadX;
@@ -16176,7 +16376,7 @@ var MesoraDrawingToolBundle = (() => {
             {
               x: buttonX + buttonW / 2,
               y: titleY,
-              fill: subdued,
+              fill: "rgba(248, 250, 252, 0.96)",
               fontSize: titleFont,
               fontFamily: "system-ui",
               fontWeight: 800,
@@ -16196,88 +16396,93 @@ var MesoraDrawingToolBundle = (() => {
                 "div",
                 {
                   xmlns: "http://www.w3.org/1999/xhtml",
-                  style: { width: "100%", height: "100%", pointerEvents: "none" },
+                  onDoubleClickCapture: openWidgetProperties,
+                  style: { width: "100%", height: "100%", pointerEvents: "none", cursor: widgetSurfaceCursor },
                   children: /* @__PURE__ */ jsx(
                     "button",
                     {
-                      "data-widget-control": liveClickable ? "true" : void 0,
+                      "data-widget-control": widgetInteractionEnabled ? "true" : void 0,
                       onMouseDown: (e) => {
-                        if (!liveClickable) return;
+                        if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         setWidgetPressed(overlayId, true);
                         if (writeBusy) return;
                         if (!canWrite) {
                           setWidgetWriteErrorByOverlay((prev) => ({
                             ...prev,
-                            [overlayId]: "Bind OPC tag to enable write."
+                            [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
                           }));
                           return;
                         }
-                        submitWidgetWrite(overlay, 1);
+                        submitWidgetWrite(overlay, pressValue);
                       },
                       onMouseUp: (e) => {
-                        if (!liveClickable) return;
+                        if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         setWidgetPressed(overlayId, false);
                         if (writeBusy || !canWrite) return;
-                        submitWidgetWrite(overlay, 0);
+                        submitWidgetWrite(overlay, releaseValue);
                       },
                       onMouseLeave: () => {
-                        if (!liveClickable) return;
+                        if (!widgetInteractionEnabled) return;
                         setWidgetPressed(overlayId, false);
                         if (writeBusy || !canWrite) return;
-                        submitWidgetWrite(overlay, 0);
+                        submitWidgetWrite(overlay, releaseValue);
                       },
                       onTouchStart: (e) => {
-                        if (!liveClickable) return;
+                        if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         setWidgetPressed(overlayId, true);
                         if (writeBusy) return;
                         if (!canWrite) {
                           setWidgetWriteErrorByOverlay((prev) => ({
                             ...prev,
-                            [overlayId]: "Bind OPC tag to enable write."
+                            [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
                           }));
                           return;
                         }
-                        submitWidgetWrite(overlay, 1);
+                        submitWidgetWrite(overlay, pressValue);
                       },
                       onTouchEnd: () => {
-                        if (!liveClickable) return;
+                        if (!widgetInteractionEnabled) return;
                         setWidgetPressed(overlayId, false);
                         if (writeBusy || !canWrite) return;
-                        submitWidgetWrite(overlay, 0);
+                        submitWidgetWrite(overlay, releaseValue);
                       },
-                      disabled: !liveClickable || writeBusy,
+                      disabled: !widgetInteractionEnabled || writeBusy,
                       style: {
                         width: "100%",
                         height: "100%",
-                        border: "1px solid var(--border)",
+                        border: "none",
                         borderRadius: Math.max(8, Math.round(buttonH * 0.22)),
                         background: visualPressed ? "linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%)" : "linear-gradient(180deg, #4f8dff 0%, #2b6cff 100%)",
                         color: "white",
                         fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                         fontWeight: 800,
-                        cursor: !liveClickable || writeBusy ? "default" : "pointer",
+                        cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : writeBusy ? "default" : "pointer",
                         opacity: !canWrite ? 0.65 : 1,
-                        boxShadow: visualPressed ? "inset 0 4px 10px rgba(2,6,23,0.38), inset 0 -1px 2px rgba(255,255,255,0.12)" : "inset 0 1px 0 rgba(255,255,255,0.35), 0 8px 16px rgba(43,108,255,0.26)",
+                        boxShadow: visualPressed ? "inset 0 4px 10px rgba(2,6,23,0.38), inset 0 -1px 2px rgba(255,255,255,0.12)" : "inset 0 1px 0 rgba(255,255,255,0.35), 0 6px 12px rgba(43,108,255,0.2)",
                         transform: visualPressed ? "translateY(1px) scale(0.99)" : "translateY(0) scale(1)",
                         transition: "transform 80ms ease, box-shadow 120ms ease, filter 120ms ease",
-                        pointerEvents: "none"
+                        pointerEvents: "none",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: Math.max(8, Math.round(buttonH * 0.16)),
+                        padding: `0 ${Math.max(10, Math.round(buttonW * 0.08))}px`
                       },
                       children: /* @__PURE__ */ jsx(
                         "span",
                         {
-                          "aria-hidden": "true",
                           style: {
-                            display: "inline-block",
-                            width: Math.max(10, Math.round(buttonH * 0.28)),
-                            height: Math.max(10, Math.round(buttonH * 0.28)),
-                            borderRadius: "999px",
-                            border: "1px solid rgba(255,255,255,0.72)",
-                            background: writeBusy ? "rgba(255,255,255,0.45)" : visualPressed ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.22)",
-                            boxShadow: visualPressed ? "inset 0 1px 2px rgba(2,6,23,0.35)" : "0 0 0 2px rgba(255,255,255,0.08)"
-                          }
+                            fontSize: Math.max(9, Math.min(18, Math.round(buttonH * 0.34))),
+                            fontWeight: 900,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "rgba(255,255,255,0.98)",
+                            whiteSpace: "nowrap"
+                          },
+                          children: writeBusy ? "Writing..." : visualPressed ? "Pressed" : "Press"
                         }
                       )
                     }
@@ -16286,7 +16491,7 @@ var MesoraDrawingToolBundle = (() => {
               )
             }
           ),
-          liveClickable ? /* @__PURE__ */ jsx(
+          widgetInteractionEnabled ? /* @__PURE__ */ jsx(
             "rect",
             {
               x: buttonX,
@@ -16297,6 +16502,7 @@ var MesoraDrawingToolBundle = (() => {
               fill: "transparent",
               pointerEvents: "all",
               style: { cursor: writeBusy ? "default" : "pointer" },
+              onDoubleClick: openWidgetProperties,
               onMouseDown: (e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, true);
@@ -16304,22 +16510,22 @@ var MesoraDrawingToolBundle = (() => {
                 if (!canWrite) {
                   setWidgetWriteErrorByOverlay((prev) => ({
                     ...prev,
-                    [overlayId]: "Bind OPC tag to enable write."
+                    [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
                   }));
                   return;
                 }
-                submitWidgetWrite(overlay, 1);
+                submitWidgetWrite(overlay, pressValue);
               },
               onMouseUp: (e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, false);
                 if (writeBusy || !canWrite) return;
-                submitWidgetWrite(overlay, 0);
+                submitWidgetWrite(overlay, releaseValue);
               },
               onMouseLeave: () => {
                 setWidgetPressed(overlayId, false);
                 if (writeBusy || !canWrite) return;
-                submitWidgetWrite(overlay, 0);
+                submitWidgetWrite(overlay, releaseValue);
               }
             }
           ) : null,
@@ -16333,13 +16539,36 @@ var MesoraDrawingToolBundle = (() => {
         const writeError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
         const isOn = toBooleanLike(rawVal);
         const localPressed = (widgetPressByOverlay == null ? void 0 : widgetPressByOverlay[overlayId]) === true;
-        const buttonW = Math.max(54, Math.round(w - pad * 2));
-        const buttonH = Math.max(26, Math.round(Math.min(52, h - headH - 16)));
-        const buttonX = x + pad;
-        const buttonY = Math.max(y + headH + 8, y + h - buttonH - 8);
+        const titleText = cardTitle || "On / Off";
+        const titleFont = resolveWidgetTitleFontSize(
+          scaledFont(dense ? 11 : 13, 9, 20),
+          9,
+          40
+        );
+        const contentPadX = Math.max(6, Math.min(14, Math.round(w * 0.06)));
+        const topInset = Math.max(4, Math.round(h * 0.06));
+        const bottomInset = Math.max(4, Math.round(h * 0.08));
+        const showTitle = Boolean(titleText);
+        const titleY = y + topInset + titleFont;
+        const contentTop = showTitle ? titleY + Math.max(8, Math.round(h * 0.08)) : y + topInset;
+        const buttonW = Math.max(54, Math.round(w - contentPadX * 2));
+        const buttonH = Math.max(28, Math.round(y + h - bottomInset - contentTop));
+        const buttonX = x + contentPadX;
+        const buttonY = contentTop;
         return /* @__PURE__ */ jsxs("g", { children: [
-          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: "var(--bg-elev)" }),
-          /* @__PURE__ */ jsx("text", { x: x + pad, y: y + headH - 7, fill: subdued, fontSize: titleSize, fontFamily: "system-ui", fontWeight: 700, children: cardTitle }),
+          showTitle ? /* @__PURE__ */ jsx(
+            "text",
+            {
+              x: buttonX + buttonW / 2,
+              y: titleY,
+              fill: "rgba(248, 250, 252, 0.96)",
+              fontSize: titleFont,
+              fontFamily: "system-ui",
+              fontWeight: 800,
+              textAnchor: "middle",
+              children: titleText
+            }
+          ) : null,
           /* @__PURE__ */ jsx(
             "foreignObject",
             {
@@ -16352,96 +16581,105 @@ var MesoraDrawingToolBundle = (() => {
                 "div",
                 {
                   xmlns: "http://www.w3.org/1999/xhtml",
-                  style: { width: "100%", height: "100%", pointerEvents: "none" },
-                  children: /* @__PURE__ */ jsx(
+                  onDoubleClickCapture: openWidgetProperties,
+                  style: { width: "100%", height: "100%", pointerEvents: "none", cursor: widgetSurfaceCursor },
+                  children: /* @__PURE__ */ jsxs(
                     "button",
                     {
-                      "data-widget-control": liveClickable ? "true" : void 0,
+                      "data-widget-control": widgetInteractionEnabled ? "true" : void 0,
                       onMouseDown: (e) => {
-                        if (!liveClickable) return;
+                        if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         setWidgetPressed(overlayId, true);
                       },
                       onMouseUp: () => setWidgetPressed(overlayId, false),
                       onMouseLeave: () => setWidgetPressed(overlayId, false),
                       onClick: (e) => {
-                        if (!liveClickable) return;
+                        if (!widgetInteractionEnabled) return;
                         e.stopPropagation();
                         pulseWidgetPress(overlayId, 180);
                         if (writeBusy) return;
                         if (!canWrite) {
                           setWidgetWriteErrorByOverlay((prev) => ({
                             ...prev,
-                            [overlayId]: "Bind OPC tag to enable write."
+                            [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
                           }));
                           return;
                         }
                         submitWidgetWrite(overlay, isOn ? 0 : 1);
                       },
-                      disabled: !liveClickable || writeBusy,
+                      disabled: !widgetInteractionEnabled || writeBusy,
                       style: {
                         width: "100%",
                         height: "100%",
-                        border: "1px solid var(--border)",
-                        borderRadius: Math.max(8, Math.round(buttonH * 0.22)),
-                        background: isOn ? "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)" : "linear-gradient(180deg, #64748b 0%, #334155 100%)",
+                        border: "none",
+                        borderRadius: 0,
+                        background: "transparent",
                         color: "white",
                         fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                         fontWeight: 800,
-                        cursor: !liveClickable || writeBusy ? "default" : "pointer",
+                        cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : writeBusy ? "default" : "pointer",
                         opacity: !canWrite ? 0.65 : 1,
-                        boxShadow: isOn ? "inset 0 1px 0 rgba(255,255,255,0.32), 0 8px 16px rgba(22,163,74,0.26)" : "inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 16px rgba(51,65,85,0.24)",
+                        boxShadow: "none",
                         transform: localPressed ? "translateY(1px) scale(0.99)" : "translateY(0) scale(1)",
                         transition: "transform 80ms ease, box-shadow 120ms ease, filter 120ms ease",
-                        pointerEvents: "none"
+                        pointerEvents: "none",
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: Math.max(6, Math.round(buttonW * 0.025)),
+                        padding: 0
                       },
-                      children: /* @__PURE__ */ jsxs(
-                        "span",
-                        {
-                          "aria-hidden": "true",
-                          style: {
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            gap: Math.max(6, Math.round(buttonH * 0.14))
-                          },
-                          children: [
-                            /* @__PURE__ */ jsx(
-                              "span",
-                              {
-                                style: {
-                                  display: "inline-block",
-                                  width: Math.max(10, Math.round(buttonH * 0.28)),
-                                  height: Math.max(10, Math.round(buttonH * 0.28)),
-                                  borderRadius: "999px",
-                                  border: "1px solid rgba(255,255,255,0.72)",
-                                  background: writeBusy ? "rgba(255,255,255,0.45)" : isOn ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.18)",
-                                  boxShadow: isOn ? "0 0 0 2px rgba(255,255,255,0.12), 0 0 12px rgba(255,255,255,0.25)" : "0 0 0 2px rgba(255,255,255,0.08)"
-                                }
-                              }
-                            ),
-                            /* @__PURE__ */ jsx(
-                              "span",
-                              {
-                                style: {
-                                  fontSize: Math.max(8, Math.min(14, Math.round(buttonH * 0.3))),
-                                  fontWeight: 800,
-                                  letterSpacing: "0.02em",
-                                  color: "rgba(255,255,255,0.96)"
-                                },
-                                children: writeBusy ? "..." : isOn ? "ON" : "OFF"
-                              }
-                            )
-                          ]
-                        }
-                      )
+                      children: [
+                        /* @__PURE__ */ jsx(
+                          "span",
+                          {
+                            style: {
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              borderRadius: Math.max(8, Math.round(buttonH * 0.18)),
+                              background: isOn ? "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)" : "linear-gradient(180deg, rgba(51, 65, 85, 0.92) 0%, rgba(30, 41, 59, 0.94) 100%)",
+                              border: isOn ? "1px solid rgba(187, 247, 208, 0.65)" : "1px solid rgba(100, 116, 139, 0.6)",
+                              boxShadow: isOn ? "inset 0 1px 0 rgba(255,255,255,0.28), 0 6px 14px rgba(22,163,74,0.22)" : "inset 0 1px 0 rgba(255,255,255,0.08)",
+                              color: "rgba(255,255,255,0.98)",
+                              fontSize: Math.max(9, Math.min(16, Math.round(buttonH * 0.28))),
+                              fontWeight: 900,
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                              minHeight: "100%"
+                            },
+                            children: "ON"
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          "span",
+                          {
+                            style: {
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              borderRadius: Math.max(8, Math.round(buttonH * 0.18)),
+                              background: !isOn ? "linear-gradient(180deg, #64748b 0%, #334155 100%)" : "linear-gradient(180deg, rgba(51, 65, 85, 0.92) 0%, rgba(30, 41, 59, 0.94) 100%)",
+                              border: !isOn ? "1px solid rgba(203, 213, 225, 0.55)" : "1px solid rgba(100, 116, 139, 0.6)",
+                              boxShadow: !isOn ? "inset 0 1px 0 rgba(255,255,255,0.18), 0 6px 14px rgba(51,65,85,0.22)" : "inset 0 1px 0 rgba(255,255,255,0.08)",
+                              color: "rgba(255,255,255,0.98)",
+                              fontSize: Math.max(9, Math.min(16, Math.round(buttonH * 0.28))),
+                              fontWeight: 900,
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                              minHeight: "100%"
+                            },
+                            children: "OFF"
+                          }
+                        )
+                      ]
                     }
                   )
                 }
               )
             }
           ),
-          liveClickable ? /* @__PURE__ */ jsx(
+          widgetInteractionEnabled ? /* @__PURE__ */ jsx(
             "rect",
             {
               x: buttonX,
@@ -16452,6 +16690,7 @@ var MesoraDrawingToolBundle = (() => {
               fill: "transparent",
               pointerEvents: "all",
               style: { cursor: writeBusy ? "default" : "pointer" },
+              onDoubleClick: openWidgetProperties,
               onMouseDown: (e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, true);
@@ -16465,7 +16704,7 @@ var MesoraDrawingToolBundle = (() => {
                 if (!canWrite) {
                   setWidgetWriteErrorByOverlay((prev) => ({
                     ...prev,
-                    [overlayId]: "Bind OPC tag to enable write."
+                    [overlayId]: getMissingWidgetWriteTargetMessage(overlay)
                   }));
                   return;
                 }
@@ -16692,7 +16931,7 @@ var MesoraDrawingToolBundle = (() => {
       const chartKey = `c-${overlay.id}-${kind}-${chartW}x${chartH}-z${viewScale.toFixed(3)}-s${overlayScale2.toFixed(3)}-vp${viewportDprBoost.toFixed(3)}`;
       const rootStyle = typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
       const isDark = String(theme || "").toLowerCase() === "dark";
-      const textColor = ((_e = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text-muted")) == null ? void 0 : _e.trim()) || (isDark ? "#b7c4d8" : "#5d6b82");
+      const textColor = ((_f = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text-muted")) == null ? void 0 : _f.trim()) || (isDark ? "#b7c4d8" : "#5d6b82");
       const chartPanelFill = isDark ? "#0b1220" : "#ffffff";
       const gridColor = isDark ? "rgba(148,163,184,0.24)" : "rgba(100,116,139,0.22)";
       const axisColor = isDark ? "#d4deee" : "#334155";
@@ -19430,8 +19669,9 @@ var MesoraDrawingToolBundle = (() => {
         if (overlay == null ? void 0 : overlay.widget) {
           const bb = (overlay == null ? void 0 : overlay.bbox) || { x: 0, y: 0, width: 320, height: 180 };
           const widgetKind = String(((_a = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a.kind) || "").trim();
+          const suppressFrame = widgetKind === "pushButton" || widgetKind === "onOffButton";
           out.set(id, {
-            widgetFrame: {
+            widgetFrame: suppressFrame ? null : {
               x: Number(bb.x) || 0,
               y: Number(bb.y) || 0,
               w: Math.max(80, Number(bb.width) || 320),
@@ -19607,7 +19847,7 @@ var MesoraDrawingToolBundle = (() => {
       () => staticOverlayRenderOverlays.map((o) => {
         var _a;
         const overlayVisual = overlayVisualById.get(String((o == null ? void 0 : o.id) || "").trim());
-        const overlayCursor = isLiveMode ? liveClickable ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
+        const overlayCursor = isLiveMode ? "pointer" : tool === "select" ? "move" : "crosshair";
         return /* @__PURE__ */ jsxs(
           "g",
           {
@@ -19688,11 +19928,14 @@ var MesoraDrawingToolBundle = (() => {
       const renderWidget = renderWidgetOverlayRef.current;
       return widgetOverlayRenderOverlays.map((o) => {
         const overlayVisual = overlayVisualById.get(String((o == null ? void 0 : o.id) || "").trim());
-        const overlayCursor = isLiveMode ? liveClickable ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
+        const overlayCursor = isLiveMode ? widgetInteractionEnabled ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
+        const widgetBounds = (o == null ? void 0 : o.bbox) || { x: 0, y: 0, width: 320, height: 180 };
+        const showDesignWidgetHitbox = !isLiveMode;
         return /* @__PURE__ */ jsx(
           "g",
           {
             "data-overlay-id": o.id,
+            onDoubleClickCapture: (e) => handleOverlayDoubleClick(e, o, { force: true }),
             onDoubleClick: (e) => handleOverlayDoubleClick(e, o, { force: true }),
             children: /* @__PURE__ */ jsxs(
               "g",
@@ -19721,7 +19964,23 @@ var MesoraDrawingToolBundle = (() => {
                       strokeWidth: 2
                     }
                   ) }) : null,
-                  o.widget && renderWidget ? renderWidget(o) : null
+                  o.widget && renderWidget ? renderWidget(o) : null,
+                  showDesignWidgetHitbox ? /* @__PURE__ */ jsx(
+                    "rect",
+                    {
+                      x: Number(widgetBounds.x) || 0,
+                      y: Number(widgetBounds.y) || 0,
+                      width: Math.max(1, Number(widgetBounds.width) || 320),
+                      height: Math.max(1, Number(widgetBounds.height) || 180),
+                      fill: "transparent",
+                      pointerEvents: "all",
+                      style: { cursor: overlayCursor },
+                      onMouseDown: (e) => handleOverlayMouseDown(e, o),
+                      onDoubleClick: (e) => handleOverlayDoubleClick(e, o, { force: true }),
+                      onMouseEnter: isLineMode ? () => setHoverOverlayId(o.id) : void 0,
+                      onMouseLeave: isLineMode ? () => setHoverOverlayId((prev) => prev === o.id ? null : prev) : void 0
+                    }
+                  ) : null
                 ]
               }
             )
@@ -19733,7 +19992,7 @@ var MesoraDrawingToolBundle = (() => {
       widgetOverlayRenderOverlays,
       overlayVisualById,
       isLiveMode,
-      liveClickable,
+      widgetInteractionEnabled,
       tool,
       isLineMode,
       handleOverlayDoubleClick,
@@ -20048,6 +20307,7 @@ var MesoraDrawingToolBundle = (() => {
         const dynamicColor = getTagColor(s.tagPath);
         if (s.type === "text") {
           const isInline = inlineEditId === s.id;
+          const displayText = getTextShapeValueForShape(s);
           return /* @__PURE__ */ jsxs("g", { "data-shape-id": s.id, children: [
             (() => {
               const tb = getTextBounds(s);
@@ -20076,7 +20336,7 @@ var MesoraDrawingToolBundle = (() => {
                 textAnchor: s.anchor || "start",
                 dominantBaseline: "text-before-edge",
                 style: { userSelect: "none", visibility: isInline ? "hidden" : "visible" },
-                children: s.text || ""
+                children: displayText
               }
             )
           ] }, s.id);
@@ -21653,6 +21913,181 @@ var MesoraDrawingToolBundle = (() => {
     );
   }
 
+  // ../../app/src/components/WidgetSelectorModal.jsx
+  var WIDGETS = [
+    { key: "lineChart", name: "Line Chart", group: "Graphs", desc: "Trend lines over time." },
+    { key: "barChart", name: "Bar Chart", group: "Graphs", desc: "Category comparison bars." },
+    { key: "areaChart", name: "Area Chart", group: "Graphs", desc: "Filled trend graph." },
+    { key: "gauge", name: "Gauge", group: "Indicators", desc: "Dial style value." },
+    { key: "weather", name: "Weather", group: "Indicators", desc: "Current weather card." },
+    { key: "kpi", name: "KPI Card", group: "Indicators", desc: "Large single metric." },
+    { key: "displayBox", name: "Display Box", group: "Indicators", desc: "Live tag read/write with units." },
+    { key: "countdownBar", name: "Countdown Bar", group: "Indicators", desc: "PLC timer PRE/ACC countdown progress." },
+    { key: "pushButton", name: "Push Button", group: "Controls", desc: "Momentary PLC write while pressed." },
+    { key: "onOffButton", name: "On/Off Button", group: "Controls", desc: "Toggle PLC write 1/0 from tag state." },
+    { key: "statusTable", name: "Status Table", group: "Tables", desc: "Compact status rows." }
+  ];
+  function WidgetSelectorModal({
+    open,
+    onClose,
+    onPickWidget,
+    docked = false,
+    absoluteDocked = false,
+    appearance = "default",
+    attached = false,
+    dockLeft = 0,
+    dockTop = 0,
+    dockBottom = 0,
+    dockWidth = 320
+  }) {
+    const [query, setQuery] = useState("");
+    const darkDrawer = appearance === "ignition-drawer";
+    const panelBg = darkDrawer ? "linear-gradient(180deg, rgba(6, 12, 28, 0.99) 0%, rgba(10, 18, 36, 0.98) 100%)" : "var(--bg-elev, rgba(15, 23, 42, 0.98))";
+    const softBg = darkDrawer ? "rgba(11, 18, 34, 0.96)" : "var(--bg-soft, rgba(15, 23, 42, 0.92))";
+    const borderColor = darkDrawer ? "rgba(87, 104, 143, 0.78)" : "var(--border, rgba(71, 85, 105, 0.9))";
+    const textColor = darkDrawer ? "#eef4ff" : "var(--text, #f8fafc)";
+    const mutedColor = darkDrawer ? "rgba(200, 214, 236, 0.74)" : "var(--text-muted, rgba(226, 232, 240, 0.72))";
+    const grouped = useMemo(() => {
+      const q = String(query || "").trim().toLowerCase();
+      const filtered = WIDGETS.filter((w) => {
+        if (!q) return true;
+        return w.name.toLowerCase().includes(q) || w.group.toLowerCase().includes(q) || w.key.toLowerCase().includes(q);
+      });
+      const map2 = /* @__PURE__ */ new Map();
+      filtered.forEach((w) => {
+        if (!map2.has(w.group)) map2.set(w.group, []);
+        map2.get(w.group).push(w);
+      });
+      return Array.from(map2.entries()).map(([group, items]) => ({ group, items }));
+    }, [query]);
+    if (!open) return null;
+    return /* @__PURE__ */ jsx(
+      "div",
+      {
+        "data-vizi-widget-drawer": docked ? "1" : void 0,
+        style: {
+          position: docked && absoluteDocked ? "absolute" : "fixed",
+          ...docked ? {
+            left: Math.max(0, Number(dockLeft) || 0),
+            top: Math.max(0, Number(dockTop) || 0),
+            bottom: Math.max(0, Number(dockBottom) || 0),
+            width: Math.max(240, Number(dockWidth) || 320),
+            zIndex: 118,
+            padding: 0,
+            pointerEvents: "auto"
+          } : {
+            inset: 0,
+            background: "rgba(0,0,0,0.25)",
+            zIndex: 45,
+            display: "grid",
+            placeItems: "center",
+            padding: 16
+          }
+        },
+        onMouseDown: docked ? void 0 : onClose,
+        children: /* @__PURE__ */ jsxs(
+          "div",
+          {
+            style: {
+              width: docked ? "100%" : "min(680px, 94vw)",
+              height: docked ? "100%" : void 0,
+              maxHeight: docked ? "100%" : "min(620px, 86vh)",
+              overflow: "auto",
+              background: panelBg,
+              border: `1px solid ${borderColor}`,
+              borderRadius: docked ? attached ? "0 18px 18px 0" : 18 : 16,
+              boxShadow: docked ? attached ? "18px 14px 36px rgba(2, 6, 23, 0.28)" : "24px 0 40px rgba(0,0,0,0.28)" : "0 14px 50px rgba(0,0,0,0.22)",
+              overscrollBehavior: "contain"
+            },
+            onMouseDown: (e) => e.stopPropagation(),
+            onWheel: (e) => e.stopPropagation(),
+            children: [
+              /* @__PURE__ */ jsxs(
+                "div",
+                {
+                  style: {
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 2,
+                    padding: 16,
+                    background: panelBg,
+                    borderBottom: `1px solid ${borderColor}`
+                  },
+                  children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }, children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontWeight: 800, fontSize: 16, color: textColor, letterSpacing: "0.01em" }, children: "Widgets" }),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          onClick: onClose,
+                          style: {
+                            border: `1px solid ${borderColor}`,
+                            background: softBg,
+                            color: textColor,
+                            borderRadius: 10,
+                            padding: "4px 8px",
+                            fontSize: 11,
+                            cursor: "pointer"
+                          },
+                          children: "X"
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsx(
+                      "input",
+                      {
+                        value: query,
+                        onChange: (e) => setQuery(e.target.value),
+                        placeholder: "Search widgets...",
+                        style: {
+                          marginTop: 10,
+                          width: "100%",
+                          border: `1px solid ${borderColor}`,
+                          background: softBg,
+                          color: textColor,
+                          borderRadius: 12,
+                          padding: "8px 10px",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          boxSizing: "border-box"
+                        }
+                      }
+                    )
+                  ]
+                }
+              ),
+              /* @__PURE__ */ jsx("div", { style: { padding: 16, display: "grid", gap: 12 }, children: grouped.length === 0 ? /* @__PURE__ */ jsx("div", { style: { color: mutedColor, fontSize: 12 }, children: "No matching widgets." }) : grouped.map((g) => /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 8 }, children: [
+                /* @__PURE__ */ jsx("div", { style: { fontSize: 11, fontWeight: 800, color: mutedColor, textTransform: "uppercase", letterSpacing: "0.08em" }, children: g.group }),
+                /* @__PURE__ */ jsx("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 8 }, children: g.items.map((w) => /* @__PURE__ */ jsxs(
+                  "button",
+                  {
+                    onClick: () => onPickWidget == null ? void 0 : onPickWidget(w.key),
+                    style: {
+                      textAlign: "left",
+                      border: `1px solid ${borderColor}`,
+                      background: softBg,
+                      color: textColor,
+                      borderRadius: 12,
+                      padding: "10px 12px",
+                      cursor: "pointer",
+                      display: "grid",
+                      gap: 5
+                    },
+                    children: [
+                      /* @__PURE__ */ jsx("div", { style: { fontWeight: 700, fontSize: 12 }, children: w.name }),
+                      /* @__PURE__ */ jsx("div", { style: { fontSize: 11, color: mutedColor, lineHeight: 1.45 }, children: w.desc })
+                    ]
+                  },
+                  w.key
+                )) })
+              ] }, g.group)) })
+            ]
+          }
+        )
+      }
+    );
+  }
+
   // web/src/PerspectiveViziCanvasBridge.jsx
   var MODULE_ID = "com.mesora.perspective.drawing";
   var MODULE_URL_ALIAS = "mesora-drawing";
@@ -21668,6 +22103,18 @@ var MesoraDrawingToolBundle = (() => {
     `/main/data/${MODULE_URL_ALIAS}/ignition-tag-values`,
     `/data/${MODULE_ID}/ignition-tag-values`,
     `/main/data/${MODULE_ID}/ignition-tag-values`
+  ];
+  var MODULE_TAG_WRITE_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/ignition-tag-write`,
+    `/main/data/${MODULE_URL_ALIAS}/ignition-tag-write`,
+    `/data/${MODULE_ID}/ignition-tag-write`,
+    `/main/data/${MODULE_ID}/ignition-tag-write`
+  ];
+  var MODULE_OPC_WRITE_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/opc-write`,
+    `/main/data/${MODULE_URL_ALIAS}/opc-write`,
+    `/data/${MODULE_ID}/opc-write`,
+    `/main/data/${MODULE_ID}/opc-write`
   ];
   var SVG_LIBRARY_MANIFEST_URL = `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`;
   var SVG_RAW_CACHE_MAX = 80;
@@ -21687,16 +22134,72 @@ var MesoraDrawingToolBundle = (() => {
   var DEFAULT_CANVAS_HEIGHT = 1401;
   var CANVAS_RULER_SIZE = 24;
   var PROPERTY_PANEL_WIDTH = 300;
+  var PROPERTY_PANEL_HEIGHT = 520;
+  var PROPERTY_PANEL_MIN_HEIGHT = 240;
   var TOOLBAR_WIDTH = 220;
   var COLLAPSED_TOOLBAR_WIDTH = 116;
   var TOOLBAR_INSET = 16;
   var TOOLBAR_DRAWER_GAP = -6;
   var SVG_DRAWER_MIN_WIDTH = 300;
   var SVG_DRAWER_PREFERRED_WIDTH = 348;
+  var HELP_DRAWER_MIN_WIDTH = 320;
+  var HELP_DRAWER_PREFERRED_WIDTH = 420;
   var EMPTY_MAP = Object.freeze({});
   var EMPTY_ARRAY = Object.freeze([]);
   var NOOP = () => {
   };
+  var IGNITION_TOOL_HELP_SECTIONS = Object.freeze([
+    Object.freeze({
+      title: "Getting Started",
+      items: Object.freeze([
+        "Use Move to select, drag, resize, and open properties for items on the canvas.",
+        "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click or Enter finishes the line.",
+        "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path."
+      ])
+    }),
+    Object.freeze({
+      title: "Selection And Editing",
+      items: Object.freeze([
+        "Single click selects one item. Shift plus click adds or removes items from the current selection.",
+        "Drag on empty space to marquee select multiple items.",
+        "Double click an SVG, widget, or text item to open its properties panel.",
+        "Shift plus Delete removes the current selection."
+      ])
+    }),
+    Object.freeze({
+      title: "SVGs And Lines",
+      items: Object.freeze([
+        "SVG Library opens the Mesora equipment drawer so you can place process equipment on the canvas.",
+        "Tag Path on an SVG binds the equipment to an Ignition tag. EType controls diverters and popup routing.",
+        "Polylines light from the SVG or line connected to their start point, just like the Mesora tool."
+      ])
+    }),
+    Object.freeze({
+      title: "Widgets",
+      items: Object.freeze([
+        "Widgets opens the Mesora widget drawer. Place a widget, then double click it to edit its properties.",
+        "Widgets can write to either Ignition tags or direct OPC, depending on the Write Target setting.",
+        "Push Button and On Off Button support titles, title font size, press value, and release value."
+      ])
+    }),
+    Object.freeze({
+      title: "Bindings",
+      items: Object.freeze([
+        "Use the Tag Path picker to browse and search Ignition tags without expanding a huge inline list.",
+        "Text items support Scale, Decimals, and Units so live values can be formatted on the canvas.",
+        "Diverters should use their state tag path so the active straight or divert path can render correctly."
+      ])
+    }),
+    Object.freeze({
+      title: "Shortcuts",
+      items: Object.freeze([
+        "Shift plus M switches to Move.",
+        "Shift plus P switches to Polyline.",
+        "Shift plus T switches to Text.",
+        "Shift plus C, V, D, Z, and Y map to copy, paste, duplicate, undo, and redo."
+      ])
+    })
+  ]);
   function isPlainObject(value) {
     return value != null && typeof value === "object" && !Array.isArray(value);
   }
@@ -21842,26 +22345,42 @@ var MesoraDrawingToolBundle = (() => {
       }
     };
   }
+  function withOverlayBindings(overlay, nextBindings) {
+    const baseOverlay = isPlainObject(overlay) ? { ...overlay } : {};
+    if (isPlainObject(nextBindings) && Object.keys(nextBindings).length > 0) {
+      return {
+        ...baseOverlay,
+        bindings: nextBindings
+      };
+    }
+    const { bindings: _ignoredBindings, ...overlayWithoutBindings } = baseOverlay;
+    return overlayWithoutBindings;
+  }
   function applyOverlayIgnitionFillBinding(overlay, rawTagPath) {
     var _a, _b, _c;
     const nextTagPath = String(rawTagPath != null ? rawTagPath : "").trim();
     const currentBindings = isPlainObject(overlay == null ? void 0 : overlay.bindings) ? overlay.bindings : {};
     const isDiverter = isDiverterOverlay(overlay);
+    const isWidget = Boolean(overlay == null ? void 0 : overlay.widget);
     if (!nextTagPath) {
       const { fill: _removedFillBinding, ...restBindings } = currentBindings;
-      return {
-        ...overlay,
-        tagPath: "",
-        bindings: Object.keys(restBindings).length ? restBindings : void 0
-      };
+      return withOverlayBindings(
+        {
+          ...overlay,
+          tagPath: ""
+        },
+        restBindings
+      );
     }
-    if (isDiverter) {
+    if (isDiverter || isWidget) {
       const { fill: _removedFillBinding, ...restBindings } = currentBindings;
-      return {
-        ...overlay,
-        tagPath: nextTagPath,
-        bindings: Object.keys(restBindings).length ? restBindings : void 0
-      };
+      return withOverlayBindings(
+        {
+          ...overlay,
+          tagPath: nextTagPath
+        },
+        restBindings
+      );
     }
     const existingBinding = getOverlayFillBinding(overlay);
     const fallbackColor = String(
@@ -22119,19 +22638,21 @@ var MesoraDrawingToolBundle = (() => {
   }
   function getPersistedArrayValue(props, key, fallback = EMPTY_ARRAY) {
     const source = getComponentPropSource(props);
-    const direct = source == null ? void 0 : source[key];
-    const modelValue = isPlainObject(source == null ? void 0 : source.model) ? source.model[key] : void 0;
-    if (Array.isArray(direct) && direct.length > 0) {
-      return direct;
-    }
-    if (Array.isArray(modelValue) && modelValue.length > 0) {
+    const hasDirectValue = Object.prototype.hasOwnProperty.call(source, key);
+    const hasModelValue = isPlainObject(source == null ? void 0 : source.model) && Object.prototype.hasOwnProperty.call(source.model, key);
+    const direct = hasDirectValue ? source[key] : void 0;
+    const modelValue = hasModelValue ? source.model[key] : void 0;
+    if (hasModelValue && Array.isArray(modelValue)) {
       return modelValue;
     }
-    if (Array.isArray(direct)) {
+    if (hasDirectValue && Array.isArray(direct)) {
       return direct;
     }
     if (Array.isArray(modelValue)) {
       return modelValue;
+    }
+    if (Array.isArray(direct)) {
+      return direct;
     }
     return fallback;
   }
@@ -22219,8 +22740,30 @@ var MesoraDrawingToolBundle = (() => {
   }
   function writeComponentProp(props, path, value) {
     var _a;
+    const sanitizePerspectiveValue = (nextValue) => {
+      if (nextValue === void 0 || nextValue === null) {
+        return void 0;
+      }
+      if (Array.isArray(nextValue)) {
+        return nextValue.map((item) => sanitizePerspectiveValue(item)).filter((item) => item !== void 0);
+      }
+      if (isPlainObject(nextValue)) {
+        return Object.entries(nextValue).reduce((acc, [key, entryValue]) => {
+          const sanitizedEntry = sanitizePerspectiveValue(entryValue);
+          if (sanitizedEntry !== void 0) {
+            acc[key] = sanitizedEntry;
+          }
+          return acc;
+        }, {});
+      }
+      return nextValue;
+    };
     const candidatePaths = path.startsWith("model.") ? [path] : [path, `model.${path}`];
     const writers = [];
+    const sanitizedValue = sanitizePerspectiveValue(value);
+    if (sanitizedValue === void 0) {
+      return false;
+    }
     if (((_a = props == null ? void 0 : props.store) == null ? void 0 : _a.props) && typeof props.store.props.write === "function") {
       writers.push(props.store.props.write.bind(props.store.props));
     }
@@ -22231,13 +22774,27 @@ var MesoraDrawingToolBundle = (() => {
     writers.forEach((writePath) => {
       candidatePaths.forEach((candidatePath) => {
         try {
-          writePath(candidatePath, value);
+          writePath(candidatePath, sanitizedValue);
           wrote = true;
         } catch (_error) {
         }
       });
     });
     return wrote;
+  }
+  function getPerspectiveClientStore(props) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
+    const nestedProps = getComponentPropSource(props);
+    return ((_c = (_b = (_a = props == null ? void 0 : props.store) == null ? void 0 : _a.view) == null ? void 0 : _b.page) == null ? void 0 : _c.parent) || ((_f = (_e = (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.view) == null ? void 0 : _e.page) == null ? void 0 : _f.parent) || ((_h = (_g = props == null ? void 0 : props.store) == null ? void 0 : _g.page) == null ? void 0 : _h.parent) || ((_j = (_i = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _i.page) == null ? void 0 : _j.parent) || (typeof window !== "undefined" ? window.__client : null) || (typeof window !== "undefined" ? (_m = (_l = (_k = window._perspective_designer) == null ? void 0 : _k.store) == null ? void 0 : _l.page) == null ? void 0 : _m.parent : null) || null;
+  }
+  function normalizeOverlayPopupViewName(value) {
+    return String(value || "").trim().replace(/\.svg$/i, "").replace(/^\/+|\/+$/g, "");
+  }
+  function resolveOverlayPopupViewPath(overlay) {
+    const popupViewName = normalizeOverlayPopupViewName(
+      (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
+    );
+    return popupViewName ? `Popups/${popupViewName}` : "";
   }
   function pointsEqual(left, right) {
     return Math.abs(Number((left == null ? void 0 : left.x) || 0) - Number((right == null ? void 0 : right.x) || 0)) < 1e-3 && Math.abs(Number((left == null ? void 0 : left.y) || 0) - Number((right == null ? void 0 : right.y) || 0)) < 1e-3;
@@ -22400,7 +22957,7 @@ var MesoraDrawingToolBundle = (() => {
   }
   function DockSection({ children, title }) {
     return /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 8 }, children: [
-      /* @__PURE__ */ jsx(
+      title ? /* @__PURE__ */ jsx(
         "div",
         {
           style: {
@@ -22412,7 +22969,7 @@ var MesoraDrawingToolBundle = (() => {
           },
           children: title
         }
-      ),
+      ) : null,
       /* @__PURE__ */ jsx("div", { style: { display: "grid", gap: 8 }, children })
     ] });
   }
@@ -22452,7 +23009,7 @@ var MesoraDrawingToolBundle = (() => {
     if (tag === "input" || tag === "textarea" || tag === "select" || tag === "button" || target.isContentEditable === true) {
       return true;
     }
-    return typeof target.closest === "function" && Boolean(target.closest("[data-vizi-properties-panel='1'], [data-vizi-import-drawer='1'], [data-vizi-dropdown='1'], [data-vizi-dropdown-menu='1']"));
+    return typeof target.closest === "function" && Boolean(target.closest("[data-vizi-properties-panel='1'], [data-vizi-import-drawer='1'], [data-vizi-widget-drawer='1'], [data-vizi-dropdown='1'], [data-vizi-dropdown-menu='1']"));
   }
   function stopInteractivePropagation(event) {
     var _a;
@@ -22747,47 +23304,494 @@ var MesoraDrawingToolBundle = (() => {
     options = EMPTY_ARRAY,
     value = ""
   }) {
+    const rootRef = useRef(null);
+    const triggerRef = useRef(null);
+    const menuRef = useRef(null);
+    const searchRef = useRef(null);
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
+    const [menuRect, setMenuRect] = useState(null);
     const currentValue = value == null ? "" : String(value);
-    const groupedOptions = coerceArray(options).reduce((acc, option) => {
-      const provider = String((option == null ? void 0 : option.provider) || "Tags").trim() || "Tags";
-      if (!acc[provider]) {
-        acc[provider] = [];
-      }
-      acc[provider].push(option);
-      return acc;
-    }, {});
-    const hasCurrentOption = coerceArray(options).some((option) => String((option == null ? void 0 : option.path) || "").trim() === currentValue);
-    const sections = [
-      {
-        items: [
-          { value: "", label: "No tag" },
-          ...!hasCurrentOption && currentValue ? [{ value: currentValue, label: `${currentValue} (current)` }] : []
-        ]
-      },
-      ...Object.keys(groupedOptions).map((provider) => ({
-        label: provider,
-        items: groupedOptions[provider].map((option) => ({
-          value: option.path,
-          label: option.path
-        }))
-      }))
-    ];
-    const helperText = error ? error : loading ? "Loading Ignition tags..." : `${coerceArray(options).length} Ignition tags available`;
-    return /* @__PURE__ */ jsx(
-      EditorDropdownField,
-      {
-        label,
-        value: currentValue,
-        disabled: disabled || loading && !options.length,
-        sections,
-        placeholder: "Select tag...",
-        helperText,
-        helperTone: error ? "error" : "muted",
-        onChange: (nextValue) => {
-          if (typeof onCommit === "function") {
-            onCommit(nextValue);
-          }
+    const normalizedOptions = useMemo(
+      () => coerceArray(options).map((option) => {
+        const path = String((option == null ? void 0 : option.path) || "").trim();
+        if (!path) {
+          return null;
         }
+        const provider = String((option == null ? void 0 : option.provider) || "Tags").trim() || "Tags";
+        const name = String((option == null ? void 0 : option.name) || "").trim() || path;
+        return {
+          value: path,
+          path,
+          provider,
+          name,
+          searchText: `${provider} ${name} ${path}`.toLowerCase()
+        };
+      }).filter(Boolean),
+      [options]
+    );
+    const groupedOptions = useMemo(
+      () => normalizedOptions.reduce((acc, option) => {
+        if (!acc[option.provider]) {
+          acc[option.provider] = [];
+        }
+        acc[option.provider].push(option);
+        return acc;
+      }, {}),
+      [normalizedOptions]
+    );
+    const hasCurrentOption = normalizedOptions.some((option) => option.path === currentValue);
+    const selectedOption = normalizedOptions.find((option) => option.path === currentValue) || null;
+    const queryText = String(query || "").trim().toLowerCase();
+    const filteredOptions = queryText ? normalizedOptions.filter((option) => option.searchText.includes(queryText)) : normalizedOptions;
+    const groupedFilteredSections = queryText ? [
+      {
+        label: filteredOptions.length ? "Results" : "",
+        items: filteredOptions
+      }
+    ] : Object.keys(groupedOptions).map((provider) => ({
+      label: provider,
+      items: groupedOptions[provider]
+    }));
+    const triggerLabel = (selectedOption == null ? void 0 : selectedOption.path) || (currentValue ? `${currentValue} (current)` : "Select tag...");
+    const resultSummary = queryText ? `${filteredOptions.length} match${filteredOptions.length === 1 ? "" : "es"}` : `${normalizedOptions.length} Ignition tags available`;
+    const helperText = error ? error : loading ? "Loading Ignition tags..." : resultSummary;
+    const closeMenu = useCallback(() => {
+      setOpen(false);
+      setQuery("");
+    }, []);
+    const updateMenuRect = useCallback(() => {
+      var _a, _b;
+      const trigger = triggerRef.current;
+      if (!trigger || typeof window === "undefined") {
+        return;
+      }
+      const rect = trigger.getBoundingClientRect();
+      const boundaryRect = ((_b = (_a = trigger.closest("[data-vizi-canvas-root='1']")) == null ? void 0 : _a.getBoundingClientRect) == null ? void 0 : _b.call(_a)) || {
+        left: 0,
+        top: 0,
+        right: window.innerWidth || 0,
+        bottom: window.innerHeight || 0,
+        width: window.innerWidth || 0,
+        height: window.innerHeight || 0
+      };
+      const boundaryLeft = Number(boundaryRect.left || 0);
+      const boundaryTop = Number(boundaryRect.top || 0);
+      const boundaryRight = Number(boundaryRect.right || (boundaryLeft || 0) + Number(boundaryRect.width || 0));
+      const boundaryBottom = Number(boundaryRect.bottom || (boundaryTop || 0) + Number(boundaryRect.height || 0));
+      const horizontalPadding = 12;
+      const verticalPadding = 12;
+      const menuGap = 6;
+      const desiredWidth = Math.max(rect.width, 360);
+      const maxWidth = Math.max(280, boundaryRight - boundaryLeft - horizontalPadding * 2);
+      const width = Math.min(desiredWidth, maxWidth);
+      const left = Math.min(
+        Math.max(boundaryLeft + horizontalPadding, rect.left),
+        Math.max(boundaryLeft + horizontalPadding, boundaryRight - width - horizontalPadding)
+      );
+      const availableBelow = Math.max(0, boundaryBottom - rect.bottom - verticalPadding - menuGap);
+      const availableAbove = Math.max(0, rect.top - boundaryTop - verticalPadding - menuGap);
+      const openAbove = availableBelow < 240 && availableAbove > availableBelow;
+      const maxHeight = Math.min(440, openAbove ? availableAbove : availableBelow);
+      const top = openAbove ? Math.max(boundaryTop + verticalPadding, rect.top - maxHeight - menuGap) : Math.min(
+        rect.bottom + menuGap,
+        Math.max(boundaryTop + verticalPadding, boundaryBottom - maxHeight - verticalPadding)
+      );
+      setMenuRect({
+        left,
+        top,
+        width,
+        maxHeight
+      });
+    }, []);
+    useEffect(() => {
+      if (!open) {
+        return void 0;
+      }
+      updateMenuRect();
+      const handleWindowPointerDown = (event) => {
+        const root = rootRef.current;
+        const menu = menuRef.current;
+        const target = event == null ? void 0 : event.target;
+        if (root && root.contains(target) || menu && menu.contains(target)) {
+          return;
+        }
+        closeMenu();
+      };
+      const handleEscape = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeMenu();
+        }
+      };
+      const handleLayout = () => {
+        updateMenuRect();
+      };
+      window.addEventListener("pointerdown", handleWindowPointerDown, true);
+      window.addEventListener("resize", handleLayout, true);
+      document.addEventListener("scroll", handleLayout, true);
+      window.addEventListener("keydown", handleEscape, true);
+      return () => {
+        window.removeEventListener("pointerdown", handleWindowPointerDown, true);
+        window.removeEventListener("resize", handleLayout, true);
+        document.removeEventListener("scroll", handleLayout, true);
+        window.removeEventListener("keydown", handleEscape, true);
+      };
+    }, [closeMenu, open, updateMenuRect]);
+    useEffect(() => {
+      if (!open) {
+        return void 0;
+      }
+      const timer = window.setTimeout(() => {
+        var _a, _b, _c, _d;
+        (_b = (_a = searchRef.current) == null ? void 0 : _a.focus) == null ? void 0 : _b.call(_a);
+        (_d = (_c = searchRef.current) == null ? void 0 : _c.select) == null ? void 0 : _d.call(_c);
+      }, 0);
+      return () => {
+        window.clearTimeout(timer);
+      };
+    }, [open]);
+    return /* @__PURE__ */ jsxs(
+      "div",
+      {
+        ref: rootRef,
+        "data-vizi-dropdown": "1",
+        style: { display: "grid", gap: 5 },
+        onMouseDown: stopInteractivePropagation,
+        onClick: stopInteractivePropagation,
+        onDoubleClick: stopInteractivePropagation,
+        children: [
+          /* @__PURE__ */ jsx("span", { style: { fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }, children: label }),
+          /* @__PURE__ */ jsxs(
+            "button",
+            {
+              ref: triggerRef,
+              type: "button",
+              disabled: disabled || loading && !normalizedOptions.length,
+              onClick: (event) => {
+                stopInteractivePropagation(event);
+                if (disabled || loading && !normalizedOptions.length) {
+                  return;
+                }
+                setOpen((current) => {
+                  const next = !current;
+                  if (!next) {
+                    setQuery("");
+                  }
+                  return next;
+                });
+              },
+              onPointerDown: stopInteractivePropagation,
+              onMouseDown: stopInteractivePropagation,
+              onMouseUp: stopInteractivePropagation,
+              onDoubleClick: stopInteractivePropagation,
+              style: {
+                width: "100%",
+                minHeight: 36,
+                boxSizing: "border-box",
+                borderRadius: 10,
+                border: "1px solid rgba(71, 85, 105, 0.9)",
+                background: disabled ? "rgba(15, 23, 42, 0.55)" : "rgba(15, 23, 42, 0.92)",
+                color: "#f8fafc",
+                padding: "8px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                cursor: disabled ? "default" : "pointer",
+                opacity: disabled ? 0.78 : 1,
+                textAlign: "left"
+              },
+              children: [
+                /* @__PURE__ */ jsx(
+                  "span",
+                  {
+                    style: {
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap"
+                    },
+                    children: triggerLabel
+                  }
+                ),
+                /* @__PURE__ */ jsx("span", { style: { color: "rgba(226, 232, 240, 0.72)", fontSize: 11 }, children: open ? "^" : "v" })
+              ]
+            }
+          ),
+          helperText ? /* @__PURE__ */ jsx(
+            "div",
+            {
+              style: {
+                fontSize: 10,
+                lineHeight: 1.4,
+                color: error ? "#fecaca" : "rgba(226, 232, 240, 0.68)"
+              },
+              children: helperText
+            }
+          ) : null,
+          open && menuRect && typeof document !== "undefined" && document.body ? createPortal(
+            /* @__PURE__ */ jsxs(
+              "div",
+              {
+                ref: menuRef,
+                "data-vizi-dropdown-menu": "1",
+                style: {
+                  position: "fixed",
+                  left: menuRect.left,
+                  top: menuRect.top,
+                  width: menuRect.width,
+                  maxHeight: menuRect.maxHeight,
+                  zIndex: 2147483200,
+                  borderRadius: 14,
+                  border: "1px solid rgba(71, 85, 105, 0.96)",
+                  background: "rgba(2, 6, 23, 0.985)",
+                  boxShadow: "0 24px 48px rgba(2, 6, 23, 0.44)",
+                  display: "grid",
+                  gap: 8,
+                  padding: 10,
+                  overflow: "hidden"
+                },
+                onPointerDown: stopInteractivePropagation,
+                onMouseDown: stopInteractivePropagation,
+                onMouseUp: stopInteractivePropagation,
+                onClick: stopInteractivePropagation,
+                onDoubleClick: stopInteractivePropagation,
+                onKeyDown: stopInteractivePropagation,
+                onKeyUp: stopInteractivePropagation,
+                children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 8 }, children: [
+                    /* @__PURE__ */ jsx(
+                      "input",
+                      {
+                        ref: searchRef,
+                        type: "text",
+                        value: query,
+                        placeholder: "Search tags by name, path, or provider...",
+                        onChange: (event) => {
+                          setQuery(event.target.value);
+                        },
+                        onFocus: stopInteractivePropagation,
+                        onPointerDown: stopInteractivePropagation,
+                        onMouseDown: stopInteractivePropagation,
+                        onMouseUp: stopInteractivePropagation,
+                        onClick: stopInteractivePropagation,
+                        onDoubleClick: stopInteractivePropagation,
+                        onKeyDown: (event) => {
+                          stopInteractivePropagation(event);
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            closeMenu();
+                          }
+                        },
+                        onKeyUp: stopInteractivePropagation,
+                        style: {
+                          width: "100%",
+                          height: 36,
+                          boxSizing: "border-box",
+                          borderRadius: 10,
+                          border: "1px solid rgba(71, 85, 105, 0.9)",
+                          background: "rgba(15, 23, 42, 0.92)",
+                          color: "#f8fafc",
+                          padding: "0 10px",
+                          fontSize: 12,
+                          fontWeight: 600
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsxs(
+                      "div",
+                      {
+                        style: {
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 12,
+                          fontSize: 10,
+                          color: "rgba(226, 232, 240, 0.68)"
+                        },
+                        children: [
+                          /* @__PURE__ */ jsx("span", { children: resultSummary }),
+                          /* @__PURE__ */ jsx(
+                            "button",
+                            {
+                              type: "button",
+                              onClick: (event) => {
+                                stopInteractivePropagation(event);
+                                closeMenu();
+                              },
+                              onPointerDown: stopInteractivePropagation,
+                              onMouseDown: stopInteractivePropagation,
+                              onMouseUp: stopInteractivePropagation,
+                              style: {
+                                border: "none",
+                                background: "transparent",
+                                color: "rgba(148, 163, 184, 0.88)",
+                                cursor: "pointer",
+                                fontSize: 11,
+                                fontWeight: 700
+                              },
+                              children: "Close"
+                            }
+                          )
+                        ]
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxs(
+                    "div",
+                    {
+                      style: {
+                        display: "grid",
+                        gap: 8,
+                        maxHeight: Math.max(120, Number(menuRect.maxHeight || 320) - 92),
+                        overflowY: "auto",
+                        paddingRight: 2
+                      },
+                      children: [
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
+                          /* @__PURE__ */ jsx(
+                            "button",
+                            {
+                              type: "button",
+                              onClick: (event) => {
+                                stopInteractivePropagation(event);
+                                closeMenu();
+                                if (typeof onCommit === "function") {
+                                  onCommit("");
+                                }
+                              },
+                              onPointerDown: stopInteractivePropagation,
+                              onMouseDown: stopInteractivePropagation,
+                              onMouseUp: stopInteractivePropagation,
+                              style: {
+                                width: "100%",
+                                border: currentValue ? "1px solid rgba(51, 65, 85, 0.92)" : "1px solid rgba(96, 165, 250, 0.85)",
+                                background: currentValue ? "rgba(15, 23, 42, 0.94)" : "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)",
+                                color: "#f8fafc",
+                                borderRadius: 10,
+                                padding: "8px 10px",
+                                fontSize: 12,
+                                fontWeight: currentValue ? 600 : 700,
+                                textAlign: "left",
+                                cursor: "pointer"
+                              },
+                              children: "No tag"
+                            }
+                          ),
+                          !hasCurrentOption && currentValue ? /* @__PURE__ */ jsxs(
+                            "div",
+                            {
+                              style: {
+                                border: "1px solid rgba(71, 85, 105, 0.76)",
+                                background: "rgba(15, 23, 42, 0.9)",
+                                color: "#e2e8f0",
+                                borderRadius: 10,
+                                padding: "8px 10px",
+                                display: "grid",
+                                gap: 3
+                              },
+                              children: [
+                                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, fontWeight: 700 }, children: currentValue }),
+                                /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: "rgba(148, 163, 184, 0.9)" }, children: "Current saved value" })
+                              ]
+                            }
+                          ) : null
+                        ] }),
+                        groupedFilteredSections.map((section, sectionIndex) => /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
+                          section.label ? /* @__PURE__ */ jsx(
+                            "div",
+                            {
+                              style: {
+                                padding: "2px 6px 4px",
+                                fontSize: 10,
+                                fontWeight: 800,
+                                letterSpacing: "0.08em",
+                                textTransform: "uppercase",
+                                color: "rgba(148, 163, 184, 0.88)"
+                              },
+                              children: section.label
+                            }
+                          ) : null,
+                          section.items.map((item) => {
+                            const active = item.value === currentValue;
+                            return /* @__PURE__ */ jsxs(
+                              "button",
+                              {
+                                type: "button",
+                                onClick: (event) => {
+                                  stopInteractivePropagation(event);
+                                  closeMenu();
+                                  if (typeof onCommit === "function") {
+                                    onCommit(item.value);
+                                  }
+                                },
+                                onPointerDown: stopInteractivePropagation,
+                                onMouseDown: stopInteractivePropagation,
+                                onMouseUp: stopInteractivePropagation,
+                                style: {
+                                  width: "100%",
+                                  border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
+                                  background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
+                                  color: "#f8fafc",
+                                  borderRadius: 10,
+                                  padding: "8px 10px",
+                                  fontSize: 12,
+                                  fontWeight: active ? 700 : 600,
+                                  textAlign: "left",
+                                  cursor: "pointer",
+                                  display: "grid",
+                                  gap: 2
+                                },
+                                children: [
+                                  /* @__PURE__ */ jsx("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: item.name }),
+                                  /* @__PURE__ */ jsx(
+                                    "span",
+                                    {
+                                      style: {
+                                        minWidth: 0,
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap",
+                                        fontSize: 10,
+                                        fontWeight: 600,
+                                        color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
+                                      },
+                                      children: item.path
+                                    }
+                                  )
+                                ]
+                              },
+                              `${section.label || "option"}-${item.value}`
+                            );
+                          })
+                        ] }, `${section.label || "section"}-${sectionIndex}`)),
+                        !loading && !filteredOptions.length ? /* @__PURE__ */ jsx(
+                          "div",
+                          {
+                            style: {
+                              borderRadius: 10,
+                              border: "1px dashed rgba(71, 85, 105, 0.78)",
+                              padding: "12px 10px",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "rgba(148, 163, 184, 0.9)",
+                              textAlign: "center"
+                            },
+                            children: "No tags match that search."
+                          }
+                        ) : null
+                      ]
+                    }
+                  )
+                ]
+              }
+            ),
+            document.body
+          ) : null
+        ]
       }
     );
   }
@@ -22832,6 +23836,20 @@ var MesoraDrawingToolBundle = (() => {
   function getShapeBounds(shape) {
     if (!shape || typeof shape !== "object") {
       return null;
+    }
+    if (shape.type === "text") {
+      const fontSize = Math.max(8, Number(shape.fontSize || 24));
+      const text = String(shape.text || "");
+      const width = Math.max(40, text.length * fontSize * 0.6);
+      const height = Math.max(24, fontSize * 1.2);
+      const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
+      const anchorOffsetX = anchor === "middle" ? -width / 2 : anchor === "end" ? -width : 0;
+      return {
+        x: Number(shape.x || 0) + anchorOffsetX,
+        y: Number(shape.y || 0),
+        width,
+        height
+      };
     }
     if (Array.isArray(shape.points)) {
       const points = clonePoints(shape.points);
@@ -22945,6 +23963,7 @@ var MesoraDrawingToolBundle = (() => {
     return Math.hypot(dx, dy);
   }
   function PerspectiveViziCanvasBridge(props) {
+    var _a, _b, _c, _d;
     const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(/* @__PURE__ */ new Map());
@@ -22996,6 +24015,8 @@ var MesoraDrawingToolBundle = (() => {
     const [ignitionTagsError, setIgnitionTagsError] = useState("");
     const [ignitionTagsLoading, setIgnitionTagsLoading] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
+    const [widgetOpen, setWidgetOpen] = useState(false);
+    const [helpOpen, setHelpOpen] = useState(false);
     const [propertiesSelectionKey, setPropertiesSelectionKey] = useState("");
     const [rootSize, setRootSize] = useState({
       width: DEFAULT_CANVAS_WIDTH,
@@ -23237,6 +24258,8 @@ var MesoraDrawingToolBundle = (() => {
       persistValue("toolbarCollapsed", value);
       if (value) {
         setImportOpen(false);
+        setWidgetOpen(false);
+        setHelpOpen(false);
       }
     }, [persistValue]);
     const setShowRulers = useCallback((nextValue) => {
@@ -23443,7 +24466,7 @@ var MesoraDrawingToolBundle = (() => {
       ) || "#0f172a"
     );
     const pointFromEvent = useCallback((event) => {
-      var _a, _b;
+      var _a2, _b2;
       const svg = svgRef.current;
       if (!svg) {
         return { x: viewBox.width / 2, y: viewBox.height / 2 };
@@ -23455,7 +24478,7 @@ var MesoraDrawingToolBundle = (() => {
           const point = svg.createSVGPoint();
           point.x = Number((event == null ? void 0 : event.clientX) || 0);
           point.y = Number((event == null ? void 0 : event.clientY) || 0);
-          const ctm = (_a = svg.getScreenCTM) == null ? void 0 : _a.call(svg);
+          const ctm = (_a2 = svg.getScreenCTM) == null ? void 0 : _a2.call(svg);
           if (ctm && typeof ctm.inverse === "function") {
             const localPoint = point.matrixTransform(ctm.inverse());
             svgX = Number(localPoint == null ? void 0 : localPoint.x);
@@ -23465,7 +24488,7 @@ var MesoraDrawingToolBundle = (() => {
       } catch (_error) {
       }
       if (!Number.isFinite(svgX) || !Number.isFinite(svgY)) {
-        const rect = (_b = svg.getBoundingClientRect) == null ? void 0 : _b.call(svg);
+        const rect = (_b2 = svg.getBoundingClientRect) == null ? void 0 : _b2.call(svg);
         if (!rect || rect.width <= 0 || rect.height <= 0) {
           return { x: viewBox.width / 2, y: viewBox.height / 2 };
         }
@@ -24058,17 +25081,21 @@ var MesoraDrawingToolBundle = (() => {
       if (!svgLibraryEnabled || !svgCatalogFiles.length) {
         return;
       }
+      setWidgetOpen(false);
+      setHelpOpen(false);
       setImportOpen((current) => !current);
     }, [svgCatalogFiles.length, svgLibraryEnabled]);
-    const onPickSvg = useCallback(async (fileKey) => {
-      const raw = await readSvgRawByKey(fileKey, { forceFresh: false });
+    const createOverlayFromRawMarkup = useCallback((raw, options = {}) => {
       if (typeof raw !== "string") {
-        return;
+        return null;
       }
       const parsed = stripOuterSvg(raw);
       if (!(parsed == null ? void 0 : parsed.inner)) {
-        return;
+        return null;
       }
+      const fileKey = String(options.fileKey || "").trim();
+      const overlayName = String(options.name || "").trim() || fileKey.split("/").pop() || fileKey || "Overlay";
+      const extraOverlay = isPlainObject(options.extraOverlay) ? options.extraOverlay : {};
       const keySize = extractKeySize(raw);
       const parsedEType = extractSvgEType(raw, fileKey);
       const baseViewBox = parsed.vb;
@@ -24100,10 +25127,10 @@ var MesoraDrawingToolBundle = (() => {
         y: viewBox.y + viewBox.height / 2
       };
       const id = createId("overlay");
-      const nextOverlay = {
+      return {
         id,
         sourceKey: fileKey,
-        name: fileKey.split("/").pop() || fileKey,
+        name: overlayName,
         inner,
         tx: anchor.x - scale * srcCenterX,
         ty: anchor.y - scale * srcCenterY,
@@ -24119,13 +25146,53 @@ var MesoraDrawingToolBundle = (() => {
           y: localViewBox.y,
           width: localViewBox.w,
           height: localViewBox.h
-        }
+        },
+        ...extraOverlay
       };
+    }, [viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
+    const onPickSvg = useCallback(async (fileKey) => {
+      const raw = await readSvgRawByKey(fileKey, { forceFresh: false });
+      const nextOverlay = createOverlayFromRawMarkup(raw, { fileKey });
+      if (!nextOverlay) {
+        return;
+      }
       updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
-      setSelectedOverlayIds([id]);
+      setSelectedOverlayIds([nextOverlay.id]);
       setSelectedIds([]);
       setImportOpen(false);
-    }, [readSvgRawByKey, updateSvgOverlays, viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
+      setWidgetOpen(false);
+    }, [createOverlayFromRawMarkup, readSvgRawByKey, updateSvgOverlays]);
+    const handleWidgetToggle = useCallback(() => {
+      setImportOpen(false);
+      setHelpOpen(false);
+      setWidgetOpen((current) => !current);
+    }, []);
+    const handleHelpToggle = useCallback(() => {
+      setImportOpen(false);
+      setWidgetOpen(false);
+      setHelpOpen((current) => !current);
+    }, []);
+    const onPickWidget = useCallback((widgetKey) => {
+      const template = widgetTemplate(widgetKey);
+      const nextOverlay = createOverlayFromRawMarkup(template == null ? void 0 : template.raw, {
+        fileKey: (template == null ? void 0 : template.name) || String(widgetKey || ""),
+        name: (template == null ? void 0 : template.name) || String(widgetKey || "Widget"),
+        extraOverlay: {
+          tagPath: "",
+          widget: defaultWidgetSettings(widgetKey),
+          eType: "Widget",
+          eTypeAuto: false
+        }
+      });
+      if (!nextOverlay) {
+        return;
+      }
+      updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
+      setSelectedOverlayIds([nextOverlay.id]);
+      setSelectedIds([]);
+      setImportOpen(false);
+      setWidgetOpen(false);
+    }, [createOverlayFromRawMarkup, updateSvgOverlays]);
     const handleSvgMouseDown = useCallback((event) => {
       if ((event == null ? void 0 : event.button) && event.button !== 0) {
         return;
@@ -24168,7 +25235,10 @@ var MesoraDrawingToolBundle = (() => {
             fontFamily: "system-ui",
             fontWeight: "400",
             anchor: "start",
-            tagPath: ""
+            tagPath: "",
+            scaleFactor: "",
+            decimals: "",
+            unit: ""
           }
         ], { persist: true });
         setSelectedIds([id]);
@@ -24207,9 +25277,9 @@ var MesoraDrawingToolBundle = (() => {
       }
     }, [clearSelection, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool, updateShapes]);
     const handleShapeMouseDown = useCallback((event, id) => {
-      var _a, _b;
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      var _a2, _b2;
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       if (tool === "polyline") {
         startOrAppendPolylineAt(pointFromEvent(event), event);
         return;
@@ -24249,9 +25319,9 @@ var MesoraDrawingToolBundle = (() => {
       beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
     }, [beginSelectionDrag, closePropertiesPanel, editingId, isShapeSelectableByMode, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
     const handleOverlayMouseDown = useCallback((event, id) => {
-      var _a, _b;
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      var _a2, _b2;
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       if (tool === "polyline") {
         startOrAppendPolylineAt(pointFromEvent(event), event);
         return;
@@ -24287,9 +25357,9 @@ var MesoraDrawingToolBundle = (() => {
       beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
     }, [beginSelectionDrag, closePropertiesPanel, overlaysSelectable, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
     const handleShapeDoubleClick = useCallback((event, id) => {
-      var _a, _b;
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      var _a2, _b2;
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       const shapeId = String(id || "");
       const shape = shapesRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === shapeId);
       if (tool === "polyline" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === shapeId) {
@@ -24311,9 +25381,9 @@ var MesoraDrawingToolBundle = (() => {
       openPropertiesForSelection(`shape:${shapeId}`);
     }, [drawing, finishActivePolylineAt, isShapeSelectableByMode, openPropertiesForSelection, pointFromEvent, tool]);
     const handleOverlayDoubleClick = useCallback((event, id) => {
-      var _a, _b;
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      var _a2, _b2;
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       if (!overlaysSelectable || tool !== "select") {
         return;
       }
@@ -24328,38 +25398,98 @@ var MesoraDrawingToolBundle = (() => {
       setSelectedSegment(null);
       openPropertiesForSelection(`overlay:${overlayId}`);
     }, [openPropertiesForSelection, overlaysSelectable, tool]);
+    const openOverlayPopup = useCallback((overlay) => {
+      if (!overlay || overlay.widget) {
+        return false;
+      }
+      const viewPath = resolveOverlayPopupViewPath(overlay);
+      if (!viewPath) {
+        return false;
+      }
+      const clientStore = getPerspectiveClientStore(props);
+      const mounts = clientStore == null ? void 0 : clientStore.mounts;
+      if (!mounts || typeof mounts.activatePopup !== "function") {
+        return false;
+      }
+      const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
+      const popupViewName = normalizeOverlayPopupViewName(
+        (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
+      );
+      const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
+      const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
+      const popupConfig = {
+        id: popupId,
+        viewPath,
+        viewParams: {
+          overlayId,
+          eType: popupViewName,
+          name: popupTitle,
+          tagPath: String((overlay == null ? void 0 : overlay.tagPath) || "").trim()
+        },
+        title: popupTitle,
+        showCloseIcon: true,
+        draggable: true,
+        resizable: true,
+        modal: false,
+        overlayDismiss: false
+      };
+      if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => (popup == null ? void 0 : popup.id) === popupId)) {
+        if (typeof mounts.closePopup === "function") {
+          mounts.closePopup(popupId);
+        }
+      }
+      mounts.activatePopup(popupConfig);
+      if (typeof mounts.focusPopup === "function") {
+        mounts.focusPopup(popupId);
+      }
+      return true;
+    }, [props]);
+    const handleLiveOverlayMouseDown = useCallback((event, id) => {
+      var _a2, _b2;
+      const overlayId = String(id || "").trim();
+      if (!overlayId) {
+        return;
+      }
+      const overlay = overlaysRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === overlayId);
+      if (!overlay || overlay.widget) {
+        return;
+      }
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
+      openOverlayPopup(overlay);
+    }, [openOverlayPopup]);
     const handleEditPolylineClick = useCallback((event, id) => {
-      var _a, _b, _c, _d;
+      var _a2, _b2, _c2, _d2;
       const shapeId = String(id || "");
       if (tool === "polyline" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === shapeId) {
-        (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-        (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+        (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+        (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
         finishActivePolylineAt(shapeId, pointFromEvent(event), event);
         return;
       }
       if (tool !== "select" || String(editingId || "") !== shapeId) {
         return;
       }
-      (_c = event == null ? void 0 : event.preventDefault) == null ? void 0 : _c.call(event);
-      (_d = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _d.call(event);
+      (_c2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _c2.call(event);
+      (_d2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _d2.call(event);
       insertPointOnPolyline(shapeId, pointFromEvent(event));
       setSelectedIds([shapeId]);
       setSelectedOverlayIds([]);
       setSelectedSegment(null);
     }, [drawing, editingId, finishActivePolylineAt, insertPointOnPolyline, pointFromEvent, tool]);
     const handleSegmentMouseDown = useCallback((event, id, index2) => {
-      var _a, _b, _c, _d;
+      var _a2, _b2, _c2, _d2;
       if (tool === "polyline" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === String(id || "")) {
-        (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-        (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+        (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+        (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
         appendPolylinePoint(id, maybeConstrainPolylinePoint(id, pointFromEvent(event), event));
         return;
       }
       if (tool !== "select") {
         return;
       }
-      (_c = event == null ? void 0 : event.preventDefault) == null ? void 0 : _c.call(event);
-      (_d = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _d.call(event);
+      (_c2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _c2.call(event);
+      (_d2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _d2.call(event);
       const shapeId = String(id || "");
       if (event == null ? void 0 : event.altKey) {
         insertPointOnPolyline(shapeId, pointFromEvent(event));
@@ -24375,12 +25505,12 @@ var MesoraDrawingToolBundle = (() => {
       setSelectedSegment({ id: shapeId, index: Number(index2 || 0), kind: "point" });
     }, [appendPolylinePoint, drawing, insertPointOnPolyline, maybeConstrainPolylinePoint, pointFromEvent, tool]);
     const handlePolylineHandleMouseDown = useCallback((event, id, index2) => {
-      var _a, _b;
+      var _a2, _b2;
       if (tool !== "select") {
         return;
       }
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       const shapeId = String(id || "");
       setSelectedIds([shapeId]);
       setSelectedOverlayIds([]);
@@ -24391,21 +25521,21 @@ var MesoraDrawingToolBundle = (() => {
       setMarquee(null);
     }, [tool]);
     const handlePolylineHandleDoubleClick = useCallback((event, id, index2) => {
-      var _a, _b;
+      var _a2, _b2;
       if (tool !== "select") {
         return;
       }
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       deletePolylineVertex(id, index2);
     }, [deletePolylineVertex, tool]);
     const handleOverlayHandleDown = useCallback((event, id, corner) => {
-      var _a, _b;
+      var _a2, _b2;
       if (tool !== "select" || !overlaysSelectable) {
         return;
       }
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       const overlayId = String(id || "");
       const overlay = overlaysRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === overlayId);
       const bbox = overlayLocalBBox(overlayId);
@@ -24443,12 +25573,12 @@ var MesoraDrawingToolBundle = (() => {
       setMarquee(null);
     }, [overlayLocalBBox, overlaysSelectable, tool]);
     const handleShapeResizeHandleDown = useCallback((event, corner) => {
-      var _a, _b;
+      var _a2, _b2;
       if (tool !== "select" || !selectedBBox || !selectedIds.length || selectedOverlayIds.length) {
         return;
       }
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       const bounds = {
         x: Number(selectedBBox.x || 0),
         y: Number(selectedBBox.y || 0),
@@ -24485,12 +25615,12 @@ var MesoraDrawingToolBundle = (() => {
       setMarquee(null);
     }, [selectedBBox, selectedIds, selectedOverlayIds.length, tool]);
     const handleOverlayGroupHandleDown = useCallback((event, corner) => {
-      var _a, _b;
+      var _a2, _b2;
       if (tool !== "select" || selectedIds.length > 0 || selectedOverlayIds.length < 2 || !selectedBBox) {
         return;
       }
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       const bounds = {
         x: Number(selectedBBox.x || 0),
         y: Number(selectedBBox.y || 0),
@@ -24540,7 +25670,7 @@ var MesoraDrawingToolBundle = (() => {
       setMarquee(null);
     }, [overlayLocalBBox, selectedBBox, selectedIds.length, selectedOverlayIds, tool]);
     const handleMouseMove = useCallback((event) => {
-      var _a, _b;
+      var _a2, _b2;
       const point = pointFromEvent(event);
       if (dragHandle == null ? void 0 : dragHandle.id) {
         updateShapes((previous) => previous.map((shape) => {
@@ -24570,7 +25700,7 @@ var MesoraDrawingToolBundle = (() => {
       if ((overlayResize == null ? void 0 : overlayResize.kind) === "single") {
         const ratio = clamp(distance(point, overlayResize.anchorWorld) / Math.max(1, overlayResize.startDist), 0.05, 100);
         updateSvgOverlays((previous) => previous.map((overlay) => {
-          var _a2, _b2, _c, _d;
+          var _a3, _b3, _c2, _d2;
           if (String((overlay == null ? void 0 : overlay.id) || "") !== String(overlayResize.id || "")) {
             return overlay;
           }
@@ -24578,8 +25708,8 @@ var MesoraDrawingToolBundle = (() => {
           return {
             ...overlay,
             scale,
-            tx: Number(((_a2 = overlayResize.anchorWorld) == null ? void 0 : _a2.x) || 0) - scale * Number(((_b2 = overlayResize.anchorLocal) == null ? void 0 : _b2.x) || 0),
-            ty: Number(((_c = overlayResize.anchorWorld) == null ? void 0 : _c.y) || 0) - scale * Number(((_d = overlayResize.anchorLocal) == null ? void 0 : _d.y) || 0)
+            tx: Number(((_a3 = overlayResize.anchorWorld) == null ? void 0 : _a3.x) || 0) - scale * Number(((_b3 = overlayResize.anchorLocal) == null ? void 0 : _b3.x) || 0),
+            ty: Number(((_c2 = overlayResize.anchorWorld) == null ? void 0 : _c2.y) || 0) - scale * Number(((_d2 = overlayResize.anchorLocal) == null ? void 0 : _d2.y) || 0)
           };
         }), { persist: false });
         return;
@@ -24587,7 +25717,7 @@ var MesoraDrawingToolBundle = (() => {
       if ((overlayResize == null ? void 0 : overlayResize.kind) === "group") {
         const ratio = clamp(distance(point, overlayResize.anchorWorld) / Math.max(1, overlayResize.startDist), 0.05, 100);
         updateSvgOverlays((previous) => previous.map((overlay) => {
-          var _a2, _b2, _c, _d;
+          var _a3, _b3, _c2, _d2;
           const snapshot2 = overlayResize.originalsById[String((overlay == null ? void 0 : overlay.id) || "")];
           if (!(snapshot2 == null ? void 0 : snapshot2.bbox)) {
             return overlay;
@@ -24598,8 +25728,8 @@ var MesoraDrawingToolBundle = (() => {
             y: Number(snapshot2.ty || 0) + Number(snapshot2.scale || 1) * Number(snapshot2.bbox.y || 0)
           };
           const nextTopLeft = {
-            x: Number(((_a2 = overlayResize.anchorWorld) == null ? void 0 : _a2.x) || 0) + (startTopLeft.x - Number(((_b2 = overlayResize.anchorWorld) == null ? void 0 : _b2.x) || 0)) * ratio,
-            y: Number(((_c = overlayResize.anchorWorld) == null ? void 0 : _c.y) || 0) + (startTopLeft.y - Number(((_d = overlayResize.anchorWorld) == null ? void 0 : _d.y) || 0)) * ratio
+            x: Number(((_a3 = overlayResize.anchorWorld) == null ? void 0 : _a3.x) || 0) + (startTopLeft.x - Number(((_b3 = overlayResize.anchorWorld) == null ? void 0 : _b3.x) || 0)) * ratio,
+            y: Number(((_c2 = overlayResize.anchorWorld) == null ? void 0 : _c2.y) || 0) + (startTopLeft.y - Number(((_d2 = overlayResize.anchorWorld) == null ? void 0 : _d2.y) || 0)) * ratio
           };
           return {
             ...overlay,
@@ -24611,8 +25741,8 @@ var MesoraDrawingToolBundle = (() => {
         return;
       }
       if (dragState == null ? void 0 : dragState.start) {
-        const dx = point.x - Number(((_a = dragState.start) == null ? void 0 : _a.x) || 0);
-        const dy = point.y - Number(((_b = dragState.start) == null ? void 0 : _b.y) || 0);
+        const dx = point.x - Number(((_a2 = dragState.start) == null ? void 0 : _a2.x) || 0);
+        const dy = point.y - Number(((_b2 = dragState.start) == null ? void 0 : _b2.y) || 0);
         if (Object.keys(dragState.shapeSnapshotsById || {}).length) {
           updateShapes((previous) => previous.map((shape) => {
             const snapshot2 = dragState.shapeSnapshotsById[String((shape == null ? void 0 : shape.id) || "")];
@@ -24638,16 +25768,16 @@ var MesoraDrawingToolBundle = (() => {
       }
       if ((drawing == null ? void 0 : drawing.kind) === "rect" || (drawing == null ? void 0 : drawing.kind) === "circle") {
         updateShapes((previous) => previous.map((shape) => {
-          var _a2, _b2, _c, _d;
+          var _a3, _b3, _c2, _d2;
           if (String((shape == null ? void 0 : shape.id) || "") !== String(drawing.id || "")) {
             return shape;
           }
           return {
             ...shape,
-            x: Math.min(Number(((_a2 = drawing.start) == null ? void 0 : _a2.x) || 0), point.x),
-            y: Math.min(Number(((_b2 = drawing.start) == null ? void 0 : _b2.y) || 0), point.y),
-            width: Math.abs(point.x - Number(((_c = drawing.start) == null ? void 0 : _c.x) || 0)),
-            height: Math.abs(point.y - Number(((_d = drawing.start) == null ? void 0 : _d.y) || 0))
+            x: Math.min(Number(((_a3 = drawing.start) == null ? void 0 : _a3.x) || 0), point.x),
+            y: Math.min(Number(((_b3 = drawing.start) == null ? void 0 : _b3.y) || 0), point.y),
+            width: Math.abs(point.x - Number(((_c2 = drawing.start) == null ? void 0 : _c2.x) || 0)),
+            height: Math.abs(point.y - Number(((_d2 = drawing.start) == null ? void 0 : _d2.y) || 0))
           };
         }), { persist: false });
         return;
@@ -24711,9 +25841,9 @@ var MesoraDrawingToolBundle = (() => {
       }
     }, [dragHandle, dragState, drawing, isShapeSelectableByMode, marquee, overlayResize, overlaysSelectable, persistShapes, persistSvgOverlays, shapeResize]);
     const handleSvgDoubleClick = useCallback((event) => {
-      var _a, _b;
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      var _a2, _b2;
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       if ((drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id) {
         finishActivePolylineAt(drawing.id, pointFromEvent(event), event);
         return;
@@ -24721,15 +25851,15 @@ var MesoraDrawingToolBundle = (() => {
       finishPolyline();
     }, [drawing, finishActivePolylineAt, finishPolyline, pointFromEvent]);
     const handleCanvasContextMenu = useCallback((event) => {
-      var _a, _b;
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      var _a2, _b2;
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       if (tool === "polyline" && (drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id) {
         removeCurrentPolylineSegment();
       }
     }, [drawing, removeCurrentPolylineSegment, tool]);
     const worldToPanelPoint = useCallback((worldX, worldY) => {
-      var _a;
+      var _a2;
       const svg = svgRef.current;
       const root = rootRef.current;
       if (!svg || !root || typeof svg.createSVGPoint !== "function" || typeof root.getBoundingClientRect !== "function") {
@@ -24739,7 +25869,7 @@ var MesoraDrawingToolBundle = (() => {
         const point = svg.createSVGPoint();
         point.x = Number((pan == null ? void 0 : pan.x) || 0) + Number(worldX || 0) * zoom;
         point.y = Number((pan == null ? void 0 : pan.y) || 0) + Number(worldY || 0) * zoom;
-        const ctm = (_a = svg.getScreenCTM) == null ? void 0 : _a.call(svg);
+        const ctm = (_a2 = svg.getScreenCTM) == null ? void 0 : _a2.call(svg);
         if (!ctm) {
           return null;
         }
@@ -24772,6 +25902,25 @@ var MesoraDrawingToolBundle = (() => {
     }, [drawing, finishPolyline, setTool]);
     const selectedShapeBounds = useMemo(() => getShapeBounds(selectedShape), [selectedShape]);
     const selectedOverlayBounds = useMemo(() => getOverlayBounds(selectedOverlay), [selectedOverlay]);
+    const selectedOverlayWidgetKind = useMemo(
+      () => {
+        var _a2;
+        return String(((_a2 = selectedOverlay == null ? void 0 : selectedOverlay.widget) == null ? void 0 : _a2.kind) || "").trim().toLowerCase();
+      },
+      [selectedOverlay]
+    );
+    const selectedOverlayWidgetSupportsWrite = useMemo(
+      () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+      [selectedOverlayWidgetKind]
+    );
+    const selectedOverlayWidgetWriteMode = useMemo(
+      () => resolveWidgetWriteMode(selectedOverlay == null ? void 0 : selectedOverlay.widget, selectedOverlay == null ? void 0 : selectedOverlay.tagPath),
+      [selectedOverlay]
+    );
+    const selectedOverlayWidgetOpcServer = useMemo(
+      () => resolveWidgetOpcServer(selectedOverlay == null ? void 0 : selectedOverlay.widget),
+      [selectedOverlay]
+    );
     const propertyTargetBounds = selectedOverlayBounds || selectedShapeBounds || selectedBBox;
     const floatingPropertyPanelStyle = useMemo(() => {
       if (!propertiesVisible || !propertyTargetBounds) {
@@ -24797,6 +25946,11 @@ var MesoraDrawingToolBundle = (() => {
       const maxLeft = Math.max(16, rootWidth - PROPERTY_PANEL_WIDTH - 16);
       const left = preferredLeft <= maxLeft ? preferredLeft : clamp(anchorLeft - PROPERTY_PANEL_WIDTH - 12, 16, maxLeft);
       const top = clamp(anchorTop, 16 + rulerInset, Math.max(16 + rulerInset, rootHeight - 220));
+      const availableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - top - 16);
+      const panelHeight = Math.max(
+        PROPERTY_PANEL_MIN_HEIGHT,
+        Math.min(PROPERTY_PANEL_HEIGHT, availableHeight)
+      );
       return {
         position: "absolute",
         left,
@@ -24804,9 +25958,11 @@ var MesoraDrawingToolBundle = (() => {
         zIndex: 70,
         width: PROPERTY_PANEL_WIDTH,
         maxWidth: `calc(100% - ${left + 16}px)`,
-        maxHeight: `calc(100% - ${top + 16}px)`,
-        overflowY: "auto",
+        height: panelHeight,
+        maxHeight: panelHeight,
+        overflow: "hidden",
         display: "grid",
+        gridTemplateRows: "auto minmax(0, 1fr)",
         gap: 12,
         padding: 14,
         borderRadius: 18,
@@ -24816,11 +25972,11 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers]);
     const fixedPropertyPanelStyle = useMemo(() => {
-      var _a, _b;
+      var _a2, _b2;
       if (!floatingPropertyPanelStyle) {
         return null;
       }
-      const rootRect = (_b = (_a = rootRef.current) == null ? void 0 : _a.getBoundingClientRect) == null ? void 0 : _b.call(_a);
+      const rootRect = (_b2 = (_a2 = rootRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2);
       if (!rootRect) {
         return null;
       }
@@ -24828,13 +25984,19 @@ var MesoraDrawingToolBundle = (() => {
       const viewportHeight = typeof window !== "undefined" ? window.innerHeight : Number(rootRect.height || 0);
       const left = Number(rootRect.left || 0) + Number(floatingPropertyPanelStyle.left || 0);
       const top = Number(rootRect.top || 0) + Number(floatingPropertyPanelStyle.top || 0);
+      const availableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, viewportHeight - top - 16);
+      const panelHeight = Math.max(
+        PROPERTY_PANEL_MIN_HEIGHT,
+        Math.min(PROPERTY_PANEL_HEIGHT, availableHeight)
+      );
       return {
         ...floatingPropertyPanelStyle,
         position: "fixed",
         left,
         top,
         maxWidth: Math.max(180, viewportWidth - left - 16),
-        maxHeight: Math.max(180, viewportHeight - top - 16)
+        height: panelHeight,
+        maxHeight: panelHeight
       };
     }, [floatingPropertyPanelStyle, rootSize]);
     const overlaySelectionUI = useCallback((overlay) => {
@@ -25054,6 +26216,25 @@ var MesoraDrawingToolBundle = (() => {
         [field]: value
       }));
     }, [updateSelectedShape]);
+    const commitSelectedShapeOptionalNumber = useCallback((field, rawValue, options = {}) => {
+      const trimmed = String(rawValue != null ? rawValue : "").trim();
+      if (!trimmed) {
+        updateSelectedShape((shape) => ({
+          ...shape,
+          [field]: ""
+        }));
+        return;
+      }
+      const next = parsePanelNumber(trimmed);
+      if (next == null) {
+        return;
+      }
+      const value = options.min != null ? Math.max(options.min, next) : next;
+      updateSelectedShape((shape) => ({
+        ...shape,
+        [field]: value
+      }));
+    }, [updateSelectedShape]);
     const commitSelectedShapePosition = useCallback((axis, rawValue) => {
       const next = parsePanelNumber(rawValue);
       if (next == null) {
@@ -25111,8 +26292,31 @@ var MesoraDrawingToolBundle = (() => {
         [field]: String(rawValue != null ? rawValue : "")
       }));
     }, [updateSelectedOverlay]);
+    const commitSelectedOverlayWidgetField = useCallback((field, rawValue) => {
+      updateSelectedOverlay((overlay) => ({
+        ...overlay,
+        widget: {
+          ...isPlainObject(overlay == null ? void 0 : overlay.widget) ? overlay.widget : {},
+          [field]: rawValue
+        }
+      }));
+    }, [updateSelectedOverlay]);
     const commitSelectedOverlayTagPath = useCallback((rawValue) => {
-      updateSelectedOverlay((overlay) => applyOverlayIgnitionFillBinding(overlay, rawValue));
+      updateSelectedOverlay((overlay) => {
+        if (overlay == null ? void 0 : overlay.widget) {
+          const nextTagPath = String(rawValue != null ? rawValue : "").trim();
+          const currentBindings = isPlainObject(overlay == null ? void 0 : overlay.bindings) ? overlay.bindings : {};
+          const { fill: _removedFillBinding, ...restBindings } = currentBindings;
+          return withOverlayBindings(
+            {
+              ...overlay,
+              tagPath: nextTagPath
+            },
+            restBindings
+          );
+        }
+        return applyOverlayIgnitionFillBinding(overlay, rawValue);
+      });
     }, [updateSelectedOverlay]);
     const commitSelectedOverlayFill = useCallback((rawValue) => {
       updateSelectedOverlay((overlay) => applyOverlayFillFallbackColor(overlay, rawValue));
@@ -25166,6 +26370,80 @@ var MesoraDrawingToolBundle = (() => {
         };
       });
     }, [updateSelectedOverlay]);
+    const writeIgnitionTagValue = useCallback(async (tagPath, value) => {
+      const nextTagPath = String(tagPath || "").trim();
+      if (!nextTagPath) {
+        throw new Error("Ignition tag path is required.");
+      }
+      const encodedPath = encodeURIComponent(nextTagPath);
+      const encodedValue = encodeURIComponent(String(value != null ? value : ""));
+      let lastError = "Ignition write failed.";
+      for (const routePath of MODULE_TAG_WRITE_ROUTE_CANDIDATES) {
+        try {
+          const response = await fetch(`${routePath}?path=${encodedPath}&value=${encodedValue}`, {
+            cache: "no-store",
+            credentials: "same-origin"
+          });
+          if (!response.ok) {
+            lastError = `Ignition write failed (${response.status}).`;
+            continue;
+          }
+          const payload = await response.json();
+          const error = String((payload == null ? void 0 : payload.error) || "").trim();
+          if (error) {
+            lastError = error;
+            continue;
+          }
+          setIgnitionTagValuesByPath((previous) => {
+            var _a2, _b2;
+            const next = previous instanceof Map ? new Map(previous) : /* @__PURE__ */ new Map();
+            next.set(nextTagPath, (_a2 = payload == null ? void 0 : payload.value) != null ? _a2 : value);
+            next.set(nextTagPath.toLowerCase(), (_b2 = payload == null ? void 0 : payload.value) != null ? _b2 : value);
+            return next;
+          });
+          return payload || { value };
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "Ignition write failed.");
+        }
+      }
+      throw new Error(lastError);
+    }, []);
+    const writeIgnitionOpcValue = useCallback(async (opcItemPath, value, opcServerName) => {
+      const nextOpcItemPath = String(opcItemPath || "").trim();
+      if (!nextOpcItemPath) {
+        throw new Error("OPC item path is required.");
+      }
+      const nextOpcServerName = String(opcServerName || "").trim();
+      const encodedPath = encodeURIComponent(nextOpcItemPath);
+      const encodedValue = encodeURIComponent(String(value != null ? value : ""));
+      const encodedServer = encodeURIComponent(nextOpcServerName);
+      let lastError = "OPC write failed.";
+      for (const routePath of MODULE_OPC_WRITE_ROUTE_CANDIDATES) {
+        try {
+          const response = await fetch(
+            `${routePath}?server=${encodedServer}&path=${encodedPath}&value=${encodedValue}`,
+            {
+              cache: "no-store",
+              credentials: "same-origin"
+            }
+          );
+          if (!response.ok) {
+            lastError = `OPC write failed (${response.status}).`;
+            continue;
+          }
+          const payload = await response.json();
+          const error = String((payload == null ? void 0 : payload.error) || "").trim();
+          if (error) {
+            lastError = error;
+            continue;
+          }
+          return payload || { value };
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "OPC write failed.");
+        }
+      }
+      throw new Error(lastError);
+    }, []);
     const selectedShapeLabel = selectedShape ? (() => {
       const rawType = String((selectedShape == null ? void 0 : selectedShape.type) || "").toLowerCase();
       if (rawType === "polyline") {
@@ -25188,6 +26466,7 @@ var MesoraDrawingToolBundle = (() => {
       [svgOverlays]
     );
     const svgLibraryStatusText = !svgLibraryEnabled ? "SVG library disabled" : svgLibraryError ? svgLibraryError : svgLibraryReady ? `${svgCatalogFiles.length} SVG templates ready` : "Loading SVG templates...";
+    const widgetLibraryStatusText = "Mesora widgets ready";
     const svgDrawerLayout = useMemo(() => {
       const maxPanelWidth = Math.max(0, Number((rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH) - TOOLBAR_INSET * 2);
       const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
@@ -25206,6 +26485,27 @@ var MesoraDrawingToolBundle = (() => {
         top: TOOLBAR_INSET,
         bottom: TOOLBAR_INSET,
         width: Math.max(260, Math.min(SVG_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
+      };
+    }, [rootSize, toolbarCollapsed]);
+    const widgetDrawerLayout = svgDrawerLayout;
+    const helpDrawerLayout = useMemo(() => {
+      const maxPanelWidth = Math.max(0, Number((rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH) - TOOLBAR_INSET * 2);
+      const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+      const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
+      const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
+      if (availableBesideToolbar >= HELP_DRAWER_MIN_WIDTH) {
+        return {
+          left: preferredLeft,
+          top: TOOLBAR_INSET,
+          bottom: TOOLBAR_INSET,
+          width: Math.min(HELP_DRAWER_PREFERRED_WIDTH, availableBesideToolbar)
+        };
+      }
+      return {
+        left: TOOLBAR_INSET,
+        top: TOOLBAR_INSET,
+        bottom: TOOLBAR_INSET,
+        width: Math.max(280, Math.min(HELP_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
       };
     }, [rootSize, toolbarCollapsed]);
     useEffect(() => {
@@ -25248,12 +26548,27 @@ var MesoraDrawingToolBundle = (() => {
         const key = String(event.key || "").toLowerCase();
         const alternate = event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
         const consumeShortcutEvent = () => {
-          var _a;
+          var _a2;
           event.preventDefault();
           event.stopPropagation();
-          (_a = event.stopImmediatePropagation) == null ? void 0 : _a.call(event);
+          (_a2 = event.stopImmediatePropagation) == null ? void 0 : _a2.call(event);
         };
         if (alternate) {
+          if (key === "m") {
+            consumeShortcutEvent();
+            activateTool("select");
+            return;
+          }
+          if (key === "p") {
+            consumeShortcutEvent();
+            activateTool("polyline");
+            return;
+          }
+          if (key === "t") {
+            consumeShortcutEvent();
+            activateTool("text");
+            return;
+          }
           if (key === "c") {
             consumeShortcutEvent();
             copySelection();
@@ -25301,10 +26616,10 @@ var MesoraDrawingToolBundle = (() => {
       };
       window.addEventListener("keydown", onKeyDown, true);
       return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [cancelPolyline, copySelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, undo]);
+    }, [activateTool, cancelPolyline, copySelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, undo]);
     useEffect(() => {
       const onKeyUp = (event) => {
-        var _a;
+        var _a2;
         if (!editorVisible || isInteractiveEditorTarget(event.target)) {
           return;
         }
@@ -25313,10 +26628,10 @@ var MesoraDrawingToolBundle = (() => {
         if (!alternate) {
           return;
         }
-        if (key === "c" || key === "v" || key === "z" || key === "y" || key === "d" || String(event.code || "") === "KeyD") {
+        if (key === "c" || key === "v" || key === "z" || key === "y" || key === "d" || key === "m" || key === "p" || key === "t" || String(event.code || "") === "KeyD") {
           event.preventDefault();
           event.stopPropagation();
-          (_a = event.stopImmediatePropagation) == null ? void 0 : _a.call(event);
+          (_a2 = event.stopImmediatePropagation) == null ? void 0 : _a2.call(event);
         }
       };
       window.addEventListener("keyup", onKeyUp, true);
@@ -25335,9 +26650,10 @@ var MesoraDrawingToolBundle = (() => {
       setSelectedSegment(null);
       setEditingId(null);
       setDrawing(null);
+      setHelpOpen(false);
       clearSelection();
     }, [clearSelection, editorVisible]);
-    return /* @__PURE__ */ jsxs("div", { ref: rootRef, style: { position: "relative", width: "100%", height: "100%" }, children: [
+    return /* @__PURE__ */ jsxs("div", { ref: rootRef, "data-vizi-canvas-root": "1", style: { position: "relative", width: "100%", height: "100%" }, children: [
       /* @__PURE__ */ jsx(
         CanvasSvg_default,
         {
@@ -25377,7 +26693,7 @@ var MesoraDrawingToolBundle = (() => {
           selectedOverlayIds: editorVisible ? selectedOverlayIds : EMPTY_ARRAY,
           singleSelectedOverlayId: editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null,
           setOverlayRef: NOOP,
-          onOverlayMouseDown: editorVisible ? handleOverlayMouseDown : NOOP,
+          onOverlayMouseDown: editorVisible ? handleOverlayMouseDown : handleLiveOverlayMouseDown,
           onOverlayDoubleClick: editorVisible ? handleOverlayDoubleClick : NOOP,
           overlaySelectionUI: editorVisible ? overlaySelectionUI : null,
           overlayGroupSelectionUI: editorVisible ? overlayGroupSelectionUI : null,
@@ -25391,6 +26707,8 @@ var MesoraDrawingToolBundle = (() => {
           routeStrokeColorByGroupPath: EMPTY_MAP,
           svgLiveValuesByGroupPath: EMPTY_MAP,
           ignitionTagValuesByPath,
+          writeIgnitionTagValue,
+          writeIgnitionOpcValue,
           liveTagKeys: coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY)),
           opcTags: coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY)),
           opcTemplateMap: EMPTY_MAP,
@@ -25526,7 +26844,7 @@ var MesoraDrawingToolBundle = (() => {
                 ]
               }
             ),
-            /* @__PURE__ */ jsxs(DockSection, { title: "Draw", children: [
+            /* @__PURE__ */ jsxs(DockSection, { children: [
               /* @__PURE__ */ jsx(DockButton, { active: tool === "select", onClick: () => activateTool("select"), children: /* @__PURE__ */ jsx("span", { children: "Move" }) }),
               /* @__PURE__ */ jsx(
                 EditorDropdownField,
@@ -25548,9 +26866,21 @@ var MesoraDrawingToolBundle = (() => {
                   }
                 }
               ),
+              /* @__PURE__ */ jsx(
+                "div",
+                {
+                  style: {
+                    marginTop: 6,
+                    fontSize: 10,
+                    fontWeight: 800,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "rgba(226, 232, 240, 0.72)"
+                  },
+                  children: "Draw"
+                }
+              ),
               /* @__PURE__ */ jsx(DockButton, { active: tool === "polyline", onClick: () => activateTool("polyline"), children: /* @__PURE__ */ jsx("span", { children: "Polyline" }) }),
-              /* @__PURE__ */ jsx(DockButton, { active: tool === "rect", onClick: () => activateTool("rect"), children: /* @__PURE__ */ jsx("span", { children: "Rectangle" }) }),
-              /* @__PURE__ */ jsx(DockButton, { active: tool === "circle", onClick: () => activateTool("circle"), children: /* @__PURE__ */ jsx("span", { children: "Circle" }) }),
               /* @__PURE__ */ jsx(DockButton, { active: tool === "text", onClick: () => activateTool("text"), children: /* @__PURE__ */ jsx("span", { children: "Text" }) })
             ] }),
             /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
@@ -25562,6 +26892,14 @@ var MesoraDrawingToolBundle = (() => {
                   disabled: !svgLibraryReady,
                   onClick: handleImportToggle,
                   children: /* @__PURE__ */ jsx("span", { children: "SVG Library" })
+                }
+              ),
+              /* @__PURE__ */ jsx(
+                DockButton,
+                {
+                  active: widgetOpen,
+                  onClick: handleWidgetToggle,
+                  children: /* @__PURE__ */ jsx("span", { children: "Widgets" })
                 }
               ),
               /* @__PURE__ */ jsxs(
@@ -25579,7 +26917,7 @@ var MesoraDrawingToolBundle = (() => {
                       {
                         disabled: !normalizableSvgCount,
                         onClick: normalizeAllSvgStrokeWidths,
-                        children: /* @__PURE__ */ jsx("span", { children: "Match Stroke Sizes" })
+                        children: /* @__PURE__ */ jsx("span", { children: "Match Stroke" })
                       }
                     ),
                     /* @__PURE__ */ jsx(
@@ -25637,6 +26975,7 @@ var MesoraDrawingToolBundle = (() => {
                   },
                   children: [
                     svgLibraryStatusText,
+                    /* @__PURE__ */ jsx("div", { children: widgetLibraryStatusText }),
                     !svgLibraryError && normalizableSvgCount ? /* @__PURE__ */ jsx("div", { children: `${normalizableSvgCount} SVGs -> ${formatPanelNumber(resolvedStrokeNormalizeWidth)}px stroke` }) : null
                   ]
                 }
@@ -25646,7 +26985,9 @@ var MesoraDrawingToolBundle = (() => {
             /* @__PURE__ */ jsxs(DockSection, { title: "Display", children: [
               /* @__PURE__ */ jsx(DockButton, { active: showTagPaths, onClick: () => setShowTagPaths(!showTagPaths), children: /* @__PURE__ */ jsx("span", { children: "Show TagPaths" }) }),
               /* @__PURE__ */ jsx(DockButton, { active: showGrid, onClick: () => setShowGrid(!showGrid), children: /* @__PURE__ */ jsx("span", { children: "Show Grid" }) })
-            ] })
+            ] }),
+            /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
+            /* @__PURE__ */ jsx(DockSection, { title: "Help", children: /* @__PURE__ */ jsx(DockButton, { active: helpOpen, onClick: handleHelpToggle, children: /* @__PURE__ */ jsx("span", { children: "Open Help" }) }) })
           ]
         }
       ) : null,
@@ -25709,326 +27050,228 @@ var MesoraDrawingToolBundle = (() => {
                 ]
               }
             ),
-            /* @__PURE__ */ jsx(PropertySection, { children: selectedOverlay ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-              /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: "SVG Overlay" }),
-              /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedOverlay.id }),
-              /* @__PURE__ */ jsx(
-                PropertyField,
-                {
-                  label: "Name",
-                  value: selectedOverlay.name || "",
-                  onCommit: (value) => {
-                    commitSelectedOverlayText("name", value);
-                  }
-                }
-              ),
-              /* @__PURE__ */ jsx(
-                PropertyTagPathField,
-                {
-                  label: "Tag Path",
-                  value: selectedOverlay.tagPath || "",
-                  options: ignitionTagOptions,
-                  loading: ignitionTagsLoading,
-                  error: ignitionTagsError,
-                  onCommit: (value) => {
-                    commitSelectedOverlayTagPath(value);
-                  }
-                }
-              ),
-              /* @__PURE__ */ jsx(
-                PropertyField,
-                {
-                  label: "EType",
-                  value: selectedOverlay.eType || "",
-                  onCommit: (value) => {
-                    commitSelectedOverlayText("eType", value);
-                  }
-                }
-              ),
-              /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                /* @__PURE__ */ jsx(
-                  PropertyField,
-                  {
-                    label: "X",
-                    value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.x),
-                    onCommit: (value) => {
-                      commitSelectedOverlayPosition("x", value);
+            /* @__PURE__ */ jsx(
+              "div",
+              {
+                style: {
+                  minHeight: 0,
+                  overflowY: "auto",
+                  paddingRight: 2
+                },
+                children: /* @__PURE__ */ jsx(PropertySection, { children: selectedOverlay ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                  /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: selectedOverlay.widget ? "Widget" : "SVG Overlay" }),
+                  /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedOverlay.id }),
+                  selectedOverlay.widget ? /* @__PURE__ */ jsx(
+                    PropertyReadout,
+                    {
+                      label: "Widget Kind",
+                      value: String(((_a = selectedOverlay.widget) == null ? void 0 : _a.kind) || "").trim() || "Widget"
                     }
-                  }
-                ),
-                /* @__PURE__ */ jsx(
-                  PropertyField,
-                  {
-                    label: "Y",
-                    value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.y),
-                    onCommit: (value) => {
-                      commitSelectedOverlayPosition("y", value);
-                    }
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                /* @__PURE__ */ jsx(
-                  PropertyField,
-                  {
-                    label: "Width",
-                    value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.width),
-                    onCommit: (value) => {
-                      commitSelectedOverlayDimension("width", value);
-                    }
-                  }
-                ),
-                /* @__PURE__ */ jsx(
-                  PropertyField,
-                  {
-                    label: "Height",
-                    value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.height),
-                    onCommit: (value) => {
-                      commitSelectedOverlayDimension("height", value);
-                    }
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                /* @__PURE__ */ jsx(
-                  PropertyField,
-                  {
-                    label: "Scale",
-                    value: formatPanelNumber(selectedOverlay.scale || 1),
-                    onCommit: (value) => {
-                      commitSelectedOverlayNumber("scale", value, { min: 0.05 });
-                    }
-                  }
-                ),
-                /* @__PURE__ */ jsx(
-                  PropertyField,
-                  {
-                    label: "Stroke Width",
-                    value: formatPanelNumber(selectedOverlay.strokeWidth || 0),
-                    onCommit: (value) => {
-                      commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
-                    }
-                  }
-                )
-              ] }),
-              /* @__PURE__ */ jsx(
-                PropertyField,
-                {
-                  label: "Fill",
-                  value: selectedOverlay.fill || "",
-                  onCommit: (value) => {
-                    commitSelectedOverlayFill(value);
-                  }
-                }
-              ),
-              /* @__PURE__ */ jsx(
-                PropertyField,
-                {
-                  label: "Stroke",
-                  value: selectedOverlay.stroke || "",
-                  onCommit: (value) => {
-                    commitSelectedOverlayText("stroke", value);
-                  }
-                }
-              )
-            ] }) : selectedShape ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-              /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: selectedShapeLabel }),
-              /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedShape.id }),
-              /* @__PURE__ */ jsx(
-                PropertyTagPathField,
-                {
-                  label: "Tag Path",
-                  value: selectedShape.tagPath || "",
-                  options: ignitionTagOptions,
-                  loading: ignitionTagsLoading,
-                  error: ignitionTagsError,
-                  onCommit: (value) => {
-                    commitSelectedShapeText("tagPath", value);
-                  }
-                }
-              ),
-              String((selectedShape == null ? void 0 : selectedShape.type) || "").toLowerCase() === "text" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                /* @__PURE__ */ jsx(
-                  PropertyField,
-                  {
-                    label: "Text",
-                    value: selectedShape.text || "",
-                    onCommit: (value) => {
-                      commitSelectedShapeText("text", value);
-                    }
-                  }
-                ),
-                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                  ) : null,
                   /* @__PURE__ */ jsx(
                     PropertyField,
                     {
-                      label: "X",
-                      value: formatPanelNumber(selectedShape.x),
+                      label: "Name",
+                      value: selectedOverlay.name || "",
                       onCommit: (value) => {
-                        commitSelectedShapePosition("x", value);
+                        commitSelectedOverlayText("name", value);
+                      }
+                    }
+                  ),
+                  selectedOverlay.widget && selectedOverlayWidgetSupportsWrite ? /* @__PURE__ */ jsx(
+                    EditorDropdownField,
+                    {
+                      label: "Write Target",
+                      value: selectedOverlayWidgetWriteMode,
+                      sections: [
+                        {
+                          items: [
+                            { value: "ignition", label: "Ignition Tag" },
+                            { value: "opc", label: "Direct OPC" }
+                          ]
+                        }
+                      ],
+                      onChange: (nextValue) => {
+                        commitSelectedOverlayWidgetField("writeMode", nextValue);
+                      }
+                    }
+                  ) : null,
+                  selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "OPC Item Path",
+                        value: selectedOverlay.tagPath || "",
+                        placeholder: "ns=1;s=[PLC]Program:Tags.MyCommand",
+                        onCommit: (value) => {
+                          commitSelectedOverlayTagPath(value);
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "OPC Server",
+                        value: selectedOverlayWidgetOpcServer,
+                        onCommit: (value) => {
+                          commitSelectedOverlayWidgetField("opcServer", String(value != null ? value : ""));
+                        }
+                      }
+                    )
+                  ] }) : /* @__PURE__ */ jsx(
+                    PropertyTagPathField,
+                    {
+                      label: "Tag Path",
+                      value: selectedOverlay.tagPath || "",
+                      options: ignitionTagOptions,
+                      loading: ignitionTagsLoading,
+                      error: ignitionTagsError,
+                      onCommit: (value) => {
+                        commitSelectedOverlayTagPath(value);
                       }
                     }
                   ),
                   /* @__PURE__ */ jsx(
                     PropertyField,
                     {
-                      label: "Y",
-                      value: formatPanelNumber(selectedShape.y),
+                      label: "EType",
+                      value: selectedOverlay.eType || "",
                       onCommit: (value) => {
-                        commitSelectedShapePosition("y", value);
-                      }
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Font Size",
-                      value: formatPanelNumber(selectedShape.fontSize || 24),
-                      onCommit: (value) => {
-                        commitSelectedShapeNumber("fontSize", value, { min: 1 });
+                        commitSelectedOverlayText("eType", value);
                       }
                     }
                   ),
+                  selectedOverlay.widget ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Title",
+                        value: ((_b = selectedOverlay.widget) == null ? void 0 : _b.title) || "",
+                        onCommit: (value) => {
+                          commitSelectedOverlayWidgetField("title", String(value != null ? value : ""));
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Title Font Size",
+                        value: formatPanelNumber((_c = selectedOverlay.widget) == null ? void 0 : _c.titleFontSize),
+                        placeholder: "Auto",
+                        onCommit: (value) => {
+                          const trimmed = String(value != null ? value : "").trim();
+                          if (!trimmed) {
+                            commitSelectedOverlayWidgetField("titleFontSize", "");
+                            return;
+                          }
+                          const next = parsePanelNumber(trimmed);
+                          if (next == null) {
+                            return;
+                          }
+                          commitSelectedOverlayWidgetField("titleFontSize", next);
+                        }
+                      }
+                    ),
+                    String(((_d = selectedOverlay.widget) == null ? void 0 : _d.kind) || "").trim().toLowerCase() === "pushbutton" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Press Value",
+                          value: String(
+                            Object.prototype.hasOwnProperty.call(selectedOverlay.widget || {}, "writeValue") ? selectedOverlay.widget.writeValue : 1
+                          ),
+                          onCommit: (value) => {
+                            commitSelectedOverlayWidgetField("writeValue", String(value != null ? value : ""));
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Release Value",
+                          value: String(
+                            Object.prototype.hasOwnProperty.call(selectedOverlay.widget || {}, "releaseValue") ? selectedOverlay.widget.releaseValue : 0
+                          ),
+                          onCommit: (value) => {
+                            commitSelectedOverlayWidgetField("releaseValue", String(value != null ? value : ""));
+                          }
+                        }
+                      )
+                    ] }) : null
+                  ] }) : null,
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "X",
+                        value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.x),
+                        onCommit: (value) => {
+                          commitSelectedOverlayPosition("x", value);
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Y",
+                        value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.y),
+                        onCommit: (value) => {
+                          commitSelectedOverlayPosition("y", value);
+                        }
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Width",
+                        value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.width),
+                        onCommit: (value) => {
+                          commitSelectedOverlayDimension("width", value);
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Height",
+                        value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.height),
+                        onCommit: (value) => {
+                          commitSelectedOverlayDimension("height", value);
+                        }
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Scale",
+                        value: formatPanelNumber(selectedOverlay.scale || 1),
+                        onCommit: (value) => {
+                          commitSelectedOverlayNumber("scale", value, { min: 0.05 });
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Stroke Width",
+                        value: formatPanelNumber(selectedOverlay.strokeWidth || 0),
+                        onCommit: (value) => {
+                          commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
+                        }
+                      }
+                    )
+                  ] }),
                   /* @__PURE__ */ jsx(
                     PropertyField,
                     {
                       label: "Fill",
-                      value: selectedShape.fill || "",
+                      value: selectedOverlay.fill || "",
                       onCommit: (value) => {
-                        commitSelectedShapeText("fill", value);
-                      }
-                    }
-                  )
-                ] })
-              ] }) : Array.isArray(selectedShape == null ? void 0 : selectedShape.points) ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "X",
-                      value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.x),
-                      onCommit: (value) => {
-                        commitSelectedShapePosition("x", value);
-                      }
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Y",
-                      value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.y),
-                      onCommit: (value) => {
-                        commitSelectedShapePosition("y", value);
-                      }
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Width",
-                      value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.width),
-                      onCommit: (value) => {
-                        commitSelectedShapeBoundsDimension("width", value);
-                      }
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Height",
-                      value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.height),
-                      onCommit: (value) => {
-                        commitSelectedShapeBoundsDimension("height", value);
-                      }
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Stroke",
-                      value: selectedShape.stroke || "",
-                      onCommit: (value) => {
-                        commitSelectedShapeText("stroke", value);
-                      }
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Stroke Width",
-                      value: formatPanelNumber(selectedShape.strokeWidth || 0),
-                      onCommit: (value) => {
-                        commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
-                      }
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsx(
-                  PropertyReadout,
-                  {
-                    label: "Points",
-                    value: String(coerceArray(selectedShape.points).length)
-                  }
-                )
-              ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
-                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "X",
-                      value: formatPanelNumber(selectedShape.x),
-                      onCommit: (value) => {
-                        commitSelectedShapePosition("x", value);
-                      }
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Y",
-                      value: formatPanelNumber(selectedShape.y),
-                      onCommit: (value) => {
-                        commitSelectedShapePosition("y", value);
-                      }
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Width",
-                      value: formatPanelNumber(selectedShape.width || 0),
-                      onCommit: (value) => {
-                        commitSelectedShapeNumber("width", value, { min: 0 });
-                      }
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Height",
-                      value: formatPanelNumber(selectedShape.height || 0),
-                      onCommit: (value) => {
-                        commitSelectedShapeNumber("height", value, { min: 0 });
-                      }
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Fill",
-                      value: selectedShape.fill || "",
-                      onCommit: (value) => {
-                        commitSelectedShapeText("fill", value);
+                        commitSelectedOverlayFill(value);
                       }
                     }
                   ),
@@ -26036,44 +27279,292 @@ var MesoraDrawingToolBundle = (() => {
                     PropertyField,
                     {
                       label: "Stroke",
-                      value: selectedShape.stroke || "",
+                      value: selectedOverlay.stroke || "",
                       onCommit: (value) => {
-                        commitSelectedShapeText("stroke", value);
+                        commitSelectedOverlayText("stroke", value);
                       }
                     }
                   )
-                ] }),
-                /* @__PURE__ */ jsx(
-                  PropertyField,
-                  {
-                    label: "Stroke Width",
-                    value: formatPanelNumber(selectedShape.strokeWidth || 0),
-                    onCommit: (value) => {
-                      commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
+                ] }) : selectedShape ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                  /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: selectedShapeLabel }),
+                  /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedShape.id }),
+                  /* @__PURE__ */ jsx(
+                    PropertyTagPathField,
+                    {
+                      label: "Tag Path",
+                      value: selectedShape.tagPath || "",
+                      options: ignitionTagOptions,
+                      loading: ignitionTagsLoading,
+                      error: ignitionTagsError,
+                      onCommit: (value) => {
+                        commitSelectedShapeText("tagPath", value);
+                      }
                     }
-                  }
-                )
-              ] })
-            ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
-              /* @__PURE__ */ jsx(
-                PropertyReadout,
-                {
-                  label: "Selection",
-                  value: `${selectedOverlayIds.length} SVGs, ${selectedIds.length} shapes`
-                }
-              ),
-              /* @__PURE__ */ jsx(
-                "div",
-                {
-                  style: {
-                    fontSize: 12,
-                    lineHeight: 1.5,
-                    color: "rgba(226, 232, 240, 0.72)"
-                  },
-                  children: "Select a single SVG or shape to edit its properties."
-                }
-              )
-            ] }) })
+                  ),
+                  String((selectedShape == null ? void 0 : selectedShape.type) || "").toLowerCase() === "text" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Text",
+                        value: selectedShape.text || "",
+                        onCommit: (value) => {
+                          commitSelectedShapeText("text", value);
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "X",
+                          value: formatPanelNumber(selectedShape.x),
+                          onCommit: (value) => {
+                            commitSelectedShapePosition("x", value);
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Y",
+                          value: formatPanelNumber(selectedShape.y),
+                          onCommit: (value) => {
+                            commitSelectedShapePosition("y", value);
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Font Size",
+                          value: formatPanelNumber(selectedShape.fontSize || 24),
+                          onCommit: (value) => {
+                            commitSelectedShapeNumber("fontSize", value, { min: 1 });
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Fill",
+                          value: selectedShape.fill || "",
+                          onCommit: (value) => {
+                            commitSelectedShapeText("fill", value);
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Scale",
+                          value: formatPanelNumber(selectedShape.scaleFactor),
+                          placeholder: "1",
+                          onCommit: (value) => {
+                            commitSelectedShapeOptionalNumber("scaleFactor", value);
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Decimals",
+                          value: formatPanelNumber(selectedShape.decimals),
+                          placeholder: "Auto",
+                          onCommit: (value) => {
+                            commitSelectedShapeOptionalNumber("decimals", value, { min: 0 });
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Units",
+                        value: selectedShape.unit || "",
+                        placeholder: "psi",
+                        onCommit: (value) => {
+                          commitSelectedShapeText("unit", value);
+                        }
+                      }
+                    )
+                  ] }) : Array.isArray(selectedShape == null ? void 0 : selectedShape.points) ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "X",
+                          value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.x),
+                          onCommit: (value) => {
+                            commitSelectedShapePosition("x", value);
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Y",
+                          value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.y),
+                          onCommit: (value) => {
+                            commitSelectedShapePosition("y", value);
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Width",
+                          value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.width),
+                          onCommit: (value) => {
+                            commitSelectedShapeBoundsDimension("width", value);
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Height",
+                          value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.height),
+                          onCommit: (value) => {
+                            commitSelectedShapeBoundsDimension("height", value);
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Stroke",
+                          value: selectedShape.stroke || "",
+                          onCommit: (value) => {
+                            commitSelectedShapeText("stroke", value);
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Stroke Width",
+                          value: formatPanelNumber(selectedShape.strokeWidth || 0),
+                          onCommit: (value) => {
+                            commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsx(
+                      PropertyReadout,
+                      {
+                        label: "Points",
+                        value: String(coerceArray(selectedShape.points).length)
+                      }
+                    )
+                  ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "X",
+                          value: formatPanelNumber(selectedShape.x),
+                          onCommit: (value) => {
+                            commitSelectedShapePosition("x", value);
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Y",
+                          value: formatPanelNumber(selectedShape.y),
+                          onCommit: (value) => {
+                            commitSelectedShapePosition("y", value);
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Width",
+                          value: formatPanelNumber(selectedShape.width || 0),
+                          onCommit: (value) => {
+                            commitSelectedShapeNumber("width", value, { min: 0 });
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Height",
+                          value: formatPanelNumber(selectedShape.height || 0),
+                          onCommit: (value) => {
+                            commitSelectedShapeNumber("height", value, { min: 0 });
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Fill",
+                          value: selectedShape.fill || "",
+                          onCommit: (value) => {
+                            commitSelectedShapeText("fill", value);
+                          }
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Stroke",
+                          value: selectedShape.stroke || "",
+                          onCommit: (value) => {
+                            commitSelectedShapeText("stroke", value);
+                          }
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsx(
+                      PropertyField,
+                      {
+                        label: "Stroke Width",
+                        value: formatPanelNumber(selectedShape.strokeWidth || 0),
+                        onCommit: (value) => {
+                          commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
+                        }
+                      }
+                    )
+                  ] })
+                ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
+                  /* @__PURE__ */ jsx(
+                    PropertyReadout,
+                    {
+                      label: "Selection",
+                      value: `${selectedOverlayIds.length} SVGs, ${selectedIds.length} shapes`
+                    }
+                  ),
+                  /* @__PURE__ */ jsx(
+                    "div",
+                    {
+                      style: {
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        color: "rgba(226, 232, 240, 0.72)"
+                      },
+                      children: "Select a single SVG or shape to edit its properties."
+                    }
+                  )
+                ] }) })
+              }
+            )
           ]
         }
       ) : null,
@@ -26106,6 +27597,162 @@ var MesoraDrawingToolBundle = (() => {
               dockWidth: svgDrawerLayout.width
             }
           )
+        }
+      ) : null,
+      editorVisible && widgetOpen ? /* @__PURE__ */ jsx(
+        "div",
+        {
+          style: {
+            "--bg-elev": "rgba(15, 23, 42, 0.98)",
+            "--bg-soft": "rgba(15, 23, 42, 0.92)",
+            "--border": "rgba(71, 85, 105, 0.9)",
+            "--text": "#f8fafc",
+            "--text-muted": "rgba(226, 232, 240, 0.72)"
+          },
+          children: /* @__PURE__ */ jsx(
+            WidgetSelectorModal,
+            {
+              open: widgetOpen,
+              onClose: () => setWidgetOpen(false),
+              onPickWidget,
+              docked: true,
+              absoluteDocked: true,
+              appearance: "ignition-drawer",
+              attached: true,
+              dockLeft: widgetDrawerLayout.left,
+              dockTop: widgetDrawerLayout.top,
+              dockBottom: widgetDrawerLayout.bottom,
+              dockWidth: widgetDrawerLayout.width
+            }
+          )
+        }
+      ) : null,
+      editorVisible && helpOpen ? /* @__PURE__ */ jsxs(
+        "div",
+        {
+          style: {
+            position: "absolute",
+            left: helpDrawerLayout.left,
+            top: helpDrawerLayout.top,
+            bottom: helpDrawerLayout.bottom,
+            width: helpDrawerLayout.width,
+            zIndex: 58,
+            display: "grid",
+            gridTemplateRows: "auto 1fr",
+            borderRadius: 22,
+            border: "1px solid rgba(71, 85, 105, 0.9)",
+            background: "linear-gradient(180deg, rgba(2, 6, 23, 0.98) 0%, rgba(15, 23, 42, 0.96) 100%)",
+            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)",
+            overflow: "hidden"
+          },
+          onPointerDown: stopInteractivePropagation,
+          onMouseDown: stopInteractivePropagation,
+          onMouseUp: stopInteractivePropagation,
+          onClick: stopInteractivePropagation,
+          onDoubleClick: stopInteractivePropagation,
+          onKeyDown: stopInteractivePropagation,
+          onKeyUp: stopInteractivePropagation,
+          onContextMenu: stopInteractivePropagation,
+          children: [
+            /* @__PURE__ */ jsxs(
+              "div",
+              {
+                style: {
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "18px 18px 14px",
+                  borderBottom: "1px solid rgba(71, 85, 105, 0.6)"
+                },
+                children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 22, fontWeight: 800, color: "#f8fafc" }, children: "Ignition Tool Help" }),
+                    /* @__PURE__ */ jsx("div", { style: { fontSize: 12, lineHeight: 1.5, color: "rgba(226, 232, 240, 0.72)" }, children: "Quick reference for drawing, bindings, widgets, and shortcuts in the Vizi Ignition tool." })
+                  ] }),
+                  /* @__PURE__ */ jsx(
+                    "button",
+                    {
+                      type: "button",
+                      onClick: () => setHelpOpen(false),
+                      style: {
+                        border: "1px solid rgba(71, 85, 105, 0.9)",
+                        background: "rgba(15, 23, 42, 0.88)",
+                        color: "#f8fafc",
+                        minWidth: 32,
+                        height: 32,
+                        padding: "0 10px",
+                        borderRadius: 999,
+                        fontSize: 14,
+                        fontWeight: 700,
+                        cursor: "pointer"
+                      },
+                      children: "x"
+                    }
+                  )
+                ]
+              }
+            ),
+            /* @__PURE__ */ jsx(
+              "div",
+              {
+                style: {
+                  overflowY: "auto",
+                  padding: 18,
+                  display: "grid",
+                  gap: 16
+                },
+                children: IGNITION_TOOL_HELP_SECTIONS.map((section) => /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    style: {
+                      display: "grid",
+                      gap: 8,
+                      padding: 14,
+                      borderRadius: 16,
+                      border: "1px solid rgba(51, 65, 85, 0.72)",
+                      background: "rgba(15, 23, 42, 0.62)"
+                    },
+                    children: [
+                      /* @__PURE__ */ jsx(
+                        "div",
+                        {
+                          style: {
+                            fontSize: 12,
+                            fontWeight: 800,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "#f8fafc"
+                          },
+                          children: section.title
+                        }
+                      ),
+                      /* @__PURE__ */ jsx("div", { style: { display: "grid", gap: 8 }, children: section.items.map((item) => /* @__PURE__ */ jsxs(
+                        "div",
+                        {
+                          style: {
+                            display: "grid",
+                            gridTemplateColumns: "10px 1fr",
+                            gap: 8,
+                            alignItems: "start",
+                            color: "rgba(226, 232, 240, 0.84)",
+                            fontSize: 13,
+                            lineHeight: 1.55
+                          },
+                          children: [
+                            /* @__PURE__ */ jsx("span", { style: { color: "#60a5fa" }, children: "\u2022" }),
+                            /* @__PURE__ */ jsx("span", { children: item })
+                          ]
+                        },
+                        item
+                      )) })
+                    ]
+                  },
+                  section.title
+                ))
+              }
+            )
+          ]
         }
       ) : null
     ] });
@@ -26354,6 +28001,20 @@ var MesoraDrawingToolBundle = (() => {
       height: DEFAULT_CANVAS_HEIGHT2
     };
   }
+  function getPerspectiveClientStore2(props) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
+    const nestedProps = getComponentPropSource2(props);
+    return ((_c = (_b = (_a = props == null ? void 0 : props.store) == null ? void 0 : _a.view) == null ? void 0 : _b.page) == null ? void 0 : _c.parent) || ((_f = (_e = (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.view) == null ? void 0 : _e.page) == null ? void 0 : _f.parent) || ((_h = (_g = props == null ? void 0 : props.store) == null ? void 0 : _g.page) == null ? void 0 : _h.parent) || ((_j = (_i = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _i.page) == null ? void 0 : _j.parent) || (typeof window !== "undefined" ? window.__client : null) || (typeof window !== "undefined" ? (_m = (_l = (_k = window._perspective_designer) == null ? void 0 : _k.store) == null ? void 0 : _l.page) == null ? void 0 : _m.parent : null) || null;
+  }
+  function normalizeOverlayPopupViewName2(value) {
+    return String(value || "").trim().replace(/\.svg$/i, "").replace(/^\/+|\/+$/g, "");
+  }
+  function resolveOverlayPopupViewPath2(overlay) {
+    const popupViewName = normalizeOverlayPopupViewName2(
+      (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
+    );
+    return popupViewName ? `Popups/${popupViewName}` : "";
+  }
   function coerceArray2(value) {
     return Array.isArray(value) ? value : [];
   }
@@ -26566,19 +28227,21 @@ var MesoraDrawingToolBundle = (() => {
   }
   function getPersistedArrayValue2(props, key, fallback = EMPTY_ARRAY2) {
     const source = getComponentPropSource2(props);
-    const direct = source == null ? void 0 : source[key];
-    const modelValue = isPlainObject2(source == null ? void 0 : source.model) ? source.model[key] : void 0;
-    if (Array.isArray(direct) && direct.length > 0) {
-      return direct;
-    }
-    if (Array.isArray(modelValue) && modelValue.length > 0) {
+    const hasDirectValue = Object.prototype.hasOwnProperty.call(source, key);
+    const hasModelValue = isPlainObject2(source == null ? void 0 : source.model) && Object.prototype.hasOwnProperty.call(source.model, key);
+    const direct = hasDirectValue ? source[key] : void 0;
+    const modelValue = hasModelValue ? source.model[key] : void 0;
+    if (hasModelValue && Array.isArray(modelValue)) {
       return modelValue;
     }
-    if (Array.isArray(direct)) {
+    if (hasDirectValue && Array.isArray(direct)) {
       return direct;
     }
     if (Array.isArray(modelValue)) {
       return modelValue;
+    }
+    if (Array.isArray(direct)) {
+      return direct;
     }
     return fallback;
   }
@@ -26818,8 +28481,30 @@ var MesoraDrawingToolBundle = (() => {
   }
   function writeComponentProp2(props, path, value) {
     var _a;
+    const sanitizePerspectiveValue = (nextValue) => {
+      if (nextValue === void 0 || nextValue === null) {
+        return void 0;
+      }
+      if (Array.isArray(nextValue)) {
+        return nextValue.map((item) => sanitizePerspectiveValue(item)).filter((item) => item !== void 0);
+      }
+      if (isPlainObject2(nextValue)) {
+        return Object.entries(nextValue).reduce((acc, [key, entryValue]) => {
+          const sanitizedEntry = sanitizePerspectiveValue(entryValue);
+          if (sanitizedEntry !== void 0) {
+            acc[key] = sanitizedEntry;
+          }
+          return acc;
+        }, {});
+      }
+      return nextValue;
+    };
     const candidatePaths = path.startsWith("model.") ? [path] : [path, `model.${path}`];
     const writers = [];
+    const sanitizedValue = sanitizePerspectiveValue(value);
+    if (sanitizedValue === void 0) {
+      return false;
+    }
     if (((_a = props == null ? void 0 : props.store) == null ? void 0 : _a.props) && typeof props.store.props.write === "function") {
       writers.push(props.store.props.write.bind(props.store.props));
     }
@@ -26830,7 +28515,7 @@ var MesoraDrawingToolBundle = (() => {
     writers.forEach((writePath) => {
       candidatePaths.forEach((candidatePath) => {
         try {
-          writePath(candidatePath, value);
+          writePath(candidatePath, sanitizedValue);
           wrote = true;
         } catch (_error) {
         }
@@ -26975,10 +28660,67 @@ var MesoraDrawingToolBundle = (() => {
       setSelectedIds(id ? [String(id)] : []);
       setSelectedOverlayIds([]);
     }, []);
-    const handleOverlayMouseDown = useCallback((_event, id) => {
-      setSelectedOverlayIds(id ? [String(id)] : []);
-      setSelectedIds([]);
-    }, []);
+    const openOverlayPopup = useCallback((overlay) => {
+      if (!overlay || overlay.widget) {
+        return false;
+      }
+      const viewPath = resolveOverlayPopupViewPath2(overlay);
+      if (!viewPath) {
+        return false;
+      }
+      const clientStore = getPerspectiveClientStore2(props);
+      const mounts = clientStore == null ? void 0 : clientStore.mounts;
+      if (!mounts || typeof mounts.activatePopup !== "function") {
+        return false;
+      }
+      const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
+      const popupViewName = normalizeOverlayPopupViewName2(
+        (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
+      );
+      const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
+      const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
+      if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => (popup == null ? void 0 : popup.id) === popupId)) {
+        if (typeof mounts.closePopup === "function") {
+          mounts.closePopup(popupId);
+        }
+      }
+      mounts.activatePopup({
+        id: popupId,
+        viewPath,
+        viewParams: {
+          overlayId,
+          eType: popupViewName,
+          name: popupTitle,
+          tagPath: String((overlay == null ? void 0 : overlay.tagPath) || "").trim()
+        },
+        title: popupTitle,
+        showCloseIcon: true,
+        draggable: true,
+        resizable: true,
+        modal: false,
+        overlayDismiss: false
+      });
+      if (typeof mounts.focusPopup === "function") {
+        mounts.focusPopup(popupId);
+      }
+      return true;
+    }, [props]);
+    const handleOverlayMouseDown = useCallback((event, id) => {
+      var _a, _b;
+      const overlayId = id ? String(id) : "";
+      const overlay = svgOverlays.find((item) => String((item == null ? void 0 : item.id) || "") === overlayId);
+      if (!overlay) {
+        return;
+      }
+      if (editorVisible) {
+        setSelectedOverlayIds([overlayId]);
+        setSelectedIds([]);
+        return;
+      }
+      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
+      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      openOverlayPopup(overlay);
+    }, [editorVisible, openOverlayPopup, setSelectedIds, setSelectedOverlayIds, svgOverlays]);
     const zoom = Number(getModelValue2(props, "zoom", 1)) || 1;
     const pan = getModelValue2(props, "pan", { x: 0, y: 0 });
     const showGrid = Boolean(getModelValue2(props, "showGrid", false));
@@ -27145,7 +28887,7 @@ var MesoraDrawingToolBundle = (() => {
           selectedOverlayIds: editorVisible ? selectedOverlayIds : EMPTY_ARRAY2,
           singleSelectedOverlayId: editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null,
           setOverlayRef: NOOP2,
-          onOverlayMouseDown: editorVisible ? handleOverlayMouseDown : NOOP2,
+          onOverlayMouseDown: handleOverlayMouseDown,
           onOverlayDoubleClick: NOOP2,
           overlaySelectionUI: null,
           overlayGroupSelectionUI: null,

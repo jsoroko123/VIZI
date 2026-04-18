@@ -282,6 +282,35 @@ function parseViewBoxParts(raw) {
     };
 }
 
+function getPerspectiveClientStore(props) {
+    const nestedProps = getComponentPropSource(props);
+    return (
+        props?.store?.view?.page?.parent
+        || nestedProps?.store?.view?.page?.parent
+        || props?.store?.page?.parent
+        || nestedProps?.store?.page?.parent
+        || (typeof window !== "undefined" ? window.__client : null)
+        || (typeof window !== "undefined" ? window._perspective_designer?.store?.page?.parent : null)
+        || null
+    );
+}
+
+function normalizeOverlayPopupViewName(value) {
+    return String(value || "")
+        .trim()
+        .replace(/\.svg$/i, "")
+        .replace(/^\/+|\/+$/g, "");
+}
+
+function resolveOverlayPopupViewPath(overlay) {
+    const popupViewName = normalizeOverlayPopupViewName(
+        overlay?.eType
+        || overlay?.name
+        || overlay?.sourceKey
+    );
+    return popupViewName ? `Popups/${popupViewName}` : "";
+}
+
 function coerceArray(value) {
     return Array.isArray(value) ? value : [];
 }
@@ -549,20 +578,27 @@ function detectPerspectiveRootComponent(props) {
 
 function getPersistedArrayValue(props, key, fallback = EMPTY_ARRAY) {
     const source = getComponentPropSource(props);
-    const direct = source?.[key];
-    const modelValue = isPlainObject(source?.model) ? source.model[key] : undefined;
+    const hasDirectValue = Object.prototype.hasOwnProperty.call(source, key);
+    const hasModelValue = isPlainObject(source?.model)
+        && Object.prototype.hasOwnProperty.call(source.model, key);
+    const direct = hasDirectValue ? source[key] : undefined;
+    const modelValue = hasModelValue ? source.model[key] : undefined;
 
-    if (Array.isArray(direct) && direct.length > 0) {
-        return direct;
-    }
-    if (Array.isArray(modelValue) && modelValue.length > 0) {
+    // The bridge writes both top-level props and model props, but in practice
+    // the model path is the more reliable one to rehydrate from after local edits.
+    // Prefer an explicitly-present model array so widget/svg edits do not snap
+    // back to stale top-level reducer values on the next render.
+    if (hasModelValue && Array.isArray(modelValue)) {
         return modelValue;
     }
-    if (Array.isArray(direct)) {
+    if (hasDirectValue && Array.isArray(direct)) {
         return direct;
     }
     if (Array.isArray(modelValue)) {
         return modelValue;
+    }
+    if (Array.isArray(direct)) {
+        return direct;
     }
     return fallback;
 }
@@ -858,8 +894,37 @@ function normalizeSvgCatalogEntries(value) {
 }
 
 function writeComponentProp(props, path, value) {
+    const sanitizePerspectiveValue = (nextValue) => {
+        if (nextValue === undefined || nextValue === null) {
+            return undefined;
+        }
+
+        if (Array.isArray(nextValue)) {
+            return nextValue
+                .map((item) => sanitizePerspectiveValue(item))
+                .filter((item) => item !== undefined);
+        }
+
+        if (isPlainObject(nextValue)) {
+            return Object.entries(nextValue).reduce((acc, [key, entryValue]) => {
+                const sanitizedEntry = sanitizePerspectiveValue(entryValue);
+                if (sanitizedEntry !== undefined) {
+                    acc[key] = sanitizedEntry;
+                }
+                return acc;
+            }, {});
+        }
+
+        return nextValue;
+    };
+
     const candidatePaths = path.startsWith("model.") ? [path] : [path, `model.${path}`];
     const writers = [];
+    const sanitizedValue = sanitizePerspectiveValue(value);
+
+    if (sanitizedValue === undefined) {
+        return false;
+    }
 
     if (props?.store?.props && typeof props.store.props.write === "function") {
         writers.push(props.store.props.write.bind(props.store.props));
@@ -872,7 +937,7 @@ function writeComponentProp(props, path, value) {
     writers.forEach((writePath) => {
         candidatePaths.forEach((candidatePath) => {
             try {
-                writePath(candidatePath, value);
+                writePath(candidatePath, sanitizedValue);
                 wrote = true;
             } catch (_error) {
             }
@@ -1045,10 +1110,80 @@ function ViziCanvasBridge(props) {
         setSelectedOverlayIds([]);
     }, []);
 
-    const handleOverlayMouseDown = useCallback((_event, id) => {
-        setSelectedOverlayIds(id ? [String(id)] : []);
-        setSelectedIds([]);
-    }, []);
+    const openOverlayPopup = useCallback((overlay) => {
+        if (!overlay || overlay.widget) {
+            return false;
+        }
+
+        const viewPath = resolveOverlayPopupViewPath(overlay);
+        if (!viewPath) {
+            return false;
+        }
+
+        const clientStore = getPerspectiveClientStore(props);
+        const mounts = clientStore?.mounts;
+        if (!mounts || typeof mounts.activatePopup !== "function") {
+            return false;
+        }
+
+        const overlayId = String(overlay?.id || "").trim();
+        const popupViewName = normalizeOverlayPopupViewName(
+            overlay?.eType
+            || overlay?.name
+            || overlay?.sourceKey
+        );
+        const popupTitle = String(overlay?.name || popupViewName || "Popup")
+            .trim()
+            .replace(/\.svg$/i, "");
+        const popupId = overlayId
+            ? `svg-popup-${overlayId}`
+            : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
+
+        if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => popup?.id === popupId)) {
+            if (typeof mounts.closePopup === "function") {
+                mounts.closePopup(popupId);
+            }
+        }
+
+        mounts.activatePopup({
+            id: popupId,
+            viewPath,
+            viewParams: {
+                overlayId,
+                eType: popupViewName,
+                name: popupTitle,
+                tagPath: String(overlay?.tagPath || "").trim()
+            },
+            title: popupTitle,
+            showCloseIcon: true,
+            draggable: true,
+            resizable: true,
+            modal: false,
+            overlayDismiss: false
+        });
+        if (typeof mounts.focusPopup === "function") {
+            mounts.focusPopup(popupId);
+        }
+        return true;
+    }, [props]);
+
+    const handleOverlayMouseDown = useCallback((event, id) => {
+        const overlayId = id ? String(id) : "";
+        const overlay = svgOverlays.find((item) => String(item?.id || "") === overlayId);
+        if (!overlay) {
+            return;
+        }
+
+        if (editorVisible) {
+            setSelectedOverlayIds([overlayId]);
+            setSelectedIds([]);
+            return;
+        }
+
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        openOverlayPopup(overlay);
+    }, [editorVisible, openOverlayPopup, setSelectedIds, setSelectedOverlayIds, svgOverlays]);
 
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
@@ -1237,7 +1372,7 @@ function ViziCanvasBridge(props) {
                 selectedOverlayIds={editorVisible ? selectedOverlayIds : EMPTY_ARRAY}
                 singleSelectedOverlayId={editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null}
                 setOverlayRef={NOOP}
-                onOverlayMouseDown={editorVisible ? handleOverlayMouseDown : NOOP}
+                onOverlayMouseDown={handleOverlayMouseDown}
                 onOverlayDoubleClick={NOOP}
                 overlaySelectionUI={null}
                 overlayGroupSelectionUI={null}

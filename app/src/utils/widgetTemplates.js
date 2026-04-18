@@ -1,3 +1,33 @@
+export const DEFAULT_WIDGET_WRITE_MODE = "ignition";
+export const DEFAULT_WIDGET_OPC_SERVER = "Ignition OPC UA Server";
+
+export function resolveWidgetWriteMode(widget, tagPath = "") {
+  const explicit = String(
+    widget?.writeMode
+    ?? widget?.writeTarget
+    ?? widget?.tagSource
+    ?? ""
+  ).trim().toLowerCase();
+  if (explicit === "opc" || explicit === "ignition") {
+    return explicit;
+  }
+  const normalizedTagPath = String(tagPath || "").trim();
+  if (normalizedTagPath.startsWith("[")) {
+    return "ignition";
+  }
+  return normalizedTagPath ? "opc" : DEFAULT_WIDGET_WRITE_MODE;
+}
+
+export function resolveWidgetOpcServer(widget) {
+  const explicit = String(
+    widget?.opcServer
+    ?? widget?.opcServerName
+    ?? widget?.serverName
+    ?? ""
+  ).trim();
+  return explicit || DEFAULT_WIDGET_OPC_SERVER;
+}
+
 export function widgetTemplate(widgetKey) {
   const templates = {
     lineChart: {
@@ -53,6 +83,13 @@ export function defaultWidgetSettings(widgetKey) {
   const base = {
     kind: kind || "lineChart",
     title: "",
+    titleFontSize: "",
+    writeMode: DEFAULT_WIDGET_WRITE_MODE,
+    opcServer: DEFAULT_WIDGET_OPC_SERVER,
+    writeValue: 1,
+    releaseValue: 0,
+    onValue: 1,
+    offValue: 0,
     min: 0,
     max: 100,
     decimals: 0,

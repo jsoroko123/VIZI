@@ -8,7 +8,7 @@ plugins {
 }
 
 allprojects {
-version = "0.1.79-SNAPSHOT"
+version = "0.1.104-SNAPSHOT"
     group = "com.mesora.perspective.drawing"
 }
 
@@ -132,12 +132,24 @@ tasks.named<SignModule>("signModule") {
     }
 }
 
+tasks.matching { it.name == "assembleModlStructure" }.configureEach {
+    doFirst {
+        delete(layout.buildDirectory.dir("moduleContent"))
+        delete(layout.buildDirectory.dir("modl-unpack-check"))
+        delete(layout.buildDirectory.file("MesoraPerspectiveDrawingTool.modl"))
+        delete(layout.buildDirectory.file("MesoraPerspectiveDrawingTool.unsigned.modl"))
+        delete(layout.buildDirectory.file("MesoraPerspectiveDrawingTool.zip"))
+        delete(layout.buildDirectory.file("buildResult.json"))
+    }
+}
+
 val deepClean by tasks.registering {
     dependsOn(allprojects.map { "${it.path}:clean" })
     description = "Executes clean tasks for all subprojects."
-    doLast {
-        delete(file(".gradle"))
-    }
+}
+
+tasks.named("build") {
+    mustRunAfter(deepClean)
 }
 
 val signingStatus by tasks.registering {
@@ -164,5 +176,6 @@ val buildSigned by tasks.registering {
             throw GradleException(signingSetupError())
         }
     }
+    dependsOn(deepClean)
     dependsOn("build")
 }

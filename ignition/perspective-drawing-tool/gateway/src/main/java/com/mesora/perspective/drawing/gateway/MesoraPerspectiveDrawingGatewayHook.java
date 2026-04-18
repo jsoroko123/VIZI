@@ -20,6 +20,7 @@ import com.inductiveautomation.ignition.common.browsing.Results;
 import com.inductiveautomation.ignition.common.gson.Gson;
 import com.inductiveautomation.ignition.common.gson.GsonBuilder;
 import com.inductiveautomation.ignition.common.licensing.LicenseState;
+import com.inductiveautomation.ignition.common.model.values.BasicQualifiedValue;
 import com.inductiveautomation.ignition.common.model.values.QualifiedValue;
 import com.inductiveautomation.ignition.common.tags.browsing.NodeDescription;
 import com.inductiveautomation.ignition.common.tags.config.types.TagObjectType;
@@ -33,6 +34,7 @@ import com.inductiveautomation.ignition.gateway.dataroutes.RouteGroup;
 import com.inductiveautomation.ignition.gateway.model.AbstractGatewayModuleHook;
 import com.inductiveautomation.ignition.gateway.model.GatewayContext;
 import com.inductiveautomation.ignition.gateway.tags.model.GatewayTagManager;
+import com.inductiveautomation.ignition.gateway.util.BasicWriteRequest;
 import com.inductiveautomation.perspective.common.api.ComponentRegistry;
 import com.inductiveautomation.perspective.gateway.api.PerspectiveContext;
 import com.mesora.perspective.drawing.common.comp.DrawingTool;
@@ -46,6 +48,7 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
     private static final long BROWSE_TIMEOUT_SECONDS = 5;
     private static final int BROWSE_PAGE_GUARD = 100;
     private static final String SYSTEM_PROVIDER_NAME = "System";
+    private static final String DEFAULT_OPC_SERVER_NAME = "Ignition OPC UA Server";
 
     private GatewayContext gatewayContext;
     private ComponentRegistry componentRegistry;
@@ -98,6 +101,29 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
 
         routes.newRoute("/ignition-tag-values")
             .handler((request, response) -> readIgnitionTagValues(request == null ? null : request.getParameter("paths")))
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
+        routes.newRoute("/ignition-tag-write")
+            .handler((request, response) -> writeIgnitionTagValue(
+                request == null ? null : request.getParameter("path"),
+                request == null ? null : request.getParameter("value")
+            ))
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
+        routes.newRoute("/opc-write")
+            .handler((request, response) -> writeOpcValue(
+                request == null ? null : request.getParameter("server"),
+                request == null ? null : request.getParameter("path"),
+                request == null ? null : request.getParameter("value")
+            ))
             .renderer(gson::toJson)
             .type(RouteGroup.TYPE_JSON)
             .accessControl(AccessControlStrategy.OPEN_ROUTE)
@@ -248,6 +274,120 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         }
 
         return new IgnitionTagValueResponse(values, "");
+    }
+
+    private IgnitionTagWriteResponse writeIgnitionTagValue(String rawPath, String rawValue) {
+        GatewayTagManager tagManager = this.gatewayContext == null ? null : this.gatewayContext.getTagManager();
+        if (tagManager == null) {
+            return new IgnitionTagWriteResponse(String.valueOf(rawPath).trim(), null, "", "Ignition tag manager was unavailable.");
+        }
+
+        String pathText = String.valueOf(rawPath).trim();
+        if (pathText.isBlank()) {
+            return new IgnitionTagWriteResponse("", null, "", "Ignition tag path is required.");
+        }
+
+        TagPath parsedPath = TagPathParser.parseSafe(pathText);
+        if (parsedPath == null) {
+            return new IgnitionTagWriteResponse(pathText, null, "", "Failed to parse Ignition tag path.");
+        }
+
+        String provider = String.valueOf(parsedPath.getSource()).trim();
+        if (provider.isBlank()) {
+            provider = inferProviderFromPath(pathText);
+        }
+        if (!isBrowsableIgnitionProvider(provider)) {
+            return new IgnitionTagWriteResponse(pathText, null, "", "Ignition tag provider was unavailable.");
+        }
+
+        TagProvider tagProvider = tagManager.getTagProvider(provider);
+        if (tagProvider == null) {
+            return new IgnitionTagWriteResponse(pathText, null, "", "Ignition tag provider was unavailable.");
+        }
+
+        Object normalizedValue = parseIncomingWriteValue(rawValue);
+
+        try {
+            List<QualifiedValue> values = List.of(new BasicQualifiedValue(normalizedValue));
+            List<?> results = tagProvider
+                .writeAsync(List.of(parsedPath), values, null)
+                .get(BROWSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+            String quality = "";
+            String error = "";
+            if (results != null && !results.isEmpty() && results.get(0) != null) {
+                Object result = results.get(0);
+                quality = String.valueOf(result);
+                try {
+                    Object good = result.getClass().getMethod("isGood").invoke(result);
+                    if (good instanceof Boolean && !((Boolean) good)) {
+                        error = quality.isBlank() ? "Ignition write failed." : quality;
+                    }
+                } catch (Exception _ignored) {
+                }
+            }
+
+            return new IgnitionTagWriteResponse(pathText, normalizeQualifiedValue(normalizedValue), quality, error);
+        } catch (Exception e) {
+            logger.warnf(
+                "Failed to write Ignition tag value for '%s': %s",
+                pathText,
+                String.valueOf(e.getMessage())
+            );
+            return new IgnitionTagWriteResponse(pathText, normalizeQualifiedValue(normalizedValue), "", String.valueOf(e.getMessage()));
+        }
+    }
+
+    private OpcWriteResponse writeOpcValue(String rawServerName, String rawPath, String rawValue) {
+        String serverName = rawServerName == null ? "" : String.valueOf(rawServerName).trim();
+        if (serverName.isBlank()) {
+            serverName = DEFAULT_OPC_SERVER_NAME;
+        }
+
+        String pathText = rawPath == null ? "" : String.valueOf(rawPath).trim();
+        if (pathText.isBlank()) {
+            return new OpcWriteResponse(serverName, "", null, "", "OPC item path is required.");
+        }
+
+        if (this.gatewayContext == null || this.gatewayContext.getOpcManager() == null) {
+            return new OpcWriteResponse(serverName, pathText, null, "", "OPC manager was unavailable.");
+        }
+
+        Object normalizedValue = parseIncomingWriteValue(rawValue);
+
+        try {
+            List<com.inductiveautomation.ignition.gateway.util.OPCWriteRequest> requests = List.of(
+                new BasicWriteRequest(serverName, pathText, normalizedValue)
+            );
+            List<com.inductiveautomation.ignition.common.model.values.QualityCode> results =
+                this.gatewayContext.getOpcManager().write(requests);
+
+            String quality = "";
+            String error = "";
+            if (results != null && !results.isEmpty() && results.get(0) != null) {
+                com.inductiveautomation.ignition.common.model.values.QualityCode result = results.get(0);
+                quality = String.valueOf(result);
+                if (!result.isGood()) {
+                    error = quality.isBlank() ? "OPC write failed." : quality;
+                }
+            }
+
+            return new OpcWriteResponse(serverName, pathText, normalizeQualifiedValue(normalizedValue), quality, error);
+        } catch (Exception e) {
+            logger.warnf(
+                "Failed to write OPC value for server '%s' path '%s': %s",
+                serverName,
+                pathText,
+                String.valueOf(e.getMessage())
+            );
+            return new OpcWriteResponse(
+                serverName,
+                pathText,
+                normalizeQualifiedValue(normalizedValue),
+                "",
+                String.valueOf(e.getMessage())
+            );
+        }
     }
 
     private void browseProviderTags(
@@ -402,6 +542,27 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         return String.valueOf(rawValue);
     }
 
+    private Object parseIncomingWriteValue(String rawValue) {
+        String text = String.valueOf(rawValue).trim();
+        if (text.isBlank()) {
+            return "";
+        }
+        if ("true".equalsIgnoreCase(text)) {
+            return Boolean.TRUE;
+        }
+        if ("false".equalsIgnoreCase(text)) {
+            return Boolean.FALSE;
+        }
+        try {
+            if (text.contains(".") || text.contains("e") || text.contains("E")) {
+                return Double.parseDouble(text);
+            }
+            return Long.parseLong(text);
+        } catch (NumberFormatException _ignored) {
+        }
+        return text;
+    }
+
     private void addBrowseResults(
         String provider,
         TagPath parentPath,
@@ -518,6 +679,23 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
 
     private record IgnitionTagValueResponse(
         List<IgnitionTagValueItem> values,
+        String error
+    ) {
+    }
+
+    private record IgnitionTagWriteResponse(
+        String path,
+        Object value,
+        String quality,
+        String error
+    ) {
+    }
+
+    private record OpcWriteResponse(
+        String server,
+        String path,
+        Object value,
+        String quality,
         String error
     ) {
     }

@@ -10,6 +10,7 @@ import {
 } from "../state/opcLiveStore";
 import { normalizeTagValue } from "../utils/appDataTransforms";
 import { isRouteIdTagKey, isStateTagKey } from "../utils/appUiHelpers";
+import { resolveWidgetOpcServer, resolveWidgetWriteMode } from "../utils/widgetTemplates";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -153,6 +154,8 @@ function CanvasSvg({
   routeStrokeColorByGroupPath,
   svgLiveValuesByGroupPath,
   ignitionTagValuesByPath,
+  writeIgnitionTagValue = null,
+  writeIgnitionOpcValue = null,
   liveTagKeys,
   opcTags,
   opcTemplateMap,
@@ -185,6 +188,7 @@ function CanvasSvg({
 }) {
   const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
   const liveCanvasEnabled = Boolean(liveUpdatesEnabled && renderLiveVisuals);
+  const widgetInteractionEnabled = Boolean(isLiveMode || liveClickable);
   const watchedLiveKeys = useMemo(() => {
     const source = liveCanvasEnabled && Array.isArray(liveTagKeys) ? liveTagKeys : [];
     const seen = new Set();
@@ -1011,17 +1015,17 @@ function CanvasSvg({
   }, []);
   const handleOverlayMouseDown = useCallback(
     (event, overlay) => {
-      if (liveClickable && overlay?.widget) return;
+      if (widgetInteractionEnabled && overlay?.widget) return;
       overlayHandlerRefs.current.onOverlayMouseDown?.(event, overlay?.id);
     },
-    [liveClickable]
+    [widgetInteractionEnabled]
   );
   const handleOverlayDoubleClick = useCallback(
     (event, overlay, options = {}) => {
-      if (!options.force && liveClickable && overlay?.widget) return;
+      if (!options.force && widgetInteractionEnabled && overlay?.widget) return;
       overlayHandlerRefs.current.onOverlayDoubleClick?.(event, overlay?.id);
     },
-    [liveClickable]
+    [widgetInteractionEnabled]
   );
   const opcTagCount = Array.isArray(opcTags) ? opcTags.length : 0;
   const shapeCount = Array.isArray(shapes) ? shapes.length : 0;
@@ -1535,6 +1539,8 @@ function CanvasSvg({
     if (!overlay?.widget) return "";
     const tagPath = String(overlay?.tagPath || "").trim();
     if (!tagPath) return "";
+    const ignitionValue = readIgnitionTagValueForPath(tagPath);
+    if (ignitionValue !== undefined) return ignitionValue;
     if (tagPath.toLowerCase().startsWith("db:")) {
       const id = String(overlay?.id || "");
       const v = widgetDbValues && Object.prototype.hasOwnProperty.call(widgetDbValues, id)
@@ -1543,6 +1549,50 @@ function CanvasSvg({
       return v == null ? "" : v;
     }
     return getLiveValueForTagPath(tagPath);
+  };
+  const getTextShapeValueForShape = (shape) => {
+    const tagPath = String(shape?.tagPath || "").trim();
+    if (!tagPath) return String(shape?.text || "");
+
+    const ignitionValue = readIgnitionTagValueForPath(tagPath);
+    const rawValue = ignitionValue !== undefined ? ignitionValue : getLiveValueForTagPath(tagPath);
+    if (rawValue == null || rawValue === "") {
+      return String(shape?.text || "");
+    }
+
+    const rawText =
+      rawValue != null && typeof rawValue === "object"
+        ? String(
+            rawValue?.value
+            ?? rawValue?.v
+            ?? rawValue?.state
+            ?? rawValue?.State
+            ?? rawValue?.rawValue
+            ?? rawValue?.raw
+            ?? ""
+          ).trim()
+        : String(rawValue).trim();
+    if (!rawText) {
+      return String(shape?.text || "");
+    }
+
+    const scaleFactorRaw = Number.parseFloat(String(shape?.scaleFactor ?? "").trim());
+    const scaleFactor = Number.isFinite(scaleFactorRaw) ? scaleFactorRaw : 1;
+    const decimalsRaw = Number.parseInt(String(shape?.decimals ?? "").trim(), 10);
+    const decimals = Number.isInteger(decimalsRaw) ? Math.max(0, Math.min(6, decimalsRaw)) : null;
+    const unit = String(shape?.unit || "").trim();
+    const numericValue = Number(rawText);
+
+    let displayValue = rawText;
+    if (Number.isFinite(numericValue)) {
+      const scaledValue = numericValue * scaleFactor;
+      displayValue =
+        decimals == null
+          ? String(scaledValue)
+          : scaledValue.toFixed(decimals);
+    }
+
+    return unit ? `${displayValue} ${unit}` : displayValue;
   };
   const toNumberOrNull = (value) => {
     if (value == null) return null;
@@ -1664,6 +1714,12 @@ function CanvasSvg({
     if (lower.startsWith("db:") || lower.startsWith("dbq:")) return "";
     return tagPath;
   };
+  const getMissingWidgetWriteTargetMessage = (overlay) => {
+    const writeMode = resolveWidgetWriteMode(overlay?.widget, overlay?.tagPath);
+    return writeMode === "opc"
+      ? "Configure OPC item path to enable write."
+      : "Configure Ignition tag path to enable write.";
+  };
   const getWidgetOptimisticWriteKeys = useCallback(
     (overlay) => {
       const tagPath = normalizeTagValue(getWritableWidgetTagPath(overlay));
@@ -1746,19 +1802,29 @@ function CanvasSvg({
     const tagPath = getWritableWidgetTagPath(overlay);
     if (!overlayId || !tagPath) return;
     const payloadValue = coerceWidgetWriteValue(writeValue);
+    const writeMode = resolveWidgetWriteMode(overlay?.widget, tagPath);
+    const isIgnitionTarget = writeMode === "ignition";
+    const isDirectOpcTarget = writeMode === "opc";
+    const opcServerName = resolveWidgetOpcServer(overlay?.widget);
     const runWrite = async () => {
       setWidgetWriteBusyByOverlay((prev) => ({ ...prev, [overlayId]: true }));
       setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
       try {
-        const data = await writeOpcValue({
-          tagKey: tagPath,
-          legacyTagKey: tagPath,
-          value: payloadValue,
-        });
+        const data = isIgnitionTarget && typeof writeIgnitionTagValue === "function"
+          ? await writeIgnitionTagValue(tagPath, payloadValue)
+          : isDirectOpcTarget && typeof writeIgnitionOpcValue === "function"
+          ? await writeIgnitionOpcValue(tagPath, payloadValue, opcServerName)
+          : await writeOpcValue({
+              tagKey: tagPath,
+              legacyTagKey: tagPath,
+              value: payloadValue,
+            });
         const nextValue = Object.prototype.hasOwnProperty.call(data || {}, "value")
           ? data.value
           : payloadValue;
-        applyOptimisticWidgetWrite(overlay, nextValue);
+        if (!isIgnitionTarget) {
+          applyOptimisticWidgetWrite(overlay, nextValue);
+        }
         setWidgetWriteDraftByOverlay((prev) => ({
           ...prev,
           [overlayId]: String(nextValue ?? ""),
@@ -2647,10 +2713,28 @@ function CanvasSvg({
     const widgetScale = Math.max(0.68, Math.min(1.15, Math.min(w, h) / 220));
     const scaledFont = (base, min = 7, max = 40) =>
       Math.max(min, Math.min(max, Math.round(Number(base || 0) * widgetScale)));
+    const explicitTitleFontSizeRaw = Number.parseFloat(String(cfg?.titleFontSize ?? "").trim());
+    const explicitTitleFontSize =
+      Number.isFinite(explicitTitleFontSizeRaw) && explicitTitleFontSizeRaw > 0
+        ? explicitTitleFontSizeRaw
+        : null;
+    const resolveWidgetTitleFontSize = (fallback, min = 7, max = 40) => {
+      if (explicitTitleFontSize == null) return fallback;
+      return Math.max(min, Math.min(max, explicitTitleFontSize));
+    };
+    const openWidgetProperties = (event) => {
+      if (isLiveMode) return;
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      handleOverlayDoubleClick(event, overlay, { force: true });
+    };
+    const widgetSurfaceCursor = isLiveMode
+      ? (widgetInteractionEnabled ? "pointer" : "default")
+      : (tool === "select" ? "move" : "crosshair");
     const headH = dense ? 20 : compact ? 24 : 28;
     const pad = dense ? 6 : compact ? 8 : 10;
     const cardTitle = title || "";
-    const titleSize = dense ? 8 : compact ? 9 : 10;
+    const titleSize = resolveWidgetTitleFontSize(dense ? 8 : compact ? 9 : 10, 7, 40);
     const valueSize = scaledFont(dense ? 12 : compact ? 16 : 19, 9, 36);
     const valueColor = "var(--text)";
     const accent = "#2b8cff";
@@ -2975,7 +3059,11 @@ function CanvasSvg({
       const barW = Math.max(24, w - countdownPad * 2);
       const labelText = cardTitle;
       const showLabel = h >= 52 && Boolean(labelText);
-      const labelFont = scaledFont(dense ? 11 : 14, 10, 24);
+      const labelFont = resolveWidgetTitleFontSize(
+        scaledFont(dense ? 11 : 14, 10, 24),
+        10,
+        40
+      );
       const topInset = Math.max(4, Math.round(h * 0.06));
       const bottomInset = Math.max(4, Math.round(h * 0.08));
       const gapAfterLabel = showLabel ? Math.max(2, Math.round(h * 0.03)) : 0;
@@ -3083,28 +3171,31 @@ function CanvasSvg({
               y={controlsY}
               width={controlsW}
               height={inputH}
-              style={{ pointerEvents: liveClickable ? "auto" : "none" }}
+              style={{ pointerEvents: widgetInteractionEnabled ? "auto" : "none" }}
             >
               <div
                 xmlns="http://www.w3.org/1999/xhtml"
+                onDoubleClickCapture={openWidgetProperties}
                 style={{
                   display: "grid",
                   gridTemplateColumns: `${Math.max(20, controlsW - btnW - 6)}px ${btnW}px`,
                   gap: 6,
                   width: "100%",
                   height: "100%",
-                  pointerEvents: liveClickable ? "auto" : "none",
+                  pointerEvents: widgetInteractionEnabled ? "auto" : "none",
+                  cursor: widgetSurfaceCursor,
                 }}
               >
                 <input
                   data-widget-control="true"
+                  onDoubleClick={openWidgetProperties}
                   value={writeDraft}
                   onMouseDown={(e) => {
-                    if (!liveClickable) return;
+                    if (!widgetInteractionEnabled) return;
                     e.stopPropagation();
                   }}
                   onChange={(e) => {
-                    if (!liveClickable) return;
+                    if (!widgetInteractionEnabled) return;
                     const nextVal = e.target.value;
                     setWidgetWriteDraftByOverlay((prev) => ({ ...prev, [overlayId]: nextVal }));
                     if (widgetWriteErrorByOverlay?.[overlayId]) {
@@ -3112,13 +3203,13 @@ function CanvasSvg({
                     }
                   }}
                   onKeyDown={(e) => {
-                    if (!liveClickable) return;
+                    if (!widgetInteractionEnabled) return;
                     if (e.key !== "Enter" || writeBusy || !canWrite) return;
                     e.preventDefault();
                     submitWidgetWrite(overlay, writeDraft);
                   }}
                   placeholder={canWrite ? "Write value" : "Bind OPC tag to write"}
-                  disabled={!liveClickable || !canWrite || writeBusy}
+                  disabled={!widgetInteractionEnabled || !canWrite || writeBusy}
                   style={{
                     width: "100%",
                     height: "100%",
@@ -3129,19 +3220,21 @@ function CanvasSvg({
                     padding: "0 8px",
                     fontSize: dense ? 11 : 12,
                     boxSizing: "border-box",
+                    cursor: widgetSurfaceCursor,
                   }}
                 />
                 <button
                   data-widget-control="true"
+                  onDoubleClick={openWidgetProperties}
                   onMouseDown={(e) => {
-                    if (!liveClickable) return;
+                    if (!widgetInteractionEnabled) return;
                     e.stopPropagation();
                   }}
                   onClick={() => {
-                    if (!liveClickable) return;
+                    if (!widgetInteractionEnabled) return;
                     submitWidgetWrite(overlay, writeDraft);
                   }}
-                  disabled={!liveClickable || !canWrite || writeBusy}
+                  disabled={!widgetInteractionEnabled || !canWrite || writeBusy}
                   style={{
                     width: "100%",
                     height: "100%",
@@ -3151,7 +3244,9 @@ function CanvasSvg({
                     borderRadius: 7,
                     fontSize: dense ? 10 : 11,
                     fontWeight: 700,
-                    cursor: !liveClickable || !canWrite || writeBusy ? "default" : "pointer",
+                    cursor: !widgetInteractionEnabled
+                      ? widgetSurfaceCursor
+                      : (!canWrite || writeBusy ? "default" : "pointer"),
                     opacity: !canWrite || writeBusy ? 0.7 : 1,
                   }}
                 >
@@ -3175,17 +3270,25 @@ function CanvasSvg({
       const canWrite = Boolean(tagPath);
       const writeBusy = widgetWriteBusyByOverlay?.[overlayId] === true;
       const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
+      const pressValue = Object.prototype.hasOwnProperty.call(cfg || {}, "writeValue") ? cfg.writeValue : 1;
+      const releaseValue = Object.prototype.hasOwnProperty.call(cfg || {}, "releaseValue") ? cfg.releaseValue : 0;
       const pressed = toBooleanLike(rawVal);
       const localPressed = widgetPressByOverlay?.[overlayId] === true;
       const visualPressed = localPressed || pressed;
-      const titleText = cardTitle;
-      const titleFont = scaledFont(dense ? 11 : 13, 10, 22);
+      const titleText = cardTitle || "Push Button";
+      const titleFont = resolveWidgetTitleFontSize(
+        scaledFont(dense ? 11 : 13, 9, 20),
+        9,
+        40
+      );
       const contentPadX = Math.max(6, Math.min(14, Math.round(w * 0.06)));
       const topInset = Math.max(4, Math.round(h * 0.06));
       const bottomInset = Math.max(4, Math.round(h * 0.08));
-      const showTitle = h >= 50 && Boolean(titleText);
+      const showTitle = Boolean(titleText);
       const titleY = y + topInset + titleFont;
-      const contentTop = showTitle ? titleY + Math.max(2, Math.round(h * 0.03)) : y + topInset;
+      const contentTop = showTitle
+        ? titleY + Math.max(8, Math.round(h * 0.08))
+        : y + topInset;
       const buttonW = Math.max(40, Math.round(w - contentPadX * 2));
       const buttonH = Math.max(18, Math.round(y + h - bottomInset - contentTop));
       const buttonX = x + contentPadX;
@@ -3196,7 +3299,7 @@ function CanvasSvg({
             <text
               x={buttonX + buttonW / 2}
               y={titleY}
-              fill={subdued}
+              fill="rgba(248, 250, 252, 0.96)"
               fontSize={titleFont}
               fontFamily="system-ui"
               fontWeight={800}
@@ -3214,62 +3317,63 @@ function CanvasSvg({
           >
             <div
               xmlns="http://www.w3.org/1999/xhtml"
-              style={{ width: "100%", height: "100%", pointerEvents: "none" }}
+              onDoubleClickCapture={openWidgetProperties}
+              style={{ width: "100%", height: "100%", pointerEvents: "none", cursor: widgetSurfaceCursor }}
             >
               <button
-                data-widget-control={liveClickable ? "true" : undefined}
+                data-widget-control={widgetInteractionEnabled ? "true" : undefined}
                 onMouseDown={(e) => {
-                  if (!liveClickable) return;
+                  if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   setWidgetPressed(overlayId, true);
                   if (writeBusy) return;
                   if (!canWrite) {
                     setWidgetWriteErrorByOverlay((prev) => ({
                       ...prev,
-                      [overlayId]: "Bind OPC tag to enable write.",
+                      [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
                     }));
                     return;
                   }
-                  submitWidgetWrite(overlay, 1);
+                  submitWidgetWrite(overlay, pressValue);
                 }}
                 onMouseUp={(e) => {
-                  if (!liveClickable) return;
+                  if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   setWidgetPressed(overlayId, false);
                   if (writeBusy || !canWrite) return;
-                  submitWidgetWrite(overlay, 0);
+                  submitWidgetWrite(overlay, releaseValue);
                 }}
                 onMouseLeave={() => {
-                  if (!liveClickable) return;
+                  if (!widgetInteractionEnabled) return;
                   setWidgetPressed(overlayId, false);
                   if (writeBusy || !canWrite) return;
-                  submitWidgetWrite(overlay, 0);
+                  submitWidgetWrite(overlay, releaseValue);
                 }}
                 onTouchStart={(e) => {
-                  if (!liveClickable) return;
+                  if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   setWidgetPressed(overlayId, true);
                   if (writeBusy) return;
                   if (!canWrite) {
                     setWidgetWriteErrorByOverlay((prev) => ({
                       ...prev,
-                      [overlayId]: "Bind OPC tag to enable write.",
+                      [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
                     }));
                     return;
                   }
-                  submitWidgetWrite(overlay, 1);
+                  submitWidgetWrite(overlay, pressValue);
                 }}
                 onTouchEnd={() => {
-                  if (!liveClickable) return;
+                  if (!widgetInteractionEnabled) return;
                   setWidgetPressed(overlayId, false);
                   if (writeBusy || !canWrite) return;
-                  submitWidgetWrite(overlay, 0);
+                  submitWidgetWrite(overlay, releaseValue);
                 }}
-                disabled={!liveClickable || writeBusy}
+                disabled={!widgetInteractionEnabled || writeBusy}
                 style={{
                   width: "100%",
                   height: "100%",
-                  border: "1px solid var(--border)",
+                  border: "none",
                   borderRadius: Math.max(8, Math.round(buttonH * 0.22)),
                   background: visualPressed
                     ? "linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%)"
@@ -3277,38 +3381,37 @@ function CanvasSvg({
                   color: "white",
                   fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                   fontWeight: 800,
-                  cursor: !liveClickable || writeBusy ? "default" : "pointer",
+                  cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : (writeBusy ? "default" : "pointer"),
                   opacity: !canWrite ? 0.65 : 1,
                   boxShadow: visualPressed
                     ? "inset 0 4px 10px rgba(2,6,23,0.38), inset 0 -1px 2px rgba(255,255,255,0.12)"
-                    : "inset 0 1px 0 rgba(255,255,255,0.35), 0 8px 16px rgba(43,108,255,0.26)",
+                    : "inset 0 1px 0 rgba(255,255,255,0.35), 0 6px 12px rgba(43,108,255,0.2)",
                   transform: visualPressed ? "translateY(1px) scale(0.99)" : "translateY(0) scale(1)",
                   transition: "transform 80ms ease, box-shadow 120ms ease, filter 120ms ease",
                   pointerEvents: "none",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: Math.max(8, Math.round(buttonH * 0.16)),
+                  padding: `0 ${Math.max(10, Math.round(buttonW * 0.08))}px`,
                 }}
               >
                 <span
-                  aria-hidden="true"
                   style={{
-                    display: "inline-block",
-                    width: Math.max(10, Math.round(buttonH * 0.28)),
-                    height: Math.max(10, Math.round(buttonH * 0.28)),
-                    borderRadius: "999px",
-                    border: "1px solid rgba(255,255,255,0.72)",
-                    background: writeBusy
-                      ? "rgba(255,255,255,0.45)"
-                      : visualPressed
-                      ? "rgba(255,255,255,0.35)"
-                      : "rgba(255,255,255,0.22)",
-                    boxShadow: visualPressed
-                      ? "inset 0 1px 2px rgba(2,6,23,0.35)"
-                      : "0 0 0 2px rgba(255,255,255,0.08)",
+                    fontSize: Math.max(9, Math.min(18, Math.round(buttonH * 0.34))),
+                    fontWeight: 900,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "rgba(255,255,255,0.98)",
+                    whiteSpace: "nowrap",
                   }}
-                />
+                >
+                  {writeBusy ? "Writing..." : visualPressed ? "Pressed" : "Press"}
+                </span>
               </button>
             </div>
           </foreignObject>
-          {liveClickable ? (
+          {widgetInteractionEnabled ? (
             <rect
               x={buttonX}
               y={buttonY}
@@ -3318,6 +3421,7 @@ function CanvasSvg({
               fill="transparent"
               pointerEvents="all"
               style={{ cursor: writeBusy ? "default" : "pointer" }}
+              onDoubleClick={openWidgetProperties}
               onMouseDown={(e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, true);
@@ -3325,22 +3429,22 @@ function CanvasSvg({
                 if (!canWrite) {
                   setWidgetWriteErrorByOverlay((prev) => ({
                     ...prev,
-                    [overlayId]: "Bind OPC tag to enable write.",
+                    [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
                   }));
                   return;
                 }
-                submitWidgetWrite(overlay, 1);
+                submitWidgetWrite(overlay, pressValue);
               }}
               onMouseUp={(e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, false);
                 if (writeBusy || !canWrite) return;
-                submitWidgetWrite(overlay, 0);
+                submitWidgetWrite(overlay, releaseValue);
               }}
               onMouseLeave={() => {
                 setWidgetPressed(overlayId, false);
                 if (writeBusy || !canWrite) return;
-                submitWidgetWrite(overlay, 0);
+                submitWidgetWrite(overlay, releaseValue);
               }}
             />
           ) : null}
@@ -3360,16 +3464,39 @@ function CanvasSvg({
       const writeError = String(widgetWriteErrorByOverlay?.[overlayId] || "");
       const isOn = toBooleanLike(rawVal);
       const localPressed = widgetPressByOverlay?.[overlayId] === true;
-      const buttonW = Math.max(54, Math.round(w - pad * 2));
-      const buttonH = Math.max(26, Math.round(Math.min(52, h - headH - 16)));
-      const buttonX = x + pad;
-      const buttonY = Math.max(y + headH + 8, y + h - buttonH - 8);
+      const titleText = cardTitle || "On / Off";
+      const titleFont = resolveWidgetTitleFontSize(
+        scaledFont(dense ? 11 : 13, 9, 20),
+        9,
+        40
+      );
+      const contentPadX = Math.max(6, Math.min(14, Math.round(w * 0.06)));
+      const topInset = Math.max(4, Math.round(h * 0.06));
+      const bottomInset = Math.max(4, Math.round(h * 0.08));
+      const showTitle = Boolean(titleText);
+      const titleY = y + topInset + titleFont;
+      const contentTop = showTitle
+        ? titleY + Math.max(8, Math.round(h * 0.08))
+        : y + topInset;
+      const buttonW = Math.max(54, Math.round(w - contentPadX * 2));
+      const buttonH = Math.max(28, Math.round(y + h - bottomInset - contentTop));
+      const buttonX = x + contentPadX;
+      const buttonY = contentTop;
       return (
         <g>
-          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
-          <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
-            {cardTitle}
-          </text>
+          {showTitle ? (
+            <text
+              x={buttonX + buttonW / 2}
+              y={titleY}
+              fill="rgba(248, 250, 252, 0.96)"
+              fontSize={titleFont}
+              fontFamily="system-ui"
+              fontWeight={800}
+              textAnchor="middle"
+            >
+              {titleText}
+            </text>
+          ) : null}
           <foreignObject
             x={buttonX}
             y={buttonY}
@@ -3379,94 +3506,108 @@ function CanvasSvg({
           >
             <div
               xmlns="http://www.w3.org/1999/xhtml"
-              style={{ width: "100%", height: "100%", pointerEvents: "none" }}
+              onDoubleClickCapture={openWidgetProperties}
+              style={{ width: "100%", height: "100%", pointerEvents: "none", cursor: widgetSurfaceCursor }}
             >
               <button
-                data-widget-control={liveClickable ? "true" : undefined}
+                data-widget-control={widgetInteractionEnabled ? "true" : undefined}
                 onMouseDown={(e) => {
-                  if (!liveClickable) return;
+                  if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   setWidgetPressed(overlayId, true);
                 }}
                 onMouseUp={() => setWidgetPressed(overlayId, false)}
                 onMouseLeave={() => setWidgetPressed(overlayId, false)}
                 onClick={(e) => {
-                  if (!liveClickable) return;
+                  if (!widgetInteractionEnabled) return;
                   e.stopPropagation();
                   pulseWidgetPress(overlayId, 180);
                   if (writeBusy) return;
                   if (!canWrite) {
                     setWidgetWriteErrorByOverlay((prev) => ({
                       ...prev,
-                      [overlayId]: "Bind OPC tag to enable write.",
+                      [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
                     }));
                     return;
                   }
                   submitWidgetWrite(overlay, isOn ? 0 : 1);
                 }}
-                disabled={!liveClickable || writeBusy}
+                disabled={!widgetInteractionEnabled || writeBusy}
                 style={{
                   width: "100%",
                   height: "100%",
-                  border: "1px solid var(--border)",
-                  borderRadius: Math.max(8, Math.round(buttonH * 0.22)),
-                  background: isOn
-                    ? "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)"
-                    : "linear-gradient(180deg, #64748b 0%, #334155 100%)",
+                  border: "none",
+                  borderRadius: 0,
+                  background: "transparent",
                   color: "white",
                   fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                   fontWeight: 800,
-                  cursor: !liveClickable || writeBusy ? "default" : "pointer",
+                  cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : (writeBusy ? "default" : "pointer"),
                   opacity: !canWrite ? 0.65 : 1,
-                  boxShadow: isOn
-                    ? "inset 0 1px 0 rgba(255,255,255,0.32), 0 8px 16px rgba(22,163,74,0.26)"
-                    : "inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 16px rgba(51,65,85,0.24)",
+                  boxShadow: "none",
                   transform: localPressed ? "translateY(1px) scale(0.99)" : "translateY(0) scale(1)",
                   transition: "transform 80ms ease, box-shadow 120ms ease, filter 120ms ease",
                   pointerEvents: "none",
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: Math.max(6, Math.round(buttonW * 0.025)),
+                  padding: 0,
                 }}
               >
                 <span
-                  aria-hidden="true"
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    gap: Math.max(6, Math.round(buttonH * 0.14)),
+                    borderRadius: Math.max(8, Math.round(buttonH * 0.18)),
+                    background: isOn
+                      ? "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)"
+                      : "linear-gradient(180deg, rgba(51, 65, 85, 0.92) 0%, rgba(30, 41, 59, 0.94) 100%)",
+                    border: isOn
+                      ? "1px solid rgba(187, 247, 208, 0.65)"
+                      : "1px solid rgba(100, 116, 139, 0.6)",
+                    boxShadow: isOn
+                      ? "inset 0 1px 0 rgba(255,255,255,0.28), 0 6px 14px rgba(22,163,74,0.22)"
+                      : "inset 0 1px 0 rgba(255,255,255,0.08)",
+                    color: "rgba(255,255,255,0.98)",
+                    fontSize: Math.max(9, Math.min(16, Math.round(buttonH * 0.28))),
+                    fontWeight: 900,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    minHeight: "100%",
                   }}
                 >
-                  <span
-                    style={{
-                      display: "inline-block",
-                      width: Math.max(10, Math.round(buttonH * 0.28)),
-                      height: Math.max(10, Math.round(buttonH * 0.28)),
-                      borderRadius: "999px",
-                      border: "1px solid rgba(255,255,255,0.72)",
-                      background: writeBusy
-                        ? "rgba(255,255,255,0.45)"
-                        : isOn
-                        ? "rgba(255,255,255,0.28)"
-                        : "rgba(255,255,255,0.18)",
-                      boxShadow: isOn
-                        ? "0 0 0 2px rgba(255,255,255,0.12), 0 0 12px rgba(255,255,255,0.25)"
-                        : "0 0 0 2px rgba(255,255,255,0.08)",
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontSize: Math.max(8, Math.min(14, Math.round(buttonH * 0.3))),
-                      fontWeight: 800,
-                      letterSpacing: "0.02em",
-                      color: "rgba(255,255,255,0.96)",
-                    }}
-                  >
-                    {writeBusy ? "..." : (isOn ? "ON" : "OFF")}
-                  </span>
+                  ON
+                </span>
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: Math.max(8, Math.round(buttonH * 0.18)),
+                    background: !isOn
+                      ? "linear-gradient(180deg, #64748b 0%, #334155 100%)"
+                      : "linear-gradient(180deg, rgba(51, 65, 85, 0.92) 0%, rgba(30, 41, 59, 0.94) 100%)",
+                    border: !isOn
+                      ? "1px solid rgba(203, 213, 225, 0.55)"
+                      : "1px solid rgba(100, 116, 139, 0.6)",
+                    boxShadow: !isOn
+                      ? "inset 0 1px 0 rgba(255,255,255,0.18), 0 6px 14px rgba(51,65,85,0.22)"
+                      : "inset 0 1px 0 rgba(255,255,255,0.08)",
+                    color: "rgba(255,255,255,0.98)",
+                    fontSize: Math.max(9, Math.min(16, Math.round(buttonH * 0.28))),
+                    fontWeight: 900,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    minHeight: "100%",
+                  }}
+                >
+                  OFF
                 </span>
               </button>
             </div>
           </foreignObject>
-          {liveClickable ? (
+          {widgetInteractionEnabled ? (
             <rect
               x={buttonX}
               y={buttonY}
@@ -3476,6 +3617,7 @@ function CanvasSvg({
               fill="transparent"
               pointerEvents="all"
               style={{ cursor: writeBusy ? "default" : "pointer" }}
+              onDoubleClick={openWidgetProperties}
               onMouseDown={(e) => {
                 e.stopPropagation();
                 setWidgetPressed(overlayId, true);
@@ -3489,7 +3631,7 @@ function CanvasSvg({
                 if (!canWrite) {
                   setWidgetWriteErrorByOverlay((prev) => ({
                     ...prev,
-                    [overlayId]: "Bind OPC tag to enable write.",
+                    [overlayId]: getMissingWidgetWriteTargetMessage(overlay),
                   }));
                   return;
                 }
@@ -6869,14 +7011,17 @@ function CanvasSvg({
       if (overlay?.widget) {
         const bb = overlay?.bbox || { x: 0, y: 0, width: 320, height: 180 };
         const widgetKind = String(overlay?.widget?.kind || "").trim();
+        const suppressFrame = widgetKind === "pushButton" || widgetKind === "onOffButton";
         out.set(id, {
-          widgetFrame: {
-            x: Number(bb.x) || 0,
-            y: Number(bb.y) || 0,
-            w: Math.max(80, Number(bb.width) || 320),
-            h: Math.max(60, Number(bb.height) || 180),
-            isCountdownBar: widgetKind === "countdownBar",
-          },
+          widgetFrame: suppressFrame
+            ? null
+            : {
+                x: Number(bb.x) || 0,
+                y: Number(bb.y) || 0,
+                w: Math.max(80, Number(bb.width) || 320),
+                h: Math.max(60, Number(bb.height) || 180),
+                isCountdownBar: widgetKind === "countdownBar",
+              },
         });
         return;
       }
@@ -7099,7 +7244,7 @@ function CanvasSvg({
       staticOverlayRenderOverlays.map((o) => {
         const overlayVisual = overlayVisualById.get(String(o?.id || "").trim());
         const overlayCursor = isLiveMode
-          ? (liveClickable ? "pointer" : "default")
+          ? "pointer"
           : (tool === "select" ? "move" : "crosshair");
         return (
           <g
@@ -7184,12 +7329,15 @@ function CanvasSvg({
     return widgetOverlayRenderOverlays.map((o) => {
       const overlayVisual = overlayVisualById.get(String(o?.id || "").trim());
       const overlayCursor = isLiveMode
-        ? (liveClickable ? "pointer" : "default")
+        ? (widgetInteractionEnabled ? "pointer" : "default")
         : (tool === "select" ? "move" : "crosshair");
+      const widgetBounds = o?.bbox || { x: 0, y: 0, width: 320, height: 180 };
+      const showDesignWidgetHitbox = !isLiveMode;
       return (
         <g
           key={o.id}
           data-overlay-id={o.id}
+          onDoubleClickCapture={(e) => handleOverlayDoubleClick(e, o, { force: true })}
           onDoubleClick={(e) => handleOverlayDoubleClick(e, o, { force: true })}
         >
           <g
@@ -7219,6 +7367,21 @@ function CanvasSvg({
               </g>
             ) : null}
             {o.widget && renderWidget ? renderWidget(o) : null}
+            {showDesignWidgetHitbox ? (
+              <rect
+                x={Number(widgetBounds.x) || 0}
+                y={Number(widgetBounds.y) || 0}
+                width={Math.max(1, Number(widgetBounds.width) || 320)}
+                height={Math.max(1, Number(widgetBounds.height) || 180)}
+                fill="transparent"
+                pointerEvents="all"
+                style={{ cursor: overlayCursor }}
+                onMouseDown={(e) => handleOverlayMouseDown(e, o)}
+                onDoubleClick={(e) => handleOverlayDoubleClick(e, o, { force: true })}
+                onMouseEnter={isLineMode ? () => setHoverOverlayId(o.id) : undefined}
+                onMouseLeave={isLineMode ? () => setHoverOverlayId((prev) => (prev === o.id ? null : prev)) : undefined}
+              />
+            ) : null}
           </g>
         </g>
       );
@@ -7227,7 +7390,7 @@ function CanvasSvg({
     widgetOverlayRenderOverlays,
     overlayVisualById,
     isLiveMode,
-    liveClickable,
+    widgetInteractionEnabled,
     tool,
     isLineMode,
     handleOverlayDoubleClick,
@@ -7565,6 +7728,7 @@ function CanvasSvg({
 
         if (s.type === "text") {
           const isInline = inlineEditId === s.id;
+          const displayText = getTextShapeValueForShape(s);
           return (
             <g key={s.id} data-shape-id={s.id}>
               {(() => {
@@ -7597,7 +7761,7 @@ function CanvasSvg({
                 dominantBaseline="text-before-edge"
                 style={{ userSelect: "none", visibility: isInline ? "hidden" : "visible" }}
               >
-                {s.text || ""}
+                {displayText}
               </text>
             </g>
           );

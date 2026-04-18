@@ -1,7 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import CanvasSvg from "../../../../app/src/components/CanvasSvg.jsx";
 import ImportModal from "../../../../app/src/components/ImportModal.jsx";
+import WidgetSelectorModal from "../../../../app/src/components/WidgetSelectorModal.jsx";
 import { stripOuterSvg } from "../../../../app/src/utils/svgSanitize.js";
+import {
+    defaultWidgetSettings,
+    resolveWidgetOpcServer,
+    resolveWidgetWriteMode,
+    widgetTemplate
+} from "../../../../app/src/utils/widgetTemplates.js";
 
 const MODULE_ID = "com.mesora.perspective.drawing";
 const MODULE_URL_ALIAS = "mesora-drawing";
@@ -17,6 +25,18 @@ const MODULE_TAG_VALUE_ROUTE_CANDIDATES = [
     `/main/data/${MODULE_URL_ALIAS}/ignition-tag-values`,
     `/data/${MODULE_ID}/ignition-tag-values`,
     `/main/data/${MODULE_ID}/ignition-tag-values`
+];
+const MODULE_TAG_WRITE_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/ignition-tag-write`,
+    `/main/data/${MODULE_URL_ALIAS}/ignition-tag-write`,
+    `/data/${MODULE_ID}/ignition-tag-write`,
+    `/main/data/${MODULE_ID}/ignition-tag-write`
+];
+const MODULE_OPC_WRITE_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/opc-write`,
+    `/main/data/${MODULE_URL_ALIAS}/opc-write`,
+    `/data/${MODULE_ID}/opc-write`,
+    `/main/data/${MODULE_ID}/opc-write`
 ];
 const SVG_LIBRARY_MANIFEST_URL = `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`;
 const SVG_RAW_CACHE_MAX = 80;
@@ -36,15 +56,71 @@ const DEFAULT_CANVAS_WIDTH = 1668;
 const DEFAULT_CANVAS_HEIGHT = 1401;
 const CANVAS_RULER_SIZE = 24;
 const PROPERTY_PANEL_WIDTH = 300;
+const PROPERTY_PANEL_HEIGHT = 520;
+const PROPERTY_PANEL_MIN_HEIGHT = 240;
 const TOOLBAR_WIDTH = 220;
 const COLLAPSED_TOOLBAR_WIDTH = 116;
 const TOOLBAR_INSET = 16;
 const TOOLBAR_DRAWER_GAP = -6;
 const SVG_DRAWER_MIN_WIDTH = 300;
 const SVG_DRAWER_PREFERRED_WIDTH = 348;
+const HELP_DRAWER_MIN_WIDTH = 320;
+const HELP_DRAWER_PREFERRED_WIDTH = 420;
 const EMPTY_MAP = Object.freeze({});
 const EMPTY_ARRAY = Object.freeze([]);
 const NOOP = () => {};
+const IGNITION_TOOL_HELP_SECTIONS = Object.freeze([
+    Object.freeze({
+        title: "Getting Started",
+        items: Object.freeze([
+            "Use Move to select, drag, resize, and open properties for items on the canvas.",
+            "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click or Enter finishes the line.",
+            "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path."
+        ])
+    }),
+    Object.freeze({
+        title: "Selection And Editing",
+        items: Object.freeze([
+            "Single click selects one item. Shift plus click adds or removes items from the current selection.",
+            "Drag on empty space to marquee select multiple items.",
+            "Double click an SVG, widget, or text item to open its properties panel.",
+            "Shift plus Delete removes the current selection."
+        ])
+    }),
+    Object.freeze({
+        title: "SVGs And Lines",
+        items: Object.freeze([
+            "SVG Library opens the Mesora equipment drawer so you can place process equipment on the canvas.",
+            "Tag Path on an SVG binds the equipment to an Ignition tag. EType controls diverters and popup routing.",
+            "Polylines light from the SVG or line connected to their start point, just like the Mesora tool."
+        ])
+    }),
+    Object.freeze({
+        title: "Widgets",
+        items: Object.freeze([
+            "Widgets opens the Mesora widget drawer. Place a widget, then double click it to edit its properties.",
+            "Widgets can write to either Ignition tags or direct OPC, depending on the Write Target setting.",
+            "Push Button and On Off Button support titles, title font size, press value, and release value."
+        ])
+    }),
+    Object.freeze({
+        title: "Bindings",
+        items: Object.freeze([
+            "Use the Tag Path picker to browse and search Ignition tags without expanding a huge inline list.",
+            "Text items support Scale, Decimals, and Units so live values can be formatted on the canvas.",
+            "Diverters should use their state tag path so the active straight or divert path can render correctly."
+        ])
+    }),
+    Object.freeze({
+        title: "Shortcuts",
+        items: Object.freeze([
+            "Shift plus M switches to Move.",
+            "Shift plus P switches to Polyline.",
+            "Shift plus T switches to Text.",
+            "Shift plus C, V, D, Z, and Y map to copy, paste, duplicate, undo, and redo."
+        ])
+    })
+]);
 
 function isPlainObject(value) {
     return value != null && typeof value === "object" && !Array.isArray(value);
@@ -224,27 +300,44 @@ function createIgnitionFillBinding(tagPath, fallbackColor, existingBinding = nul
     };
 }
 
+function withOverlayBindings(overlay, nextBindings) {
+    const baseOverlay = isPlainObject(overlay) ? { ...overlay } : {};
+    if (isPlainObject(nextBindings) && Object.keys(nextBindings).length > 0) {
+        return {
+            ...baseOverlay,
+            bindings: nextBindings
+        };
+    }
+    const { bindings: _ignoredBindings, ...overlayWithoutBindings } = baseOverlay;
+    return overlayWithoutBindings;
+}
+
 function applyOverlayIgnitionFillBinding(overlay, rawTagPath) {
     const nextTagPath = String(rawTagPath ?? "").trim();
     const currentBindings = isPlainObject(overlay?.bindings) ? overlay.bindings : {};
     const isDiverter = isDiverterOverlay(overlay);
+    const isWidget = Boolean(overlay?.widget);
 
     if (!nextTagPath) {
         const { fill: _removedFillBinding, ...restBindings } = currentBindings;
-        return {
-            ...overlay,
-            tagPath: "",
-            bindings: Object.keys(restBindings).length ? restBindings : undefined
-        };
+        return withOverlayBindings(
+            {
+                ...overlay,
+                tagPath: ""
+            },
+            restBindings
+        );
     }
 
-    if (isDiverter) {
+    if (isDiverter || isWidget) {
         const { fill: _removedFillBinding, ...restBindings } = currentBindings;
-        return {
-            ...overlay,
-            tagPath: nextTagPath,
-            bindings: Object.keys(restBindings).length ? restBindings : undefined
-        };
+        return withOverlayBindings(
+            {
+                ...overlay,
+                tagPath: nextTagPath
+            },
+            restBindings
+        );
     }
 
     const existingBinding = getOverlayFillBinding(overlay);
@@ -547,20 +640,23 @@ function detectPerspectivePreviewMode(props) {
 
 function getPersistedArrayValue(props, key, fallback = EMPTY_ARRAY) {
     const source = getComponentPropSource(props);
-    const direct = source?.[key];
-    const modelValue = isPlainObject(source?.model) ? source.model[key] : undefined;
+    const hasDirectValue = Object.prototype.hasOwnProperty.call(source, key);
+    const hasModelValue = isPlainObject(source?.model)
+        && Object.prototype.hasOwnProperty.call(source.model, key);
+    const direct = hasDirectValue ? source[key] : undefined;
+    const modelValue = hasModelValue ? source.model[key] : undefined;
 
-    if (Array.isArray(direct) && direct.length > 0) {
-        return direct;
-    }
-    if (Array.isArray(modelValue) && modelValue.length > 0) {
+    if (hasModelValue && Array.isArray(modelValue)) {
         return modelValue;
     }
-    if (Array.isArray(direct)) {
+    if (hasDirectValue && Array.isArray(direct)) {
         return direct;
     }
     if (Array.isArray(modelValue)) {
         return modelValue;
+    }
+    if (Array.isArray(direct)) {
+        return direct;
     }
     return fallback;
 }
@@ -665,8 +761,37 @@ function normalizeSvgCatalogEntries(value) {
 }
 
 function writeComponentProp(props, path, value) {
+    const sanitizePerspectiveValue = (nextValue) => {
+        if (nextValue === undefined || nextValue === null) {
+            return undefined;
+        }
+
+        if (Array.isArray(nextValue)) {
+            return nextValue
+                .map((item) => sanitizePerspectiveValue(item))
+                .filter((item) => item !== undefined);
+        }
+
+        if (isPlainObject(nextValue)) {
+            return Object.entries(nextValue).reduce((acc, [key, entryValue]) => {
+                const sanitizedEntry = sanitizePerspectiveValue(entryValue);
+                if (sanitizedEntry !== undefined) {
+                    acc[key] = sanitizedEntry;
+                }
+                return acc;
+            }, {});
+        }
+
+        return nextValue;
+    };
+
     const candidatePaths = path.startsWith("model.") ? [path] : [path, `model.${path}`];
     const writers = [];
+    const sanitizedValue = sanitizePerspectiveValue(value);
+
+    if (sanitizedValue === undefined) {
+        return false;
+    }
 
     if (props?.store?.props && typeof props.store.props.write === "function") {
         writers.push(props.store.props.write.bind(props.store.props));
@@ -679,7 +804,7 @@ function writeComponentProp(props, path, value) {
     writers.forEach((writePath) => {
         candidatePaths.forEach((candidatePath) => {
             try {
-                writePath(candidatePath, value);
+                writePath(candidatePath, sanitizedValue);
                 wrote = true;
             } catch (_error) {
             }
@@ -687,6 +812,35 @@ function writeComponentProp(props, path, value) {
     });
 
     return wrote;
+}
+
+function getPerspectiveClientStore(props) {
+    const nestedProps = getComponentPropSource(props);
+    return (
+        props?.store?.view?.page?.parent
+        || nestedProps?.store?.view?.page?.parent
+        || props?.store?.page?.parent
+        || nestedProps?.store?.page?.parent
+        || (typeof window !== "undefined" ? window.__client : null)
+        || (typeof window !== "undefined" ? window._perspective_designer?.store?.page?.parent : null)
+        || null
+    );
+}
+
+function normalizeOverlayPopupViewName(value) {
+    return String(value || "")
+        .trim()
+        .replace(/\.svg$/i, "")
+        .replace(/^\/+|\/+$/g, "");
+}
+
+function resolveOverlayPopupViewPath(overlay) {
+    const popupViewName = normalizeOverlayPopupViewName(
+        overlay?.eType
+        || overlay?.name
+        || overlay?.sourceKey
+    );
+    return popupViewName ? `Popups/${popupViewName}` : "";
 }
 
 function pointsEqual(left, right) {
@@ -867,17 +1021,19 @@ function cloneDeepValue(value) {
 function DockSection({ children, title }) {
     return (
         <div style={{ display: "grid", gap: 8 }}>
-            <div
-                style={{
-                    fontSize: 10,
-                    fontWeight: 800,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    color: "rgba(226, 232, 240, 0.72)"
-                }}
-            >
-                {title}
-            </div>
+            {title ? (
+                <div
+                    style={{
+                        fontSize: 10,
+                        fontWeight: 800,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        color: "rgba(226, 232, 240, 0.72)"
+                    }}
+                >
+                    {title}
+                </div>
+            ) : null}
             <div style={{ display: "grid", gap: 8 }}>
                 {children}
             </div>
@@ -929,7 +1085,7 @@ function isInteractiveEditorTarget(target) {
         return true;
     }
     return typeof target.closest === "function"
-        && Boolean(target.closest("[data-vizi-properties-panel='1'], [data-vizi-import-drawer='1'], [data-vizi-dropdown='1'], [data-vizi-dropdown-menu='1']"));
+        && Boolean(target.closest("[data-vizi-properties-panel='1'], [data-vizi-import-drawer='1'], [data-vizi-widget-drawer='1'], [data-vizi-dropdown='1'], [data-vizi-dropdown-menu='1']"));
 }
 
 function stopInteractivePropagation(event) {
@@ -1239,54 +1395,489 @@ function PropertyTagPathField({
     options = EMPTY_ARRAY,
     value = ""
 }) {
+    const rootRef = useRef(null);
+    const triggerRef = useRef(null);
+    const menuRef = useRef(null);
+    const searchRef = useRef(null);
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
+    const [menuRect, setMenuRect] = useState(null);
     const currentValue = value == null ? "" : String(value);
-    const groupedOptions = coerceArray(options).reduce((acc, option) => {
-        const provider = String(option?.provider || "Tags").trim() || "Tags";
-        if (!acc[provider]) {
-            acc[provider] = [];
-        }
-        acc[provider].push(option);
-        return acc;
-    }, {});
-    const hasCurrentOption = coerceArray(options).some((option) => String(option?.path || "").trim() === currentValue);
-    const sections = [
-        {
-            items: [
-                { value: "", label: "No tag" },
-                ...(!hasCurrentOption && currentValue
-                    ? [{ value: currentValue, label: `${currentValue} (current)` }]
-                    : [])
-            ]
-        },
-        ...Object.keys(groupedOptions).map((provider) => ({
+    const normalizedOptions = useMemo(
+        () => coerceArray(options).map((option) => {
+            const path = String(option?.path || "").trim();
+            if (!path) {
+                return null;
+            }
+            const provider = String(option?.provider || "Tags").trim() || "Tags";
+            const name = String(option?.name || "").trim() || path;
+            return {
+                value: path,
+                path,
+                provider,
+                name,
+                searchText: `${provider} ${name} ${path}`.toLowerCase()
+            };
+        }).filter(Boolean),
+        [options]
+    );
+    const groupedOptions = useMemo(
+        () => normalizedOptions.reduce((acc, option) => {
+            if (!acc[option.provider]) {
+                acc[option.provider] = [];
+            }
+            acc[option.provider].push(option);
+            return acc;
+        }, {}),
+        [normalizedOptions]
+    );
+    const hasCurrentOption = normalizedOptions.some((option) => option.path === currentValue);
+    const selectedOption = normalizedOptions.find((option) => option.path === currentValue) || null;
+    const queryText = String(query || "").trim().toLowerCase();
+    const filteredOptions = queryText
+        ? normalizedOptions.filter((option) => option.searchText.includes(queryText))
+        : normalizedOptions;
+    const groupedFilteredSections = queryText
+        ? [
+            {
+                label: filteredOptions.length ? "Results" : "",
+                items: filteredOptions
+            }
+        ]
+        : Object.keys(groupedOptions).map((provider) => ({
             label: provider,
-            items: groupedOptions[provider].map((option) => ({
-                value: option.path,
-                label: option.path
-            }))
-        }))
-    ];
+            items: groupedOptions[provider]
+        }));
+    const triggerLabel = selectedOption?.path
+        || (currentValue ? `${currentValue} (current)` : "Select tag...");
+    const resultSummary = queryText
+        ? `${filteredOptions.length} match${filteredOptions.length === 1 ? "" : "es"}`
+        : `${normalizedOptions.length} Ignition tags available`;
     const helperText = error
         ? error
         : loading
             ? "Loading Ignition tags..."
-            : `${coerceArray(options).length} Ignition tags available`;
+            : resultSummary;
+
+    const closeMenu = useCallback(() => {
+        setOpen(false);
+        setQuery("");
+    }, []);
+
+    const updateMenuRect = useCallback(() => {
+        const trigger = triggerRef.current;
+        if (!trigger || typeof window === "undefined") {
+            return;
+        }
+        const rect = trigger.getBoundingClientRect();
+        const boundaryRect = trigger.closest("[data-vizi-canvas-root='1']")?.getBoundingClientRect?.()
+            || {
+                left: 0,
+                top: 0,
+                right: window.innerWidth || 0,
+                bottom: window.innerHeight || 0,
+                width: window.innerWidth || 0,
+                height: window.innerHeight || 0
+            };
+        const boundaryLeft = Number(boundaryRect.left || 0);
+        const boundaryTop = Number(boundaryRect.top || 0);
+        const boundaryRight = Number(boundaryRect.right || ((boundaryLeft || 0) + Number(boundaryRect.width || 0)));
+        const boundaryBottom = Number(boundaryRect.bottom || ((boundaryTop || 0) + Number(boundaryRect.height || 0)));
+        const horizontalPadding = 12;
+        const verticalPadding = 12;
+        const menuGap = 6;
+        const desiredWidth = Math.max(rect.width, 360);
+        const maxWidth = Math.max(280, boundaryRight - boundaryLeft - (horizontalPadding * 2));
+        const width = Math.min(desiredWidth, maxWidth);
+        const left = Math.min(
+            Math.max(boundaryLeft + horizontalPadding, rect.left),
+            Math.max(boundaryLeft + horizontalPadding, boundaryRight - width - horizontalPadding)
+        );
+        const availableBelow = Math.max(0, boundaryBottom - rect.bottom - verticalPadding - menuGap);
+        const availableAbove = Math.max(0, rect.top - boundaryTop - verticalPadding - menuGap);
+        const openAbove = availableBelow < 240 && availableAbove > availableBelow;
+        const maxHeight = Math.min(440, openAbove ? availableAbove : availableBelow);
+        const top = openAbove
+            ? Math.max(boundaryTop + verticalPadding, rect.top - maxHeight - menuGap)
+            : Math.min(
+                rect.bottom + menuGap,
+                Math.max(boundaryTop + verticalPadding, boundaryBottom - maxHeight - verticalPadding)
+            );
+        setMenuRect({
+            left,
+            top,
+            width,
+            maxHeight
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!open) {
+            return undefined;
+        }
+        updateMenuRect();
+        const handleWindowPointerDown = (event) => {
+            const root = rootRef.current;
+            const menu = menuRef.current;
+            const target = event?.target;
+            if ((root && root.contains(target)) || (menu && menu.contains(target))) {
+                return;
+            }
+            closeMenu();
+        };
+        const handleEscape = (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeMenu();
+            }
+        };
+        const handleLayout = () => {
+            updateMenuRect();
+        };
+        window.addEventListener("pointerdown", handleWindowPointerDown, true);
+        window.addEventListener("resize", handleLayout, true);
+        document.addEventListener("scroll", handleLayout, true);
+        window.addEventListener("keydown", handleEscape, true);
+        return () => {
+            window.removeEventListener("pointerdown", handleWindowPointerDown, true);
+            window.removeEventListener("resize", handleLayout, true);
+            document.removeEventListener("scroll", handleLayout, true);
+            window.removeEventListener("keydown", handleEscape, true);
+        };
+    }, [closeMenu, open, updateMenuRect]);
+
+    useEffect(() => {
+        if (!open) {
+            return undefined;
+        }
+        const timer = window.setTimeout(() => {
+            searchRef.current?.focus?.();
+            searchRef.current?.select?.();
+        }, 0);
+        return () => {
+            window.clearTimeout(timer);
+        };
+    }, [open]);
 
     return (
-        <EditorDropdownField
-            label={label}
-            value={currentValue}
-            disabled={disabled || (loading && !options.length)}
-            sections={sections}
-            placeholder="Select tag..."
-            helperText={helperText}
-            helperTone={error ? "error" : "muted"}
-            onChange={(nextValue) => {
-                if (typeof onCommit === "function") {
-                    onCommit(nextValue);
-                }
-            }}
-        />
+        <div
+            ref={rootRef}
+            data-vizi-dropdown="1"
+            style={{ display: "grid", gap: 5 }}
+            onMouseDown={stopInteractivePropagation}
+            onClick={stopInteractivePropagation}
+            onDoubleClick={stopInteractivePropagation}
+        >
+            <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }}>
+                {label}
+            </span>
+            <button
+                ref={triggerRef}
+                type="button"
+                disabled={disabled || (loading && !normalizedOptions.length)}
+                onClick={(event) => {
+                    stopInteractivePropagation(event);
+                    if (disabled || (loading && !normalizedOptions.length)) {
+                        return;
+                    }
+                    setOpen((current) => {
+                        const next = !current;
+                        if (!next) {
+                            setQuery("");
+                        }
+                        return next;
+                    });
+                }}
+                onPointerDown={stopInteractivePropagation}
+                onMouseDown={stopInteractivePropagation}
+                onMouseUp={stopInteractivePropagation}
+                onDoubleClick={stopInteractivePropagation}
+                style={{
+                    width: "100%",
+                    minHeight: 36,
+                    boxSizing: "border-box",
+                    borderRadius: 10,
+                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                    background: disabled ? "rgba(15, 23, 42, 0.55)" : "rgba(15, 23, 42, 0.92)",
+                    color: "#f8fafc",
+                    padding: "8px 10px",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    cursor: disabled ? "default" : "pointer",
+                    opacity: disabled ? 0.78 : 1,
+                    textAlign: "left"
+                }}
+            >
+                <span
+                    style={{
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap"
+                    }}
+                >
+                    {triggerLabel}
+                </span>
+                <span style={{ color: "rgba(226, 232, 240, 0.72)", fontSize: 11 }}>
+                    {open ? "^" : "v"}
+                </span>
+            </button>
+            {helperText ? (
+                <div
+                    style={{
+                        fontSize: 10,
+                        lineHeight: 1.4,
+                        color: error ? "#fecaca" : "rgba(226, 232, 240, 0.68)"
+                    }}
+                >
+                    {helperText}
+                </div>
+            ) : null}
+            {open && menuRect && typeof document !== "undefined" && document.body
+                ? createPortal(
+                    <div
+                        ref={menuRef}
+                        data-vizi-dropdown-menu="1"
+                        style={{
+                            position: "fixed",
+                            left: menuRect.left,
+                            top: menuRect.top,
+                            width: menuRect.width,
+                            maxHeight: menuRect.maxHeight,
+                            zIndex: 2147483200,
+                            borderRadius: 14,
+                            border: "1px solid rgba(71, 85, 105, 0.96)",
+                            background: "rgba(2, 6, 23, 0.985)",
+                            boxShadow: "0 24px 48px rgba(2, 6, 23, 0.44)",
+                            display: "grid",
+                            gap: 8,
+                            padding: 10,
+                            overflow: "hidden"
+                        }}
+                        onPointerDown={stopInteractivePropagation}
+                        onMouseDown={stopInteractivePropagation}
+                        onMouseUp={stopInteractivePropagation}
+                        onClick={stopInteractivePropagation}
+                        onDoubleClick={stopInteractivePropagation}
+                        onKeyDown={stopInteractivePropagation}
+                        onKeyUp={stopInteractivePropagation}
+                    >
+                        <div style={{ display: "grid", gap: 8 }}>
+                            <input
+                                ref={searchRef}
+                                type="text"
+                                value={query}
+                                placeholder="Search tags by name, path, or provider..."
+                                onChange={(event) => {
+                                    setQuery(event.target.value);
+                                }}
+                                onFocus={stopInteractivePropagation}
+                                onPointerDown={stopInteractivePropagation}
+                                onMouseDown={stopInteractivePropagation}
+                                onMouseUp={stopInteractivePropagation}
+                                onClick={stopInteractivePropagation}
+                                onDoubleClick={stopInteractivePropagation}
+                                onKeyDown={(event) => {
+                                    stopInteractivePropagation(event);
+                                    if (event.key === "Escape") {
+                                        event.preventDefault();
+                                        closeMenu();
+                                    }
+                                }}
+                                onKeyUp={stopInteractivePropagation}
+                                style={{
+                                    width: "100%",
+                                    height: 36,
+                                    boxSizing: "border-box",
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                                    background: "rgba(15, 23, 42, 0.92)",
+                                    color: "#f8fafc",
+                                    padding: "0 10px",
+                                    fontSize: 12,
+                                    fontWeight: 600
+                                }}
+                            />
+                            <div
+                                style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    gap: 12,
+                                    fontSize: 10,
+                                    color: "rgba(226, 232, 240, 0.68)"
+                                }}
+                            >
+                                <span>{resultSummary}</span>
+                                <button
+                                    type="button"
+                                    onClick={(event) => {
+                                        stopInteractivePropagation(event);
+                                        closeMenu();
+                                    }}
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onMouseUp={stopInteractivePropagation}
+                                    style={{
+                                        border: "none",
+                                        background: "transparent",
+                                        color: "rgba(148, 163, 184, 0.88)",
+                                        cursor: "pointer",
+                                        fontSize: 11,
+                                        fontWeight: 700
+                                    }}
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                        <div
+                            style={{
+                                display: "grid",
+                                gap: 8,
+                                maxHeight: Math.max(120, Number(menuRect.maxHeight || 320) - 92),
+                                overflowY: "auto",
+                                paddingRight: 2
+                            }}
+                        >
+                            <div style={{ display: "grid", gap: 4 }}>
+                                <button
+                                    type="button"
+                                    onClick={(event) => {
+                                        stopInteractivePropagation(event);
+                                        closeMenu();
+                                        if (typeof onCommit === "function") {
+                                            onCommit("");
+                                        }
+                                    }}
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onMouseUp={stopInteractivePropagation}
+                                    style={{
+                                        width: "100%",
+                                        border: currentValue ? "1px solid rgba(51, 65, 85, 0.92)" : "1px solid rgba(96, 165, 250, 0.85)",
+                                        background: currentValue ? "rgba(15, 23, 42, 0.94)" : "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)",
+                                        color: "#f8fafc",
+                                        borderRadius: 10,
+                                        padding: "8px 10px",
+                                        fontSize: 12,
+                                        fontWeight: currentValue ? 600 : 700,
+                                        textAlign: "left",
+                                        cursor: "pointer"
+                                    }}
+                                >
+                                    No tag
+                                </button>
+                                {!hasCurrentOption && currentValue ? (
+                                    <div
+                                        style={{
+                                            border: "1px solid rgba(71, 85, 105, 0.76)",
+                                            background: "rgba(15, 23, 42, 0.9)",
+                                            color: "#e2e8f0",
+                                            borderRadius: 10,
+                                            padding: "8px 10px",
+                                            display: "grid",
+                                            gap: 3
+                                        }}
+                                    >
+                                        <div style={{ fontSize: 12, fontWeight: 700 }}>{currentValue}</div>
+                                        <div style={{ fontSize: 10, color: "rgba(148, 163, 184, 0.9)" }}>Current saved value</div>
+                                    </div>
+                                ) : null}
+                            </div>
+                            {groupedFilteredSections.map((section, sectionIndex) => (
+                                <div key={`${section.label || "section"}-${sectionIndex}`} style={{ display: "grid", gap: 4 }}>
+                                    {section.label ? (
+                                        <div
+                                            style={{
+                                                padding: "2px 6px 4px",
+                                                fontSize: 10,
+                                                fontWeight: 800,
+                                                letterSpacing: "0.08em",
+                                                textTransform: "uppercase",
+                                                color: "rgba(148, 163, 184, 0.88)"
+                                            }}
+                                        >
+                                            {section.label}
+                                        </div>
+                                    ) : null}
+                                    {section.items.map((item) => {
+                                        const active = item.value === currentValue;
+                                        return (
+                                            <button
+                                                key={`${section.label || "option"}-${item.value}`}
+                                                type="button"
+                                                onClick={(event) => {
+                                                    stopInteractivePropagation(event);
+                                                    closeMenu();
+                                                    if (typeof onCommit === "function") {
+                                                        onCommit(item.value);
+                                                    }
+                                                }}
+                                                onPointerDown={stopInteractivePropagation}
+                                                onMouseDown={stopInteractivePropagation}
+                                                onMouseUp={stopInteractivePropagation}
+                                                style={{
+                                                    width: "100%",
+                                                    border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
+                                                    background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
+                                                    color: "#f8fafc",
+                                                    borderRadius: 10,
+                                                    padding: "8px 10px",
+                                                    fontSize: 12,
+                                                    fontWeight: active ? 700 : 600,
+                                                    textAlign: "left",
+                                                    cursor: "pointer",
+                                                    display: "grid",
+                                                    gap: 2
+                                                }}
+                                            >
+                                                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                    {item.name}
+                                                </span>
+                                                <span
+                                                    style={{
+                                                        minWidth: 0,
+                                                        overflow: "hidden",
+                                                        textOverflow: "ellipsis",
+                                                        whiteSpace: "nowrap",
+                                                        fontSize: 10,
+                                                        fontWeight: 600,
+                                                        color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
+                                                    }}
+                                                >
+                                                    {item.path}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            ))}
+                            {!loading && !filteredOptions.length ? (
+                                <div
+                                    style={{
+                                        borderRadius: 10,
+                                        border: "1px dashed rgba(71, 85, 105, 0.78)",
+                                        padding: "12px 10px",
+                                        fontSize: 11,
+                                        fontWeight: 600,
+                                        color: "rgba(148, 163, 184, 0.9)",
+                                        textAlign: "center"
+                                    }}
+                                >
+                                    No tags match that search.
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>,
+                    document.body
+                )
+                : null}
+        </div>
     );
 }
 
@@ -1336,6 +1927,20 @@ function parsePanelNumber(value) {
 function getShapeBounds(shape) {
     if (!shape || typeof shape !== "object") {
         return null;
+    }
+    if (shape.type === "text") {
+        const fontSize = Math.max(8, Number(shape.fontSize || 24));
+        const text = String(shape.text || "");
+        const width = Math.max(40, text.length * fontSize * 0.6);
+        const height = Math.max(24, fontSize * 1.2);
+        const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
+        const anchorOffsetX = anchor === "middle" ? -width / 2 : anchor === "end" ? -width : 0;
+        return {
+            x: Number(shape.x || 0) + anchorOffsetX,
+            y: Number(shape.y || 0),
+            width,
+            height
+        };
     }
     if (Array.isArray(shape.points)) {
         const points = clonePoints(shape.points);
@@ -1524,6 +2129,8 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [ignitionTagsError, setIgnitionTagsError] = useState("");
     const [ignitionTagsLoading, setIgnitionTagsLoading] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
+    const [widgetOpen, setWidgetOpen] = useState(false);
+    const [helpOpen, setHelpOpen] = useState(false);
     const [propertiesSelectionKey, setPropertiesSelectionKey] = useState("");
     const [rootSize, setRootSize] = useState({
         width: DEFAULT_CANVAS_WIDTH,
@@ -1817,6 +2424,8 @@ export default function PerspectiveViziCanvasBridge(props) {
         persistValue("toolbarCollapsed", value);
         if (value) {
             setImportOpen(false);
+            setWidgetOpen(false);
+            setHelpOpen(false);
         }
     }, [persistValue]);
 
@@ -2768,19 +3377,23 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (!svgLibraryEnabled || !svgCatalogFiles.length) {
             return;
         }
+        setWidgetOpen(false);
+        setHelpOpen(false);
         setImportOpen((current) => !current);
     }, [svgCatalogFiles.length, svgLibraryEnabled]);
 
-    const onPickSvg = useCallback(async (fileKey) => {
-        const raw = await readSvgRawByKey(fileKey, { forceFresh: false });
+    const createOverlayFromRawMarkup = useCallback((raw, options = {}) => {
         if (typeof raw !== "string") {
-            return;
+            return null;
         }
         const parsed = stripOuterSvg(raw);
         if (!parsed?.inner) {
-            return;
+            return null;
         }
 
+        const fileKey = String(options.fileKey || "").trim();
+        const overlayName = String(options.name || "").trim() || fileKey.split("/").pop() || fileKey || "Overlay";
+        const extraOverlay = isPlainObject(options.extraOverlay) ? options.extraOverlay : {};
         const keySize = extractKeySize(raw);
         const parsedEType = extractSvgEType(raw, fileKey);
         const baseViewBox = parsed.vb;
@@ -2817,10 +3430,10 @@ export default function PerspectiveViziCanvasBridge(props) {
             y: viewBox.y + (viewBox.height / 2)
         };
         const id = createId("overlay");
-        const nextOverlay = {
+        return {
             id,
             sourceKey: fileKey,
-            name: fileKey.split("/").pop() || fileKey,
+            name: overlayName,
             inner,
             tx: anchor.x - (scale * srcCenterX),
             ty: anchor.y - (scale * srcCenterY),
@@ -2836,14 +3449,59 @@ export default function PerspectiveViziCanvasBridge(props) {
                 y: localViewBox.y,
                 width: localViewBox.w,
                 height: localViewBox.h
-            }
+            },
+            ...extraOverlay
         };
+    }, [viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
+
+    const onPickSvg = useCallback(async (fileKey) => {
+        const raw = await readSvgRawByKey(fileKey, { forceFresh: false });
+        const nextOverlay = createOverlayFromRawMarkup(raw, { fileKey });
+        if (!nextOverlay) {
+            return;
+        }
 
         updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
-        setSelectedOverlayIds([id]);
+        setSelectedOverlayIds([nextOverlay.id]);
         setSelectedIds([]);
         setImportOpen(false);
-    }, [readSvgRawByKey, updateSvgOverlays, viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
+        setWidgetOpen(false);
+    }, [createOverlayFromRawMarkup, readSvgRawByKey, updateSvgOverlays]);
+
+    const handleWidgetToggle = useCallback(() => {
+        setImportOpen(false);
+        setHelpOpen(false);
+        setWidgetOpen((current) => !current);
+    }, []);
+
+    const handleHelpToggle = useCallback(() => {
+        setImportOpen(false);
+        setWidgetOpen(false);
+        setHelpOpen((current) => !current);
+    }, []);
+
+    const onPickWidget = useCallback((widgetKey) => {
+        const template = widgetTemplate(widgetKey);
+        const nextOverlay = createOverlayFromRawMarkup(template?.raw, {
+            fileKey: template?.name || String(widgetKey || ""),
+            name: template?.name || String(widgetKey || "Widget"),
+            extraOverlay: {
+                tagPath: "",
+                widget: defaultWidgetSettings(widgetKey),
+                eType: "Widget",
+                eTypeAuto: false
+            }
+        });
+        if (!nextOverlay) {
+            return;
+        }
+
+        updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
+        setSelectedOverlayIds([nextOverlay.id]);
+        setSelectedIds([]);
+        setImportOpen(false);
+        setWidgetOpen(false);
+    }, [createOverlayFromRawMarkup, updateSvgOverlays]);
 
     const handleSvgMouseDown = useCallback((event) => {
         if (event?.button && event.button !== 0) {
@@ -2890,7 +3548,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                     fontFamily: "system-ui",
                     fontWeight: "400",
                     anchor: "start",
-                    tagPath: ""
+                    tagPath: "",
+                    scaleFactor: "",
+                    decimals: "",
+                    unit: ""
                 }
             ], { persist: true });
             setSelectedIds([id]);
@@ -3064,6 +3725,81 @@ export default function PerspectiveViziCanvasBridge(props) {
         setSelectedSegment(null);
         openPropertiesForSelection(`overlay:${overlayId}`);
     }, [openPropertiesForSelection, overlaysSelectable, tool]);
+
+    const openOverlayPopup = useCallback((overlay) => {
+        if (!overlay || overlay.widget) {
+            return false;
+        }
+
+        const viewPath = resolveOverlayPopupViewPath(overlay);
+        if (!viewPath) {
+            return false;
+        }
+
+        const clientStore = getPerspectiveClientStore(props);
+        const mounts = clientStore?.mounts;
+        if (!mounts || typeof mounts.activatePopup !== "function") {
+            return false;
+        }
+
+        const overlayId = String(overlay?.id || "").trim();
+        const popupViewName = normalizeOverlayPopupViewName(
+            overlay?.eType
+            || overlay?.name
+            || overlay?.sourceKey
+        );
+        const popupTitle = String(overlay?.name || popupViewName || "Popup")
+            .trim()
+            .replace(/\.svg$/i, "");
+        const popupId = overlayId
+            ? `svg-popup-${overlayId}`
+            : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
+
+        const popupConfig = {
+            id: popupId,
+            viewPath,
+            viewParams: {
+                overlayId,
+                eType: popupViewName,
+                name: popupTitle,
+                tagPath: String(overlay?.tagPath || "").trim()
+            },
+            title: popupTitle,
+            showCloseIcon: true,
+            draggable: true,
+            resizable: true,
+            modal: false,
+            overlayDismiss: false
+        };
+
+        if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => popup?.id === popupId)) {
+            if (typeof mounts.closePopup === "function") {
+                mounts.closePopup(popupId);
+            }
+        }
+
+        mounts.activatePopup(popupConfig);
+        if (typeof mounts.focusPopup === "function") {
+            mounts.focusPopup(popupId);
+        }
+        return true;
+    }, [props]);
+
+    const handleLiveOverlayMouseDown = useCallback((event, id) => {
+        const overlayId = String(id || "").trim();
+        if (!overlayId) {
+            return;
+        }
+
+        const overlay = overlaysRef.current.find((item) => String(item?.id || "") === overlayId);
+        if (!overlay || overlay.widget) {
+            return;
+        }
+
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        openOverlayPopup(overlay);
+    }, [openOverlayPopup]);
 
     const handleEditPolylineClick = useCallback((event, id) => {
         const shapeId = String(id || "");
@@ -3549,6 +4285,22 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const selectedShapeBounds = useMemo(() => getShapeBounds(selectedShape), [selectedShape]);
     const selectedOverlayBounds = useMemo(() => getOverlayBounds(selectedOverlay), [selectedOverlay]);
+    const selectedOverlayWidgetKind = useMemo(
+        () => String(selectedOverlay?.widget?.kind || "").trim().toLowerCase(),
+        [selectedOverlay]
+    );
+    const selectedOverlayWidgetSupportsWrite = useMemo(
+        () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+        [selectedOverlayWidgetKind]
+    );
+    const selectedOverlayWidgetWriteMode = useMemo(
+        () => resolveWidgetWriteMode(selectedOverlay?.widget, selectedOverlay?.tagPath),
+        [selectedOverlay]
+    );
+    const selectedOverlayWidgetOpcServer = useMemo(
+        () => resolveWidgetOpcServer(selectedOverlay?.widget),
+        [selectedOverlay]
+    );
     const propertyTargetBounds = selectedOverlayBounds || selectedShapeBounds || selectedBBox;
 
     const floatingPropertyPanelStyle = useMemo(() => {
@@ -3581,6 +4333,11 @@ export default function PerspectiveViziCanvasBridge(props) {
             ? preferredLeft
             : clamp(anchorLeft - PROPERTY_PANEL_WIDTH - 12, 16, maxLeft);
         const top = clamp(anchorTop, 16 + rulerInset, Math.max(16 + rulerInset, rootHeight - 220));
+        const availableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - top - 16);
+        const panelHeight = Math.max(
+            PROPERTY_PANEL_MIN_HEIGHT,
+            Math.min(PROPERTY_PANEL_HEIGHT, availableHeight)
+        );
 
         return {
             position: "absolute",
@@ -3589,9 +4346,11 @@ export default function PerspectiveViziCanvasBridge(props) {
             zIndex: 70,
             width: PROPERTY_PANEL_WIDTH,
             maxWidth: `calc(100% - ${left + 16}px)`,
-            maxHeight: `calc(100% - ${top + 16}px)`,
-            overflowY: "auto",
+            height: panelHeight,
+            maxHeight: panelHeight,
+            overflow: "hidden",
             display: "grid",
+            gridTemplateRows: "auto minmax(0, 1fr)",
             gap: 12,
             padding: 14,
             borderRadius: 18,
@@ -3613,13 +4372,19 @@ export default function PerspectiveViziCanvasBridge(props) {
         const viewportHeight = typeof window !== "undefined" ? window.innerHeight : Number(rootRect.height || 0);
         const left = Number(rootRect.left || 0) + Number(floatingPropertyPanelStyle.left || 0);
         const top = Number(rootRect.top || 0) + Number(floatingPropertyPanelStyle.top || 0);
+        const availableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, viewportHeight - top - 16);
+        const panelHeight = Math.max(
+            PROPERTY_PANEL_MIN_HEIGHT,
+            Math.min(PROPERTY_PANEL_HEIGHT, availableHeight)
+        );
         return {
             ...floatingPropertyPanelStyle,
             position: "fixed",
             left,
             top,
             maxWidth: Math.max(180, viewportWidth - left - 16),
-            maxHeight: Math.max(180, viewportHeight - top - 16)
+            height: panelHeight,
+            maxHeight: panelHeight
         };
     }, [floatingPropertyPanelStyle, rootSize]);
 
@@ -3855,6 +4620,26 @@ export default function PerspectiveViziCanvasBridge(props) {
         }));
     }, [updateSelectedShape]);
 
+    const commitSelectedShapeOptionalNumber = useCallback((field, rawValue, options = {}) => {
+        const trimmed = String(rawValue ?? "").trim();
+        if (!trimmed) {
+            updateSelectedShape((shape) => ({
+                ...shape,
+                [field]: ""
+            }));
+            return;
+        }
+        const next = parsePanelNumber(trimmed);
+        if (next == null) {
+            return;
+        }
+        const value = options.min != null ? Math.max(options.min, next) : next;
+        updateSelectedShape((shape) => ({
+            ...shape,
+            [field]: value
+        }));
+    }, [updateSelectedShape]);
+
     const commitSelectedShapePosition = useCallback((axis, rawValue) => {
         const next = parsePanelNumber(rawValue);
         if (next == null) {
@@ -3915,8 +4700,32 @@ export default function PerspectiveViziCanvasBridge(props) {
         }));
     }, [updateSelectedOverlay]);
 
+    const commitSelectedOverlayWidgetField = useCallback((field, rawValue) => {
+        updateSelectedOverlay((overlay) => ({
+            ...overlay,
+            widget: {
+                ...(isPlainObject(overlay?.widget) ? overlay.widget : {}),
+                [field]: rawValue
+            }
+        }));
+    }, [updateSelectedOverlay]);
+
     const commitSelectedOverlayTagPath = useCallback((rawValue) => {
-        updateSelectedOverlay((overlay) => applyOverlayIgnitionFillBinding(overlay, rawValue));
+        updateSelectedOverlay((overlay) => {
+            if (overlay?.widget) {
+                const nextTagPath = String(rawValue ?? "").trim();
+                const currentBindings = isPlainObject(overlay?.bindings) ? overlay.bindings : {};
+                const { fill: _removedFillBinding, ...restBindings } = currentBindings;
+                return withOverlayBindings(
+                    {
+                        ...overlay,
+                        tagPath: nextTagPath
+                    },
+                    restBindings
+                );
+            }
+            return applyOverlayIgnitionFillBinding(overlay, rawValue);
+        });
     }, [updateSelectedOverlay]);
 
     const commitSelectedOverlayFill = useCallback((rawValue) => {
@@ -3977,6 +4786,88 @@ export default function PerspectiveViziCanvasBridge(props) {
         });
     }, [updateSelectedOverlay]);
 
+    const writeIgnitionTagValue = useCallback(async (tagPath, value) => {
+        const nextTagPath = String(tagPath || "").trim();
+        if (!nextTagPath) {
+            throw new Error("Ignition tag path is required.");
+        }
+
+        const encodedPath = encodeURIComponent(nextTagPath);
+        const encodedValue = encodeURIComponent(String(value ?? ""));
+        let lastError = "Ignition write failed.";
+
+        for (const routePath of MODULE_TAG_WRITE_ROUTE_CANDIDATES) {
+            try {
+                const response = await fetch(`${routePath}?path=${encodedPath}&value=${encodedValue}`, {
+                    cache: "no-store",
+                    credentials: "same-origin"
+                });
+                if (!response.ok) {
+                    lastError = `Ignition write failed (${response.status}).`;
+                    continue;
+                }
+                const payload = await response.json();
+                const error = String(payload?.error || "").trim();
+                if (error) {
+                    lastError = error;
+                    continue;
+                }
+
+                setIgnitionTagValuesByPath((previous) => {
+                    const next = previous instanceof Map ? new Map(previous) : new Map();
+                    next.set(nextTagPath, payload?.value ?? value);
+                    next.set(nextTagPath.toLowerCase(), payload?.value ?? value);
+                    return next;
+                });
+                return payload || { value };
+            } catch (error) {
+                lastError = String(error?.message || "Ignition write failed.");
+            }
+        }
+
+        throw new Error(lastError);
+    }, []);
+
+    const writeIgnitionOpcValue = useCallback(async (opcItemPath, value, opcServerName) => {
+        const nextOpcItemPath = String(opcItemPath || "").trim();
+        if (!nextOpcItemPath) {
+            throw new Error("OPC item path is required.");
+        }
+
+        const nextOpcServerName = String(opcServerName || "").trim();
+        const encodedPath = encodeURIComponent(nextOpcItemPath);
+        const encodedValue = encodeURIComponent(String(value ?? ""));
+        const encodedServer = encodeURIComponent(nextOpcServerName);
+        let lastError = "OPC write failed.";
+
+        for (const routePath of MODULE_OPC_WRITE_ROUTE_CANDIDATES) {
+            try {
+                const response = await fetch(
+                    `${routePath}?server=${encodedServer}&path=${encodedPath}&value=${encodedValue}`,
+                    {
+                        cache: "no-store",
+                        credentials: "same-origin"
+                    }
+                );
+                if (!response.ok) {
+                    lastError = `OPC write failed (${response.status}).`;
+                    continue;
+                }
+                const payload = await response.json();
+                const error = String(payload?.error || "").trim();
+                if (error) {
+                    lastError = error;
+                    continue;
+                }
+                return payload || { value };
+            } catch (error) {
+                lastError = String(error?.message || "OPC write failed.");
+            }
+        }
+
+        throw new Error(lastError);
+    }, []);
+
     const selectedShapeLabel = selectedShape
         ? (() => {
             const rawType = String(selectedShape?.type || "").toLowerCase();
@@ -4008,6 +4899,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             : svgLibraryReady
                 ? `${svgCatalogFiles.length} SVG templates ready`
                 : "Loading SVG templates...";
+    const widgetLibraryStatusText = "Mesora widgets ready";
 
     const svgDrawerLayout = useMemo(() => {
         const maxPanelWidth = Math.max(0, Number(rootSize?.width || DEFAULT_CANVAS_WIDTH) - (TOOLBAR_INSET * 2));
@@ -4029,6 +4921,29 @@ export default function PerspectiveViziCanvasBridge(props) {
             top: TOOLBAR_INSET,
             bottom: TOOLBAR_INSET,
             width: Math.max(260, Math.min(SVG_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
+        };
+    }, [rootSize, toolbarCollapsed]);
+    const widgetDrawerLayout = svgDrawerLayout;
+    const helpDrawerLayout = useMemo(() => {
+        const maxPanelWidth = Math.max(0, Number(rootSize?.width || DEFAULT_CANVAS_WIDTH) - (TOOLBAR_INSET * 2));
+        const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+        const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
+        const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
+
+        if (availableBesideToolbar >= HELP_DRAWER_MIN_WIDTH) {
+            return {
+                left: preferredLeft,
+                top: TOOLBAR_INSET,
+                bottom: TOOLBAR_INSET,
+                width: Math.min(HELP_DRAWER_PREFERRED_WIDTH, availableBesideToolbar)
+            };
+        }
+
+        return {
+            left: TOOLBAR_INSET,
+            top: TOOLBAR_INSET,
+            bottom: TOOLBAR_INSET,
+            width: Math.max(280, Math.min(HELP_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
         };
     }, [rootSize, toolbarCollapsed]);
     useEffect(() => {
@@ -4089,6 +5004,21 @@ export default function PerspectiveViziCanvasBridge(props) {
             };
 
             if (alternate) {
+                if (key === "m") {
+                    consumeShortcutEvent();
+                    activateTool("select");
+                    return;
+                }
+                if (key === "p") {
+                    consumeShortcutEvent();
+                    activateTool("polyline");
+                    return;
+                }
+                if (key === "t") {
+                    consumeShortcutEvent();
+                    activateTool("text");
+                    return;
+                }
                 if (key === "c") {
                     consumeShortcutEvent();
                     copySelection();
@@ -4140,7 +5070,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         window.addEventListener("keydown", onKeyDown, true);
         return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [cancelPolyline, copySelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, undo]);
+    }, [activateTool, cancelPolyline, copySelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, undo]);
 
     useEffect(() => {
         const onKeyUp = (event) => {
@@ -4152,7 +5082,17 @@ export default function PerspectiveViziCanvasBridge(props) {
             if (!alternate) {
                 return;
             }
-            if (key === "c" || key === "v" || key === "z" || key === "y" || key === "d" || String(event.code || "") === "KeyD") {
+            if (
+                key === "c"
+                || key === "v"
+                || key === "z"
+                || key === "y"
+                || key === "d"
+                || key === "m"
+                || key === "p"
+                || key === "t"
+                || String(event.code || "") === "KeyD"
+            ) {
                 event.preventDefault();
                 event.stopPropagation();
                 event.stopImmediatePropagation?.();
@@ -4176,11 +5116,12 @@ export default function PerspectiveViziCanvasBridge(props) {
         setSelectedSegment(null);
         setEditingId(null);
         setDrawing(null);
+        setHelpOpen(false);
         clearSelection();
     }, [clearSelection, editorVisible]);
 
     return (
-        <div ref={rootRef} style={{ position: "relative", width: "100%", height: "100%" }}>
+        <div ref={rootRef} data-vizi-canvas-root="1" style={{ position: "relative", width: "100%", height: "100%" }}>
             <CanvasSvg
                 svgRef={svgRef}
                 zoom={zoom}
@@ -4218,7 +5159,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 selectedOverlayIds={editorVisible ? selectedOverlayIds : EMPTY_ARRAY}
                 singleSelectedOverlayId={editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null}
                 setOverlayRef={NOOP}
-                onOverlayMouseDown={editorVisible ? handleOverlayMouseDown : NOOP}
+                onOverlayMouseDown={editorVisible ? handleOverlayMouseDown : handleLiveOverlayMouseDown}
                 onOverlayDoubleClick={editorVisible ? handleOverlayDoubleClick : NOOP}
                 overlaySelectionUI={editorVisible ? overlaySelectionUI : null}
                 overlayGroupSelectionUI={editorVisible ? overlayGroupSelectionUI : null}
@@ -4232,6 +5173,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 routeStrokeColorByGroupPath={EMPTY_MAP}
                 svgLiveValuesByGroupPath={EMPTY_MAP}
                 ignitionTagValuesByPath={ignitionTagValuesByPath}
+                writeIgnitionTagValue={writeIgnitionTagValue}
+                writeIgnitionOpcValue={writeIgnitionOpcValue}
                 liveTagKeys={coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY))}
                 opcTags={coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY))}
                 opcTemplateMap={EMPTY_MAP}
@@ -4365,7 +5308,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                             </button>
                         </div>
 
-                        <DockSection title="Draw">
+                        <DockSection>
                             <DockButton active={tool === "select"} onClick={() => activateTool("select")}>
                                 <span>Move</span>
                             </DockButton>
@@ -4388,14 +5331,21 @@ export default function PerspectiveViziCanvasBridge(props) {
                                 }}
                             />
 
+                            <div
+                                style={{
+                                    marginTop: 6,
+                                    fontSize: 10,
+                                    fontWeight: 800,
+                                    letterSpacing: "0.08em",
+                                    textTransform: "uppercase",
+                                    color: "rgba(226, 232, 240, 0.72)"
+                                }}
+                            >
+                                Draw
+                            </div>
+
                             <DockButton active={tool === "polyline"} onClick={() => activateTool("polyline")}>
                                 <span>Polyline</span>
-                            </DockButton>
-                            <DockButton active={tool === "rect"} onClick={() => activateTool("rect")}>
-                                <span>Rectangle</span>
-                            </DockButton>
-                            <DockButton active={tool === "circle"} onClick={() => activateTool("circle")}>
-                                <span>Circle</span>
                             </DockButton>
                             <DockButton active={tool === "text"} onClick={() => activateTool("text")}>
                                 <span>Text</span>
@@ -4412,6 +5362,12 @@ export default function PerspectiveViziCanvasBridge(props) {
                             >
                                 <span>SVG Library</span>
                             </DockButton>
+                            <DockButton
+                                active={widgetOpen}
+                                onClick={handleWidgetToggle}
+                            >
+                                <span>Widgets</span>
+                            </DockButton>
                             <div
                                 style={{
                                     display: "grid",
@@ -4424,7 +5380,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     disabled={!normalizableSvgCount}
                                     onClick={normalizeAllSvgStrokeWidths}
                                 >
-                                    <span>Match Stroke Sizes</span>
+                                    <span>Match Stroke</span>
                                 </DockButton>
                                 <input
                                     type="number"
@@ -4474,6 +5430,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                                 }}
                             >
                                 {svgLibraryStatusText}
+                                <div>{widgetLibraryStatusText}</div>
                                 {!svgLibraryError && normalizableSvgCount ? (
                                     <div>{`${normalizableSvgCount} SVGs -> ${formatPanelNumber(resolvedStrokeNormalizeWidth)}px stroke`}</div>
                                 ) : null}
@@ -4488,6 +5445,14 @@ export default function PerspectiveViziCanvasBridge(props) {
                             </DockButton>
                             <DockButton active={showGrid} onClick={() => setShowGrid(!showGrid)}>
                                 <span>Show Grid</span>
+                            </DockButton>
+                        </DockSection>
+
+                        <div style={{ height: 1, background: "rgba(71, 85, 105, 0.7)" }} />
+
+                        <DockSection title="Help">
+                            <DockButton active={helpOpen} onClick={handleHelpToggle}>
+                                <span>Open Help</span>
                             </DockButton>
                         </DockSection>
                     </div>
@@ -4544,11 +5509,24 @@ export default function PerspectiveViziCanvasBridge(props) {
                             x
                         </button>
                     </div>
+                    <div
+                        style={{
+                            minHeight: 0,
+                            overflowY: "auto",
+                            paddingRight: 2
+                        }}
+                    >
                     <PropertySection>
                         {selectedOverlay ? (
                             <>
-                                <PropertyReadout label="Type" value="SVG Overlay" />
+                                <PropertyReadout label="Type" value={selectedOverlay.widget ? "Widget" : "SVG Overlay"} />
                                 <PropertyReadout label="ID" value={selectedOverlay.id} />
+                                {selectedOverlay.widget ? (
+                                    <PropertyReadout
+                                        label="Widget Kind"
+                                        value={String(selectedOverlay.widget?.kind || "").trim() || "Widget"}
+                                    />
+                                ) : null}
                                 <PropertyField
                                     label="Name"
                                     value={selectedOverlay.name || ""}
@@ -4556,16 +5534,53 @@ export default function PerspectiveViziCanvasBridge(props) {
                                         commitSelectedOverlayText("name", value);
                                     }}
                                 />
-                                <PropertyTagPathField
-                                    label="Tag Path"
-                                    value={selectedOverlay.tagPath || ""}
-                                    options={ignitionTagOptions}
-                                    loading={ignitionTagsLoading}
-                                    error={ignitionTagsError}
-                                    onCommit={(value) => {
-                                        commitSelectedOverlayTagPath(value);
-                                    }}
-                                />
+                                {selectedOverlay.widget && selectedOverlayWidgetSupportsWrite ? (
+                                    <EditorDropdownField
+                                        label="Write Target"
+                                        value={selectedOverlayWidgetWriteMode}
+                                        sections={[
+                                            {
+                                                items: [
+                                                    { value: "ignition", label: "Ignition Tag" },
+                                                    { value: "opc", label: "Direct OPC" }
+                                                ]
+                                            }
+                                        ]}
+                                        onChange={(nextValue) => {
+                                            commitSelectedOverlayWidgetField("writeMode", nextValue);
+                                        }}
+                                    />
+                                ) : null}
+                                {selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? (
+                                    <>
+                                        <PropertyField
+                                            label="OPC Item Path"
+                                            value={selectedOverlay.tagPath || ""}
+                                            placeholder="ns=1;s=[PLC]Program:Tags.MyCommand"
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayTagPath(value);
+                                            }}
+                                        />
+                                        <PropertyField
+                                            label="OPC Server"
+                                            value={selectedOverlayWidgetOpcServer}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayWidgetField("opcServer", String(value ?? ""));
+                                            }}
+                                        />
+                                    </>
+                                ) : (
+                                    <PropertyTagPathField
+                                        label="Tag Path"
+                                        value={selectedOverlay.tagPath || ""}
+                                        options={ignitionTagOptions}
+                                        loading={ignitionTagsLoading}
+                                        error={ignitionTagsError}
+                                        onCommit={(value) => {
+                                            commitSelectedOverlayTagPath(value);
+                                        }}
+                                    />
+                                )}
                                 <PropertyField
                                     label="EType"
                                     value={selectedOverlay.eType || ""}
@@ -4573,6 +5588,60 @@ export default function PerspectiveViziCanvasBridge(props) {
                                         commitSelectedOverlayText("eType", value);
                                     }}
                                 />
+                                {selectedOverlay.widget ? (
+                                    <>
+                                        <PropertyField
+                                            label="Title"
+                                            value={selectedOverlay.widget?.title || ""}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayWidgetField("title", String(value ?? ""));
+                                            }}
+                                        />
+                                        <PropertyField
+                                            label="Title Font Size"
+                                            value={formatPanelNumber(selectedOverlay.widget?.titleFontSize)}
+                                            placeholder="Auto"
+                                            onCommit={(value) => {
+                                                const trimmed = String(value ?? "").trim();
+                                                if (!trimmed) {
+                                                    commitSelectedOverlayWidgetField("titleFontSize", "");
+                                                    return;
+                                                }
+                                                const next = parsePanelNumber(trimmed);
+                                                if (next == null) {
+                                                    return;
+                                                }
+                                                commitSelectedOverlayWidgetField("titleFontSize", next);
+                                            }}
+                                        />
+                                        {String(selectedOverlay.widget?.kind || "").trim().toLowerCase() === "pushbutton" ? (
+                                            <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                                <PropertyField
+                                                    label="Press Value"
+                                                    value={String(
+                                                        Object.prototype.hasOwnProperty.call(selectedOverlay.widget || {}, "writeValue")
+                                                            ? selectedOverlay.widget.writeValue
+                                                            : 1
+                                                    )}
+                                                    onCommit={(value) => {
+                                                        commitSelectedOverlayWidgetField("writeValue", String(value ?? ""));
+                                                    }}
+                                                />
+                                                <PropertyField
+                                                    label="Release Value"
+                                                    value={String(
+                                                        Object.prototype.hasOwnProperty.call(selectedOverlay.widget || {}, "releaseValue")
+                                                            ? selectedOverlay.widget.releaseValue
+                                                            : 0
+                                                    )}
+                                                    onCommit={(value) => {
+                                                        commitSelectedOverlayWidgetField("releaseValue", String(value ?? ""));
+                                                    }}
+                                                />
+                                            </div>
+                                        ) : null}
+                                    </>
+                                ) : null}
                                 <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
                                     <PropertyField
                                         label="X"
@@ -4691,6 +5760,32 @@ export default function PerspectiveViziCanvasBridge(props) {
                                                 }}
                                             />
                                         </div>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
+                                                label="Scale"
+                                                value={formatPanelNumber(selectedShape.scaleFactor)}
+                                                placeholder="1"
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeOptionalNumber("scaleFactor", value);
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Decimals"
+                                                value={formatPanelNumber(selectedShape.decimals)}
+                                                placeholder="Auto"
+                                                onCommit={(value) => {
+                                                    commitSelectedShapeOptionalNumber("decimals", value, { min: 0 });
+                                                }}
+                                            />
+                                        </div>
+                                        <PropertyField
+                                            label="Units"
+                                            value={selectedShape.unit || ""}
+                                            placeholder="psi"
+                                            onCommit={(value) => {
+                                                commitSelectedShapeText("unit", value);
+                                            }}
+                                        />
                                     </>
                                 ) : Array.isArray(selectedShape?.points) ? (
                                     <>
@@ -4825,6 +5920,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                             </>
                         )}
                     </PropertySection>
+                    </div>
                 </div>
             ) : null}
 
@@ -4854,6 +5950,151 @@ export default function PerspectiveViziCanvasBridge(props) {
                         dockBottom={svgDrawerLayout.bottom}
                         dockWidth={svgDrawerLayout.width}
                     />
+                </div>
+            ) : null}
+
+            {editorVisible && widgetOpen ? (
+                <div
+                    style={{
+                        "--bg-elev": "rgba(15, 23, 42, 0.98)",
+                        "--bg-soft": "rgba(15, 23, 42, 0.92)",
+                        "--border": "rgba(71, 85, 105, 0.9)",
+                        "--text": "#f8fafc",
+                        "--text-muted": "rgba(226, 232, 240, 0.72)"
+                    }}
+                >
+                    <WidgetSelectorModal
+                        open={widgetOpen}
+                        onClose={() => setWidgetOpen(false)}
+                        onPickWidget={onPickWidget}
+                        docked
+                        absoluteDocked
+                        appearance="ignition-drawer"
+                        attached
+                        dockLeft={widgetDrawerLayout.left}
+                        dockTop={widgetDrawerLayout.top}
+                        dockBottom={widgetDrawerLayout.bottom}
+                        dockWidth={widgetDrawerLayout.width}
+                    />
+                </div>
+            ) : null}
+
+            {editorVisible && helpOpen ? (
+                <div
+                    style={{
+                        position: "absolute",
+                        left: helpDrawerLayout.left,
+                        top: helpDrawerLayout.top,
+                        bottom: helpDrawerLayout.bottom,
+                        width: helpDrawerLayout.width,
+                        zIndex: 58,
+                        display: "grid",
+                        gridTemplateRows: "auto 1fr",
+                        borderRadius: 22,
+                        border: "1px solid rgba(71, 85, 105, 0.9)",
+                        background: "linear-gradient(180deg, rgba(2, 6, 23, 0.98) 0%, rgba(15, 23, 42, 0.96) 100%)",
+                        boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)",
+                        overflow: "hidden"
+                    }}
+                    onPointerDown={stopInteractivePropagation}
+                    onMouseDown={stopInteractivePropagation}
+                    onMouseUp={stopInteractivePropagation}
+                    onClick={stopInteractivePropagation}
+                    onDoubleClick={stopInteractivePropagation}
+                    onKeyDown={stopInteractivePropagation}
+                    onKeyUp={stopInteractivePropagation}
+                    onContextMenu={stopInteractivePropagation}
+                >
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 12,
+                            padding: "18px 18px 14px",
+                            borderBottom: "1px solid rgba(71, 85, 105, 0.6)"
+                        }}
+                    >
+                        <div style={{ display: "grid", gap: 4 }}>
+                            <div style={{ fontSize: 22, fontWeight: 800, color: "#f8fafc" }}>
+                                Ignition Tool Help
+                            </div>
+                            <div style={{ fontSize: 12, lineHeight: 1.5, color: "rgba(226, 232, 240, 0.72)" }}>
+                                Quick reference for drawing, bindings, widgets, and shortcuts in the Vizi Ignition tool.
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setHelpOpen(false)}
+                            style={{
+                                border: "1px solid rgba(71, 85, 105, 0.9)",
+                                background: "rgba(15, 23, 42, 0.88)",
+                                color: "#f8fafc",
+                                minWidth: 32,
+                                height: 32,
+                                padding: "0 10px",
+                                borderRadius: 999,
+                                fontSize: 14,
+                                fontWeight: 700,
+                                cursor: "pointer"
+                            }}
+                        >
+                            x
+                        </button>
+                    </div>
+                    <div
+                        style={{
+                            overflowY: "auto",
+                            padding: 18,
+                            display: "grid",
+                            gap: 16
+                        }}
+                    >
+                        {IGNITION_TOOL_HELP_SECTIONS.map((section) => (
+                            <div
+                                key={section.title}
+                                style={{
+                                    display: "grid",
+                                    gap: 8,
+                                    padding: 14,
+                                    borderRadius: 16,
+                                    border: "1px solid rgba(51, 65, 85, 0.72)",
+                                    background: "rgba(15, 23, 42, 0.62)"
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        fontSize: 12,
+                                        fontWeight: 800,
+                                        letterSpacing: "0.08em",
+                                        textTransform: "uppercase",
+                                        color: "#f8fafc"
+                                    }}
+                                >
+                                    {section.title}
+                                </div>
+                                <div style={{ display: "grid", gap: 8 }}>
+                                    {section.items.map((item) => (
+                                        <div
+                                            key={item}
+                                            style={{
+                                                display: "grid",
+                                                gridTemplateColumns: "10px 1fr",
+                                                gap: 8,
+                                                alignItems: "start",
+                                                color: "rgba(226, 232, 240, 0.84)",
+                                                fontSize: 13,
+                                                lineHeight: 1.55
+                                            }}
+                                        >
+                                            <span style={{ color: "#60a5fa" }}>•</span>
+                                            <span>{item}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             ) : null}
         </div>

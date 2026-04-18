@@ -19,12 +19,27 @@ export default function WidgetSelectorModal({
   onClose,
   onPickWidget,
   docked = false,
+  absoluteDocked = false,
+  appearance = "default",
+  attached = false,
   dockLeft = 0,
   dockTop = 0,
   dockBottom = 0,
   dockWidth = 320,
 }) {
   const [query, setQuery] = useState("");
+  const darkDrawer = appearance === "ignition-drawer";
+  const panelBg = darkDrawer
+    ? "linear-gradient(180deg, rgba(6, 12, 28, 0.99) 0%, rgba(10, 18, 36, 0.98) 100%)"
+    : "var(--bg-elev, rgba(15, 23, 42, 0.98))";
+  const softBg = darkDrawer
+    ? "rgba(11, 18, 34, 0.96)"
+    : "var(--bg-soft, rgba(15, 23, 42, 0.92))";
+  const borderColor = darkDrawer
+    ? "rgba(87, 104, 143, 0.78)"
+    : "var(--border, rgba(71, 85, 105, 0.9))";
+  const textColor = darkDrawer ? "#eef4ff" : "var(--text, #f8fafc)";
+  const mutedColor = darkDrawer ? "rgba(200, 214, 236, 0.74)" : "var(--text-muted, rgba(226, 232, 240, 0.72))";
 
   const grouped = useMemo(() => {
     const q = String(query || "").trim().toLowerCase();
@@ -48,8 +63,9 @@ export default function WidgetSelectorModal({
 
   return (
     <div
+      data-vizi-widget-drawer={docked ? "1" : undefined}
       style={{
-        position: "fixed",
+        position: docked && absoluteDocked ? "absolute" : "fixed",
         ...(docked
           ? {
               left: Math.max(0, Number(dockLeft) || 0),
@@ -77,10 +93,12 @@ export default function WidgetSelectorModal({
           height: docked ? "100%" : undefined,
           maxHeight: docked ? "100%" : "min(620px, 86vh)",
           overflow: "auto",
-          background: "var(--bg-elev)",
-          border: "1px solid var(--border)",
-          borderRadius: docked ? 0 : 16,
-          boxShadow: docked ? "24px 0 40px rgba(0,0,0,0.28)" : "0 14px 50px rgba(0,0,0,0.22)",
+          background: panelBg,
+          border: `1px solid ${borderColor}`,
+          borderRadius: docked ? (attached ? "0 18px 18px 0" : 18) : 16,
+          boxShadow: docked
+            ? (attached ? "18px 14px 36px rgba(2, 6, 23, 0.28)" : "24px 0 40px rgba(0,0,0,0.28)")
+            : "0 14px 50px rgba(0,0,0,0.22)",
           overscrollBehavior: "contain",
         }}
         onMouseDown={(e) => e.stopPropagation()}
@@ -92,18 +110,18 @@ export default function WidgetSelectorModal({
             top: 0,
             zIndex: 2,
             padding: 16,
-            background: "var(--bg-elev)",
-            borderBottom: "1px solid var(--border)",
+            background: panelBg,
+            borderBottom: `1px solid ${borderColor}`,
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-            <div style={{ fontWeight: 800, fontSize: 13, color: "var(--text)" }}>Widget Selector</div>
+            <div style={{ fontWeight: 800, fontSize: 16, color: textColor, letterSpacing: "0.01em" }}>Widgets</div>
             <button
               onClick={onClose}
               style={{
-                border: "1px solid var(--border)",
-                background: "var(--bg-elev)",
-                color: "var(--text)",
+                border: `1px solid ${borderColor}`,
+                background: softBg,
+                color: textColor,
                 borderRadius: 10,
                 padding: "4px 8px",
                 fontSize: 11,
@@ -120,12 +138,13 @@ export default function WidgetSelectorModal({
             style={{
               marginTop: 10,
               width: "100%",
-              border: "1px solid var(--border)",
-              background: "var(--bg-elev)",
-              color: "var(--text)",
-              borderRadius: 10,
-              padding: "7px 9px",
-              fontSize: 12,
+              border: `1px solid ${borderColor}`,
+              background: softBg,
+              color: textColor,
+              borderRadius: 12,
+              padding: "8px 10px",
+              fontSize: 13,
+              fontWeight: 600,
               boxSizing: "border-box",
             }}
           />
@@ -133,11 +152,11 @@ export default function WidgetSelectorModal({
 
         <div style={{ padding: 16, display: "grid", gap: 12 }}>
           {grouped.length === 0 ? (
-            <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No matching widgets.</div>
+            <div style={{ color: mutedColor, fontSize: 12 }}>No matching widgets.</div>
           ) : (
             grouped.map((g) => (
               <div key={g.group} style={{ display: "grid", gap: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)" }}>{g.group}</div>
+                <div style={{ fontSize: 11, fontWeight: 800, color: mutedColor, textTransform: "uppercase", letterSpacing: "0.08em" }}>{g.group}</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 8 }}>
                   {g.items.map((w) => (
                     <button
@@ -145,18 +164,18 @@ export default function WidgetSelectorModal({
                       onClick={() => onPickWidget?.(w.key)}
                       style={{
                         textAlign: "left",
-                        border: "1px solid var(--border)",
-                        background: "var(--bg-elev)",
-                        color: "var(--text)",
+                        border: `1px solid ${borderColor}`,
+                        background: softBg,
+                        color: textColor,
                         borderRadius: 12,
-                        padding: "8px 10px",
+                        padding: "10px 12px",
                         cursor: "pointer",
                         display: "grid",
-                        gap: 4,
+                        gap: 5,
                       }}
                     >
                       <div style={{ fontWeight: 700, fontSize: 12 }}>{w.name}</div>
-                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{w.desc}</div>
+                      <div style={{ fontSize: 11, color: mutedColor, lineHeight: 1.45 }}>{w.desc}</div>
                     </button>
                   ))}
                 </div>
