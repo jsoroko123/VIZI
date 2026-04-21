@@ -235,6 +235,31 @@ function resolveCanvasHostSize(componentProps) {
     };
 }
 
+function resolveCanvasDefaultSize(componentProps) {
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const candidates = [
+        componentProps?.store?.view?.page?.rootView?.props,
+        nestedProps?.store?.view?.page?.rootView?.props,
+        componentProps?.store?.view?.page?.props,
+        nestedProps?.store?.view?.page?.props,
+        componentProps?.store?.view?.page?.rootView,
+        nestedProps?.store?.view?.page?.rootView,
+        globalClient?.store?.view?.page?.rootView?.props,
+        globalClient?.store?.view?.page?.props,
+        globalClient?.store?.view?.page?.rootView
+    ];
+
+    for (const candidate of candidates) {
+        const resolved = readDefaultSizeCandidate(candidate);
+        if (resolved) {
+            return resolved;
+        }
+    }
+
+    return null;
+}
+
 function isAutoResizableViewBoxParts(x, y, width, height) {
     return x === 0
         && y === 0
@@ -309,23 +334,56 @@ function readBrowserViewportHeight() {
     );
 }
 
-function resolveBrowserHeightCanvasZoom(rootNode, fallbackHeight, viewBoundsHeight, browserViewportHeight) {
+function readBrowserViewportWidth() {
+    if (typeof window === "undefined") {
+        return 0;
+    }
+    return (
+        toPositiveNumber(window.visualViewport?.width)
+        || toPositiveNumber(window.innerWidth)
+        || 0
+    );
+}
+
+function resolveBrowserHeightCanvasZoom(
+    rootNode,
+    hostWidthFallback,
+    fallbackHeight,
+    viewBoundsWidth,
+    viewBoundsHeight,
+    browserViewportWidth,
+    browserViewportHeight
+) {
+    const targetViewWidth = toPositiveNumber(viewBoundsWidth) || DEFAULT_CANVAS_WIDTH;
     const targetViewHeight = toPositiveNumber(viewBoundsHeight) || DEFAULT_CANVAS_HEIGHT;
     const rect = rootNode && typeof rootNode.getBoundingClientRect === "function"
         ? rootNode.getBoundingClientRect()
         : null;
+    const rootLeft = Math.max(0, Number(rect?.left || 0));
     const rootTop = Math.max(0, Number(rect?.top || 0));
-    const hostHeight = toPositiveNumber(rect?.height) || toPositiveNumber(fallbackHeight) || 0;
+    const hostWidth = toPositiveNumber(rect?.width) || toPositiveNumber(hostWidthFallback) || 0;
+    const hostHeight = toPositiveNumber(fallbackHeight) || toPositiveNumber(rect?.height) || 0;
+    const viewportWidth = toPositiveNumber(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
+    const availableBrowserWidth = viewportWidth > 0
+        ? Math.max(1, viewportWidth - rootLeft)
+        : 0;
     const availableBrowserHeight = viewportHeight > 0
         ? Math.max(1, viewportHeight - rootTop)
         : 0;
+    const targetWidth = toPositiveNumber(
+        availableBrowserWidth && hostWidth
+            ? Math.min(availableBrowserWidth, hostWidth)
+            : availableBrowserWidth || hostWidth
+    ) || targetViewWidth;
     const targetHeight = toPositiveNumber(
         availableBrowserHeight && hostHeight
             ? Math.min(availableBrowserHeight, hostHeight)
             : availableBrowserHeight || hostHeight
     ) || targetViewHeight;
-    return Math.max(0.05, Math.min(8, targetHeight / targetViewHeight));
+    const scaleByWidth = targetWidth / targetViewWidth;
+    const scaleByHeight = targetHeight / targetViewHeight;
+    return Math.max(0.05, Math.min(8, Math.min(scaleByWidth, scaleByHeight)));
 }
 
 function getPerspectiveClientStore(props) {
@@ -1005,12 +1063,14 @@ function ViziCanvasBridge(props) {
     const svgRawCacheRef = useRef(new Map());
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
     const hostSize = resolveCanvasHostSize(props);
+    const defaultHostSize = resolveCanvasDefaultSize(props);
     const previewActive = detectPerspectivePreviewMode(props);
     const designerActive = detectPerspectiveDesignerMode(props);
     const editorVisible = designerActive && !previewActive;
     const isLiveMode = !designerActive || previewActive;
     const browserRuntimeMode = isLiveMode && !designerActive;
     const [rootSize, setRootSize] = useState(hostSize);
+    const [browserViewportWidth, setBrowserViewportWidth] = useState(() => readBrowserViewportWidth());
     const [browserViewportHeight, setBrowserViewportHeight] = useState(() => readBrowserViewportHeight());
     const effectiveHostSize = (
         toPositiveNumber(rootSize?.width) && toPositiveNumber(rootSize?.height)
@@ -1018,7 +1078,7 @@ function ViziCanvasBridge(props) {
             : hostSize
     );
     const responsiveViewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, effectiveHostSize));
-    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument));
+    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument, defaultHostSize || hostSize));
     const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
     const externalOverlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
@@ -1074,7 +1134,9 @@ function ViziCanvasBridge(props) {
         }
 
         const updateViewportHeight = () => {
+            const nextWidth = readBrowserViewportWidth();
             const nextHeight = readBrowserViewportHeight();
+            setBrowserViewportWidth((previous) => (previous === nextWidth ? previous : nextWidth));
             setBrowserViewportHeight((previous) => (previous === nextHeight ? previous : nextHeight));
         };
 
@@ -1451,8 +1513,11 @@ function ViziCanvasBridge(props) {
     const liveCanvasZoom = browserRuntimeMode
         ? resolveBrowserHeightCanvasZoom(
             rootRef.current,
-            rootSize?.height,
+            rootSize?.width || hostSize?.width || defaultHostSize?.width,
+            defaultHostSize?.height || hostSize?.height || rootSize?.height,
+            viewBox.width,
             viewBox.height,
+            browserViewportWidth,
             browserViewportHeight
         )
         : 1;
