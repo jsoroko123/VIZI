@@ -142,6 +142,7 @@ function CanvasSvg({
   setOverlayRef,
   onOverlayMouseDown,
   onOverlayDoubleClick,
+  onOverlayContextMenu,
   overlaySelectionUI,
   overlayGroupSelectionUI,
   shapeSelectionUI,
@@ -186,6 +187,7 @@ function CanvasSvg({
   viewportLeftOffset = 0,
   viewportScrollTarget = null,
   onViewportScroll = null,
+  absoluteViewportLayout = true,
 }) {
   const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
   const liveCanvasEnabled = Boolean(liveUpdatesEnabled && renderLiveVisuals);
@@ -271,6 +273,7 @@ function CanvasSvg({
   const isLineMode = tool === "polyline" || tool === "rect" || tool === "circle";
   const isCrosshair = isLineMode || marquee;
   const themeStrokeDefault = "#808080";
+  const themeFillDefault = "#cccccc";
   const isDarkTheme = String(theme || "").toLowerCase() === "dark";
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
   const [viewportScroll, setViewportScroll] = useState({ x: 0, y: 0 });
@@ -7045,6 +7048,8 @@ function CanvasSvg({
 
       const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
       const isDiverterOverlay = overlayEType.includes("diverter");
+      const strokeModeRaw = String(overlay?.strokeMode || "").trim().toLowerCase();
+      const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
       if (!renderLiveVisuals) {
         const overlayFill = String(getOverlayBoundFillColor(overlay) || overlay?.fill || "").trim();
         const overlayStroke = String(overlay?.stroke || "").trim();
@@ -7052,6 +7057,10 @@ function CanvasSvg({
           Number.isFinite(Number(overlay?.strokeWidth)) && Number(overlay.strokeWidth) > 0
             ? Number(overlay.strokeWidth)
             : undefined;
+        const hasCustomOverlayFill =
+          Boolean(overlayFill) && (!preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
+        const hasCustomOverlayStroke =
+          Boolean(overlayStroke) && (!preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
         if (isDiverterOverlay) {
           const diverterMode = getEffectiveDiverterState(overlay);
           const diverterFlowColor = normalizeActiveLineColor(
@@ -7074,14 +7083,14 @@ function CanvasSvg({
         }
         out.set(id, {
           inner: applyOverlayPaintOverrides(String(overlay?.inner || ""), {
-            fillColor: overlayFill,
-            strokeColor: overlayStroke,
+            fillColor: hasCustomOverlayFill ? overlayFill : "",
+            strokeColor: hasCustomOverlayStroke ? overlayStroke : "",
             strokeWidth: overlayStrokeWidth,
           }),
           className: undefined,
           style: {
-            fill: overlayFill || "none",
-            stroke: overlayStroke || themeStrokeDefault,
+            fill: hasCustomOverlayFill ? overlayFill : undefined,
+            stroke: hasCustomOverlayStroke ? overlayStroke : undefined,
             strokeWidth: overlayStrokeWidth,
             pointerEvents: "visiblePainted",
           },
@@ -7141,7 +7150,17 @@ function CanvasSvg({
         Number.isFinite(Number(overlay?.strokeWidth)) && Number(overlay.strokeWidth) > 0
           ? Number(overlay.strokeWidth)
           : undefined;
-      const effectiveStrokeColor = isDiverterOverlay ? "" : routeStroke || overlayStroke || themeStrokeDefault;
+      const hasCustomOverlayFill =
+        Boolean(overlayFill) && (!preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
+      const hasCustomOverlayStroke =
+        Boolean(overlayStroke) && (!preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
+      const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
+      const effectiveFillColor = isDiverterOverlay
+        ? ""
+        : (tagFill || (hasCustomOverlayFill ? overlayFill : ""));
+      const effectiveStrokeColor = isDiverterOverlay
+        ? ""
+        : (hasCustomOverlayStroke ? overlayStroke : (useForcedStroke ? routeStroke : ""));
 
       if (tagFill) {
         const key = String(overlay.tagPath || overlay.id || "");
@@ -7151,16 +7170,7 @@ function CanvasSvg({
         }
       }
 
-      const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
-      let inner = isDiverterOverlay
-        ? overlay.inner
-        : tagFill
-        ? overrideSvgColors(overlay.inner, tagFill)
-        : routeStroke
-        ? overrideSvgStrokeOnly(overlay.inner)
-        : useForcedStroke
-        ? overrideSvgStrokeOnly(overlay.inner)
-        : overlay.inner;
+      let inner = overlay.inner;
 
       if (shouldReplaceBinText) {
         inner = replaceSvgTextPlaceholders(inner, {
@@ -7194,12 +7204,12 @@ function CanvasSvg({
       }
       if (!isDiverterOverlay) {
         inner = applyOverlayPaintOverrides(inner, {
-          fillColor: tagFill ? "" : overlayFill,
-          strokeColor: routeStroke ? "" : overlayStroke,
+          fillColor: isFaultSimulated ? "" : effectiveFillColor,
+          strokeColor: effectiveStrokeColor,
           strokeWidth: overlayStrokeWidth,
         });
       }
-      if (!isDiverterOverlay && !routeStroke) {
+      if (!isDiverterOverlay && effectiveStrokeColor) {
         inner = forceSvgStrokeColor(inner, effectiveStrokeColor);
       }
       if (isDiverterOverlay) {
@@ -7215,9 +7225,6 @@ function CanvasSvg({
               pointerEvents: "visiblePainted",
             }
           : {
-              fill: isFaultSimulated ? faultColor : tagFill || overlayFill || "none",
-              stroke: effectiveStrokeColor,
-              strokeWidth: overlayStrokeWidth,
               pointerEvents: "visiblePainted",
             },
         isConveyorScrew,
@@ -7278,6 +7285,7 @@ function CanvasSvg({
               transform={`translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`}
               onMouseDown={(e) => handleOverlayMouseDown(e, o)}
               onDoubleClick={(e) => handleOverlayDoubleClick(e, o)}
+              onContextMenu={(e) => onOverlayContextMenu?.(e, o)}
               onMouseEnter={isLineMode ? () => setHoverOverlayId(o.id) : undefined}
               onMouseLeave={isLineMode ? () => setHoverOverlayId((prev) => (prev === o.id ? null : prev)) : undefined}
               style={{
@@ -7475,7 +7483,7 @@ function CanvasSvg({
         >
           <g
             ref={(node) => applyOverlayNodeRef(o.id, node)}
-            transform={`translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`}
+            transform={`translate(${o.tx} ${o.ty})`}
             onMouseDown={!isLiveMode ? (e) => handleOverlayMouseDown(e, o) : undefined}
             onDoubleClick={(e) => handleOverlayDoubleClick(e, o, { force: true })}
             style={{
@@ -7485,21 +7493,18 @@ function CanvasSvg({
           >
             {overlayVisual?.embeddedViewFrame ? (
               <rect
-                x={overlayVisual.embeddedViewFrame.x}
-                y={overlayVisual.embeddedViewFrame.y}
-                width={overlayVisual.embeddedViewFrame.w}
-                height={overlayVisual.embeddedViewFrame.h}
-                rx={12}
+                x={(overlayVisual.embeddedViewFrame.x) * overlayScaleX(o)}
+                y={(overlayVisual.embeddedViewFrame.y) * overlayScaleY(o)}
+                width={overlayVisual.embeddedViewFrame.w * overlayScaleX(o)}
+                height={overlayVisual.embeddedViewFrame.h * overlayScaleY(o)}
                 fill="rgba(15, 23, 42, 0.86)"
-                stroke="rgba(71, 85, 105, 0.92)"
-                strokeWidth={2}
               />
             ) : null}
             <foreignObject
-              x={Number(embeddedBounds.x) || 0}
-              y={Number(embeddedBounds.y) || 0}
-              width={Math.max(1, Number(embeddedBounds.width) || 360)}
-              height={Math.max(1, Number(embeddedBounds.height) || 220)}
+              x={(Number(embeddedBounds.x) || 0) * overlayScaleX(o)}
+              y={(Number(embeddedBounds.y) || 0) * overlayScaleY(o)}
+              width={Math.max(1, (Number(embeddedBounds.width) || 360) * overlayScaleX(o))}
+              height={Math.max(1, (Number(embeddedBounds.height) || 220) * overlayScaleY(o))}
               style={{ pointerEvents: interactionEnabled ? "auto" : "none" }}
             >
               <div
@@ -7509,7 +7514,6 @@ function CanvasSvg({
                   height: "100%",
                   boxSizing: "border-box",
                   overflow: "hidden",
-                  borderRadius: "12px",
                   pointerEvents: interactionEnabled ? "auto" : "none",
                   background: "rgba(15, 23, 42, 0.2)",
                 }}
@@ -7556,10 +7560,10 @@ function CanvasSvg({
             </foreignObject>
             {showDesignHitbox ? (
               <rect
-                x={Number(embeddedBounds.x) || 0}
-                y={Number(embeddedBounds.y) || 0}
-                width={Math.max(1, Number(embeddedBounds.width) || 360)}
-                height={Math.max(1, Number(embeddedBounds.height) || 220)}
+                x={(Number(embeddedBounds.x) || 0) * overlayScaleX(o)}
+                y={(Number(embeddedBounds.y) || 0) * overlayScaleY(o)}
+                width={Math.max(1, (Number(embeddedBounds.width) || 360) * overlayScaleX(o))}
+                height={Math.max(1, (Number(embeddedBounds.height) || 220) * overlayScaleY(o))}
                 fill="transparent"
                 pointerEvents="all"
                 style={{ cursor: overlayCursor }}
@@ -7772,6 +7776,7 @@ function CanvasSvg({
     return (
       <g>
         {overlayRenderOverlays.map((o) => {
+          if (o?.embeddedView) return null;
           const overlayTagPath = String(o?.tagPath || "").trim();
           const overlayEType = String(o?.eType || o?.name || "").trim();
           const widgetKind = String(o?.widget?.kind || "").trim().toLowerCase();
@@ -8478,14 +8483,20 @@ function CanvasSvg({
   return (
     <div
       style={{
-        position: "absolute",
-        top: viewportTopOffset,
-        left: viewportShiftX,
-        right: 0,
-        bottom: 0,
+        position: absoluteViewportLayout ? "absolute" : "relative",
+        top: absoluteViewportLayout ? viewportTopOffset : undefined,
+        left: absoluteViewportLayout ? viewportShiftX : undefined,
+        right: absoluteViewportLayout ? 0 : undefined,
+        bottom: absoluteViewportLayout ? 0 : undefined,
+        width: absoluteViewportLayout ? undefined : "100%",
+        height: absoluteViewportLayout ? undefined : "100%",
+        minWidth: 0,
+        minHeight: 0,
+        flex: absoluteViewportLayout ? undefined : "1 1 auto",
+        alignSelf: absoluteViewportLayout ? undefined : "stretch",
         userSelect: "none",
-        transition: "left 280ms cubic-bezier(0.22, 1, 0.36, 1)",
-        willChange: "left",
+        transition: absoluteViewportLayout ? "left 280ms cubic-bezier(0.22, 1, 0.36, 1)" : undefined,
+        willChange: absoluteViewportLayout ? "left" : undefined,
       }}
     >
       <div

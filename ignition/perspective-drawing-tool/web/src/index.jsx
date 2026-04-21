@@ -235,14 +235,30 @@ function resolveCanvasHostSize(componentProps) {
     };
 }
 
+function isAutoResizableViewBoxParts(x, y, width, height) {
+    return x === 0
+        && y === 0
+        && (
+            (width === 1200 && height === 800)
+            || (width === DEFAULT_CANVAS_WIDTH && height === DEFAULT_CANVAS_HEIGHT)
+        );
+}
+
 function normalizeViewBox(documentValue, fallbackSize = null) {
     const fallbackWidth = toPositiveNumber(fallbackSize?.width) || DEFAULT_CANVAS_WIDTH;
     const fallbackHeight = toPositiveNumber(fallbackSize?.height) || DEFAULT_CANVAS_HEIGHT;
     const viewBox = documentValue && documentValue.viewBox;
     if (typeof viewBox === "string" && viewBox.trim()) {
         const trimmed = viewBox.trim();
-        if (fallbackSize && trimmed === "0 0 1200 800") {
-            return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+        if (fallbackSize) {
+            const parts = trimmed.split(/[\s,]+/).map((value) => Number(value));
+            if (
+                parts.length === 4
+                && parts.every(Number.isFinite)
+                && isAutoResizableViewBoxParts(parts[0], parts[1], parts[2], parts[3])
+            ) {
+                return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+            }
         }
         return trimmed;
     }
@@ -251,7 +267,7 @@ function normalizeViewBox(documentValue, fallbackSize = null) {
         const y = Number(viewBox.y) || 0;
         const width = Number(viewBox.width) || 100;
         const height = Number(viewBox.height) || 100;
-        if (fallbackSize && x === 0 && y === 0 && width === 1200 && height === 800) {
+        if (fallbackSize && isAutoResizableViewBoxParts(x, y, width, height)) {
             return `0 0 ${fallbackWidth} ${fallbackHeight}`;
         }
         return `${x} ${y} ${width} ${height}`;
@@ -280,6 +296,36 @@ function parseViewBoxParts(raw) {
         width: DEFAULT_CANVAS_WIDTH,
         height: DEFAULT_CANVAS_HEIGHT
     };
+}
+
+function readBrowserViewportHeight() {
+    if (typeof window === "undefined") {
+        return 0;
+    }
+    return (
+        toPositiveNumber(window.visualViewport?.height)
+        || toPositiveNumber(window.innerHeight)
+        || 0
+    );
+}
+
+function resolveBrowserHeightCanvasZoom(rootNode, fallbackHeight, viewBoundsHeight, browserViewportHeight) {
+    const targetViewHeight = toPositiveNumber(viewBoundsHeight) || DEFAULT_CANVAS_HEIGHT;
+    const rect = rootNode && typeof rootNode.getBoundingClientRect === "function"
+        ? rootNode.getBoundingClientRect()
+        : null;
+    const rootTop = Math.max(0, Number(rect?.top || 0));
+    const hostHeight = toPositiveNumber(rect?.height) || toPositiveNumber(fallbackHeight) || 0;
+    const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
+    const availableBrowserHeight = viewportHeight > 0
+        ? Math.max(1, viewportHeight - rootTop)
+        : 0;
+    const targetHeight = toPositiveNumber(
+        availableBrowserHeight && hostHeight
+            ? Math.min(availableBrowserHeight, hostHeight)
+            : availableBrowserHeight || hostHeight
+    ) || targetViewHeight;
+    return Math.max(0.05, Math.min(8, targetHeight / targetViewHeight));
 }
 
 function getPerspectiveClientStore(props) {
@@ -605,8 +651,14 @@ function getPersistedArrayValue(props, key, fallback = EMPTY_ARRAY) {
 
 function getRootContainerProps(props) {
     const baseStyle = {
+        display: "flex",
+        flexDirection: "column",
         width: "100%",
-        height: "100%"
+        height: "100%",
+        minWidth: 0,
+        minHeight: 0,
+        flex: "1 1 auto",
+        alignSelf: "stretch"
     };
 
     if (typeof props?.emit !== "function") {
@@ -948,11 +1000,26 @@ function writeComponentProp(props, path, value) {
 }
 
 function ViziCanvasBridge(props) {
+    const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(new Map());
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
     const hostSize = resolveCanvasHostSize(props);
-    const viewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, hostSize));
+    const previewActive = detectPerspectivePreviewMode(props);
+    const designerActive = detectPerspectiveDesignerMode(props);
+    const editorVisible = designerActive && !previewActive;
+    const isLiveMode = !designerActive || previewActive;
+    const browserRuntimeMode = isLiveMode && !designerActive;
+    const [rootSize, setRootSize] = useState(hostSize);
+    const [browserViewportHeight, setBrowserViewportHeight] = useState(() => readBrowserViewportHeight());
+    const effectiveHostSize = (
+        toPositiveNumber(rootSize?.width) && toPositiveNumber(rootSize?.height)
+            ? rootSize
+            : hostSize
+    );
+    const responsiveViewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, effectiveHostSize));
+    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument));
+    const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
     const externalOverlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
     const externalSelectedIds = getModelValue(props, "selectedIds", EMPTY_ARRAY);
@@ -967,6 +1034,58 @@ function ViziCanvasBridge(props) {
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY);
     const [svgLibraryError, setSvgLibraryError] = useState("");
     const [importOpen, setImportOpen] = useState(false);
+
+    useEffect(() => {
+        const node = rootRef.current;
+        if (!node || typeof node.getBoundingClientRect !== "function") {
+            return undefined;
+        }
+
+        const updateRootSize = () => {
+            const rect = node.getBoundingClientRect();
+            const width = toPositiveNumber(rect?.width) || hostSize.width;
+            const height = toPositiveNumber(rect?.height) || hostSize.height;
+            setRootSize((previous) => (
+                previous.width === width && previous.height === height
+                    ? previous
+                    : { width, height }
+            ));
+        };
+
+        updateRootSize();
+
+        if (typeof ResizeObserver === "function") {
+            const observer = new ResizeObserver(updateRootSize);
+            observer.observe(node);
+            return () => observer.disconnect();
+        }
+
+        if (typeof window !== "undefined") {
+            window.addEventListener("resize", updateRootSize);
+            return () => window.removeEventListener("resize", updateRootSize);
+        }
+
+        return undefined;
+    }, [hostSize.height, hostSize.width]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return undefined;
+        }
+
+        const updateViewportHeight = () => {
+            const nextHeight = readBrowserViewportHeight();
+            setBrowserViewportHeight((previous) => (previous === nextHeight ? previous : nextHeight));
+        };
+
+        updateViewportHeight();
+        window.addEventListener("resize", updateViewportHeight);
+        window.visualViewport?.addEventListener?.("resize", updateViewportHeight);
+        return () => {
+            window.removeEventListener("resize", updateViewportHeight);
+            window.visualViewport?.removeEventListener?.("resize", updateViewportHeight);
+        };
+    }, []);
 
     useEffect(() => {
         setSelectedIds(coerceArray(externalSelectedIds));
@@ -1191,9 +1310,6 @@ function ViziCanvasBridge(props) {
     const showRulers = Boolean(getModelValue(props, "showRulers", false));
     const tool = String(getModelValue(props, "tool", "select") || "select");
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
-    const previewActive = detectPerspectivePreviewMode(props);
-    const editorVisible = !previewActive;
-    const isLiveMode = previewActive;
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
@@ -1332,89 +1448,130 @@ function ViziCanvasBridge(props) {
         : svgCatalogFiles.length > 0
         ? `SVG Library (${svgCatalogFiles.length})`
         : "Loading SVG Library...";
+    const liveCanvasZoom = browserRuntimeMode
+        ? resolveBrowserHeightCanvasZoom(
+            rootRef.current,
+            rootSize?.height,
+            viewBox.height,
+            browserViewportHeight
+        )
+        : 1;
+    const canvasContent = (
+        <CanvasSvg
+            svgRef={svgRef}
+            zoom={isLiveMode ? 1 : zoom}
+            pan={isLiveMode ? { x: 0, y: 0 } : (isPlainObject(pan) ? pan : { x: 0, y: 0 })}
+            onWheel={NOOP}
+            marquee={null}
+            tool={tool}
+            shapes={coerceArray(externalShapes)}
+            setShapes={NOOP}
+            selectedIds={editorVisible ? selectedIds : EMPTY_ARRAY}
+            setSelectedIds={editorVisible ? setSelectedIds : NOOP}
+            setSelectedOverlayIds={editorVisible ? setSelectedOverlayIds : NOOP}
+            inlineEditId={null}
+            selectedSegment={null}
+            editingId={null}
+            showTagPaths={false}
+            showGrid={editorVisible && showGrid}
+            showRulers={editorVisible && showRulers}
+            useWindowPointerTracking={false}
+            onSvgMouseDown={editorVisible ? handleSvgMouseDown : NOOP}
+            onMouseMove={NOOP}
+            onMouseUp={NOOP}
+            onContextMenu={NOOP}
+            onShapeMouseDown={editorVisible ? handleShapeMouseDown : NOOP}
+            onShapeDoubleClick={NOOP}
+            onEditPolylineClick={NOOP}
+            onHandleMouseDown={NOOP}
+            onHandleDoubleClick={NOOP}
+            onHandleContextMenu={NOOP}
+            onSegmentMouseDown={NOOP}
+            vbW={viewBox.width}
+            vbH={viewBox.height}
+            svgOverlays={svgOverlays}
+            setSvgOverlays={setSvgOverlays}
+            selectedOverlayIds={editorVisible ? selectedOverlayIds : EMPTY_ARRAY}
+            singleSelectedOverlayId={editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null}
+            setOverlayRef={NOOP}
+            onOverlayMouseDown={handleOverlayMouseDown}
+            onOverlayDoubleClick={NOOP}
+            overlaySelectionUI={null}
+            overlayGroupSelectionUI={null}
+            shapeSelectionUI={null}
+            mixedSelectionUI={null}
+            overlayLocalBBox={overlayLocalBBox}
+            importAnchor={null}
+            onCanvasDoubleClick={NOOP}
+            tagStateColorsByPath={EMPTY_MAP}
+            routeColorsBySvgKey={EMPTY_MAP}
+            routeStrokeColorByGroupPath={EMPTY_MAP}
+            svgLiveValuesByGroupPath={EMPTY_MAP}
+            liveTagKeys={coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY))}
+            opcTags={coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY))}
+            opcTemplateMap={EMPTY_MAP}
+            opcTagMappingMap={EMPTY_MAP}
+            opcMappingSetMap={EMPTY_MAP}
+            widgetDbValues={EMPTY_MAP}
+            binProductLabelByOverlayId={EMPTY_MAP}
+            binNameLabelByOverlayId={EMPTY_MAP}
+            binLevelRatioByOverlayId={EMPTY_MAP}
+            binLockedInByOverlayId={EMPTY_MAP}
+            binLockedOutByOverlayId={EMPTY_MAP}
+            onWidgetDurationPresetChange={NOOP}
+            onTrendTagDrop={NOOP}
+            hiddenTagBubbleIds={EMPTY_ARRAY}
+            onHideTagBubble={NOOP}
+            onSvgDoubleClick={NOOP}
+            collaboratorCursors={EMPTY_ARRAY}
+            liveUpdatesEnabled={liveUpdatesEnabled}
+            interactionActive={false}
+            theme={theme}
+            canvasBackgroundColor={canvasBackgroundColor}
+            liveClickable={liveClickable}
+            isLiveMode={isLiveMode}
+            preserveAspectRatioMode="xMinYMin meet"
+            forceStaticVisuals={!editorVisible}
+            viewportTopOffset={0}
+            viewportLeftOffset={0}
+            viewportScrollTarget={null}
+            onViewportScroll={NOOP}
+            absoluteViewportLayout={false}
+        />
+    );
 
     return (
-        <div style={{ position: "relative", width: "100%", height: "100%" }}>
-            <CanvasSvg
-                svgRef={svgRef}
-                zoom={zoom}
-                pan={isPlainObject(pan) ? pan : { x: 0, y: 0 }}
-                onWheel={NOOP}
-                marquee={null}
-                tool={tool}
-                shapes={coerceArray(externalShapes)}
-                setShapes={NOOP}
-                selectedIds={editorVisible ? selectedIds : EMPTY_ARRAY}
-                setSelectedIds={editorVisible ? setSelectedIds : NOOP}
-                setSelectedOverlayIds={editorVisible ? setSelectedOverlayIds : NOOP}
-                inlineEditId={null}
-                selectedSegment={null}
-                editingId={null}
-                showTagPaths={false}
-                showGrid={editorVisible && showGrid}
-                showRulers={editorVisible && showRulers}
-                useWindowPointerTracking={false}
-                onSvgMouseDown={editorVisible ? handleSvgMouseDown : NOOP}
-                onMouseMove={NOOP}
-                onMouseUp={NOOP}
-                onContextMenu={NOOP}
-                onShapeMouseDown={editorVisible ? handleShapeMouseDown : NOOP}
-                onShapeDoubleClick={NOOP}
-                onEditPolylineClick={NOOP}
-                onHandleMouseDown={NOOP}
-                onHandleDoubleClick={NOOP}
-                onHandleContextMenu={NOOP}
-                onSegmentMouseDown={NOOP}
-                vbW={viewBox.width}
-                vbH={viewBox.height}
-                svgOverlays={svgOverlays}
-                setSvgOverlays={setSvgOverlays}
-                selectedOverlayIds={editorVisible ? selectedOverlayIds : EMPTY_ARRAY}
-                singleSelectedOverlayId={editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null}
-                setOverlayRef={NOOP}
-                onOverlayMouseDown={handleOverlayMouseDown}
-                onOverlayDoubleClick={NOOP}
-                overlaySelectionUI={null}
-                overlayGroupSelectionUI={null}
-                shapeSelectionUI={null}
-                mixedSelectionUI={null}
-                overlayLocalBBox={overlayLocalBBox}
-                importAnchor={null}
-                onCanvasDoubleClick={NOOP}
-                tagStateColorsByPath={EMPTY_MAP}
-                routeColorsBySvgKey={EMPTY_MAP}
-                routeStrokeColorByGroupPath={EMPTY_MAP}
-                svgLiveValuesByGroupPath={EMPTY_MAP}
-                liveTagKeys={coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY))}
-                opcTags={coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY))}
-                opcTemplateMap={EMPTY_MAP}
-                opcTagMappingMap={EMPTY_MAP}
-                opcMappingSetMap={EMPTY_MAP}
-                widgetDbValues={EMPTY_MAP}
-                binProductLabelByOverlayId={EMPTY_MAP}
-                binNameLabelByOverlayId={EMPTY_MAP}
-                binLevelRatioByOverlayId={EMPTY_MAP}
-                binLockedInByOverlayId={EMPTY_MAP}
-                binLockedOutByOverlayId={EMPTY_MAP}
-                onWidgetDurationPresetChange={NOOP}
-                onTrendTagDrop={NOOP}
-                hiddenTagBubbleIds={EMPTY_ARRAY}
-                onHideTagBubble={NOOP}
-                onSvgDoubleClick={NOOP}
-                collaboratorCursors={EMPTY_ARRAY}
-                liveUpdatesEnabled={liveUpdatesEnabled}
-                interactionActive={false}
-                theme={theme}
-                canvasBackgroundColor={canvasBackgroundColor}
-                liveClickable={liveClickable}
-                isLiveMode={isLiveMode}
-                preserveAspectRatioMode="xMinYMin slice"
-                forceStaticVisuals={!editorVisible}
-                viewportTopOffset={0}
-                viewportLeftOffset={0}
-                viewportScrollTarget={null}
-                onViewportScroll={NOOP}
-            />
+        <div
+            ref={rootRef}
+            style={{
+                position: "relative",
+                display: "flex",
+                width: "100%",
+                height: "100%",
+                minWidth: 0,
+                minHeight: 0,
+                flex: "1 1 auto",
+                alignSelf: "stretch",
+                overflow: "hidden",
+                ...(browserRuntimeMode ? {
+                    alignItems: "flex-start",
+                    justifyContent: "flex-start"
+                } : {})
+            }}
+        >
+            {browserRuntimeMode ? (
+                <div
+                    style={{
+                        width: viewBox.width,
+                        height: viewBox.height,
+                        zoom: liveCanvasZoom,
+                        flexShrink: 0,
+                        position: "relative"
+                    }}
+                >
+                    {canvasContent}
+                </div>
+            ) : canvasContent}
 
             {editorVisible && svgLibraryEnabled ? (
                 <div
@@ -1500,6 +1657,7 @@ function MesoraDrawingTool(props) {
     const rootRuntimeComponent = !designerActive && detectPerspectiveRootComponent(props);
     const useDesignerPortal = designerActive && !previewActive && hasViziCanvasModel(props);
     const rootBackgroundColor = String(viewProps.backgroundColor || "#0f172a");
+    const fillViewport = rootRuntimeComponent;
     const componentPath = String(
         rootProps["data-component-path"]
         || props?.store?.path
@@ -1520,12 +1678,17 @@ function MesoraDrawingTool(props) {
                 ref={rootRef}
                 style={{
                     ...(isPlainObject(rootProps.style) ? rootProps.style : {}),
-                    position: "relative",
+                    position: fillViewport ? "fixed" : "relative",
+                    left: fillViewport ? 0 : undefined,
+                    top: fillViewport ? 0 : undefined,
+                    right: fillViewport ? 0 : undefined,
+                    bottom: fillViewport ? 0 : undefined,
+                    width: fillViewport ? "100dvw" : undefined,
+                    height: fillViewport ? "100dvh" : undefined,
+                    minWidth: fillViewport ? "100vw" : undefined,
+                    minHeight: fillViewport ? "100vh" : undefined,
                     overflow: "hidden",
-                    background: rootBackgroundColor,
-                    height: rootRuntimeComponent ? "100dvh" : undefined,
-                    minHeight: rootRuntimeComponent ? "100dvh" : undefined,
-                    maxHeight: rootRuntimeComponent ? "none" : undefined
+                    background: rootBackgroundColor
                 }}
             >
                 {useDesignerPortal ? (
@@ -1576,8 +1739,8 @@ class DrawingToolMeta {
 
     getDefaultSize() {
         return {
-            width: DEFAULT_CANVAS_WIDTH,
-            height: DEFAULT_CANVAS_HEIGHT
+            width: "100%",
+            height: "100dvh"
         };
     }
 

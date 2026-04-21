@@ -599,6 +599,8 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
                 continue;
             }
 
+            String typeId = String.valueOf(node.getSubTypeId() == null ? "" : node.getSubTypeId()).trim();
+
             byPath.put(
                 key,
                 new IgnitionTagBrowseItem(
@@ -606,6 +608,7 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
                     provider,
                     String.valueOf(node.getName() == null ? "" : node.getName()).trim(),
                     String.valueOf(node.getObjectType() == null ? "" : node.getObjectType()).trim(),
+                    typeId,
                     node.hasChildren()
                 )
             );
@@ -650,6 +653,7 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         String provider,
         String name,
         String objectType,
+        String typeId,
         boolean hasChildren
     ) {
     }

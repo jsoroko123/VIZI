@@ -13599,6 +13599,7 @@ var MesoraDrawingToolBundle = (() => {
     setOverlayRef,
     onOverlayMouseDown,
     onOverlayDoubleClick,
+    onOverlayContextMenu,
     overlaySelectionUI,
     overlayGroupSelectionUI,
     shapeSelectionUI,
@@ -13643,7 +13644,8 @@ var MesoraDrawingToolBundle = (() => {
     viewportTopOffset = 0,
     viewportLeftOffset = 0,
     viewportScrollTarget = null,
-    onViewportScroll = null
+    onViewportScroll = null,
+    absoluteViewportLayout = true
   }) {
     var _a;
     const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
@@ -13729,6 +13731,7 @@ var MesoraDrawingToolBundle = (() => {
     const isLineMode = tool === "polyline" || tool === "rect" || tool === "circle";
     const isCrosshair = isLineMode || marquee;
     const themeStrokeDefault = "#808080";
+    const themeFillDefault = "#cccccc";
     const isDarkTheme = String(theme || "").toLowerCase() === "dark";
     const [hoverOverlayId, setHoverOverlayId] = useState(null);
     const [viewportScroll, setViewportScroll] = useState({ x: 0, y: 0 });
@@ -19699,10 +19702,14 @@ var MesoraDrawingToolBundle = (() => {
         }
         const overlayEType = String((overlay == null ? void 0 : overlay.eType) || "").trim().toLowerCase();
         const isDiverterOverlay2 = overlayEType.includes("diverter");
+        const strokeModeRaw = String((overlay == null ? void 0 : overlay.strokeMode) || "").trim().toLowerCase();
+        const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
         if (!renderLiveVisuals) {
           const overlayFill2 = String(getOverlayBoundFillColor(overlay) || (overlay == null ? void 0 : overlay.fill) || "").trim();
           const overlayStroke2 = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
           const overlayStrokeWidth2 = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
+          const hasCustomOverlayFill2 = Boolean(overlayFill2) && (!preserveStrokeMode || overlayFill2.toLowerCase() !== themeFillDefault);
+          const hasCustomOverlayStroke2 = Boolean(overlayStroke2) && (!preserveStrokeMode || overlayStroke2.toLowerCase() !== themeStrokeDefault.toLowerCase());
           if (isDiverterOverlay2) {
             const diverterMode = getEffectiveDiverterState(overlay);
             const diverterFlowColor2 = normalizeActiveLineColor(
@@ -19725,14 +19732,14 @@ var MesoraDrawingToolBundle = (() => {
           }
           out.set(id, {
             inner: applyOverlayPaintOverrides(String((overlay == null ? void 0 : overlay.inner) || ""), {
-              fillColor: overlayFill2,
-              strokeColor: overlayStroke2,
+              fillColor: hasCustomOverlayFill2 ? overlayFill2 : "",
+              strokeColor: hasCustomOverlayStroke2 ? overlayStroke2 : "",
               strokeWidth: overlayStrokeWidth2
             }),
             className: void 0,
             style: {
-              fill: overlayFill2 || "none",
-              stroke: overlayStroke2 || themeStrokeDefault,
+              fill: hasCustomOverlayFill2 ? overlayFill2 : void 0,
+              stroke: hasCustomOverlayStroke2 ? overlayStroke2 : void 0,
               strokeWidth: overlayStrokeWidth2,
               pointerEvents: "visiblePainted"
             },
@@ -19771,7 +19778,11 @@ var MesoraDrawingToolBundle = (() => {
         const overlayFill = String((overlay == null ? void 0 : overlay.fill) || "").trim();
         const overlayStroke = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
         const overlayStrokeWidth = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
-        const effectiveStrokeColor = isDiverterOverlay2 ? "" : routeStroke || overlayStroke || themeStrokeDefault;
+        const hasCustomOverlayFill = Boolean(overlayFill) && (!preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
+        const hasCustomOverlayStroke = Boolean(overlayStroke) && (!preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
+        const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
+        const effectiveFillColor = isDiverterOverlay2 ? "" : tagFill || (hasCustomOverlayFill ? overlayFill : "");
+        const effectiveStrokeColor = isDiverterOverlay2 ? "" : hasCustomOverlayStroke ? overlayStroke : useForcedStroke ? routeStroke : "";
         if (tagFill) {
           const key = String(overlay.tagPath || overlay.id || "");
           const prev = lastTagColorRef.current.get(key);
@@ -19779,8 +19790,7 @@ var MesoraDrawingToolBundle = (() => {
             lastTagColorRef.current.set(key, tagFill);
           }
         }
-        const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
-        let inner = isDiverterOverlay2 ? overlay.inner : tagFill ? overrideSvgColors(overlay.inner, tagFill) : routeStroke ? overrideSvgStrokeOnly(overlay.inner) : useForcedStroke ? overrideSvgStrokeOnly(overlay.inner) : overlay.inner;
+        let inner = overlay.inner;
         if (shouldReplaceBinText) {
           inner = replaceSvgTextPlaceholders(inner, {
             product: dynamicBinProductLabel,
@@ -19802,12 +19812,12 @@ var MesoraDrawingToolBundle = (() => {
         }
         if (!isDiverterOverlay2) {
           inner = applyOverlayPaintOverrides(inner, {
-            fillColor: tagFill ? "" : overlayFill,
-            strokeColor: routeStroke ? "" : overlayStroke,
+            fillColor: isFaultSimulated ? "" : effectiveFillColor,
+            strokeColor: effectiveStrokeColor,
             strokeWidth: overlayStrokeWidth
           });
         }
-        if (!isDiverterOverlay2 && !routeStroke) {
+        if (!isDiverterOverlay2 && effectiveStrokeColor) {
           inner = forceSvgStrokeColor(inner, effectiveStrokeColor);
         }
         if (isDiverterOverlay2) {
@@ -19819,9 +19829,6 @@ var MesoraDrawingToolBundle = (() => {
           style: isDiverterOverlay2 ? {
             pointerEvents: "visiblePainted"
           } : {
-            fill: isFaultSimulated ? faultColor : tagFill || overlayFill || "none",
-            stroke: effectiveStrokeColor,
-            strokeWidth: overlayStrokeWidth,
             pointerEvents: "visiblePainted"
           },
           isConveyorScrew
@@ -19881,6 +19888,7 @@ var MesoraDrawingToolBundle = (() => {
                   transform: `translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`,
                   onMouseDown: (e) => handleOverlayMouseDown(e, o),
                   onDoubleClick: (e) => handleOverlayDoubleClick(e, o),
+                  onContextMenu: (e) => onOverlayContextMenu == null ? void 0 : onOverlayContextMenu(e, o),
                   onMouseEnter: isLineMode ? () => setHoverOverlayId(o.id) : void 0,
                   onMouseLeave: isLineMode ? () => setHoverOverlayId((prev) => prev === o.id ? null : prev) : void 0,
                   style: {
@@ -20069,7 +20077,7 @@ var MesoraDrawingToolBundle = (() => {
               "g",
               {
                 ref: (node) => applyOverlayNodeRef(o.id, node),
-                transform: `translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`,
+                transform: `translate(${o.tx} ${o.ty})`,
                 onMouseDown: !isLiveMode ? (e) => handleOverlayMouseDown(e, o) : void 0,
                 onDoubleClick: (e) => handleOverlayDoubleClick(e, o, { force: true }),
                 style: {
@@ -20080,23 +20088,20 @@ var MesoraDrawingToolBundle = (() => {
                   (overlayVisual == null ? void 0 : overlayVisual.embeddedViewFrame) ? /* @__PURE__ */ jsx(
                     "rect",
                     {
-                      x: overlayVisual.embeddedViewFrame.x,
-                      y: overlayVisual.embeddedViewFrame.y,
-                      width: overlayVisual.embeddedViewFrame.w,
-                      height: overlayVisual.embeddedViewFrame.h,
-                      rx: 12,
-                      fill: "rgba(15, 23, 42, 0.86)",
-                      stroke: "rgba(71, 85, 105, 0.92)",
-                      strokeWidth: 2
+                      x: overlayVisual.embeddedViewFrame.x * overlayScaleX(o),
+                      y: overlayVisual.embeddedViewFrame.y * overlayScaleY(o),
+                      width: overlayVisual.embeddedViewFrame.w * overlayScaleX(o),
+                      height: overlayVisual.embeddedViewFrame.h * overlayScaleY(o),
+                      fill: "rgba(15, 23, 42, 0.86)"
                     }
                   ) : null,
                   /* @__PURE__ */ jsx(
                     "foreignObject",
                     {
-                      x: Number(embeddedBounds.x) || 0,
-                      y: Number(embeddedBounds.y) || 0,
-                      width: Math.max(1, Number(embeddedBounds.width) || 360),
-                      height: Math.max(1, Number(embeddedBounds.height) || 220),
+                      x: (Number(embeddedBounds.x) || 0) * overlayScaleX(o),
+                      y: (Number(embeddedBounds.y) || 0) * overlayScaleY(o),
+                      width: Math.max(1, (Number(embeddedBounds.width) || 360) * overlayScaleX(o)),
+                      height: Math.max(1, (Number(embeddedBounds.height) || 220) * overlayScaleY(o)),
                       style: { pointerEvents: interactionEnabled ? "auto" : "none" },
                       children: /* @__PURE__ */ jsx(
                         "div",
@@ -20107,7 +20112,6 @@ var MesoraDrawingToolBundle = (() => {
                             height: "100%",
                             boxSizing: "border-box",
                             overflow: "hidden",
-                            borderRadius: "12px",
                             pointerEvents: interactionEnabled ? "auto" : "none",
                             background: "rgba(15, 23, 42, 0.2)"
                           },
@@ -20149,10 +20153,10 @@ var MesoraDrawingToolBundle = (() => {
                   showDesignHitbox ? /* @__PURE__ */ jsx(
                     "rect",
                     {
-                      x: Number(embeddedBounds.x) || 0,
-                      y: Number(embeddedBounds.y) || 0,
-                      width: Math.max(1, Number(embeddedBounds.width) || 360),
-                      height: Math.max(1, Number(embeddedBounds.height) || 220),
+                      x: (Number(embeddedBounds.x) || 0) * overlayScaleX(o),
+                      y: (Number(embeddedBounds.y) || 0) * overlayScaleY(o),
+                      width: Math.max(1, (Number(embeddedBounds.width) || 360) * overlayScaleX(o)),
+                      height: Math.max(1, (Number(embeddedBounds.height) || 220) * overlayScaleY(o)),
                       fill: "transparent",
                       pointerEvents: "all",
                       style: { cursor: overlayCursor },
@@ -20364,6 +20368,7 @@ var MesoraDrawingToolBundle = (() => {
       }
       return /* @__PURE__ */ jsx("g", { children: overlayRenderOverlays.map((o) => {
         var _a2, _b;
+        if (o == null ? void 0 : o.embeddedView) return null;
         const overlayTagPath = String((o == null ? void 0 : o.tagPath) || "").trim();
         const overlayEType = String((o == null ? void 0 : o.eType) || (o == null ? void 0 : o.name) || "").trim();
         const widgetKind = String(((_a2 = o == null ? void 0 : o.widget) == null ? void 0 : _a2.kind) || "").trim().toLowerCase();
@@ -21023,14 +21028,20 @@ var MesoraDrawingToolBundle = (() => {
       "div",
       {
         style: {
-          position: "absolute",
-          top: viewportTopOffset,
-          left: viewportShiftX,
-          right: 0,
-          bottom: 0,
+          position: absoluteViewportLayout ? "absolute" : "relative",
+          top: absoluteViewportLayout ? viewportTopOffset : void 0,
+          left: absoluteViewportLayout ? viewportShiftX : void 0,
+          right: absoluteViewportLayout ? 0 : void 0,
+          bottom: absoluteViewportLayout ? 0 : void 0,
+          width: absoluteViewportLayout ? void 0 : "100%",
+          height: absoluteViewportLayout ? void 0 : "100%",
+          minWidth: 0,
+          minHeight: 0,
+          flex: absoluteViewportLayout ? void 0 : "1 1 auto",
+          alignSelf: absoluteViewportLayout ? void 0 : "stretch",
           userSelect: "none",
-          transition: "left 280ms cubic-bezier(0.22, 1, 0.36, 1)",
-          willChange: "left"
+          transition: absoluteViewportLayout ? "left 280ms cubic-bezier(0.22, 1, 0.36, 1)" : void 0,
+          willChange: absoluteViewportLayout ? "left" : void 0
         },
         children: [
           /* @__PURE__ */ jsx(
@@ -22306,6 +22317,8 @@ var MesoraDrawingToolBundle = (() => {
   var PROPERTY_PANEL_WIDTH = 300;
   var PROPERTY_PANEL_HEIGHT = 520;
   var PROPERTY_PANEL_MIN_HEIGHT = 240;
+  var QUICK_TAG_PANEL_WIDTH = 360;
+  var QUICK_TAG_PANEL_HEIGHT = 124;
   var TOOLBAR_WIDTH = 220;
   var COLLAPSED_TOOLBAR_WIDTH = 116;
   var TOOLBAR_INSET = 16;
@@ -22405,6 +22418,7 @@ var MesoraDrawingToolBundle = (() => {
         provider: provider || "Tags",
         name: String((entry == null ? void 0 : entry.name) || "").trim() || path,
         objectType: String((entry == null ? void 0 : entry.objectType) || "").trim(),
+        typeId: String((entry == null ? void 0 : entry.typeId) || "").trim(),
         hasChildren: Boolean(entry == null ? void 0 : entry.hasChildren)
       });
     });
@@ -22588,6 +22602,49 @@ var MesoraDrawingToolBundle = (() => {
       }
     };
   }
+  function incrementTagPathValue(rawTagPath, amount = 1) {
+    const tagPath = String(rawTagPath != null ? rawTagPath : "").trim();
+    const step = Number(amount);
+    if (!tagPath || !Number.isFinite(step) || step === 0) {
+      return tagPath;
+    }
+    let lastMatch = null;
+    const regex = /\d+/g;
+    let match = regex.exec(tagPath);
+    while (match) {
+      lastMatch = match;
+      match = regex.exec(tagPath);
+    }
+    if (!lastMatch) {
+      return tagPath;
+    }
+    const start = Number(lastMatch.index || 0);
+    const rawDigits = String(lastMatch[0] || "");
+    const currentValue = Number(rawDigits);
+    if (!Number.isFinite(currentValue)) {
+      return tagPath;
+    }
+    const nextValue = Math.max(0, currentValue + step);
+    const nextDigits = String(nextValue).padStart(rawDigits.length, "0");
+    return `${tagPath.slice(0, start)}${nextDigits}${tagPath.slice(start + rawDigits.length)}`;
+  }
+  function withIncrementedShapeTagPath(shape, amount = 1) {
+    const nextTagPath = incrementTagPathValue(shape == null ? void 0 : shape.tagPath, amount);
+    if (!nextTagPath || nextTagPath === String((shape == null ? void 0 : shape.tagPath) || "").trim()) {
+      return shape;
+    }
+    return {
+      ...shape,
+      tagPath: nextTagPath
+    };
+  }
+  function withIncrementedOverlayTagPath(overlay, amount = 1) {
+    const nextTagPath = incrementTagPathValue(overlay == null ? void 0 : overlay.tagPath, amount);
+    if (!nextTagPath || nextTagPath === String((overlay == null ? void 0 : overlay.tagPath) || "").trim()) {
+      return overlay;
+    }
+    return applyOverlayIgnitionFillBinding(overlay, nextTagPath);
+  }
   function normalizeIgnitionTagValues(payload) {
     var _a;
     const out = /* @__PURE__ */ new Map();
@@ -22713,14 +22770,20 @@ var MesoraDrawingToolBundle = (() => {
       height: DEFAULT_CANVAS_HEIGHT
     };
   }
+  function isAutoResizableViewBoxParts(x, y, width, height) {
+    return x === 0 && y === 0 && (width === 1200 && height === 800 || width === DEFAULT_CANVAS_WIDTH && height === DEFAULT_CANVAS_HEIGHT);
+  }
   function normalizeViewBox(documentValue, fallbackSize = null) {
     const fallbackWidth = toPositiveNumber(fallbackSize == null ? void 0 : fallbackSize.width) || DEFAULT_CANVAS_WIDTH;
     const fallbackHeight = toPositiveNumber(fallbackSize == null ? void 0 : fallbackSize.height) || DEFAULT_CANVAS_HEIGHT;
     const viewBox = documentValue && documentValue.viewBox;
     if (typeof viewBox === "string" && viewBox.trim()) {
       const trimmed = viewBox.trim();
-      if (fallbackSize && trimmed === "0 0 1200 800") {
-        return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+      if (fallbackSize) {
+        const parts = trimmed.split(/[\s,]+/).map((value) => Number(value));
+        if (parts.length === 4 && parts.every(Number.isFinite) && isAutoResizableViewBoxParts(parts[0], parts[1], parts[2], parts[3])) {
+          return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+        }
       }
       return trimmed;
     }
@@ -22729,7 +22792,7 @@ var MesoraDrawingToolBundle = (() => {
       const y = Number(viewBox.y) || 0;
       const width = Number(viewBox.width) || 100;
       const height = Number(viewBox.height) || 100;
-      if (fallbackSize && x === 0 && y === 0 && width === 1200 && height === 800) {
+      if (fallbackSize && isAutoResizableViewBoxParts(x, y, width, height)) {
         return `0 0 ${fallbackWidth} ${fallbackHeight}`;
       }
       return `${x} ${y} ${width} ${height}`;
@@ -22752,6 +22815,25 @@ var MesoraDrawingToolBundle = (() => {
       width: DEFAULT_CANVAS_WIDTH,
       height: DEFAULT_CANVAS_HEIGHT
     };
+  }
+  function readBrowserViewportHeight() {
+    var _a;
+    if (typeof window === "undefined") {
+      return 0;
+    }
+    return toPositiveNumber((_a = window.visualViewport) == null ? void 0 : _a.height) || toPositiveNumber(window.innerHeight) || 0;
+  }
+  function resolveBrowserHeightCanvasZoom(rootNode, fallbackHeight, viewBoundsHeight, browserViewportHeight) {
+    const targetViewHeight = toPositiveNumber(viewBoundsHeight) || DEFAULT_CANVAS_HEIGHT;
+    const rect = rootNode && typeof rootNode.getBoundingClientRect === "function" ? rootNode.getBoundingClientRect() : null;
+    const rootTop = Math.max(0, Number((rect == null ? void 0 : rect.top) || 0));
+    const hostHeight = toPositiveNumber(rect == null ? void 0 : rect.height) || toPositiveNumber(fallbackHeight) || 0;
+    const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
+    const availableBrowserHeight = viewportHeight > 0 ? Math.max(1, viewportHeight - rootTop) : 0;
+    const targetHeight = toPositiveNumber(
+      availableBrowserHeight && hostHeight ? Math.min(availableBrowserHeight, hostHeight) : availableBrowserHeight || hostHeight
+    ) || targetViewHeight;
+    return Math.max(0.05, Math.min(8, targetHeight / targetViewHeight));
   }
   function getModelValue(props, key, fallback) {
     const source = getComponentPropSource(props);
@@ -22805,6 +22887,23 @@ var MesoraDrawingToolBundle = (() => {
       return false;
     }
     return true;
+  }
+  function detectPerspectiveDesignerMode(props) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+    const parentStore = (_c = (_b = (_a = props == null ? void 0 : props.store) == null ? void 0 : _a.view) == null ? void 0 : _b.page) == null ? void 0 : _c.parent;
+    const nestedProps = getComponentPropSource(props);
+    const nestedParentStore = (_f = (_e = (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.view) == null ? void 0 : _e.page) == null ? void 0 : _f.parent;
+    const localStore = props == null ? void 0 : props.store;
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const designerScope = typeof window !== "undefined" ? ((_h = (_g = window.PerspectiveClient) == null ? void 0 : _g.ClientScope) == null ? void 0 : _h.Designer) || "D" : "D";
+    if ((parentStore == null ? void 0 : parentStore.isDesigner) === true || (nestedParentStore == null ? void 0 : nestedParentStore.isDesigner) === true || (localStore == null ? void 0 : localStore.isDesigner) === true || ((_i = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _i.isDesigner) === true || (globalClient == null ? void 0 : globalClient.isDesigner) === true || (globalDesigner == null ? void 0 : globalDesigner.isDesigner) === true) {
+      return true;
+    }
+    if ((parentStore == null ? void 0 : parentStore.scope) === designerScope || (nestedParentStore == null ? void 0 : nestedParentStore.scope) === designerScope || (localStore == null ? void 0 : localStore.scope) === designerScope || ((_j = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _j.scope) === designerScope || (globalClient == null ? void 0 : globalClient.scope) === designerScope || (globalDesigner == null ? void 0 : globalDesigner.scope) === designerScope) {
+      return true;
+    }
+    return Boolean(globalDesigner);
   }
   function getPersistedArrayValue(props, key, fallback = EMPTY_ARRAY) {
     const source = getComponentPropSource(props);
@@ -23441,6 +23540,7 @@ var MesoraDrawingToolBundle = (() => {
               "div",
               {
                 "data-vizi-dropdown-menu": "1",
+                className: "vizi-scroll",
                 style: {
                   marginTop: 6,
                   overflowY: "auto",
@@ -23526,10 +23626,13 @@ var MesoraDrawingToolBundle = (() => {
     );
   }
   function PropertyTagPathField({
+    autoOpenToken = 0,
     disabled = false,
     error = "",
     label,
+    loaded = true,
     loading = false,
+    onOpen,
     onCommit,
     options = EMPTY_ARRAY,
     value = ""
@@ -23538,6 +23641,7 @@ var MesoraDrawingToolBundle = (() => {
     const triggerRef = useRef(null);
     const menuRef = useRef(null);
     const searchRef = useRef(null);
+    const lastAutoOpenTokenRef = useRef(0);
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [menuRect, setMenuRect] = useState(null);
@@ -23584,8 +23688,8 @@ var MesoraDrawingToolBundle = (() => {
       items: groupedOptions[provider]
     }));
     const triggerLabel = (selectedOption == null ? void 0 : selectedOption.path) || (currentValue ? `${currentValue} (current)` : "Select tag...");
-    const resultSummary = queryText ? `${filteredOptions.length} match${filteredOptions.length === 1 ? "" : "es"}` : `${normalizedOptions.length} Ignition tags available`;
-    const helperText = error ? error : loading ? "Loading Ignition tags..." : resultSummary;
+    const resultSummary = loading ? "Loading Ignition tags..." : !loaded ? "Open to load Ignition tags" : queryText ? `${filteredOptions.length} match${filteredOptions.length === 1 ? "" : "es"}` : `${normalizedOptions.length} Ignition tags available`;
+    const helperText = error ? error : loading ? "Loading Ignition tags..." : !loaded ? "Open to load Ignition tags." : resultSummary;
     const closeMenu = useCallback(() => {
       setOpen(false);
       setQuery("");
@@ -23681,6 +23785,27 @@ var MesoraDrawingToolBundle = (() => {
         window.clearTimeout(timer);
       };
     }, [open]);
+    useEffect(() => {
+      const nextToken = Number(autoOpenToken) || 0;
+      if (!nextToken || disabled || lastAutoOpenTokenRef.current === nextToken) {
+        return;
+      }
+      lastAutoOpenTokenRef.current = nextToken;
+      setQuery("");
+      setOpen(true);
+      if (typeof onOpen === "function") {
+        onOpen();
+      }
+      const timer = window.setTimeout(() => {
+        var _a, _b, _c, _d;
+        updateMenuRect();
+        (_b = (_a = searchRef.current) == null ? void 0 : _a.focus) == null ? void 0 : _b.call(_a);
+        (_d = (_c = searchRef.current) == null ? void 0 : _c.select) == null ? void 0 : _d.call(_c);
+      }, 0);
+      return () => {
+        window.clearTimeout(timer);
+      };
+    }, [autoOpenToken, disabled, onOpen, updateMenuRect]);
     return /* @__PURE__ */ jsxs(
       "div",
       {
@@ -23705,6 +23830,9 @@ var MesoraDrawingToolBundle = (() => {
                 }
                 setOpen((current) => {
                   const next = !current;
+                  if (next && typeof onOpen === "function") {
+                    onOpen();
+                  }
                   if (!next) {
                     setQuery("");
                   }
@@ -23775,13 +23903,13 @@ var MesoraDrawingToolBundle = (() => {
                   width: menuRect.width,
                   maxHeight: menuRect.maxHeight,
                   zIndex: 2147483200,
-                  borderRadius: 14,
+                  borderRadius: 10,
                   border: "1px solid rgba(71, 85, 105, 0.96)",
                   background: "rgba(2, 6, 23, 0.985)",
                   boxShadow: "0 24px 48px rgba(2, 6, 23, 0.44)",
                   display: "grid",
-                  gap: 8,
-                  padding: 10,
+                  gap: 6,
+                  padding: 8,
                   overflow: "hidden"
                 },
                 onPointerDown: stopInteractivePropagation,
@@ -23792,7 +23920,7 @@ var MesoraDrawingToolBundle = (() => {
                 onKeyDown: stopInteractivePropagation,
                 onKeyUp: stopInteractivePropagation,
                 children: [
-                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 8 }, children: [
+                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 6 }, children: [
                     /* @__PURE__ */ jsx(
                       "input",
                       {
@@ -23819,69 +23947,47 @@ var MesoraDrawingToolBundle = (() => {
                         onKeyUp: stopInteractivePropagation,
                         style: {
                           width: "100%",
-                          height: 36,
+                          height: 30,
                           boxSizing: "border-box",
-                          borderRadius: 10,
+                          borderRadius: 8,
                           border: "1px solid rgba(71, 85, 105, 0.9)",
                           background: "rgba(15, 23, 42, 0.92)",
                           color: "#f8fafc",
-                          padding: "0 10px",
-                          fontSize: 12,
+                          padding: "0 9px",
+                          fontSize: 11,
                           fontWeight: 600
                         }
                       }
                     ),
-                    /* @__PURE__ */ jsxs(
+                    /* @__PURE__ */ jsx(
                       "div",
                       {
                         style: {
                           display: "flex",
                           alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 12,
-                          fontSize: 10,
+                          justifyContent: "flex-start",
+                          gap: 8,
+                          fontSize: 9,
+                          lineHeight: 1.2,
                           color: "rgba(226, 232, 240, 0.68)"
                         },
-                        children: [
-                          /* @__PURE__ */ jsx("span", { children: resultSummary }),
-                          /* @__PURE__ */ jsx(
-                            "button",
-                            {
-                              type: "button",
-                              onClick: (event) => {
-                                stopInteractivePropagation(event);
-                                closeMenu();
-                              },
-                              onPointerDown: stopInteractivePropagation,
-                              onMouseDown: stopInteractivePropagation,
-                              onMouseUp: stopInteractivePropagation,
-                              style: {
-                                border: "none",
-                                background: "transparent",
-                                color: "rgba(148, 163, 184, 0.88)",
-                                cursor: "pointer",
-                                fontSize: 11,
-                                fontWeight: 700
-                              },
-                              children: "Close"
-                            }
-                          )
-                        ]
+                        children: /* @__PURE__ */ jsx("span", { children: resultSummary })
                       }
                     )
                   ] }),
                   /* @__PURE__ */ jsxs(
                     "div",
                     {
+                      className: "vizi-scroll",
                       style: {
                         display: "grid",
-                        gap: 8,
-                        maxHeight: Math.max(120, Number(menuRect.maxHeight || 320) - 92),
+                        gap: 6,
+                        maxHeight: Math.max(120, Number(menuRect.maxHeight || 320) - 68),
                         overflowY: "auto",
                         paddingRight: 2
                       },
                       children: [
-                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 3 }, children: [
                           /* @__PURE__ */ jsx(
                             "button",
                             {
@@ -23901,11 +24007,12 @@ var MesoraDrawingToolBundle = (() => {
                                 border: currentValue ? "1px solid rgba(51, 65, 85, 0.92)" : "1px solid rgba(96, 165, 250, 0.85)",
                                 background: currentValue ? "rgba(15, 23, 42, 0.94)" : "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)",
                                 color: "#f8fafc",
-                                borderRadius: 10,
-                                padding: "8px 10px",
-                                fontSize: 12,
+                                borderRadius: 8,
+                                padding: "6px 8px",
+                                fontSize: 11,
                                 fontWeight: currentValue ? 600 : 700,
                                 textAlign: "left",
+                                lineHeight: 1.15,
                                 cursor: "pointer"
                               },
                               children: "No tag"
@@ -23918,25 +24025,25 @@ var MesoraDrawingToolBundle = (() => {
                                 border: "1px solid rgba(71, 85, 105, 0.76)",
                                 background: "rgba(15, 23, 42, 0.9)",
                                 color: "#e2e8f0",
-                                borderRadius: 10,
-                                padding: "8px 10px",
+                                borderRadius: 8,
+                                padding: "6px 8px",
                                 display: "grid",
-                                gap: 3
+                                gap: 1
                               },
                               children: [
-                                /* @__PURE__ */ jsx("div", { style: { fontSize: 12, fontWeight: 700 }, children: currentValue }),
-                                /* @__PURE__ */ jsx("div", { style: { fontSize: 10, color: "rgba(148, 163, 184, 0.9)" }, children: "Current saved value" })
+                                /* @__PURE__ */ jsx("div", { style: { fontSize: 11, fontWeight: 700, lineHeight: 1.15 }, children: currentValue }),
+                                /* @__PURE__ */ jsx("div", { style: { fontSize: 9, color: "rgba(148, 163, 184, 0.9)", lineHeight: 1.1 }, children: "Current saved value" })
                               ]
                             }
                           ) : null
                         ] }),
-                        groupedFilteredSections.map((section, sectionIndex) => /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
+                        groupedFilteredSections.map((section, sectionIndex) => /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 3 }, children: [
                           section.label ? /* @__PURE__ */ jsx(
                             "div",
                             {
                               style: {
-                                padding: "2px 6px 4px",
-                                fontSize: 10,
+                                padding: "1px 4px 2px",
+                                fontSize: 9,
                                 fontWeight: 800,
                                 letterSpacing: "0.08em",
                                 textTransform: "uppercase",
@@ -23966,14 +24073,15 @@ var MesoraDrawingToolBundle = (() => {
                                   border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
                                   background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
                                   color: "#f8fafc",
-                                  borderRadius: 10,
-                                  padding: "8px 10px",
-                                  fontSize: 12,
+                                  borderRadius: 8,
+                                  padding: "6px 8px",
+                                  fontSize: 11,
                                   fontWeight: active ? 700 : 600,
                                   textAlign: "left",
                                   cursor: "pointer",
                                   display: "grid",
-                                  gap: 2
+                                  gap: 1,
+                                  lineHeight: 1.1
                                 },
                                 children: [
                                   /* @__PURE__ */ jsx("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: item.name }),
@@ -23985,8 +24093,9 @@ var MesoraDrawingToolBundle = (() => {
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
                                         whiteSpace: "nowrap",
-                                        fontSize: 10,
+                                        fontSize: 9,
                                         fontWeight: 600,
+                                        lineHeight: 1.05,
                                         color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
                                       },
                                       children: item.path
@@ -24002,10 +24111,10 @@ var MesoraDrawingToolBundle = (() => {
                           "div",
                           {
                             style: {
-                              borderRadius: 10,
+                              borderRadius: 8,
                               border: "1px dashed rgba(71, 85, 105, 0.78)",
-                              padding: "12px 10px",
-                              fontSize: 11,
+                              padding: "10px 8px",
+                              fontSize: 10,
                               fontWeight: 600,
                               color: "rgba(148, 163, 184, 0.9)",
                               textAlign: "center"
@@ -24152,6 +24261,12 @@ var MesoraDrawingToolBundle = (() => {
     }
     return Number(left.x || 0) <= Number(right.x || 0) + Number(right.width || 0) && Number(left.x || 0) + Number(left.width || 0) >= Number(right.x || 0) && Number(left.y || 0) <= Number(right.y || 0) + Number(right.height || 0) && Number(left.y || 0) + Number(left.height || 0) >= Number(right.y || 0);
   }
+  function rectContains(outer, inner) {
+    if (!outer || !inner) {
+      return false;
+    }
+    return Number(outer.x || 0) <= Number(inner.x || 0) && Number(outer.y || 0) <= Number(inner.y || 0) && Number(outer.x || 0) + Number(outer.width || 0) >= Number(inner.x || 0) + Number(inner.width || 0) && Number(outer.y || 0) + Number(outer.height || 0) >= Number(inner.y || 0) + Number(inner.height || 0);
+  }
   function unionBounds(bounds) {
     const items = (Array.isArray(bounds) ? bounds : []).filter(Boolean);
     if (!items.length) {
@@ -24200,7 +24315,20 @@ var MesoraDrawingToolBundle = (() => {
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
     const perspectiveClientStore = getPerspectiveClientStore(props);
     const hostSize = resolveCanvasHostSize(props);
-    const viewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, hostSize));
+    const previewActive = detectPerspectivePreviewMode(props);
+    const designerActive = detectPerspectiveDesignerMode(props);
+    const editorVisible = designerActive && !previewActive;
+    const isLiveMode = !designerActive || previewActive;
+    const browserRuntimeMode = isLiveMode && !designerActive;
+    const [rootSize, setRootSize] = useState({
+      width: DEFAULT_CANVAS_WIDTH,
+      height: DEFAULT_CANVAS_HEIGHT
+    });
+    const [browserViewportHeight, setBrowserViewportHeight] = useState(() => readBrowserViewportHeight());
+    const effectiveHostSize = toPositiveNumber(rootSize == null ? void 0 : rootSize.width) && toPositiveNumber(rootSize == null ? void 0 : rootSize.height) ? rootSize : hostSize;
+    const responsiveViewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, effectiveHostSize));
+    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument));
+    const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
     const externalOverlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
     const externalSelectedIds = getModelValue(props, "selectedIds", EMPTY_ARRAY);
@@ -24245,14 +24373,17 @@ var MesoraDrawingToolBundle = (() => {
     const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => /* @__PURE__ */ new Map());
     const [ignitionTagsError, setIgnitionTagsError] = useState("");
     const [ignitionTagsLoading, setIgnitionTagsLoading] = useState(false);
+    const [ignitionTagsLoaded, setIgnitionTagsLoaded] = useState(false);
+    const [quickTagPickerState, setQuickTagPickerState] = useState({
+      overlayId: "",
+      nonce: 0,
+      clientX: 0,
+      clientY: 0
+    });
     const [importOpen, setImportOpen] = useState(false);
     const [widgetOpen, setWidgetOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
     const [propertiesSelectionKey, setPropertiesSelectionKey] = useState("");
-    const [rootSize, setRootSize] = useState({
-      width: DEFAULT_CANVAS_WIDTH,
-      height: DEFAULT_CANVAS_HEIGHT
-    });
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
@@ -24288,6 +24419,24 @@ var MesoraDrawingToolBundle = (() => {
         return () => window.removeEventListener("resize", updateRootSize);
       }
       return void 0;
+    }, []);
+    useEffect(() => {
+      var _a2, _b2;
+      if (typeof window === "undefined") {
+        return void 0;
+      }
+      const updateViewportHeight = () => {
+        const nextHeight = readBrowserViewportHeight();
+        setBrowserViewportHeight((previous) => previous === nextHeight ? previous : nextHeight);
+      };
+      updateViewportHeight();
+      window.addEventListener("resize", updateViewportHeight);
+      (_b2 = (_a2 = window.visualViewport) == null ? void 0 : _a2.addEventListener) == null ? void 0 : _b2.call(_a2, "resize", updateViewportHeight);
+      return () => {
+        var _a3, _b3;
+        window.removeEventListener("resize", updateViewportHeight);
+        (_b3 = (_a3 = window.visualViewport) == null ? void 0 : _a3.removeEventListener) == null ? void 0 : _b3.call(_a3, "resize", updateViewportHeight);
+      };
     }, []);
     useEffect(() => {
       const next = coerceArray(externalShapes);
@@ -24329,61 +24478,58 @@ var MesoraDrawingToolBundle = (() => {
     const overlayFillBindingPaths = useMemo(() => {
       const seen = /* @__PURE__ */ new Set();
       const out = [];
+      const addPath = (path) => {
+        const key = String(path || "").toLowerCase();
+        if (!path || seen.has(key)) return;
+        seen.add(key);
+        out.push(path);
+      };
       coerceArray(svgOverlays).forEach((overlay) => {
-        const candidates = [
-          getOverlayFillBindingTagPath(overlay),
-          String((overlay == null ? void 0 : overlay.tagPath) || "").trim()
-        ];
-        candidates.forEach((path) => {
-          const key = String(path || "").toLowerCase();
-          if (!path || seen.has(key)) {
-            return;
-          }
-          seen.add(key);
-          out.push(path);
-        });
+        addPath(getOverlayFillBindingTagPath(overlay));
+        addPath(String((overlay == null ? void 0 : overlay.tagPath) || "").trim());
+      });
+      coerceArray(shapes).forEach((shape) => {
+        addPath(String((shape == null ? void 0 : shape.tagPath) || "").trim());
       });
       return out;
-    }, [svgOverlays]);
+    }, [svgOverlays, shapes]);
     const overlayFillBindingPathsKey = JSON.stringify(overlayFillBindingPaths);
-    useEffect(() => {
-      let cancelled = false;
+    const ignitionTagRequestIdRef = useRef(0);
+    const loadIgnitionTags = useCallback(async () => {
+      const requestId = ignitionTagRequestIdRef.current + 1;
+      ignitionTagRequestIdRef.current = requestId;
       setIgnitionTagsLoading(true);
       setIgnitionTagsError("");
-      const loadIgnitionTags = async () => {
-        let lastError = "Failed to load Ignition tags.";
-        for (const routePath of MODULE_DATA_ROUTE_CANDIDATES) {
-          try {
-            const response = await fetch(routePath, {
-              cache: "no-store",
-              credentials: "same-origin"
-            });
-            if (!response.ok) {
-              lastError = `Failed to load Ignition tags (${response.status}).`;
-              continue;
-            }
-            const payload = await response.json();
-            if (cancelled) {
-              return;
-            }
-            setIgnitionTagOptions(normalizeIgnitionTagEntries(payload));
-            setIgnitionTagsError(String((payload == null ? void 0 : payload.error) || "").trim());
-            setIgnitionTagsLoading(false);
-            return;
-          } catch (error) {
-            lastError = String((error == null ? void 0 : error.message) || "Failed to load Ignition tags.");
+      let lastError = "Failed to load Ignition tags.";
+      for (const routePath of MODULE_DATA_ROUTE_CANDIDATES) {
+        try {
+          const response = await fetch(routePath, {
+            cache: "no-store",
+            credentials: "same-origin"
+          });
+          if (!response.ok) {
+            lastError = `Failed to load Ignition tags (${response.status}).`;
+            continue;
           }
-        }
-        if (!cancelled) {
-          setIgnitionTagOptions(EMPTY_ARRAY);
-          setIgnitionTagsError(lastError);
+          const payload = await response.json();
+          if (ignitionTagRequestIdRef.current !== requestId) {
+            return;
+          }
+          setIgnitionTagOptions(normalizeIgnitionTagEntries(payload));
+          setIgnitionTagsError(String((payload == null ? void 0 : payload.error) || "").trim());
+          setIgnitionTagsLoaded(true);
           setIgnitionTagsLoading(false);
+          return;
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "Failed to load Ignition tags.");
         }
-      };
-      loadIgnitionTags();
-      return () => {
-        cancelled = true;
-      };
+      }
+      if (ignitionTagRequestIdRef.current === requestId) {
+        setIgnitionTagOptions(EMPTY_ARRAY);
+        setIgnitionTagsError(lastError);
+        setIgnitionTagsLoaded(true);
+        setIgnitionTagsLoading(false);
+      }
     }, []);
     useEffect(() => {
       if (!overlayFillBindingPaths.length) {
@@ -24683,10 +24829,13 @@ var MesoraDrawingToolBundle = (() => {
     );
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
+    const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom(
+      rootRef.current,
+      rootSize == null ? void 0 : rootSize.height,
+      viewBox.height,
+      browserViewportHeight
+    ) : 1;
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
-    const previewActive = detectPerspectivePreviewMode(props);
-    const editorVisible = !previewActive;
-    const isLiveMode = previewActive;
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
@@ -24942,6 +25091,12 @@ var MesoraDrawingToolBundle = (() => {
       return "";
     }, [selectedOverlay, selectedShape]);
     const propertiesVisible = editorVisible && Boolean(singleSelectionKey) && propertiesSelectionKey === singleSelectionKey;
+    const quickTagPickerOverlay = useMemo(
+      () => svgOverlays.find((overlay) => String((overlay == null ? void 0 : overlay.id) || "") === String((quickTagPickerState == null ? void 0 : quickTagPickerState.overlayId) || "")) || null,
+      [quickTagPickerState, svgOverlays]
+    );
+    const quickTagPickerRef = useRef(null);
+    const quickTagPickerAutoOpenToken = Number((quickTagPickerState == null ? void 0 : quickTagPickerState.nonce) || 0);
     const finishPolyline = useCallback(() => {
       if ((drawing == null ? void 0 : drawing.kind) !== "polyline") {
         return;
@@ -24980,6 +25135,14 @@ var MesoraDrawingToolBundle = (() => {
     }, []);
     const closePropertiesPanel = useCallback(() => {
       setPropertiesSelectionKey("");
+    }, []);
+    const closeQuickTagPicker = useCallback(() => {
+      setQuickTagPickerState({
+        overlayId: "",
+        nonce: 0,
+        clientX: 0,
+        clientY: 0
+      });
     }, []);
     const appendPolylinePoint = useCallback((id, point) => {
       const shapeId = String(id || "");
@@ -25180,31 +25343,31 @@ var MesoraDrawingToolBundle = (() => {
         const id = createId("shape");
         nextShapeIds.push(id);
         if (Array.isArray(shape == null ? void 0 : shape.points)) {
-          return {
+          return withIncrementedShapeTagPath({
             ...cloneDeepValue(shape),
             id,
             points: clonePoints(shape.points).map((point) => ({
               x: Number(point.x || 0) + dx,
               y: Number(point.y || 0) + dy
             }))
-          };
+          }, pasteCount);
         }
-        return {
+        return withIncrementedShapeTagPath({
           ...cloneDeepValue(shape),
           id,
           x: Number((shape == null ? void 0 : shape.x) || 0) + dx,
           y: Number((shape == null ? void 0 : shape.y) || 0) + dy
-        };
+        }, pasteCount);
       });
       const nextOverlays = overlayCopies.map((overlay) => {
         const id = createId("overlay");
         nextOverlayIds.push(id);
-        return {
+        return withIncrementedOverlayTagPath({
           ...cloneDeepValue(overlay),
           id,
           tx: Number((overlay == null ? void 0 : overlay.tx) || 0) + dx,
           ty: Number((overlay == null ? void 0 : overlay.ty) || 0) + dy
-        };
+        }, pasteCount);
       });
       if (nextShapes.length) {
         updateShapes((previous) => [...previous, ...nextShapes], { persist: true });
@@ -25224,9 +25387,61 @@ var MesoraDrawingToolBundle = (() => {
       setTool("select");
     }, [setTool, updateShapes, updateSvgOverlays]);
     const duplicateSelected = useCallback(() => {
-      copySelection();
-      pasteClipboard();
-    }, [copySelection, pasteClipboard]);
+      const shapeIds = new Set(coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean));
+      const overlayIds = new Set(coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean));
+      const selectedShapes = shapesRef.current.filter((shape) => shapeIds.has(String((shape == null ? void 0 : shape.id) || "")));
+      const selectedOverlays = overlaysRef.current.filter((overlay) => overlayIds.has(String((overlay == null ? void 0 : overlay.id) || "")));
+      if (!selectedShapes.length && !selectedOverlays.length) {
+        return;
+      }
+      const selectionBoxes = [
+        ...selectedShapes.map((shape) => getShapeBounds(shape)),
+        ...selectedOverlays.map((overlay) => getOverlayBounds(overlay))
+      ].filter(Boolean);
+      const leftmostBox = selectionBoxes.length ? selectionBoxes.reduce((left, right) => Number((right == null ? void 0 : right.x) || 0) < Number((left == null ? void 0 : left.x) || 0) ? right : left, selectionBoxes[0]) : null;
+      const dx = Math.max(0, Number((leftmostBox == null ? void 0 : leftmostBox.width) || 0)) + 10;
+      const nextShapeIds = [];
+      const nextOverlayIds = [];
+      const nextShapes = selectedShapes.map((shape) => {
+        const id = createId("shape");
+        nextShapeIds.push(id);
+        if (Array.isArray(shape == null ? void 0 : shape.points) && shape.points.length > 0) {
+          return withIncrementedShapeTagPath({
+            ...cloneDeepValue(shape),
+            id,
+            points: clonePoints(shape.points).map((point) => ({
+              x: Number(point.x || 0) + dx,
+              y: Number(point.y || 0)
+            }))
+          }, 1);
+        }
+        return withIncrementedShapeTagPath({
+          ...cloneDeepValue(shape),
+          id,
+          x: Number((shape == null ? void 0 : shape.x) || 0) + dx,
+          y: Number((shape == null ? void 0 : shape.y) || 0)
+        }, 1);
+      });
+      const nextOverlays = selectedOverlays.map((overlay) => {
+        const id = createId("overlay");
+        nextOverlayIds.push(id);
+        return withIncrementedOverlayTagPath({
+          ...cloneDeepValue(overlay),
+          id,
+          tx: Number((overlay == null ? void 0 : overlay.tx) || 0) + dx,
+          ty: Number((overlay == null ? void 0 : overlay.ty) || 0)
+        }, 1);
+      });
+      if (nextShapes.length) {
+        updateShapes((previous) => [...previous, ...nextShapes], { persist: true });
+      }
+      if (nextOverlays.length) {
+        updateSvgOverlays((previous) => [...previous, ...nextOverlays], { persist: true });
+      }
+      setSelectedIds(nextShapeIds);
+      setSelectedOverlayIds(nextOverlayIds);
+      setEditingId(null);
+    }, [selectedIds, selectedOverlayIds, updateShapes, updateSvgOverlays]);
     const beginSelectionDrag = useCallback((start, shapeIds = EMPTY_ARRAY, overlayIds = EMPTY_ARRAY) => {
       const shapeSnapshotsById = {};
       coerceArray(shapeIds).forEach((shapeId) => {
@@ -25647,15 +25862,17 @@ var MesoraDrawingToolBundle = (() => {
       }
       openPropertiesForSelection(`shape:${shapeId}`);
     }, [drawing, finishActivePolylineAt, isShapeSelectableByMode, openPropertiesForSelection, pointFromEvent, tool]);
-    const handleOverlayDoubleClick = useCallback((event, id) => {
+    const handleOverlayDoubleClick = useCallback((event, overlayOrId) => {
       var _a2, _b2;
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       if (!overlaysSelectable || tool !== "select") {
         return;
       }
-      const overlayId = String(id || "");
-      const overlay = overlaysRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === overlayId);
+      const overlayId = String(
+        typeof overlayOrId === "object" && overlayOrId ? overlayOrId.id || "" : overlayOrId || ""
+      ).trim();
+      const overlay = overlaysRef.current.find((item) => String((item == null ? void 0 : item.id) || "").trim() === overlayId);
       if (!overlay) {
         return;
       }
@@ -25663,8 +25880,36 @@ var MesoraDrawingToolBundle = (() => {
       setSelectedIds([]);
       setEditingId(null);
       setSelectedSegment(null);
-      openPropertiesForSelection(`overlay:${overlayId}`);
-    }, [openPropertiesForSelection, overlaysSelectable, tool]);
+      closeQuickTagPicker();
+      const selectionKey = `overlay:${overlayId}`;
+      openPropertiesForSelection(selectionKey);
+    }, [closeQuickTagPicker, openPropertiesForSelection, overlaysSelectable, tool]);
+    const handleOverlayContextMenu = useCallback((event, overlayOrId) => {
+      var _a2, _b2;
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
+      if (!overlaysSelectable || tool !== "select") {
+        return;
+      }
+      const overlayId = String(
+        typeof overlayOrId === "object" && overlayOrId ? overlayOrId.id || "" : overlayOrId || ""
+      ).trim();
+      const overlay = overlaysRef.current.find((item) => String((item == null ? void 0 : item.id) || "").trim() === overlayId);
+      if (!overlay || overlay.widget || overlay.embeddedView) {
+        return;
+      }
+      setSelectedOverlayIds([overlayId]);
+      setSelectedIds([]);
+      setEditingId(null);
+      setSelectedSegment(null);
+      closePropertiesPanel();
+      setQuickTagPickerState({
+        overlayId,
+        nonce: Date.now(),
+        clientX: Number((event == null ? void 0 : event.clientX) || 0),
+        clientY: Number((event == null ? void 0 : event.clientY) || 0)
+      });
+    }, [closePropertiesPanel, overlaysSelectable, tool]);
     const openOverlayPopup = useCallback((overlay) => {
       if (!overlay || overlay.widget || overlay.embeddedView) {
         return false;
@@ -26091,8 +26336,10 @@ var MesoraDrawingToolBundle = (() => {
       }
       if (marquee == null ? void 0 : marquee.start) {
         const bounds = rectFromPoints(marquee.start, marquee.cur);
-        const hitShapeIds = shapesRef.current.filter((shape) => isShapeSelectableByMode(shape) && rectsIntersect(bounds, getShapeBounds(shape))).map((shape) => String((shape == null ? void 0 : shape.id) || ""));
-        const hitOverlayIds = overlaysSelectable ? overlaysRef.current.filter((overlay) => rectsIntersect(bounds, getOverlayBounds(overlay))).map((overlay) => String((overlay == null ? void 0 : overlay.id) || "")) : EMPTY_ARRAY;
+        const isWindowSelect = marquee.start.x < marquee.cur.x;
+        const matchesBounds = isWindowSelect ? rectContains : rectsIntersect;
+        const hitShapeIds = shapesRef.current.filter((shape) => isShapeSelectableByMode(shape) && matchesBounds(bounds, getShapeBounds(shape))).map((shape) => String((shape == null ? void 0 : shape.id) || ""));
+        const hitOverlayIds = overlaysSelectable ? overlaysRef.current.filter((overlay) => matchesBounds(bounds, getOverlayBounds(overlay))).map((overlay) => String((overlay == null ? void 0 : overlay.id) || "")) : EMPTY_ARRAY;
         setSelectedIds(
           marquee.additive ? Array.from(/* @__PURE__ */ new Set([...coerceArray(marquee.baseShapeIds), ...hitShapeIds])) : hitShapeIds
         );
@@ -26219,6 +26466,30 @@ var MesoraDrawingToolBundle = (() => {
         return String((error == null ? void 0 : error.message) || "Invalid JSON.");
       }
     }, [selectedOverlayEmbeddedView, selectedOverlayIsEmbeddedView]);
+    const selectedOverlayIsBin = useMemo(
+      () => String((selectedOverlay == null ? void 0 : selectedOverlay.eType) || "").trim().toLowerCase().startsWith("bin"),
+      [selectedOverlay]
+    );
+    const ignitionTagOptionsForOverlay = useMemo(
+      () => selectedOverlayIsBin ? ignitionTagOptions.filter((opt) => {
+        const objectType = String((opt == null ? void 0 : opt.objectType) || "").toLowerCase();
+        const typeId = String((opt == null ? void 0 : opt.typeId) || "").toLowerCase();
+        return objectType.includes("bin") || typeId.includes("bin");
+      }) : ignitionTagOptions,
+      [ignitionTagOptions, selectedOverlayIsBin]
+    );
+    const quickTagPickerOverlayIsBin = useMemo(
+      () => String((quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.eType) || "").trim().toLowerCase().startsWith("bin"),
+      [quickTagPickerOverlay]
+    );
+    const ignitionTagOptionsForQuickPicker = useMemo(
+      () => quickTagPickerOverlayIsBin ? ignitionTagOptions.filter((opt) => {
+        const objectType = String((opt == null ? void 0 : opt.objectType) || "").toLowerCase();
+        const typeId = String((opt == null ? void 0 : opt.typeId) || "").toLowerCase();
+        return objectType.includes("bin") || typeId.includes("bin");
+      }) : ignitionTagOptions,
+      [ignitionTagOptions, quickTagPickerOverlayIsBin]
+    );
     const propertyTargetBounds = selectedOverlayBounds || selectedShapeBounds || selectedBBox;
     const floatingPropertyPanelStyle = useMemo(() => {
       if (!propertiesVisible || !propertyTargetBounds) {
@@ -26260,7 +26531,7 @@ var MesoraDrawingToolBundle = (() => {
         maxHeight: panelHeight,
         overflow: "hidden",
         display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr)",
+        gridTemplateRows: "auto minmax(0, 1fr) auto",
         gap: 12,
         padding: 14,
         borderRadius: 18,
@@ -26297,6 +26568,83 @@ var MesoraDrawingToolBundle = (() => {
         maxHeight: panelHeight
       };
     }, [floatingPropertyPanelStyle, rootSize]);
+    const quickTagPickerStyle = useMemo(() => {
+      var _a2, _b2;
+      if (!editorVisible || !quickTagPickerOverlay) {
+        return null;
+      }
+      const rootRect = (_b2 = (_a2 = rootRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2);
+      if (!rootRect) {
+        return null;
+      }
+      const viewportWidth = typeof window !== "undefined" ? window.innerWidth : Number(rootRect.width || 0);
+      const viewportHeight = typeof window !== "undefined" ? window.innerHeight : Number(rootRect.height || 0);
+      const rootLeft = Number(rootRect.left || 0);
+      const rootTop = Number(rootRect.top || 0);
+      const rootRight = rootLeft + Number(rootRect.width || 0);
+      const rootBottom = rootTop + Number(rootRect.height || 0);
+      const width = Math.min(QUICK_TAG_PANEL_WIDTH, Math.max(280, rootRight - rootLeft - 24));
+      const maxHeight = Math.min(
+        QUICK_TAG_PANEL_HEIGHT,
+        Math.max(112, rootBottom - rootTop - 24)
+      );
+      const preferredLeft = Number((quickTagPickerState == null ? void 0 : quickTagPickerState.clientX) || 0) + 8;
+      const preferredTop = Number((quickTagPickerState == null ? void 0 : quickTagPickerState.clientY) || 0) + 8;
+      const left = clamp(
+        preferredLeft,
+        rootLeft + 12,
+        Math.max(rootLeft + 12, Math.min(rootRight - width - 12, viewportWidth - width - 12))
+      );
+      const top = clamp(
+        preferredTop,
+        rootTop + 12,
+        Math.max(rootTop + 12, Math.min(rootBottom - maxHeight - 12, viewportHeight - maxHeight - 12))
+      );
+      return {
+        position: "fixed",
+        left,
+        top,
+        zIndex: 90,
+        width,
+        maxWidth: Math.max(220, viewportWidth - left - 12),
+        minHeight: 100,
+        maxHeight,
+        overflow: "visible",
+        display: "grid",
+        gap: 10,
+        padding: 12,
+        borderRadius: 16,
+        border: "1px solid rgba(51, 65, 85, 0.95)",
+        background: "linear-gradient(180deg, rgba(2, 6, 23, 0.96) 0%, rgba(15, 23, 42, 0.94) 100%)",
+        boxShadow: "0 18px 44px rgba(2, 6, 23, 0.34)"
+      };
+    }, [editorVisible, quickTagPickerOverlay, quickTagPickerState, rootSize]);
+    useEffect(() => {
+      if (!quickTagPickerOverlay) {
+        return void 0;
+      }
+      const handlePointerDown = (event) => {
+        var _a2, _b2;
+        const target = event == null ? void 0 : event.target;
+        const popupNode = quickTagPickerRef.current;
+        if (((_a2 = popupNode == null ? void 0 : popupNode.contains) == null ? void 0 : _a2.call(popupNode, target)) || ((_b2 = target == null ? void 0 : target.closest) == null ? void 0 : _b2.call(target, "[data-vizi-dropdown-menu='1']"))) {
+          return;
+        }
+        closeQuickTagPicker();
+      };
+      const handleEscape = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeQuickTagPicker();
+        }
+      };
+      window.addEventListener("pointerdown", handlePointerDown, true);
+      window.addEventListener("keydown", handleEscape, true);
+      return () => {
+        window.removeEventListener("pointerdown", handlePointerDown, true);
+        window.removeEventListener("keydown", handleEscape, true);
+      };
+    }, [closeQuickTagPicker, quickTagPickerOverlay]);
     const overlaySelectionUI = useCallback((overlay) => {
       const bounds = getOverlayBounds(overlay);
       if (!bounds) {
@@ -26497,6 +26845,13 @@ var MesoraDrawingToolBundle = (() => {
       }
       updateSvgOverlays((previous) => previous.map((overlay) => String((overlay == null ? void 0 : overlay.id) || "") === String(selectedOverlay.id || "") ? updater(overlay) : overlay), { persist: true });
     }, [selectedOverlay, updateSvgOverlays]);
+    const updateOverlayById = useCallback((overlayId, updater) => {
+      const targetId = String(overlayId || "").trim();
+      if (!targetId || typeof updater !== "function") {
+        return;
+      }
+      updateSvgOverlays((previous) => previous.map((overlay) => String((overlay == null ? void 0 : overlay.id) || "").trim() === targetId ? updater(overlay) : overlay), { persist: true });
+    }, [updateSvgOverlays]);
     const commitSelectedShapeText = useCallback((field, rawValue) => {
       updateSelectedShape((shape) => ({
         ...shape,
@@ -26625,6 +26980,23 @@ var MesoraDrawingToolBundle = (() => {
         return applyOverlayIgnitionFillBinding(overlay, rawValue);
       });
     }, [updateSelectedOverlay]);
+    const commitOverlayTagPathById = useCallback((overlayId, rawValue) => {
+      updateOverlayById(overlayId, (overlay) => {
+        if (overlay == null ? void 0 : overlay.widget) {
+          const nextTagPath = String(rawValue != null ? rawValue : "").trim();
+          const currentBindings = isPlainObject(overlay == null ? void 0 : overlay.bindings) ? overlay.bindings : {};
+          const { fill: _removedFillBinding, ...restBindings } = currentBindings;
+          return withOverlayBindings(
+            {
+              ...overlay,
+              tagPath: nextTagPath
+            },
+            restBindings
+          );
+        }
+        return applyOverlayIgnitionFillBinding(overlay, rawValue);
+      });
+    }, [updateOverlayById]);
     const commitSelectedOverlayFill = useCallback((rawValue) => {
       updateSelectedOverlay((overlay) => applyOverlayFillFallbackColor(overlay, rawValue));
     }, [updateSelectedOverlay]);
@@ -26960,1165 +27332,1360 @@ var MesoraDrawingToolBundle = (() => {
       setHelpOpen(false);
       clearSelection();
     }, [clearSelection, editorVisible]);
-    return /* @__PURE__ */ jsxs("div", { ref: rootRef, "data-vizi-canvas-root": "1", style: { position: "relative", width: "100%", height: "100%" }, children: [
-      /* @__PURE__ */ jsx(
-        CanvasSvg_default,
-        {
-          svgRef,
-          zoom,
-          pan: isPlainObject(pan) ? pan : { x: 0, y: 0 },
-          onWheel: NOOP,
-          marquee: editorVisible ? marquee : null,
-          tool: editorVisible ? tool : "select",
-          shapes,
-          setShapes: (updater) => updateShapes(updater, { persist: true }),
-          selectedIds: editorVisible ? selectedIds : EMPTY_ARRAY,
-          setSelectedIds: editorVisible ? setSelectedIds : NOOP,
-          setSelectedOverlayIds: editorVisible ? setSelectedOverlayIds : NOOP,
-          inlineEditId: null,
-          selectedSegment: editorVisible ? selectedSegment : null,
-          editingId: editorVisible ? editingId : null,
-          showTagPaths: editorVisible && showTagPaths,
-          showGrid: editorVisible && showGrid,
-          showRulers: editorVisible && showRulers,
-          useWindowPointerTracking: false,
-          onSvgMouseDown: editorVisible ? handleSvgMouseDown : NOOP,
-          onMouseMove: editorVisible ? handleMouseMove : NOOP,
-          onMouseUp: editorVisible ? handleMouseUp : NOOP,
-          onContextMenu: editorVisible ? handleCanvasContextMenu : NOOP,
-          onShapeMouseDown: editorVisible ? handleShapeMouseDown : NOOP,
-          onShapeDoubleClick: editorVisible ? handleShapeDoubleClick : NOOP,
-          onEditPolylineClick: editorVisible ? handleEditPolylineClick : NOOP,
-          onHandleMouseDown: editorVisible ? handlePolylineHandleMouseDown : NOOP,
-          onHandleDoubleClick: editorVisible ? handlePolylineHandleDoubleClick : NOOP,
-          onHandleContextMenu: NOOP,
-          onSegmentMouseDown: editorVisible ? handleSegmentMouseDown : NOOP,
-          vbW: viewBox.width,
-          vbH: viewBox.height,
-          svgOverlays,
-          setSvgOverlays: (updater) => updateSvgOverlays(updater, { persist: true }),
-          selectedOverlayIds: editorVisible ? selectedOverlayIds : EMPTY_ARRAY,
-          singleSelectedOverlayId: editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null,
-          setOverlayRef: NOOP,
-          onOverlayMouseDown: editorVisible ? handleOverlayMouseDown : handleLiveOverlayMouseDown,
-          onOverlayDoubleClick: editorVisible ? handleOverlayDoubleClick : NOOP,
-          overlaySelectionUI: editorVisible ? overlaySelectionUI : null,
-          overlayGroupSelectionUI: editorVisible ? overlayGroupSelectionUI : null,
-          shapeSelectionUI: editorVisible ? shapeSelectionUI : null,
-          mixedSelectionUI: editorVisible ? mixedSelectionUI : null,
-          overlayLocalBBox,
-          importAnchor: null,
-          onCanvasDoubleClick: NOOP,
-          tagStateColorsByPath: EMPTY_MAP,
-          routeColorsBySvgKey: EMPTY_MAP,
-          routeStrokeColorByGroupPath: EMPTY_MAP,
-          svgLiveValuesByGroupPath: EMPTY_MAP,
-          ignitionTagValuesByPath,
-          writeIgnitionTagValue,
-          writeIgnitionOpcValue,
-          liveTagKeys: coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY)),
-          opcTags: coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY)),
-          opcTemplateMap: EMPTY_MAP,
-          opcTagMappingMap: EMPTY_MAP,
-          opcMappingSetMap: EMPTY_MAP,
-          widgetDbValues: EMPTY_MAP,
-          binProductLabelByOverlayId: EMPTY_MAP,
-          binNameLabelByOverlayId: EMPTY_MAP,
-          binLevelRatioByOverlayId: EMPTY_MAP,
-          binLockedInByOverlayId: EMPTY_MAP,
-          binLockedOutByOverlayId: EMPTY_MAP,
-          onWidgetDurationPresetChange: NOOP,
-          onTrendTagDrop: NOOP,
-          hiddenTagBubbleIds: EMPTY_ARRAY,
-          onHideTagBubble: NOOP,
-          onSvgDoubleClick: editorVisible ? handleSvgDoubleClick : NOOP,
-          collaboratorCursors: EMPTY_ARRAY,
-          liveUpdatesEnabled,
-          interactionActive: editorVisible && (Boolean(drawing) || Boolean(dragState) || Boolean(dragHandle) || Boolean(shapeResize) || Boolean(overlayResize) || Boolean(marquee)),
-          theme,
-          canvasBackgroundColor,
-          liveClickable,
-          isLiveMode,
-          perspectiveClientStore,
-          preserveAspectRatioMode: "xMinYMin slice",
-          forceStaticVisuals: !editorVisible,
-          viewportTopOffset: 0,
-          viewportLeftOffset: 0,
-          viewportScrollTarget: null,
-          onViewportScroll: NOOP
-        }
-      ),
-      editorVisible ? toolbarCollapsed ? /* @__PURE__ */ jsx(
-        "div",
-        {
-          style: {
+    return /* @__PURE__ */ jsxs(
+      "div",
+      {
+        ref: rootRef,
+        "data-vizi-canvas-root": "1",
+        style: {
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          minWidth: 0,
+          minHeight: 0,
+          ...browserRuntimeMode ? {
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "flex-start",
+            overflow: "hidden"
+          } : {}
+        },
+        children: [
+          /* @__PURE__ */ jsx("div", { style: browserRuntimeMode ? {
+            width: viewBox.width,
+            height: viewBox.height,
+            zoom: liveCanvasZoom,
+            flexShrink: 0,
+            position: "relative"
+          } : {
             position: "absolute",
-            top: TOOLBAR_INSET,
-            left: TOOLBAR_INSET,
-            zIndex: 60,
-            width: COLLAPSED_TOOLBAR_WIDTH,
-            maxWidth: `min(${COLLAPSED_TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
-            display: "grid",
-            gap: 8,
-            padding: 10,
-            borderRadius: 18,
-            border: "1px solid rgba(51, 65, 85, 0.95)",
-            background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
-            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
-          },
-          children: /* @__PURE__ */ jsx(
-            "button",
+            inset: 0
+          }, children: /* @__PURE__ */ jsx(
+            CanvasSvg_default,
             {
-              type: "button",
-              onClick: () => setToolbarCollapsed(false),
-              style: {
-                width: "100%",
-                minHeight: 38,
-                borderRadius: 12,
-                border: "1px solid rgba(71, 85, 105, 0.9)",
-                background: "rgba(15, 23, 42, 0.9)",
-                color: "#f8fafc",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 800,
-                letterSpacing: "0.04em"
-              },
-              children: "Show Tools"
+              svgRef,
+              zoom: isLiveMode ? 1 : zoom,
+              pan: isLiveMode ? { x: 0, y: 0 } : isPlainObject(pan) ? pan : { x: 0, y: 0 },
+              onWheel: NOOP,
+              marquee: editorVisible ? marquee : null,
+              tool: editorVisible ? tool : "select",
+              shapes,
+              setShapes: (updater) => updateShapes(updater, { persist: true }),
+              selectedIds: editorVisible ? selectedIds : EMPTY_ARRAY,
+              setSelectedIds: editorVisible ? setSelectedIds : NOOP,
+              setSelectedOverlayIds: editorVisible ? setSelectedOverlayIds : NOOP,
+              inlineEditId: null,
+              selectedSegment: editorVisible ? selectedSegment : null,
+              editingId: editorVisible ? editingId : null,
+              showTagPaths: editorVisible && showTagPaths,
+              showGrid: editorVisible && showGrid,
+              showRulers: editorVisible && showRulers,
+              useWindowPointerTracking: false,
+              onSvgMouseDown: editorVisible ? handleSvgMouseDown : NOOP,
+              onMouseMove: editorVisible ? handleMouseMove : NOOP,
+              onMouseUp: editorVisible ? handleMouseUp : NOOP,
+              onContextMenu: editorVisible ? handleCanvasContextMenu : NOOP,
+              onShapeMouseDown: editorVisible ? handleShapeMouseDown : NOOP,
+              onShapeDoubleClick: editorVisible ? handleShapeDoubleClick : NOOP,
+              onEditPolylineClick: editorVisible ? handleEditPolylineClick : NOOP,
+              onHandleMouseDown: editorVisible ? handlePolylineHandleMouseDown : NOOP,
+              onHandleDoubleClick: editorVisible ? handlePolylineHandleDoubleClick : NOOP,
+              onHandleContextMenu: NOOP,
+              onSegmentMouseDown: editorVisible ? handleSegmentMouseDown : NOOP,
+              onOverlayContextMenu: editorVisible ? handleOverlayContextMenu : NOOP,
+              vbW: viewBox.width,
+              vbH: viewBox.height,
+              svgOverlays,
+              setSvgOverlays: (updater) => updateSvgOverlays(updater, { persist: true }),
+              selectedOverlayIds: editorVisible ? selectedOverlayIds : EMPTY_ARRAY,
+              singleSelectedOverlayId: editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null,
+              setOverlayRef: NOOP,
+              onOverlayMouseDown: editorVisible ? handleOverlayMouseDown : handleLiveOverlayMouseDown,
+              onOverlayDoubleClick: editorVisible ? handleOverlayDoubleClick : NOOP,
+              overlaySelectionUI: editorVisible ? overlaySelectionUI : null,
+              overlayGroupSelectionUI: editorVisible ? overlayGroupSelectionUI : null,
+              shapeSelectionUI: editorVisible ? shapeSelectionUI : null,
+              mixedSelectionUI: editorVisible ? mixedSelectionUI : null,
+              overlayLocalBBox,
+              importAnchor: null,
+              onCanvasDoubleClick: NOOP,
+              tagStateColorsByPath: EMPTY_MAP,
+              routeColorsBySvgKey: EMPTY_MAP,
+              routeStrokeColorByGroupPath: EMPTY_MAP,
+              svgLiveValuesByGroupPath: EMPTY_MAP,
+              ignitionTagValuesByPath,
+              writeIgnitionTagValue,
+              writeIgnitionOpcValue,
+              liveTagKeys: coerceArray(getModelValue(props, "liveTagKeys", EMPTY_ARRAY)),
+              opcTags: coerceArray(getModelValue(props, "opcTags", EMPTY_ARRAY)),
+              opcTemplateMap: EMPTY_MAP,
+              opcTagMappingMap: EMPTY_MAP,
+              opcMappingSetMap: EMPTY_MAP,
+              widgetDbValues: EMPTY_MAP,
+              binProductLabelByOverlayId: EMPTY_MAP,
+              binNameLabelByOverlayId: EMPTY_MAP,
+              binLevelRatioByOverlayId: EMPTY_MAP,
+              binLockedInByOverlayId: EMPTY_MAP,
+              binLockedOutByOverlayId: EMPTY_MAP,
+              onWidgetDurationPresetChange: NOOP,
+              onTrendTagDrop: NOOP,
+              hiddenTagBubbleIds: EMPTY_ARRAY,
+              onHideTagBubble: NOOP,
+              onSvgDoubleClick: editorVisible ? handleSvgDoubleClick : NOOP,
+              collaboratorCursors: EMPTY_ARRAY,
+              liveUpdatesEnabled,
+              interactionActive: editorVisible && (Boolean(drawing) || Boolean(dragState) || Boolean(dragHandle) || Boolean(shapeResize) || Boolean(overlayResize) || Boolean(marquee)),
+              theme,
+              canvasBackgroundColor,
+              liveClickable,
+              isLiveMode,
+              perspectiveClientStore,
+              preserveAspectRatioMode: "xMinYMin meet",
+              forceStaticVisuals: !editorVisible,
+              viewportTopOffset: 0,
+              viewportLeftOffset: 0,
+              viewportScrollTarget: null,
+              onViewportScroll: NOOP
             }
-          )
-        }
-      ) : /* @__PURE__ */ jsxs(
-        "div",
-        {
-          style: {
-            position: "absolute",
-            top: TOOLBAR_INSET,
-            left: TOOLBAR_INSET,
-            zIndex: 60,
-            width: TOOLBAR_WIDTH,
-            maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
-            display: "grid",
-            gap: 12,
-            padding: 14,
-            borderRadius: 18,
-            border: "1px solid rgba(51, 65, 85, 0.95)",
-            background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
-            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
-          },
-          children: [
-            /* @__PURE__ */ jsxs(
-              "div",
-              {
-                style: {
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12
-                },
-                children: [
-                  /* @__PURE__ */ jsx(
-                    "div",
-                    {
-                      style: {
-                        fontSize: 11,
-                        fontWeight: 800,
-                        letterSpacing: "0.12em",
-                        textTransform: "uppercase",
-                        color: "rgba(226, 232, 240, 0.76)"
-                      },
-                      children: "Tools"
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    "button",
-                    {
-                      type: "button",
-                      onClick: () => setToolbarCollapsed(true),
-                      style: {
-                        border: "1px solid rgba(71, 85, 105, 0.9)",
-                        background: "rgba(15, 23, 42, 0.88)",
-                        color: "#f8fafc",
-                        minWidth: 28,
-                        height: 28,
-                        padding: "0 8px",
-                        borderRadius: 999,
-                        fontSize: 14,
-                        fontWeight: 700,
-                        cursor: "pointer"
-                      },
-                      children: "_"
-                    }
-                  )
-                ]
-              }
-            ),
-            /* @__PURE__ */ jsxs(DockSection, { children: [
-              /* @__PURE__ */ jsx(DockButton, { active: tool === "select", onClick: () => activateTool("select"), children: /* @__PURE__ */ jsx("span", { children: "Move" }) }),
-              /* @__PURE__ */ jsx(
-                EditorDropdownField,
+          ) }),
+          editorVisible ? toolbarCollapsed ? /* @__PURE__ */ jsx(
+            "div",
+            {
+              style: {
+                position: "absolute",
+                top: TOOLBAR_INSET,
+                left: TOOLBAR_INSET,
+                zIndex: 60,
+                width: COLLAPSED_TOOLBAR_WIDTH,
+                maxWidth: `min(${COLLAPSED_TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
+                display: "grid",
+                gap: 8,
+                padding: 10,
+                borderRadius: 18,
+                border: "1px solid rgba(51, 65, 85, 0.95)",
+                background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
+                boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+              },
+              children: /* @__PURE__ */ jsx(
+                "button",
                 {
-                  label: "Selection",
-                  value: selectionMode,
-                  sections: [
-                    {
-                      items: [
-                        { value: "all", label: "All objects" },
-                        { value: "svg", label: "SVG only" },
-                        { value: "polyline", label: "Polylines only" }
-                      ]
-                    }
-                  ],
-                  onChange: (nextValue) => {
-                    setSelectionMode(nextValue);
-                    clearSelection();
-                  }
-                }
-              ),
-              /* @__PURE__ */ jsx(
-                "div",
-                {
+                  type: "button",
+                  onClick: () => setToolbarCollapsed(false),
                   style: {
-                    marginTop: 6,
-                    fontSize: 10,
+                    width: "100%",
+                    minHeight: 38,
+                    borderRadius: 12,
+                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                    background: "rgba(15, 23, 42, 0.9)",
+                    color: "#f8fafc",
+                    cursor: "pointer",
+                    fontSize: 12,
                     fontWeight: 800,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    color: "rgba(226, 232, 240, 0.72)"
+                    letterSpacing: "0.04em"
                   },
-                  children: "Draw"
-                }
-              ),
-              /* @__PURE__ */ jsx(DockButton, { active: tool === "polyline", onClick: () => activateTool("polyline"), children: /* @__PURE__ */ jsx("span", { children: "Polyline" }) }),
-              /* @__PURE__ */ jsx(DockButton, { active: tool === "text", onClick: () => activateTool("text"), children: /* @__PURE__ */ jsx("span", { children: "Text" }) })
-            ] }),
-            /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
-            /* @__PURE__ */ jsxs(DockSection, { title: "Assets", children: [
-              /* @__PURE__ */ jsx(
-                DockButton,
-                {
-                  active: importOpen,
-                  disabled: !svgLibraryReady,
-                  onClick: handleImportToggle,
-                  children: /* @__PURE__ */ jsx("span", { children: "SVG Library" })
-                }
-              ),
-              /* @__PURE__ */ jsx(
-                DockButton,
-                {
-                  active: widgetOpen,
-                  onClick: handleWidgetToggle,
-                  children: /* @__PURE__ */ jsx("span", { children: "Widgets" })
-                }
-              ),
-              /* @__PURE__ */ jsx(DockButton, { onClick: handleAddEmbeddedView, children: /* @__PURE__ */ jsx("span", { children: "Embedded View" }) }),
-              /* @__PURE__ */ jsxs(
-                "div",
-                {
-                  style: {
-                    display: "grid",
-                    gridTemplateColumns: "minmax(0, 1fr) 78px",
-                    gap: 8,
-                    alignItems: "stretch"
-                  },
-                  children: [
-                    /* @__PURE__ */ jsx(
-                      DockButton,
-                      {
-                        disabled: !normalizableSvgCount,
-                        onClick: normalizeAllSvgStrokeWidths,
-                        children: /* @__PURE__ */ jsx("span", { children: "Match Stroke" })
-                      }
-                    ),
-                    /* @__PURE__ */ jsx(
-                      "input",
-                      {
-                        type: "number",
-                        min: "0.1",
-                        step: "0.1",
-                        value: strokeNormalizeWidthDraft,
-                        placeholder: formatPanelNumber(NORMALIZED_SVG_STROKE_WIDTH),
-                        onChange: (event) => {
-                          setStrokeNormalizeWidthDraft(event.target.value);
-                        },
-                        onBlur: commitStrokeNormalizeWidth,
-                        onFocus: stopInteractivePropagation,
-                        onPointerDown: stopInteractivePropagation,
-                        onMouseDown: stopInteractivePropagation,
-                        onMouseUp: stopInteractivePropagation,
-                        onClick: stopInteractivePropagation,
-                        onDoubleClick: stopInteractivePropagation,
-                        onKeyDown: (event) => {
-                          stopInteractivePropagation(event);
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            commitStrokeNormalizeWidth();
-                            event.currentTarget.blur();
-                          }
-                        },
-                        onKeyUp: stopInteractivePropagation,
-                        style: {
-                          width: "100%",
-                          minHeight: 40,
-                          boxSizing: "border-box",
-                          borderRadius: 12,
-                          border: "1px solid rgba(71, 85, 105, 0.9)",
-                          background: "rgba(15, 23, 42, 0.92)",
-                          color: "#f8fafc",
-                          padding: "0 10px",
-                          fontSize: 12,
-                          fontWeight: 700,
-                          textAlign: "center"
-                        }
-                      }
-                    )
-                  ]
-                }
-              ),
-              /* @__PURE__ */ jsxs(
-                "div",
-                {
-                  style: {
-                    fontSize: 11,
-                    lineHeight: 1.45,
-                    color: svgLibraryError ? "#fecaca" : "rgba(226, 232, 240, 0.72)"
-                  },
-                  children: [
-                    svgLibraryStatusText,
-                    /* @__PURE__ */ jsx("div", { children: widgetLibraryStatusText }),
-                    !svgLibraryError && normalizableSvgCount ? /* @__PURE__ */ jsx("div", { children: `${normalizableSvgCount} SVGs -> ${formatPanelNumber(resolvedStrokeNormalizeWidth)}px stroke` }) : null
-                  ]
+                  children: "Show Tools"
                 }
               )
-            ] }),
-            /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
-            /* @__PURE__ */ jsxs(DockSection, { title: "Display", children: [
-              /* @__PURE__ */ jsx(DockButton, { active: showTagPaths, onClick: () => setShowTagPaths(!showTagPaths), children: /* @__PURE__ */ jsx("span", { children: "Show TagPaths" }) }),
-              /* @__PURE__ */ jsx(DockButton, { active: showGrid, onClick: () => setShowGrid(!showGrid), children: /* @__PURE__ */ jsx("span", { children: "Show Grid" }) })
-            ] }),
-            /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
-            /* @__PURE__ */ jsx(DockSection, { title: "Help", children: /* @__PURE__ */ jsx(DockButton, { active: helpOpen, onClick: handleHelpToggle, children: /* @__PURE__ */ jsx("span", { children: "Open Help" }) }) })
-          ]
-        }
-      ) : null,
-      editorVisible && propertiesVisible && floatingPropertyPanelStyle ? /* @__PURE__ */ jsxs(
-        "div",
-        {
-          "data-vizi-properties-panel": "1",
-          style: floatingPropertyPanelStyle,
-          onPointerDown: stopInteractivePropagation,
-          onMouseDown: stopInteractivePropagation,
-          onMouseUp: stopInteractivePropagation,
-          onClick: stopInteractivePropagation,
-          onDoubleClick: stopInteractivePropagation,
-          onKeyDown: stopInteractivePropagation,
-          onKeyUp: stopInteractivePropagation,
-          onContextMenu: stopInteractivePropagation,
-          children: [
-            /* @__PURE__ */ jsxs(
-              "div",
-              {
-                style: {
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12
-                },
-                children: [
-                  /* @__PURE__ */ jsx(
-                    "div",
-                    {
-                      style: {
-                        fontSize: 11,
-                        fontWeight: 800,
-                        letterSpacing: "0.12em",
-                        textTransform: "uppercase",
-                        color: "rgba(226, 232, 240, 0.76)"
-                      },
-                      children: "Properties"
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    "button",
-                    {
-                      type: "button",
-                      onClick: closePropertiesPanel,
-                      style: {
-                        border: "1px solid rgba(71, 85, 105, 0.9)",
-                        background: "rgba(15, 23, 42, 0.88)",
-                        color: "#f8fafc",
-                        width: 28,
-                        height: 28,
-                        borderRadius: 999,
-                        fontSize: 14,
-                        fontWeight: 700,
-                        cursor: "pointer"
-                      },
-                      children: "x"
-                    }
-                  )
-                ]
-              }
-            ),
-            /* @__PURE__ */ jsx(
-              "div",
-              {
-                style: {
-                  minHeight: 0,
-                  overflowY: "auto",
-                  paddingRight: 2
-                },
-                children: /* @__PURE__ */ jsx(PropertySection, { children: selectedOverlay ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyReadout,
-                    {
-                      label: "Type",
-                      value: selectedOverlayIsEmbeddedView ? "Embedded View" : selectedOverlay.widget ? "Widget" : "SVG Overlay"
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedOverlay.id }),
-                  selectedOverlay.widget ? /* @__PURE__ */ jsx(
-                    PropertyReadout,
-                    {
-                      label: "Widget Kind",
-                      value: String(((_a = selectedOverlay.widget) == null ? void 0 : _a.kind) || "").trim() || "Widget"
-                    }
-                  ) : null,
-                  /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "Name",
-                      value: selectedOverlay.name || "",
-                      onCommit: (value) => {
-                        commitSelectedOverlayText("name", value);
-                      }
-                    }
-                  ),
-                  selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "View Path",
-                        value: (selectedOverlayEmbeddedView == null ? void 0 : selectedOverlayEmbeddedView.viewPath) || "",
-                        placeholder: "Views/MyEmbeddedView",
-                        onCommit: (value) => {
-                          commitSelectedOverlayEmbeddedViewField("viewPath", String(value != null ? value : "").trim());
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ jsx(
-                      PropertyTextArea,
-                      {
-                        label: "View Params JSON",
-                        value: (selectedOverlayEmbeddedView == null ? void 0 : selectedOverlayEmbeddedView.paramsJson) || "{}",
-                        placeholder: '{"tagPath":"[default]MyTag"}',
-                        rows: 5,
-                        onCommit: (value) => {
-                          commitSelectedOverlayEmbeddedViewField("paramsJson", String(value != null ? value : ""));
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ jsx(
-                      EditorDropdownField,
-                      {
-                        label: "Runtime Interaction",
-                        value: selectedOverlayEmbeddedViewInteractive ? "enabled" : "disabled",
-                        options: [
-                          { label: "Enabled", value: "enabled" },
-                          { label: "Disabled", value: "disabled" }
-                        ],
-                        onChange: (value) => {
-                          commitSelectedOverlayEmbeddedViewField("runtimeInteractive", value !== "disabled");
-                        }
-                      }
-                    ),
-                    selectedOverlayEmbeddedViewParamsError ? /* @__PURE__ */ jsx(
-                      PropertyReadout,
-                      {
-                        label: "Params Status",
-                        value: selectedOverlayEmbeddedViewParamsError
-                      }
-                    ) : null
-                  ] }) : null,
-                  selectedOverlay.widget && selectedOverlayWidgetSupportsWrite ? /* @__PURE__ */ jsx(
-                    EditorDropdownField,
-                    {
-                      label: "Write Target",
-                      value: selectedOverlayWidgetWriteMode,
-                      sections: [
-                        {
-                          items: [
-                            { value: "ignition", label: "Ignition Tag" },
-                            { value: "opc", label: "Direct OPC" }
-                          ]
-                        }
-                      ],
-                      onChange: (nextValue) => {
-                        commitSelectedOverlayWidgetField("writeMode", nextValue);
-                      }
-                    }
-                  ) : null,
-                  !selectedOverlayIsEmbeddedView && selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "OPC Item Path",
-                        value: selectedOverlay.tagPath || "",
-                        placeholder: "ns=1;s=[PLC]Program:Tags.MyCommand",
-                        onCommit: (value) => {
-                          commitSelectedOverlayTagPath(value);
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "OPC Server",
-                        value: selectedOverlayWidgetOpcServer,
-                        onCommit: (value) => {
-                          commitSelectedOverlayWidgetField("opcServer", String(value != null ? value : ""));
-                        }
-                      }
-                    )
-                  ] }) : !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsx(
-                    PropertyTagPathField,
-                    {
-                      label: "Tag Path",
-                      value: selectedOverlay.tagPath || "",
-                      options: ignitionTagOptions,
-                      loading: ignitionTagsLoading,
-                      error: ignitionTagsError,
-                      onCommit: (value) => {
-                        commitSelectedOverlayTagPath(value);
-                      }
-                    }
-                  ) : null,
-                  !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsx(
-                    PropertyField,
-                    {
-                      label: "EType",
-                      value: selectedOverlay.eType || "",
-                      onCommit: (value) => {
-                        commitSelectedOverlayText("eType", value);
-                      }
-                    }
-                  ) : null,
-                  selectedOverlay.widget ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Title",
-                        value: ((_b = selectedOverlay.widget) == null ? void 0 : _b.title) || "",
-                        onCommit: (value) => {
-                          commitSelectedOverlayWidgetField("title", String(value != null ? value : ""));
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Title Font Size",
-                        value: formatPanelNumber((_c = selectedOverlay.widget) == null ? void 0 : _c.titleFontSize),
-                        placeholder: "Auto",
-                        onCommit: (value) => {
-                          const trimmed = String(value != null ? value : "").trim();
-                          if (!trimmed) {
-                            commitSelectedOverlayWidgetField("titleFontSize", "");
-                            return;
-                          }
-                          const next = parsePanelNumber(trimmed);
-                          if (next == null) {
-                            return;
-                          }
-                          commitSelectedOverlayWidgetField("titleFontSize", next);
-                        }
-                      }
-                    ),
-                    String(((_d = selectedOverlay.widget) == null ? void 0 : _d.kind) || "").trim().toLowerCase() === "pushbutton" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Press Value",
-                          value: String(
-                            Object.prototype.hasOwnProperty.call(selectedOverlay.widget || {}, "writeValue") ? selectedOverlay.widget.writeValue : 1
-                          ),
-                          onCommit: (value) => {
-                            commitSelectedOverlayWidgetField("writeValue", String(value != null ? value : ""));
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Release Value",
-                          value: String(
-                            Object.prototype.hasOwnProperty.call(selectedOverlay.widget || {}, "releaseValue") ? selectedOverlay.widget.releaseValue : 0
-                          ),
-                          onCommit: (value) => {
-                            commitSelectedOverlayWidgetField("releaseValue", String(value != null ? value : ""));
-                          }
-                        }
-                      )
-                    ] }) : null
-                  ] }) : null,
-                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "X",
-                        value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.x),
-                        onCommit: (value) => {
-                          commitSelectedOverlayPosition("x", value);
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Y",
-                        value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.y),
-                        onCommit: (value) => {
-                          commitSelectedOverlayPosition("y", value);
-                        }
-                      }
-                    )
-                  ] }),
-                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Width",
-                        value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.width),
-                        onCommit: (value) => {
-                          commitSelectedOverlayDimension("width", value);
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Height",
-                        value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.height),
-                        onCommit: (value) => {
-                          commitSelectedOverlayDimension("height", value);
-                        }
-                      }
-                    )
-                  ] }),
-                  !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Scale",
-                          value: formatPanelNumber(selectedOverlay.scale || 1),
-                          onCommit: (value) => {
-                            commitSelectedOverlayNumber("scale", value, { min: 0.05 });
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Stroke Width",
-                          value: formatPanelNumber(selectedOverlay.strokeWidth || 0),
-                          onCommit: (value) => {
-                            commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Fill",
-                        value: selectedOverlay.fill || "",
-                        onCommit: (value) => {
-                          commitSelectedOverlayFill(value);
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Stroke",
-                        value: selectedOverlay.stroke || "",
-                        onCommit: (value) => {
-                          commitSelectedOverlayText("stroke", value);
-                        }
-                      }
-                    )
-                  ] }) : null
-                ] }) : selectedShape ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                  /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: selectedShapeLabel }),
-                  /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedShape.id }),
-                  /* @__PURE__ */ jsx(
-                    PropertyTagPathField,
-                    {
-                      label: "Tag Path",
-                      value: selectedShape.tagPath || "",
-                      options: ignitionTagOptions,
-                      loading: ignitionTagsLoading,
-                      error: ignitionTagsError,
-                      onCommit: (value) => {
-                        commitSelectedShapeText("tagPath", value);
-                      }
-                    }
-                  ),
-                  String((selectedShape == null ? void 0 : selectedShape.type) || "").toLowerCase() === "text" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Text",
-                        value: selectedShape.text || "",
-                        onCommit: (value) => {
-                          commitSelectedShapeText("text", value);
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "X",
-                          value: formatPanelNumber(selectedShape.x),
-                          onCommit: (value) => {
-                            commitSelectedShapePosition("x", value);
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Y",
-                          value: formatPanelNumber(selectedShape.y),
-                          onCommit: (value) => {
-                            commitSelectedShapePosition("y", value);
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Font Size",
-                          value: formatPanelNumber(selectedShape.fontSize || 24),
-                          onCommit: (value) => {
-                            commitSelectedShapeNumber("fontSize", value, { min: 1 });
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Fill",
-                          value: selectedShape.fill || "",
-                          onCommit: (value) => {
-                            commitSelectedShapeText("fill", value);
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Scale",
-                          value: formatPanelNumber(selectedShape.scaleFactor),
-                          placeholder: "1",
-                          onCommit: (value) => {
-                            commitSelectedShapeOptionalNumber("scaleFactor", value);
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Decimals",
-                          value: formatPanelNumber(selectedShape.decimals),
-                          placeholder: "Auto",
-                          onCommit: (value) => {
-                            commitSelectedShapeOptionalNumber("decimals", value, { min: 0 });
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Units",
-                        value: selectedShape.unit || "",
-                        placeholder: "psi",
-                        onCommit: (value) => {
-                          commitSelectedShapeText("unit", value);
-                        }
-                      }
-                    )
-                  ] }) : Array.isArray(selectedShape == null ? void 0 : selectedShape.points) ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "X",
-                          value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.x),
-                          onCommit: (value) => {
-                            commitSelectedShapePosition("x", value);
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Y",
-                          value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.y),
-                          onCommit: (value) => {
-                            commitSelectedShapePosition("y", value);
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Width",
-                          value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.width),
-                          onCommit: (value) => {
-                            commitSelectedShapeBoundsDimension("width", value);
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Height",
-                          value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.height),
-                          onCommit: (value) => {
-                            commitSelectedShapeBoundsDimension("height", value);
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Stroke",
-                          value: selectedShape.stroke || "",
-                          onCommit: (value) => {
-                            commitSelectedShapeText("stroke", value);
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Stroke Width",
-                          value: formatPanelNumber(selectedShape.strokeWidth || 0),
-                          onCommit: (value) => {
-                            commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsx(
-                      PropertyReadout,
-                      {
-                        label: "Points",
-                        value: String(coerceArray(selectedShape.points).length)
-                      }
-                    )
-                  ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "X",
-                          value: formatPanelNumber(selectedShape.x),
-                          onCommit: (value) => {
-                            commitSelectedShapePosition("x", value);
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Y",
-                          value: formatPanelNumber(selectedShape.y),
-                          onCommit: (value) => {
-                            commitSelectedShapePosition("y", value);
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Width",
-                          value: formatPanelNumber(selectedShape.width || 0),
-                          onCommit: (value) => {
-                            commitSelectedShapeNumber("width", value, { min: 0 });
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Height",
-                          value: formatPanelNumber(selectedShape.height || 0),
-                          onCommit: (value) => {
-                            commitSelectedShapeNumber("height", value, { min: 0 });
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Fill",
-                          value: selectedShape.fill || "",
-                          onCommit: (value) => {
-                            commitSelectedShapeText("fill", value);
-                          }
-                        }
-                      ),
-                      /* @__PURE__ */ jsx(
-                        PropertyField,
-                        {
-                          label: "Stroke",
-                          value: selectedShape.stroke || "",
-                          onCommit: (value) => {
-                            commitSelectedShapeText("stroke", value);
-                          }
-                        }
-                      )
-                    ] }),
-                    /* @__PURE__ */ jsx(
-                      PropertyField,
-                      {
-                        label: "Stroke Width",
-                        value: formatPanelNumber(selectedShape.strokeWidth || 0),
-                        onCommit: (value) => {
-                          commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
-                        }
-                      }
-                    )
-                  ] })
-                ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
-                  /* @__PURE__ */ jsx(
-                    PropertyReadout,
-                    {
-                      label: "Selection",
-                      value: `${selectedOverlayIds.length} SVGs, ${selectedIds.length} shapes`
-                    }
-                  ),
-                  /* @__PURE__ */ jsx(
-                    "div",
-                    {
-                      style: {
-                        fontSize: 12,
-                        lineHeight: 1.5,
-                        color: "rgba(226, 232, 240, 0.72)"
-                      },
-                      children: "Select a single SVG or shape to edit its properties."
-                    }
-                  )
-                ] }) })
-              }
-            )
-          ]
-        }
-      ) : null,
-      editorVisible && svgLibraryEnabled && importOpen ? /* @__PURE__ */ jsx(
-        "div",
-        {
-          style: {
-            "--bg-elev": "rgba(15, 23, 42, 0.98)",
-            "--bg-soft": "rgba(15, 23, 42, 0.92)",
-            "--border": "rgba(71, 85, 105, 0.9)",
-            "--text": "#f8fafc",
-            "--text-muted": "rgba(226, 232, 240, 0.72)"
-          },
-          children: /* @__PURE__ */ jsx(
-            ImportModal,
-            {
-              importOpen,
-              setImportOpen,
-              svgFiles,
-              svgLibrary: svgLibraryMap,
-              loadSvgRaw: readSvgRawByKey,
-              onPickSvg,
-              docked: true,
-              absoluteDocked: true,
-              appearance: "ignition-drawer",
-              attached: true,
-              dockLeft: svgDrawerLayout.left,
-              dockTop: svgDrawerLayout.top,
-              dockBottom: svgDrawerLayout.bottom,
-              dockWidth: svgDrawerLayout.width
             }
-          )
-        }
-      ) : null,
-      editorVisible && widgetOpen ? /* @__PURE__ */ jsx(
-        "div",
-        {
-          style: {
-            "--bg-elev": "rgba(15, 23, 42, 0.98)",
-            "--bg-soft": "rgba(15, 23, 42, 0.92)",
-            "--border": "rgba(71, 85, 105, 0.9)",
-            "--text": "#f8fafc",
-            "--text-muted": "rgba(226, 232, 240, 0.72)"
-          },
-          children: /* @__PURE__ */ jsx(
-            WidgetSelectorModal,
+          ) : /* @__PURE__ */ jsxs(
+            "div",
             {
-              open: widgetOpen,
-              onClose: () => setWidgetOpen(false),
-              onPickWidget,
-              docked: true,
-              absoluteDocked: true,
-              appearance: "ignition-drawer",
-              attached: true,
-              dockLeft: widgetDrawerLayout.left,
-              dockTop: widgetDrawerLayout.top,
-              dockBottom: widgetDrawerLayout.bottom,
-              dockWidth: widgetDrawerLayout.width
-            }
-          )
-        }
-      ) : null,
-      editorVisible && helpOpen ? /* @__PURE__ */ jsxs(
-        "div",
-        {
-          style: {
-            position: "absolute",
-            left: helpDrawerLayout.left,
-            top: helpDrawerLayout.top,
-            bottom: helpDrawerLayout.bottom,
-            width: helpDrawerLayout.width,
-            zIndex: 58,
-            display: "grid",
-            gridTemplateRows: "auto 1fr",
-            borderRadius: 22,
-            border: "1px solid rgba(71, 85, 105, 0.9)",
-            background: "linear-gradient(180deg, rgba(2, 6, 23, 0.98) 0%, rgba(15, 23, 42, 0.96) 100%)",
-            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)",
-            overflow: "hidden"
-          },
-          onPointerDown: stopInteractivePropagation,
-          onMouseDown: stopInteractivePropagation,
-          onMouseUp: stopInteractivePropagation,
-          onClick: stopInteractivePropagation,
-          onDoubleClick: stopInteractivePropagation,
-          onKeyDown: stopInteractivePropagation,
-          onKeyUp: stopInteractivePropagation,
-          onContextMenu: stopInteractivePropagation,
-          children: [
-            /* @__PURE__ */ jsxs(
-              "div",
-              {
-                style: {
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  padding: "18px 18px 14px",
-                  borderBottom: "1px solid rgba(71, 85, 105, 0.6)"
-                },
-                children: [
-                  /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
-                    /* @__PURE__ */ jsx("div", { style: { fontSize: 22, fontWeight: 800, color: "#f8fafc" }, children: "Ignition Tool Help" }),
-                    /* @__PURE__ */ jsx("div", { style: { fontSize: 12, lineHeight: 1.5, color: "rgba(226, 232, 240, 0.72)" }, children: "Quick reference for drawing, bindings, widgets, and shortcuts in the Vizi Ignition tool." })
-                  ] }),
-                  /* @__PURE__ */ jsx(
-                    "button",
-                    {
-                      type: "button",
-                      onClick: () => setHelpOpen(false),
-                      style: {
-                        border: "1px solid rgba(71, 85, 105, 0.9)",
-                        background: "rgba(15, 23, 42, 0.88)",
-                        color: "#f8fafc",
-                        minWidth: 32,
-                        height: 32,
-                        padding: "0 10px",
-                        borderRadius: 999,
-                        fontSize: 14,
-                        fontWeight: 700,
-                        cursor: "pointer"
-                      },
-                      children: "x"
-                    }
-                  )
-                ]
-              }
-            ),
-            /* @__PURE__ */ jsx(
-              "div",
-              {
-                style: {
-                  overflowY: "auto",
-                  padding: 18,
-                  display: "grid",
-                  gap: 16
-                },
-                children: IGNITION_TOOL_HELP_SECTIONS.map((section) => /* @__PURE__ */ jsxs(
+              style: {
+                position: "absolute",
+                top: TOOLBAR_INSET,
+                left: TOOLBAR_INSET,
+                zIndex: 60,
+                width: TOOLBAR_WIDTH,
+                maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
+                display: "grid",
+                gap: 12,
+                padding: 14,
+                borderRadius: 18,
+                border: "1px solid rgba(51, 65, 85, 0.95)",
+                background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
+                boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+              },
+              children: [
+                /* @__PURE__ */ jsxs(
                   "div",
                   {
                     style: {
-                      display: "grid",
-                      gap: 8,
-                      padding: 14,
-                      borderRadius: 16,
-                      border: "1px solid rgba(51, 65, 85, 0.72)",
-                      background: "rgba(15, 23, 42, 0.62)"
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12
                     },
                     children: [
                       /* @__PURE__ */ jsx(
                         "div",
                         {
                           style: {
-                            fontSize: 12,
+                            fontSize: 11,
                             fontWeight: 800,
-                            letterSpacing: "0.08em",
+                            letterSpacing: "0.12em",
                             textTransform: "uppercase",
-                            color: "#f8fafc"
+                            color: "rgba(226, 232, 240, 0.76)"
                           },
-                          children: section.title
+                          children: "Tools"
                         }
                       ),
-                      /* @__PURE__ */ jsx("div", { style: { display: "grid", gap: 8 }, children: section.items.map((item) => /* @__PURE__ */ jsxs(
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => setToolbarCollapsed(true),
+                          style: {
+                            border: "1px solid rgba(71, 85, 105, 0.9)",
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#f8fafc",
+                            minWidth: 28,
+                            height: 28,
+                            padding: "0 8px",
+                            borderRadius: 999,
+                            fontSize: 14,
+                            fontWeight: 700,
+                            cursor: "pointer"
+                          },
+                          children: "_"
+                        }
+                      )
+                    ]
+                  }
+                ),
+                /* @__PURE__ */ jsxs(DockSection, { children: [
+                  /* @__PURE__ */ jsx(DockButton, { active: tool === "select", onClick: () => activateTool("select"), children: /* @__PURE__ */ jsx("span", { children: "Move" }) }),
+                  /* @__PURE__ */ jsx(
+                    EditorDropdownField,
+                    {
+                      label: "Selection",
+                      value: selectionMode,
+                      sections: [
+                        {
+                          items: [
+                            { value: "all", label: "All objects" },
+                            { value: "svg", label: "SVG only" },
+                            { value: "polyline", label: "Polylines only" }
+                          ]
+                        }
+                      ],
+                      onChange: (nextValue) => {
+                        setSelectionMode(nextValue);
+                        clearSelection();
+                      }
+                    }
+                  ),
+                  /* @__PURE__ */ jsx(
+                    "div",
+                    {
+                      style: {
+                        marginTop: 6,
+                        fontSize: 10,
+                        fontWeight: 800,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        color: "rgba(226, 232, 240, 0.72)"
+                      },
+                      children: "Draw"
+                    }
+                  ),
+                  /* @__PURE__ */ jsx(DockButton, { active: tool === "polyline", onClick: () => activateTool("polyline"), children: /* @__PURE__ */ jsx("span", { children: "Polyline" }) }),
+                  /* @__PURE__ */ jsx(DockButton, { active: tool === "text", onClick: () => activateTool("text"), children: /* @__PURE__ */ jsx("span", { children: "Text" }) })
+                ] }),
+                /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
+                /* @__PURE__ */ jsxs(DockSection, { title: "Assets", children: [
+                  /* @__PURE__ */ jsx(
+                    DockButton,
+                    {
+                      active: importOpen,
+                      disabled: !svgLibraryReady,
+                      onClick: handleImportToggle,
+                      children: /* @__PURE__ */ jsx("span", { children: "SVG Library" })
+                    }
+                  ),
+                  /* @__PURE__ */ jsx(
+                    DockButton,
+                    {
+                      active: widgetOpen,
+                      onClick: handleWidgetToggle,
+                      children: /* @__PURE__ */ jsx("span", { children: "Widgets" })
+                    }
+                  ),
+                  /* @__PURE__ */ jsx(DockButton, { onClick: handleAddEmbeddedView, children: /* @__PURE__ */ jsx("span", { children: "Embedded View" }) }),
+                  /* @__PURE__ */ jsxs(
+                    "div",
+                    {
+                      style: {
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) 78px",
+                        gap: 8,
+                        alignItems: "stretch"
+                      },
+                      children: [
+                        /* @__PURE__ */ jsx(
+                          DockButton,
+                          {
+                            disabled: !normalizableSvgCount,
+                            onClick: normalizeAllSvgStrokeWidths,
+                            children: /* @__PURE__ */ jsx("span", { children: "Match Stroke" })
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          "input",
+                          {
+                            type: "number",
+                            min: "0.1",
+                            step: "0.1",
+                            value: strokeNormalizeWidthDraft,
+                            placeholder: formatPanelNumber(NORMALIZED_SVG_STROKE_WIDTH),
+                            onChange: (event) => {
+                              setStrokeNormalizeWidthDraft(event.target.value);
+                            },
+                            onBlur: commitStrokeNormalizeWidth,
+                            onFocus: stopInteractivePropagation,
+                            onPointerDown: stopInteractivePropagation,
+                            onMouseDown: stopInteractivePropagation,
+                            onMouseUp: stopInteractivePropagation,
+                            onClick: stopInteractivePropagation,
+                            onDoubleClick: stopInteractivePropagation,
+                            onKeyDown: (event) => {
+                              stopInteractivePropagation(event);
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                commitStrokeNormalizeWidth();
+                                event.currentTarget.blur();
+                              }
+                            },
+                            onKeyUp: stopInteractivePropagation,
+                            style: {
+                              width: "100%",
+                              minHeight: 40,
+                              boxSizing: "border-box",
+                              borderRadius: 12,
+                              border: "1px solid rgba(71, 85, 105, 0.9)",
+                              background: "rgba(15, 23, 42, 0.92)",
+                              color: "#f8fafc",
+                              padding: "0 10px",
+                              fontSize: 12,
+                              fontWeight: 700,
+                              textAlign: "center"
+                            }
+                          }
+                        )
+                      ]
+                    }
+                  ),
+                  /* @__PURE__ */ jsxs(
+                    "div",
+                    {
+                      style: {
+                        fontSize: 11,
+                        lineHeight: 1.45,
+                        color: svgLibraryError ? "#fecaca" : "rgba(226, 232, 240, 0.72)"
+                      },
+                      children: [
+                        svgLibraryStatusText,
+                        /* @__PURE__ */ jsx("div", { children: widgetLibraryStatusText }),
+                        !svgLibraryError && normalizableSvgCount ? /* @__PURE__ */ jsx("div", { children: `${normalizableSvgCount} SVGs -> ${formatPanelNumber(resolvedStrokeNormalizeWidth)}px stroke` }) : null
+                      ]
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
+                /* @__PURE__ */ jsxs(DockSection, { title: "Display", children: [
+                  /* @__PURE__ */ jsx(DockButton, { active: showTagPaths, onClick: () => setShowTagPaths(!showTagPaths), children: /* @__PURE__ */ jsx("span", { children: "Show TagPaths" }) }),
+                  /* @__PURE__ */ jsx(DockButton, { active: showGrid, onClick: () => setShowGrid(!showGrid), children: /* @__PURE__ */ jsx("span", { children: "Show Grid" }) })
+                ] }),
+                /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
+                /* @__PURE__ */ jsx(DockSection, { title: "Help", children: /* @__PURE__ */ jsx(DockButton, { active: helpOpen, onClick: handleHelpToggle, children: /* @__PURE__ */ jsx("span", { children: "Open Help" }) }) })
+              ]
+            }
+          ) : null,
+          editorVisible && quickTagPickerOverlay && quickTagPickerStyle ? /* @__PURE__ */ jsxs(
+            "div",
+            {
+              ref: quickTagPickerRef,
+              "data-vizi-quick-tag-picker": "1",
+              style: quickTagPickerStyle,
+              onPointerDown: stopInteractivePropagation,
+              onMouseDown: stopInteractivePropagation,
+              onMouseUp: stopInteractivePropagation,
+              onClick: stopInteractivePropagation,
+              onDoubleClick: stopInteractivePropagation,
+              onKeyDown: stopInteractivePropagation,
+              onKeyUp: stopInteractivePropagation,
+              onContextMenu: stopInteractivePropagation,
+              children: [
+                /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12
+                    },
+                    children: [
+                      /* @__PURE__ */ jsxs("div", { style: { minWidth: 0, display: "grid", gap: 2 }, children: [
+                        /* @__PURE__ */ jsx(
+                          "div",
+                          {
+                            style: {
+                              fontSize: 11,
+                              fontWeight: 800,
+                              letterSpacing: "0.12em",
+                              textTransform: "uppercase",
+                              color: "rgba(226, 232, 240, 0.76)"
+                            },
+                            children: "Set Tag"
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          "div",
+                          {
+                            style: {
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "#f8fafc",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap"
+                            },
+                            children: quickTagPickerOverlay.name || quickTagPickerOverlay.id || "SVG Overlay"
+                          }
+                        )
+                      ] }),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: closeQuickTagPicker,
+                          style: {
+                            border: "1px solid rgba(71, 85, 105, 0.9)",
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#f8fafc",
+                            width: 28,
+                            height: 28,
+                            borderRadius: 999,
+                            fontSize: 14,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            flex: "0 0 auto"
+                          },
+                          children: "x"
+                        }
+                      )
+                    ]
+                  }
+                ),
+                /* @__PURE__ */ jsx(
+                  PropertyTagPathField,
+                  {
+                    autoOpenToken: quickTagPickerAutoOpenToken,
+                    label: "Tag Path",
+                    value: quickTagPickerOverlay.tagPath || "",
+                    options: ignitionTagOptionsForQuickPicker,
+                    loaded: ignitionTagsLoaded,
+                    loading: ignitionTagsLoading,
+                    error: ignitionTagsError,
+                    onOpen: loadIgnitionTags,
+                    onCommit: (value) => {
+                      commitOverlayTagPathById(quickTagPickerOverlay.id, value);
+                      closeQuickTagPicker();
+                    }
+                  }
+                )
+              ]
+            }
+          ) : null,
+          editorVisible && propertiesVisible && floatingPropertyPanelStyle ? /* @__PURE__ */ jsxs(
+            "div",
+            {
+              "data-vizi-properties-panel": "1",
+              style: floatingPropertyPanelStyle,
+              onPointerDown: stopInteractivePropagation,
+              onMouseDown: stopInteractivePropagation,
+              onMouseUp: stopInteractivePropagation,
+              onClick: stopInteractivePropagation,
+              onDoubleClick: stopInteractivePropagation,
+              onKeyDown: stopInteractivePropagation,
+              onKeyUp: stopInteractivePropagation,
+              onContextMenu: stopInteractivePropagation,
+              children: [
+                /* @__PURE__ */ jsx("style", { children: `
+                    .vizi-scroll::-webkit-scrollbar { width: 4px; }
+                    .vizi-scroll::-webkit-scrollbar-track { background: transparent; }
+                    .vizi-scroll::-webkit-scrollbar-thumb { background: rgba(71, 85, 105, 0.4); border-radius: 999px; }
+                    .vizi-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.72); }
+                    .vizi-scroll { scrollbar-width: thin; scrollbar-color: rgba(71, 85, 105, 0.4) transparent; }
+                ` }),
+                /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12
+                    },
+                    children: [
+                      /* @__PURE__ */ jsx(
                         "div",
                         {
                           style: {
-                            display: "grid",
-                            gridTemplateColumns: "10px 1fr",
-                            gap: 8,
-                            alignItems: "start",
-                            color: "rgba(226, 232, 240, 0.84)",
-                            fontSize: 13,
-                            lineHeight: 1.55
+                            fontSize: 11,
+                            fontWeight: 800,
+                            letterSpacing: "0.12em",
+                            textTransform: "uppercase",
+                            color: "rgba(226, 232, 240, 0.76)"
                           },
-                          children: [
-                            /* @__PURE__ */ jsx("span", { style: { color: "#60a5fa" }, children: "\u2022" }),
-                            /* @__PURE__ */ jsx("span", { children: item })
-                          ]
-                        },
-                        item
-                      )) })
+                          children: "Properties"
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: closePropertiesPanel,
+                          style: {
+                            border: "1px solid rgba(71, 85, 105, 0.9)",
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#f8fafc",
+                            width: 28,
+                            height: 28,
+                            borderRadius: 999,
+                            fontSize: 14,
+                            fontWeight: 700,
+                            cursor: "pointer"
+                          },
+                          children: "x"
+                        }
+                      )
                     ]
-                  },
-                  section.title
-                ))
-              }
-            )
-          ]
-        }
-      ) : null
-    ] });
+                  }
+                ),
+                /* @__PURE__ */ jsx(
+                  "div",
+                  {
+                    className: "vizi-scroll",
+                    style: {
+                      minHeight: 0,
+                      overflowY: "auto",
+                      paddingRight: 2
+                    },
+                    children: /* @__PURE__ */ jsx(PropertySection, { children: selectedOverlay ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyReadout,
+                        {
+                          label: "Type",
+                          value: selectedOverlayIsEmbeddedView ? "Embedded View" : selectedOverlay.widget ? "Widget" : "SVG Overlay"
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedOverlay.id }),
+                      selectedOverlay.widget ? /* @__PURE__ */ jsx(
+                        PropertyReadout,
+                        {
+                          label: "Widget Kind",
+                          value: String(((_a = selectedOverlay.widget) == null ? void 0 : _a.kind) || "").trim() || "Widget"
+                        }
+                      ) : null,
+                      /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "Name",
+                          value: selectedOverlay.name || "",
+                          onCommit: (value) => {
+                            commitSelectedOverlayText("name", value);
+                          }
+                        }
+                      ),
+                      selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "View Path",
+                            value: (selectedOverlayEmbeddedView == null ? void 0 : selectedOverlayEmbeddedView.viewPath) || "",
+                            placeholder: "Views/MyEmbeddedView",
+                            onCommit: (value) => {
+                              commitSelectedOverlayEmbeddedViewField("viewPath", String(value != null ? value : "").trim());
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyTextArea,
+                          {
+                            label: "View Params JSON",
+                            value: (selectedOverlayEmbeddedView == null ? void 0 : selectedOverlayEmbeddedView.paramsJson) || "{}",
+                            placeholder: '{"tagPath":"[default]MyTag"}',
+                            rows: 5,
+                            onCommit: (value) => {
+                              commitSelectedOverlayEmbeddedViewField("paramsJson", String(value != null ? value : ""));
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          EditorDropdownField,
+                          {
+                            label: "Runtime Interaction",
+                            value: selectedOverlayEmbeddedViewInteractive ? "enabled" : "disabled",
+                            options: [
+                              { label: "Enabled", value: "enabled" },
+                              { label: "Disabled", value: "disabled" }
+                            ],
+                            onChange: (value) => {
+                              commitSelectedOverlayEmbeddedViewField("runtimeInteractive", value !== "disabled");
+                            }
+                          }
+                        ),
+                        selectedOverlayEmbeddedViewParamsError ? /* @__PURE__ */ jsx(
+                          PropertyReadout,
+                          {
+                            label: "Params Status",
+                            value: selectedOverlayEmbeddedViewParamsError
+                          }
+                        ) : null
+                      ] }) : null,
+                      selectedOverlay.widget && selectedOverlayWidgetSupportsWrite ? /* @__PURE__ */ jsx(
+                        EditorDropdownField,
+                        {
+                          label: "Write Target",
+                          value: selectedOverlayWidgetWriteMode,
+                          sections: [
+                            {
+                              items: [
+                                { value: "ignition", label: "Ignition Tag" },
+                                { value: "opc", label: "Direct OPC" }
+                              ]
+                            }
+                          ],
+                          onChange: (nextValue) => {
+                            commitSelectedOverlayWidgetField("writeMode", nextValue);
+                          }
+                        }
+                      ) : null,
+                      !selectedOverlayIsEmbeddedView && selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "OPC Item Path",
+                            value: selectedOverlay.tagPath || "",
+                            placeholder: "ns=1;s=[PLC]Program:Tags.MyCommand",
+                            onCommit: (value) => {
+                              commitSelectedOverlayTagPath(value);
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "OPC Server",
+                            value: selectedOverlayWidgetOpcServer,
+                            onCommit: (value) => {
+                              commitSelectedOverlayWidgetField("opcServer", String(value != null ? value : ""));
+                            }
+                          }
+                        )
+                      ] }) : !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsx(
+                        PropertyTagPathField,
+                        {
+                          label: "Tag Path",
+                          value: selectedOverlay.tagPath || "",
+                          options: ignitionTagOptionsForOverlay,
+                          loaded: ignitionTagsLoaded,
+                          loading: ignitionTagsLoading,
+                          error: ignitionTagsError,
+                          onOpen: loadIgnitionTags,
+                          onCommit: (value) => {
+                            commitSelectedOverlayTagPath(value);
+                          }
+                        }
+                      ) : null,
+                      !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsx(
+                        PropertyField,
+                        {
+                          label: "EType",
+                          value: selectedOverlay.eType || "",
+                          onCommit: (value) => {
+                            commitSelectedOverlayText("eType", value);
+                          }
+                        }
+                      ) : null,
+                      selectedOverlay.widget ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Title",
+                            value: ((_b = selectedOverlay.widget) == null ? void 0 : _b.title) || "",
+                            onCommit: (value) => {
+                              commitSelectedOverlayWidgetField("title", String(value != null ? value : ""));
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Title Font Size",
+                            value: formatPanelNumber((_c = selectedOverlay.widget) == null ? void 0 : _c.titleFontSize),
+                            placeholder: "Auto",
+                            onCommit: (value) => {
+                              const trimmed = String(value != null ? value : "").trim();
+                              if (!trimmed) {
+                                commitSelectedOverlayWidgetField("titleFontSize", "");
+                                return;
+                              }
+                              const next = parsePanelNumber(trimmed);
+                              if (next == null) {
+                                return;
+                              }
+                              commitSelectedOverlayWidgetField("titleFontSize", next);
+                            }
+                          }
+                        ),
+                        String(((_d = selectedOverlay.widget) == null ? void 0 : _d.kind) || "").trim().toLowerCase() === "pushbutton" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Press Value",
+                              value: String(
+                                Object.prototype.hasOwnProperty.call(selectedOverlay.widget || {}, "writeValue") ? selectedOverlay.widget.writeValue : 1
+                              ),
+                              onCommit: (value) => {
+                                commitSelectedOverlayWidgetField("writeValue", String(value != null ? value : ""));
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Release Value",
+                              value: String(
+                                Object.prototype.hasOwnProperty.call(selectedOverlay.widget || {}, "releaseValue") ? selectedOverlay.widget.releaseValue : 0
+                              ),
+                              onCommit: (value) => {
+                                commitSelectedOverlayWidgetField("releaseValue", String(value != null ? value : ""));
+                              }
+                            }
+                          )
+                        ] }) : null
+                      ] }) : null,
+                      /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "X",
+                            value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.x),
+                            onCommit: (value) => {
+                              commitSelectedOverlayPosition("x", value);
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Y",
+                            value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.y),
+                            onCommit: (value) => {
+                              commitSelectedOverlayPosition("y", value);
+                            }
+                          }
+                        )
+                      ] }),
+                      /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Width",
+                            value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.width),
+                            onCommit: (value) => {
+                              commitSelectedOverlayDimension("width", value);
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Height",
+                            value: formatPanelNumber(selectedOverlayBounds == null ? void 0 : selectedOverlayBounds.height),
+                            onCommit: (value) => {
+                              commitSelectedOverlayDimension("height", value);
+                            }
+                          }
+                        )
+                      ] }),
+                      !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Scale",
+                              value: formatPanelNumber(selectedOverlay.scale || 1),
+                              onCommit: (value) => {
+                                commitSelectedOverlayNumber("scale", value, { min: 0.05 });
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Stroke Width",
+                              value: formatPanelNumber(selectedOverlay.strokeWidth || 0),
+                              onCommit: (value) => {
+                                commitSelectedOverlayNumber("strokeWidth", value, { min: 0 });
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Fill",
+                            value: selectedOverlay.fill || "",
+                            onCommit: (value) => {
+                              commitSelectedOverlayFill(value);
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Stroke",
+                            value: selectedOverlay.stroke || "",
+                            onCommit: (value) => {
+                              commitSelectedOverlayText("stroke", value);
+                            }
+                          }
+                        )
+                      ] }) : null
+                    ] }) : selectedShape ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                      /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: selectedShapeLabel }),
+                      /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedShape.id }),
+                      /* @__PURE__ */ jsx(
+                        PropertyTagPathField,
+                        {
+                          label: "Tag Path",
+                          value: selectedShape.tagPath || "",
+                          options: ignitionTagOptions,
+                          loaded: ignitionTagsLoaded,
+                          loading: ignitionTagsLoading,
+                          error: ignitionTagsError,
+                          onOpen: loadIgnitionTags,
+                          onCommit: (value) => {
+                            commitSelectedShapeText("tagPath", value);
+                          }
+                        }
+                      ),
+                      String((selectedShape == null ? void 0 : selectedShape.type) || "").toLowerCase() === "text" ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Text",
+                            value: selectedShape.text || "",
+                            onCommit: (value) => {
+                              commitSelectedShapeText("text", value);
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "X",
+                              value: formatPanelNumber(selectedShape.x),
+                              onCommit: (value) => {
+                                commitSelectedShapePosition("x", value);
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Y",
+                              value: formatPanelNumber(selectedShape.y),
+                              onCommit: (value) => {
+                                commitSelectedShapePosition("y", value);
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Font Size",
+                              value: formatPanelNumber(selectedShape.fontSize || 24),
+                              onCommit: (value) => {
+                                commitSelectedShapeNumber("fontSize", value, { min: 1 });
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Fill",
+                              value: selectedShape.fill || "",
+                              onCommit: (value) => {
+                                commitSelectedShapeText("fill", value);
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Scale",
+                              value: formatPanelNumber(selectedShape.scaleFactor),
+                              placeholder: "1",
+                              onCommit: (value) => {
+                                commitSelectedShapeOptionalNumber("scaleFactor", value);
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Decimals",
+                              value: formatPanelNumber(selectedShape.decimals),
+                              placeholder: "Auto",
+                              onCommit: (value) => {
+                                commitSelectedShapeOptionalNumber("decimals", value, { min: 0 });
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Units",
+                            value: selectedShape.unit || "",
+                            placeholder: "psi",
+                            onCommit: (value) => {
+                              commitSelectedShapeText("unit", value);
+                            }
+                          }
+                        )
+                      ] }) : Array.isArray(selectedShape == null ? void 0 : selectedShape.points) ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "X",
+                              value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.x),
+                              onCommit: (value) => {
+                                commitSelectedShapePosition("x", value);
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Y",
+                              value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.y),
+                              onCommit: (value) => {
+                                commitSelectedShapePosition("y", value);
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Width",
+                              value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.width),
+                              onCommit: (value) => {
+                                commitSelectedShapeBoundsDimension("width", value);
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Height",
+                              value: formatPanelNumber(selectedShapeBounds == null ? void 0 : selectedShapeBounds.height),
+                              onCommit: (value) => {
+                                commitSelectedShapeBoundsDimension("height", value);
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Stroke",
+                              value: selectedShape.stroke || "",
+                              onCommit: (value) => {
+                                commitSelectedShapeText("stroke", value);
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Stroke Width",
+                              value: formatPanelNumber(selectedShape.strokeWidth || 0),
+                              onCommit: (value) => {
+                                commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsx(
+                          PropertyReadout,
+                          {
+                            label: "Points",
+                            value: String(coerceArray(selectedShape.points).length)
+                          }
+                        )
+                      ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "X",
+                              value: formatPanelNumber(selectedShape.x),
+                              onCommit: (value) => {
+                                commitSelectedShapePosition("x", value);
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Y",
+                              value: formatPanelNumber(selectedShape.y),
+                              onCommit: (value) => {
+                                commitSelectedShapePosition("y", value);
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Width",
+                              value: formatPanelNumber(selectedShape.width || 0),
+                              onCommit: (value) => {
+                                commitSelectedShapeNumber("width", value, { min: 0 });
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Height",
+                              value: formatPanelNumber(selectedShape.height || 0),
+                              onCommit: (value) => {
+                                commitSelectedShapeNumber("height", value, { min: 0 });
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Fill",
+                              value: selectedShape.fill || "",
+                              onCommit: (value) => {
+                                commitSelectedShapeText("fill", value);
+                              }
+                            }
+                          ),
+                          /* @__PURE__ */ jsx(
+                            PropertyField,
+                            {
+                              label: "Stroke",
+                              value: selectedShape.stroke || "",
+                              onCommit: (value) => {
+                                commitSelectedShapeText("stroke", value);
+                              }
+                            }
+                          )
+                        ] }),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Stroke Width",
+                            value: formatPanelNumber(selectedShape.strokeWidth || 0),
+                            onCommit: (value) => {
+                              commitSelectedShapeNumber("strokeWidth", value, { min: 0 });
+                            }
+                          }
+                        )
+                      ] })
+                    ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyReadout,
+                        {
+                          label: "Selection",
+                          value: `${selectedOverlayIds.length} SVGs, ${selectedIds.length} shapes`
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        "div",
+                        {
+                          style: {
+                            fontSize: 12,
+                            lineHeight: 1.5,
+                            color: "rgba(226, 232, 240, 0.72)"
+                          },
+                          children: "Select a single SVG or shape to edit its properties."
+                        }
+                      )
+                    ] }) })
+                  }
+                ),
+                /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    style: {
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 8,
+                      paddingTop: 4,
+                      borderTop: "1px solid rgba(71, 85, 105, 0.5)"
+                    },
+                    children: [
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: closePropertiesPanel,
+                          style: {
+                            background: "rgba(30, 58, 138, 0.72)",
+                            border: "1px solid rgba(59, 130, 246, 0.55)",
+                            color: "#bfdbfe",
+                            height: 34,
+                            borderRadius: 10,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            letterSpacing: "0.04em"
+                          },
+                          children: "Save"
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => {
+                            deleteSelected();
+                            closePropertiesPanel();
+                          },
+                          style: {
+                            background: "rgba(127, 29, 29, 0.6)",
+                            border: "1px solid rgba(239, 68, 68, 0.5)",
+                            color: "#fca5a5",
+                            height: 34,
+                            borderRadius: 10,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            letterSpacing: "0.04em"
+                          },
+                          children: "Delete"
+                        }
+                      )
+                    ]
+                  }
+                )
+              ]
+            }
+          ) : null,
+          editorVisible && svgLibraryEnabled && importOpen ? /* @__PURE__ */ jsx(
+            "div",
+            {
+              style: {
+                "--bg-elev": "rgba(15, 23, 42, 0.98)",
+                "--bg-soft": "rgba(15, 23, 42, 0.92)",
+                "--border": "rgba(71, 85, 105, 0.9)",
+                "--text": "#f8fafc",
+                "--text-muted": "rgba(226, 232, 240, 0.72)"
+              },
+              children: /* @__PURE__ */ jsx(
+                ImportModal,
+                {
+                  importOpen,
+                  setImportOpen,
+                  svgFiles,
+                  svgLibrary: svgLibraryMap,
+                  loadSvgRaw: readSvgRawByKey,
+                  onPickSvg,
+                  docked: true,
+                  absoluteDocked: true,
+                  appearance: "ignition-drawer",
+                  attached: true,
+                  dockLeft: svgDrawerLayout.left,
+                  dockTop: svgDrawerLayout.top,
+                  dockBottom: svgDrawerLayout.bottom,
+                  dockWidth: svgDrawerLayout.width
+                }
+              )
+            }
+          ) : null,
+          editorVisible && widgetOpen ? /* @__PURE__ */ jsx(
+            "div",
+            {
+              style: {
+                "--bg-elev": "rgba(15, 23, 42, 0.98)",
+                "--bg-soft": "rgba(15, 23, 42, 0.92)",
+                "--border": "rgba(71, 85, 105, 0.9)",
+                "--text": "#f8fafc",
+                "--text-muted": "rgba(226, 232, 240, 0.72)"
+              },
+              children: /* @__PURE__ */ jsx(
+                WidgetSelectorModal,
+                {
+                  open: widgetOpen,
+                  onClose: () => setWidgetOpen(false),
+                  onPickWidget,
+                  docked: true,
+                  absoluteDocked: true,
+                  appearance: "ignition-drawer",
+                  attached: true,
+                  dockLeft: widgetDrawerLayout.left,
+                  dockTop: widgetDrawerLayout.top,
+                  dockBottom: widgetDrawerLayout.bottom,
+                  dockWidth: widgetDrawerLayout.width
+                }
+              )
+            }
+          ) : null,
+          editorVisible && helpOpen ? /* @__PURE__ */ jsxs(
+            "div",
+            {
+              style: {
+                position: "absolute",
+                left: helpDrawerLayout.left,
+                top: helpDrawerLayout.top,
+                bottom: helpDrawerLayout.bottom,
+                width: helpDrawerLayout.width,
+                zIndex: 58,
+                display: "grid",
+                gridTemplateRows: "auto 1fr",
+                borderRadius: 22,
+                border: "1px solid rgba(71, 85, 105, 0.9)",
+                background: "linear-gradient(180deg, rgba(2, 6, 23, 0.98) 0%, rgba(15, 23, 42, 0.96) 100%)",
+                boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)",
+                overflow: "hidden"
+              },
+              onPointerDown: stopInteractivePropagation,
+              onMouseDown: stopInteractivePropagation,
+              onMouseUp: stopInteractivePropagation,
+              onClick: stopInteractivePropagation,
+              onDoubleClick: stopInteractivePropagation,
+              onKeyDown: stopInteractivePropagation,
+              onKeyUp: stopInteractivePropagation,
+              onContextMenu: stopInteractivePropagation,
+              children: [
+                /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      padding: "18px 18px 14px",
+                      borderBottom: "1px solid rgba(71, 85, 105, 0.6)"
+                    },
+                    children: [
+                      /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 22, fontWeight: 800, color: "#f8fafc" }, children: "Ignition Tool Help" }),
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 12, lineHeight: 1.5, color: "rgba(226, 232, 240, 0.72)" }, children: "Quick reference for drawing, bindings, widgets, and shortcuts in the Vizi Ignition tool." })
+                      ] }),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => setHelpOpen(false),
+                          style: {
+                            border: "1px solid rgba(71, 85, 105, 0.9)",
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#f8fafc",
+                            minWidth: 32,
+                            height: 32,
+                            padding: "0 10px",
+                            borderRadius: 999,
+                            fontSize: 14,
+                            fontWeight: 700,
+                            cursor: "pointer"
+                          },
+                          children: "x"
+                        }
+                      )
+                    ]
+                  }
+                ),
+                /* @__PURE__ */ jsx(
+                  "div",
+                  {
+                    className: "vizi-scroll",
+                    style: {
+                      overflowY: "auto",
+                      padding: 18,
+                      display: "grid",
+                      gap: 16
+                    },
+                    children: IGNITION_TOOL_HELP_SECTIONS.map((section) => /* @__PURE__ */ jsxs(
+                      "div",
+                      {
+                        style: {
+                          display: "grid",
+                          gap: 8,
+                          padding: 14,
+                          borderRadius: 16,
+                          border: "1px solid rgba(51, 65, 85, 0.72)",
+                          background: "rgba(15, 23, 42, 0.62)"
+                        },
+                        children: [
+                          /* @__PURE__ */ jsx(
+                            "div",
+                            {
+                              style: {
+                                fontSize: 12,
+                                fontWeight: 800,
+                                letterSpacing: "0.08em",
+                                textTransform: "uppercase",
+                                color: "#f8fafc"
+                              },
+                              children: section.title
+                            }
+                          ),
+                          /* @__PURE__ */ jsx("div", { style: { display: "grid", gap: 8 }, children: section.items.map((item) => /* @__PURE__ */ jsxs(
+                            "div",
+                            {
+                              style: {
+                                display: "grid",
+                                gridTemplateColumns: "10px 1fr",
+                                gap: 8,
+                                alignItems: "start",
+                                color: "rgba(226, 232, 240, 0.84)",
+                                fontSize: 13,
+                                lineHeight: 1.55
+                              },
+                              children: [
+                                /* @__PURE__ */ jsx("span", { style: { color: "#60a5fa" }, children: "\u2022" }),
+                                /* @__PURE__ */ jsx("span", { children: item })
+                              ]
+                            },
+                            item
+                          )) })
+                        ]
+                      },
+                      section.title
+                    ))
+                  }
+                )
+              ]
+            }
+          ) : null
+        ]
+      }
+    );
   }
 
   // web/src/index.jsx
@@ -28324,14 +28891,20 @@ var MesoraDrawingToolBundle = (() => {
       height: DEFAULT_CANVAS_HEIGHT2
     };
   }
+  function isAutoResizableViewBoxParts2(x, y, width, height) {
+    return x === 0 && y === 0 && (width === 1200 && height === 800 || width === DEFAULT_CANVAS_WIDTH2 && height === DEFAULT_CANVAS_HEIGHT2);
+  }
   function normalizeViewBox2(documentValue, fallbackSize = null) {
     const fallbackWidth = toPositiveNumber2(fallbackSize == null ? void 0 : fallbackSize.width) || DEFAULT_CANVAS_WIDTH2;
     const fallbackHeight = toPositiveNumber2(fallbackSize == null ? void 0 : fallbackSize.height) || DEFAULT_CANVAS_HEIGHT2;
     const viewBox = documentValue && documentValue.viewBox;
     if (typeof viewBox === "string" && viewBox.trim()) {
       const trimmed = viewBox.trim();
-      if (fallbackSize && trimmed === "0 0 1200 800") {
-        return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+      if (fallbackSize) {
+        const parts = trimmed.split(/[\s,]+/).map((value) => Number(value));
+        if (parts.length === 4 && parts.every(Number.isFinite) && isAutoResizableViewBoxParts2(parts[0], parts[1], parts[2], parts[3])) {
+          return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+        }
       }
       return trimmed;
     }
@@ -28340,7 +28913,7 @@ var MesoraDrawingToolBundle = (() => {
       const y = Number(viewBox.y) || 0;
       const width = Number(viewBox.width) || 100;
       const height = Number(viewBox.height) || 100;
-      if (fallbackSize && x === 0 && y === 0 && width === 1200 && height === 800) {
+      if (fallbackSize && isAutoResizableViewBoxParts2(x, y, width, height)) {
         return `0 0 ${fallbackWidth} ${fallbackHeight}`;
       }
       return `${x} ${y} ${width} ${height}`;
@@ -28363,6 +28936,25 @@ var MesoraDrawingToolBundle = (() => {
       width: DEFAULT_CANVAS_WIDTH2,
       height: DEFAULT_CANVAS_HEIGHT2
     };
+  }
+  function readBrowserViewportHeight2() {
+    var _a;
+    if (typeof window === "undefined") {
+      return 0;
+    }
+    return toPositiveNumber2((_a = window.visualViewport) == null ? void 0 : _a.height) || toPositiveNumber2(window.innerHeight) || 0;
+  }
+  function resolveBrowserHeightCanvasZoom2(rootNode, fallbackHeight, viewBoundsHeight, browserViewportHeight) {
+    const targetViewHeight = toPositiveNumber2(viewBoundsHeight) || DEFAULT_CANVAS_HEIGHT2;
+    const rect = rootNode && typeof rootNode.getBoundingClientRect === "function" ? rootNode.getBoundingClientRect() : null;
+    const rootTop = Math.max(0, Number((rect == null ? void 0 : rect.top) || 0));
+    const hostHeight = toPositiveNumber2(rect == null ? void 0 : rect.height) || toPositiveNumber2(fallbackHeight) || 0;
+    const viewportHeight = toPositiveNumber2(browserViewportHeight) || 0;
+    const availableBrowserHeight = viewportHeight > 0 ? Math.max(1, viewportHeight - rootTop) : 0;
+    const targetHeight = toPositiveNumber2(
+      availableBrowserHeight && hostHeight ? Math.min(availableBrowserHeight, hostHeight) : availableBrowserHeight || hostHeight
+    ) || targetViewHeight;
+    return Math.max(0.05, Math.min(8, targetHeight / targetViewHeight));
   }
   function getPerspectiveClientStore2(props) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
@@ -28556,7 +29148,7 @@ var MesoraDrawingToolBundle = (() => {
     }
     return true;
   }
-  function detectPerspectiveDesignerMode(props) {
+  function detectPerspectiveDesignerMode2(props) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
     const parentStore = (_c = (_b = (_a = props == null ? void 0 : props.store) == null ? void 0 : _a.view) == null ? void 0 : _b.page) == null ? void 0 : _c.parent;
     const nestedProps = getComponentPropSource2(props);
@@ -28610,8 +29202,14 @@ var MesoraDrawingToolBundle = (() => {
   }
   function getRootContainerProps(props) {
     const baseStyle = {
+      display: "flex",
+      flexDirection: "column",
       width: "100%",
-      height: "100%"
+      height: "100%",
+      minWidth: 0,
+      minHeight: 0,
+      flex: "1 1 auto",
+      alignSelf: "stretch"
     };
     if (typeof (props == null ? void 0 : props.emit) !== "function") {
       return { style: baseStyle };
@@ -28887,11 +29485,22 @@ var MesoraDrawingToolBundle = (() => {
     return wrote;
   }
   function ViziCanvasBridge(props) {
+    const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(/* @__PURE__ */ new Map());
     const sourceDocument = isPlainObject2(props.document) ? props.document : {};
     const hostSize = resolveCanvasHostSize2(props);
-    const viewBox = parseViewBoxParts2(normalizeViewBox2(sourceDocument, hostSize));
+    const previewActive = detectPerspectivePreviewMode2(props);
+    const designerActive = detectPerspectiveDesignerMode2(props);
+    const editorVisible = designerActive && !previewActive;
+    const isLiveMode = !designerActive || previewActive;
+    const browserRuntimeMode = isLiveMode && !designerActive;
+    const [rootSize, setRootSize] = useState(hostSize);
+    const [browserViewportHeight, setBrowserViewportHeight] = useState(() => readBrowserViewportHeight2());
+    const effectiveHostSize = toPositiveNumber2(rootSize == null ? void 0 : rootSize.width) && toPositiveNumber2(rootSize == null ? void 0 : rootSize.height) ? rootSize : hostSize;
+    const responsiveViewBox = parseViewBoxParts2(normalizeViewBox2(sourceDocument, effectiveHostSize));
+    const documentViewBounds = parseViewBoxParts2(normalizeViewBox2(sourceDocument));
+    const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
     const externalShapes = getPersistedArrayValue2(props, "shapes", EMPTY_ARRAY2);
     const externalOverlays = getPersistedArrayValue2(props, "svgOverlays", EMPTY_ARRAY2);
     const externalSelectedIds = getModelValue2(props, "selectedIds", EMPTY_ARRAY2);
@@ -28906,6 +29515,47 @@ var MesoraDrawingToolBundle = (() => {
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY2);
     const [svgLibraryError, setSvgLibraryError] = useState("");
     const [importOpen, setImportOpen] = useState(false);
+    useEffect(() => {
+      const node = rootRef.current;
+      if (!node || typeof node.getBoundingClientRect !== "function") {
+        return void 0;
+      }
+      const updateRootSize = () => {
+        const rect = node.getBoundingClientRect();
+        const width = toPositiveNumber2(rect == null ? void 0 : rect.width) || hostSize.width;
+        const height = toPositiveNumber2(rect == null ? void 0 : rect.height) || hostSize.height;
+        setRootSize((previous) => previous.width === width && previous.height === height ? previous : { width, height });
+      };
+      updateRootSize();
+      if (typeof ResizeObserver === "function") {
+        const observer = new ResizeObserver(updateRootSize);
+        observer.observe(node);
+        return () => observer.disconnect();
+      }
+      if (typeof window !== "undefined") {
+        window.addEventListener("resize", updateRootSize);
+        return () => window.removeEventListener("resize", updateRootSize);
+      }
+      return void 0;
+    }, [hostSize.height, hostSize.width]);
+    useEffect(() => {
+      var _a, _b;
+      if (typeof window === "undefined") {
+        return void 0;
+      }
+      const updateViewportHeight = () => {
+        const nextHeight = readBrowserViewportHeight2();
+        setBrowserViewportHeight((previous) => previous === nextHeight ? previous : nextHeight);
+      };
+      updateViewportHeight();
+      window.addEventListener("resize", updateViewportHeight);
+      (_b = (_a = window.visualViewport) == null ? void 0 : _a.addEventListener) == null ? void 0 : _b.call(_a, "resize", updateViewportHeight);
+      return () => {
+        var _a2, _b2;
+        window.removeEventListener("resize", updateViewportHeight);
+        (_b2 = (_a2 = window.visualViewport) == null ? void 0 : _a2.removeEventListener) == null ? void 0 : _b2.call(_a2, "resize", updateViewportHeight);
+      };
+    }, []);
     useEffect(() => {
       setSelectedIds(coerceArray2(externalSelectedIds));
     }, [externalSelectedIdsKey]);
@@ -29090,9 +29740,6 @@ var MesoraDrawingToolBundle = (() => {
     const showRulers = Boolean(getModelValue2(props, "showRulers", false));
     const tool = String(getModelValue2(props, "tool", "select") || "select");
     const liveUpdatesEnabled = Boolean(getModelValue2(props, "liveUpdatesEnabled", true));
-    const previewActive = detectPerspectivePreviewMode2(props);
-    const editorVisible = !previewActive;
-    const isLiveMode = previewActive;
     const liveClickable = Boolean(getModelValue2(props, "liveClickable", false));
     const theme = String(getModelValue2(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
@@ -29210,154 +29857,195 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [svgOverlays]);
     const libraryButtonLabel = svgLibraryError ? "SVG Library Unavailable" : svgCatalogFiles.length > 0 ? `SVG Library (${svgCatalogFiles.length})` : "Loading SVG Library...";
-    return /* @__PURE__ */ jsxs("div", { style: { position: "relative", width: "100%", height: "100%" }, children: [
-      /* @__PURE__ */ jsx(
-        CanvasSvg_default,
-        {
-          svgRef,
-          zoom,
-          pan: isPlainObject2(pan) ? pan : { x: 0, y: 0 },
-          onWheel: NOOP2,
-          marquee: null,
-          tool,
-          shapes: coerceArray2(externalShapes),
-          setShapes: NOOP2,
-          selectedIds: editorVisible ? selectedIds : EMPTY_ARRAY2,
-          setSelectedIds: editorVisible ? setSelectedIds : NOOP2,
-          setSelectedOverlayIds: editorVisible ? setSelectedOverlayIds : NOOP2,
-          inlineEditId: null,
-          selectedSegment: null,
-          editingId: null,
-          showTagPaths: false,
-          showGrid: editorVisible && showGrid,
-          showRulers: editorVisible && showRulers,
-          useWindowPointerTracking: false,
-          onSvgMouseDown: editorVisible ? handleSvgMouseDown : NOOP2,
-          onMouseMove: NOOP2,
-          onMouseUp: NOOP2,
-          onContextMenu: NOOP2,
-          onShapeMouseDown: editorVisible ? handleShapeMouseDown : NOOP2,
-          onShapeDoubleClick: NOOP2,
-          onEditPolylineClick: NOOP2,
-          onHandleMouseDown: NOOP2,
-          onHandleDoubleClick: NOOP2,
-          onHandleContextMenu: NOOP2,
-          onSegmentMouseDown: NOOP2,
-          vbW: viewBox.width,
-          vbH: viewBox.height,
-          svgOverlays,
-          setSvgOverlays,
-          selectedOverlayIds: editorVisible ? selectedOverlayIds : EMPTY_ARRAY2,
-          singleSelectedOverlayId: editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null,
-          setOverlayRef: NOOP2,
-          onOverlayMouseDown: handleOverlayMouseDown,
-          onOverlayDoubleClick: NOOP2,
-          overlaySelectionUI: null,
-          overlayGroupSelectionUI: null,
-          shapeSelectionUI: null,
-          mixedSelectionUI: null,
-          overlayLocalBBox,
-          importAnchor: null,
-          onCanvasDoubleClick: NOOP2,
-          tagStateColorsByPath: EMPTY_MAP2,
-          routeColorsBySvgKey: EMPTY_MAP2,
-          routeStrokeColorByGroupPath: EMPTY_MAP2,
-          svgLiveValuesByGroupPath: EMPTY_MAP2,
-          liveTagKeys: coerceArray2(getModelValue2(props, "liveTagKeys", EMPTY_ARRAY2)),
-          opcTags: coerceArray2(getModelValue2(props, "opcTags", EMPTY_ARRAY2)),
-          opcTemplateMap: EMPTY_MAP2,
-          opcTagMappingMap: EMPTY_MAP2,
-          opcMappingSetMap: EMPTY_MAP2,
-          widgetDbValues: EMPTY_MAP2,
-          binProductLabelByOverlayId: EMPTY_MAP2,
-          binNameLabelByOverlayId: EMPTY_MAP2,
-          binLevelRatioByOverlayId: EMPTY_MAP2,
-          binLockedInByOverlayId: EMPTY_MAP2,
-          binLockedOutByOverlayId: EMPTY_MAP2,
-          onWidgetDurationPresetChange: NOOP2,
-          onTrendTagDrop: NOOP2,
-          hiddenTagBubbleIds: EMPTY_ARRAY2,
-          onHideTagBubble: NOOP2,
-          onSvgDoubleClick: NOOP2,
-          collaboratorCursors: EMPTY_ARRAY2,
-          liveUpdatesEnabled,
-          interactionActive: false,
-          theme,
-          canvasBackgroundColor,
-          liveClickable,
-          isLiveMode,
-          preserveAspectRatioMode: "xMinYMin slice",
-          forceStaticVisuals: !editorVisible,
-          viewportTopOffset: 0,
-          viewportLeftOffset: 0,
-          viewportScrollTarget: null,
-          onViewportScroll: NOOP2
-        }
-      ),
-      editorVisible && svgLibraryEnabled ? /* @__PURE__ */ jsxs(
-        "div",
-        {
-          style: {
-            position: "absolute",
-            top: 12,
-            right: 12,
-            zIndex: 50,
-            display: "grid",
-            gap: 8,
-            maxWidth: 320
-          },
-          children: [
-            /* @__PURE__ */ jsx(
-              "button",
-              {
-                type: "button",
-                onClick: handleImportToggle,
-                disabled: svgCatalogFiles.length === 0,
-                style: {
-                  border: "1px solid rgba(148, 163, 184, 0.35)",
-                  background: "rgba(15, 23, 42, 0.88)",
-                  color: "#f8fafc",
-                  borderRadius: 999,
-                  padding: "10px 14px",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: svgCatalogFiles.length > 0 ? "pointer" : "default",
-                  boxShadow: "0 10px 30px rgba(15, 23, 42, 0.2)",
-                  opacity: svgCatalogFiles.length > 0 ? 1 : 0.76
-                },
-                children: libraryButtonLabel
-              }
-            ),
-            svgLibraryError ? /* @__PURE__ */ jsx(
-              "div",
-              {
-                style: {
-                  border: "1px solid rgba(239, 68, 68, 0.32)",
-                  background: "rgba(127, 29, 29, 0.92)",
-                  color: "#fee2e2",
-                  borderRadius: 14,
-                  padding: "10px 12px",
-                  fontSize: 11,
-                  lineHeight: 1.4
-                },
-                children: svgLibraryError
-              }
-            ) : null
-          ]
-        }
-      ) : null,
-      editorVisible && svgLibraryEnabled && importOpen ? /* @__PURE__ */ jsx(
-        ImportModal,
-        {
-          importOpen,
-          setImportOpen,
-          svgFiles,
-          svgLibrary: svgLibraryMap,
-          loadSvgRaw: readSvgRawByKey,
-          onPickSvg
-        }
-      ) : null
-    ] });
+    const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom2(
+      rootRef.current,
+      rootSize == null ? void 0 : rootSize.height,
+      viewBox.height,
+      browserViewportHeight
+    ) : 1;
+    const canvasContent = /* @__PURE__ */ jsx(
+      CanvasSvg_default,
+      {
+        svgRef,
+        zoom: isLiveMode ? 1 : zoom,
+        pan: isLiveMode ? { x: 0, y: 0 } : isPlainObject2(pan) ? pan : { x: 0, y: 0 },
+        onWheel: NOOP2,
+        marquee: null,
+        tool,
+        shapes: coerceArray2(externalShapes),
+        setShapes: NOOP2,
+        selectedIds: editorVisible ? selectedIds : EMPTY_ARRAY2,
+        setSelectedIds: editorVisible ? setSelectedIds : NOOP2,
+        setSelectedOverlayIds: editorVisible ? setSelectedOverlayIds : NOOP2,
+        inlineEditId: null,
+        selectedSegment: null,
+        editingId: null,
+        showTagPaths: false,
+        showGrid: editorVisible && showGrid,
+        showRulers: editorVisible && showRulers,
+        useWindowPointerTracking: false,
+        onSvgMouseDown: editorVisible ? handleSvgMouseDown : NOOP2,
+        onMouseMove: NOOP2,
+        onMouseUp: NOOP2,
+        onContextMenu: NOOP2,
+        onShapeMouseDown: editorVisible ? handleShapeMouseDown : NOOP2,
+        onShapeDoubleClick: NOOP2,
+        onEditPolylineClick: NOOP2,
+        onHandleMouseDown: NOOP2,
+        onHandleDoubleClick: NOOP2,
+        onHandleContextMenu: NOOP2,
+        onSegmentMouseDown: NOOP2,
+        vbW: viewBox.width,
+        vbH: viewBox.height,
+        svgOverlays,
+        setSvgOverlays,
+        selectedOverlayIds: editorVisible ? selectedOverlayIds : EMPTY_ARRAY2,
+        singleSelectedOverlayId: editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null,
+        setOverlayRef: NOOP2,
+        onOverlayMouseDown: handleOverlayMouseDown,
+        onOverlayDoubleClick: NOOP2,
+        overlaySelectionUI: null,
+        overlayGroupSelectionUI: null,
+        shapeSelectionUI: null,
+        mixedSelectionUI: null,
+        overlayLocalBBox,
+        importAnchor: null,
+        onCanvasDoubleClick: NOOP2,
+        tagStateColorsByPath: EMPTY_MAP2,
+        routeColorsBySvgKey: EMPTY_MAP2,
+        routeStrokeColorByGroupPath: EMPTY_MAP2,
+        svgLiveValuesByGroupPath: EMPTY_MAP2,
+        liveTagKeys: coerceArray2(getModelValue2(props, "liveTagKeys", EMPTY_ARRAY2)),
+        opcTags: coerceArray2(getModelValue2(props, "opcTags", EMPTY_ARRAY2)),
+        opcTemplateMap: EMPTY_MAP2,
+        opcTagMappingMap: EMPTY_MAP2,
+        opcMappingSetMap: EMPTY_MAP2,
+        widgetDbValues: EMPTY_MAP2,
+        binProductLabelByOverlayId: EMPTY_MAP2,
+        binNameLabelByOverlayId: EMPTY_MAP2,
+        binLevelRatioByOverlayId: EMPTY_MAP2,
+        binLockedInByOverlayId: EMPTY_MAP2,
+        binLockedOutByOverlayId: EMPTY_MAP2,
+        onWidgetDurationPresetChange: NOOP2,
+        onTrendTagDrop: NOOP2,
+        hiddenTagBubbleIds: EMPTY_ARRAY2,
+        onHideTagBubble: NOOP2,
+        onSvgDoubleClick: NOOP2,
+        collaboratorCursors: EMPTY_ARRAY2,
+        liveUpdatesEnabled,
+        interactionActive: false,
+        theme,
+        canvasBackgroundColor,
+        liveClickable,
+        isLiveMode,
+        preserveAspectRatioMode: "xMinYMin meet",
+        forceStaticVisuals: !editorVisible,
+        viewportTopOffset: 0,
+        viewportLeftOffset: 0,
+        viewportScrollTarget: null,
+        onViewportScroll: NOOP2,
+        absoluteViewportLayout: false
+      }
+    );
+    return /* @__PURE__ */ jsxs(
+      "div",
+      {
+        ref: rootRef,
+        style: {
+          position: "relative",
+          display: "flex",
+          width: "100%",
+          height: "100%",
+          minWidth: 0,
+          minHeight: 0,
+          flex: "1 1 auto",
+          alignSelf: "stretch",
+          overflow: "hidden",
+          ...browserRuntimeMode ? {
+            alignItems: "flex-start",
+            justifyContent: "flex-start"
+          } : {}
+        },
+        children: [
+          browserRuntimeMode ? /* @__PURE__ */ jsx(
+            "div",
+            {
+              style: {
+                width: viewBox.width,
+                height: viewBox.height,
+                zoom: liveCanvasZoom,
+                flexShrink: 0,
+                position: "relative"
+              },
+              children: canvasContent
+            }
+          ) : canvasContent,
+          editorVisible && svgLibraryEnabled ? /* @__PURE__ */ jsxs(
+            "div",
+            {
+              style: {
+                position: "absolute",
+                top: 12,
+                right: 12,
+                zIndex: 50,
+                display: "grid",
+                gap: 8,
+                maxWidth: 320
+              },
+              children: [
+                /* @__PURE__ */ jsx(
+                  "button",
+                  {
+                    type: "button",
+                    onClick: handleImportToggle,
+                    disabled: svgCatalogFiles.length === 0,
+                    style: {
+                      border: "1px solid rgba(148, 163, 184, 0.35)",
+                      background: "rgba(15, 23, 42, 0.88)",
+                      color: "#f8fafc",
+                      borderRadius: 999,
+                      padding: "10px 14px",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: svgCatalogFiles.length > 0 ? "pointer" : "default",
+                      boxShadow: "0 10px 30px rgba(15, 23, 42, 0.2)",
+                      opacity: svgCatalogFiles.length > 0 ? 1 : 0.76
+                    },
+                    children: libraryButtonLabel
+                  }
+                ),
+                svgLibraryError ? /* @__PURE__ */ jsx(
+                  "div",
+                  {
+                    style: {
+                      border: "1px solid rgba(239, 68, 68, 0.32)",
+                      background: "rgba(127, 29, 29, 0.92)",
+                      color: "#fee2e2",
+                      borderRadius: 14,
+                      padding: "10px 12px",
+                      fontSize: 11,
+                      lineHeight: 1.4
+                    },
+                    children: svgLibraryError
+                  }
+                ) : null
+              ]
+            }
+          ) : null,
+          editorVisible && svgLibraryEnabled && importOpen ? /* @__PURE__ */ jsx(
+            ImportModal,
+            {
+              importOpen,
+              setImportOpen,
+              svgFiles,
+              svgLibrary: svgLibraryMap,
+              loadSvgRaw: readSvgRawByKey,
+              onPickSvg
+            }
+          ) : null
+        ]
+      }
+    );
   }
   function hasViziCanvasModel(props) {
     const shapes = getPersistedArrayValue2(props, "shapes", EMPTY_ARRAY2);
@@ -29372,10 +30060,11 @@ var MesoraDrawingToolBundle = (() => {
     const viewProps = getComponentPropSource2(props);
     const rootRef = useRef(null);
     const previewActive = detectPerspectivePreviewMode2(props);
-    const designerActive = detectPerspectiveDesignerMode(props);
+    const designerActive = detectPerspectiveDesignerMode2(props);
     const rootRuntimeComponent = !designerActive && detectPerspectiveRootComponent(props);
     const useDesignerPortal = designerActive && !previewActive && hasViziCanvasModel(props);
     const rootBackgroundColor = String(viewProps.backgroundColor || "#0f172a");
+    const fillViewport = rootRuntimeComponent;
     const componentPath = String(
       rootProps["data-component-path"] || ((_a = props == null ? void 0 : props.store) == null ? void 0 : _a.path) || ((_b = viewProps == null ? void 0 : viewProps.store) == null ? void 0 : _b.path) || ""
     ).trim();
@@ -29388,12 +30077,17 @@ var MesoraDrawingToolBundle = (() => {
           ref: rootRef,
           style: {
             ...isPlainObject2(rootProps.style) ? rootProps.style : {},
-            position: "relative",
+            position: fillViewport ? "fixed" : "relative",
+            left: fillViewport ? 0 : void 0,
+            top: fillViewport ? 0 : void 0,
+            right: fillViewport ? 0 : void 0,
+            bottom: fillViewport ? 0 : void 0,
+            width: fillViewport ? "100dvw" : void 0,
+            height: fillViewport ? "100dvh" : void 0,
+            minWidth: fillViewport ? "100vw" : void 0,
+            minHeight: fillViewport ? "100vh" : void 0,
             overflow: "hidden",
-            background: rootBackgroundColor,
-            height: rootRuntimeComponent ? "100dvh" : void 0,
-            minHeight: rootRuntimeComponent ? "100dvh" : void 0,
-            maxHeight: rootRuntimeComponent ? "none" : void 0
+            background: rootBackgroundColor
           },
           children: [
             useDesignerPortal ? /* @__PURE__ */ jsx(
@@ -29443,8 +30137,8 @@ var MesoraDrawingToolBundle = (() => {
     }
     getDefaultSize() {
       return {
-        width: DEFAULT_CANVAS_WIDTH2,
-        height: DEFAULT_CANVAS_HEIGHT2
+        width: "100%",
+        height: "100dvh"
       };
     }
     getPropsReducer(tree) {

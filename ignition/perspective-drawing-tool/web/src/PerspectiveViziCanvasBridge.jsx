@@ -58,6 +58,8 @@ const CANVAS_RULER_SIZE = 24;
 const PROPERTY_PANEL_WIDTH = 300;
 const PROPERTY_PANEL_HEIGHT = 520;
 const PROPERTY_PANEL_MIN_HEIGHT = 240;
+const QUICK_TAG_PANEL_WIDTH = 360;
+const QUICK_TAG_PANEL_HEIGHT = 124;
 const TOOLBAR_WIDTH = 220;
 const COLLAPSED_TOOLBAR_WIDTH = 116;
 const TOOLBAR_INSET = 16;
@@ -163,6 +165,7 @@ function normalizeIgnitionTagEntries(payload) {
             provider: provider || "Tags",
             name: String(entry?.name || "").trim() || path,
             objectType: String(entry?.objectType || "").trim(),
+            typeId: String(entry?.typeId || "").trim(),
             hasChildren: Boolean(entry?.hasChildren)
         });
     });
@@ -383,6 +386,56 @@ function applyOverlayFillFallbackColor(overlay, rawFill) {
     };
 }
 
+function incrementTagPathValue(rawTagPath, amount = 1) {
+    const tagPath = String(rawTagPath ?? "").trim();
+    const step = Number(amount);
+    if (!tagPath || !Number.isFinite(step) || step === 0) {
+        return tagPath;
+    }
+
+    let lastMatch = null;
+    const regex = /\d+/g;
+    let match = regex.exec(tagPath);
+    while (match) {
+        lastMatch = match;
+        match = regex.exec(tagPath);
+    }
+
+    if (!lastMatch) {
+        return tagPath;
+    }
+
+    const start = Number(lastMatch.index || 0);
+    const rawDigits = String(lastMatch[0] || "");
+    const currentValue = Number(rawDigits);
+    if (!Number.isFinite(currentValue)) {
+        return tagPath;
+    }
+
+    const nextValue = Math.max(0, currentValue + step);
+    const nextDigits = String(nextValue).padStart(rawDigits.length, "0");
+    return `${tagPath.slice(0, start)}${nextDigits}${tagPath.slice(start + rawDigits.length)}`;
+}
+
+function withIncrementedShapeTagPath(shape, amount = 1) {
+    const nextTagPath = incrementTagPathValue(shape?.tagPath, amount);
+    if (!nextTagPath || nextTagPath === String(shape?.tagPath || "").trim()) {
+        return shape;
+    }
+    return {
+        ...shape,
+        tagPath: nextTagPath
+    };
+}
+
+function withIncrementedOverlayTagPath(overlay, amount = 1) {
+    const nextTagPath = incrementTagPathValue(overlay?.tagPath, amount);
+    if (!nextTagPath || nextTagPath === String(overlay?.tagPath || "").trim()) {
+        return overlay;
+    }
+    return applyOverlayIgnitionFillBinding(overlay, nextTagPath);
+}
+
 function normalizeIgnitionTagValues(payload) {
     const out = new Map();
 
@@ -525,14 +578,30 @@ function resolveCanvasHostSize(componentProps) {
     };
 }
 
+function isAutoResizableViewBoxParts(x, y, width, height) {
+    return x === 0
+        && y === 0
+        && (
+            (width === 1200 && height === 800)
+            || (width === DEFAULT_CANVAS_WIDTH && height === DEFAULT_CANVAS_HEIGHT)
+        );
+}
+
 function normalizeViewBox(documentValue, fallbackSize = null) {
     const fallbackWidth = toPositiveNumber(fallbackSize?.width) || DEFAULT_CANVAS_WIDTH;
     const fallbackHeight = toPositiveNumber(fallbackSize?.height) || DEFAULT_CANVAS_HEIGHT;
     const viewBox = documentValue && documentValue.viewBox;
     if (typeof viewBox === "string" && viewBox.trim()) {
         const trimmed = viewBox.trim();
-        if (fallbackSize && trimmed === "0 0 1200 800") {
-            return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+        if (fallbackSize) {
+            const parts = trimmed.split(/[\s,]+/).map((value) => Number(value));
+            if (
+                parts.length === 4
+                && parts.every(Number.isFinite)
+                && isAutoResizableViewBoxParts(parts[0], parts[1], parts[2], parts[3])
+            ) {
+                return `0 0 ${fallbackWidth} ${fallbackHeight}`;
+            }
         }
         return trimmed;
     }
@@ -541,7 +610,7 @@ function normalizeViewBox(documentValue, fallbackSize = null) {
         const y = Number(viewBox.y) || 0;
         const width = Number(viewBox.width) || 100;
         const height = Number(viewBox.height) || 100;
-        if (fallbackSize && x === 0 && y === 0 && width === 1200 && height === 800) {
+        if (fallbackSize && isAutoResizableViewBoxParts(x, y, width, height)) {
             return `0 0 ${fallbackWidth} ${fallbackHeight}`;
         }
         return `${x} ${y} ${width} ${height}`;
@@ -570,6 +639,36 @@ function parseViewBoxParts(raw) {
         width: DEFAULT_CANVAS_WIDTH,
         height: DEFAULT_CANVAS_HEIGHT
     };
+}
+
+function readBrowserViewportHeight() {
+    if (typeof window === "undefined") {
+        return 0;
+    }
+    return (
+        toPositiveNumber(window.visualViewport?.height)
+        || toPositiveNumber(window.innerHeight)
+        || 0
+    );
+}
+
+function resolveBrowserHeightCanvasZoom(rootNode, fallbackHeight, viewBoundsHeight, browserViewportHeight) {
+    const targetViewHeight = toPositiveNumber(viewBoundsHeight) || DEFAULT_CANVAS_HEIGHT;
+    const rect = rootNode && typeof rootNode.getBoundingClientRect === "function"
+        ? rootNode.getBoundingClientRect()
+        : null;
+    const rootTop = Math.max(0, Number(rect?.top || 0));
+    const hostHeight = toPositiveNumber(rect?.height) || toPositiveNumber(fallbackHeight) || 0;
+    const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
+    const availableBrowserHeight = viewportHeight > 0
+        ? Math.max(1, viewportHeight - rootTop)
+        : 0;
+    const targetHeight = toPositiveNumber(
+        availableBrowserHeight && hostHeight
+            ? Math.min(availableBrowserHeight, hostHeight)
+            : availableBrowserHeight || hostHeight
+    ) || targetViewHeight;
+    return Math.max(0.05, Math.min(8, targetHeight / targetViewHeight));
 }
 
 function getModelValue(props, key, fallback) {
@@ -636,6 +735,42 @@ function detectPerspectivePreviewMode(props) {
     }
 
     return true;
+}
+
+function detectPerspectiveDesignerMode(props) {
+    const parentStore = props?.store?.view?.page?.parent;
+    const nestedProps = getComponentPropSource(props);
+    const nestedParentStore = nestedProps?.store?.view?.page?.parent;
+    const localStore = props?.store;
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const designerScope = typeof window !== "undefined"
+        ? window.PerspectiveClient?.ClientScope?.Designer || "D"
+        : "D";
+
+    if (
+        parentStore?.isDesigner === true
+        || nestedParentStore?.isDesigner === true
+        || localStore?.isDesigner === true
+        || nestedProps?.store?.isDesigner === true
+        || globalClient?.isDesigner === true
+        || globalDesigner?.isDesigner === true
+    ) {
+        return true;
+    }
+
+    if (
+        parentStore?.scope === designerScope
+        || nestedParentStore?.scope === designerScope
+        || localStore?.scope === designerScope
+        || nestedProps?.store?.scope === designerScope
+        || globalClient?.scope === designerScope
+        || globalDesigner?.scope === designerScope
+    ) {
+        return true;
+    }
+
+    return Boolean(globalDesigner);
 }
 
 function getPersistedArrayValue(props, key, fallback = EMPTY_ARRAY) {
@@ -1360,6 +1495,7 @@ function EditorDropdownField({
                 {open && !disabled ? (
                     <div
                         data-vizi-dropdown-menu="1"
+                        className="vizi-scroll"
                         style={{
                             marginTop: 6,
                             overflowY: "auto",
@@ -1448,10 +1584,13 @@ function EditorDropdownField({
 }
 
 function PropertyTagPathField({
+    autoOpenToken = 0,
     disabled = false,
     error = "",
     label,
+    loaded = true,
     loading = false,
+    onOpen,
     onCommit,
     options = EMPTY_ARRAY,
     value = ""
@@ -1460,6 +1599,7 @@ function PropertyTagPathField({
     const triggerRef = useRef(null);
     const menuRef = useRef(null);
     const searchRef = useRef(null);
+    const lastAutoOpenTokenRef = useRef(0);
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [menuRect, setMenuRect] = useState(null);
@@ -1511,13 +1651,19 @@ function PropertyTagPathField({
         }));
     const triggerLabel = selectedOption?.path
         || (currentValue ? `${currentValue} (current)` : "Select tag...");
-    const resultSummary = queryText
-        ? `${filteredOptions.length} match${filteredOptions.length === 1 ? "" : "es"}`
-        : `${normalizedOptions.length} Ignition tags available`;
+    const resultSummary = loading
+        ? "Loading Ignition tags..."
+        : !loaded
+            ? "Open to load Ignition tags"
+            : queryText
+                ? `${filteredOptions.length} match${filteredOptions.length === 1 ? "" : "es"}`
+                : `${normalizedOptions.length} Ignition tags available`;
     const helperText = error
         ? error
         : loading
             ? "Loading Ignition tags..."
+            : !loaded
+                ? "Open to load Ignition tags."
             : resultSummary;
 
     const closeMenu = useCallback(() => {
@@ -1620,6 +1766,27 @@ function PropertyTagPathField({
         };
     }, [open]);
 
+    useEffect(() => {
+        const nextToken = Number(autoOpenToken) || 0;
+        if (!nextToken || disabled || lastAutoOpenTokenRef.current === nextToken) {
+            return;
+        }
+        lastAutoOpenTokenRef.current = nextToken;
+        setQuery("");
+        setOpen(true);
+        if (typeof onOpen === "function") {
+            onOpen();
+        }
+        const timer = window.setTimeout(() => {
+            updateMenuRect();
+            searchRef.current?.focus?.();
+            searchRef.current?.select?.();
+        }, 0);
+        return () => {
+            window.clearTimeout(timer);
+        };
+    }, [autoOpenToken, disabled, onOpen, updateMenuRect]);
+
     return (
         <div
             ref={rootRef}
@@ -1643,6 +1810,9 @@ function PropertyTagPathField({
                     }
                     setOpen((current) => {
                         const next = !current;
+                        if (next && typeof onOpen === "function") {
+                            onOpen();
+                        }
                         if (!next) {
                             setQuery("");
                         }
@@ -1710,13 +1880,13 @@ function PropertyTagPathField({
                             width: menuRect.width,
                             maxHeight: menuRect.maxHeight,
                             zIndex: 2147483200,
-                            borderRadius: 14,
+                            borderRadius: 10,
                             border: "1px solid rgba(71, 85, 105, 0.96)",
                             background: "rgba(2, 6, 23, 0.985)",
                             boxShadow: "0 24px 48px rgba(2, 6, 23, 0.44)",
                             display: "grid",
-                            gap: 8,
-                            padding: 10,
+                            gap: 6,
+                            padding: 8,
                             overflow: "hidden"
                         }}
                         onPointerDown={stopInteractivePropagation}
@@ -1727,7 +1897,7 @@ function PropertyTagPathField({
                         onKeyDown={stopInteractivePropagation}
                         onKeyUp={stopInteractivePropagation}
                     >
-                        <div style={{ display: "grid", gap: 8 }}>
+                        <div style={{ display: "grid", gap: 6 }}>
                             <input
                                 ref={searchRef}
                                 type="text"
@@ -1752,14 +1922,14 @@ function PropertyTagPathField({
                                 onKeyUp={stopInteractivePropagation}
                                 style={{
                                     width: "100%",
-                                    height: 36,
+                                    height: 30,
                                     boxSizing: "border-box",
-                                    borderRadius: 10,
+                                    borderRadius: 8,
                                     border: "1px solid rgba(71, 85, 105, 0.9)",
                                     background: "rgba(15, 23, 42, 0.92)",
                                     color: "#f8fafc",
-                                    padding: "0 10px",
-                                    fontSize: 12,
+                                    padding: "0 9px",
+                                    fontSize: 11,
                                     fontWeight: 600
                                 }}
                             />
@@ -1767,45 +1937,27 @@ function PropertyTagPathField({
                                 style={{
                                     display: "flex",
                                     alignItems: "center",
-                                    justifyContent: "space-between",
-                                    gap: 12,
-                                    fontSize: 10,
+                                    justifyContent: "flex-start",
+                                    gap: 8,
+                                    fontSize: 9,
+                                    lineHeight: 1.2,
                                     color: "rgba(226, 232, 240, 0.68)"
                                 }}
                             >
                                 <span>{resultSummary}</span>
-                                <button
-                                    type="button"
-                                    onClick={(event) => {
-                                        stopInteractivePropagation(event);
-                                        closeMenu();
-                                    }}
-                                    onPointerDown={stopInteractivePropagation}
-                                    onMouseDown={stopInteractivePropagation}
-                                    onMouseUp={stopInteractivePropagation}
-                                    style={{
-                                        border: "none",
-                                        background: "transparent",
-                                        color: "rgba(148, 163, 184, 0.88)",
-                                        cursor: "pointer",
-                                        fontSize: 11,
-                                        fontWeight: 700
-                                    }}
-                                >
-                                    Close
-                                </button>
                             </div>
                         </div>
                         <div
+                            className="vizi-scroll"
                             style={{
                                 display: "grid",
-                                gap: 8,
-                                maxHeight: Math.max(120, Number(menuRect.maxHeight || 320) - 92),
+                                gap: 6,
+                                maxHeight: Math.max(120, Number(menuRect.maxHeight || 320) - 68),
                                 overflowY: "auto",
                                 paddingRight: 2
                             }}
                         >
-                            <div style={{ display: "grid", gap: 4 }}>
+                            <div style={{ display: "grid", gap: 3 }}>
                                 <button
                                     type="button"
                                     onClick={(event) => {
@@ -1823,11 +1975,12 @@ function PropertyTagPathField({
                                         border: currentValue ? "1px solid rgba(51, 65, 85, 0.92)" : "1px solid rgba(96, 165, 250, 0.85)",
                                         background: currentValue ? "rgba(15, 23, 42, 0.94)" : "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)",
                                         color: "#f8fafc",
-                                        borderRadius: 10,
-                                        padding: "8px 10px",
-                                        fontSize: 12,
+                                        borderRadius: 8,
+                                        padding: "6px 8px",
+                                        fontSize: 11,
                                         fontWeight: currentValue ? 600 : 700,
                                         textAlign: "left",
+                                        lineHeight: 1.15,
                                         cursor: "pointer"
                                     }}
                                 >
@@ -1839,24 +1992,24 @@ function PropertyTagPathField({
                                             border: "1px solid rgba(71, 85, 105, 0.76)",
                                             background: "rgba(15, 23, 42, 0.9)",
                                             color: "#e2e8f0",
-                                            borderRadius: 10,
-                                            padding: "8px 10px",
+                                            borderRadius: 8,
+                                            padding: "6px 8px",
                                             display: "grid",
-                                            gap: 3
+                                            gap: 1
                                         }}
                                     >
-                                        <div style={{ fontSize: 12, fontWeight: 700 }}>{currentValue}</div>
-                                        <div style={{ fontSize: 10, color: "rgba(148, 163, 184, 0.9)" }}>Current saved value</div>
+                                        <div style={{ fontSize: 11, fontWeight: 700, lineHeight: 1.15 }}>{currentValue}</div>
+                                        <div style={{ fontSize: 9, color: "rgba(148, 163, 184, 0.9)", lineHeight: 1.1 }}>Current saved value</div>
                                     </div>
                                 ) : null}
                             </div>
                             {groupedFilteredSections.map((section, sectionIndex) => (
-                                <div key={`${section.label || "section"}-${sectionIndex}`} style={{ display: "grid", gap: 4 }}>
+                                <div key={`${section.label || "section"}-${sectionIndex}`} style={{ display: "grid", gap: 3 }}>
                                     {section.label ? (
                                         <div
                                             style={{
-                                                padding: "2px 6px 4px",
-                                                fontSize: 10,
+                                                padding: "1px 4px 2px",
+                                                fontSize: 9,
                                                 fontWeight: 800,
                                                 letterSpacing: "0.08em",
                                                 textTransform: "uppercase",
@@ -1887,14 +2040,15 @@ function PropertyTagPathField({
                                                     border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
                                                     background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
                                                     color: "#f8fafc",
-                                                    borderRadius: 10,
-                                                    padding: "8px 10px",
-                                                    fontSize: 12,
+                                                    borderRadius: 8,
+                                                    padding: "6px 8px",
+                                                    fontSize: 11,
                                                     fontWeight: active ? 700 : 600,
                                                     textAlign: "left",
                                                     cursor: "pointer",
                                                     display: "grid",
-                                                    gap: 2
+                                                    gap: 1,
+                                                    lineHeight: 1.1
                                                 }}
                                             >
                                                 <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -1906,8 +2060,9 @@ function PropertyTagPathField({
                                                         overflow: "hidden",
                                                         textOverflow: "ellipsis",
                                                         whiteSpace: "nowrap",
-                                                        fontSize: 10,
+                                                        fontSize: 9,
                                                         fontWeight: 600,
+                                                        lineHeight: 1.05,
                                                         color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
                                                     }}
                                                 >
@@ -1921,10 +2076,10 @@ function PropertyTagPathField({
                             {!loading && !filteredOptions.length ? (
                                 <div
                                     style={{
-                                        borderRadius: 10,
+                                        borderRadius: 8,
                                         border: "1px dashed rgba(71, 85, 105, 0.78)",
-                                        padding: "12px 10px",
-                                        fontSize: 11,
+                                        padding: "10px 8px",
+                                        fontSize: 10,
                                         fontWeight: 600,
                                         color: "rgba(148, 163, 184, 0.9)",
                                         textAlign: "center"
@@ -2087,6 +2242,18 @@ function rectsIntersect(left, right) {
     );
 }
 
+function rectContains(outer, inner) {
+    if (!outer || !inner) {
+        return false;
+    }
+    return (
+        Number(outer.x || 0) <= Number(inner.x || 0)
+        && Number(outer.y || 0) <= Number(inner.y || 0)
+        && Number(outer.x || 0) + Number(outer.width || 0) >= Number(inner.x || 0) + Number(inner.width || 0)
+        && Number(outer.y || 0) + Number(outer.height || 0) >= Number(inner.y || 0) + Number(inner.height || 0)
+    );
+}
+
 function unionBounds(bounds) {
     const items = (Array.isArray(bounds) ? bounds : []).filter(Boolean);
     if (!items.length) {
@@ -2141,7 +2308,24 @@ export default function PerspectiveViziCanvasBridge(props) {
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
     const perspectiveClientStore = getPerspectiveClientStore(props);
     const hostSize = resolveCanvasHostSize(props);
-    const viewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, hostSize));
+    const previewActive = detectPerspectivePreviewMode(props);
+    const designerActive = detectPerspectiveDesignerMode(props);
+    const editorVisible = designerActive && !previewActive;
+    const isLiveMode = !designerActive || previewActive;
+    const browserRuntimeMode = isLiveMode && !designerActive;
+    const [rootSize, setRootSize] = useState({
+        width: DEFAULT_CANVAS_WIDTH,
+        height: DEFAULT_CANVAS_HEIGHT
+    });
+    const [browserViewportHeight, setBrowserViewportHeight] = useState(() => readBrowserViewportHeight());
+    const effectiveHostSize = (
+        toPositiveNumber(rootSize?.width) && toPositiveNumber(rootSize?.height)
+            ? rootSize
+            : hostSize
+    );
+    const responsiveViewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, effectiveHostSize));
+    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument));
+    const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
     const externalOverlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
     const externalSelectedIds = getModelValue(props, "selectedIds", EMPTY_ARRAY);
@@ -2190,14 +2374,17 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => new Map());
     const [ignitionTagsError, setIgnitionTagsError] = useState("");
     const [ignitionTagsLoading, setIgnitionTagsLoading] = useState(false);
+    const [ignitionTagsLoaded, setIgnitionTagsLoaded] = useState(false);
+    const [quickTagPickerState, setQuickTagPickerState] = useState({
+        overlayId: "",
+        nonce: 0,
+        clientX: 0,
+        clientY: 0
+    });
     const [importOpen, setImportOpen] = useState(false);
     const [widgetOpen, setWidgetOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
     const [propertiesSelectionKey, setPropertiesSelectionKey] = useState("");
-    const [rootSize, setRootSize] = useState({
-        width: DEFAULT_CANVAS_WIDTH,
-        height: DEFAULT_CANVAS_HEIGHT
-    });
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
@@ -2245,6 +2432,25 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         return undefined;
+    }, []);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return undefined;
+        }
+
+        const updateViewportHeight = () => {
+            const nextHeight = readBrowserViewportHeight();
+            setBrowserViewportHeight((previous) => (previous === nextHeight ? previous : nextHeight));
+        };
+
+        updateViewportHeight();
+        window.addEventListener("resize", updateViewportHeight);
+        window.visualViewport?.addEventListener?.("resize", updateViewportHeight);
+        return () => {
+            window.removeEventListener("resize", updateViewportHeight);
+            window.visualViewport?.removeEventListener?.("resize", updateViewportHeight);
+        };
     }, []);
 
     useEffect(() => {
@@ -2299,71 +2505,66 @@ export default function PerspectiveViziCanvasBridge(props) {
         const seen = new Set();
         const out = [];
 
-        coerceArray(svgOverlays).forEach((overlay) => {
-            const candidates = [
-                getOverlayFillBindingTagPath(overlay),
-                String(overlay?.tagPath || "").trim()
-            ];
+        const addPath = (path) => {
+            const key = String(path || "").toLowerCase();
+            if (!path || seen.has(key)) return;
+            seen.add(key);
+            out.push(path);
+        };
 
-            candidates.forEach((path) => {
-                const key = String(path || "").toLowerCase();
-                if (!path || seen.has(key)) {
-                    return;
-                }
-                seen.add(key);
-                out.push(path);
-            });
+        coerceArray(svgOverlays).forEach((overlay) => {
+            addPath(getOverlayFillBindingTagPath(overlay));
+            addPath(String(overlay?.tagPath || "").trim());
+        });
+
+        coerceArray(shapes).forEach((shape) => {
+            addPath(String(shape?.tagPath || "").trim());
         });
 
         return out;
-    }, [svgOverlays]);
+    }, [svgOverlays, shapes]);
     const overlayFillBindingPathsKey = JSON.stringify(overlayFillBindingPaths);
+    const ignitionTagRequestIdRef = useRef(0);
 
-    useEffect(() => {
-        let cancelled = false;
+    const loadIgnitionTags = useCallback(async () => {
+        const requestId = ignitionTagRequestIdRef.current + 1;
+        ignitionTagRequestIdRef.current = requestId;
         setIgnitionTagsLoading(true);
         setIgnitionTagsError("");
+        let lastError = "Failed to load Ignition tags.";
 
-        const loadIgnitionTags = async () => {
-            let lastError = "Failed to load Ignition tags.";
-
-            for (const routePath of MODULE_DATA_ROUTE_CANDIDATES) {
-                try {
-                    const response = await fetch(routePath, {
-                        cache: "no-store",
-                        credentials: "same-origin"
-                    });
-                    if (!response.ok) {
-                        lastError = `Failed to load Ignition tags (${response.status}).`;
-                        continue;
-                    }
-
-                    const payload = await response.json();
-                    if (cancelled) {
-                        return;
-                    }
-
-                    setIgnitionTagOptions(normalizeIgnitionTagEntries(payload));
-                    setIgnitionTagsError(String(payload?.error || "").trim());
-                    setIgnitionTagsLoading(false);
-                    return;
-                } catch (error) {
-                    lastError = String(error?.message || "Failed to load Ignition tags.");
+        for (const routePath of MODULE_DATA_ROUTE_CANDIDATES) {
+            try {
+                const response = await fetch(routePath, {
+                    cache: "no-store",
+                    credentials: "same-origin"
+                });
+                if (!response.ok) {
+                    lastError = `Failed to load Ignition tags (${response.status}).`;
+                    continue;
                 }
-            }
 
-            if (!cancelled) {
-                setIgnitionTagOptions(EMPTY_ARRAY);
-                setIgnitionTagsError(lastError);
+                const payload = await response.json();
+                if (ignitionTagRequestIdRef.current !== requestId) {
+                    return;
+                }
+
+                setIgnitionTagOptions(normalizeIgnitionTagEntries(payload));
+                setIgnitionTagsError(String(payload?.error || "").trim());
+                setIgnitionTagsLoaded(true);
                 setIgnitionTagsLoading(false);
+                return;
+            } catch (error) {
+                lastError = String(error?.message || "Failed to load Ignition tags.");
             }
-        };
+        }
 
-        loadIgnitionTags();
-
-        return () => {
-            cancelled = true;
-        };
+        if (ignitionTagRequestIdRef.current === requestId) {
+            setIgnitionTagOptions(EMPTY_ARRAY);
+            setIgnitionTagsError(lastError);
+            setIgnitionTagsLoaded(true);
+            setIgnitionTagsLoading(false);
+        }
     }, []);
 
     useEffect(() => {
@@ -2713,10 +2914,15 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
+    const liveCanvasZoom = browserRuntimeMode
+        ? resolveBrowserHeightCanvasZoom(
+            rootRef.current,
+            rootSize?.height,
+            viewBox.height,
+            browserViewportHeight
+        )
+        : 1;
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
-    const previewActive = detectPerspectivePreviewMode(props);
-    const editorVisible = !previewActive;
-    const isLiveMode = previewActive;
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
@@ -3004,6 +3210,12 @@ export default function PerspectiveViziCanvasBridge(props) {
     const propertiesVisible = editorVisible
         && Boolean(singleSelectionKey)
         && propertiesSelectionKey === singleSelectionKey;
+    const quickTagPickerOverlay = useMemo(
+        () => svgOverlays.find((overlay) => String(overlay?.id || "") === String(quickTagPickerState?.overlayId || "")) || null,
+        [quickTagPickerState, svgOverlays]
+    );
+    const quickTagPickerRef = useRef(null);
+    const quickTagPickerAutoOpenToken = Number(quickTagPickerState?.nonce || 0);
 
     const finishPolyline = useCallback(() => {
         if (drawing?.kind !== "polyline") {
@@ -3049,6 +3261,15 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const closePropertiesPanel = useCallback(() => {
         setPropertiesSelectionKey("");
+    }, []);
+
+    const closeQuickTagPicker = useCallback(() => {
+        setQuickTagPickerState({
+            overlayId: "",
+            nonce: 0,
+            clientX: 0,
+            clientY: 0
+        });
     }, []);
 
     const appendPolylinePoint = useCallback((id, point) => {
@@ -3289,32 +3510,32 @@ export default function PerspectiveViziCanvasBridge(props) {
             const id = createId("shape");
             nextShapeIds.push(id);
             if (Array.isArray(shape?.points)) {
-                return {
+                return withIncrementedShapeTagPath({
                     ...cloneDeepValue(shape),
                     id,
                     points: clonePoints(shape.points).map((point) => ({
                         x: Number(point.x || 0) + dx,
                         y: Number(point.y || 0) + dy
                     }))
-                };
+                }, pasteCount);
             }
-            return {
+            return withIncrementedShapeTagPath({
                 ...cloneDeepValue(shape),
                 id,
                 x: Number(shape?.x || 0) + dx,
                 y: Number(shape?.y || 0) + dy
-            };
+            }, pasteCount);
         });
 
         const nextOverlays = overlayCopies.map((overlay) => {
             const id = createId("overlay");
             nextOverlayIds.push(id);
-            return {
+            return withIncrementedOverlayTagPath({
                 ...cloneDeepValue(overlay),
                 id,
                 tx: Number(overlay?.tx || 0) + dx,
                 ty: Number(overlay?.ty || 0) + dy
-            };
+            }, pasteCount);
         });
 
         if (nextShapes.length) {
@@ -3336,9 +3557,65 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [setTool, updateShapes, updateSvgOverlays]);
 
     const duplicateSelected = useCallback(() => {
-        copySelection();
-        pasteClipboard();
-    }, [copySelection, pasteClipboard]);
+        const shapeIds = new Set(coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean));
+        const overlayIds = new Set(coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean));
+        const selectedShapes = shapesRef.current.filter((shape) => shapeIds.has(String(shape?.id || "")));
+        const selectedOverlays = overlaysRef.current.filter((overlay) => overlayIds.has(String(overlay?.id || "")));
+        if (!selectedShapes.length && !selectedOverlays.length) {
+            return;
+        }
+        const selectionBoxes = [
+            ...selectedShapes.map((shape) => getShapeBounds(shape)),
+            ...selectedOverlays.map((overlay) => getOverlayBounds(overlay))
+        ].filter(Boolean);
+        const leftmostBox = selectionBoxes.length
+            ? selectionBoxes.reduce((left, right) => (
+                Number(right?.x || 0) < Number(left?.x || 0) ? right : left
+            ), selectionBoxes[0])
+            : null;
+        const dx = Math.max(0, Number(leftmostBox?.width || 0)) + 10;
+        const nextShapeIds = [];
+        const nextOverlayIds = [];
+        const nextShapes = selectedShapes.map((shape) => {
+            const id = createId("shape");
+            nextShapeIds.push(id);
+            if (Array.isArray(shape?.points) && shape.points.length > 0) {
+                return withIncrementedShapeTagPath({
+                    ...cloneDeepValue(shape),
+                    id,
+                    points: clonePoints(shape.points).map((point) => ({
+                        x: Number(point.x || 0) + dx,
+                        y: Number(point.y || 0)
+                    }))
+                }, 1);
+            }
+            return withIncrementedShapeTagPath({
+                ...cloneDeepValue(shape),
+                id,
+                x: Number(shape?.x || 0) + dx,
+                y: Number(shape?.y || 0)
+            }, 1);
+        });
+        const nextOverlays = selectedOverlays.map((overlay) => {
+            const id = createId("overlay");
+            nextOverlayIds.push(id);
+            return withIncrementedOverlayTagPath({
+                ...cloneDeepValue(overlay),
+                id,
+                tx: Number(overlay?.tx || 0) + dx,
+                ty: Number(overlay?.ty || 0)
+            }, 1);
+        });
+        if (nextShapes.length) {
+            updateShapes((previous) => [...previous, ...nextShapes], { persist: true });
+        }
+        if (nextOverlays.length) {
+            updateSvgOverlays((previous) => [...previous, ...nextOverlays], { persist: true });
+        }
+        setSelectedIds(nextShapeIds);
+        setSelectedOverlayIds(nextOverlayIds);
+        setEditingId(null);
+    }, [selectedIds, selectedOverlayIds, updateShapes, updateSvgOverlays]);
 
     const beginSelectionDrag = useCallback((start, shapeIds = EMPTY_ARRAY, overlayIds = EMPTY_ARRAY) => {
         const shapeSnapshotsById = {};
@@ -3808,14 +4085,18 @@ export default function PerspectiveViziCanvasBridge(props) {
         openPropertiesForSelection(`shape:${shapeId}`);
     }, [drawing, finishActivePolylineAt, isShapeSelectableByMode, openPropertiesForSelection, pointFromEvent, tool]);
 
-    const handleOverlayDoubleClick = useCallback((event, id) => {
+    const handleOverlayDoubleClick = useCallback((event, overlayOrId) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
         if (!overlaysSelectable || tool !== "select") {
             return;
         }
-        const overlayId = String(id || "");
-        const overlay = overlaysRef.current.find((item) => String(item?.id || "") === overlayId);
+        const overlayId = String(
+            typeof overlayOrId === "object" && overlayOrId
+                ? overlayOrId.id || ""
+                : overlayOrId || ""
+        ).trim();
+        const overlay = overlaysRef.current.find((item) => String(item?.id || "").trim() === overlayId);
         if (!overlay) {
             return;
         }
@@ -3823,8 +4104,40 @@ export default function PerspectiveViziCanvasBridge(props) {
         setSelectedIds([]);
         setEditingId(null);
         setSelectedSegment(null);
-        openPropertiesForSelection(`overlay:${overlayId}`);
-    }, [openPropertiesForSelection, overlaysSelectable, tool]);
+        closeQuickTagPicker();
+        const selectionKey = `overlay:${overlayId}`;
+        openPropertiesForSelection(selectionKey);
+    }, [closeQuickTagPicker, openPropertiesForSelection, overlaysSelectable, tool]);
+
+    const handleOverlayContextMenu = useCallback((event, overlayOrId) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (!overlaysSelectable || tool !== "select") {
+            return;
+        }
+
+        const overlayId = String(
+            typeof overlayOrId === "object" && overlayOrId
+                ? overlayOrId.id || ""
+                : overlayOrId || ""
+        ).trim();
+        const overlay = overlaysRef.current.find((item) => String(item?.id || "").trim() === overlayId);
+        if (!overlay || overlay.widget || overlay.embeddedView) {
+            return;
+        }
+
+        setSelectedOverlayIds([overlayId]);
+        setSelectedIds([]);
+        setEditingId(null);
+        setSelectedSegment(null);
+        closePropertiesPanel();
+        setQuickTagPickerState({
+            overlayId,
+            nonce: Date.now(),
+            clientX: Number(event?.clientX || 0),
+            clientY: Number(event?.clientY || 0)
+        });
+    }, [closePropertiesPanel, overlaysSelectable, tool]);
 
     const openOverlayPopup = useCallback((overlay) => {
         if (!overlay || overlay.widget || overlay.embeddedView) {
@@ -4292,12 +4605,14 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         if (marquee?.start) {
             const bounds = rectFromPoints(marquee.start, marquee.cur);
+            const isWindowSelect = marquee.start.x < marquee.cur.x;
+            const matchesBounds = isWindowSelect ? rectContains : rectsIntersect;
             const hitShapeIds = shapesRef.current
-                .filter((shape) => isShapeSelectableByMode(shape) && rectsIntersect(bounds, getShapeBounds(shape)))
+                .filter((shape) => isShapeSelectableByMode(shape) && matchesBounds(bounds, getShapeBounds(shape)))
                 .map((shape) => String(shape?.id || ""));
             const hitOverlayIds = overlaysSelectable
                 ? overlaysRef.current
-                    .filter((overlay) => rectsIntersect(bounds, getOverlayBounds(overlay)))
+                    .filter((overlay) => matchesBounds(bounds, getOverlayBounds(overlay)))
                     .map((overlay) => String(overlay?.id || ""))
                 : EMPTY_ARRAY;
 
@@ -4431,6 +4746,34 @@ export default function PerspectiveViziCanvasBridge(props) {
             return String(error?.message || "Invalid JSON.");
         }
     }, [selectedOverlayEmbeddedView, selectedOverlayIsEmbeddedView]);
+    const selectedOverlayIsBin = useMemo(
+        () => String(selectedOverlay?.eType || "").trim().toLowerCase().startsWith("bin"),
+        [selectedOverlay]
+    );
+    const ignitionTagOptionsForOverlay = useMemo(
+        () => selectedOverlayIsBin
+            ? ignitionTagOptions.filter((opt) => {
+                const objectType = String(opt?.objectType || "").toLowerCase();
+                const typeId = String(opt?.typeId || "").toLowerCase();
+                return objectType.includes("bin") || typeId.includes("bin");
+            })
+            : ignitionTagOptions,
+        [ignitionTagOptions, selectedOverlayIsBin]
+    );
+    const quickTagPickerOverlayIsBin = useMemo(
+        () => String(quickTagPickerOverlay?.eType || "").trim().toLowerCase().startsWith("bin"),
+        [quickTagPickerOverlay]
+    );
+    const ignitionTagOptionsForQuickPicker = useMemo(
+        () => quickTagPickerOverlayIsBin
+            ? ignitionTagOptions.filter((opt) => {
+                const objectType = String(opt?.objectType || "").toLowerCase();
+                const typeId = String(opt?.typeId || "").toLowerCase();
+                return objectType.includes("bin") || typeId.includes("bin");
+            })
+            : ignitionTagOptions,
+        [ignitionTagOptions, quickTagPickerOverlayIsBin]
+    );
     const propertyTargetBounds = selectedOverlayBounds || selectedShapeBounds || selectedBBox;
 
     const floatingPropertyPanelStyle = useMemo(() => {
@@ -4480,7 +4823,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             maxHeight: panelHeight,
             overflow: "hidden",
             display: "grid",
-            gridTemplateRows: "auto minmax(0, 1fr)",
+            gridTemplateRows: "auto minmax(0, 1fr) auto",
             gap: 12,
             padding: 14,
             borderRadius: 18,
@@ -4517,6 +4860,85 @@ export default function PerspectiveViziCanvasBridge(props) {
             maxHeight: panelHeight
         };
     }, [floatingPropertyPanelStyle, rootSize]);
+
+    const quickTagPickerStyle = useMemo(() => {
+        if (!editorVisible || !quickTagPickerOverlay) {
+            return null;
+        }
+        const rootRect = rootRef.current?.getBoundingClientRect?.();
+        if (!rootRect) {
+            return null;
+        }
+
+        const viewportWidth = typeof window !== "undefined" ? window.innerWidth : Number(rootRect.width || 0);
+        const viewportHeight = typeof window !== "undefined" ? window.innerHeight : Number(rootRect.height || 0);
+        const rootLeft = Number(rootRect.left || 0);
+        const rootTop = Number(rootRect.top || 0);
+        const rootRight = rootLeft + Number(rootRect.width || 0);
+        const rootBottom = rootTop + Number(rootRect.height || 0);
+        const width = Math.min(QUICK_TAG_PANEL_WIDTH, Math.max(280, rootRight - rootLeft - 24));
+        const maxHeight = Math.min(
+            QUICK_TAG_PANEL_HEIGHT,
+            Math.max(112, rootBottom - rootTop - 24)
+        );
+        const preferredLeft = Number(quickTagPickerState?.clientX || 0) + 8;
+        const preferredTop = Number(quickTagPickerState?.clientY || 0) + 8;
+        const left = clamp(
+            preferredLeft,
+            rootLeft + 12,
+            Math.max(rootLeft + 12, Math.min(rootRight - width - 12, viewportWidth - width - 12))
+        );
+        const top = clamp(
+            preferredTop,
+            rootTop + 12,
+            Math.max(rootTop + 12, Math.min(rootBottom - maxHeight - 12, viewportHeight - maxHeight - 12))
+        );
+
+        return {
+            position: "fixed",
+            left,
+            top,
+            zIndex: 90,
+            width,
+            maxWidth: Math.max(220, viewportWidth - left - 12),
+            minHeight: 100,
+            maxHeight,
+            overflow: "visible",
+            display: "grid",
+            gap: 10,
+            padding: 12,
+            borderRadius: 16,
+            border: "1px solid rgba(51, 65, 85, 0.95)",
+            background: "linear-gradient(180deg, rgba(2, 6, 23, 0.96) 0%, rgba(15, 23, 42, 0.94) 100%)",
+            boxShadow: "0 18px 44px rgba(2, 6, 23, 0.34)"
+        };
+    }, [editorVisible, quickTagPickerOverlay, quickTagPickerState, rootSize]);
+
+    useEffect(() => {
+        if (!quickTagPickerOverlay) {
+            return undefined;
+        }
+        const handlePointerDown = (event) => {
+            const target = event?.target;
+            const popupNode = quickTagPickerRef.current;
+            if (popupNode?.contains?.(target) || target?.closest?.("[data-vizi-dropdown-menu='1']")) {
+                return;
+            }
+            closeQuickTagPicker();
+        };
+        const handleEscape = (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeQuickTagPicker();
+            }
+        };
+        window.addEventListener("pointerdown", handlePointerDown, true);
+        window.addEventListener("keydown", handleEscape, true);
+        return () => {
+            window.removeEventListener("pointerdown", handlePointerDown, true);
+            window.removeEventListener("keydown", handleEscape, true);
+        };
+    }, [closeQuickTagPicker, quickTagPickerOverlay]);
 
     const overlaySelectionUI = useCallback((overlay) => {
         const bounds = getOverlayBounds(overlay);
@@ -4731,6 +5153,18 @@ export default function PerspectiveViziCanvasBridge(props) {
         )), { persist: true });
     }, [selectedOverlay, updateSvgOverlays]);
 
+    const updateOverlayById = useCallback((overlayId, updater) => {
+        const targetId = String(overlayId || "").trim();
+        if (!targetId || typeof updater !== "function") {
+            return;
+        }
+        updateSvgOverlays((previous) => previous.map((overlay) => (
+            String(overlay?.id || "").trim() === targetId
+                ? updater(overlay)
+                : overlay
+        )), { persist: true });
+    }, [updateSvgOverlays]);
+
     const commitSelectedShapeText = useCallback((field, rawValue) => {
         updateSelectedShape((shape) => ({
             ...shape,
@@ -4867,6 +5301,24 @@ export default function PerspectiveViziCanvasBridge(props) {
             return applyOverlayIgnitionFillBinding(overlay, rawValue);
         });
     }, [updateSelectedOverlay]);
+
+    const commitOverlayTagPathById = useCallback((overlayId, rawValue) => {
+        updateOverlayById(overlayId, (overlay) => {
+            if (overlay?.widget) {
+                const nextTagPath = String(rawValue ?? "").trim();
+                const currentBindings = isPlainObject(overlay?.bindings) ? overlay.bindings : {};
+                const { fill: _removedFillBinding, ...restBindings } = currentBindings;
+                return withOverlayBindings(
+                    {
+                        ...overlay,
+                        tagPath: nextTagPath
+                    },
+                    restBindings
+                );
+            }
+            return applyOverlayIgnitionFillBinding(overlay, rawValue);
+        });
+    }, [updateOverlayById]);
 
     const commitSelectedOverlayFill = useCallback((rawValue) => {
         updateSelectedOverlay((overlay) => applyOverlayFillFallbackColor(overlay, rawValue));
@@ -5261,11 +5713,37 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [clearSelection, editorVisible]);
 
     return (
-        <div ref={rootRef} data-vizi-canvas-root="1" style={{ position: "relative", width: "100%", height: "100%" }}>
+        <div
+            ref={rootRef}
+            data-vizi-canvas-root="1"
+            style={{
+                position: "relative",
+                width: "100%",
+                height: "100%",
+                minWidth: 0,
+                minHeight: 0,
+                ...(browserRuntimeMode ? {
+                    display: "flex",
+                    alignItems: "flex-start",
+                    justifyContent: "flex-start",
+                    overflow: "hidden"
+                } : {})
+            }}
+        >
+            <div style={browserRuntimeMode ? {
+                width: viewBox.width,
+                height: viewBox.height,
+                zoom: liveCanvasZoom,
+                flexShrink: 0,
+                position: "relative"
+            } : {
+                position: "absolute",
+                inset: 0
+            }}>
             <CanvasSvg
                 svgRef={svgRef}
-                zoom={zoom}
-                pan={isPlainObject(pan) ? pan : { x: 0, y: 0 }}
+                zoom={isLiveMode ? 1 : zoom}
+                pan={isLiveMode ? { x: 0, y: 0 } : (isPlainObject(pan) ? pan : { x: 0, y: 0 })}
                 onWheel={NOOP}
                 marquee={editorVisible ? marquee : null}
                 tool={editorVisible ? tool : "select"}
@@ -5292,6 +5770,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 onHandleDoubleClick={editorVisible ? handlePolylineHandleDoubleClick : NOOP}
                 onHandleContextMenu={NOOP}
                 onSegmentMouseDown={editorVisible ? handleSegmentMouseDown : NOOP}
+                onOverlayContextMenu={editorVisible ? handleOverlayContextMenu : NOOP}
                 vbW={viewBox.width}
                 vbH={viewBox.height}
                 svgOverlays={svgOverlays}
@@ -5346,13 +5825,14 @@ export default function PerspectiveViziCanvasBridge(props) {
                 liveClickable={liveClickable}
                 isLiveMode={isLiveMode}
                 perspectiveClientStore={perspectiveClientStore}
-                preserveAspectRatioMode="xMinYMin slice"
+                preserveAspectRatioMode="xMinYMin meet"
                 forceStaticVisuals={!editorVisible}
                 viewportTopOffset={0}
                 viewportLeftOffset={0}
                 viewportScrollTarget={null}
                 onViewportScroll={NOOP}
             />
+            </div>
 
             {editorVisible ? (
                 toolbarCollapsed ? (
@@ -5603,6 +6083,89 @@ export default function PerspectiveViziCanvasBridge(props) {
                 )
             ) : null}
 
+            {editorVisible && quickTagPickerOverlay && quickTagPickerStyle ? (
+                <div
+                    ref={quickTagPickerRef}
+                    data-vizi-quick-tag-picker="1"
+                    style={quickTagPickerStyle}
+                    onPointerDown={stopInteractivePropagation}
+                    onMouseDown={stopInteractivePropagation}
+                    onMouseUp={stopInteractivePropagation}
+                    onClick={stopInteractivePropagation}
+                    onDoubleClick={stopInteractivePropagation}
+                    onKeyDown={stopInteractivePropagation}
+                    onKeyUp={stopInteractivePropagation}
+                    onContextMenu={stopInteractivePropagation}
+                >
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 12
+                        }}
+                    >
+                        <div style={{ minWidth: 0, display: "grid", gap: 2 }}>
+                            <div
+                                style={{
+                                    fontSize: 11,
+                                    fontWeight: 800,
+                                    letterSpacing: "0.12em",
+                                    textTransform: "uppercase",
+                                    color: "rgba(226, 232, 240, 0.76)"
+                                }}
+                            >
+                                Set Tag
+                            </div>
+                            <div
+                                style={{
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    color: "#f8fafc",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap"
+                                }}
+                            >
+                                {quickTagPickerOverlay.name || quickTagPickerOverlay.id || "SVG Overlay"}
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={closeQuickTagPicker}
+                            style={{
+                                border: "1px solid rgba(71, 85, 105, 0.9)",
+                                background: "rgba(15, 23, 42, 0.88)",
+                                color: "#f8fafc",
+                                width: 28,
+                                height: 28,
+                                borderRadius: 999,
+                                fontSize: 14,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                flex: "0 0 auto"
+                            }}
+                        >
+                            x
+                        </button>
+                    </div>
+                    <PropertyTagPathField
+                        autoOpenToken={quickTagPickerAutoOpenToken}
+                        label="Tag Path"
+                        value={quickTagPickerOverlay.tagPath || ""}
+                        options={ignitionTagOptionsForQuickPicker}
+                        loaded={ignitionTagsLoaded}
+                        loading={ignitionTagsLoading}
+                        error={ignitionTagsError}
+                        onOpen={loadIgnitionTags}
+                        onCommit={(value) => {
+                            commitOverlayTagPathById(quickTagPickerOverlay.id, value);
+                            closeQuickTagPicker();
+                        }}
+                    />
+                </div>
+            ) : null}
+
             {editorVisible && propertiesVisible && floatingPropertyPanelStyle ? (
                 <div
                     data-vizi-properties-panel="1"
@@ -5616,6 +6179,13 @@ export default function PerspectiveViziCanvasBridge(props) {
                     onKeyUp={stopInteractivePropagation}
                     onContextMenu={stopInteractivePropagation}
                 >
+                <style>{`
+                    .vizi-scroll::-webkit-scrollbar { width: 4px; }
+                    .vizi-scroll::-webkit-scrollbar-track { background: transparent; }
+                    .vizi-scroll::-webkit-scrollbar-thumb { background: rgba(71, 85, 105, 0.4); border-radius: 999px; }
+                    .vizi-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.72); }
+                    .vizi-scroll { scrollbar-width: thin; scrollbar-color: rgba(71, 85, 105, 0.4) transparent; }
+                `}</style>
                     <div
                         style={{
                             display: "flex",
@@ -5654,6 +6224,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                         </button>
                     </div>
                     <div
+                        className="vizi-scroll"
                         style={{
                             minHeight: 0,
                             overflowY: "auto",
@@ -5764,9 +6335,11 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     <PropertyTagPathField
                                         label="Tag Path"
                                         value={selectedOverlay.tagPath || ""}
-                                        options={ignitionTagOptions}
+                                        options={ignitionTagOptionsForOverlay}
+                                        loaded={ignitionTagsLoaded}
                                         loading={ignitionTagsLoading}
                                         error={ignitionTagsError}
+                                        onOpen={loadIgnitionTags}
                                         onCommit={(value) => {
                                             commitSelectedOverlayTagPath(value);
                                         }}
@@ -5910,8 +6483,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     label="Tag Path"
                                     value={selectedShape.tagPath || ""}
                                     options={ignitionTagOptions}
+                                    loaded={ignitionTagsLoaded}
                                     loading={ignitionTagsLoading}
                                     error={ignitionTagsError}
+                                    onOpen={loadIgnitionTags}
                                     onCommit={(value) => {
                                         commitSelectedShapeText("tagPath", value);
                                     }}
@@ -6118,6 +6693,50 @@ export default function PerspectiveViziCanvasBridge(props) {
                         )}
                     </PropertySection>
                     </div>
+                    <div
+                        style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            gap: 8,
+                            paddingTop: 4,
+                            borderTop: "1px solid rgba(71, 85, 105, 0.5)"
+                        }}
+                    >
+                        <button
+                            type="button"
+                            onClick={closePropertiesPanel}
+                            style={{
+                                background: "rgba(30, 58, 138, 0.72)",
+                                border: "1px solid rgba(59, 130, 246, 0.55)",
+                                color: "#bfdbfe",
+                                height: 34,
+                                borderRadius: 10,
+                                fontSize: 12,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                letterSpacing: "0.04em"
+                            }}
+                        >
+                            Save
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { deleteSelected(); closePropertiesPanel(); }}
+                            style={{
+                                background: "rgba(127, 29, 29, 0.6)",
+                                border: "1px solid rgba(239, 68, 68, 0.5)",
+                                color: "#fca5a5",
+                                height: 34,
+                                borderRadius: 10,
+                                fontSize: 12,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                letterSpacing: "0.04em"
+                            }}
+                        >
+                            Delete
+                        </button>
+                    </div>
                 </div>
             ) : null}
 
@@ -6240,6 +6859,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                         </button>
                     </div>
                     <div
+                        className="vizi-scroll"
                         style={{
                             overflowY: "auto",
                             padding: 18,
