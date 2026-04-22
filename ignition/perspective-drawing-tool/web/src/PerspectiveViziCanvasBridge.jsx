@@ -38,7 +38,13 @@ const MODULE_OPC_WRITE_ROUTE_CANDIDATES = [
     `/data/${MODULE_ID}/opc-write`,
     `/main/data/${MODULE_ID}/opc-write`
 ];
-const SVG_LIBRARY_MANIFEST_URL = `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`;
+const SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/svg-library-catalog`,
+    `/main/data/${MODULE_URL_ALIAS}/svg-library-catalog`,
+    `/data/${MODULE_ID}/svg-library-catalog`,
+    `/main/data/${MODULE_ID}/svg-library-catalog`,
+    `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`
+];
 const SVG_RAW_CACHE_MAX = 80;
 const DEFAULT_FILL = "#CCCCCC";
 const DEFAULT_STROKE = "#808080";
@@ -957,13 +963,42 @@ function normalizeSvgCatalogEntries(value) {
         .map((entry) => {
             const key = String(entry?.key || "").trim();
             const name = String(entry?.name || key.split("/").pop() || "").trim();
-            const url = String(entry?.url || "").trim();
-            if (!key || !name || !url) {
+            const urls = [];
+            coerceArray(entry?.urlCandidates).forEach((candidate) => {
+                const next = String(candidate || "").trim();
+                if (next && !urls.includes(next)) {
+                    urls.push(next);
+                }
+            });
+            const directUrl = String(entry?.url || "").trim();
+            if (directUrl && !urls.includes(directUrl)) {
+                urls.push(directUrl);
+            }
+            if (!key || !name || !urls.length) {
                 return null;
             }
-            return { key, name, url };
+            return {
+                key,
+                name,
+                source: String(entry?.source || "").trim(),
+                url: urls.length === 1 ? urls[0] : urls
+            };
         })
         .filter(Boolean);
+}
+
+function normalizeSvgCatalogPayload(value) {
+    const payload = value && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : { entries: value };
+
+    return {
+        entries: normalizeSvgCatalogEntries(payload?.entries),
+        externalDirectory: String(payload?.externalDirectory || "").trim(),
+        externalCount: Math.max(0, Number(payload?.externalCount) || 0),
+        builtInCount: Math.max(0, Number(payload?.builtInCount) || 0),
+        error: String(payload?.error || "").trim()
+    };
 }
 
 function writeComponentProp(props, path, value) {
@@ -2489,6 +2524,9 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [overlayResize, setOverlayResize] = useState(null);
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY);
     const [svgLibraryError, setSvgLibraryError] = useState("");
+    const [svgLibraryExternalDirectory, setSvgLibraryExternalDirectory] = useState("");
+    const [svgLibraryExternalCount, setSvgLibraryExternalCount] = useState(0);
+    const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [ignitionTagOptions, setIgnitionTagOptions] = useState(EMPTY_ARRAY);
     const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => new Map());
     const [ignitionTagsError, setIgnitionTagsError] = useState("");
@@ -2509,6 +2547,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
+    const svgCatalogRequestIdRef = useRef(0);
     const runtimeDocumentViewBounds = useMemo(
         () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
         [
@@ -2943,40 +2982,72 @@ export default function PerspectiveViziCanvasBridge(props) {
         applyHistorySnapshot(next);
     }, [applyHistorySnapshot]);
 
+    const loadSvgCatalog = useCallback(async () => {
+        const requestId = svgCatalogRequestIdRef.current + 1;
+        svgCatalogRequestIdRef.current = requestId;
+        setSvgLibraryRefreshing(true);
+        setSvgLibraryError("");
+        let lastError = "Failed to load SVG catalog.";
+
+        for (const routePath of SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES) {
+            try {
+                const requestUrl = `${routePath}${routePath.includes("?") ? "&" : "?"}t=${Date.now()}`;
+                const response = await fetch(requestUrl, {
+                    cache: "no-store",
+                    credentials: "same-origin"
+                });
+                if (!response.ok) {
+                    lastError = `Failed to load SVG catalog (${response.status}).`;
+                    continue;
+                }
+
+                const payload = normalizeSvgCatalogPayload(await response.json());
+                if (svgCatalogRequestIdRef.current !== requestId) {
+                    return;
+                }
+
+                svgRawCacheRef.current.clear();
+                setSvgCatalogFiles(payload.entries);
+                setSvgLibraryExternalDirectory(payload.externalDirectory);
+                setSvgLibraryExternalCount(payload.externalCount);
+                setSvgLibraryError(payload.error);
+                setSvgLibraryRefreshing(false);
+                return;
+            } catch (error) {
+                lastError = String(error?.message || "Failed to load SVG catalog.");
+            }
+        }
+
+        if (svgCatalogRequestIdRef.current === requestId) {
+            setSvgCatalogFiles(EMPTY_ARRAY);
+            setSvgLibraryExternalDirectory("");
+            setSvgLibraryExternalCount(0);
+            setSvgLibraryError(lastError);
+            setSvgLibraryRefreshing(false);
+        }
+    }, []);
+
     useEffect(() => {
         if (!svgLibraryEnabled) {
             setSvgCatalogFiles(EMPTY_ARRAY);
             setSvgLibraryError("");
+            setSvgLibraryExternalDirectory("");
+            setSvgLibraryExternalCount(0);
+            setSvgLibraryRefreshing(false);
             setImportOpen(false);
             return undefined;
         }
 
-        let cancelled = false;
-        setSvgLibraryError("");
+        loadSvgCatalog();
+        return undefined;
+    }, [loadSvgCatalog, svgLibraryEnabled]);
 
-        fetch(SVG_LIBRARY_MANIFEST_URL, { cache: "no-store" })
-            .then((response) => {
-                if (!response.ok) {
-                    throw new Error(`Failed to load SVG catalog (${response.status}).`);
-                }
-                return response.json();
-            })
-            .then((payload) => {
-                if (!cancelled) {
-                    setSvgCatalogFiles(normalizeSvgCatalogEntries(payload));
-                }
-            })
-            .catch((error) => {
-                if (!cancelled) {
-                    setSvgCatalogFiles(EMPTY_ARRAY);
-                    setSvgLibraryError(String(error?.message || "Failed to load SVG catalog."));
-                }
-            });
-
-        return () => {
-            cancelled = true;
-        };
-    }, [svgLibraryEnabled]);
+    useEffect(() => {
+        if (!svgLibraryEnabled || !importOpen) {
+            return;
+        }
+        loadSvgCatalog();
+    }, [importOpen, loadSvgCatalog, svgLibraryEnabled]);
 
     const svgLibraryMap = useMemo(() => {
         const out = {};
@@ -2996,45 +3067,60 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (value && typeof value === "object" && typeof value.default === "string") {
             value = value.default;
         }
-        if (typeof value !== "string") {
-            return null;
-        }
         if (isSvgMarkup(value)) {
             return value;
         }
 
-        const url = value.trim();
-        if (!url) {
+        const urlCandidates = (Array.isArray(value) ? value : [value])
+            .map((candidate) => String(candidate || "").trim())
+            .filter(Boolean);
+        if (!urlCandidates.length) {
             return null;
         }
 
         const cache = svgRawCacheRef.current;
-        if (!forceFresh && cache.has(url)) {
-            const cached = cache.get(url);
-            cache.delete(url);
-            cache.set(url, cached);
+        const cacheKey = urlCandidates.join("\n");
+        if (!forceFresh && cache.has(cacheKey)) {
+            const cached = cache.get(cacheKey);
+            cache.delete(cacheKey);
+            cache.set(cacheKey, cached);
             return cached;
         }
 
-        const requestUrl = forceFresh
-            ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`
-            : url;
-        const response = await fetch(requestUrl, forceFresh ? { cache: "no-store" } : undefined);
-        if (!response.ok) {
-            throw new Error(`Failed to load SVG (${response.status}).`);
-        }
-        const raw = await response.text();
+        let lastError = "Failed to load SVG.";
+        for (const url of urlCandidates) {
+            try {
+                const requestUrl = forceFresh
+                    ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`
+                    : url;
+                const response = await fetch(
+                    requestUrl,
+                    forceFresh
+                        ? { cache: "no-store", credentials: "same-origin" }
+                        : { credentials: "same-origin" }
+                );
+                if (!response.ok) {
+                    lastError = `Failed to load SVG (${response.status}).`;
+                    continue;
+                }
+                const raw = await response.text();
 
-        if (cache.has(url)) {
-            cache.delete(url);
-        }
-        cache.set(url, raw);
-        while (cache.size > SVG_RAW_CACHE_MAX) {
-            const oldest = cache.keys().next().value;
-            cache.delete(oldest);
+                if (cache.has(cacheKey)) {
+                    cache.delete(cacheKey);
+                }
+                cache.set(cacheKey, raw);
+                while (cache.size > SVG_RAW_CACHE_MAX) {
+                    const oldest = cache.keys().next().value;
+                    cache.delete(oldest);
+                }
+
+                return raw;
+            } catch (error) {
+                lastError = String(error?.message || "Failed to load SVG.");
+            }
         }
 
-        return raw;
+        throw new Error(lastError);
     }, []);
 
     const readSvgRawByKey = useCallback(
@@ -3048,6 +3134,15 @@ export default function PerspectiveViziCanvasBridge(props) {
             .sort((left, right) => left.name.localeCompare(right.name)),
         [svgCatalogFiles]
     );
+    const handleRefreshSvgLibrary = useCallback(() => {
+        loadSvgCatalog();
+    }, [loadSvgCatalog]);
+    const svgLibraryHelpText = svgLibraryExternalDirectory
+        ? `Drop .svg files into this folder and click Refresh:\n${svgLibraryExternalDirectory}`
+        : "External SVG folder path will appear here when the catalog loads.";
+    const svgLibrarySummaryText = svgLibraryExternalCount > 0
+        ? `${svgCatalogFiles.length} templates loaded, ${svgLibraryExternalCount} external`
+        : `${svgCatalogFiles.length} templates loaded`;
 
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
@@ -3133,25 +3228,71 @@ export default function PerspectiveViziCanvasBridge(props) {
         return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
 
+    // Map trunk tag keys ("trunk:<id>") to the bin tagPaths connected via drop lines.
+    // Drop lines have tagPath = binTagPath and an endpoint near the trunk.
+    const trunkBinMappings = useMemo(() => {
+        const map = new Map();
+        const allShapes = shapes;
+        const trunkShapes = allShapes.filter((s) =>
+            s?.type === "polyline" && String(s?.tagPath || "").startsWith("trunk:")
+        );
+        const dropLines = allShapes.filter((s) =>
+            s?.type === "polyline" &&
+            String(s?.tagPath || "") &&
+            !String(s?.tagPath || "").startsWith("trunk:")
+        );
+        trunkShapes.forEach((trunk) => {
+            const trunkPts = Array.isArray(trunk.points) ? trunk.points : [];
+            if (trunkPts.length < 2) return;
+            const trunkY = trunkPts.reduce((sum, p) => sum + (Number(p?.y) || 0), 0) / trunkPts.length;
+            const trunkMinX = Math.min(...trunkPts.map((p) => Number(p?.x) || 0));
+            const trunkMaxX = Math.max(...trunkPts.map((p) => Number(p?.x) || 0));
+            const connectedBinPaths = dropLines
+                .map((dl) => {
+                    const pts = Array.isArray(dl.points) ? dl.points : [];
+                    const endPt = pts[pts.length - 1];
+                    if (!endPt) return null;
+                    const near = Math.abs(Number(endPt.y) - trunkY) < 30 &&
+                        Number(endPt.x) >= trunkMinX - 30 &&
+                        Number(endPt.x) <= trunkMaxX + 30;
+                    return near ? String(dl.tagPath || "").trim() : null;
+                })
+                .filter(Boolean);
+            if (connectedBinPaths.length > 0) {
+                map.set(String(trunk.tagPath), connectedBinPaths);
+            }
+        });
+        return map;
+    }, [shapes]);
+
+    const isBinFlowing = useCallback((basePath) => {
+        const lockDischarging = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging");
+        const currentLevel = Number(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "CurrentLevel"));
+        const lockedOut = lockDischarging === true || lockDischarging === 1
+            || String(lockDischarging ?? "").toLowerCase() === "true"
+            || String(lockDischarging ?? "") === "1";
+        return !lockedOut && Number.isFinite(currentLevel) && currentLevel > 0;
+    }, [ignitionTagValuesByPath]);
+
     const binTagStateColorsByPath = useMemo(() => {
         const out = new Map();
         coerceArray(svgOverlays).forEach((overlay) => {
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             if (!basePath || !isBinOverlay(overlay)) return;
-            const lockDischarging = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging");
-            const currentLevel = Number(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "CurrentLevel"));
-            const lockedOut = lockDischarging === true || lockDischarging === 1
-                || String(lockDischarging ?? "").toLowerCase() === "true"
-                || String(lockDischarging ?? "") === "1";
-            const isFlowing = lockDischarging !== null && lockDischarging !== undefined
-                && !lockedOut && Number.isFinite(currentLevel) && currentLevel > 0;
-            if (isFlowing) {
+            if (isBinFlowing(basePath)) {
                 out.set(basePath, "#22c55e");
                 out.set(basePath.toLowerCase(), "#22c55e");
             }
         });
+        // Color trunk tag keys when any connected bin is flowing
+        trunkBinMappings.forEach((binPaths, trunkKey) => {
+            if (binPaths.some((p) => isBinFlowing(p))) {
+                out.set(trunkKey, "#22c55e");
+                out.set(trunkKey.toLowerCase(), "#22c55e");
+            }
+        });
         return out;
-    }, [svgOverlays, ignitionTagValuesByPath]);
+    }, [svgOverlays, ignitionTagValuesByPath, trunkBinMappings, isBinFlowing]);
 
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
@@ -3592,7 +3733,6 @@ export default function PerspectiveViziCanvasBridge(props) {
                 strokeWidth: 3,
                 fill: "none",
                 lineStyle: "solid",
-                arrowEnd: "out",
                 tagPath: ""
             }
         ], { persist: false });
@@ -3661,13 +3801,22 @@ export default function PerspectiveViziCanvasBridge(props) {
                 strokeWidth: 3,
                 fill: "none",
                 lineStyle: "solid",
-                arrowEnd: "out",
                 tagPath: String(overlay?.tagPath || "").trim()
             };
         }).filter(Boolean);
 
         if (!newLines.length) return;
-        updateShapes((previous) => [...previous, ...newLines], { persist: true });
+        const trunkTagKey = `trunk:${trunkShape.id}`;
+        updateShapes((previous) => [
+            ...previous.map((s) => {
+                if (String(s?.id || "") === String(trunkShape.id || "")) {
+                    const { arrowEnd: _a, ...rest } = s;
+                    return { ...rest, tagPath: trunkTagKey };
+                }
+                return s;
+            }),
+            ...newLines,
+        ], { persist: true });
     }, [overlaysRef, selectedIds, selectedOverlayIds, shapesRef, updateShapes]);
 
     const startOrAppendPolylineAt = useCallback((point, event) => {
@@ -3693,7 +3842,6 @@ export default function PerspectiveViziCanvasBridge(props) {
                 fill: "none",
                 lineStyle: "solid",
                 tagPath: "",
-                ...(tool === "trunkconn" ? { arrowEnd: "out" } : {})
             }
         ], { persist: false });
         setSelectedIds([id]);
@@ -7182,6 +7330,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                         svgLibrary={svgLibraryMap}
                         loadSvgRaw={readSvgRawByKey}
                         onPickSvg={onPickSvg}
+                        helpText={svgLibraryHelpText}
+                        librarySummary={svgLibrarySummaryText}
+                        onRefresh={handleRefreshSvgLibrary}
+                        refreshDisabled={svgLibraryRefreshing}
                         docked
                         absoluteDocked
                         appearance="ignition-drawer"

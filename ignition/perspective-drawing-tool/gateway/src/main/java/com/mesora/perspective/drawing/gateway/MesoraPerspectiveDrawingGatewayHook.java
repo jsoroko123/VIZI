@@ -15,6 +15,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
+import jakarta.servlet.http.HttpServletResponse;
+
 import com.inductiveautomation.ignition.common.browsing.BrowseFilter;
 import com.inductiveautomation.ignition.common.browsing.Results;
 import com.inductiveautomation.ignition.common.gson.Gson;
@@ -49,13 +51,16 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
     private static final int BROWSE_PAGE_GUARD = 100;
     private static final String SYSTEM_PROVIDER_NAME = "System";
     private static final String DEFAULT_OPC_SERVER_NAME = "Ignition OPC UA Server";
+    private static final String EMPTY_RESPONSE = "";
 
     private GatewayContext gatewayContext;
     private ComponentRegistry componentRegistry;
+    private SvgLibraryGatewayService svgLibraryGatewayService;
 
     @Override
     public void setup(GatewayContext context) {
         this.gatewayContext = context;
+        this.svgLibraryGatewayService = new SvgLibraryGatewayService(context, logger);
         logger.info("Setting up Mesora Perspective Drawing module.");
     }
 
@@ -129,11 +134,68 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
             .accessControl(AccessControlStrategy.OPEN_ROUTE)
             .nocache()
             .mount();
+
+        routes.newRoute("/svg-library-catalog")
+            .handler((request, response) -> svgLibraryCatalog())
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
+        routes.newRoute("/svg-library-file")
+            .handler((request, response) -> readExternalSvg(
+                request == null ? null : request.getParameter("path"),
+                response
+            ))
+            .renderer((value) -> value == null ? EMPTY_RESPONSE : String.valueOf(value))
+            .type(RouteGroup.TYPE_IMG_SVG_XML)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
     }
 
     @Override
     public boolean isFreeModule() {
         return true;
+    }
+
+    private SvgLibraryGatewayService.SvgLibraryCatalogResponse svgLibraryCatalog() {
+        if (svgLibraryGatewayService == null) {
+            return new SvgLibraryGatewayService.SvgLibraryCatalogResponse(
+                List.of(),
+                "",
+                0,
+                0,
+                "SVG library service was unavailable."
+            );
+        }
+        return svgLibraryGatewayService.getCatalog();
+    }
+
+    private String readExternalSvg(String rawRelativePath, HttpServletResponse response) {
+        if (svgLibraryGatewayService == null) {
+            response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+            return EMPTY_RESPONSE;
+        }
+
+        try {
+            String svg = svgLibraryGatewayService.readExternalSvg(rawRelativePath);
+            if (svg == null || svg.isBlank()) {
+                response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+                return EMPTY_RESPONSE;
+            }
+            response.setCharacterEncoding("UTF-8");
+            return svg;
+        } catch (Exception e) {
+            logger.warnf(
+                "Failed to read external SVG '%s': %s",
+                String.valueOf(rawRelativePath),
+                String.valueOf(e.getMessage())
+            );
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            return EMPTY_RESPONSE;
+        }
     }
 
     private IgnitionTagBrowseResponse browseIgnitionTags() {

@@ -25018,22 +25018,58 @@ var MesoraDrawingToolBundle = (() => {
       });
       return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
+    const trunkBinMappings = useMemo(() => {
+      const map2 = /* @__PURE__ */ new Map();
+      const allShapes = shapes;
+      const trunkShapes = allShapes.filter(
+        (s) => (s == null ? void 0 : s.type) === "polyline" && String((s == null ? void 0 : s.tagPath) || "").startsWith("trunk:")
+      );
+      const dropLines = allShapes.filter(
+        (s) => (s == null ? void 0 : s.type) === "polyline" && String((s == null ? void 0 : s.tagPath) || "") && !String((s == null ? void 0 : s.tagPath) || "").startsWith("trunk:")
+      );
+      trunkShapes.forEach((trunk) => {
+        const trunkPts = Array.isArray(trunk.points) ? trunk.points : [];
+        if (trunkPts.length < 2) return;
+        const trunkY = trunkPts.reduce((sum, p) => sum + (Number(p == null ? void 0 : p.y) || 0), 0) / trunkPts.length;
+        const trunkMinX = Math.min(...trunkPts.map((p) => Number(p == null ? void 0 : p.x) || 0));
+        const trunkMaxX = Math.max(...trunkPts.map((p) => Number(p == null ? void 0 : p.x) || 0));
+        const connectedBinPaths = dropLines.map((dl) => {
+          const pts = Array.isArray(dl.points) ? dl.points : [];
+          const endPt = pts[pts.length - 1];
+          if (!endPt) return null;
+          const near = Math.abs(Number(endPt.y) - trunkY) < 30 && Number(endPt.x) >= trunkMinX - 30 && Number(endPt.x) <= trunkMaxX + 30;
+          return near ? String(dl.tagPath || "").trim() : null;
+        }).filter(Boolean);
+        if (connectedBinPaths.length > 0) {
+          map2.set(String(trunk.tagPath), connectedBinPaths);
+        }
+      });
+      return map2;
+    }, [shapes]);
+    const isBinFlowing = useCallback((basePath) => {
+      const lockDischarging = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging");
+      const currentLevel = Number(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "CurrentLevel"));
+      const lockedOut = lockDischarging === true || lockDischarging === 1 || String(lockDischarging != null ? lockDischarging : "").toLowerCase() === "true" || String(lockDischarging != null ? lockDischarging : "") === "1";
+      return lockDischarging !== null && lockDischarging !== void 0 && !lockedOut && Number.isFinite(currentLevel) && currentLevel > 0;
+    }, [ignitionTagValuesByPath]);
     const binTagStateColorsByPath = useMemo(() => {
       const out = /* @__PURE__ */ new Map();
       coerceArray(svgOverlays).forEach((overlay) => {
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!basePath || !isBinOverlay(overlay)) return;
-        const lockDischarging = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging");
-        const currentLevel = Number(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "CurrentLevel"));
-        const lockedOut = lockDischarging === true || lockDischarging === 1 || String(lockDischarging != null ? lockDischarging : "").toLowerCase() === "true" || String(lockDischarging != null ? lockDischarging : "") === "1";
-        const isFlowing = lockDischarging !== null && lockDischarging !== void 0 && !lockedOut && Number.isFinite(currentLevel) && currentLevel > 0;
-        if (isFlowing) {
+        if (isBinFlowing(basePath)) {
           out.set(basePath, "#22c55e");
           out.set(basePath.toLowerCase(), "#22c55e");
         }
       });
+      trunkBinMappings.forEach((binPaths, trunkKey) => {
+        if (binPaths.some((p) => isBinFlowing(p))) {
+          out.set(trunkKey, "#22c55e");
+          out.set(trunkKey.toLowerCase(), "#22c55e");
+        }
+      });
       return out;
-    }, [svgOverlays, ignitionTagValuesByPath]);
+    }, [svgOverlays, ignitionTagValuesByPath, trunkBinMappings, isBinFlowing]);
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
       getModelValue(
@@ -25467,12 +25503,17 @@ var MesoraDrawingToolBundle = (() => {
           strokeWidth: 3,
           fill: "none",
           lineStyle: "solid",
-          arrowEnd: "out",
           tagPath: String((overlay == null ? void 0 : overlay.tagPath) || "").trim()
         };
       }).filter(Boolean);
       if (!newLines.length) return;
-      updateShapes((previous) => [...previous, ...newLines], { persist: true });
+      const trunkTagKey = `trunk:${trunkShape.id}`;
+      updateShapes((previous) => [
+        ...previous.map(
+          (s) => String((s == null ? void 0 : s.id) || "") === String(trunkShape.id || "") ? { ...s, tagPath: trunkTagKey } : s
+        ),
+        ...newLines
+      ], { persist: true });
     }, [overlaysRef, selectedIds, selectedOverlayIds, shapesRef, updateShapes]);
     const startOrAppendPolylineAt = useCallback((point, event) => {
       if ((drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id) {

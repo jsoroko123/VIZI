@@ -1292,6 +1292,10 @@ function resolveLiveVisualState(index, scene) {
     const shapeId = String(shape.id || "");
     const startPoint = shape.points[0];
     polylineColorById[shapeId] = normalizeActiveColor(prepassPolylineColorById[shapeId]);
+    if (!polylineColorById[shapeId]) {
+      const tagPathColor = normalizeActiveColor(tagColorFor(shape?.tagPath));
+      if (tagPathColor) polylineColorById[shapeId] = tagPathColor;
+    }
     if (polylineColorById[shapeId]) return;
     const splitCarry = resolvedPolylineSplitCarryById[shapeId];
     if (!Array.isArray(splitCarry) || !splitCarry.length) return;

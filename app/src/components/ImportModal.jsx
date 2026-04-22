@@ -21,6 +21,10 @@ export default function ImportModal({
   onPickSvg,
   svgLibrary, // ✅ NEW
   loadSvgRaw,
+  helpText = "",
+  librarySummary = "",
+  onRefresh = null,
+  refreshDisabled = false,
   docked = false,
   absoluteDocked = false,
   appearance = "default",
@@ -82,6 +86,12 @@ export default function ImportModal({
     cursor: "pointer",
     lineHeight: 1,
     color: textColor,
+    fontWeight: 700,
+  };
+  const secondaryBtnStyle = {
+    ...closeBtnStyle,
+    minWidth: 74,
+    fontSize: 12,
     fontWeight: 700,
   };
 
@@ -283,14 +293,55 @@ export default function ImportModal({
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: textColor, letterSpacing: "0.01em" }}>Import SVG</div>
-            <button title="Close" onClick={() => setImportOpen(false)} style={closeBtnStyle}>
-              X
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              {typeof onRefresh === "function" ? (
+                <button
+                  type="button"
+                  title="Refresh SVG library"
+                  onClick={onRefresh}
+                  disabled={refreshDisabled}
+                  style={{
+                    ...secondaryBtnStyle,
+                    opacity: refreshDisabled ? 0.72 : 1,
+                    cursor: refreshDisabled ? "default" : "pointer",
+                  }}
+                >
+                  {refreshDisabled ? "Refreshing" : "Refresh"}
+                </button>
+              ) : null}
+              <button title="Close" onClick={() => setImportOpen(false)} style={closeBtnStyle}>
+                X
+              </button>
+            </div>
           </div>
 
           <div style={{ marginTop: 6, color: mutedColor, fontSize: 13, fontWeight: 800 }}>
             SVG Templates
           </div>
+          {librarySummary ? (
+            <div style={{ marginTop: 6, color: mutedColor, fontSize: 11, lineHeight: 1.35 }}>
+              {librarySummary}
+            </div>
+          ) : null}
+          {helpText ? (
+            <div
+              style={{
+                marginTop: 10,
+                border: `1px solid ${borderColor}`,
+                background: softBg,
+                borderRadius: 12,
+                padding: "10px 12px",
+                color: textColor,
+                fontSize: 11,
+                lineHeight: 1.45,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                fontFamily: "Consolas, 'Courier New', monospace",
+              }}
+            >
+              {helpText}
+            </div>
+          ) : null}
 
           <div style={{ marginTop: 10 }}>
             <div style={{ position: "relative" }}>
@@ -344,7 +395,7 @@ export default function ImportModal({
           <div style={{ marginTop: 0, display: "grid", gap: 8, color: mutedColor }}>
             {list.length === 0 ? (
               <div style={{ color: mutedColor, fontSize: 13 }}>
-                No SVGs found. Put files in <b>src/assets/SVG Files</b>.
+                No SVGs found. {helpText ? "Add files to the external folder above and click Refresh." : "Put files in src/assets/SVG Files."}
               </div>
             ) : grouped.length === 0 ? (
               <div style={{ color: mutedColor, fontSize: 13 }}>No matches.</div>
