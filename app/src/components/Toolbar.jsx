@@ -69,6 +69,13 @@ const Icons = {
       <circle cx="19" cy="12" r="2" fill="currentColor" />
     </svg>
   ),
+  trunk: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+      <path d="M12 4v10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M4 14h16" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+      <path d="M19 11l3 3-3 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
   rect: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
       <rect x="5" y="6" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="2" />
@@ -410,6 +417,18 @@ export default function Toolbar({
             }}
           >
             {Icons.poly}
+          </IconButton>
+          <IconButton
+            title="Trunk connector (click start → click end, auto-routes with right angles)"
+            active={tool === "trunkconn"}
+            onClick={() => {
+              setTool("trunkconn");
+              setDrawing?.(null);
+              exitEditMode?.();
+              setSelectedOverlayIds?.([]);
+            }}
+          >
+            {Icons.trunk}
           </IconButton>
           <IconButton
             title="Rectangle"

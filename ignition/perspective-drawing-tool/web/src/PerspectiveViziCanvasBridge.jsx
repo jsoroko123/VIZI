@@ -711,7 +711,7 @@ function readBrowserViewportWidth() {
 
 function resolveBrowserHeightCanvasZoom(
     rootNode,
-    hostWidthFallback,
+    fallbackWidth,
     fallbackHeight,
     viewBoundsWidth,
     viewBoundsHeight,
@@ -725,7 +725,7 @@ function resolveBrowserHeightCanvasZoom(
         : null;
     const rootLeft = Math.max(0, Number(rect?.left || 0));
     const rootTop = Math.max(0, Number(rect?.top || 0));
-    const hostWidth = toPositiveNumber(rect?.width) || toPositiveNumber(hostWidthFallback) || 0;
+    const hostWidth = toPositiveNumber(fallbackWidth) || toPositiveNumber(rect?.width) || 0;
     const hostHeight = toPositiveNumber(fallbackHeight) || toPositiveNumber(rect?.height) || 0;
     const viewportWidth = toPositiveNumber(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
@@ -735,19 +735,11 @@ function resolveBrowserHeightCanvasZoom(
     const availableBrowserHeight = viewportHeight > 0
         ? Math.max(1, viewportHeight - rootTop)
         : 0;
-    const targetWidth = toPositiveNumber(
-        availableBrowserWidth && hostWidth
-            ? Math.min(availableBrowserWidth, hostWidth)
-            : availableBrowserWidth || hostWidth
-    ) || targetViewWidth;
-    const targetHeight = toPositiveNumber(
-        availableBrowserHeight && hostHeight
-            ? Math.min(availableBrowserHeight, hostHeight)
-            : availableBrowserHeight || hostHeight
-    ) || targetViewHeight;
+    const targetWidth = toPositiveNumber(availableBrowserWidth || hostWidth) || targetViewWidth;
+    const targetHeight = toPositiveNumber(availableBrowserHeight || hostHeight) || targetViewHeight;
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
-    return Math.max(0.05, Math.min(8, Math.min(scaleByWidth, scaleByHeight)));
+    return Math.max(0.05, Math.min(8, scaleByHeight));
 }
 
 function getModelValue(props, key, fallback) {
@@ -2281,6 +2273,52 @@ function getOverlayBounds(overlay) {
     };
 }
 
+function expandViewBoundsToFitContent(baseViewBounds, shapes, overlays, padding = 24) {
+    const fallback = {
+        x: Number(baseViewBounds?.x || 0),
+        y: Number(baseViewBounds?.y || 0),
+        width: Math.max(1, Number(baseViewBounds?.width || DEFAULT_CANVAS_WIDTH)),
+        height: Math.max(1, Number(baseViewBounds?.height || DEFAULT_CANVAS_HEIGHT))
+    };
+    const boundsList = [
+        ...coerceArray(shapes).map((shape) => getShapeBounds(shape)),
+        ...coerceArray(overlays).map((overlay) => getOverlayBounds(overlay))
+    ].filter(Boolean);
+
+    if (!boundsList.length) {
+        return fallback;
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    boundsList.forEach((bounds) => {
+        const x = Number(bounds.x || 0);
+        const y = Number(bounds.y || 0);
+        const width = Number(bounds.width || 0);
+        const height = Number(bounds.height || 0);
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + width);
+        maxY = Math.max(maxY, y + height);
+    });
+
+    const extraPadding = Math.max(0, Number(padding || 0));
+    const nextX = Math.min(fallback.x, minX - extraPadding);
+    const nextY = Math.min(fallback.y, minY - extraPadding);
+    const nextRight = Math.max(fallback.x + fallback.width, maxX + extraPadding);
+    const nextBottom = Math.max(fallback.y + fallback.height, maxY + extraPadding);
+
+    return {
+        x: nextX,
+        y: nextY,
+        width: Math.max(1, nextRight - nextX),
+        height: Math.max(1, nextBottom - nextY)
+    };
+}
+
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
@@ -2405,8 +2443,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             : hostSize
     );
     const responsiveViewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, effectiveHostSize));
-    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument, defaultHostSize || hostSize));
-    const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
+    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument));
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
     const externalOverlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
     const externalSelectedIds = getModelValue(props, "selectedIds", EMPTY_ARRAY);
@@ -2472,6 +2509,18 @@ export default function PerspectiveViziCanvasBridge(props) {
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
+    const runtimeDocumentViewBounds = useMemo(
+        () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
+        [
+            documentViewBounds.x,
+            documentViewBounds.y,
+            documentViewBounds.width,
+            documentViewBounds.height,
+            shapes,
+            svgOverlays
+        ]
+    );
+    const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
 
     useEffect(() => {
         shapesRef.current = shapes;
@@ -3005,7 +3054,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const liveCanvasZoom = browserRuntimeMode
         ? resolveBrowserHeightCanvasZoom(
             rootRef.current,
-            rootSize?.width || hostSize?.width || defaultHostSize?.width,
+            viewBox.width,
             defaultHostSize?.height || hostSize?.height || rootSize?.height,
             viewBox.width,
             viewBox.height,
@@ -3083,6 +3132,27 @@ export default function PerspectiveViziCanvasBridge(props) {
         });
         return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
+
+    const binTagStateColorsByPath = useMemo(() => {
+        const out = new Map();
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!basePath || !isBinOverlay(overlay)) return;
+            const lockDischarging = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging");
+            const currentLevel = Number(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "CurrentLevel"));
+            const lockedOut = lockDischarging === true || lockDischarging === 1
+                || String(lockDischarging ?? "").toLowerCase() === "true"
+                || String(lockDischarging ?? "") === "1";
+            const isFlowing = lockDischarging !== null && lockDischarging !== undefined
+                && !lockedOut && Number.isFinite(currentLevel) && currentLevel > 0;
+            if (isFlowing) {
+                out.set(basePath, "#22c55e");
+                out.set(basePath.toLowerCase(), "#22c55e");
+            }
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
         getModelValue(
@@ -3501,6 +3571,105 @@ export default function PerspectiveViziCanvasBridge(props) {
         finishPolyline();
     }, [commitPolylinePreviewPoint, finishPolyline, maybeConstrainPolylinePoint]);
 
+    const computeOrthogonalRoute = useCallback((from, to) => {
+        const corner = { x: from.x, y: to.y };
+        return [from, corner, to];
+    }, []);
+
+    const computeStraightRoute = useCallback((from, to) => {
+        return [from, to];
+    }, []);
+
+    const startTrunkConnAt = useCallback((point) => {
+        const id = createId("polyline");
+        updateShapes((previous) => [
+            ...previous,
+            {
+                id,
+                type: "polyline",
+                points: [point, point],
+                stroke: DEFAULT_STROKE,
+                strokeWidth: 3,
+                fill: "none",
+                lineStyle: "solid",
+                arrowEnd: "out",
+                tagPath: ""
+            }
+        ], { persist: false });
+        setSelectedIds([id]);
+        setSelectedOverlayIds([]);
+        setEditingId(null);
+        setSelectedSegment(null);
+        setDrawing({ kind: "trunkconn", id, start: point });
+    }, [updateShapes]);
+
+    const finishTrunkConnAt = useCallback((point) => {
+        if (drawing?.kind !== "trunkconn" || !drawing?.id) return;
+        const route = computeStraightRoute(drawing.start, point);
+        updateShapes((previous) => previous.map((shape) =>
+            String(shape?.id || "") === String(drawing.id || "")
+                ? { ...shape, points: route }
+                : shape
+        ), { persist: true });
+        setDrawing(null);
+    }, [computeStraightRoute, drawing, updateShapes]);
+
+    const connectBinsToTrunk = useCallback(() => {
+        // Find the selected trunk polyline (horizontal line among selected shapes)
+        const selShapeIds = coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean);
+        const selOverlayIds = coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean);
+
+        const allShapes = shapesRef.current;
+        const allOverlays = overlaysRef.current;
+
+        // Pick the most horizontal polyline from selection as the trunk
+        const trunkShape = selShapeIds
+            .map((id) => allShapes.find((s) => String(s?.id || "") === id))
+            .filter((s) => s?.type === "polyline" && Array.isArray(s.points) && s.points.length >= 2)
+            .sort((a, b) => {
+                const spanX = (pts) => Math.abs((pts[pts.length - 1]?.x || 0) - (pts[0]?.x || 0));
+                return spanX(b.points) - spanX(a.points);
+            })[0];
+
+        if (!trunkShape) return;
+
+        // Trunk Y level = average Y of trunk points
+        const trunkY = trunkShape.points.reduce((sum, p) => sum + (Number(p?.y) || 0), 0) / trunkShape.points.length;
+        const trunkMinX = Math.min(...trunkShape.points.map((p) => Number(p?.x) || 0));
+        const trunkMaxX = Math.max(...trunkShape.points.map((p) => Number(p?.x) || 0));
+
+        // Selected bin overlays
+        const binOverlays = selOverlayIds.length
+            ? selOverlayIds.map((id) => allOverlays.find((o) => String(o?.id || "") === id)).filter(Boolean)
+            : allOverlays.filter((o) => isBinOverlay(o));
+
+        if (!binOverlays.length) return;
+
+        const newLines = binOverlays.map((overlay) => {
+            const bounds = getOverlayBounds(overlay);
+            if (!bounds) return null;
+            // Drop from bottom-center of bin
+            const binCenterX = Math.max(trunkMinX, Math.min(trunkMaxX, bounds.x + bounds.width / 2));
+            const binBottomY = bounds.y + bounds.height;
+            const start = { x: binCenterX, y: binBottomY };
+            const end = { x: binCenterX, y: trunkY };
+            return {
+                id: createId("polyline"),
+                type: "polyline",
+                points: [start, end],
+                stroke: DEFAULT_STROKE,
+                strokeWidth: 3,
+                fill: "none",
+                lineStyle: "solid",
+                arrowEnd: "out",
+                tagPath: String(overlay?.tagPath || "").trim()
+            };
+        }).filter(Boolean);
+
+        if (!newLines.length) return;
+        updateShapes((previous) => [...previous, ...newLines], { persist: true });
+    }, [overlaysRef, selectedIds, selectedOverlayIds, shapesRef, updateShapes]);
+
     const startOrAppendPolylineAt = useCallback((point, event) => {
         if (drawing?.kind === "polyline" && drawing.id) {
             if (Number(event?.detail || 0) >= 2) {
@@ -3523,7 +3692,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 strokeWidth: 3,
                 fill: "none",
                 lineStyle: "solid",
-                tagPath: ""
+                tagPath: "",
+                ...(tool === "trunkconn" ? { arrowEnd: "out" } : {})
             }
         ], { persist: false });
         setSelectedIds([id]);
@@ -3531,7 +3701,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         setEditingId(null);
         setSelectedSegment(null);
         setDrawing({ kind: "polyline", id, start: startPoint });
-    }, [appendPolylinePoint, drawing, finishActivePolylineAt, maybeConstrainPolylinePoint, updateShapes]);
+    }, [appendPolylinePoint, drawing, finishActivePolylineAt, maybeConstrainPolylinePoint, tool, updateShapes]);
 
     const deleteSelected = useCallback(() => {
         const shapeIds = coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean);
@@ -4123,15 +4293,15 @@ export default function PerspectiveViziCanvasBridge(props) {
             return;
         }
 
-        if (tool === "polyline") {
+        if (tool === "trunkconn" || tool === "polyline" || tool === "trunkconn") {
             startOrAppendPolylineAt(point, event);
         }
-    }, [clearSelection, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool, updateShapes]);
+    }, [clearSelection, drawing, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool, updateShapes]);
 
     const handleShapeMouseDown = useCallback((event, id) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
-        if (tool === "polyline") {
+        if (tool === "polyline" || tool === "trunkconn") {
             startOrAppendPolylineAt(pointFromEvent(event), event);
             return;
         }
@@ -4180,7 +4350,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const handleOverlayMouseDown = useCallback((event, id) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
-        if (tool === "polyline") {
+        if (tool === "polyline" || tool === "trunkconn") {
             startOrAppendPolylineAt(pointFromEvent(event), event);
             return;
         }
@@ -4225,7 +4395,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         event?.stopPropagation?.();
         const shapeId = String(id || "");
         const shape = shapesRef.current.find((item) => String(item?.id || "") === shapeId);
-        if (tool === "polyline" && drawing?.kind === "polyline" && String(drawing.id || "") === shapeId) {
+        if (tool === "polyline" || tool === "trunkconn" && drawing?.kind === "polyline" && String(drawing.id || "") === shapeId) {
             finishActivePolylineAt(shapeId, pointFromEvent(event), event);
             return;
         }
@@ -4375,7 +4545,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const handleEditPolylineClick = useCallback((event, id) => {
         const shapeId = String(id || "");
-        if (tool === "polyline" && drawing?.kind === "polyline" && String(drawing.id || "") === shapeId) {
+        if (tool === "polyline" || tool === "trunkconn" && drawing?.kind === "polyline" && String(drawing.id || "") === shapeId) {
             event?.preventDefault?.();
             event?.stopPropagation?.();
             finishActivePolylineAt(shapeId, pointFromEvent(event), event);
@@ -4393,7 +4563,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [drawing, editingId, finishActivePolylineAt, insertPointOnPolyline, pointFromEvent, tool]);
 
     const handleSegmentMouseDown = useCallback((event, id, index) => {
-        if (tool === "polyline" && drawing?.kind === "polyline" && String(drawing.id || "") === String(id || "")) {
+        if (tool === "polyline" || tool === "trunkconn" && drawing?.kind === "polyline" && String(drawing.id || "") === String(id || "")) {
             event?.preventDefault?.();
             event?.stopPropagation?.();
             appendPolylinePoint(id, maybeConstrainPolylinePoint(id, pointFromEvent(event), event));
@@ -4776,6 +4946,15 @@ export default function PerspectiveViziCanvasBridge(props) {
             return;
         }
 
+        if (drawing?.kind === "trunkconn" && drawing.id) {
+            const route = computeStraightRoute(drawing.start, point);
+            updateShapes((previous) => previous.map((shape) =>
+                String(shape?.id || "") === String(drawing.id || "")
+                    ? { ...shape, points: route }
+                    : shape
+            ), { persist: false });
+        }
+
         if (drawing?.kind === "polyline") {
             updateShapes((previous) => previous.map((shape) => {
                 if (String(shape?.id || "") !== String(drawing.id || "")) {
@@ -4883,7 +5062,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         event?.preventDefault?.();
         event?.stopPropagation?.();
 
-        if (tool === "polyline" && drawing?.kind === "polyline" && drawing.id) {
+        if (tool === "polyline" || tool === "trunkconn" && drawing?.kind === "polyline" && drawing.id) {
             removeCurrentPolylineSegment();
         }
     }, [drawing, removeCurrentPolylineSegment, tool]);
@@ -4914,9 +5093,9 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [pan, zoom]);
 
     const activateTool = useCallback((nextTool) => {
-        if (drawing?.kind === "polyline" && nextTool !== "polyline") {
+        if (drawing?.kind === "polyline" && nextTool !== "polyline" && nextTool !== "trunkconn") {
             finishPolyline();
-        } else if (drawing && drawing.kind !== nextTool) {
+        } else if (drawing && drawing.kind !== nextTool && drawing.kind !== "polyline") {
             setDrawing(null);
         }
         setDragState(null);
@@ -5960,7 +6139,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                     display: "flex",
                     alignItems: "flex-start",
                     justifyContent: "flex-start",
-                    overflow: "hidden"
+                    overflowX: "auto",
+                    overflowY: "hidden"
                 } : {})
             }}
         >
@@ -5969,7 +6149,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 height: viewBox.height,
                 zoom: liveCanvasZoom,
                 flexShrink: 0,
-                position: "relative"
+                position: "relative",
+                transformOrigin: "top left"
             } : {
                 position: "absolute",
                 inset: 0
@@ -6021,8 +6202,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 overlayLocalBBox={overlayLocalBBox}
                 importAnchor={null}
                 onCanvasDoubleClick={NOOP}
-                tagStateColorsByPath={EMPTY_MAP}
-                routeColorsBySvgKey={EMPTY_MAP}
+                tagStateColorsByPath={binTagStateColorsByPath}
+                routeColorsBySvgKey={binTagStateColorsByPath}
                 routeStrokeColorByGroupPath={EMPTY_MAP}
                 svgLiveValuesByGroupPath={EMPTY_MAP}
                 ignitionTagValuesByPath={ignitionTagValuesByPath}
@@ -6202,6 +6383,15 @@ export default function PerspectiveViziCanvasBridge(props) {
 
                             <DockButton active={tool === "polyline"} onClick={() => activateTool("polyline")}>
                                 <span>Polyline</span>
+                            </DockButton>
+                            <DockButton active={tool === "trunkconn"} onClick={() => activateTool("trunkconn")} title="Trunk Connector — click start then end, auto-routes with right angles and flow arrow">
+                                <span>Trunk Line</span>
+                            </DockButton>
+                            <DockButton
+                                onClick={connectBinsToTrunk}
+                                title="Select a trunk polyline + bin overlays (or no overlays to use all bins), then click to auto-generate drop connections"
+                            >
+                                <span>Connect Bins</span>
                             </DockButton>
                             <DockButton active={tool === "text"} onClick={() => activateTool("text")}>
                                 <span>Text</span>

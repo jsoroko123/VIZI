@@ -497,6 +497,8 @@ function resolveLiveVisualState(index, scene) {
   const tagColorFor = (rawTagPath) => {
     const tagPath = normalizeKey(rawTagPath);
     if (!tagPath) return "";
+    const routeDirect = routeColorsMap.get(tagPath) || routeColorsMap.get(tagPath.toLowerCase()) || "";
+    if (routeDirect) return normalizeActiveColor(routeDirect) || routeDirect;
     const direct = tagColorMap.get(tagPath) || tagColorMap.get(tagPath.toLowerCase()) || "";
     if (direct) return normalizeActiveColor(direct) || direct;
     const parts = tagPath.split(".").map((x) => x.trim()).filter(Boolean);
@@ -1336,6 +1338,8 @@ function resolveBasicLiveVisualState(index, scene) {
   const tagColorFor = (rawTagPath) => {
     const tagPath = normalizeKey(rawTagPath);
     if (!tagPath) return "";
+    const routeDirect = routeColorsMap.get(tagPath) || routeColorsMap.get(tagPath.toLowerCase()) || "";
+    if (routeDirect) return normalizeActiveColor(routeDirect) || routeDirect;
     const direct = tagColorMap.get(tagPath) || tagColorMap.get(tagPath.toLowerCase()) || "";
     if (direct) return normalizeActiveColor(direct) || direct;
     const parts = tagPath.split(".").map((x) => x.trim()).filter(Boolean);

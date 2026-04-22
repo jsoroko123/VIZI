@@ -7955,7 +7955,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   }, [widgetOpen, svgPropertiesStickyOpen]);
 
   useEffect(() => {
-    if (tool === "polyline" && !svgPropertiesStickyOpen) setShowHUD(false);
+    if ((tool === "polyline" || tool === "trunkconn") && !svgPropertiesStickyOpen) setShowHUD(false);
   }, [tool, svgPropertiesStickyOpen]);
 
   useEffect(() => {
@@ -11589,6 +11589,53 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
 
 
+  // ---------- Trunk connector tool ----------
+  function computeOrthogonalRoute(from, to) {
+    // Route: vertical first (down from source), then horizontal (along trunk)
+    const corner = { x: from.x, y: to.y };
+    return [from, corner, to];
+  }
+
+  function startTrunkConnAt(p) {
+    pushHistory();
+    const start = snapPointToNearestPolylineConnection(
+      snapPointToNearestPolylineEndpoint(p, POLYLINE_ENDPOINT_SNAP_THRESHOLD),
+      POLYLINE_CONNECTION_SNAP_THRESHOLD
+    );
+    const id = uid();
+    const poly = {
+      id,
+      type: "polyline",
+      tagPath: "",
+      points: [start, start, start],
+      stroke: "#808080",
+      fill: "transparent",
+      strokeWidth: 3,
+      lineStyle: "solid",
+      arrowEnd: "out",
+    };
+    setShapes((prev) => [...prev, poly]);
+    setSelectedIds([id]);
+    setSelectedOverlayIds([]);
+    setDrawing({ mode: "draw-trunk-conn", id, start });
+    setShowHUD(false);
+    scheduleProjectAutoSave();
+  }
+
+  function finishTrunkConnAt(p) {
+    if (!drawing || drawing.mode !== "draw-trunk-conn") return;
+    const end = snapPointToNearestPolylineConnection(
+      snapPointToNearestPolylineEndpoint(p, POLYLINE_ENDPOINT_SNAP_THRESHOLD),
+      POLYLINE_CONNECTION_SNAP_THRESHOLD
+    );
+    const route = computeOrthogonalRoute(drawing.start, end);
+    setShapes((prev) =>
+      prev.map((s) => (s.id === drawing.id ? { ...s, points: route } : s))
+    );
+    setDrawing(null);
+    scheduleProjectAutoSave();
+  }
+
   // ---------- Polyline drawing/editing ----------
   function startPolylineAt(p, options = {}) {
     pushHistory();
@@ -11804,7 +11851,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function cancelPolyline() {
     pushHistory();
-    if (!drawing || drawing.mode !== "draw-poly") return;
+    if (!drawing) return;
+    if (drawing.mode !== "draw-poly" && drawing.mode !== "draw-trunk-conn") return;
     const id = drawing.id;
 
     setShapes((prev) => prev.filter((s) => s.id !== id));
@@ -14735,6 +14783,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     const p = svgPoint(e);
 
+    if (tool === "trunkconn") {
+      if (!drawing) startTrunkConnAt(p);
+      else finishTrunkConnAt(p);
+      return;
+    }
+
     if (tool === "polyline") {
       let p2 = p;
 
@@ -15216,6 +15270,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
       panRef.current = nextPan;
       enqueueCanvasUpdate("pan", () => setPan(nextPan));
+      return;
+    }
+
+    if (drawing?.mode === "draw-trunk-conn") {
+      const id = drawing.id;
+      const route = computeOrthogonalRoute(drawing.start, p);
+      applyShapeDrawPreview(id, { points: route });
       return;
     }
 

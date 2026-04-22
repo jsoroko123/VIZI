@@ -22872,27 +22872,23 @@ var MesoraDrawingToolBundle = (() => {
     }
     return toPositiveNumber((_a = window.visualViewport) == null ? void 0 : _a.width) || toPositiveNumber(window.innerWidth) || 0;
   }
-  function resolveBrowserHeightCanvasZoom(rootNode, hostWidthFallback, fallbackHeight, viewBoundsWidth, viewBoundsHeight, browserViewportWidth, browserViewportHeight) {
+  function resolveBrowserHeightCanvasZoom(rootNode, fallbackWidth, fallbackHeight, viewBoundsWidth, viewBoundsHeight, browserViewportWidth, browserViewportHeight) {
     const targetViewWidth = toPositiveNumber(viewBoundsWidth) || DEFAULT_CANVAS_WIDTH;
     const targetViewHeight = toPositiveNumber(viewBoundsHeight) || DEFAULT_CANVAS_HEIGHT;
     const rect = rootNode && typeof rootNode.getBoundingClientRect === "function" ? rootNode.getBoundingClientRect() : null;
     const rootLeft = Math.max(0, Number((rect == null ? void 0 : rect.left) || 0));
     const rootTop = Math.max(0, Number((rect == null ? void 0 : rect.top) || 0));
-    const hostWidth = toPositiveNumber(rect == null ? void 0 : rect.width) || toPositiveNumber(hostWidthFallback) || 0;
+    const hostWidth = toPositiveNumber(fallbackWidth) || toPositiveNumber(rect == null ? void 0 : rect.width) || 0;
     const hostHeight = toPositiveNumber(fallbackHeight) || toPositiveNumber(rect == null ? void 0 : rect.height) || 0;
     const viewportWidth = toPositiveNumber(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
     const availableBrowserWidth = viewportWidth > 0 ? Math.max(1, viewportWidth - rootLeft) : 0;
     const availableBrowserHeight = viewportHeight > 0 ? Math.max(1, viewportHeight - rootTop) : 0;
-    const targetWidth = toPositiveNumber(
-      availableBrowserWidth && hostWidth ? Math.min(availableBrowserWidth, hostWidth) : availableBrowserWidth || hostWidth
-    ) || targetViewWidth;
-    const targetHeight = toPositiveNumber(
-      availableBrowserHeight && hostHeight ? Math.min(availableBrowserHeight, hostHeight) : availableBrowserHeight || hostHeight
-    ) || targetViewHeight;
+    const targetWidth = toPositiveNumber(availableBrowserWidth || hostWidth) || targetViewWidth;
+    const targetHeight = toPositiveNumber(availableBrowserHeight || hostHeight) || targetViewHeight;
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
-    return Math.max(0.05, Math.min(8, Math.min(scaleByWidth, scaleByHeight)));
+    return Math.max(0.05, Math.min(8, scaleByHeight));
   }
   function getModelValue(props, key, fallback) {
     const source = getComponentPropSource(props);
@@ -24291,6 +24287,46 @@ var MesoraDrawingToolBundle = (() => {
       height: Math.max(1, scale * Number(bbox.height || 0))
     };
   }
+  function expandViewBoundsToFitContent(baseViewBounds, shapes, overlays, padding = 24) {
+    const fallback = {
+      x: Number((baseViewBounds == null ? void 0 : baseViewBounds.x) || 0),
+      y: Number((baseViewBounds == null ? void 0 : baseViewBounds.y) || 0),
+      width: Math.max(1, Number((baseViewBounds == null ? void 0 : baseViewBounds.width) || DEFAULT_CANVAS_WIDTH)),
+      height: Math.max(1, Number((baseViewBounds == null ? void 0 : baseViewBounds.height) || DEFAULT_CANVAS_HEIGHT))
+    };
+    const boundsList = [
+      ...coerceArray(shapes).map((shape) => getShapeBounds(shape)),
+      ...coerceArray(overlays).map((overlay) => getOverlayBounds(overlay))
+    ].filter(Boolean);
+    if (!boundsList.length) {
+      return fallback;
+    }
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    boundsList.forEach((bounds) => {
+      const x = Number(bounds.x || 0);
+      const y = Number(bounds.y || 0);
+      const width = Number(bounds.width || 0);
+      const height = Number(bounds.height || 0);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + width);
+      maxY = Math.max(maxY, y + height);
+    });
+    const extraPadding = Math.max(0, Number(padding || 0));
+    const nextX = Math.min(fallback.x, minX - extraPadding);
+    const nextY = Math.min(fallback.y, minY - extraPadding);
+    const nextRight = Math.max(fallback.x + fallback.width, maxX + extraPadding);
+    const nextBottom = Math.max(fallback.y + fallback.height, maxY + extraPadding);
+    return {
+      x: nextX,
+      y: nextY,
+      width: Math.max(1, nextRight - nextX),
+      height: Math.max(1, nextBottom - nextY)
+    };
+  }
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
@@ -24388,8 +24424,7 @@ var MesoraDrawingToolBundle = (() => {
     const [browserViewportHeight, setBrowserViewportHeight] = useState(() => readBrowserViewportHeight());
     const effectiveHostSize = toPositiveNumber(rootSize == null ? void 0 : rootSize.width) && toPositiveNumber(rootSize == null ? void 0 : rootSize.height) ? rootSize : hostSize;
     const responsiveViewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, effectiveHostSize));
-    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument, defaultHostSize || hostSize));
-    const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
+    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument));
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
     const externalOverlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
     const externalSelectedIds = getModelValue(props, "selectedIds", EMPTY_ARRAY);
@@ -24451,6 +24486,18 @@ var MesoraDrawingToolBundle = (() => {
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
+    const runtimeDocumentViewBounds = useMemo(
+      () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
+      [
+        documentViewBounds.x,
+        documentViewBounds.y,
+        documentViewBounds.width,
+        documentViewBounds.height,
+        shapes,
+        svgOverlays
+      ]
+    );
+    const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
     useEffect(() => {
       shapesRef.current = shapes;
     }, [shapes]);
@@ -24899,7 +24946,7 @@ var MesoraDrawingToolBundle = (() => {
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
     const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom(
       rootRef.current,
-      (rootSize == null ? void 0 : rootSize.width) || (hostSize == null ? void 0 : hostSize.width) || (defaultHostSize == null ? void 0 : defaultHostSize.width),
+      viewBox.width,
       (defaultHostSize == null ? void 0 : defaultHostSize.height) || (hostSize == null ? void 0 : hostSize.height) || (rootSize == null ? void 0 : rootSize.height),
       viewBox.width,
       viewBox.height,
@@ -24968,6 +25015,22 @@ var MesoraDrawingToolBundle = (() => {
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!id || !basePath || !isBinOverlay(overlay)) return;
         if (getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging")) out[id] = true;
+      });
+      return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+    const binTagStateColorsByPath = useMemo(() => {
+      const out = /* @__PURE__ */ new Map();
+      coerceArray(svgOverlays).forEach((overlay) => {
+        const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
+        if (!basePath || !isBinOverlay(overlay)) return;
+        const lockDischarging = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging");
+        const currentLevel = Number(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "CurrentLevel"));
+        const lockedOut = lockDischarging === true || lockDischarging === 1 || String(lockDischarging != null ? lockDischarging : "").toLowerCase() === "true" || String(lockDischarging != null ? lockDischarging : "") === "1";
+        const isFlowing = lockDischarging !== null && lockDischarging !== void 0 && !lockedOut && Number.isFinite(currentLevel) && currentLevel > 0;
+        if (isFlowing) {
+          out.set(basePath, "#22c55e");
+          out.set(basePath.toLowerCase(), "#22c55e");
+        }
       });
       return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
@@ -25334,6 +25397,83 @@ var MesoraDrawingToolBundle = (() => {
       commitPolylinePreviewPoint(shapeId, finalPoint, { persist: false });
       finishPolyline();
     }, [commitPolylinePreviewPoint, finishPolyline, maybeConstrainPolylinePoint]);
+    const computeOrthogonalRoute = useCallback((from2, to2) => {
+      const corner = { x: from2.x, y: to2.y };
+      return [from2, corner, to2];
+    }, []);
+    const computeStraightRoute = useCallback((from2, to2) => {
+      return [from2, to2];
+    }, []);
+    const startTrunkConnAt = useCallback((point) => {
+      const id = createId("polyline");
+      updateShapes((previous) => [
+        ...previous,
+        {
+          id,
+          type: "polyline",
+          points: [point, point],
+          stroke: DEFAULT_STROKE,
+          strokeWidth: 3,
+          fill: "none",
+          lineStyle: "solid",
+          arrowEnd: "out",
+          tagPath: ""
+        }
+      ], { persist: false });
+      setSelectedIds([id]);
+      setSelectedOverlayIds([]);
+      setEditingId(null);
+      setSelectedSegment(null);
+      setDrawing({ kind: "trunkconn", id, start: point });
+    }, [updateShapes]);
+    const finishTrunkConnAt = useCallback((point) => {
+      if ((drawing == null ? void 0 : drawing.kind) !== "trunkconn" || !(drawing == null ? void 0 : drawing.id)) return;
+      const route = computeStraightRoute(drawing.start, point);
+      updateShapes((previous) => previous.map(
+        (shape) => String((shape == null ? void 0 : shape.id) || "") === String(drawing.id || "") ? { ...shape, points: route } : shape
+      ), { persist: true });
+      setDrawing(null);
+    }, [computeStraightRoute, drawing, updateShapes]);
+    const connectBinsToTrunk = useCallback(() => {
+      const selShapeIds = coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean);
+      const selOverlayIds = coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean);
+      const allShapes = shapesRef.current;
+      const allOverlays = overlaysRef.current;
+      const trunkShape = selShapeIds.map((id) => allShapes.find((s) => String((s == null ? void 0 : s.id) || "") === id)).filter((s) => (s == null ? void 0 : s.type) === "polyline" && Array.isArray(s.points) && s.points.length >= 2).sort((a, b) => {
+        const spanX = (pts) => {
+          var _a2, _b2;
+          return Math.abs((((_a2 = pts[pts.length - 1]) == null ? void 0 : _a2.x) || 0) - (((_b2 = pts[0]) == null ? void 0 : _b2.x) || 0));
+        };
+        return spanX(b.points) - spanX(a.points);
+      })[0];
+      if (!trunkShape) return;
+      const trunkY = trunkShape.points.reduce((sum, p) => sum + (Number(p == null ? void 0 : p.y) || 0), 0) / trunkShape.points.length;
+      const trunkMinX = Math.min(...trunkShape.points.map((p) => Number(p == null ? void 0 : p.x) || 0));
+      const trunkMaxX = Math.max(...trunkShape.points.map((p) => Number(p == null ? void 0 : p.x) || 0));
+      const binOverlays = selOverlayIds.length ? selOverlayIds.map((id) => allOverlays.find((o) => String((o == null ? void 0 : o.id) || "") === id)).filter(Boolean) : allOverlays.filter((o) => isBinOverlay(o));
+      if (!binOverlays.length) return;
+      const newLines = binOverlays.map((overlay) => {
+        const bounds = getOverlayBounds(overlay);
+        if (!bounds) return null;
+        const binCenterX = Math.max(trunkMinX, Math.min(trunkMaxX, bounds.x + bounds.width / 2));
+        const binBottomY = bounds.y + bounds.height;
+        const start = { x: binCenterX, y: binBottomY };
+        const end = { x: binCenterX, y: trunkY };
+        return {
+          id: createId("polyline"),
+          type: "polyline",
+          points: [start, end],
+          stroke: DEFAULT_STROKE,
+          strokeWidth: 3,
+          fill: "none",
+          lineStyle: "solid",
+          arrowEnd: "out",
+          tagPath: String((overlay == null ? void 0 : overlay.tagPath) || "").trim()
+        };
+      }).filter(Boolean);
+      if (!newLines.length) return;
+      updateShapes((previous) => [...previous, ...newLines], { persist: true });
+    }, [overlaysRef, selectedIds, selectedOverlayIds, shapesRef, updateShapes]);
     const startOrAppendPolylineAt = useCallback((point, event) => {
       if ((drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id) {
         if (Number((event == null ? void 0 : event.detail) || 0) >= 2) {
@@ -25355,7 +25495,8 @@ var MesoraDrawingToolBundle = (() => {
           strokeWidth: 3,
           fill: "none",
           lineStyle: "solid",
-          tagPath: ""
+          tagPath: "",
+          ...tool === "trunkconn" ? { arrowEnd: "out" } : {}
         }
       ], { persist: false });
       setSelectedIds([id]);
@@ -25363,7 +25504,7 @@ var MesoraDrawingToolBundle = (() => {
       setEditingId(null);
       setSelectedSegment(null);
       setDrawing({ kind: "polyline", id, start: startPoint });
-    }, [appendPolylinePoint, drawing, finishActivePolylineAt, maybeConstrainPolylinePoint, updateShapes]);
+    }, [appendPolylinePoint, drawing, finishActivePolylineAt, maybeConstrainPolylinePoint, tool, updateShapes]);
     const deleteSelected = useCallback(() => {
       const shapeIds = coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean);
       const overlayIds = coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean);
@@ -25888,15 +26029,15 @@ var MesoraDrawingToolBundle = (() => {
         setDrawing({ kind: tool, id, start: point });
         return;
       }
-      if (tool === "polyline") {
+      if (tool === "trunkconn" || tool === "polyline" || tool === "trunkconn") {
         startOrAppendPolylineAt(point, event);
       }
-    }, [clearSelection, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool, updateShapes]);
+    }, [clearSelection, drawing, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool, updateShapes]);
     const handleShapeMouseDown = useCallback((event, id) => {
       var _a2, _b2;
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
-      if (tool === "polyline") {
+      if (tool === "polyline" || tool === "trunkconn") {
         startOrAppendPolylineAt(pointFromEvent(event), event);
         return;
       }
@@ -25938,7 +26079,7 @@ var MesoraDrawingToolBundle = (() => {
       var _a2, _b2;
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
-      if (tool === "polyline") {
+      if (tool === "polyline" || tool === "trunkconn") {
         startOrAppendPolylineAt(pointFromEvent(event), event);
         return;
       }
@@ -25978,7 +26119,7 @@ var MesoraDrawingToolBundle = (() => {
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       const shapeId = String(id || "");
       const shape = shapesRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === shapeId);
-      if (tool === "polyline" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === shapeId) {
+      if (tool === "polyline" || tool === "trunkconn" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === shapeId) {
         finishActivePolylineAt(shapeId, pointFromEvent(event), event);
         return;
       }
@@ -26107,7 +26248,7 @@ var MesoraDrawingToolBundle = (() => {
     const handleEditPolylineClick = useCallback((event, id) => {
       var _a2, _b2, _c2, _d2;
       const shapeId = String(id || "");
-      if (tool === "polyline" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === shapeId) {
+      if (tool === "polyline" || tool === "trunkconn" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === shapeId) {
         (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
         (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
         finishActivePolylineAt(shapeId, pointFromEvent(event), event);
@@ -26125,7 +26266,7 @@ var MesoraDrawingToolBundle = (() => {
     }, [drawing, editingId, finishActivePolylineAt, insertPointOnPolyline, pointFromEvent, tool]);
     const handleSegmentMouseDown = useCallback((event, id, index2) => {
       var _a2, _b2, _c2, _d2;
-      if (tool === "polyline" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === String(id || "")) {
+      if (tool === "polyline" || tool === "trunkconn" && (drawing == null ? void 0 : drawing.kind) === "polyline" && String(drawing.id || "") === String(id || "")) {
         (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
         (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
         appendPolylinePoint(id, maybeConstrainPolylinePoint(id, pointFromEvent(event), event));
@@ -26485,6 +26626,12 @@ var MesoraDrawingToolBundle = (() => {
         }), { persist: false });
         return;
       }
+      if ((drawing == null ? void 0 : drawing.kind) === "trunkconn" && drawing.id) {
+        const route = computeStraightRoute(drawing.start, point);
+        updateShapes((previous) => previous.map(
+          (shape) => String((shape == null ? void 0 : shape.id) || "") === String(drawing.id || "") ? { ...shape, points: route } : shape
+        ), { persist: false });
+      }
       if ((drawing == null ? void 0 : drawing.kind) === "polyline") {
         updateShapes((previous) => previous.map((shape) => {
           if (String((shape == null ? void 0 : shape.id) || "") !== String(drawing.id || "")) {
@@ -26573,7 +26720,7 @@ var MesoraDrawingToolBundle = (() => {
       var _a2, _b2;
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
-      if (tool === "polyline" && (drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id) {
+      if (tool === "polyline" || tool === "trunkconn" && (drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id) {
         removeCurrentPolylineSegment();
       }
     }, [drawing, removeCurrentPolylineSegment, tool]);
@@ -26603,9 +26750,9 @@ var MesoraDrawingToolBundle = (() => {
       }
     }, [pan, zoom]);
     const activateTool = useCallback((nextTool) => {
-      if ((drawing == null ? void 0 : drawing.kind) === "polyline" && nextTool !== "polyline") {
+      if ((drawing == null ? void 0 : drawing.kind) === "polyline" && nextTool !== "polyline" && nextTool !== "trunkconn") {
         finishPolyline();
-      } else if (drawing && drawing.kind !== nextTool) {
+      } else if (drawing && drawing.kind !== nextTool && drawing.kind !== "polyline") {
         setDrawing(null);
       }
       setDragState(null);
@@ -27553,7 +27700,8 @@ var MesoraDrawingToolBundle = (() => {
             display: "flex",
             alignItems: "flex-start",
             justifyContent: "flex-start",
-            overflow: "hidden"
+            overflowX: "auto",
+            overflowY: "hidden"
           } : {}
         },
         children: [
@@ -27562,7 +27710,8 @@ var MesoraDrawingToolBundle = (() => {
             height: viewBox.height,
             zoom: liveCanvasZoom,
             flexShrink: 0,
-            position: "relative"
+            position: "relative",
+            transformOrigin: "top left"
           } : {
             position: "absolute",
             inset: 0
@@ -27615,8 +27764,8 @@ var MesoraDrawingToolBundle = (() => {
               overlayLocalBBox,
               importAnchor: null,
               onCanvasDoubleClick: NOOP,
-              tagStateColorsByPath: EMPTY_MAP,
-              routeColorsBySvgKey: EMPTY_MAP,
+              tagStateColorsByPath: binTagStateColorsByPath,
+              routeColorsBySvgKey: binTagStateColorsByPath,
               routeStrokeColorByGroupPath: EMPTY_MAP,
               svgLiveValuesByGroupPath: EMPTY_MAP,
               ignitionTagValuesByPath,
@@ -27795,6 +27944,15 @@ var MesoraDrawingToolBundle = (() => {
                     }
                   ),
                   /* @__PURE__ */ jsx(DockButton, { active: tool === "polyline", onClick: () => activateTool("polyline"), children: /* @__PURE__ */ jsx("span", { children: "Polyline" }) }),
+                  /* @__PURE__ */ jsx(DockButton, { active: tool === "trunkconn", onClick: () => activateTool("trunkconn"), title: "Trunk Connector \u2014 click start then end, auto-routes with right angles and flow arrow", children: /* @__PURE__ */ jsx("span", { children: "Trunk Line" }) }),
+                  /* @__PURE__ */ jsx(
+                    DockButton,
+                    {
+                      onClick: connectBinsToTrunk,
+                      title: "Select a trunk polyline + bin overlays (or no overlays to use all bins), then click to auto-generate drop connections",
+                      children: /* @__PURE__ */ jsx("span", { children: "Connect Bins" })
+                    }
+                  ),
                   /* @__PURE__ */ jsx(DockButton, { active: tool === "text", onClick: () => activateTool("text"), children: /* @__PURE__ */ jsx("span", { children: "Text" }) })
                 ] }),
                 /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
@@ -29180,27 +29338,23 @@ var MesoraDrawingToolBundle = (() => {
     }
     return toPositiveNumber2((_a = window.visualViewport) == null ? void 0 : _a.width) || toPositiveNumber2(window.innerWidth) || 0;
   }
-  function resolveBrowserHeightCanvasZoom2(rootNode, hostWidthFallback, fallbackHeight, viewBoundsWidth, viewBoundsHeight, browserViewportWidth, browserViewportHeight) {
+  function resolveBrowserHeightCanvasZoom2(rootNode, fallbackWidth, fallbackHeight, viewBoundsWidth, viewBoundsHeight, browserViewportWidth, browserViewportHeight) {
     const targetViewWidth = toPositiveNumber2(viewBoundsWidth) || DEFAULT_CANVAS_WIDTH2;
     const targetViewHeight = toPositiveNumber2(viewBoundsHeight) || DEFAULT_CANVAS_HEIGHT2;
     const rect = rootNode && typeof rootNode.getBoundingClientRect === "function" ? rootNode.getBoundingClientRect() : null;
     const rootLeft = Math.max(0, Number((rect == null ? void 0 : rect.left) || 0));
     const rootTop = Math.max(0, Number((rect == null ? void 0 : rect.top) || 0));
-    const hostWidth = toPositiveNumber2(rect == null ? void 0 : rect.width) || toPositiveNumber2(hostWidthFallback) || 0;
+    const hostWidth = toPositiveNumber2(fallbackWidth) || toPositiveNumber2(rect == null ? void 0 : rect.width) || 0;
     const hostHeight = toPositiveNumber2(fallbackHeight) || toPositiveNumber2(rect == null ? void 0 : rect.height) || 0;
     const viewportWidth = toPositiveNumber2(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber2(browserViewportHeight) || 0;
     const availableBrowserWidth = viewportWidth > 0 ? Math.max(1, viewportWidth - rootLeft) : 0;
     const availableBrowserHeight = viewportHeight > 0 ? Math.max(1, viewportHeight - rootTop) : 0;
-    const targetWidth = toPositiveNumber2(
-      availableBrowserWidth && hostWidth ? Math.min(availableBrowserWidth, hostWidth) : availableBrowserWidth || hostWidth
-    ) || targetViewWidth;
-    const targetHeight = toPositiveNumber2(
-      availableBrowserHeight && hostHeight ? Math.min(availableBrowserHeight, hostHeight) : availableBrowserHeight || hostHeight
-    ) || targetViewHeight;
+    const targetWidth = toPositiveNumber2(availableBrowserWidth || hostWidth) || targetViewWidth;
+    const targetHeight = toPositiveNumber2(availableBrowserHeight || hostHeight) || targetViewHeight;
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
-    return Math.max(0.05, Math.min(8, Math.min(scaleByWidth, scaleByHeight)));
+    return Math.max(0.05, Math.min(8, scaleByHeight));
   }
   function getPerspectiveClientStore2(props) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
@@ -29218,6 +29372,107 @@ var MesoraDrawingToolBundle = (() => {
   }
   function coerceArray2(value) {
     return Array.isArray(value) ? value : [];
+  }
+  function getIndexShapeBounds(shape) {
+    if (!shape || typeof shape !== "object") {
+      return null;
+    }
+    if (shape.type === "text") {
+      const fontSize = Math.max(8, Number(shape.fontSize || 24));
+      const text = String(shape.text || "");
+      const width = Math.max(40, text.length * fontSize * 0.6);
+      const height = Math.max(24, fontSize * 1.2);
+      const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
+      const anchorOffsetX = anchor === "middle" ? -width / 2 : anchor === "end" ? -width : 0;
+      return {
+        x: Number(shape.x || 0) + anchorOffsetX,
+        y: Number(shape.y || 0),
+        width,
+        height
+      };
+    }
+    if (Array.isArray(shape.points)) {
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      shape.points.forEach((point) => {
+        const x = Number((point == null ? void 0 : point.x) || 0);
+        const y = Number((point == null ? void 0 : point.y) || 0);
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      });
+      if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+        return null;
+      }
+      return {
+        x: minX,
+        y: minY,
+        width: Math.max(1, maxX - minX),
+        height: Math.max(1, maxY - minY)
+      };
+    }
+    return {
+      x: Number(shape.x || 0),
+      y: Number(shape.y || 0),
+      width: Math.max(0, Number(shape.width || 0)),
+      height: Math.max(0, Number(shape.height || 0))
+    };
+  }
+  function getIndexOverlayBounds(overlay) {
+    const bbox = overlay == null ? void 0 : overlay.bbox;
+    if (!bbox || typeof bbox !== "object") {
+      return null;
+    }
+    const scale = Math.max(1e-4, Math.abs(Number((overlay == null ? void 0 : overlay.scale) || 1)));
+    return {
+      x: Number((overlay == null ? void 0 : overlay.tx) || 0) + scale * Number(bbox.x || 0),
+      y: Number((overlay == null ? void 0 : overlay.ty) || 0) + scale * Number(bbox.y || 0),
+      width: Math.max(1, scale * Number(bbox.width || 0)),
+      height: Math.max(1, scale * Number(bbox.height || 0))
+    };
+  }
+  function expandIndexViewBoundsToFitContent(baseViewBounds, shapes, overlays, padding = 24) {
+    const fallback = {
+      x: Number((baseViewBounds == null ? void 0 : baseViewBounds.x) || 0),
+      y: Number((baseViewBounds == null ? void 0 : baseViewBounds.y) || 0),
+      width: Math.max(1, Number((baseViewBounds == null ? void 0 : baseViewBounds.width) || DEFAULT_CANVAS_WIDTH2)),
+      height: Math.max(1, Number((baseViewBounds == null ? void 0 : baseViewBounds.height) || DEFAULT_CANVAS_HEIGHT2))
+    };
+    const boundsList = [
+      ...coerceArray2(shapes).map((shape) => getIndexShapeBounds(shape)),
+      ...coerceArray2(overlays).map((overlay) => getIndexOverlayBounds(overlay))
+    ].filter(Boolean);
+    if (!boundsList.length) {
+      return fallback;
+    }
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    boundsList.forEach((bounds) => {
+      const x = Number(bounds.x || 0);
+      const y = Number(bounds.y || 0);
+      const width = Number(bounds.width || 0);
+      const height = Number(bounds.height || 0);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + width);
+      maxY = Math.max(maxY, y + height);
+    });
+    const extraPadding = Math.max(0, Number(padding || 0));
+    const nextX = Math.min(fallback.x, minX - extraPadding);
+    const nextY = Math.min(fallback.y, minY - extraPadding);
+    const nextRight = Math.max(fallback.x + fallback.width, maxX + extraPadding);
+    const nextBottom = Math.max(fallback.y + fallback.height, maxY + extraPadding);
+    return {
+      x: nextX,
+      y: nextY,
+      width: Math.max(1, nextRight - nextX),
+      height: Math.max(1, nextBottom - nextY)
+    };
   }
   function buildElementProps(element) {
     const props = {
@@ -29747,8 +30002,7 @@ var MesoraDrawingToolBundle = (() => {
     const [browserViewportHeight, setBrowserViewportHeight] = useState(() => readBrowserViewportHeight2());
     const effectiveHostSize = toPositiveNumber2(rootSize == null ? void 0 : rootSize.width) && toPositiveNumber2(rootSize == null ? void 0 : rootSize.height) ? rootSize : hostSize;
     const responsiveViewBox = parseViewBoxParts2(normalizeViewBox2(sourceDocument, effectiveHostSize));
-    const documentViewBounds = parseViewBoxParts2(normalizeViewBox2(sourceDocument, defaultHostSize || hostSize));
-    const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
+    const documentViewBounds = parseViewBoxParts2(normalizeViewBox2(sourceDocument));
     const externalShapes = getPersistedArrayValue2(props, "shapes", EMPTY_ARRAY2);
     const externalOverlays = getPersistedArrayValue2(props, "svgOverlays", EMPTY_ARRAY2);
     const externalSelectedIds = getModelValue2(props, "selectedIds", EMPTY_ARRAY2);
@@ -29763,6 +30017,18 @@ var MesoraDrawingToolBundle = (() => {
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY2);
     const [svgLibraryError, setSvgLibraryError] = useState("");
     const [importOpen, setImportOpen] = useState(false);
+    const runtimeDocumentViewBounds = useMemo(
+      () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
+      [
+        documentViewBounds.x,
+        documentViewBounds.y,
+        documentViewBounds.width,
+        documentViewBounds.height,
+        externalShapes,
+        svgOverlays
+      ]
+    );
+    const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
     useEffect(() => {
       const node = rootRef.current;
       if (!node || typeof node.getBoundingClientRect !== "function") {
@@ -30109,7 +30375,7 @@ var MesoraDrawingToolBundle = (() => {
     const libraryButtonLabel = svgLibraryError ? "SVG Library Unavailable" : svgCatalogFiles.length > 0 ? `SVG Library (${svgCatalogFiles.length})` : "Loading SVG Library...";
     const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom2(
       rootRef.current,
-      (rootSize == null ? void 0 : rootSize.width) || (hostSize == null ? void 0 : hostSize.width) || (defaultHostSize == null ? void 0 : defaultHostSize.width),
+      viewBox.width,
       (defaultHostSize == null ? void 0 : defaultHostSize.height) || (hostSize == null ? void 0 : hostSize.height) || (rootSize == null ? void 0 : rootSize.height),
       viewBox.width,
       viewBox.height,
@@ -30216,7 +30482,9 @@ var MesoraDrawingToolBundle = (() => {
           overflow: "hidden",
           ...browserRuntimeMode ? {
             alignItems: "flex-start",
-            justifyContent: "flex-start"
+            justifyContent: "flex-start",
+            overflowX: "auto",
+            overflowY: "hidden"
           } : {}
         },
         children: [
@@ -30228,7 +30496,8 @@ var MesoraDrawingToolBundle = (() => {
                 height: viewBox.height,
                 zoom: liveCanvasZoom,
                 flexShrink: 0,
-                position: "relative"
+                position: "relative",
+                transformOrigin: "top left"
               },
               children: canvasContent
             }

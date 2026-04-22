@@ -347,7 +347,7 @@ function readBrowserViewportWidth() {
 
 function resolveBrowserHeightCanvasZoom(
     rootNode,
-    hostWidthFallback,
+    fallbackWidth,
     fallbackHeight,
     viewBoundsWidth,
     viewBoundsHeight,
@@ -361,7 +361,7 @@ function resolveBrowserHeightCanvasZoom(
         : null;
     const rootLeft = Math.max(0, Number(rect?.left || 0));
     const rootTop = Math.max(0, Number(rect?.top || 0));
-    const hostWidth = toPositiveNumber(rect?.width) || toPositiveNumber(hostWidthFallback) || 0;
+    const hostWidth = toPositiveNumber(fallbackWidth) || toPositiveNumber(rect?.width) || 0;
     const hostHeight = toPositiveNumber(fallbackHeight) || toPositiveNumber(rect?.height) || 0;
     const viewportWidth = toPositiveNumber(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
@@ -371,19 +371,11 @@ function resolveBrowserHeightCanvasZoom(
     const availableBrowserHeight = viewportHeight > 0
         ? Math.max(1, viewportHeight - rootTop)
         : 0;
-    const targetWidth = toPositiveNumber(
-        availableBrowserWidth && hostWidth
-            ? Math.min(availableBrowserWidth, hostWidth)
-            : availableBrowserWidth || hostWidth
-    ) || targetViewWidth;
-    const targetHeight = toPositiveNumber(
-        availableBrowserHeight && hostHeight
-            ? Math.min(availableBrowserHeight, hostHeight)
-            : availableBrowserHeight || hostHeight
-    ) || targetViewHeight;
+    const targetWidth = toPositiveNumber(availableBrowserWidth || hostWidth) || targetViewWidth;
+    const targetHeight = toPositiveNumber(availableBrowserHeight || hostHeight) || targetViewHeight;
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
-    return Math.max(0.05, Math.min(8, Math.min(scaleByWidth, scaleByHeight)));
+    return Math.max(0.05, Math.min(8, scaleByHeight));
 }
 
 function getPerspectiveClientStore(props) {
@@ -417,6 +409,115 @@ function resolveOverlayPopupViewPath(overlay) {
 
 function coerceArray(value) {
     return Array.isArray(value) ? value : [];
+}
+
+function getIndexShapeBounds(shape) {
+    if (!shape || typeof shape !== "object") {
+        return null;
+    }
+    if (shape.type === "text") {
+        const fontSize = Math.max(8, Number(shape.fontSize || 24));
+        const text = String(shape.text || "");
+        const width = Math.max(40, text.length * fontSize * 0.6);
+        const height = Math.max(24, fontSize * 1.2);
+        const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
+        const anchorOffsetX = anchor === "middle" ? -width / 2 : anchor === "end" ? -width : 0;
+        return {
+            x: Number(shape.x || 0) + anchorOffsetX,
+            y: Number(shape.y || 0),
+            width,
+            height
+        };
+    }
+    if (Array.isArray(shape.points)) {
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        shape.points.forEach((point) => {
+            const x = Number(point?.x || 0);
+            const y = Number(point?.y || 0);
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+        });
+        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+            return null;
+        }
+        return {
+            x: minX,
+            y: minY,
+            width: Math.max(1, maxX - minX),
+            height: Math.max(1, maxY - minY)
+        };
+    }
+    return {
+        x: Number(shape.x || 0),
+        y: Number(shape.y || 0),
+        width: Math.max(0, Number(shape.width || 0)),
+        height: Math.max(0, Number(shape.height || 0))
+    };
+}
+
+function getIndexOverlayBounds(overlay) {
+    const bbox = overlay?.bbox;
+    if (!bbox || typeof bbox !== "object") {
+        return null;
+    }
+    const scale = Math.max(0.0001, Math.abs(Number(overlay?.scale || 1)));
+    return {
+        x: Number(overlay?.tx || 0) + scale * Number(bbox.x || 0),
+        y: Number(overlay?.ty || 0) + scale * Number(bbox.y || 0),
+        width: Math.max(1, scale * Number(bbox.width || 0)),
+        height: Math.max(1, scale * Number(bbox.height || 0))
+    };
+}
+
+function expandIndexViewBoundsToFitContent(baseViewBounds, shapes, overlays, padding = 24) {
+    const fallback = {
+        x: Number(baseViewBounds?.x || 0),
+        y: Number(baseViewBounds?.y || 0),
+        width: Math.max(1, Number(baseViewBounds?.width || DEFAULT_CANVAS_WIDTH)),
+        height: Math.max(1, Number(baseViewBounds?.height || DEFAULT_CANVAS_HEIGHT))
+    };
+    const boundsList = [
+        ...coerceArray(shapes).map((shape) => getIndexShapeBounds(shape)),
+        ...coerceArray(overlays).map((overlay) => getIndexOverlayBounds(overlay))
+    ].filter(Boolean);
+
+    if (!boundsList.length) {
+        return fallback;
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    boundsList.forEach((bounds) => {
+        const x = Number(bounds.x || 0);
+        const y = Number(bounds.y || 0);
+        const width = Number(bounds.width || 0);
+        const height = Number(bounds.height || 0);
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + width);
+        maxY = Math.max(maxY, y + height);
+    });
+
+    const extraPadding = Math.max(0, Number(padding || 0));
+    const nextX = Math.min(fallback.x, minX - extraPadding);
+    const nextY = Math.min(fallback.y, minY - extraPadding);
+    const nextRight = Math.max(fallback.x + fallback.width, maxX + extraPadding);
+    const nextBottom = Math.max(fallback.y + fallback.height, maxY + extraPadding);
+
+    return {
+        x: nextX,
+        y: nextY,
+        width: Math.max(1, nextRight - nextX),
+        height: Math.max(1, nextBottom - nextY)
+    };
 }
 
 function buildElementProps(element) {
@@ -1078,8 +1179,7 @@ function ViziCanvasBridge(props) {
             : hostSize
     );
     const responsiveViewBox = parseViewBoxParts(normalizeViewBox(sourceDocument, effectiveHostSize));
-    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument, defaultHostSize || hostSize));
-    const viewBox = browserRuntimeMode ? documentViewBounds : responsiveViewBox;
+    const documentViewBounds = parseViewBoxParts(normalizeViewBox(sourceDocument));
     const externalShapes = getPersistedArrayValue(props, "shapes", EMPTY_ARRAY);
     const externalOverlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
     const externalSelectedIds = getModelValue(props, "selectedIds", EMPTY_ARRAY);
@@ -1094,6 +1194,18 @@ function ViziCanvasBridge(props) {
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY);
     const [svgLibraryError, setSvgLibraryError] = useState("");
     const [importOpen, setImportOpen] = useState(false);
+    const runtimeDocumentViewBounds = useMemo(
+        () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
+        [
+            documentViewBounds.x,
+            documentViewBounds.y,
+            documentViewBounds.width,
+            documentViewBounds.height,
+            externalShapes,
+            svgOverlays
+        ]
+    );
+    const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
 
     useEffect(() => {
         const node = rootRef.current;
@@ -1513,7 +1625,7 @@ function ViziCanvasBridge(props) {
     const liveCanvasZoom = browserRuntimeMode
         ? resolveBrowserHeightCanvasZoom(
             rootRef.current,
-            rootSize?.width || hostSize?.width || defaultHostSize?.width,
+            viewBox.width,
             defaultHostSize?.height || hostSize?.height || rootSize?.height,
             viewBox.width,
             viewBox.height,
@@ -1620,7 +1732,9 @@ function ViziCanvasBridge(props) {
                 overflow: "hidden",
                 ...(browserRuntimeMode ? {
                     alignItems: "flex-start",
-                    justifyContent: "flex-start"
+                    justifyContent: "flex-start",
+                    overflowX: "auto",
+                    overflowY: "hidden"
                 } : {})
             }}
         >
@@ -1631,7 +1745,8 @@ function ViziCanvasBridge(props) {
                         height: viewBox.height,
                         zoom: liveCanvasZoom,
                         flexShrink: 0,
-                        position: "relative"
+                        position: "relative",
+                        transformOrigin: "top left"
                     }}
                 >
                     {canvasContent}
