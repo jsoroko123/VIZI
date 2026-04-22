@@ -3146,6 +3146,11 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
+
+    const [localZoom, setLocalZoom] = useState(null);
+    const effectiveZoom = localZoom !== null ? localZoom : zoom;
+    const effectiveZoomRef = useRef(effectiveZoom);
+    effectiveZoomRef.current = effectiveZoom;
     const liveCanvasZoom = browserRuntimeMode
         ? resolveBrowserHeightCanvasZoom(
             rootRef.current,
@@ -6139,6 +6144,22 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [deletePolylineVertex, deleteSelected, editingId, editorVisible, selectedIds, selectedOverlayIds, selectedSegment]);
 
     useEffect(() => {
+        const onWheelNonPassive = (event) => {
+            if (!event.ctrlKey && !event.metaKey) return;
+            if (!rootRef.current) return;
+            if (!rootRef.current.contains(event.target)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const direction = event.deltaY < 0 ? 1 : -1;
+            const base = effectiveZoomRef.current;
+            const next = Math.max(0.1, Math.min(8, base + direction * 0.1 * base));
+            setLocalZoom(Math.round(next * 100) / 100);
+        };
+        window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
+        return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
+    }, []);
+
+    useEffect(() => {
         const onKeyDown = (event) => {
             if (!editorVisible) {
                 return;
@@ -6305,7 +6326,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             }}>
             <CanvasSvg
                 svgRef={svgRef}
-                zoom={isLiveMode ? 1 : zoom}
+                zoom={isLiveMode ? 1 : effectiveZoom}
                 pan={isLiveMode ? { x: 0, y: 0 } : (isPlainObject(pan) ? pan : { x: 0, y: 0 })}
                 onWheel={NOOP}
                 marquee={editorVisible ? marquee : null}
@@ -6445,6 +6466,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                             zIndex: 60,
                             width: TOOLBAR_WIDTH,
                             maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
+                            maxHeight: `calc(100% - ${TOOLBAR_INSET * 2}px)`,
+                            overflowY: "auto",
                             display: "grid",
                             gap: 12,
                             padding: 14,
@@ -6492,6 +6515,50 @@ export default function PerspectiveViziCanvasBridge(props) {
                                 _
                             </button>
                         </div>
+
+                        <DockSection title="Zoom">
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                <button
+                                    type="button"
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onClick={(e) => { stopInteractivePropagation(e); setLocalZoom(Math.max(0.1, Math.round((effectiveZoom - 0.1) * 100) / 100)); }}
+                                    style={{ flexShrink: 0, width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "#f8fafc", fontSize: 16, cursor: "pointer", lineHeight: 1 }}
+                                >−</button>
+                                <input
+                                    type="range"
+                                    min={10}
+                                    max={400}
+                                    step={5}
+                                    value={Math.round(effectiveZoom * 100)}
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onChange={(e) => setLocalZoom(Number(e.target.value) / 100)}
+                                    style={{ flex: 1, accentColor: "#22c55e", cursor: "pointer" }}
+                                />
+                                <button
+                                    type="button"
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onClick={(e) => { stopInteractivePropagation(e); setLocalZoom(Math.min(4, Math.round((effectiveZoom + 0.1) * 100) / 100)); }}
+                                    style={{ flexShrink: 0, width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "#f8fafc", fontSize: 16, cursor: "pointer", lineHeight: 1 }}
+                                >+</button>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                                <span style={{ fontSize: 11, color: "rgba(226,232,240,0.72)", fontWeight: 700 }}>
+                                    {Math.round(effectiveZoom * 100)}%
+                                </span>
+                                <button
+                                    type="button"
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onClick={(e) => { stopInteractivePropagation(e); setLocalZoom(null); }}
+                                    style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "rgba(226,232,240,0.72)", cursor: "pointer", fontWeight: 700 }}
+                                >Reset</button>
+                            </div>
+                        </DockSection>
+
+                        <div style={{ height: 1, background: "rgba(71, 85, 105, 0.7)" }} />
 
                         <DockSection>
                             <DockButton active={tool === "select"} onClick={() => activateTool("select")}>
