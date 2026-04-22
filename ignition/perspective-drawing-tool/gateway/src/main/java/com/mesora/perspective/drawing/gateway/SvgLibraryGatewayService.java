@@ -43,11 +43,13 @@ final class SvgLibraryGatewayService {
 
     private final LoggerEx logger;
     private final Path externalLibraryDirectory;
+    private final String externalLibraryDisplayPath;
     private volatile List<SvgCatalogEntry> builtinEntries;
 
     SvgLibraryGatewayService(GatewayContext gatewayContext, LoggerEx logger) {
         this.logger = logger;
         this.externalLibraryDirectory = resolveExternalLibraryDirectory(gatewayContext);
+        this.externalLibraryDisplayPath = resolveExternalLibraryDisplayPath(this.externalLibraryDirectory);
         ensureExternalLibraryDirectory();
     }
 
@@ -67,7 +69,7 @@ final class SvgLibraryGatewayService {
 
         return new SvgLibraryCatalogResponse(
             entries,
-            externalLibraryDirectory.toAbsolutePath().normalize().toString(),
+            externalLibraryDisplayPath,
             builtin.size(),
             external.size(),
             ""
@@ -113,6 +115,14 @@ final class SvgLibraryGatewayService {
                 String.valueOf(e.getMessage())
             );
         }
+    }
+
+    private String resolveExternalLibraryDisplayPath(Path resolvedPath) {
+        String override = trimToEmpty(System.getenv("MESORA_SVG_LIBRARY_DISPLAY_PATH"));
+        if (!override.isBlank()) {
+            return override;
+        }
+        return resolvedPath.toAbsolutePath().normalize().toString();
     }
 
     private List<SvgCatalogEntry> loadBuiltinEntries() {

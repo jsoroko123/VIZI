@@ -9,11 +9,13 @@ services:
       - "9043:8043"
     volumes:
       - gateway-data:/usr/local/bin/ignition/data
+      - ./gateway/svg-library-external:/usr/local/bin/ignition/data/config/com.mesora.perspective.drawing/svg-library
     environment:
       ACCEPT_IGNITION_EULA: "Y"
       GATEWAY_ADMIN_USERNAME: admin
       GATEWAY_ADMIN_PASSWORD: mesora-dev-password
       IGNITION_EDITION: standard
+      MESORA_SVG_LIBRARY_DISPLAY_PATH: ./gateway/svg-library-external
       TZ: America/Chicago
     command: >
       -n mesora-drawing-dev

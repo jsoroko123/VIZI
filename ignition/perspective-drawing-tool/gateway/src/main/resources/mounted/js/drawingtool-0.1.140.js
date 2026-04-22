@@ -21727,6 +21727,10 @@ var MesoraDrawingToolBundle = (() => {
     svgLibrary,
     // ✅ NEW
     loadSvgRaw,
+    helpText = "",
+    librarySummary = "",
+    onRefresh = null,
+    refreshDisabled = false,
     docked = false,
     absoluteDocked = false,
     appearance = "default",
@@ -21775,6 +21779,12 @@ var MesoraDrawingToolBundle = (() => {
       cursor: "pointer",
       lineHeight: 1,
       color: textColor,
+      fontWeight: 700
+    };
+    const secondaryBtnStyle = {
+      ...closeBtnStyle,
+      minWidth: 74,
+      fontSize: 12,
       fontWeight: 700
     };
     const grouped = useMemo(() => {
@@ -21947,9 +21957,46 @@ var MesoraDrawingToolBundle = (() => {
                         children: [
                           /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 }, children: [
                             /* @__PURE__ */ jsx("div", { style: { fontWeight: 800, fontSize: 16, color: textColor, letterSpacing: "0.01em" }, children: "Import SVG" }),
-                            /* @__PURE__ */ jsx("button", { title: "Close", onClick: () => setImportOpen(false), style: closeBtnStyle, children: "X" })
+                            /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                              typeof onRefresh === "function" ? /* @__PURE__ */ jsx(
+                                "button",
+                                {
+                                  type: "button",
+                                  title: "Refresh SVG library",
+                                  onClick: onRefresh,
+                                  disabled: refreshDisabled,
+                                  style: {
+                                    ...secondaryBtnStyle,
+                                    opacity: refreshDisabled ? 0.72 : 1,
+                                    cursor: refreshDisabled ? "default" : "pointer"
+                                  },
+                                  children: refreshDisabled ? "Refreshing" : "Refresh"
+                                }
+                              ) : null,
+                              /* @__PURE__ */ jsx("button", { title: "Close", onClick: () => setImportOpen(false), style: closeBtnStyle, children: "X" })
+                            ] })
                           ] }),
                           /* @__PURE__ */ jsx("div", { style: { marginTop: 6, color: mutedColor, fontSize: 13, fontWeight: 800 }, children: "SVG Templates" }),
+                          librarySummary ? /* @__PURE__ */ jsx("div", { style: { marginTop: 6, color: mutedColor, fontSize: 11, lineHeight: 1.35 }, children: librarySummary }) : null,
+                          helpText ? /* @__PURE__ */ jsx(
+                            "div",
+                            {
+                              style: {
+                                marginTop: 10,
+                                border: `1px solid ${borderColor}`,
+                                background: softBg,
+                                borderRadius: 12,
+                                padding: "10px 12px",
+                                color: textColor,
+                                fontSize: 11,
+                                lineHeight: 1.45,
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                                fontFamily: "Consolas, 'Courier New', monospace"
+                              },
+                              children: helpText
+                            }
+                          ) : null,
                           /* @__PURE__ */ jsx("div", { style: { marginTop: 10 }, children: /* @__PURE__ */ jsxs("div", { style: { position: "relative" }, children: [
                             /* @__PURE__ */ jsx(
                               "input",
@@ -22001,9 +22048,8 @@ var MesoraDrawingToolBundle = (() => {
                       }
                     ),
                     /* @__PURE__ */ jsx("div", { style: { padding: "12px 18px 16px 14px" }, children: /* @__PURE__ */ jsx("div", { style: { marginTop: 0, display: "grid", gap: 8, color: mutedColor }, children: list.length === 0 ? /* @__PURE__ */ jsxs("div", { style: { color: mutedColor, fontSize: 13 }, children: [
-                      "No SVGs found. Put files in ",
-                      /* @__PURE__ */ jsx("b", { children: "src/assets/SVG Files" }),
-                      "."
+                      "No SVGs found. ",
+                      helpText ? "Add files to the external folder above and click Refresh." : "Put files in src/assets/SVG Files."
                     ] }) : grouped.length === 0 ? /* @__PURE__ */ jsx("div", { style: { color: mutedColor, fontSize: 13 }, children: "No matches." }) : grouped.map((group) => /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 8 }, children: [
                       /* @__PURE__ */ jsx("div", { style: { color: mutedColor, fontSize: 11, fontWeight: 800, padding: "2px 2px" }, children: group.folder }),
                       group.files.map((f) => /* @__PURE__ */ jsx(
@@ -22297,7 +22343,13 @@ var MesoraDrawingToolBundle = (() => {
     `/data/${MODULE_ID}/opc-write`,
     `/main/data/${MODULE_ID}/opc-write`
   ];
-  var SVG_LIBRARY_MANIFEST_URL = `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`;
+  var SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/svg-library-catalog`,
+    `/main/data/${MODULE_URL_ALIAS}/svg-library-catalog`,
+    `/data/${MODULE_ID}/svg-library-catalog`,
+    `/main/data/${MODULE_ID}/svg-library-catalog`,
+    `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`
+  ];
   var SVG_RAW_CACHE_MAX = 80;
   var DEFAULT_FILL = "#CCCCCC";
   var DEFAULT_STROKE = "#808080";
@@ -23055,12 +23107,37 @@ var MesoraDrawingToolBundle = (() => {
     return (Array.isArray(value) ? value : []).map((entry) => {
       const key = String((entry == null ? void 0 : entry.key) || "").trim();
       const name = String((entry == null ? void 0 : entry.name) || key.split("/").pop() || "").trim();
-      const url = String((entry == null ? void 0 : entry.url) || "").trim();
-      if (!key || !name || !url) {
+      const urls = [];
+      coerceArray(entry == null ? void 0 : entry.urlCandidates).forEach((candidate) => {
+        const next = String(candidate || "").trim();
+        if (next && !urls.includes(next)) {
+          urls.push(next);
+        }
+      });
+      const directUrl = String((entry == null ? void 0 : entry.url) || "").trim();
+      if (directUrl && !urls.includes(directUrl)) {
+        urls.push(directUrl);
+      }
+      if (!key || !name || !urls.length) {
         return null;
       }
-      return { key, name, url };
+      return {
+        key,
+        name,
+        source: String((entry == null ? void 0 : entry.source) || "").trim(),
+        url: urls.length === 1 ? urls[0] : urls
+      };
     }).filter(Boolean);
+  }
+  function normalizeSvgCatalogPayload(value) {
+    const payload = value && typeof value === "object" && !Array.isArray(value) ? value : { entries: value };
+    return {
+      entries: normalizeSvgCatalogEntries(payload == null ? void 0 : payload.entries),
+      externalDirectory: String((payload == null ? void 0 : payload.externalDirectory) || "").trim(),
+      externalCount: Math.max(0, Number(payload == null ? void 0 : payload.externalCount) || 0),
+      builtInCount: Math.max(0, Number(payload == null ? void 0 : payload.builtInCount) || 0),
+      error: String((payload == null ? void 0 : payload.error) || "").trim()
+    };
   }
   function writeComponentProp(props, path, value) {
     var _a;
@@ -24466,6 +24543,9 @@ var MesoraDrawingToolBundle = (() => {
     const [overlayResize, setOverlayResize] = useState(null);
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY);
     const [svgLibraryError, setSvgLibraryError] = useState("");
+    const [svgLibraryExternalDirectory, setSvgLibraryExternalDirectory] = useState("");
+    const [svgLibraryExternalCount, setSvgLibraryExternalCount] = useState(0);
+    const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [ignitionTagOptions, setIgnitionTagOptions] = useState(EMPTY_ARRAY);
     const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => /* @__PURE__ */ new Map());
     const [ignitionTagsError, setIgnitionTagsError] = useState("");
@@ -24486,6 +24566,7 @@ var MesoraDrawingToolBundle = (() => {
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
+    const svgCatalogRequestIdRef = useRef(0);
     const runtimeDocumentViewBounds = useMemo(
       () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
       [
@@ -24857,34 +24938,65 @@ var MesoraDrawingToolBundle = (() => {
       history.current = cloneDeepValue(next);
       applyHistorySnapshot(next);
     }, [applyHistorySnapshot]);
+    const loadSvgCatalog = useCallback(async () => {
+      const requestId = svgCatalogRequestIdRef.current + 1;
+      svgCatalogRequestIdRef.current = requestId;
+      setSvgLibraryRefreshing(true);
+      setSvgLibraryError("");
+      let lastError = "Failed to load SVG catalog.";
+      for (const routePath of SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES) {
+        try {
+          const requestUrl = `${routePath}${routePath.includes("?") ? "&" : "?"}t=${Date.now()}`;
+          const response = await fetch(requestUrl, {
+            cache: "no-store",
+            credentials: "same-origin"
+          });
+          if (!response.ok) {
+            lastError = `Failed to load SVG catalog (${response.status}).`;
+            continue;
+          }
+          const payload = normalizeSvgCatalogPayload(await response.json());
+          if (svgCatalogRequestIdRef.current !== requestId) {
+            return;
+          }
+          svgRawCacheRef.current.clear();
+          setSvgCatalogFiles(payload.entries);
+          setSvgLibraryExternalDirectory(payload.externalDirectory);
+          setSvgLibraryExternalCount(payload.externalCount);
+          setSvgLibraryError(payload.error);
+          setSvgLibraryRefreshing(false);
+          return;
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "Failed to load SVG catalog.");
+        }
+      }
+      if (svgCatalogRequestIdRef.current === requestId) {
+        setSvgCatalogFiles(EMPTY_ARRAY);
+        setSvgLibraryExternalDirectory("");
+        setSvgLibraryExternalCount(0);
+        setSvgLibraryError(lastError);
+        setSvgLibraryRefreshing(false);
+      }
+    }, []);
     useEffect(() => {
       if (!svgLibraryEnabled) {
         setSvgCatalogFiles(EMPTY_ARRAY);
         setSvgLibraryError("");
+        setSvgLibraryExternalDirectory("");
+        setSvgLibraryExternalCount(0);
+        setSvgLibraryRefreshing(false);
         setImportOpen(false);
         return void 0;
       }
-      let cancelled = false;
-      setSvgLibraryError("");
-      fetch(SVG_LIBRARY_MANIFEST_URL, { cache: "no-store" }).then((response) => {
-        if (!response.ok) {
-          throw new Error(`Failed to load SVG catalog (${response.status}).`);
-        }
-        return response.json();
-      }).then((payload) => {
-        if (!cancelled) {
-          setSvgCatalogFiles(normalizeSvgCatalogEntries(payload));
-        }
-      }).catch((error) => {
-        if (!cancelled) {
-          setSvgCatalogFiles(EMPTY_ARRAY);
-          setSvgLibraryError(String((error == null ? void 0 : error.message) || "Failed to load SVG catalog."));
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
-    }, [svgLibraryEnabled]);
+      loadSvgCatalog();
+      return void 0;
+    }, [loadSvgCatalog, svgLibraryEnabled]);
+    useEffect(() => {
+      if (!svgLibraryEnabled || !importOpen) {
+        return;
+      }
+      loadSvgCatalog();
+    }, [importOpen, loadSvgCatalog, svgLibraryEnabled]);
     const svgLibraryMap = useMemo(() => {
       const out = {};
       svgCatalogFiles.forEach((entry) => {
@@ -24901,38 +25013,48 @@ var MesoraDrawingToolBundle = (() => {
       if (value && typeof value === "object" && typeof value.default === "string") {
         value = value.default;
       }
-      if (typeof value !== "string") {
-        return null;
-      }
       if (isSvgMarkup(value)) {
         return value;
       }
-      const url = value.trim();
-      if (!url) {
+      const urlCandidates = (Array.isArray(value) ? value : [value]).map((candidate) => String(candidate || "").trim()).filter(Boolean);
+      if (!urlCandidates.length) {
         return null;
       }
       const cache = svgRawCacheRef.current;
-      if (!forceFresh && cache.has(url)) {
-        const cached = cache.get(url);
-        cache.delete(url);
-        cache.set(url, cached);
+      const cacheKey = urlCandidates.join("\n");
+      if (!forceFresh && cache.has(cacheKey)) {
+        const cached = cache.get(cacheKey);
+        cache.delete(cacheKey);
+        cache.set(cacheKey, cached);
         return cached;
       }
-      const requestUrl = forceFresh ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}` : url;
-      const response = await fetch(requestUrl, forceFresh ? { cache: "no-store" } : void 0);
-      if (!response.ok) {
-        throw new Error(`Failed to load SVG (${response.status}).`);
+      let lastError = "Failed to load SVG.";
+      for (const url of urlCandidates) {
+        try {
+          const requestUrl = forceFresh ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}` : url;
+          const response = await fetch(
+            requestUrl,
+            forceFresh ? { cache: "no-store", credentials: "same-origin" } : { credentials: "same-origin" }
+          );
+          if (!response.ok) {
+            lastError = `Failed to load SVG (${response.status}).`;
+            continue;
+          }
+          const raw = await response.text();
+          if (cache.has(cacheKey)) {
+            cache.delete(cacheKey);
+          }
+          cache.set(cacheKey, raw);
+          while (cache.size > SVG_RAW_CACHE_MAX) {
+            const oldest = cache.keys().next().value;
+            cache.delete(oldest);
+          }
+          return raw;
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "Failed to load SVG.");
+        }
       }
-      const raw = await response.text();
-      if (cache.has(url)) {
-        cache.delete(url);
-      }
-      cache.set(url, raw);
-      while (cache.size > SVG_RAW_CACHE_MAX) {
-        const oldest = cache.keys().next().value;
-        cache.delete(oldest);
-      }
-      return raw;
+      throw new Error(lastError);
     }, []);
     const readSvgRawByKey = useCallback(
       async (fileKey, options = {}) => readSvgRaw(svgLibraryMap[fileKey], options),
@@ -24942,6 +25064,12 @@ var MesoraDrawingToolBundle = (() => {
       () => svgCatalogFiles.map((entry) => ({ key: entry.key, name: entry.name })).sort((left, right) => left.name.localeCompare(right.name)),
       [svgCatalogFiles]
     );
+    const handleRefreshSvgLibrary = useCallback(() => {
+      loadSvgCatalog();
+    }, [loadSvgCatalog]);
+    const svgLibraryHelpText = svgLibraryExternalDirectory ? `Drop .svg files into this folder and click Refresh:
+${svgLibraryExternalDirectory}` : "External SVG folder path will appear here when the catalog loads.";
+    const svgLibrarySummaryText = svgLibraryExternalCount > 0 ? `${svgCatalogFiles.length} templates loaded, ${svgLibraryExternalCount} external` : `${svgCatalogFiles.length} templates loaded`;
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
     const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom(
@@ -25050,7 +25178,7 @@ var MesoraDrawingToolBundle = (() => {
       const lockDischarging = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging");
       const currentLevel = Number(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "CurrentLevel"));
       const lockedOut = lockDischarging === true || lockDischarging === 1 || String(lockDischarging != null ? lockDischarging : "").toLowerCase() === "true" || String(lockDischarging != null ? lockDischarging : "") === "1";
-      return lockDischarging !== null && lockDischarging !== void 0 && !lockedOut && Number.isFinite(currentLevel) && currentLevel > 0;
+      return !lockedOut && Number.isFinite(currentLevel) && currentLevel > 0;
     }, [ignitionTagValuesByPath]);
     const binTagStateColorsByPath = useMemo(() => {
       const out = /* @__PURE__ */ new Map();
@@ -25452,7 +25580,6 @@ var MesoraDrawingToolBundle = (() => {
           strokeWidth: 3,
           fill: "none",
           lineStyle: "solid",
-          arrowEnd: "out",
           tagPath: ""
         }
       ], { persist: false });
@@ -25509,9 +25636,13 @@ var MesoraDrawingToolBundle = (() => {
       if (!newLines.length) return;
       const trunkTagKey = `trunk:${trunkShape.id}`;
       updateShapes((previous) => [
-        ...previous.map(
-          (s) => String((s == null ? void 0 : s.id) || "") === String(trunkShape.id || "") ? { ...s, tagPath: trunkTagKey } : s
-        ),
+        ...previous.map((s) => {
+          if (String((s == null ? void 0 : s.id) || "") === String(trunkShape.id || "")) {
+            const { arrowEnd: _a2, ...rest } = s;
+            return { ...rest, tagPath: trunkTagKey };
+          }
+          return s;
+        }),
         ...newLines
       ], { persist: true });
     }, [overlaysRef, selectedIds, selectedOverlayIds, shapesRef, updateShapes]);
@@ -25536,8 +25667,7 @@ var MesoraDrawingToolBundle = (() => {
           strokeWidth: 3,
           fill: "none",
           lineStyle: "solid",
-          tagPath: "",
-          ...tool === "trunkconn" ? { arrowEnd: "out" } : {}
+          tagPath: ""
         }
       ], { persist: false });
       setSelectedIds([id]);
@@ -28919,6 +29049,10 @@ var MesoraDrawingToolBundle = (() => {
                   svgLibrary: svgLibraryMap,
                   loadSvgRaw: readSvgRawByKey,
                   onPickSvg,
+                  helpText: svgLibraryHelpText,
+                  librarySummary: svgLibrarySummaryText,
+                  onRefresh: handleRefreshSvgLibrary,
+                  refreshDisabled: svgLibraryRefreshing,
                   docked: true,
                   absoluteDocked: true,
                   appearance: "ignition-drawer",
@@ -29096,8 +29230,16 @@ var MesoraDrawingToolBundle = (() => {
   // web/src/index.jsx
   var { ComponentRegistry } = window.PerspectiveClient;
   var COMPONENT_TYPE = "com.mesora.perspective.drawingtool";
+  var MODULE_ID2 = "com.mesora.perspective.drawing";
+  var MODULE_URL_ALIAS2 = "mesora-drawing";
   var MODULE_RESOURCE_BASE2 = "/res/mesora-drawing";
-  var SVG_LIBRARY_MANIFEST_URL2 = `${MODULE_RESOURCE_BASE2}/svg-library/manifest.json`;
+  var SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES2 = [
+    `/data/${MODULE_URL_ALIAS2}/svg-library-catalog`,
+    `/main/data/${MODULE_URL_ALIAS2}/svg-library-catalog`,
+    `/data/${MODULE_ID2}/svg-library-catalog`,
+    `/main/data/${MODULE_ID2}/svg-library-catalog`,
+    `${MODULE_RESOURCE_BASE2}/svg-library/manifest.json`
+  ];
   var SVG_RAW_CACHE_MAX2 = 80;
   var DEFAULT_FILL2 = "#CCCCCC";
   var DEFAULT_STROKE2 = "#808080";
@@ -29975,12 +30117,37 @@ var MesoraDrawingToolBundle = (() => {
     return (Array.isArray(value) ? value : []).map((entry) => {
       const key = String((entry == null ? void 0 : entry.key) || "").trim();
       const name = String((entry == null ? void 0 : entry.name) || key.split("/").pop() || "").trim();
-      const url = String((entry == null ? void 0 : entry.url) || "").trim();
-      if (!key || !name || !url) {
+      const urls = [];
+      coerceArray2(entry == null ? void 0 : entry.urlCandidates).forEach((candidate) => {
+        const next = String(candidate || "").trim();
+        if (next && !urls.includes(next)) {
+          urls.push(next);
+        }
+      });
+      const directUrl = String((entry == null ? void 0 : entry.url) || "").trim();
+      if (directUrl && !urls.includes(directUrl)) {
+        urls.push(directUrl);
+      }
+      if (!key || !name || !urls.length) {
         return null;
       }
-      return { key, name, url };
+      return {
+        key,
+        name,
+        source: String((entry == null ? void 0 : entry.source) || "").trim(),
+        url: urls.length === 1 ? urls[0] : urls
+      };
     }).filter(Boolean);
+  }
+  function normalizeSvgCatalogPayload2(value) {
+    const payload = value && typeof value === "object" && !Array.isArray(value) ? value : { entries: value };
+    return {
+      entries: normalizeSvgCatalogEntries2(payload == null ? void 0 : payload.entries),
+      externalDirectory: String((payload == null ? void 0 : payload.externalDirectory) || "").trim(),
+      externalCount: Math.max(0, Number(payload == null ? void 0 : payload.externalCount) || 0),
+      builtInCount: Math.max(0, Number(payload == null ? void 0 : payload.builtInCount) || 0),
+      error: String((payload == null ? void 0 : payload.error) || "").trim()
+    };
   }
   function writeComponentProp2(props, path, value) {
     var _a;
@@ -30057,7 +30224,11 @@ var MesoraDrawingToolBundle = (() => {
     const [svgOverlays, setSvgOverlaysState] = useState(coerceArray2(externalOverlays));
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY2);
     const [svgLibraryError, setSvgLibraryError] = useState("");
+    const [svgLibraryExternalDirectory, setSvgLibraryExternalDirectory] = useState("");
+    const [svgLibraryExternalCount, setSvgLibraryExternalCount] = useState(0);
+    const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
+    const svgCatalogRequestIdRef = useRef(0);
     const runtimeDocumentViewBounds = useMemo(
       () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
       [
@@ -30122,36 +30293,65 @@ var MesoraDrawingToolBundle = (() => {
     useEffect(() => {
       setSvgOverlaysState(coerceArray2(externalOverlays));
     }, [externalOverlaysKey]);
+    const loadSvgCatalog = useCallback(async () => {
+      const requestId = svgCatalogRequestIdRef.current + 1;
+      svgCatalogRequestIdRef.current = requestId;
+      setSvgLibraryRefreshing(true);
+      setSvgLibraryError("");
+      let lastError = "Failed to load SVG catalog.";
+      for (const routePath of SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES2) {
+        try {
+          const requestUrl = `${routePath}${routePath.includes("?") ? "&" : "?"}t=${Date.now()}`;
+          const response = await fetch(requestUrl, {
+            cache: "no-store",
+            credentials: "same-origin"
+          });
+          if (!response.ok) {
+            lastError = `Failed to load SVG catalog (${response.status}).`;
+            continue;
+          }
+          const payload = normalizeSvgCatalogPayload2(await response.json());
+          if (svgCatalogRequestIdRef.current !== requestId) {
+            return;
+          }
+          svgRawCacheRef.current.clear();
+          setSvgCatalogFiles(payload.entries);
+          setSvgLibraryExternalDirectory(payload.externalDirectory);
+          setSvgLibraryExternalCount(payload.externalCount);
+          setSvgLibraryError(payload.error);
+          setSvgLibraryRefreshing(false);
+          return;
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "Failed to load SVG catalog.");
+        }
+      }
+      if (svgCatalogRequestIdRef.current === requestId) {
+        setSvgCatalogFiles(EMPTY_ARRAY2);
+        setSvgLibraryExternalDirectory("");
+        setSvgLibraryExternalCount(0);
+        setSvgLibraryError(lastError);
+        setSvgLibraryRefreshing(false);
+      }
+    }, []);
     useEffect(() => {
       if (!svgLibraryEnabled) {
         setSvgCatalogFiles(EMPTY_ARRAY2);
         setSvgLibraryError("");
+        setSvgLibraryExternalDirectory("");
+        setSvgLibraryExternalCount(0);
+        setSvgLibraryRefreshing(false);
         setImportOpen(false);
         return void 0;
       }
-      let cancelled = false;
-      setSvgLibraryError("");
-      fetch(SVG_LIBRARY_MANIFEST_URL2, { cache: "no-store" }).then((response) => {
-        if (!response.ok) {
-          throw new Error(`Failed to load SVG catalog (${response.status}).`);
-        }
-        return response.json();
-      }).then((payload) => {
-        if (cancelled) {
-          return;
-        }
-        setSvgCatalogFiles(normalizeSvgCatalogEntries2(payload));
-      }).catch((error) => {
-        if (cancelled) {
-          return;
-        }
-        setSvgCatalogFiles(EMPTY_ARRAY2);
-        setSvgLibraryError(String((error == null ? void 0 : error.message) || "Failed to load SVG catalog."));
-      });
-      return () => {
-        cancelled = true;
-      };
-    }, [svgLibraryEnabled]);
+      loadSvgCatalog();
+      return void 0;
+    }, [loadSvgCatalog, svgLibraryEnabled]);
+    useEffect(() => {
+      if (!svgLibraryEnabled || !importOpen) {
+        return;
+      }
+      loadSvgCatalog();
+    }, [importOpen, loadSvgCatalog, svgLibraryEnabled]);
     const persistSvgOverlays = useCallback(
       (nextOverlays) => {
         writeComponentProp2(props, "svgOverlays", nextOverlays);
@@ -30185,38 +30385,48 @@ var MesoraDrawingToolBundle = (() => {
       if (value && typeof value === "object" && typeof value.default === "string") {
         value = value.default;
       }
-      if (typeof value !== "string") {
-        return null;
-      }
       if (isSvgMarkup2(value)) {
         return value;
       }
-      const url = value.trim();
-      if (!url) {
+      const urlCandidates = (Array.isArray(value) ? value : [value]).map((candidate) => String(candidate || "").trim()).filter(Boolean);
+      if (!urlCandidates.length) {
         return null;
       }
       const cache = svgRawCacheRef.current;
-      if (!forceFresh && cache.has(url)) {
-        const cached = cache.get(url);
-        cache.delete(url);
-        cache.set(url, cached);
+      const cacheKey = urlCandidates.join("\n");
+      if (!forceFresh && cache.has(cacheKey)) {
+        const cached = cache.get(cacheKey);
+        cache.delete(cacheKey);
+        cache.set(cacheKey, cached);
         return cached;
       }
-      const requestUrl = forceFresh ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}` : url;
-      const response = await fetch(requestUrl, forceFresh ? { cache: "no-store" } : void 0);
-      if (!response.ok) {
-        throw new Error(`Failed to load SVG (${response.status}).`);
+      let lastError = "Failed to load SVG.";
+      for (const url of urlCandidates) {
+        try {
+          const requestUrl = forceFresh ? `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}` : url;
+          const response = await fetch(
+            requestUrl,
+            forceFresh ? { cache: "no-store", credentials: "same-origin" } : { credentials: "same-origin" }
+          );
+          if (!response.ok) {
+            lastError = `Failed to load SVG (${response.status}).`;
+            continue;
+          }
+          const raw = await response.text();
+          if (cache.has(cacheKey)) {
+            cache.delete(cacheKey);
+          }
+          cache.set(cacheKey, raw);
+          while (cache.size > SVG_RAW_CACHE_MAX2) {
+            const oldest = cache.keys().next().value;
+            cache.delete(oldest);
+          }
+          return raw;
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "Failed to load SVG.");
+        }
       }
-      const raw = await response.text();
-      if (cache.has(url)) {
-        cache.delete(url);
-      }
-      cache.set(url, raw);
-      while (cache.size > SVG_RAW_CACHE_MAX2) {
-        const oldest = cache.keys().next().value;
-        cache.delete(oldest);
-      }
-      return raw;
+      throw new Error(lastError);
     }, []);
     const readSvgRawByKey = useCallback(
       async (fileKey, options = {}) => readSvgRaw(svgLibraryMap[fileKey], options),
@@ -30310,6 +30520,12 @@ var MesoraDrawingToolBundle = (() => {
       () => svgCatalogFiles.map((entry) => ({ key: entry.key, name: entry.name })).sort((left, right) => left.name.localeCompare(right.name)),
       [svgCatalogFiles]
     );
+    const handleRefreshSvgLibrary = useCallback(() => {
+      loadSvgCatalog();
+    }, [loadSvgCatalog]);
+    const svgLibraryHelpText = svgLibraryExternalDirectory ? `Drop .svg files into this folder and click Refresh:
+${svgLibraryExternalDirectory}` : "External SVG folder path will appear here when the catalog loads.";
+    const svgLibrarySummaryText = svgLibraryExternalCount > 0 ? `${svgCatalogFiles.length} templates loaded, ${svgLibraryExternalCount} external` : `${svgCatalogFiles.length} templates loaded`;
     const handleImportToggle = useCallback(() => {
       if (!svgLibraryEnabled || !svgCatalogFiles.length) {
         return;
@@ -30603,7 +30819,11 @@ var MesoraDrawingToolBundle = (() => {
               svgFiles,
               svgLibrary: svgLibraryMap,
               loadSvgRaw: readSvgRawByKey,
-              onPickSvg
+              onPickSvg,
+              helpText: svgLibraryHelpText,
+              librarySummary: svgLibrarySummaryText,
+              onRefresh: handleRefreshSvgLibrary,
+              refreshDisabled: svgLibraryRefreshing
             }
           ) : null
         ]
