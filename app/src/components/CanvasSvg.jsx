@@ -836,7 +836,6 @@ function CanvasSvg({
   };
 
   const getRouteStrokeColorForOverlay = (overlay) => {
-    if (!renderLiveVisuals) return "";
     if (!effectiveRouteStrokeColorByGroupPath) return "";
     const key = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
     const cacheKey = key.toLowerCase();
@@ -851,10 +850,6 @@ function CanvasSvg({
     if (direct) {
       if (cacheKey) renderRouteStrokeColorCache.set(cacheKey, direct);
       return direct;
-    }
-    if (liveCanvasEnabled) {
-      if (cacheKey) renderRouteStrokeColorCache.set(cacheKey, "");
-      return "";
     }
 
     const groupLive = getLiveValuesForOverlay(overlay);
@@ -881,7 +876,6 @@ function CanvasSvg({
   };
 
   const getLiveValuesForOverlay = (overlay) => {
-    if (!renderLiveVisuals) return null;
     if (!effectiveSvgLiveValuesByGroupPath) return null;
     const key = String(overlay?.tagPath || "").replace(/\r?\n/g, "").trim();
     if (!key) return null;
@@ -963,15 +957,15 @@ function CanvasSvg({
       tagStateColorsByPath:
         liveResolvedTagColorByPathRef.current instanceof Map && liveResolvedTagColorByPathRef.current.size
           ? liveResolvedTagColorByPathRef.current
-          : liveEmptyTagColorMapRef.current,
+          : fallbackTagColors,
       routeStrokeColorByGroupPath:
         liveResolvedRouteStrokeByPathRef.current instanceof Map && liveResolvedRouteStrokeByPathRef.current.size
           ? liveResolvedRouteStrokeByPathRef.current
-          : liveEmptyRouteStrokeMapRef.current,
+          : fallbackRouteColors,
       svgLiveValuesByGroupPath:
         liveGroupRouteStateByPathRef.current instanceof Map && liveGroupRouteStateByPathRef.current.size
           ? liveGroupRouteStateByPathRef.current
-          : liveEmptyGroupValuesMapRef.current,
+          : fallbackGroupValues,
     };
   }, [
     liveCanvasEnabled,
@@ -4463,7 +4457,6 @@ function CanvasSvg({
   };
 
   const getGroupRouteStateForTagPath = (rawTagPath) => {
-    if (!renderLiveVisuals) return { routeId: "", state: "" };
     const tagPath = String(rawTagPath || "").replace(/\r?\n/g, "").trim();
     if (!tagPath) return { routeId: "", state: "" };
     const cacheKey = tagPath.toLowerCase();
@@ -4473,9 +4466,6 @@ function CanvasSvg({
         routeId: String(cached?.routeId || ""),
         state: String(cached?.state || ""),
       };
-    }
-    if (liveCanvasEnabled) {
-      return { routeId: "", state: "" };
     }
 
     const candidates = [tagPath];
@@ -5360,72 +5350,77 @@ function CanvasSvg({
     }
     _diverterVisiting.add(cacheKey);
     try {
-      if (liveCanvasEnabled) {
-        const workerCachedColor = liveResolvedDiverterEntryColorByIdRef.current.get(overlayId);
-        if (workerCachedColor) {
-          const resolved = String(workerCachedColor || "");
-          _diverterColorCache.set(cacheKey, resolved);
-          return resolved;
-        }
-      }
-      const bb = overlayLocalBBox(overlay?.id);
-      const entryPoint = getDiverterEntryConnectorWorldPoint(overlay, bb);
-      if (!entryPoint) {
+      if (!overlay || !Array.isArray(shapes) || !shapes.length) {
         _diverterColorCache.set(cacheKey, "");
         return "";
       }
-      const directOverlayColor = normalizeActiveLineColor(
-        getNonDiverterStartSourceColorAtPoint(entryPoint, options)
+      const bb = overlay?.bbox || overlayLocalBBox?.(overlay.id);
+      if (!bb) {
+        _diverterColorCache.set(cacheKey, "");
+        return "";
+      }
+      const wr = overlayWorldRect(overlay, bb);
+      const threshold = 28;
+      const excludedOverlayIds = new Set(
+        [
+          options?.excludeOverlayId,
+          ...(Array.isArray(options?.excludedOverlayIds) ? options.excludedOverlayIds : []),
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
       );
-      if (directOverlayColor) {
-        _diverterColorCache.set(cacheKey, directOverlayColor);
-        return directOverlayColor;
-      }
-      for (const other of Array.isArray(shapes) ? shapes : []) {
-        if (other?.type !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
-        const startPoint = other.points[0];
-        const endPoint = other.points[other.points.length - 1];
-        if (pointsNear(entryPoint, startPoint)) {
-          const displayedColor = normalizeActiveLineColor(
-            getPolylineDisplayedColor(other, {
-              includeThemeDefault: false,
-              allowExplicitStroke: true,
-              excludeOverlayId: overlayId,
-            })
+      let bestColor = "";
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const s of shapes) {
+        if (s?.type !== "polyline" || !Array.isArray(s.points) || s.points.length < 2) continue;
+        const endpoints = [s.points[0], s.points[s.points.length - 1]].filter(Boolean);
+        for (let idx = 0; idx < endpoints.length; idx += 1) {
+          const pt = endpoints[idx];
+          const dist = distancePointToRect(pt, wr);
+          if (dist > threshold || dist >= bestDistance) continue;
+          const sx = overlayScaleX(overlay);
+          const sy = overlayScaleY(overlay);
+          const localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
+          const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
+          const branch =
+            getDiverterBranchAtWorldPointByConnector(overlay, pt, bb, 40) ||
+            getDiverterBranchAtLocalPoint(localX, localY, bb);
+          if (branch !== "entry") continue;
+          const oppositePt = idx === 0 ? s.points[s.points.length - 1] : s.points[0];
+          const upstreamActiveColor = normalizeActiveLineColor(
+            oppositePt
+              ? getOverlayColorAtPoint(oppositePt, {
+                  ...options,
+                  excludeOverlayId: overlay?.id,
+                }) ||
+                  getOverlayColorNearPoint(oppositePt, 42, {
+                    ...options,
+                    excludeOverlayId: overlay?.id,
+                  })
+              : ""
           );
-          if (displayedColor) {
-            _diverterColorCache.set(cacheKey, displayedColor);
-            return displayedColor;
-          }
-          const resolved = normalizeActiveLineColor(findConnectedSourceColorFromPolyline(other, 0, options));
-          if (resolved) {
-            _diverterColorCache.set(cacheKey, resolved);
-            return resolved;
-          }
-        }
-        if (pointsNear(entryPoint, endPoint)) {
-          const displayedColor = normalizeActiveLineColor(
-            getPolylineDisplayedColor(other, {
-              includeThemeDefault: false,
-              allowExplicitStroke: true,
-              excludeOverlayId: overlayId,
-            })
+          const c = normalizeActiveLineColor(
+            upstreamActiveColor ||
+              getTagColor(s?.tagPath) ||
+              s?.stroke
           );
-          if (displayedColor) {
-            _diverterColorCache.set(cacheKey, displayedColor);
-            return displayedColor;
-          }
-          const resolved = normalizeActiveLineColor(
-            findConnectedSourceColorFromPolyline(other, other.points.length - 1, options)
-          );
-          if (resolved) {
-            _diverterColorCache.set(cacheKey, resolved);
-            return resolved;
-          }
+          if (!c) continue;
+          bestDistance = dist;
+          bestColor = c;
         }
       }
-      _diverterColorCache.set(cacheKey, "");
-      return "";
+      if (!bestColor && liveCanvasEnabled) {
+        const workerCachedColor = liveResolvedDiverterEntryColorByIdRef.current.get(overlayId);
+        if (workerCachedColor) {
+          bestColor = String(workerCachedColor || "");
+        }
+      }
+      if (!bestColor && excludedOverlayIds.size) {
+        _diverterColorCache.set(cacheKey, "");
+        return "";
+      }
+      _diverterColorCache.set(cacheKey, bestColor);
+      return bestColor;
     } finally {
       _diverterVisiting.delete(cacheKey);
     }
@@ -7048,6 +7043,21 @@ function CanvasSvg({
 
       const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
       const isDiverterOverlay = overlayEType.includes("diverter");
+      const isBinOverlay = overlayEType === "bin" || overlayEType.startsWith("bin");
+      const dynamicBinProductLabel = String(
+        binProductLabelByOverlayId?.[id] || ""
+      ).trim();
+      const dynamicBinNameLabel = String(
+        binNameLabelByOverlayId?.[id] || ""
+      ).trim();
+      const binLevelRatio = Math.max(
+        0,
+        Math.min(1, Number(binLevelRatioByOverlayId?.[id]) || 0)
+      );
+      const binLockedIn = binLockedInByOverlayId?.[id] === true;
+      const binLockedOut = binLockedOutByOverlayId?.[id] === true;
+      const shouldReplaceBinText =
+        isBinOverlay && (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
       const strokeModeRaw = String(overlay?.strokeMode || "").trim().toLowerCase();
       const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
       if (!renderLiveVisuals) {
@@ -7061,6 +7071,29 @@ function CanvasSvg({
           Boolean(overlayFill) && (!preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
         const hasCustomOverlayStroke =
           Boolean(overlayStroke) && (!preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
+        let inner = String(overlay?.inner || "");
+        if (shouldReplaceBinText) {
+          inner = replaceSvgTextPlaceholders(inner, {
+            product: dynamicBinProductLabel,
+            binNo: dynamicBinNameLabel,
+          });
+        }
+        if (
+          isBinOverlay &&
+          (
+            /id=["']BarGraph["']/i.test(String(inner || "")) ||
+            /id=["']Lock_Filling["']/i.test(String(inner || "")) ||
+            /id=["']Lock_Discharge["']/i.test(String(inner || "")) ||
+            /id=["']LockFill["']/i.test(String(inner || "")) ||
+            /id=["']LockDischarge["']/i.test(String(inner || ""))
+          )
+        ) {
+          inner = applyBinVisualStateToSvg(inner, {
+            ratio: binLevelRatio,
+            showFillLock: binLockedIn,
+            showDischargeLock: binLockedOut,
+          });
+        }
         if (isDiverterOverlay) {
           const diverterMode = getEffectiveDiverterState(overlay);
           const diverterFlowColor = normalizeActiveLineColor(
@@ -7068,7 +7101,6 @@ function CanvasSvg({
               excludedOverlayIds: [id],
             })
           );
-          let inner = String(overlay?.inner || "");
           inner = applyDiverterModeToSvg(inner, diverterMode);
           inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, diverterMode);
           out.set(id, {
@@ -7082,7 +7114,7 @@ function CanvasSvg({
           return;
         }
         out.set(id, {
-          inner: applyOverlayPaintOverrides(String(overlay?.inner || ""), {
+          inner: applyOverlayPaintOverrides(inner, {
             fillColor: hasCustomOverlayFill ? overlayFill : "",
             strokeColor: hasCustomOverlayStroke ? overlayStroke : "",
             strokeWidth: overlayStrokeWidth,
@@ -7098,22 +7130,6 @@ function CanvasSvg({
         });
         return;
       }
-
-      const dynamicBinProductLabel = String(
-        binProductLabelByOverlayId?.[id] || ""
-      ).trim();
-      const dynamicBinNameLabel = String(
-        binNameLabelByOverlayId?.[id] || ""
-      ).trim();
-      const binLevelRatio = Math.max(
-        0,
-        Math.min(1, Number(binLevelRatioByOverlayId?.[id]) || 0)
-      );
-      const binLockedIn = binLockedInByOverlayId?.[id] === true;
-      const binLockedOut = binLockedOutByOverlayId?.[id] === true;
-      const shouldReplaceBinText =
-        (overlayEType === "bin" || overlayEType.startsWith("bin")) &&
-        (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
 
       const boundFill = String(getOverlayBoundFillColor(overlay) || "").trim();
       const tagFill = isDiverterOverlay
@@ -7179,7 +7195,7 @@ function CanvasSvg({
         });
       }
       if (
-        (overlayEType === "bin" || overlayEType.startsWith("bin")) &&
+        isBinOverlay &&
         (
           /id=["']BarGraph["']/i.test(String(inner || "")) ||
           /id=["']Lock_Filling["']/i.test(String(inner || "")) ||

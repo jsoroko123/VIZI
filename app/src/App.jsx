@@ -9405,8 +9405,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     const onWheelBlockPageZoom = (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
-      e.preventDefault();
       if (!isCanvasTarget(e.target)) return;
+      e.preventDefault();
       const direction = e.deltaY < 0 ? 1 : -1;
       setZoom((z) => {
         const next = nudgeZoomPercent(z, direction > 0 ? ZOOM_STEP_PERCENT : -ZOOM_STEP_PERCENT);
@@ -9420,12 +9420,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (!mod) return;
       const k = String(e.key || "").toLowerCase();
       if (!["=", "+", "-", "_", "0"].includes(k)) return;
-      if (isCanvasTarget(e.target)) return;
+      if (!isCanvasTarget(e.target)) return;
       e.preventDefault();
     };
 
     const onGestureBlockPageZoom = (e) => {
-      if (isCanvasTarget(e.target)) return;
+      if (!isCanvasTarget(e.target)) return;
       e.preventDefault();
     };
 

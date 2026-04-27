@@ -14213,7 +14213,6 @@ var MesoraDrawingToolBundle = (() => {
       return resolved;
     };
     const getRouteStrokeColorForOverlay = (overlay) => {
-      if (!renderLiveVisuals) return "";
       if (!effectiveRouteStrokeColorByGroupPath) return "";
       const key = String((overlay == null ? void 0 : overlay.tagPath) || "").replace(/\r?\n/g, "").trim();
       const cacheKey = key.toLowerCase();
@@ -14224,10 +14223,6 @@ var MesoraDrawingToolBundle = (() => {
       if (direct) {
         if (cacheKey) renderRouteStrokeColorCache.set(cacheKey, direct);
         return direct;
-      }
-      if (liveCanvasEnabled) {
-        if (cacheKey) renderRouteStrokeColorCache.set(cacheKey, "");
-        return "";
       }
       const groupLive = getLiveValuesForOverlay(overlay);
       const fallbackGroupState = getGroupRouteStateForTagPath(overlay == null ? void 0 : overlay.tagPath);
@@ -14248,7 +14243,6 @@ var MesoraDrawingToolBundle = (() => {
       return "";
     };
     const getLiveValuesForOverlay = (overlay) => {
-      if (!renderLiveVisuals) return null;
       if (!effectiveSvgLiveValuesByGroupPath) return null;
       const key = String((overlay == null ? void 0 : overlay.tagPath) || "").replace(/\r?\n/g, "").trim();
       if (!key) return null;
@@ -14317,9 +14311,9 @@ var MesoraDrawingToolBundle = (() => {
         };
       }
       return {
-        tagStateColorsByPath: liveResolvedTagColorByPathRef.current instanceof Map && liveResolvedTagColorByPathRef.current.size ? liveResolvedTagColorByPathRef.current : liveEmptyTagColorMapRef.current,
-        routeStrokeColorByGroupPath: liveResolvedRouteStrokeByPathRef.current instanceof Map && liveResolvedRouteStrokeByPathRef.current.size ? liveResolvedRouteStrokeByPathRef.current : liveEmptyRouteStrokeMapRef.current,
-        svgLiveValuesByGroupPath: liveGroupRouteStateByPathRef.current instanceof Map && liveGroupRouteStateByPathRef.current.size ? liveGroupRouteStateByPathRef.current : liveEmptyGroupValuesMapRef.current
+        tagStateColorsByPath: liveResolvedTagColorByPathRef.current instanceof Map && liveResolvedTagColorByPathRef.current.size ? liveResolvedTagColorByPathRef.current : fallbackTagColors,
+        routeStrokeColorByGroupPath: liveResolvedRouteStrokeByPathRef.current instanceof Map && liveResolvedRouteStrokeByPathRef.current.size ? liveResolvedRouteStrokeByPathRef.current : fallbackRouteColors,
+        svgLiveValuesByGroupPath: liveGroupRouteStateByPathRef.current instanceof Map && liveGroupRouteStateByPathRef.current.size ? liveGroupRouteStateByPathRef.current : fallbackGroupValues
       };
     }, [
       liveCanvasEnabled,
@@ -17446,7 +17440,6 @@ var MesoraDrawingToolBundle = (() => {
       ] });
     };
     const getGroupRouteStateForTagPath = (rawTagPath) => {
-      if (!renderLiveVisuals) return { routeId: "", state: "" };
       const tagPath = String(rawTagPath || "").replace(/\r?\n/g, "").trim();
       if (!tagPath) return { routeId: "", state: "" };
       const cacheKey = tagPath.toLowerCase();
@@ -17456,9 +17449,6 @@ var MesoraDrawingToolBundle = (() => {
           routeId: String((cached == null ? void 0 : cached.routeId) || ""),
           state: String((cached == null ? void 0 : cached.state) || "")
         };
-      }
-      if (liveCanvasEnabled) {
-        return { routeId: "", state: "" };
       }
       const candidates = [tagPath];
       const parts = tagPath.split(".").map((x) => x.trim()).filter(Boolean);
@@ -18200,72 +18190,68 @@ var MesoraDrawingToolBundle = (() => {
       }
       _diverterVisiting.add(cacheKey);
       try {
-        if (liveCanvasEnabled) {
-          const workerCachedColor = liveResolvedDiverterEntryColorByIdRef.current.get(overlayId);
-          if (workerCachedColor) {
-            const resolved = String(workerCachedColor || "");
-            _diverterColorCache.set(cacheKey, resolved);
-            return resolved;
-          }
-        }
-        const bb = overlayLocalBBox(overlay == null ? void 0 : overlay.id);
-        const entryPoint = getDiverterEntryConnectorWorldPoint(overlay, bb);
-        if (!entryPoint) {
+        if (!overlay || !Array.isArray(shapes) || !shapes.length) {
           _diverterColorCache.set(cacheKey, "");
           return "";
         }
-        const directOverlayColor = normalizeActiveLineColor(
-          getNonDiverterStartSourceColorAtPoint(entryPoint, options)
+        const bb = (overlay == null ? void 0 : overlay.bbox) || (overlayLocalBBox == null ? void 0 : overlayLocalBBox(overlay.id));
+        if (!bb) {
+          _diverterColorCache.set(cacheKey, "");
+          return "";
+        }
+        const wr = overlayWorldRect(overlay, bb);
+        const threshold = 28;
+        const excludedOverlayIds = new Set(
+          [
+            options == null ? void 0 : options.excludeOverlayId,
+            ...Array.isArray(options == null ? void 0 : options.excludedOverlayIds) ? options.excludedOverlayIds : []
+          ].map((value) => String(value || "").trim()).filter(Boolean)
         );
-        if (directOverlayColor) {
-          _diverterColorCache.set(cacheKey, directOverlayColor);
-          return directOverlayColor;
-        }
-        for (const other of Array.isArray(shapes) ? shapes : []) {
-          if ((other == null ? void 0 : other.type) !== "polyline" || !Array.isArray(other.points) || other.points.length < 2) continue;
-          const startPoint = other.points[0];
-          const endPoint = other.points[other.points.length - 1];
-          if (pointsNear(entryPoint, startPoint)) {
-            const displayedColor = normalizeActiveLineColor(
-              getPolylineDisplayedColor(other, {
-                includeThemeDefault: false,
-                allowExplicitStroke: true,
-                excludeOverlayId: overlayId
-              })
+        let bestColor = "";
+        let bestDistance = Number.POSITIVE_INFINITY;
+        for (const s of shapes) {
+          if ((s == null ? void 0 : s.type) !== "polyline" || !Array.isArray(s.points) || s.points.length < 2) continue;
+          const endpoints = [s.points[0], s.points[s.points.length - 1]].filter(Boolean);
+          for (let idx = 0; idx < endpoints.length; idx += 1) {
+            const pt = endpoints[idx];
+            const dist = distancePointToRect(pt, wr);
+            if (dist > threshold || dist >= bestDistance) continue;
+            const sx = overlayScaleX(overlay);
+            const sy = overlayScaleY(overlay);
+            const localX = (Number(pt == null ? void 0 : pt.x) - Number((overlay == null ? void 0 : overlay.tx) || 0)) / Math.max(1e-4, sx);
+            const localY = (Number(pt == null ? void 0 : pt.y) - Number((overlay == null ? void 0 : overlay.ty) || 0)) / Math.max(1e-4, sy);
+            const branch = getDiverterBranchAtWorldPointByConnector(overlay, pt, bb, 40) || getDiverterBranchAtLocalPoint(localX, localY, bb);
+            if (branch !== "entry") continue;
+            const oppositePt = idx === 0 ? s.points[s.points.length - 1] : s.points[0];
+            const upstreamActiveColor = normalizeActiveLineColor(
+              oppositePt ? getOverlayColorAtPoint(oppositePt, {
+                ...options,
+                excludeOverlayId: overlay == null ? void 0 : overlay.id
+              }) || getOverlayColorNearPoint(oppositePt, 42, {
+                ...options,
+                excludeOverlayId: overlay == null ? void 0 : overlay.id
+              }) : ""
             );
-            if (displayedColor) {
-              _diverterColorCache.set(cacheKey, displayedColor);
-              return displayedColor;
-            }
-            const resolved = normalizeActiveLineColor(findConnectedSourceColorFromPolyline(other, 0, options));
-            if (resolved) {
-              _diverterColorCache.set(cacheKey, resolved);
-              return resolved;
-            }
-          }
-          if (pointsNear(entryPoint, endPoint)) {
-            const displayedColor = normalizeActiveLineColor(
-              getPolylineDisplayedColor(other, {
-                includeThemeDefault: false,
-                allowExplicitStroke: true,
-                excludeOverlayId: overlayId
-              })
+            const c = normalizeActiveLineColor(
+              upstreamActiveColor || getTagColor(s == null ? void 0 : s.tagPath) || (s == null ? void 0 : s.stroke)
             );
-            if (displayedColor) {
-              _diverterColorCache.set(cacheKey, displayedColor);
-              return displayedColor;
-            }
-            const resolved = normalizeActiveLineColor(
-              findConnectedSourceColorFromPolyline(other, other.points.length - 1, options)
-            );
-            if (resolved) {
-              _diverterColorCache.set(cacheKey, resolved);
-              return resolved;
-            }
+            if (!c) continue;
+            bestDistance = dist;
+            bestColor = c;
           }
         }
-        _diverterColorCache.set(cacheKey, "");
-        return "";
+        if (!bestColor && liveCanvasEnabled) {
+          const workerCachedColor = liveResolvedDiverterEntryColorByIdRef.current.get(overlayId);
+          if (workerCachedColor) {
+            bestColor = String(workerCachedColor || "");
+          }
+        }
+        if (!bestColor && excludedOverlayIds.size) {
+          _diverterColorCache.set(cacheKey, "");
+          return "";
+        }
+        _diverterColorCache.set(cacheKey, bestColor);
+        return bestColor;
       } finally {
         _diverterVisiting.delete(cacheKey);
       }
@@ -19702,6 +19688,20 @@ var MesoraDrawingToolBundle = (() => {
         }
         const overlayEType = String((overlay == null ? void 0 : overlay.eType) || "").trim().toLowerCase();
         const isDiverterOverlay2 = overlayEType.includes("diverter");
+        const isBinOverlay2 = overlayEType === "bin" || overlayEType.startsWith("bin");
+        const dynamicBinProductLabel = String(
+          (binProductLabelByOverlayId == null ? void 0 : binProductLabelByOverlayId[id]) || ""
+        ).trim();
+        const dynamicBinNameLabel = String(
+          (binNameLabelByOverlayId == null ? void 0 : binNameLabelByOverlayId[id]) || ""
+        ).trim();
+        const binLevelRatio = Math.max(
+          0,
+          Math.min(1, Number(binLevelRatioByOverlayId == null ? void 0 : binLevelRatioByOverlayId[id]) || 0)
+        );
+        const binLockedIn = (binLockedInByOverlayId == null ? void 0 : binLockedInByOverlayId[id]) === true;
+        const binLockedOut = (binLockedOutByOverlayId == null ? void 0 : binLockedOutByOverlayId[id]) === true;
+        const shouldReplaceBinText = isBinOverlay2 && (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
         const strokeModeRaw = String((overlay == null ? void 0 : overlay.strokeMode) || "").trim().toLowerCase();
         const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
         if (!renderLiveVisuals) {
@@ -19710,6 +19710,20 @@ var MesoraDrawingToolBundle = (() => {
           const overlayStrokeWidth2 = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
           const hasCustomOverlayFill2 = Boolean(overlayFill2) && (!preserveStrokeMode || overlayFill2.toLowerCase() !== themeFillDefault);
           const hasCustomOverlayStroke2 = Boolean(overlayStroke2) && (!preserveStrokeMode || overlayStroke2.toLowerCase() !== themeStrokeDefault.toLowerCase());
+          let inner2 = String((overlay == null ? void 0 : overlay.inner) || "");
+          if (shouldReplaceBinText) {
+            inner2 = replaceSvgTextPlaceholders(inner2, {
+              product: dynamicBinProductLabel,
+              binNo: dynamicBinNameLabel
+            });
+          }
+          if (isBinOverlay2 && (/id=["']BarGraph["']/i.test(String(inner2 || "")) || /id=["']Lock_Filling["']/i.test(String(inner2 || "")) || /id=["']Lock_Discharge["']/i.test(String(inner2 || "")) || /id=["']LockFill["']/i.test(String(inner2 || "")) || /id=["']LockDischarge["']/i.test(String(inner2 || "")))) {
+            inner2 = applyBinVisualStateToSvg(inner2, {
+              ratio: binLevelRatio,
+              showFillLock: binLockedIn,
+              showDischargeLock: binLockedOut
+            });
+          }
           if (isDiverterOverlay2) {
             const diverterMode = getEffectiveDiverterState(overlay);
             const diverterFlowColor2 = normalizeActiveLineColor(
@@ -19717,7 +19731,6 @@ var MesoraDrawingToolBundle = (() => {
                 excludedOverlayIds: [id]
               })
             );
-            let inner2 = String((overlay == null ? void 0 : overlay.inner) || "");
             inner2 = applyDiverterModeToSvg(inner2, diverterMode);
             inner2 = applyDiverterFlowColorToSvg(inner2, diverterFlowColor2, diverterMode);
             out.set(id, {
@@ -19731,7 +19744,7 @@ var MesoraDrawingToolBundle = (() => {
             return;
           }
           out.set(id, {
-            inner: applyOverlayPaintOverrides(String((overlay == null ? void 0 : overlay.inner) || ""), {
+            inner: applyOverlayPaintOverrides(inner2, {
               fillColor: hasCustomOverlayFill2 ? overlayFill2 : "",
               strokeColor: hasCustomOverlayStroke2 ? overlayStroke2 : "",
               strokeWidth: overlayStrokeWidth2
@@ -19747,19 +19760,6 @@ var MesoraDrawingToolBundle = (() => {
           });
           return;
         }
-        const dynamicBinProductLabel = String(
-          (binProductLabelByOverlayId == null ? void 0 : binProductLabelByOverlayId[id]) || ""
-        ).trim();
-        const dynamicBinNameLabel = String(
-          (binNameLabelByOverlayId == null ? void 0 : binNameLabelByOverlayId[id]) || ""
-        ).trim();
-        const binLevelRatio = Math.max(
-          0,
-          Math.min(1, Number(binLevelRatioByOverlayId == null ? void 0 : binLevelRatioByOverlayId[id]) || 0)
-        );
-        const binLockedIn = (binLockedInByOverlayId == null ? void 0 : binLockedInByOverlayId[id]) === true;
-        const binLockedOut = (binLockedOutByOverlayId == null ? void 0 : binLockedOutByOverlayId[id]) === true;
-        const shouldReplaceBinText = (overlayEType === "bin" || overlayEType.startsWith("bin")) && (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
         const boundFill = String(getOverlayBoundFillColor(overlay) || "").trim();
         const tagFill = isDiverterOverlay2 ? "" : normalizeOverlayActiveFillColor(boundFill || getTagColor(overlay.tagPath));
         const routeStroke = normalizeActiveLineColor(getRouteStrokeColorForOverlay(overlay));
@@ -19797,7 +19797,7 @@ var MesoraDrawingToolBundle = (() => {
             binNo: dynamicBinNameLabel
           });
         }
-        if ((overlayEType === "bin" || overlayEType.startsWith("bin")) && (/id=["']BarGraph["']/i.test(String(inner || "")) || /id=["']Lock_Filling["']/i.test(String(inner || "")) || /id=["']Lock_Discharge["']/i.test(String(inner || "")) || /id=["']LockFill["']/i.test(String(inner || "")) || /id=["']LockDischarge["']/i.test(String(inner || "")))) {
+        if (isBinOverlay2 && (/id=["']BarGraph["']/i.test(String(inner || "")) || /id=["']Lock_Filling["']/i.test(String(inner || "")) || /id=["']Lock_Discharge["']/i.test(String(inner || "")) || /id=["']LockFill["']/i.test(String(inner || "")) || /id=["']LockDischarge["']/i.test(String(inner || "")))) {
           inner = applyBinVisualStateToSvg(inner, {
             ratio: binLevelRatio,
             showFillLock: binLockedIn,
@@ -22365,6 +22365,9 @@ var MesoraDrawingToolBundle = (() => {
   ]);
   var DEFAULT_CANVAS_WIDTH = 1668;
   var DEFAULT_CANVAS_HEIGHT = 1401;
+  var LOCAL_CANVAS_ZOOM_MIN = 0.1;
+  var LOCAL_CANVAS_ZOOM_MAX = 4;
+  var LOCAL_CANVAS_ZOOM_STEP = 0.1;
   var CANVAS_RULER_SIZE = 24;
   var PROPERTY_PANEL_WIDTH = 300;
   var PROPERTY_PANEL_HEIGHT = 520;
@@ -22733,6 +22736,16 @@ var MesoraDrawingToolBundle = (() => {
   function toPositiveNumber(value) {
     const next = Number(value);
     return Number.isFinite(next) && next > 0 ? next : null;
+  }
+  function normalizeLocalCanvasZoom(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      return 1;
+    }
+    return Math.min(
+      LOCAL_CANVAS_ZOOM_MAX,
+      Math.max(LOCAL_CANVAS_ZOOM_MIN, Math.round(num * 100) / 100)
+    );
   }
   function readDefaultSizeCandidate(candidate) {
     var _a, _b, _c, _d;
@@ -25076,6 +25089,12 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const effectiveZoom = localZoom !== null ? localZoom : zoom;
     const effectiveZoomRef = useRef(effectiveZoom);
     effectiveZoomRef.current = effectiveZoom;
+    const stepCanvasZoom = useCallback((direction) => {
+      const amount = Number(direction);
+      if (!Number.isFinite(amount) || amount === 0) return;
+      const base = normalizeLocalCanvasZoom(effectiveZoomRef.current);
+      setLocalZoom(normalizeLocalCanvasZoom(base + amount * LOCAL_CANVAS_ZOOM_STEP));
+    }, []);
     const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom(
       rootRef.current,
       viewBox.width,
@@ -25084,6 +25103,13 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       viewBox.height,
       browserViewportWidth,
       browserViewportHeight
+    ) : 1;
+    const runtimeCanvasZoom = browserRuntimeMode ? Math.max(
+      0.05,
+      Math.min(
+        8,
+        liveCanvasZoom * (localZoom !== null ? normalizeLocalCanvasZoom(localZoom) : 1)
+      )
     ) : 1;
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
@@ -27745,19 +27771,18 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     }, [deletePolylineVertex, deleteSelected, editingId, editorVisible, selectedIds, selectedOverlayIds, selectedSegment]);
     useEffect(() => {
       const onWheelNonPassive = (event) => {
-        if (!event.ctrlKey && !event.metaKey) return;
+        if (!editorVisible && !browserRuntimeMode) return;
         if (!rootRef.current) return;
         if (!rootRef.current.contains(event.target)) return;
+        if (editorVisible && !event.ctrlKey && !event.metaKey) return;
+        if (browserRuntimeMode && event.altKey) return;
         event.preventDefault();
         event.stopPropagation();
-        const direction = event.deltaY < 0 ? 1 : -1;
-        const base = effectiveZoomRef.current;
-        const next = Math.max(0.1, Math.min(8, base + direction * 0.1 * base));
-        setLocalZoom(Math.round(next * 100) / 100);
+        stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
       };
       window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
       return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
-    }, []);
+    }, [browserRuntimeMode, editorVisible, stepCanvasZoom]);
     useEffect(() => {
       const onKeyDown = (event) => {
         if (!editorVisible) {
@@ -27898,7 +27923,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           /* @__PURE__ */ jsx("div", { style: browserRuntimeMode ? {
             width: viewBox.width,
             height: viewBox.height,
-            zoom: liveCanvasZoom,
+            zoom: runtimeCanvasZoom,
             flexShrink: 0,
             position: "relative",
             transformOrigin: "top left"
@@ -28109,7 +28134,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                         onMouseDown: stopInteractivePropagation,
                         onClick: (e) => {
                           stopInteractivePropagation(e);
-                          setLocalZoom(Math.max(0.1, Math.round((effectiveZoom - 0.1) * 100) / 100));
+                          stepCanvasZoom(-1);
                         },
                         style: { flexShrink: 0, width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "#f8fafc", fontSize: 16, cursor: "pointer", lineHeight: 1 },
                         children: "\u2212"
@@ -28125,7 +28150,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                         value: Math.round(effectiveZoom * 100),
                         onPointerDown: stopInteractivePropagation,
                         onMouseDown: stopInteractivePropagation,
-                        onChange: (e) => setLocalZoom(Number(e.target.value) / 100),
+                        onChange: (e) => setLocalZoom(normalizeLocalCanvasZoom(Number(e.target.value) / 100)),
                         style: { flex: 1, accentColor: "#22c55e", cursor: "pointer" }
                       }
                     ),
@@ -28137,7 +28162,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                         onMouseDown: stopInteractivePropagation,
                         onClick: (e) => {
                           stopInteractivePropagation(e);
-                          setLocalZoom(Math.min(4, Math.round((effectiveZoom + 0.1) * 100) / 100));
+                          stepCanvasZoom(1);
                         },
                         style: { flexShrink: 0, width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "#f8fafc", fontSize: 16, cursor: "pointer", lineHeight: 1 },
                         children: "+"
@@ -29333,6 +29358,9 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
   var DEFAULT_STROKE2 = "#808080";
   var DEFAULT_CANVAS_WIDTH2 = 1668;
   var DEFAULT_CANVAS_HEIGHT2 = 1401;
+  var LOCAL_CANVAS_ZOOM_MIN2 = 0.1;
+  var LOCAL_CANVAS_ZOOM_MAX2 = 4;
+  var LOCAL_CANVAS_ZOOM_STEP2 = 0.1;
   function readTreeValue(tree, path, fallback) {
     try {
       if (typeof fallback === "string" && typeof tree.readString === "function") {
@@ -29418,6 +29446,16 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
   function toPositiveNumber2(value) {
     const next = Number(value);
     return Number.isFinite(next) && next > 0 ? next : null;
+  }
+  function normalizeLocalCanvasZoom2(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      return 1;
+    }
+    return Math.min(
+      LOCAL_CANVAS_ZOOM_MAX2,
+      Math.max(LOCAL_CANVAS_ZOOM_MIN2, Math.round(num * 100) / 100)
+    );
   }
   function readDefaultSizeCandidate2(candidate) {
     var _a, _b, _c, _d;
@@ -30317,6 +30355,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const svgCatalogRequestIdRef = useRef(0);
+    const [localZoom, setLocalZoom] = useState(null);
     const runtimeDocumentViewBounds = useMemo(
       () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
       [
@@ -30329,6 +30368,16 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       ]
     );
     const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
+    const stepCanvasZoom = useCallback((direction) => {
+      const amount = Number(direction);
+      if (!Number.isFinite(amount) || amount === 0) {
+        return;
+      }
+      setLocalZoom((previous) => {
+        const base = previous != null ? previous : 1;
+        return normalizeLocalCanvasZoom2(base + amount * LOCAL_CANVAS_ZOOM_STEP2);
+      });
+    }, []);
     useEffect(() => {
       const node = rootRef.current;
       if (!node || typeof node.getBoundingClientRect !== "function") {
@@ -30372,6 +30421,19 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         (_b2 = (_a2 = window.visualViewport) == null ? void 0 : _a2.removeEventListener) == null ? void 0 : _b2.call(_a2, "resize", updateViewportHeight);
       };
     }, []);
+    useEffect(() => {
+      const onWheelNonPassive = (event) => {
+        if (!browserRuntimeMode) return;
+        if (event.altKey) return;
+        if (!rootRef.current) return;
+        if (!rootRef.current.contains(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
+      };
+      window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
+      return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
+    }, [browserRuntimeMode, stepCanvasZoom]);
     useEffect(() => {
       setSelectedIds(coerceArray2(externalSelectedIds));
     }, [externalSelectedIdsKey]);
@@ -30727,6 +30789,13 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       browserViewportWidth,
       browserViewportHeight
     ) : 1;
+    const runtimeCanvasZoom = browserRuntimeMode ? Math.max(
+      0.05,
+      Math.min(
+        8,
+        liveCanvasZoom * (localZoom !== null ? normalizeLocalCanvasZoom2(localZoom) : 1)
+      )
+    ) : 1;
     const canvasContent = /* @__PURE__ */ jsx(
       CanvasSvg_default,
       {
@@ -30839,7 +30908,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
               style: {
                 width: viewBox.width,
                 height: viewBox.height,
-                zoom: liveCanvasZoom,
+                zoom: runtimeCanvasZoom,
                 flexShrink: 0,
                 position: "relative",
                 transformOrigin: "top left"

@@ -60,6 +60,9 @@ const DEFAULT_IGNITION_FILL_MAP = Object.freeze([
 ]);
 const DEFAULT_CANVAS_WIDTH = 1668;
 const DEFAULT_CANVAS_HEIGHT = 1401;
+const LOCAL_CANVAS_ZOOM_MIN = 0.1;
+const LOCAL_CANVAS_ZOOM_MAX = 4;
+const LOCAL_CANVAS_ZOOM_STEP = 0.1;
 const CANVAS_RULER_SIZE = 24;
 const PROPERTY_PANEL_WIDTH = 300;
 const PROPERTY_PANEL_HEIGHT = 520;
@@ -481,6 +484,17 @@ function getIgnitionTagValue(tagValMap, basePath, member) {
 function toPositiveNumber(value) {
     const next = Number(value);
     return Number.isFinite(next) && next > 0 ? next : null;
+}
+
+function normalizeLocalCanvasZoom(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+        return 1;
+    }
+    return Math.min(
+        LOCAL_CANVAS_ZOOM_MAX,
+        Math.max(LOCAL_CANVAS_ZOOM_MIN, Math.round(num * 100) / 100)
+    );
 }
 
 function readDefaultSizeCandidate(candidate) {
@@ -3151,6 +3165,12 @@ export default function PerspectiveViziCanvasBridge(props) {
     const effectiveZoom = localZoom !== null ? localZoom : zoom;
     const effectiveZoomRef = useRef(effectiveZoom);
     effectiveZoomRef.current = effectiveZoom;
+    const stepCanvasZoom = useCallback((direction) => {
+        const amount = Number(direction);
+        if (!Number.isFinite(amount) || amount === 0) return;
+        const base = normalizeLocalCanvasZoom(effectiveZoomRef.current);
+        setLocalZoom(normalizeLocalCanvasZoom(base + (amount * LOCAL_CANVAS_ZOOM_STEP)));
+    }, []);
     const liveCanvasZoom = browserRuntimeMode
         ? resolveBrowserHeightCanvasZoom(
             rootRef.current,
@@ -3160,6 +3180,15 @@ export default function PerspectiveViziCanvasBridge(props) {
             viewBox.height,
             browserViewportWidth,
             browserViewportHeight
+        )
+        : 1;
+    const runtimeCanvasZoom = browserRuntimeMode
+        ? Math.max(
+            0.05,
+            Math.min(
+                8,
+                liveCanvasZoom * (localZoom !== null ? normalizeLocalCanvasZoom(localZoom) : 1)
+            )
         )
         : 1;
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
@@ -6145,19 +6174,18 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     useEffect(() => {
         const onWheelNonPassive = (event) => {
-            if (!event.ctrlKey && !event.metaKey) return;
+            if (!editorVisible && !browserRuntimeMode) return;
             if (!rootRef.current) return;
             if (!rootRef.current.contains(event.target)) return;
+            if (editorVisible && !event.ctrlKey && !event.metaKey) return;
+            if (browserRuntimeMode && event.altKey) return;
             event.preventDefault();
             event.stopPropagation();
-            const direction = event.deltaY < 0 ? 1 : -1;
-            const base = effectiveZoomRef.current;
-            const next = Math.max(0.1, Math.min(8, base + direction * 0.1 * base));
-            setLocalZoom(Math.round(next * 100) / 100);
+            stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
         };
         window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
         return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
-    }, []);
+    }, [browserRuntimeMode, editorVisible, stepCanvasZoom]);
 
     useEffect(() => {
         const onKeyDown = (event) => {
@@ -6316,7 +6344,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             <div style={browserRuntimeMode ? {
                 width: viewBox.width,
                 height: viewBox.height,
-                zoom: liveCanvasZoom,
+                zoom: runtimeCanvasZoom,
                 flexShrink: 0,
                 position: "relative",
                 transformOrigin: "top left"
@@ -6522,7 +6550,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     type="button"
                                     onPointerDown={stopInteractivePropagation}
                                     onMouseDown={stopInteractivePropagation}
-                                    onClick={(e) => { stopInteractivePropagation(e); setLocalZoom(Math.max(0.1, Math.round((effectiveZoom - 0.1) * 100) / 100)); }}
+                                    onClick={(e) => { stopInteractivePropagation(e); stepCanvasZoom(-1); }}
                                     style={{ flexShrink: 0, width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "#f8fafc", fontSize: 16, cursor: "pointer", lineHeight: 1 }}
                                 >−</button>
                                 <input
@@ -6533,14 +6561,14 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     value={Math.round(effectiveZoom * 100)}
                                     onPointerDown={stopInteractivePropagation}
                                     onMouseDown={stopInteractivePropagation}
-                                    onChange={(e) => setLocalZoom(Number(e.target.value) / 100)}
+                                    onChange={(e) => setLocalZoom(normalizeLocalCanvasZoom(Number(e.target.value) / 100))}
                                     style={{ flex: 1, accentColor: "#22c55e", cursor: "pointer" }}
                                 />
                                 <button
                                     type="button"
                                     onPointerDown={stopInteractivePropagation}
                                     onMouseDown={stopInteractivePropagation}
-                                    onClick={(e) => { stopInteractivePropagation(e); setLocalZoom(Math.min(4, Math.round((effectiveZoom + 0.1) * 100) / 100)); }}
+                                    onClick={(e) => { stopInteractivePropagation(e); stepCanvasZoom(1); }}
                                     style={{ flexShrink: 0, width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "#f8fafc", fontSize: 16, cursor: "pointer", lineHeight: 1 }}
                                 >+</button>
                             </div>

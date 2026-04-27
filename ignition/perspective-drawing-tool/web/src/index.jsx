@@ -22,6 +22,9 @@ const DEFAULT_FILL = "#CCCCCC";
 const DEFAULT_STROKE = "#808080";
 const DEFAULT_CANVAS_WIDTH = 1668;
 const DEFAULT_CANVAS_HEIGHT = 1401;
+const LOCAL_CANVAS_ZOOM_MIN = 0.1;
+const LOCAL_CANVAS_ZOOM_MAX = 4;
+const LOCAL_CANVAS_ZOOM_STEP = 0.1;
 
 function readTreeValue(tree, path, fallback) {
     try {
@@ -119,6 +122,17 @@ function resolveBindings(element, data) {
 function toPositiveNumber(value) {
     const next = Number(value);
     return Number.isFinite(next) && next > 0 ? next : null;
+}
+
+function normalizeLocalCanvasZoom(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+        return 1;
+    }
+    return Math.min(
+        LOCAL_CANVAS_ZOOM_MAX,
+        Math.max(LOCAL_CANVAS_ZOOM_MIN, Math.round(num * 100) / 100)
+    );
 }
 
 function readDefaultSizeCandidate(candidate) {
@@ -1235,6 +1249,7 @@ function ViziCanvasBridge(props) {
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const svgCatalogRequestIdRef = useRef(0);
+    const [localZoom, setLocalZoom] = useState(null);
     const runtimeDocumentViewBounds = useMemo(
         () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
         [
@@ -1247,6 +1262,16 @@ function ViziCanvasBridge(props) {
         ]
     );
     const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
+    const stepCanvasZoom = useCallback((direction) => {
+        const amount = Number(direction);
+        if (!Number.isFinite(amount) || amount === 0) {
+            return;
+        }
+        setLocalZoom((previous) => {
+            const base = previous != null ? previous : 1;
+            return normalizeLocalCanvasZoom(base + (amount * LOCAL_CANVAS_ZOOM_STEP));
+        });
+    }, []);
 
     useEffect(() => {
         const node = rootRef.current;
@@ -1301,6 +1326,20 @@ function ViziCanvasBridge(props) {
             window.visualViewport?.removeEventListener?.("resize", updateViewportHeight);
         };
     }, []);
+
+    useEffect(() => {
+        const onWheelNonPassive = (event) => {
+            if (!browserRuntimeMode) return;
+            if (event.altKey) return;
+            if (!rootRef.current) return;
+            if (!rootRef.current.contains(event.target)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
+        };
+        window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
+        return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
+    }, [browserRuntimeMode, stepCanvasZoom]);
 
     useEffect(() => {
         setSelectedIds(coerceArray(externalSelectedIds));
@@ -1728,6 +1767,15 @@ function ViziCanvasBridge(props) {
             browserViewportHeight
         )
         : 1;
+    const runtimeCanvasZoom = browserRuntimeMode
+        ? Math.max(
+            0.05,
+            Math.min(
+                8,
+                liveCanvasZoom * (localZoom !== null ? normalizeLocalCanvasZoom(localZoom) : 1)
+            )
+        )
+        : 1;
     const canvasContent = (
         <CanvasSvg
             svgRef={svgRef}
@@ -1838,7 +1886,7 @@ function ViziCanvasBridge(props) {
                     style={{
                         width: viewBox.width,
                         height: viewBox.height,
-                        zoom: liveCanvasZoom,
+                        zoom: runtimeCanvasZoom,
                         flexShrink: 0,
                         position: "relative",
                         transformOrigin: "top left"
