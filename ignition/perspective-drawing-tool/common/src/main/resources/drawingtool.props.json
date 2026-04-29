@@ -97,6 +97,15 @@
     "model": {
       "type": "object",
       "additionalProperties": true,
+      "properties": {
+        "hmiStateStyleMaps": {
+          "type": "object",
+          "title": "HMI State Style Maps",
+          "description": "Optional overrides for the gateway hmi-state-style-maps.json file. Maps UDT HMI_State integer values to Ignition style classes.",
+          "additionalProperties": true,
+          "default": {}
+        }
+      },
       "default": {
         "tool": "select",
         "zoom": 1,
@@ -105,7 +114,8 @@
           "y": 0
         },
         "shapes": [],
-        "svgOverlays": []
+        "svgOverlays": [],
+        "hmiStateStyleMaps": {}
       }
     },
     "shapes": {
@@ -196,6 +206,13 @@
     "liveTagKeys": {
       "type": "array",
       "default": []
+    },
+    "hmiStateStyleMaps": {
+      "type": "object",
+      "title": "HMI State Style Maps",
+      "description": "Optional overrides for the gateway hmi-state-style-maps.json file. Maps UDT HMI_State integer values to Ignition style classes.",
+      "additionalProperties": true,
+      "default": {}
     },
     "opcTags": {
       "type": "array",

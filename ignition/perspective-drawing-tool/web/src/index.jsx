@@ -426,7 +426,61 @@ function resolveOverlayPopupViewPath(overlay) {
         || overlay?.name
         || overlay?.sourceKey
     );
-    return popupViewName ? `Popups/${popupViewName}` : "";
+    if (!popupViewName) {
+        return "";
+    }
+    if (/^Terra\/Popups\//i.test(popupViewName)) {
+        return popupViewName;
+    }
+    if (/^Popups\//i.test(popupViewName)) {
+        return `Terra/${popupViewName}`;
+    }
+    return `Terra/Popups/${popupViewName}`;
+}
+
+function parsePopupParamsObject(value) {
+    if (isPlainObject(value)) {
+        return cloneValue(value);
+    }
+    const raw = String(value ?? "").trim();
+    if (!raw) {
+        return {};
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        return isPlainObject(parsed) ? parsed : {};
+    } catch (_error) {
+        return {};
+    }
+}
+
+function applyPopupParamPlaceholders(value, context) {
+    if (typeof value === "string") {
+        return value.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => (
+            Object.prototype.hasOwnProperty.call(context, key)
+                ? String(context[key] ?? "")
+                : match
+        ));
+    }
+    if (Array.isArray(value)) {
+        return value.map((entry) => applyPopupParamPlaceholders(entry, context));
+    }
+    if (isPlainObject(value)) {
+        return Object.fromEntries(
+            Object.entries(value).map(([key, entry]) => [key, applyPopupParamPlaceholders(entry, context)])
+        );
+    }
+    return value;
+}
+
+function resolveOverlayPopupParams(overlay, baseParams) {
+    const rawParams =
+        overlay?.popupParamsJson
+        ?? overlay?.popupParams
+        ?? overlay?.popupParametersJson
+        ?? overlay?.popupParameters
+        ?? {};
+    return applyPopupParamPlaceholders(parsePopupParamsObject(rawParams), baseParams);
 }
 
 function coerceArray(value) {
@@ -1556,6 +1610,15 @@ function ViziCanvasBridge(props) {
         const popupId = overlayId
             ? `svg-popup-${overlayId}`
             : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
+        const tagPath = String(overlay?.tagPath || "").trim();
+        const baseViewParams = {
+            overlayId,
+            eType: popupViewName,
+            name: popupTitle,
+            tagName: tagPath,
+            tagPath
+        };
+        const extraViewParams = resolveOverlayPopupParams(overlay, baseViewParams);
 
         if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => popup?.id === popupId)) {
             if (typeof mounts.closePopup === "function") {
@@ -1567,10 +1630,8 @@ function ViziCanvasBridge(props) {
             id: popupId,
             viewPath,
             viewParams: {
-                overlayId,
-                eType: popupViewName,
-                name: popupTitle,
-                tagPath: String(overlay?.tagPath || "").trim()
+                ...extraViewParams,
+                ...baseViewParams
             },
             title: popupTitle,
             showCloseIcon: true,

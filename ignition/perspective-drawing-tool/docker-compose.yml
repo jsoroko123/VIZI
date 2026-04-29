@@ -10,11 +10,13 @@ services:
     volumes:
       - gateway-data:/usr/local/bin/ignition/data
       - ./gateway/svg-library-external:/usr/local/bin/ignition/data/config/com.mesora.perspective.drawing/svg-library
+      - ./gateway/hmi-state-style-maps.json:/usr/local/bin/ignition/data/config/com.mesora.perspective.drawing/hmi-state-style-maps.json
     environment:
       ACCEPT_IGNITION_EULA: "Y"
       GATEWAY_ADMIN_USERNAME: admin
       GATEWAY_ADMIN_PASSWORD: mesora-dev-password
       IGNITION_EDITION: standard
+      MESORA_HMI_STATE_STYLE_MAP_DISPLAY_PATH: ./gateway/hmi-state-style-maps.json
       MESORA_SVG_LIBRARY_DISPLAY_PATH: ./gateway/svg-library-external
       TZ: America/Chicago
     command: >

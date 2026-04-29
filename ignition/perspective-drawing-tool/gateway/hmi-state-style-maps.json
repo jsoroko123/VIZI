@@ -1,0 +1,851 @@
+{
+  "classes": {
+    "MotorStopped": {
+      "class": "Terra/EquipmentStyles/Motor/Stopped",
+      "text": "Stopped"
+    },
+    "MotorStartingFwd": {
+      "class": "Terra/EquipmentStyles/Motor/StartingFwd",
+      "text": "StartingFwd"
+    },
+    "MotorStartingRev": {
+      "class": "Terra/EquipmentStyles/Motor/StartingRev",
+      "text": "StartingRev"
+    },
+    "MotorRunningFwd": {
+      "class": "Terra/EquipmentStyles/Motor/RunningFwd",
+      "text": "RunningFwd"
+    },
+    "MotorRunningRev": {
+      "class": "Terra/EquipmentStyles/Motor/RunningRev",
+      "text": "RunningRev"
+    },
+    "MotorStopping": {
+      "class": "Terra/EquipmentStyles/Motor/Stopping",
+      "text": "Stopping"
+    },
+    "MotorFaulted": {
+      "class": "Terra/EquipmentStyles/Motor/Faulted",
+      "text": "Faulted"
+    },
+    "AINCtoHigh": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/CtoHigh",
+      "text": "CtoHigh"
+    },
+    "AINCtoLow": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/CtoLow",
+      "text": "CtoLow"
+    },
+    "AINCtoNormal": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/CtoNormal",
+      "text": "CtoNormal"
+    },
+    "AINFaultHigh": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/FaultHigh",
+      "text": "FaultHigh"
+    },
+    "AINFaultHighHigh": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/FaultHighHigh",
+      "text": "FaultHighHigh"
+    },
+    "AINFaultLow": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/FaultLow",
+      "text": "FaultLow"
+    },
+    "AINFaultLowLow": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/FaultLowLow",
+      "text": "FaultLowLow"
+    },
+    "AINHigh": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/High",
+      "text": "High"
+    },
+    "AINHighHigh": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/HighHigh",
+      "text": "HighHigh"
+    },
+    "AINLow": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/Low",
+      "text": "Low"
+    },
+    "AINLowLow": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/LowLow",
+      "text": "LowLow"
+    },
+    "AINNormal": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/Normal",
+      "text": "Normal"
+    },
+    "AINNoState": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/NoState",
+      "text": "NoState"
+    },
+    "AINWarningHigh": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/WarningHigh",
+      "text": "WarningHigh"
+    },
+    "AINWarningHighHigh": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/WarningHighHigh",
+      "text": "WarningHighHigh"
+    },
+    "AINWarningLow": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/WarningLow",
+      "text": "WarningLow"
+    },
+    "AINWarningLowLow": {
+      "class": "Terra/EquipmentStyles/AIN/AIN/WarningLowLow",
+      "text": "WarningLowLow"
+    },
+    "AutoManButtonAuto": {
+      "class": "Terra/EquipmentStyles/AutoManButton/Auto",
+      "text": "Auto"
+    },
+    "AutoManButtonMainentenance": {
+      "class": "Terra/EquipmentStyles/AutoManButton/Mainentenance",
+      "text": "Mainentenance"
+    },
+    "AutoManButtonManual": {
+      "class": "Terra/EquipmentStyles/AutoManButton/Manual",
+      "text": "Manual"
+    },
+    "BatchScaleDosing": {
+      "class": "Terra/EquipmentStyles/BatchScale/Dosing",
+      "text": "Dosing"
+    },
+    "BatchScaleEmptied": {
+      "class": "Terra/EquipmentStyles/BatchScale/Emptied",
+      "text": "Emptied"
+    },
+    "BatchScaleEmptying": {
+      "class": "Terra/EquipmentStyles/BatchScale/Emptying",
+      "text": "Emptying"
+    },
+    "BatchScaleFaulted": {
+      "class": "Terra/EquipmentStyles/BatchScale/Faulted",
+      "text": "Faulted"
+    },
+    "BatchScaleMeasuring": {
+      "class": "Terra/EquipmentStyles/BatchScale/Measuring",
+      "text": "Measuring"
+    },
+    "BatchScaleNoState": {
+      "class": "Terra/EquipmentStyles/BatchScale/NoState",
+      "text": "NoState"
+    },
+    "BatchScaleStarting": {
+      "class": "Terra/EquipmentStyles/BatchScale/Starting",
+      "text": "Starting"
+    },
+    "BatchScaleStopped": {
+      "class": "Terra/EquipmentStyles/BatchScale/Stopped",
+      "text": "Stopped"
+    },
+    "BatchScaleStopping": {
+      "class": "Terra/EquipmentStyles/BatchScale/Stopping",
+      "text": "Stopping"
+    },
+    "DICGenericCtoFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Generic/CtoFalse",
+      "text": "CtoFalse"
+    },
+    "DICGenericCtoTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Generic/CtoTrue",
+      "text": "CtoTrue"
+    },
+    "DICGenericFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Generic/False",
+      "text": "False"
+    },
+    "DICGenericFaulted": {
+      "class": "Terra/EquipmentStyles/DIC/Generic/Faulted",
+      "text": "Faulted"
+    },
+    "DICGenericNoState": {
+      "class": "Terra/EquipmentStyles/DIC/Generic/NoState",
+      "text": "NoState"
+    },
+    "DICGenericTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Generic/True",
+      "text": "True"
+    },
+    "DICGenericWarningFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Generic/WarningFalse",
+      "text": "WarningFalse"
+    },
+    "DICGenericWarningTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Generic/WarningTrue",
+      "text": "WarningTrue"
+    },
+    "DICGenericReverseStateCtoFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Generic_ReverseState/CtoFalse",
+      "text": "CtoFalse"
+    },
+    "DICGenericReverseStateCtoTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Generic_ReverseState/CtoTrue",
+      "text": "CtoTrue"
+    },
+    "DICGenericReverseStateFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Generic_ReverseState/False",
+      "text": "False"
+    },
+    "DICGenericReverseStateFaulted": {
+      "class": "Terra/EquipmentStyles/DIC/Generic_ReverseState/Faulted",
+      "text": "Faulted"
+    },
+    "DICGenericReverseStateNoState": {
+      "class": "Terra/EquipmentStyles/DIC/Generic_ReverseState/NoState",
+      "text": "NoState"
+    },
+    "DICGenericReverseStateTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Generic_ReverseState/True",
+      "text": "True"
+    },
+    "DICGenericReverseStateWarningFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Generic_ReverseState/WarningFalse",
+      "text": "WarningFalse"
+    },
+    "DICGenericReverseStateWarningTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Generic_ReverseState/WarningTrue",
+      "text": "WarningTrue"
+    },
+    "DICLevelSwitchCovered": {
+      "class": "Terra/EquipmentStyles/DIC/LevelSwitch/Covered",
+      "text": "Covered"
+    },
+    "DICLevelSwitchCtoCovered": {
+      "class": "Terra/EquipmentStyles/DIC/LevelSwitch/CtoCovered",
+      "text": "CtoCovered"
+    },
+    "DICLevelSwitchCtoUnCovered": {
+      "class": "Terra/EquipmentStyles/DIC/LevelSwitch/CtoUnCovered",
+      "text": "CtoUnCovered"
+    },
+    "DICLevelSwitchFaulted": {
+      "class": "Terra/EquipmentStyles/DIC/LevelSwitch/Faulted",
+      "text": "Faulted"
+    },
+    "DICLevelSwitchNoState": {
+      "class": "Terra/EquipmentStyles/DIC/LevelSwitch/NoState",
+      "text": "NoState"
+    },
+    "DICLevelSwitchUncovered": {
+      "class": "Terra/EquipmentStyles/DIC/LevelSwitch/Uncovered",
+      "text": "Uncovered"
+    },
+    "DICLevelSwitchWarningCovered": {
+      "class": "Terra/EquipmentStyles/DIC/LevelSwitch/WarningCovered",
+      "text": "WarningCovered"
+    },
+    "DICLevelSwitchWarningUncovered": {
+      "class": "Terra/EquipmentStyles/DIC/LevelSwitch/WarningUncovered",
+      "text": "WarningUncovered"
+    },
+    "DICLightningCtoFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Lightning/CtoFalse",
+      "text": "CtoFalse"
+    },
+    "DICLightningCtoTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Lightning/CtoTrue",
+      "text": "CtoTrue"
+    },
+    "DICLightningFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Lightning/False",
+      "text": "False"
+    },
+    "DICLightningFaulted": {
+      "class": "Terra/EquipmentStyles/DIC/Lightning/Faulted",
+      "text": "Faulted"
+    },
+    "DICLightningNoState": {
+      "class": "Terra/EquipmentStyles/DIC/Lightning/NoState",
+      "text": "NoState"
+    },
+    "DICLightningTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Lightning/True",
+      "text": "True"
+    },
+    "DICLightningWarningFalse": {
+      "class": "Terra/EquipmentStyles/DIC/Lightning/WarningFalse",
+      "text": "WarningFalse"
+    },
+    "DICLightningWarningTrue": {
+      "class": "Terra/EquipmentStyles/DIC/Lightning/WarningTrue",
+      "text": "WarningTrue"
+    },
+    "DICSpeedSwitchCtoFalse": {
+      "class": "Terra/EquipmentStyles/DIC/SpeedSwitch/CtoFalse",
+      "text": "CtoFalse"
+    },
+    "DICSpeedSwitchCtoTrue": {
+      "class": "Terra/EquipmentStyles/DIC/SpeedSwitch/CtoTrue",
+      "text": "CtoTrue"
+    },
+    "DICSpeedSwitchFalse": {
+      "class": "Terra/EquipmentStyles/DIC/SpeedSwitch/False",
+      "text": "False"
+    },
+    "DICSpeedSwitchFaulted": {
+      "class": "Terra/EquipmentStyles/DIC/SpeedSwitch/Faulted",
+      "text": "Faulted"
+    },
+    "DICSpeedSwitchNoState": {
+      "class": "Terra/EquipmentStyles/DIC/SpeedSwitch/NoState",
+      "text": "NoState"
+    },
+    "DICSpeedSwitchTrue": {
+      "class": "Terra/EquipmentStyles/DIC/SpeedSwitch/True",
+      "text": "True"
+    },
+    "DICSpeedSwitchWarningFalse": {
+      "class": "Terra/EquipmentStyles/DIC/SpeedSwitch/WarningFalse",
+      "text": "WarningFalse"
+    },
+    "DICSpeedSwitchWarningTrue": {
+      "class": "Terra/EquipmentStyles/DIC/SpeedSwitch/WarningTrue",
+      "text": "WarningTrue"
+    },
+    "DistributorFault": {
+      "class": "Terra/EquipmentStyles/Distributor/Fault",
+      "text": "Fault"
+    },
+    "DistributorInMotion": {
+      "class": "Terra/EquipmentStyles/Distributor/InMotion",
+      "text": "InMotion"
+    },
+    "DistributorInPosition": {
+      "class": "Terra/EquipmentStyles/Distributor/InPosition",
+      "text": "InPosition"
+    },
+    "DistributorNoPosition": {
+      "class": "Terra/EquipmentStyles/Distributor/NoPosition",
+      "text": "NoPosition"
+    },
+    "DOCFaulted": {
+      "class": "Terra/EquipmentStyles/DOC/Faulted",
+      "text": "Faulted"
+    },
+    "DOCNoState": {
+      "class": "Terra/EquipmentStyles/DOC/NoState",
+      "text": "NoState"
+    },
+    "DOCRunning": {
+      "class": "Terra/EquipmentStyles/DOC/Running",
+      "text": "Running"
+    },
+    "DOCStarting": {
+      "class": "Terra/EquipmentStyles/DOC/Starting",
+      "text": "Starting"
+    },
+    "DOCStopped": {
+      "class": "Terra/EquipmentStyles/DOC/Stopped",
+      "text": "Stopped"
+    },
+    "DOCStopping": {
+      "class": "Terra/EquipmentStyles/DOC/Stopping",
+      "text": "Stopping"
+    },
+    "DOCValveFaulted": {
+      "class": "Terra/EquipmentStyles/DOC/Valve/Faulted",
+      "text": "Faulted"
+    },
+    "DOCValveNoState": {
+      "class": "Terra/EquipmentStyles/DOC/Valve/NoState",
+      "text": "NoState"
+    },
+    "DOCValveRunning": {
+      "class": "Terra/EquipmentStyles/DOC/Valve/Running",
+      "text": "Running"
+    },
+    "DOCValveStarting": {
+      "class": "Terra/EquipmentStyles/DOC/Valve/Starting",
+      "text": "Starting"
+    },
+    "DOCValveStopped": {
+      "class": "Terra/EquipmentStyles/DOC/Valve/Stopped",
+      "text": "Stopped"
+    },
+    "DOCValveStopping": {
+      "class": "Terra/EquipmentStyles/DOC/Valve/Stopping",
+      "text": "Stopping"
+    },
+    "GateFaulted": {
+      "class": "Terra/EquipmentStyles/Gate/Faulted",
+      "text": "Faulted"
+    },
+    "GateInMotiontoPos1": {
+      "class": "Terra/EquipmentStyles/Gate/InMotiontoPos1",
+      "text": "InMotiontoPos1"
+    },
+    "GateInMotiontoPos2": {
+      "class": "Terra/EquipmentStyles/Gate/InMotiontoPos2",
+      "text": "InMotiontoPos2"
+    },
+    "GateInTransition": {
+      "class": "Terra/EquipmentStyles/Gate/InTransition",
+      "text": "InTransition"
+    },
+    "GateNoPosition": {
+      "class": "Terra/EquipmentStyles/Gate/NoPosition",
+      "text": "NoPosition"
+    },
+    "GatePosition1": {
+      "class": "Terra/EquipmentStyles/Gate/Position1",
+      "text": "Position1"
+    },
+    "GatePosition2": {
+      "class": "Terra/EquipmentStyles/Gate/Position2",
+      "text": "Position2"
+    },
+    "GateAnalogFaulted": {
+      "class": "Terra/EquipmentStyles/GateAnalog/Faulted",
+      "text": "Faulted"
+    },
+    "GateAnalogInMotiontoPos1": {
+      "class": "Terra/EquipmentStyles/GateAnalog/InMotiontoPos1",
+      "text": "InMotiontoPos1"
+    },
+    "GateAnalogInMotiontoPos2": {
+      "class": "Terra/EquipmentStyles/GateAnalog/InMotiontoPos2",
+      "text": "InMotiontoPos2"
+    },
+    "GateAnalogInTransition": {
+      "class": "Terra/EquipmentStyles/GateAnalog/InTransition",
+      "text": "InTransition"
+    },
+    "GateAnalogNoPosition": {
+      "class": "Terra/EquipmentStyles/GateAnalog/NoPosition",
+      "text": "NoPosition"
+    },
+    "GateAnalogPosition1": {
+      "class": "Terra/EquipmentStyles/GateAnalog/Position1",
+      "text": "Position1"
+    },
+    "GateAnalogPosition2": {
+      "class": "Terra/EquipmentStyles/GateAnalog/Position2",
+      "text": "Position2"
+    },
+    "LevelSwitchDiscreteCovered": {
+      "class": "Terra/EquipmentStyles/LevelSwitch_Discrete/Covered",
+      "text": "Covered"
+    },
+    "LevelSwitchDiscreteCtoCovered": {
+      "class": "Terra/EquipmentStyles/LevelSwitch_Discrete/CtoCovered",
+      "text": "CtoCovered"
+    },
+    "LevelSwitchDiscreteCtoUnCovered": {
+      "class": "Terra/EquipmentStyles/LevelSwitch_Discrete/CtoUnCovered",
+      "text": "CtoUnCovered"
+    },
+    "LevelSwitchDiscreteFaulted": {
+      "class": "Terra/EquipmentStyles/LevelSwitch_Discrete/Faulted",
+      "text": "Faulted"
+    },
+    "LevelSwitchDiscreteNoState": {
+      "class": "Terra/EquipmentStyles/LevelSwitch_Discrete/NoState",
+      "text": "NoState"
+    },
+    "LevelSwitchDiscreteUncovered": {
+      "class": "Terra/EquipmentStyles/LevelSwitch_Discrete/Uncovered",
+      "text": "Uncovered"
+    },
+    "LevelSwitchDiscreteWarningCovered": {
+      "class": "Terra/EquipmentStyles/LevelSwitch_Discrete/WarningCovered",
+      "text": "WarningCovered"
+    },
+    "LevelSwitchDiscreteWarningUncovered": {
+      "class": "Terra/EquipmentStyles/LevelSwitch_Discrete/WarningUncovered",
+      "text": "WarningUncovered"
+    },
+    "MoistureAdaptorDosing": {
+      "class": "Terra/EquipmentStyles/MoistureAdaptor/Dosing",
+      "text": "Dosing"
+    },
+    "MoistureAdaptorFaulted": {
+      "class": "Terra/EquipmentStyles/MoistureAdaptor/Faulted",
+      "text": "Faulted"
+    },
+    "MoistureAdaptorMeasuring": {
+      "class": "Terra/EquipmentStyles/MoistureAdaptor/Measuring",
+      "text": "Measuring"
+    },
+    "MoistureAdaptorNoState": {
+      "class": "Terra/EquipmentStyles/MoistureAdaptor/NoState",
+      "text": "NoState"
+    },
+    "MoistureAdaptorStarting": {
+      "class": "Terra/EquipmentStyles/MoistureAdaptor/Starting",
+      "text": "Starting"
+    },
+    "MoistureAdaptorStopped": {
+      "class": "Terra/EquipmentStyles/MoistureAdaptor/Stopped",
+      "text": "Stopped"
+    },
+    "MoistureAdaptorStopping": {
+      "class": "Terra/EquipmentStyles/MoistureAdaptor/Stopping",
+      "text": "Stopping"
+    },
+    "MoistureAdaptorWaiting": {
+      "class": "Terra/EquipmentStyles/MoistureAdaptor/Waiting",
+      "text": "Waiting"
+    },
+    "PressureRangePressureCtoHigh": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/CtoHigh",
+      "text": "CtoHigh"
+    },
+    "PressureRangePressureCtoLow": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/CtoLow",
+      "text": "CtoLow"
+    },
+    "PressureRangePressureCtoNormal": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/CtoNormal",
+      "text": "CtoNormal"
+    },
+    "PressureRangePressureFaultHigh": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/FaultHigh",
+      "text": "FaultHigh"
+    },
+    "PressureRangePressureFaultLow": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/FaultLow",
+      "text": "FaultLow"
+    },
+    "PressureRangePressureHigh": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/High",
+      "text": "High"
+    },
+    "PressureRangePressureLow": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/Low",
+      "text": "Low"
+    },
+    "PressureRangePressureNormal": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/Normal",
+      "text": "Normal"
+    },
+    "PressureRangePressureNoState": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/NoState",
+      "text": "NoState"
+    },
+    "PressureRangePressureWarningHigh": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/WarningHigh",
+      "text": "WarningHigh"
+    },
+    "PressureRangePressureWarningLow": {
+      "class": "Terra/EquipmentStyles/PressureRange/Pressure/WarningLow",
+      "text": "WarningLow"
+    },
+    "PressureRangeTextCtoHigh": {
+      "class": "Terra/EquipmentStyles/PressureRange/Text/CtoHigh",
+      "text": "CtoHigh"
+    },
+    "PressureRangeTextFaultHigh": {
+      "class": "Terra/EquipmentStyles/PressureRange/Text/FaultHigh",
+      "text": "FaultHigh"
+    },
+    "PressureRangeTextFaultLow": {
+      "class": "Terra/EquipmentStyles/PressureRange/Text/FaultLow",
+      "text": "FaultLow"
+    },
+    "PressureRangeTextHigh": {
+      "class": "Terra/EquipmentStyles/PressureRange/Text/High",
+      "text": "High"
+    },
+    "PressureRangeTextWarningHigh": {
+      "class": "Terra/EquipmentStyles/PressureRange/Text/WarningHigh",
+      "text": "WarningHigh"
+    },
+    "PressureRangeTextWarningLow": {
+      "class": "Terra/EquipmentStyles/PressureRange/Text/WarningLow",
+      "text": "WarningLow"
+    },
+    "RouteActive": {
+      "class": "Terra/EquipmentStyles/Route/Active",
+      "text": "Active"
+    },
+    "RouteEmptying": {
+      "class": "Terra/EquipmentStyles/Route/Emptying",
+      "text": "Emptying"
+    },
+    "RouteFaulted": {
+      "class": "Terra/EquipmentStyles/Route/Faulted",
+      "text": "Faulted"
+    },
+    "RouteNoState": {
+      "class": "Terra/EquipmentStyles/Route/NoState",
+      "text": "NoState"
+    },
+    "RouteStopped": {
+      "class": "Terra/EquipmentStyles/Route/Stopped",
+      "text": "Stopped"
+    },
+    "ScaleAdaptorDosing": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/Dosing",
+      "text": "Dosing"
+    },
+    "ScaleAdaptorEmptied": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/Emptied",
+      "text": "Emptied"
+    },
+    "ScaleAdaptorEmptying": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/Emptying",
+      "text": "Emptying"
+    },
+    "ScaleAdaptorFaulted": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/Faulted",
+      "text": "Faulted"
+    },
+    "ScaleAdaptorMeasuring": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/Measuring",
+      "text": "Measuring"
+    },
+    "ScaleAdaptorNoState": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/NoState",
+      "text": "NoState"
+    },
+    "ScaleAdaptorStarting": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/Starting",
+      "text": "Starting"
+    },
+    "ScaleAdaptorStopped": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/Stopped",
+      "text": "Stopped"
+    },
+    "ScaleAdaptorStopping": {
+      "class": "Terra/EquipmentStyles/ScaleAdaptor/Stopping",
+      "text": "Stopping"
+    },
+    "TwoWayFaulted": {
+      "class": "Terra/EquipmentStyles/TwoWay/Faulted",
+      "text": "Faulted"
+    },
+    "TwoWayInMotiontoPos1": {
+      "class": "Terra/EquipmentStyles/TwoWay/InMotiontoPos1",
+      "text": "InMotiontoPos1"
+    },
+    "TwoWayInMotiontoPos2": {
+      "class": "Terra/EquipmentStyles/TwoWay/InMotiontoPos2",
+      "text": "InMotiontoPos2"
+    },
+    "TwoWayNoPosition": {
+      "class": "Terra/EquipmentStyles/TwoWay/NoPosition",
+      "text": "NoPosition"
+    },
+    "TwoWayPosition1": {
+      "class": "Terra/EquipmentStyles/TwoWay/Position1",
+      "text": "Position1"
+    },
+    "TwoWayPosition2": {
+      "class": "Terra/EquipmentStyles/TwoWay/Position2",
+      "text": "Position2"
+    }
+  },
+  "hmiStateStyleMaps": {
+    "Motor": {
+      "1": "MotorStopped",
+      "2": "MotorStartingFwd",
+      "3": "MotorStartingRev",
+      "4": "MotorRunningFwd",
+      "5": "MotorRunningRev",
+      "6": "MotorStopping",
+      "16": "MotorFaulted"
+    },
+    "AIN": {
+      "1": "AINCtoHigh",
+      "2": "AINCtoLow",
+      "3": "AINCtoNormal",
+      "4": "AINFaultHigh",
+      "5": "AINFaultHighHigh",
+      "6": "AINFaultLow",
+      "7": "AINFaultLowLow",
+      "8": "AINHigh",
+      "9": "AINHighHigh",
+      "10": "AINLow",
+      "11": "AINLowLow",
+      "12": "AINNormal",
+      "13": "AINNoState",
+      "14": "AINWarningHigh",
+      "15": "AINWarningHighHigh",
+      "16": "AINWarningLow",
+      "17": "AINWarningLowLow"
+    },
+    "AutoManButton": {
+      "1": "AutoManButtonAuto",
+      "2": "AutoManButtonMainentenance",
+      "3": "AutoManButtonManual"
+    },
+    "BatchScale": {
+      "1": "BatchScaleDosing",
+      "2": "BatchScaleEmptied",
+      "3": "BatchScaleEmptying",
+      "4": "BatchScaleFaulted",
+      "5": "BatchScaleMeasuring",
+      "6": "BatchScaleNoState",
+      "7": "BatchScaleStarting",
+      "8": "BatchScaleStopped",
+      "9": "BatchScaleStopping"
+    },
+    "DIC_Generic": {
+      "1": "DICGenericCtoFalse",
+      "2": "DICGenericCtoTrue",
+      "3": "DICGenericFalse",
+      "4": "DICGenericFaulted",
+      "5": "DICGenericNoState",
+      "6": "DICGenericTrue",
+      "7": "DICGenericWarningFalse",
+      "8": "DICGenericWarningTrue"
+    },
+    "DIC_Generic_ReverseState": {
+      "1": "DICGenericReverseStateCtoFalse",
+      "2": "DICGenericReverseStateCtoTrue",
+      "3": "DICGenericReverseStateFalse",
+      "4": "DICGenericReverseStateFaulted",
+      "5": "DICGenericReverseStateNoState",
+      "6": "DICGenericReverseStateTrue",
+      "7": "DICGenericReverseStateWarningFalse",
+      "8": "DICGenericReverseStateWarningTrue"
+    },
+    "DIC_LevelSwitch": {
+      "1": "DICLevelSwitchCovered",
+      "2": "DICLevelSwitchCtoCovered",
+      "3": "DICLevelSwitchCtoUnCovered",
+      "4": "DICLevelSwitchFaulted",
+      "5": "DICLevelSwitchNoState",
+      "6": "DICLevelSwitchUncovered",
+      "7": "DICLevelSwitchWarningCovered",
+      "8": "DICLevelSwitchWarningUncovered"
+    },
+    "DIC_Lightning": {
+      "1": "DICLightningCtoFalse",
+      "2": "DICLightningCtoTrue",
+      "3": "DICLightningFalse",
+      "4": "DICLightningFaulted",
+      "5": "DICLightningNoState",
+      "6": "DICLightningTrue",
+      "7": "DICLightningWarningFalse",
+      "8": "DICLightningWarningTrue"
+    },
+    "DIC_SpeedSwitch": {
+      "1": "DICSpeedSwitchCtoFalse",
+      "2": "DICSpeedSwitchCtoTrue",
+      "3": "DICSpeedSwitchFalse",
+      "4": "DICSpeedSwitchFaulted",
+      "5": "DICSpeedSwitchNoState",
+      "6": "DICSpeedSwitchTrue",
+      "7": "DICSpeedSwitchWarningFalse",
+      "8": "DICSpeedSwitchWarningTrue"
+    },
+    "Distributor": {
+      "1": "DistributorFault",
+      "2": "DistributorInMotion",
+      "3": "DistributorInPosition",
+      "4": "DistributorNoPosition"
+    },
+    "DOC": {
+      "1": "DOCFaulted",
+      "2": "DOCNoState",
+      "3": "DOCRunning",
+      "4": "DOCStarting",
+      "5": "DOCStopped",
+      "6": "DOCStopping"
+    },
+    "DOC_Valve": {
+      "1": "DOCValveFaulted",
+      "2": "DOCValveNoState",
+      "3": "DOCValveRunning",
+      "4": "DOCValveStarting",
+      "5": "DOCValveStopped",
+      "6": "DOCValveStopping"
+    },
+    "Gate": {
+      "1": "GateFaulted",
+      "2": "GateInMotiontoPos1",
+      "3": "GateInMotiontoPos2",
+      "4": "GateInTransition",
+      "5": "GateNoPosition",
+      "6": "GatePosition1",
+      "7": "GatePosition2"
+    },
+    "GateAnalog": {
+      "1": "GateAnalogFaulted",
+      "2": "GateAnalogInMotiontoPos1",
+      "3": "GateAnalogInMotiontoPos2",
+      "4": "GateAnalogInTransition",
+      "5": "GateAnalogNoPosition",
+      "6": "GateAnalogPosition1",
+      "7": "GateAnalogPosition2"
+    },
+    "LevelSwitch_Discrete": {
+      "1": "LevelSwitchDiscreteCovered",
+      "2": "LevelSwitchDiscreteCtoCovered",
+      "3": "LevelSwitchDiscreteCtoUnCovered",
+      "4": "LevelSwitchDiscreteFaulted",
+      "5": "LevelSwitchDiscreteNoState",
+      "6": "LevelSwitchDiscreteUncovered",
+      "7": "LevelSwitchDiscreteWarningCovered",
+      "8": "LevelSwitchDiscreteWarningUncovered"
+    },
+    "MoistureAdaptor": {
+      "1": "MoistureAdaptorDosing",
+      "2": "MoistureAdaptorFaulted",
+      "3": "MoistureAdaptorMeasuring",
+      "4": "MoistureAdaptorNoState",
+      "5": "MoistureAdaptorStarting",
+      "6": "MoistureAdaptorStopped",
+      "7": "MoistureAdaptorStopping",
+      "8": "MoistureAdaptorWaiting"
+    },
+    "PressureRange_Pressure": {
+      "1": "PressureRangePressureCtoHigh",
+      "2": "PressureRangePressureCtoLow",
+      "3": "PressureRangePressureCtoNormal",
+      "4": "PressureRangePressureFaultHigh",
+      "5": "PressureRangePressureFaultLow",
+      "6": "PressureRangePressureHigh",
+      "7": "PressureRangePressureLow",
+      "8": "PressureRangePressureNormal",
+      "9": "PressureRangePressureNoState",
+      "10": "PressureRangePressureWarningHigh",
+      "11": "PressureRangePressureWarningLow"
+    },
+    "PressureRange_Text": {
+      "1": "PressureRangeTextCtoHigh",
+      "2": "PressureRangeTextFaultHigh",
+      "3": "PressureRangeTextFaultLow",
+      "4": "PressureRangeTextHigh",
+      "5": "PressureRangeTextWarningHigh",
+      "6": "PressureRangeTextWarningLow"
+    },
+    "Route": {
+      "1": "RouteActive",
+      "2": "RouteEmptying",
+      "3": "RouteFaulted",
+      "4": "RouteNoState",
+      "5": "RouteStopped"
+    },
+    "ScaleAdaptor": {
+      "1": "ScaleAdaptorDosing",
+      "2": "ScaleAdaptorEmptied",
+      "3": "ScaleAdaptorEmptying",
+      "4": "ScaleAdaptorFaulted",
+      "5": "ScaleAdaptorMeasuring",
+      "6": "ScaleAdaptorNoState",
+      "7": "ScaleAdaptorStarting",
+      "8": "ScaleAdaptorStopped",
+      "9": "ScaleAdaptorStopping"
+    },
+    "TwoWay": {
+      "1": "TwoWayFaulted",
+      "2": "TwoWayInMotiontoPos1",
+      "3": "TwoWayInMotiontoPos2",
+      "4": "TwoWayNoPosition",
+      "5": "TwoWayPosition1",
+      "6": "TwoWayPosition2"
+    },
+    "Diverter": {
+      "1": "TwoWayFaulted",
+      "2": "TwoWayInMotiontoPos1",
+      "3": "TwoWayInMotiontoPos2",
+      "4": "TwoWayNoPosition",
+      "5": "TwoWayPosition1",
+      "6": "TwoWayPosition2"
+    }
+  }
+}

@@ -251,6 +251,43 @@ const LIVE_CANVAS_PRIMARY_STATUS_TAG_ALIASES = [
   "RouteColor",
   "Route Color",
 ];
+
+const getTagPathLeaf = (value) => {
+  const raw = normalizeTagValue(value);
+  if (!raw) return "";
+  const parts = raw.split(/[./]/).map((entry) => entry.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : raw;
+};
+
+const isRouteIdTagPathKey = (value) => isRouteIdTagKey(value) || isRouteIdTagKey(getTagPathLeaf(value));
+const isStateTagPathKey = (value) => isStateTagKey(value) || isStateTagKey(getTagPathLeaf(value));
+
+const buildStateTagParentPathCandidates = (tagPath, tagName, groupName, topicName) => {
+  const out = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const value = normalizeTagValue(raw);
+    if (!value) return;
+    const lower = value.toLowerCase();
+    if (seen.has(lower)) return;
+    seen.add(lower);
+    out.push(value);
+  };
+  if (!(isStateTagPathKey(tagName) || isStateTagPathKey(tagPath))) return out;
+  const path = normalizeTagValue(tagPath);
+  const leaf = getTagPathLeaf(path);
+  if (path && isStateTagPathKey(leaf)) {
+    const cut = Math.max(path.lastIndexOf("."), path.lastIndexOf("/"));
+    if (cut > 0) {
+      const parent = path.slice(0, cut);
+      push(parent);
+      if (topicName) push(`${topicName}.${parent}`);
+    }
+  }
+  push(groupName);
+  if (topicName && groupName) push(`${topicName}.${groupName}`);
+  return out;
+};
 const POLYLINE_OVERLAY_SNAP_RADIUS_PX = 7;
 const POLYLINE_CONNECTION_SNAP_THRESHOLD = 10;
 const POLYLINE_ENDPOINT_SNAP_THRESHOLD = 9;
@@ -2305,7 +2342,15 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
           const stateVal = String(m?.state ?? "").trim();
           if (!stateVal) return;
           const key = `${fieldVal}::${stateVal}`;
-          map.set(key, String(m?.color || "").trim());
+          map.set(key, String(
+            m?.color ??
+            m?.class ??
+            m?.styleClass ??
+            m?.className ??
+            m?.style ??
+            m?.cssClass ??
+            ""
+          ).trim());
         });
       }
     }
@@ -2332,9 +2377,17 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
           ? false
           : null;
       for (const mapping of Array.isArray(mappings) ? mappings : []) {
-        const color = String(mapping?.color ?? "").trim();
+        const color = String(
+          mapping?.color ??
+          mapping?.class ??
+          mapping?.styleClass ??
+          mapping?.className ??
+          mapping?.style ??
+          mapping?.cssClass ??
+          ""
+        ).trim();
         if (!color) continue;
-        const candidates = [mapping?.state, mapping?.field];
+        const candidates = [mapping?.state, mapping?.field, mapping?.value, mapping?.input, mapping?.key];
         for (const candidateRaw of candidates) {
           const candidateText = String(candidateRaw ?? "").trim();
           if (!candidateText) continue;
@@ -2391,13 +2444,14 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       const tagName = normalizeTagValue(tag?.name || "");
       const topicName = normalizeTagValue(tag?.topic || "");
       const groupName = inferGroupName(tag);
-      const keyCandidates = [
+      const keyCandidates = Array.from(new Set([
         tagPath,
         topicName && tagName ? `${topicName}.${tagName}` : "",
         topicName && tagPath ? `${topicName}.${tagPath}` : "",
+        ...buildStateTagParentPathCandidates(tagPath, tagName, groupName, topicName),
         groupName,
         topicName && groupName ? `${topicName}.${groupName}` : "",
-      ].filter(Boolean);
+      ].map((x) => normalizeTagValue(x)).filter(Boolean)));
       if (!keyCandidates.length) return;
       const rawValue = readLiveTagValue(tag, topicName, groupName);
       const scale = Number.isFinite(Number(tag?.scale)) ? Number(tag.scale) : 1;
@@ -2439,7 +2493,15 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       const normalizedSetMappings = (setMappings || []).map((m) => ({
         field: String(m?.field ?? ""),
         state: String(m?.state ?? ""),
-        color: String(m?.color ?? ""),
+        color: String(
+          m?.color ??
+          m?.class ??
+          m?.styleClass ??
+          m?.className ??
+          m?.style ??
+          m?.cssClass ??
+          ""
+        ),
       }));
       const mappings = tagMappings.length
         ? tagMappings
@@ -2619,7 +2681,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
 
       const tagKeyA = tag?.name || "";
       const tagKeyB = tag?.tagPath || "";
-      if (!isRouteIdTagKey(tagKeyA) && !isRouteIdTagKey(tagKeyB)) return;
+      if (!isRouteIdTagPathKey(tagKeyA) && !isRouteIdTagPathKey(tagKeyB)) return;
 
       const routeValueRaw = readLiveTagValue(tag, topic);
       const routeValue = normalizeTagValue(routeValueRaw);
@@ -2682,10 +2744,10 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       if (!value) return;
 
       const entry = groups.get(groupPath) || { routeId: "", state: "" };
-      if (!entry.routeId && (isRouteIdTagKey(routeKeyA) || isRouteIdTagKey(routeKeyB))) {
+      if (!entry.routeId && (isRouteIdTagPathKey(routeKeyA) || isRouteIdTagPathKey(routeKeyB))) {
         entry.routeId = value;
       }
-      if (!entry.state && (isStateTagKey(routeKeyA) || isStateTagKey(routeKeyB))) {
+      if (!entry.state && (isStateTagPathKey(routeKeyA) || isStateTagPathKey(routeKeyB))) {
         entry.state = value;
       }
       groups.set(groupPath, entry);
@@ -11057,6 +11119,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         tagPath: "",
         eType: fallbackEType,
         eTypeAuto: true,
+        popupParamsJson: "{}",
         bbox,
       };
     }
@@ -11080,6 +11143,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         tagPath: "",
         eType: fallbackEType,
         eTypeAuto: true,
+        popupParamsJson: "{}",
         bbox,
       };
     }
@@ -11103,6 +11167,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         tagPath: "",
         eType: fallbackEType,
         eTypeAuto: true,
+        popupParamsJson: "{}",
         bbox,
       };
     }
@@ -11153,6 +11218,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       tagPath: "",
       eType,
       eTypeAuto: true,
+      popupParamsJson: "{}",
       bbox,
       sourceScaleX,
       sourceScaleY,
@@ -12351,6 +12417,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         tagPath: "",
         eType: String(overlayExtras?.eType || parsedEType || "").trim(),
         eTypeAuto: overlayExtras?.eType != null ? false : true,
+        popupParamsJson: "{}",
         bbox,
         sourceScaleX,
         sourceScaleY,
@@ -12839,6 +12906,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     tagPath: "",
     binBindingKey: "",
     eType: "",
+    popupParamsJson: "{}",
     diverterMode: "straight",
     fill: DEFAULT_FILL,
     stroke: DEFAULT_STROKE,
@@ -12911,6 +12979,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         tagPath: "",
         binBindingKey: "",
         eType: "",
+        popupParamsJson: "{}",
         diverterMode: "straight",
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
@@ -13010,6 +13079,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
           tagPath,
           binBindingKey: String(o.binBindingKey || ""),
           eType: String(o.eType || resolveOverlayEType(o) || ""),
+          popupParamsJson: String(
+            o.popupParamsJson ||
+            (o.popupParams && typeof o.popupParams === "object" ? JSON.stringify(o.popupParams) : "") ||
+            "{}"
+          ),
           diverterMode: String(o.diverterMode || "straight").trim().toLowerCase() === "divert" ? "divert" : "straight",
           fill,
           stroke,
@@ -13083,6 +13157,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           tagPath,
           binBindingKey: "",
           eType: "",
+          popupParamsJson: "{}",
           diverterMode: "straight",
           fill,
           stroke,
@@ -13147,6 +13222,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       tagPath,
       binBindingKey: "",
       eType: "",
+      popupParamsJson: "{}",
       diverterMode: "straight",
       fill,
       stroke,
@@ -14986,10 +15062,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setSelectedOverlayIds([]);
     }
 
-    // ? While drawing: Shift + right-click finishes, plain right-click removes the last SAVED segment.
+    // While drawing: right-click finishes, Shift + right-click removes the last saved segment.
     if (tool === "polyline" && drawing?.mode === "draw-poly") {
       const id = drawing.id;
-      if (e.shiftKey) {
+      if (!e.shiftKey) {
         if (mouseMoveRafRef.current) {
           window.cancelAnimationFrame(mouseMoveRafRef.current);
           mouseMoveRafRef.current = 0;
@@ -17361,6 +17437,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
+  function applySinglePopupParamsJson(nextRaw) {
+    if (!isSingle || !singleId || singleKind !== "SVG") return;
+    const value = String(nextRaw ?? "").trim() || "{}";
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.id === singleId ? { ...o, popupParamsJson: value } : o))
+    );
+    scheduleProjectAutoSave();
+  }
+
   function applySingleDiverterMode(nextRaw) {
     if (!isSingle || !singleId || singleKind !== "SVG") return;
     const mode = String(nextRaw || "").trim().toLowerCase() === "divert" ? "divert" : "straight";
@@ -18436,6 +18521,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         applySingleTagPath={applySingleTagPath}
         applySingleBinBinding={applySingleBinBinding}
         applySingleEType={applySingleEType}
+        applySinglePopupParamsJson={applySinglePopupParamsJson}
         applySingleDiverterMode={applySingleDiverterMode}
         applySingleFill={applySingleFill}
         applySingleStroke={applySingleStroke}

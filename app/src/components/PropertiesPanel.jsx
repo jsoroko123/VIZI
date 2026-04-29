@@ -365,6 +365,7 @@ export default function PropertiesPanel({
   applySingleTagPath,
   applySingleBinBinding,
   applySingleEType,
+  applySinglePopupParamsJson,
   applySingleDiverterMode,
   applySingleFill,
   applySingleStroke,
@@ -505,6 +506,7 @@ export default function PropertiesPanel({
     applySingleTagPath,
     applySingleBinBinding,
     applySingleEType,
+    applySinglePopupParamsJson,
     applySingleDiverterMode,
     applySingleFill,
     applySingleStroke,
@@ -892,6 +894,7 @@ export default function PropertiesPanel({
 
       if (isSvg) {
         a.applySingleEType?.(next.eType);
+        a.applySinglePopupParamsJson?.(next.popupParamsJson);
         a.applySingleDiverterMode?.(next.diverterMode);
         a.applySingleBinBinding?.(next.binBindingKey);
         a.applySingleSvgStrokeWidth?.(next.strokeWidth);
@@ -1121,6 +1124,13 @@ export default function PropertiesPanel({
                   options={svgETypeSelectOptions}
                   searchable
                   searchPlaceholder="Search eType..."
+                />
+                <Row
+                  label="Popup Params"
+                  value={hudFields.popupParamsJson ?? "{}"}
+                  onChange={(v) => setHudFields((p) => ({ ...p, popupParamsJson: v }))}
+                  onBlur={() => applySinglePopupParamsJson?.(hudFields.popupParamsJson)}
+                  placeholder='{"area":"Mill"}'
                 />
                 {isDiverterSvg && (
                   <>

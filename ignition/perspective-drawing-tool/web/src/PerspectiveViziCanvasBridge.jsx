@@ -45,6 +45,12 @@ const SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES = [
     `/main/data/${MODULE_ID}/svg-library-catalog`,
     `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`
 ];
+const HMI_STATE_STYLE_MAP_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/hmi-state-style-maps`,
+    `/main/data/${MODULE_URL_ALIAS}/hmi-state-style-maps`,
+    `/data/${MODULE_ID}/hmi-state-style-maps`,
+    `/main/data/${MODULE_ID}/hmi-state-style-maps`
+];
 const SVG_RAW_CACHE_MAX = 80;
 const DEFAULT_FILL = "#D7DADE";
 const DEFAULT_STROKE = "#808080";
@@ -348,12 +354,21 @@ function cloneDefaultIgnitionFillMappings(source = DEFAULT_IGNITION_FILL_MAP) {
 function normalizeIgnitionFillBindingMappings(value) {
     const normalized = coerceArray(value)
         .map((entry) => {
-            const color = String(entry?.color ?? "").trim();
+            const color = String(
+                entry?.color
+                ?? entry?.class
+                ?? entry?.styleClass
+                ?? entry?.className
+                ?? entry?.style
+                ?? entry?.cssClass
+                ?? ""
+            ).trim();
             const mappingValue = String(
                 entry?.value
                 ?? entry?.state
                 ?? entry?.field
                 ?? entry?.input
+                ?? entry?.key
                 ?? ""
             ).trim();
             if (!mappingValue || !color) {
@@ -367,6 +382,555 @@ function normalizeIgnitionFillBindingMappings(value) {
         .filter(Boolean);
 
     return normalized.length ? normalized : cloneDefaultIgnitionFillMappings();
+}
+
+function readStateStyleMapSource(value) {
+    if (typeof value === "string") {
+        const raw = value.trim();
+        if (!raw) {
+            return {};
+        }
+        try {
+            return JSON.parse(raw);
+        } catch (_error) {
+            return {};
+        }
+    }
+    if (
+        isPlainObject(value)
+        && Object.prototype.hasOwnProperty.call(value, "value")
+        && (
+            Object.prototype.hasOwnProperty.call(value, "quality")
+            || Object.prototype.hasOwnProperty.call(value, "timestamp")
+        )
+    ) {
+        return value.value;
+    }
+    return isPlainObject(value) || Array.isArray(value) ? value : {};
+}
+
+function normalizeCssPropertyName(value) {
+    return String(value || "")
+        .trim()
+        .replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)
+        .replace(/^ms-/, "-ms-")
+        .toLowerCase();
+}
+
+function normalizeCssValue(value) {
+    if (value == null || typeof value === "object") {
+        return "";
+    }
+    return String(value).trim().replace(/[{}]/g, "");
+}
+
+function readInlineStyleObject(value) {
+    const source = isPlainObject(value) ? value : {};
+    const nested = isPlainObject(source.style)
+        ? source.style
+        : isPlainObject(source.css)
+            ? source.css
+            : isPlainObject(source.styles)
+                ? source.styles
+                : {};
+    const out = { ...nested };
+    [
+        "fill",
+        "stroke",
+        "color",
+        "backgroundColor",
+        "background-color",
+        "opacity",
+        "fillOpacity",
+        "fill-opacity",
+        "strokeOpacity",
+        "stroke-opacity",
+        "strokeWidth",
+        "stroke-width"
+    ].forEach((property) => {
+        if (source[property] !== undefined && source[property] !== null) {
+            out[property] = source[property];
+        }
+    });
+    return out;
+}
+
+function normalizeHmiStatePaint(value) {
+    if (isPlainObject(value)) {
+        return String(
+            value.fill
+            ?? value.color
+            ?? value.backgroundColor
+            ?? value["background-color"]
+            ?? ""
+        ).trim();
+    }
+    return String(value ?? "").trim();
+}
+
+function normalizeHmiStateStyleMapRows(value) {
+    const source = readStateStyleMapSource(value);
+    const rows = [];
+    const pushRow = (stateKey, entry) => {
+        const record = isPlainObject(entry) ? entry : {};
+        const mappingValue = String(
+            record.value
+            ?? record.state
+            ?? record.field
+            ?? record.input
+            ?? record.key
+            ?? stateKey
+            ?? ""
+        ).trim();
+        const paint = normalizeHmiStatePaint(
+            record.color
+            ?? record.class
+            ?? record.styleClass
+            ?? record.className
+            ?? record.style
+            ?? record.cssClass
+            ?? readInlineStyleObject(record)
+            ?? (isPlainObject(entry) ? "" : entry)
+        );
+        if (!mappingValue || !paint) {
+            return;
+        }
+        rows.push({
+            value: mappingValue,
+            state: mappingValue,
+            color: paint,
+            style: readInlineStyleObject(record),
+            text: String(record.text ?? record.label ?? "").trim()
+        });
+    };
+
+    if (Array.isArray(source)) {
+        source.forEach((entry, index) => pushRow(String(index), entry));
+        return rows;
+    }
+
+    if (isPlainObject(source)) {
+        Object.entries(source).forEach(([stateKey, entry]) => pushRow(stateKey, entry));
+    }
+
+    return rows;
+}
+
+function looksLikeHmiStateStyleTable(value) {
+    const source = readStateStyleMapSource(value);
+    if (Array.isArray(source)) {
+        return true;
+    }
+    if (!isPlainObject(source)) {
+        return false;
+    }
+    return Object.entries(source).some(([stateKey, entry]) => {
+        if (!isPlainObject(entry)) {
+            return typeof entry === "string" || typeof entry === "number";
+        }
+        const hasPaint =
+            Object.prototype.hasOwnProperty.call(entry, "color")
+            || Object.prototype.hasOwnProperty.call(entry, "class")
+            || Object.prototype.hasOwnProperty.call(entry, "style")
+            || Object.prototype.hasOwnProperty.call(entry, "styleClass")
+            || Object.prototype.hasOwnProperty.call(entry, "className")
+            || Object.prototype.hasOwnProperty.call(entry, "cssClass");
+        const hasExplicitState =
+            Object.prototype.hasOwnProperty.call(entry, "value")
+            || Object.prototype.hasOwnProperty.call(entry, "state")
+            || Object.prototype.hasOwnProperty.call(entry, "field")
+            || Object.prototype.hasOwnProperty.call(entry, "input")
+            || Object.prototype.hasOwnProperty.call(entry, "key");
+        return hasPaint && (hasExplicitState || String(stateKey || "").trim() !== "");
+    });
+}
+
+function normalizeHmiStateStyleMapIndex(value) {
+    const source = readStateStyleMapSource(value);
+    const entries = [];
+    const addEntry = (name, table) => {
+        const rows = normalizeHmiStateStyleMapRows(table);
+        const token = normalizeTagTypeMatchToken(name);
+        if (!rows.length) {
+            return;
+        }
+        entries.push({
+            name: String(name || "").trim(),
+            token,
+            rows
+        });
+    };
+
+    if (looksLikeHmiStateStyleTable(source)) {
+        addEntry("default", source);
+        return { entries, defaultRows: entries[0]?.rows || [] };
+    }
+
+    if (isPlainObject(source)) {
+        Object.entries(source).forEach(([name, table]) => addEntry(name, table));
+    }
+
+    return {
+        entries,
+        defaultRows: entries.length === 1 ? entries[0].rows : []
+    };
+}
+
+function resolveHmiStateStyleEntryReference(entry, styles) {
+    const styleIndex = isPlainObject(styles) ? styles : {};
+    if (typeof entry === "string" || typeof entry === "number") {
+        const styleKey = String(entry).trim();
+        if (styleKey && isPlainObject(styleIndex[styleKey])) {
+            return { ...styleIndex[styleKey] };
+        }
+        return entry;
+    }
+
+    if (!isPlainObject(entry)) {
+        return entry;
+    }
+
+    const styleKey = String(
+        entry.styleRef
+        ?? entry.ref
+        ?? entry.styleKey
+        ?? entry.styleName
+        ?? ""
+    ).trim();
+    if (!styleKey || !isPlainObject(styleIndex[styleKey])) {
+        return entry;
+    }
+
+    const {
+        styleRef: _ignoredStyleRef,
+        ref: _ignoredRef,
+        styleKey: _ignoredStyleKey,
+        styleName: _ignoredStyleName,
+        ...entryWithoutRef
+    } = entry;
+    return {
+        ...styleIndex[styleKey],
+        ...entryWithoutRef
+    };
+}
+
+function resolveHmiStateStyleMapReferences(maps, styles) {
+    const source = readStateStyleMapSource(maps);
+    const styleIndex = readStateStyleMapSource(styles);
+    if (!isPlainObject(styleIndex) || !Object.keys(styleIndex).length) {
+        return source;
+    }
+
+    const resolveTable = (table) => {
+        const tableSource = readStateStyleMapSource(table);
+        if (Array.isArray(tableSource)) {
+            return tableSource.map((entry) => resolveHmiStateStyleEntryReference(entry, styleIndex));
+        }
+        if (isPlainObject(tableSource)) {
+            return Object.entries(tableSource).reduce((acc, [stateKey, entry]) => {
+                acc[stateKey] = resolveHmiStateStyleEntryReference(entry, styleIndex);
+                return acc;
+            }, {});
+        }
+        return table;
+    };
+
+    if (looksLikeHmiStateStyleTable(source)) {
+        return resolveTable(source);
+    }
+
+    if (isPlainObject(source)) {
+        return Object.entries(source).reduce((acc, [name, table]) => {
+            acc[name] = resolveTable(table);
+            return acc;
+        }, {});
+    }
+
+    return source;
+}
+
+function normalizeHmiStateStyleMapPayload(value) {
+    const payload = isPlainObject(value) ? value : { maps: value };
+    const rawMaps = (
+        payload.maps
+        ?? payload.hmiStateStyleMaps
+        ?? payload.udtStateStyleMaps
+        ?? payload.stateMaps
+        ?? payload.data
+        ?? value
+    );
+    const styles = payload.styles ?? payload.classes ?? payload.styleClasses ?? payload.styleDefinitions ?? EMPTY_MAP;
+    const maps = resolveHmiStateStyleMapReferences(rawMaps, styles);
+
+    return {
+        maps: isPlainObject(maps) || Array.isArray(maps) ? maps : EMPTY_MAP,
+        styles: isPlainObject(styles) ? styles : EMPTY_MAP,
+        filePath: String(payload.filePath ?? payload.path ?? "").trim(),
+        lastModified: Math.max(0, Number(payload.lastModified) || 0),
+        mapCount: Math.max(0, Number(payload.mapCount) || 0),
+        error: String(payload.error || "").trim()
+    };
+}
+
+function normalizeIgnitionStyleClassNameForCss(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const lower = raw.toLowerCase();
+    let classText = "";
+    let singleStyleName = false;
+    if (lower.startsWith("style:")) {
+        classText = raw.slice(raw.indexOf(":") + 1).trim();
+        singleStyleName = true;
+    } else if (lower.startsWith("class:")) {
+        classText = raw.slice(raw.indexOf(":") + 1).trim();
+    } else if (lower.startsWith(".")) {
+        classText = raw.slice(1).trim();
+    } else if (lower.startsWith("psc-")) {
+        classText = raw;
+    } else if (raw.includes("/")) {
+        classText = raw;
+        singleStyleName = true;
+    }
+    if (!classText) {
+        return "";
+    }
+
+    const entries = singleStyleName ? [classText] : classText.split(/\s+/);
+    return entries
+        .map((entry) => {
+            const cleaned = String(entry || "")
+                .trim()
+                .replace(/^\./, "")
+                .replace(/^style:/i, "")
+                .replace(/^class:/i, "");
+            if (!cleaned) {
+                return "";
+            }
+            return cleaned.toLowerCase().startsWith("psc-") ? cleaned : `psc-${cleaned}`;
+        })
+        .filter(Boolean)
+        .join(" ");
+}
+
+function escapeCssClassSelector(value) {
+    const className = String(value || "").trim();
+    if (!className) {
+        return "";
+    }
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+        return `.${CSS.escape(className)}`;
+    }
+    return `.${className.replace(/[^a-zA-Z0-9_-]/g, "\\$&")}`;
+}
+
+function collectStyleDefinitionClassNames(name, definition) {
+    const rawClassNames = [];
+    const add = (value) => {
+        if (Array.isArray(value)) {
+            value.forEach(add);
+            return;
+        }
+        const raw = String(value || "").trim();
+        if (raw) {
+            rawClassNames.push(raw);
+        }
+    };
+    add(definition?.class);
+    add(definition?.classes);
+    add(definition?.styleClass);
+    add(definition?.className);
+    add(definition?.cssClass);
+    add(definition?.styleClassName);
+    const nameText = String(name || "").trim();
+    if (nameText.includes("/") || nameText.toLowerCase().startsWith("psc-")) {
+        add(nameText);
+    }
+
+    const classNames = new Set();
+    rawClassNames.forEach((raw) => {
+        normalizeIgnitionStyleClassNameForCss(raw)
+            .split(/\s+/)
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+            .forEach((entry) => classNames.add(entry));
+    });
+    return Array.from(classNames);
+}
+
+function serializeHmiStateStyleDeclaration(styleObject) {
+    const source = isPlainObject(styleObject) ? styleObject : {};
+    const declarations = [];
+    Object.entries(source).forEach(([property, rawValue]) => {
+        const cssProperty = normalizeCssPropertyName(property);
+        const cssValue = normalizeCssValue(rawValue);
+        if (!cssProperty || !cssValue) {
+            return;
+        }
+        declarations.push(`${cssProperty}: ${cssValue} !important;`);
+    });
+    return declarations.join(" ");
+}
+
+function buildHmiStateStyleDefinitionCss(styles) {
+    const source = readStateStyleMapSource(styles);
+    if (!isPlainObject(source)) {
+        return "";
+    }
+
+    const rules = [];
+    Object.entries(source).forEach(([name, definition]) => {
+        if (!isPlainObject(definition)) {
+            return;
+        }
+        const classNames = collectStyleDefinitionClassNames(name, definition);
+        const declaration = serializeHmiStateStyleDeclaration(readInlineStyleObject(definition));
+        if (!classNames.length || !declaration) {
+            return;
+        }
+        classNames.forEach((className) => {
+            const selector = escapeCssClassSelector(className);
+            if (selector) {
+                rules.push(`${selector} { ${declaration} }`);
+            }
+        });
+    });
+    return rules.join("\n");
+}
+
+function hasHmiStateStyleMapEntries(value) {
+    return normalizeHmiStateStyleMapIndex(value).entries.length > 0;
+}
+
+function mergeHmiStateStyleMapSources(baseMaps, overrideMaps) {
+    const baseSource = readStateStyleMapSource(baseMaps);
+    const overrideSource = readStateStyleMapSource(overrideMaps);
+    const hasBase = hasHmiStateStyleMapEntries(baseSource);
+    const hasOverride = hasHmiStateStyleMapEntries(overrideSource);
+
+    if (!hasOverride) {
+        return hasBase ? baseSource : EMPTY_MAP;
+    }
+    if (!hasBase) {
+        return overrideSource;
+    }
+    if (looksLikeHmiStateStyleTable(baseSource) || looksLikeHmiStateStyleTable(overrideSource)) {
+        return overrideSource;
+    }
+    return {
+        ...baseSource,
+        ...overrideSource
+    };
+}
+
+function getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex) {
+    const entries = Array.isArray(stateStyleMapIndex?.entries) ? stateStyleMapIndex.entries : [];
+    if (!entries.length) {
+        return [];
+    }
+
+    const tokenList = Array.from(collectTagTypeMatchTokens(
+        overlay?.udtName,
+        overlay?.udtType,
+        overlay?.templateName,
+        overlay?.typeId,
+        overlay?.eType,
+        overlay?.name,
+        overlay?.sourceKey
+    )).filter(Boolean);
+
+    for (const token of tokenList) {
+        const exact = entries.find((entry) => entry.token && entry.token === token);
+        if (exact) {
+            return exact.rows;
+        }
+    }
+
+    if (tokenList.some(isDiverterTypeToken)) {
+        const diverterMatch = entries.find((entry) => isDiverterTypeToken(entry.name) || isDiverterTypeToken(entry.token));
+        if (diverterMatch) {
+            return diverterMatch.rows;
+        }
+    }
+
+    for (const token of tokenList) {
+        const partial = entries.find((entry) => (
+            entry.token
+            && token.length >= 3
+            && (
+                token.includes(entry.token)
+                || entry.token.includes(token)
+            )
+        ));
+        if (partial) {
+            return partial.rows;
+        }
+    }
+
+    return Array.isArray(stateStyleMapIndex?.defaultRows) ? stateStyleMapIndex.defaultRows : [];
+}
+
+function getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex) {
+    const mappings = getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex);
+    if (!mappings.length) {
+        return null;
+    }
+
+    const currentBinding = getOverlayFillBinding(overlay);
+    const tagPath = String(
+        currentBinding?.tagPath
+        ?? currentBinding?.path
+        ?? currentBinding?.sourcePath
+        ?? overlay?.tagPath
+        ?? ""
+    ).trim();
+    if (!tagPath) {
+        return null;
+    }
+
+    const fallbackColor = String(
+        currentBinding?.transform?.fallbackColor
+        ?? currentBinding?.fallbackColor
+        ?? overlay?.fill
+        ?? DEFAULT_FILL
+    ).trim() || DEFAULT_FILL;
+
+    return {
+        ...(isPlainObject(currentBinding) ? currentBinding : {}),
+        type: "tag",
+        source: "ignition",
+        property: "fill",
+        tagPath,
+        transform: {
+            ...(isPlainObject(currentBinding?.transform) ? currentBinding.transform : {}),
+            type: "map",
+            inputType: "value",
+            mappings,
+            fallbackColor
+        }
+    };
+}
+
+function applyHmiStateStyleMapsToOverlays(overlays, stateStyleMapIndex) {
+    if (!Array.isArray(overlays) || !Array.isArray(stateStyleMapIndex?.entries) || !stateStyleMapIndex.entries.length) {
+        return overlays;
+    }
+
+    return overlays.map((overlay) => {
+        if (!isPlainObject(overlay) || overlay?.widget || overlay?.embeddedView) {
+            return overlay;
+        }
+        const fillBinding = getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex);
+        if (!fillBinding) {
+            return overlay;
+        }
+        const currentBindings = isPlainObject(overlay.bindings) ? overlay.bindings : {};
+        return withOverlayBindings(overlay, {
+            ...currentBindings,
+            fill: fillBinding
+        });
+    });
 }
 
 function formatSvgAttributeNumber(value) {
@@ -744,8 +1308,23 @@ function resolveIgnitionStateMappingColor(mappings, rawValue) {
                 : null;
 
     for (const mapping of coerceArray(mappings)) {
-        const color = String(mapping?.color ?? "").trim();
-        const mappingValue = String(mapping?.value ?? "").trim();
+        const color = String(
+            mapping?.color
+            ?? mapping?.class
+            ?? mapping?.styleClass
+            ?? mapping?.className
+            ?? mapping?.style
+            ?? mapping?.cssClass
+            ?? ""
+        ).trim();
+        const mappingValue = String(
+            mapping?.value
+            ?? mapping?.state
+            ?? mapping?.field
+            ?? mapping?.input
+            ?? mapping?.key
+            ?? ""
+        ).trim();
         if (!color || !mappingValue) {
             continue;
         }
@@ -774,7 +1353,15 @@ function resolveIgnitionStateMappingColor(mappings, rawValue) {
     return "";
 }
 
-function getOverlayHmiStateColor(overlay, rawState) {
+function getOverlayHmiStateColor(overlay, rawState, stateStyleMapIndex = null) {
+    const hmiStateStyleMappings = getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex);
+    if (hmiStateStyleMappings.length) {
+        const mappedPaint = resolveIgnitionStateMappingColor(hmiStateStyleMappings, rawState);
+        if (mappedPaint) {
+            return mappedPaint;
+        }
+    }
+
     const binding = getOverlayFillBinding(overlay);
     const mappings = normalizeIgnitionFillBindingMappings(
         binding?.transform?.mappings
@@ -1397,7 +1984,61 @@ function resolveOverlayPopupViewPath(overlay) {
         || overlay?.name
         || overlay?.sourceKey
     );
-    return popupViewName ? `Popups/${popupViewName}` : "";
+    if (!popupViewName) {
+        return "";
+    }
+    if (/^Terra\/Popups\//i.test(popupViewName)) {
+        return popupViewName;
+    }
+    if (/^Popups\//i.test(popupViewName)) {
+        return `Terra/${popupViewName}`;
+    }
+    return `Terra/Popups/${popupViewName}`;
+}
+
+function parsePopupParamsObject(value) {
+    if (isPlainObject(value)) {
+        return cloneDeepValue(value);
+    }
+    const raw = String(value ?? "").trim();
+    if (!raw) {
+        return {};
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        return isPlainObject(parsed) ? parsed : {};
+    } catch (_error) {
+        return {};
+    }
+}
+
+function applyPopupParamPlaceholders(value, context) {
+    if (typeof value === "string") {
+        return value.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => (
+            Object.prototype.hasOwnProperty.call(context, key)
+                ? String(context[key] ?? "")
+                : match
+        ));
+    }
+    if (Array.isArray(value)) {
+        return value.map((entry) => applyPopupParamPlaceholders(entry, context));
+    }
+    if (isPlainObject(value)) {
+        return Object.fromEntries(
+            Object.entries(value).map(([key, entry]) => [key, applyPopupParamPlaceholders(entry, context)])
+        );
+    }
+    return value;
+}
+
+function resolveOverlayPopupParams(overlay, baseParams) {
+    const rawParams =
+        overlay?.popupParamsJson
+        ?? overlay?.popupParams
+        ?? overlay?.popupParametersJson
+        ?? overlay?.popupParameters
+        ?? {};
+    return applyPopupParamPlaceholders(parsePopupParamsObject(rawParams), baseParams);
 }
 
 function pointsEqual(left, right) {
@@ -2831,6 +3472,27 @@ export default function PerspectiveViziCanvasBridge(props) {
     const externalStrokeNormalizeWidth = Number.isFinite(externalStrokeNormalizeWidthRaw) && externalStrokeNormalizeWidthRaw > 0
         ? externalStrokeNormalizeWidthRaw
         : NORMALIZED_SVG_STROKE_WIDTH;
+    const propHmiStateStyleMaps = getModelValue(
+        props,
+        "hmiStateStyleMaps",
+        getModelValue(props, "udtStateStyleMaps", EMPTY_MAP)
+    );
+    const [fileHmiStateStyleMaps, setFileHmiStateStyleMaps] = useState(EMPTY_MAP);
+    const [fileHmiStateStyleDefinitions, setFileHmiStateStyleDefinitions] = useState(EMPTY_MAP);
+    const [hmiStateStyleMapFilePath, setHmiStateStyleMapFilePath] = useState("");
+    const [hmiStateStyleMapError, setHmiStateStyleMapError] = useState("");
+    const [hmiStateStyleMapRefreshing, setHmiStateStyleMapRefreshing] = useState(false);
+    const [hmiStateStyleMapLastModified, setHmiStateStyleMapLastModified] = useState(0);
+    const propHmiStateStyleMapsKey = JSON.stringify(propHmiStateStyleMaps || {});
+    const fileHmiStateStyleMapsKey = JSON.stringify(fileHmiStateStyleMaps || {});
+    const effectiveHmiStateStyleMaps = useMemo(
+        () => mergeHmiStateStyleMapSources(fileHmiStateStyleMaps, propHmiStateStyleMaps),
+        [fileHmiStateStyleMapsKey, propHmiStateStyleMapsKey]
+    );
+    const hmiStateStyleMapIndex = useMemo(
+        () => normalizeHmiStateStyleMapIndex(effectiveHmiStateStyleMaps),
+        [effectiveHmiStateStyleMaps]
+    );
     const svgLibraryEnabled = Boolean(getModelValue(props, "svgLibraryEnabled", true));
     const externalShapesKey = JSON.stringify(coerceArray(externalShapes));
     const externalOverlaysKey = JSON.stringify(coerceArray(externalOverlays));
@@ -2882,6 +3544,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
     const svgCatalogRequestIdRef = useRef(0);
+    const hmiStateStyleMapRequestIdRef = useRef(0);
     const runtimeDocumentViewBounds = useMemo(
         () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
         [
@@ -2894,6 +3557,10 @@ export default function PerspectiveViziCanvasBridge(props) {
         ]
     );
     const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
+    const canvasSvgOverlays = useMemo(
+        () => applyHmiStateStyleMapsToOverlays(svgOverlays, hmiStateStyleMapIndex),
+        [svgOverlays, hmiStateStyleMapIndex]
+    );
 
     useEffect(() => {
         shapesRef.current = shapes;
@@ -3018,7 +3685,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             out.push(path);
         };
 
-        coerceArray(svgOverlays).forEach((overlay) => {
+        coerceArray(canvasSvgOverlays).forEach((overlay) => {
             addPath(getOverlayFillBindingTagPath(overlay));
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             addPath(basePath);
@@ -3041,7 +3708,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         });
 
         return out;
-    }, [svgOverlays, shapes]);
+    }, [canvasSvgOverlays, shapes]);
     const overlayFillBindingPathsKey = JSON.stringify(overlayFillBindingPaths);
     const overlayFillBindingPathChunks = useMemo(
         () => chunkIgnitionTagValuePaths(overlayFillBindingPaths),
@@ -3165,6 +3832,26 @@ export default function PerspectiveViziCanvasBridge(props) {
         },
         [props]
     );
+
+    useEffect(() => {
+        if (!designerActive || previewActive) {
+            return;
+        }
+
+        const source = getComponentPropSource(props);
+        const hasModelStyleMaps = isPlainObject(source.model)
+            && Object.prototype.hasOwnProperty.call(source.model, "hmiStateStyleMaps");
+
+        if (hasModelStyleMaps) {
+            return;
+        }
+
+        const rootStyleMaps = isPlainObject(source.hmiStateStyleMaps)
+            ? source.hmiStateStyleMaps
+            : {};
+
+        writeComponentProp(props, "model.hmiStateStyleMaps", rootStyleMaps);
+    }, [designerActive, previewActive, props]);
 
     const persistShapes = useCallback(
         (nextShapes) => {
@@ -3347,6 +4034,84 @@ export default function PerspectiveViziCanvasBridge(props) {
         applyHistorySnapshot(next);
     }, [applyHistorySnapshot]);
 
+    const loadHmiStateStyleMaps = useCallback(async () => {
+        const requestId = hmiStateStyleMapRequestIdRef.current + 1;
+        hmiStateStyleMapRequestIdRef.current = requestId;
+        setHmiStateStyleMapRefreshing(true);
+        setHmiStateStyleMapError("");
+        let lastError = "Failed to load HMI state style maps.";
+
+        for (const routePath of HMI_STATE_STYLE_MAP_ROUTE_CANDIDATES) {
+            try {
+                const requestUrl = `${routePath}${routePath.includes("?") ? "&" : "?"}t=${Date.now()}`;
+                const response = await fetch(requestUrl, {
+                    cache: "no-store",
+                    credentials: "same-origin"
+                });
+                if (!response.ok) {
+                    lastError = `Failed to load HMI state style maps (${response.status}).`;
+                    continue;
+                }
+
+                const payload = normalizeHmiStateStyleMapPayload(await response.json());
+                if (hmiStateStyleMapRequestIdRef.current !== requestId) {
+                    return;
+                }
+
+                setFileHmiStateStyleMaps(payload.maps);
+                setFileHmiStateStyleDefinitions(payload.styles);
+                setHmiStateStyleMapFilePath(payload.filePath);
+                setHmiStateStyleMapLastModified(payload.lastModified);
+                setHmiStateStyleMapError(payload.error);
+                setHmiStateStyleMapRefreshing(false);
+                return;
+            } catch (error) {
+                lastError = String(error?.message || "Failed to load HMI state style maps.");
+            }
+        }
+
+        if (hmiStateStyleMapRequestIdRef.current === requestId) {
+            setFileHmiStateStyleMaps(EMPTY_MAP);
+            setFileHmiStateStyleDefinitions(EMPTY_MAP);
+            setHmiStateStyleMapFilePath("");
+            setHmiStateStyleMapLastModified(0);
+            setHmiStateStyleMapError(lastError);
+            setHmiStateStyleMapRefreshing(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadHmiStateStyleMaps();
+        return undefined;
+    }, [loadHmiStateStyleMaps]);
+
+    useEffect(() => {
+        if (typeof document === "undefined") {
+            return undefined;
+        }
+
+        const styleElementId = "mesora-hmi-state-style-map-css";
+        const cssText = buildHmiStateStyleDefinitionCss(fileHmiStateStyleDefinitions);
+        let styleElement = document.getElementById(styleElementId);
+        if (!cssText) {
+            if (styleElement && styleElement.parentNode) {
+                styleElement.parentNode.removeChild(styleElement);
+            }
+            return undefined;
+        }
+
+        if (!styleElement) {
+            styleElement = document.createElement("style");
+            styleElement.id = styleElementId;
+            styleElement.setAttribute("data-mesora-source", "hmi-state-style-maps");
+            document.head.appendChild(styleElement);
+        }
+        if (styleElement.textContent !== cssText) {
+            styleElement.textContent = cssText;
+        }
+        return undefined;
+    }, [fileHmiStateStyleDefinitions]);
+
     const loadSvgCatalog = useCallback(async () => {
         const requestId = svgCatalogRequestIdRef.current + 1;
         svgCatalogRequestIdRef.current = requestId;
@@ -3502,6 +4267,9 @@ export default function PerspectiveViziCanvasBridge(props) {
     const handleRefreshSvgLibrary = useCallback(() => {
         loadSvgCatalog();
     }, [loadSvgCatalog]);
+    const handleRefreshHmiStateStyleMaps = useCallback(() => {
+        loadHmiStateStyleMaps();
+    }, [loadHmiStateStyleMaps]);
     const svgLibraryHelpText = svgLibraryExternalDirectory
         ? `Drop .svg files into this folder and click Refresh:\n${svgLibraryExternalDirectory}`
         : "External SVG folder path will appear here when the catalog loads.";
@@ -3690,7 +4458,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 basePath,
                 IGNITION_FILL_STATE_MEMBERS
             );
-            const color = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+            const color = String(getOverlayHmiStateColor(overlay, rawState, hmiStateStyleMapIndex) || "").trim();
             if (!color) return;
 
             out.set(basePath, color);
@@ -3705,7 +4473,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             });
         });
         return out;
-    }, [svgOverlays, ignitionTagValuesByPath]);
+    }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
 
     const motorTagStateColorsByPath = useMemo(() => {
         const out = new Map();
@@ -3717,7 +4485,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 basePath,
                 MOTOR_UDT_STATE_MEMBERS
             );
-            const color = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+            const color = String(getOverlayHmiStateColor(overlay, rawState, hmiStateStyleMapIndex) || "").trim();
             if (!color) return;
             out.set(basePath, color);
             out.set(basePath.toLowerCase(), color);
@@ -3728,7 +4496,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             });
         });
         return out;
-    }, [svgOverlays, ignitionTagValuesByPath]);
+    }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
 
     const motorHmiStateColorByOverlayId = useMemo(() => {
         const out = {};
@@ -3741,11 +4509,11 @@ export default function PerspectiveViziCanvasBridge(props) {
                 basePath,
                 MOTOR_UDT_STATE_MEMBERS
             );
-            const color = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+            const color = String(getOverlayHmiStateColor(overlay, rawState, hmiStateStyleMapIndex) || "").trim();
             if (color) out[id] = color;
         });
         return out;
-    }, [svgOverlays, ignitionTagValuesByPath]);
+    }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
 
     const motorRouteColorsBySvgKey = useMemo(() => {
         const out = new Map();
@@ -4797,6 +5565,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             tagPath: "",
             eType: parsedEType,
             eTypeAuto: true,
+            popupParamsJson: "{}",
             bbox: {
                 x: localViewBox.x,
                 y: localViewBox.y,
@@ -5183,15 +5952,22 @@ export default function PerspectiveViziCanvasBridge(props) {
         const popupId = overlayId
             ? `svg-popup-${overlayId}`
             : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
+        const tagPath = String(overlay?.tagPath || "").trim();
+        const baseViewParams = {
+            overlayId,
+            eType: popupViewName,
+            name: popupTitle,
+            tagName: tagPath,
+            tagPath
+        };
+        const extraViewParams = resolveOverlayPopupParams(overlay, baseViewParams);
 
         const popupConfig = {
             id: popupId,
             viewPath,
             viewParams: {
-                overlayId,
-                eType: popupViewName,
-                name: popupTitle,
-                tagPath: String(overlay?.tagPath || "").trim()
+                ...extraViewParams,
+                ...baseViewParams
             },
             title: popupTitle,
             showCloseIcon: true,
@@ -5855,6 +6631,24 @@ export default function PerspectiveViziCanvasBridge(props) {
             return String(error?.message || "Invalid JSON.");
         }
     }, [selectedOverlayEmbeddedView, selectedOverlayIsEmbeddedView]);
+    const selectedOverlayPopupParamsError = useMemo(() => {
+        if (!selectedOverlay || selectedOverlayIsEmbeddedView || selectedOverlay?.widget) {
+            return "";
+        }
+        const raw = String(selectedOverlay?.popupParamsJson ?? selectedOverlay?.popupParams ?? "{}").trim();
+        if (!raw) {
+            return "";
+        }
+        try {
+            const parsed = JSON.parse(raw);
+            if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+                return "Params must be a JSON object.";
+            }
+            return "";
+        } catch (error) {
+            return String(error?.message || "Invalid JSON.");
+        }
+    }, [selectedOverlay, selectedOverlayIsEmbeddedView]);
     const selectedOverlayIsBin = useMemo(
         () => String(selectedOverlay?.eType || "").trim().toLowerCase().startsWith("bin"),
         [selectedOverlay]
@@ -6607,6 +7401,16 @@ export default function PerspectiveViziCanvasBridge(props) {
                 ? `${svgCatalogFiles.length} SVG templates ready`
                 : "Loading SVG templates...";
     const widgetLibraryStatusText = "Mesora widgets ready";
+    const hmiStateStyleMapCount = Array.isArray(hmiStateStyleMapIndex?.entries)
+        ? hmiStateStyleMapIndex.entries.length
+        : 0;
+    const hmiStateStyleMapStatusText = hmiStateStyleMapError
+        ? hmiStateStyleMapError
+        : hmiStateStyleMapRefreshing
+            ? "Loading HMI state styles..."
+            : hmiStateStyleMapCount > 0
+                ? `${hmiStateStyleMapCount} HMI state style maps loaded`
+                : "No HMI state style maps loaded";
 
     const svgDrawerLayout = useMemo(() => {
         const maxPanelWidth = Math.max(0, Number(rootSize?.width || DEFAULT_CANVAS_WIDTH) - (TOOLBAR_INSET * 2));
@@ -6906,7 +7710,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 onOverlayContextMenu={editorVisible ? handleOverlayContextMenu : NOOP}
                 vbW={viewBox.width}
                 vbH={viewBox.height}
-                svgOverlays={svgOverlays}
+                svgOverlays={canvasSvgOverlays}
                 setSvgOverlays={(updater) => updateSvgOverlays(updater, { persist: true })}
                 selectedOverlayIds={editorVisible ? selectedOverlayIds : EMPTY_ARRAY}
                 singleSelectedOverlayId={editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null}
@@ -7178,6 +7982,12 @@ export default function PerspectiveViziCanvasBridge(props) {
                             >
                                 <span>Widgets</span>
                             </DockButton>
+                            <DockButton
+                                disabled={hmiStateStyleMapRefreshing}
+                                onClick={handleRefreshHmiStateStyleMaps}
+                            >
+                                <span>{hmiStateStyleMapRefreshing ? "Loading Styles" : "Refresh Styles"}</span>
+                            </DockButton>
                             <DockButton onClick={handleAddEmbeddedView}>
                                 <span>Embedded View</span>
                             </DockButton>
@@ -7239,11 +8049,12 @@ export default function PerspectiveViziCanvasBridge(props) {
                                 style={{
                                     fontSize: 11,
                                     lineHeight: 1.45,
-                                    color: svgLibraryError ? "#fecaca" : "rgba(226, 232, 240, 0.72)"
+                                    color: (svgLibraryError || hmiStateStyleMapError) ? "#fecaca" : "rgba(226, 232, 240, 0.72)"
                                 }}
                             >
                                 {svgLibraryStatusText}
                                 <div>{widgetLibraryStatusText}</div>
+                                <div>{hmiStateStyleMapStatusText}</div>
                                 {!svgLibraryError && normalizableSvgCount ? (
                                     <div>{`${normalizableSvgCount} SVGs -> ${formatPanelNumber(resolvedStrokeNormalizeWidth)}px stroke`}</div>
                                 ) : null}
@@ -7544,6 +8355,25 @@ export default function PerspectiveViziCanvasBridge(props) {
                                             commitSelectedOverlayText("eType", value);
                                         }}
                                     />
+                                ) : null}
+                                {!selectedOverlayIsEmbeddedView && !selectedOverlay.widget ? (
+                                    <>
+                                        <PropertyTextArea
+                                            label="Popup Params JSON"
+                                            value={selectedOverlay.popupParamsJson || "{}"}
+                                            placeholder='{"line":"{{tagName}}","area":"Mill"}'
+                                            rows={4}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayText("popupParamsJson", value);
+                                            }}
+                                        />
+                                        {selectedOverlayPopupParamsError ? (
+                                            <PropertyReadout
+                                                label="Popup Params Status"
+                                                value={selectedOverlayPopupParamsError}
+                                            />
+                                        ) : null}
+                                    </>
                                 ) : null}
                                 {selectedOverlay.widget ? (
                                     <>

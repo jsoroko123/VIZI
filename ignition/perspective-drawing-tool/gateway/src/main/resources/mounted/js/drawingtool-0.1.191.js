@@ -13530,6 +13530,67 @@ var MesoraDrawingToolBundle = (() => {
   ];
   var BIN_LOCK_FILL_GROUP_IDS = ["Lock_Filling", "LockFill"];
   var BIN_LOCK_DISCHARGE_GROUP_IDS = ["Lock_Discharge", "LockDischarge"];
+  var getTagPathLeaf = (value) => {
+    const raw = normalizeTagValue(value);
+    if (!raw) return "";
+    const parts = raw.split(/[./]/).map((entry) => entry.trim()).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : raw;
+  };
+  var isStateTagPathKey = (value) => isStateTagKey(value) || isStateTagKey(getTagPathLeaf(value));
+  var buildStateTagParentPathCandidates = (tagPath, tagName, groupName, topicName) => {
+    const out = [];
+    const seen = /* @__PURE__ */ new Set();
+    const push = (raw) => {
+      const value = normalizeTagValue(raw);
+      if (!value) return;
+      const lower = value.toLowerCase();
+      if (seen.has(lower)) return;
+      seen.add(lower);
+      out.push(value);
+    };
+    if (!(isStateTagPathKey(tagName) || isStateTagPathKey(tagPath))) return out;
+    const path = normalizeTagValue(tagPath);
+    const leaf = getTagPathLeaf(path);
+    if (path && isStateTagPathKey(leaf)) {
+      const cut = Math.max(path.lastIndexOf("."), path.lastIndexOf("/"));
+      if (cut > 0) {
+        const parent = path.slice(0, cut);
+        push(parent);
+        if (topicName) push(`${topicName}.${parent}`);
+      }
+    }
+    push(groupName);
+    if (topicName && groupName) push(`${topicName}.${groupName}`);
+    return out;
+  };
+  var normalizeIgnitionStyleClassName = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    let classText = "";
+    let singleStyleName = false;
+    if (lower.startsWith("style:")) {
+      classText = raw.slice(raw.indexOf(":") + 1).trim();
+      singleStyleName = true;
+    } else if (lower.startsWith("class:")) {
+      classText = raw.slice(raw.indexOf(":") + 1).trim();
+    } else if (lower.startsWith(".")) {
+      classText = raw.slice(1).trim();
+    } else if (lower.startsWith("psc-")) {
+      classText = raw;
+    } else if (raw.includes("/") && !lower.startsWith("url(") && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(raw) && !/^(?:rgb|hsl)a?\(/i.test(raw) && !lower.startsWith("var(")) {
+      classText = raw;
+      singleStyleName = true;
+    }
+    if (!classText) return "";
+    const entries = singleStyleName ? [classText] : classText.split(/\s+/);
+    return entries.map((entry) => {
+      const cleaned = String(entry || "").trim().replace(/^\./, "").replace(/^style:/i, "").replace(/^class:/i, "");
+      if (!cleaned) return "";
+      return cleaned.toLowerCase().startsWith("psc-") ? cleaned : `psc-${cleaned}`;
+    }).filter(Boolean).join(" ");
+  };
+  var isIgnitionStyleReference = (value) => Boolean(normalizeIgnitionStyleClassName(value));
   Chart.register(
     CategoryScale,
     LinearScale,
@@ -13870,6 +13931,7 @@ var MesoraDrawingToolBundle = (() => {
     const normalizeStickyActiveColor = (value) => {
       const raw = String(value || "").trim();
       if (!raw) return "";
+      if (isIgnitionStyleReference(raw)) return "";
       const lower = raw.toLowerCase();
       if (lower === "#808080" || lower === "#d7dade" || lower === "rgb(215,218,222)" || lower === "rgba(215,218,222,1)" || lower === "rgb(128,128,128)" || lower === "gray" || lower === "grey" || lower === "#fff" || lower === "#ffffff" || lower === "white" || lower === "rgb(255,255,255)" || lower === "rgba(255,255,255,1)") {
         return "";
@@ -13900,6 +13962,7 @@ var MesoraDrawingToolBundle = (() => {
     const normalizeOverlayActiveFillColor = (value) => {
       const raw = String(value || "").trim();
       if (!raw) return "";
+      if (isIgnitionStyleReference(raw)) return "";
       const lower = raw.toLowerCase();
       if (lower === "none" || lower === "transparent" || lower === "#fff" || lower === "#ffffff" || lower === "white" || lower === "rgb(255,255,255)" || lower === "rgba(255,255,255,1)") {
         return "";
@@ -13911,15 +13974,20 @@ var MesoraDrawingToolBundle = (() => {
       }
       return raw;
     };
+    const getStateMappingPaint = (mapping) => {
+      var _a2, _b, _c, _d, _e, _f;
+      return String(
+        (_f = (_e = (_d = (_c = (_b = (_a2 = mapping == null ? void 0 : mapping.color) != null ? _a2 : mapping == null ? void 0 : mapping.class) != null ? _b : mapping == null ? void 0 : mapping.styleClass) != null ? _c : mapping == null ? void 0 : mapping.className) != null ? _d : mapping == null ? void 0 : mapping.style) != null ? _e : mapping == null ? void 0 : mapping.cssClass) != null ? _f : ""
+      ).trim();
+    };
     const matchStateMappingColor = (mappings, rawValue) => {
-      var _a2;
       const valueText = String(rawValue != null ? rawValue : "").trim();
       if (!valueText) return "";
       const valueNum = Number(rawValue);
       const valueLower = valueText.toLowerCase();
       const valueBool = valueLower === "true" || valueLower === "1" ? true : valueLower === "false" || valueLower === "0" ? false : null;
       for (const mapping of Array.isArray(mappings) ? mappings : []) {
-        const color2 = String((_a2 = mapping == null ? void 0 : mapping.color) != null ? _a2 : "").trim();
+        const color2 = getStateMappingPaint(mapping);
         if (!color2) continue;
         const candidates = [mapping == null ? void 0 : mapping.state, mapping == null ? void 0 : mapping.field, mapping == null ? void 0 : mapping.value, mapping == null ? void 0 : mapping.input, mapping == null ? void 0 : mapping.key];
         for (const candidateRaw of candidates) {
@@ -13961,14 +14029,14 @@ var MesoraDrawingToolBundle = (() => {
           if (template.parent_name) walk(template.parent_name);
           if (Array.isArray(template.state_mappings)) {
             template.state_mappings.forEach((mapping) => {
-              var _a3, _b2, _c;
+              var _a3, _b2;
               const field = String((_a3 = mapping == null ? void 0 : mapping.field) != null ? _a3 : "").trim();
               const state = String((_b2 = mapping == null ? void 0 : mapping.state) != null ? _b2 : "").trim();
               if (!field && !state) return;
               out.set(`${field}::${state}`, {
                 field,
                 state,
-                color: String((_c = mapping == null ? void 0 : mapping.color) != null ? _c : "").trim()
+                color: getStateMappingPaint(mapping)
               });
             });
           }
@@ -13982,14 +14050,15 @@ var MesoraDrawingToolBundle = (() => {
         const tagName = normalizeTagValue((tag == null ? void 0 : tag.name) || "");
         const topicName = normalizeTagValue((tag == null ? void 0 : tag.topic) || "");
         const groupName = inferGroupName(tag);
-        if (!(isStateTagKey(tagName) || isStateTagKey(tagPath))) return;
-        const keyCandidates = [
+        if (!(isStateTagPathKey(tagName) || isStateTagPathKey(tagPath))) return;
+        const keyCandidates = Array.from(new Set([
           tagPath,
           topicName && tagName ? `${topicName}.${tagName}` : "",
           topicName && tagPath ? `${topicName}.${tagPath}` : "",
+          ...buildStateTagParentPathCandidates(tagPath, tagName, groupName, topicName),
           groupName,
           topicName && groupName ? `${topicName}.${groupName}` : ""
-        ].map((entry) => normalizeTagValue(entry)).filter(Boolean);
+        ].map((entry) => normalizeTagValue(entry)).filter(Boolean)));
         if (!keyCandidates.length) return;
         const mappingKeys = [
           topicName && groupName && tagName ? `${topicName}.${groupName}.${tagName}` : "",
@@ -14007,25 +14076,25 @@ var MesoraDrawingToolBundle = (() => {
           var _a3, _b2;
           const rows = ((_a3 = opcTagMappingMap == null ? void 0 : opcTagMappingMap.get) == null ? void 0 : _a3.call(opcTagMappingMap, key)) || ((_b2 = opcTagMappingMap == null ? void 0 : opcTagMappingMap.get) == null ? void 0 : _b2.call(opcTagMappingMap, key.toLowerCase())) || [];
           rows.forEach((row) => {
-            var _a4, _b3, _c;
+            var _a4, _b3;
             const signature = `${String((row == null ? void 0 : row.field) || "")}::${String((row == null ? void 0 : row.state) || "")}::${String((row == null ? void 0 : row.color) || "")}`;
             if (seen.has(signature)) return;
             seen.add(signature);
             tagMappings.push({
               field: String((_a4 = row == null ? void 0 : row.field) != null ? _a4 : "").trim(),
               state: String((_b3 = row == null ? void 0 : row.state) != null ? _b3 : "").trim(),
-              color: String((_c = row == null ? void 0 : row.color) != null ? _c : "").trim()
+              color: getStateMappingPaint(row)
             });
           });
         });
         const mappingSetName = String((tag == null ? void 0 : tag.mappingSet) || "").trim();
         const mappingSet = ((_a2 = opcMappingSetMap == null ? void 0 : opcMappingSetMap.get) == null ? void 0 : _a2.call(opcMappingSetMap, mappingSetName)) || ((_b = opcMappingSetMap == null ? void 0 : opcMappingSetMap.get) == null ? void 0 : _b.call(opcMappingSetMap, mappingSetName.toLowerCase())) || null;
         const setMappings = Array.isArray(mappingSet == null ? void 0 : mappingSet.mappings) ? mappingSet.mappings.map((mapping) => {
-          var _a3, _b2, _c;
+          var _a3, _b2;
           return {
             field: String((_a3 = mapping == null ? void 0 : mapping.field) != null ? _a3 : "").trim(),
             state: String((_b2 = mapping == null ? void 0 : mapping.state) != null ? _b2 : "").trim(),
-            color: String((_c = mapping == null ? void 0 : mapping.color) != null ? _c : "").trim()
+            color: getStateMappingPaint(mapping)
           };
         }) : [];
         const templateMappings = resolveTemplateStateMappings(tag == null ? void 0 : tag.plcType);
@@ -14150,9 +14219,9 @@ var MesoraDrawingToolBundle = (() => {
       if (rawValue == null || String(rawValue).trim() === "") {
         return "";
       }
-      return normalizeActiveLineColor(
-        matchStateMappingColor(getOverlayFillBindingMappings(overlay), rawValue)
-      );
+      const mappedColor = matchStateMappingColor(getOverlayFillBindingMappings(overlay), rawValue);
+      if (isIgnitionStyleReference(mappedColor)) return String(mappedColor || "").trim();
+      return normalizeActiveLineColor(mappedColor);
     };
     const getOverlayDisplayedFlowFillColor = (overlay) => {
       if (isDiverterEType(overlay == null ? void 0 : overlay.eType)) return "";
@@ -18315,6 +18384,45 @@ var MesoraDrawingToolBundle = (() => {
     const normalizeActiveLineColor = (value) => {
       return normalizeStickyActiveColor(value);
     };
+    const appendSvgClassName = (node, className) => {
+      if (!node || !className) return;
+      const existing = String(node.getAttribute("class") || "").trim();
+      const next = Array.from(new Set(`${existing} ${className}`.trim().split(/\s+/).filter(Boolean))).join(" ");
+      if (next) node.setAttribute("class", next);
+    };
+    const stripSvgStyleProperty = (styleText, propertyName) => {
+      const property = String(propertyName || "").trim();
+      if (!property) return String(styleText || "").trim();
+      return String(styleText || "").split(";").map((part) => part.trim()).filter((part) => part && !part.toLowerCase().startsWith(`${property.toLowerCase()}:`)).join("; ");
+    };
+    const applyIgnitionStyleClassToSvg = (inner, className) => {
+      const classText = String(className || "").trim();
+      const source = String(inner || "");
+      if (!source || !classText || typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") return source;
+      try {
+        const doc = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${source}</svg>`, "image/svg+xml");
+        const root = doc.documentElement;
+        if (!root || root.nodeName.toLowerCase() !== "svg") return source;
+        appendSvgClassName(root, classText);
+        const nodes = root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline,line,text,use,g");
+        nodes.forEach((node) => {
+          const fillAttr = String(node.getAttribute("fill") || "").trim().toLowerCase();
+          const styleAttr = String(node.getAttribute("style") || "");
+          if (fillAttr === "none" || /(?:^|;)\s*fill\s*:\s*none\s*(?:;|$)/i.test(styleAttr)) return;
+          appendSvgClassName(node, classText);
+          if (node.hasAttribute("fill")) node.removeAttribute("fill");
+          if (styleAttr) {
+            const nextStyle = stripSvgStyleProperty(styleAttr, "fill");
+            if (nextStyle) node.setAttribute("style", nextStyle);
+            else node.removeAttribute("style");
+          }
+        });
+        const serializer = new XMLSerializer();
+        return Array.from(root.childNodes).map((node) => serializer.serializeToString(node)).join("");
+      } catch {
+        return source;
+      }
+    };
     const escapeRegExp = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const setSvgElementVisibleById = (inner, elementId, visible) => {
       if (!inner || !elementId) return inner;
@@ -19906,9 +20014,9 @@ var MesoraDrawingToolBundle = (() => {
         const binLockedIn = (binLockedInByOverlayId == null ? void 0 : binLockedInByOverlayId[id]) === true;
         const binLockedOut = (binLockedOutByOverlayId == null ? void 0 : binLockedOutByOverlayId[id]) === true;
         const shouldReplaceBinText = isBinOverlay2 && (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
-        const overlayStateColor = normalizeOverlayActiveFillColor(
-          (overlayHmiStateColorByOverlayId == null ? void 0 : overlayHmiStateColorByOverlayId[id]) || ""
-        );
+        const overlayStatePaint = String((overlayHmiStateColorByOverlayId == null ? void 0 : overlayHmiStateColorByOverlayId[id]) || "").trim();
+        const overlayStateStyleClass = isDiverterOverlay2 || isBinOverlay2 ? "" : normalizeIgnitionStyleClassName(overlayStatePaint);
+        const overlayStateColor = overlayStateStyleClass ? "" : normalizeOverlayActiveFillColor(overlayStatePaint);
         const routeOutlineStroke = isBinOverlay2 || isDiverterOverlay2 ? "" : normalizeActiveLineColor(
           getRouteColorForOverlay(overlay) || getRouteStrokeColorForOverlay(overlay)
         );
@@ -19916,7 +20024,13 @@ var MesoraDrawingToolBundle = (() => {
         const strokeModeRaw = String((overlay == null ? void 0 : overlay.strokeMode) || "").trim().toLowerCase();
         const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
         if (!renderLiveVisuals) {
-          const overlayFill2 = String(getOverlayBoundFillColor(overlay) || (overlay == null ? void 0 : overlay.fill) || "").trim();
+          const boundActiveFillPaint = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
+          const boundFillPaint = String(getOverlayBoundFillColor(overlay) || "").trim();
+          const boundActiveStyleClass = isDiverterOverlay2 || isBinOverlay2 ? "" : normalizeIgnitionStyleClassName(boundActiveFillPaint);
+          const boundFillStyleClass = isDiverterOverlay2 || isBinOverlay2 ? "" : normalizeIgnitionStyleClassName(boundFillPaint);
+          const boundActiveFillColor = boundActiveStyleClass ? "" : normalizeOverlayActiveFillColor(boundActiveFillPaint);
+          const boundFillColor = boundFillStyleClass ? "" : normalizeOverlayActiveFillColor(boundFillPaint);
+          const overlayFill2 = String(boundActiveFillColor || boundFillColor || (overlay == null ? void 0 : overlay.fill) || "").trim();
           const overlayStroke2 = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
           const overlayStrokeWidth2 = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
           const hasCustomOverlayFill2 = Boolean(overlayFill2) && (!preserveStrokeMode || overlayFill2.toLowerCase() !== themeFillDefault);
@@ -19958,11 +20072,15 @@ var MesoraDrawingToolBundle = (() => {
             inner: (() => {
               const strokeColor = hasCustomOverlayStroke2 ? overlayStroke2 : "";
               const defaultOverlayFill = hasCustomOverlayFill2 ? overlayFill2 : themeFillDefault;
+              const stateStyleClass = isBinOverlay2 ? "" : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass;
               let nextInner = applyOverlayPaintOverrides(inner2, {
-                fillColor: isBinOverlay2 ? "" : overlayStateColor || defaultOverlayFill,
+                fillColor: isBinOverlay2 || stateStyleClass ? "" : overlayStateColor || defaultOverlayFill,
                 strokeColor,
                 strokeWidth: overlayStrokeWidth2
               });
+              if (stateStyleClass) {
+                nextInner = applyIgnitionStyleClassToSvg(nextInner, stateStyleClass);
+              }
               if (strokeColor) {
                 nextInner = forceSvgStrokeColor(nextInner, strokeColor);
               }
@@ -19971,9 +20089,9 @@ var MesoraDrawingToolBundle = (() => {
               }
               return nextInner;
             })(),
-            className: void 0,
+            className: (isBinOverlay2 ? "" : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass) || void 0,
             style: {
-              fill: isBinOverlay2 ? void 0 : overlayStateColor || (hasCustomOverlayFill2 ? overlayFill2 : void 0),
+              fill: isBinOverlay2 ? void 0 : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass ? hasCustomOverlayFill2 ? overlayFill2 : themeFillDefault : overlayStateColor || (hasCustomOverlayFill2 ? overlayFill2 : void 0),
               stroke: hasCustomOverlayStroke2 ? overlayStroke2 : void 0,
               strokeWidth: overlayStrokeWidth2,
               pointerEvents: "visiblePainted"
@@ -19983,7 +20101,10 @@ var MesoraDrawingToolBundle = (() => {
           return;
         }
         const boundActiveFill = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
-        const tagFill = isDiverterOverlay2 || isBinOverlay2 ? "" : normalizeOverlayActiveFillColor(boundActiveFill || getTagColor(overlay.tagPath) || overlayStateColor);
+        const tagStatePaint = String(getTagColor(overlay.tagPath) || "").trim();
+        const activeFillPaint = boundActiveFill || tagStatePaint || overlayStatePaint;
+        const activeFillStyleClass = isDiverterOverlay2 || isBinOverlay2 ? "" : normalizeIgnitionStyleClassName(activeFillPaint);
+        const tagFill = isDiverterOverlay2 || isBinOverlay2 ? "" : activeFillStyleClass ? "" : normalizeOverlayActiveFillColor(activeFillPaint || overlayStateColor);
         const routeStroke = normalizeActiveLineColor(getRouteStrokeColorForOverlay(overlay));
         const diverterIncomingColor = isDiverterOverlay2 ? normalizeActiveLineColor(
           getDirectEntryActiveColorForDiverter(overlay, {
@@ -20003,7 +20124,7 @@ var MesoraDrawingToolBundle = (() => {
         const hasCustomOverlayFill = Boolean(overlayFill) && (!preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
         const hasCustomOverlayStroke = Boolean(overlayStroke) && (!preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
         const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
-        const effectiveFillColor = isDiverterOverlay2 ? "" : isBinOverlay2 ? "" : tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : themeFillDefault);
+        const effectiveFillColor = isDiverterOverlay2 ? "" : isBinOverlay2 ? "" : activeFillStyleClass ? "" : tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : themeFillDefault);
         const effectiveStrokeColor = isDiverterOverlay2 ? "" : routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : useForcedStroke ? routeStroke : "");
         if (tagFill) {
           const key = String(overlay.tagPath || overlay.id || "");
@@ -20039,6 +20160,9 @@ var MesoraDrawingToolBundle = (() => {
             strokeWidth: overlayStrokeWidth
           });
         }
+        if (!isDiverterOverlay2 && activeFillStyleClass && !isFaultSimulated) {
+          inner = applyIgnitionStyleClassToSvg(inner, activeFillStyleClass);
+        }
         if (!isDiverterOverlay2 && hasCustomOverlayStroke) {
           inner = forceSvgStrokeColor(inner, overlayStroke);
         }
@@ -20050,10 +20174,11 @@ var MesoraDrawingToolBundle = (() => {
         }
         out.set(id, {
           inner,
-          className: [isFaultSimulated ? "vizi-svg-fault-flash" : ""].filter(Boolean).join(" ") || void 0,
+          className: [activeFillStyleClass, isFaultSimulated ? "vizi-svg-fault-flash" : ""].filter(Boolean).join(" ") || void 0,
           style: isDiverterOverlay2 ? {
             pointerEvents: "visiblePainted"
           } : {
+            fill: activeFillStyleClass ? hasCustomOverlayFill ? overlayFill : themeFillDefault : void 0,
             pointerEvents: "visiblePainted"
           },
           isConveyorScrew
@@ -22603,6 +22728,12 @@ var MesoraDrawingToolBundle = (() => {
     `/main/data/${MODULE_ID}/svg-library-catalog`,
     `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`
   ];
+  var HMI_STATE_STYLE_MAP_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/hmi-state-style-maps`,
+    `/main/data/${MODULE_URL_ALIAS}/hmi-state-style-maps`,
+    `/data/${MODULE_ID}/hmi-state-style-maps`,
+    `/main/data/${MODULE_ID}/hmi-state-style-maps`
+  ];
   var SVG_RAW_CACHE_MAX = 80;
   var DEFAULT_FILL = "#D7DADE";
   var DEFAULT_STROKE = "#808080";
@@ -22867,10 +22998,12 @@ var MesoraDrawingToolBundle = (() => {
   }
   function normalizeIgnitionFillBindingMappings(value) {
     const normalized = coerceArray(value).map((entry) => {
-      var _a, _b, _c, _d, _e;
-      const color2 = String((_a = entry == null ? void 0 : entry.color) != null ? _a : "").trim();
+      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+      const color2 = String(
+        (_f = (_e = (_d = (_c = (_b = (_a = entry == null ? void 0 : entry.color) != null ? _a : entry == null ? void 0 : entry.class) != null ? _b : entry == null ? void 0 : entry.styleClass) != null ? _c : entry == null ? void 0 : entry.className) != null ? _d : entry == null ? void 0 : entry.style) != null ? _e : entry == null ? void 0 : entry.cssClass) != null ? _f : ""
+      ).trim();
       const mappingValue = String(
-        (_e = (_d = (_c = (_b = entry == null ? void 0 : entry.value) != null ? _b : entry == null ? void 0 : entry.state) != null ? _c : entry == null ? void 0 : entry.field) != null ? _d : entry == null ? void 0 : entry.input) != null ? _e : ""
+        (_k = (_j = (_i = (_h = (_g = entry == null ? void 0 : entry.value) != null ? _g : entry == null ? void 0 : entry.state) != null ? _h : entry == null ? void 0 : entry.field) != null ? _i : entry == null ? void 0 : entry.input) != null ? _j : entry == null ? void 0 : entry.key) != null ? _k : ""
       ).trim();
       if (!mappingValue || !color2) {
         return null;
@@ -22881,6 +23014,432 @@ var MesoraDrawingToolBundle = (() => {
       };
     }).filter(Boolean);
     return normalized.length ? normalized : cloneDefaultIgnitionFillMappings();
+  }
+  function readStateStyleMapSource(value) {
+    if (typeof value === "string") {
+      const raw = value.trim();
+      if (!raw) {
+        return {};
+      }
+      try {
+        return JSON.parse(raw);
+      } catch (_error) {
+        return {};
+      }
+    }
+    if (isPlainObject(value) && Object.prototype.hasOwnProperty.call(value, "value") && (Object.prototype.hasOwnProperty.call(value, "quality") || Object.prototype.hasOwnProperty.call(value, "timestamp"))) {
+      return value.value;
+    }
+    return isPlainObject(value) || Array.isArray(value) ? value : {};
+  }
+  function normalizeCssPropertyName(value) {
+    return String(value || "").trim().replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`).replace(/^ms-/, "-ms-").toLowerCase();
+  }
+  function normalizeCssValue(value) {
+    if (value == null || typeof value === "object") {
+      return "";
+    }
+    return String(value).trim().replace(/[{}]/g, "");
+  }
+  function readInlineStyleObject(value) {
+    const source = isPlainObject(value) ? value : {};
+    const nested = isPlainObject(source.style) ? source.style : isPlainObject(source.css) ? source.css : isPlainObject(source.styles) ? source.styles : {};
+    const out = { ...nested };
+    [
+      "fill",
+      "stroke",
+      "color",
+      "backgroundColor",
+      "background-color",
+      "opacity",
+      "fillOpacity",
+      "fill-opacity",
+      "strokeOpacity",
+      "stroke-opacity",
+      "strokeWidth",
+      "stroke-width"
+    ].forEach((property) => {
+      if (source[property] !== void 0 && source[property] !== null) {
+        out[property] = source[property];
+      }
+    });
+    return out;
+  }
+  function normalizeHmiStatePaint(value) {
+    var _a, _b, _c, _d;
+    if (isPlainObject(value)) {
+      return String(
+        (_d = (_c = (_b = (_a = value.fill) != null ? _a : value.color) != null ? _b : value.backgroundColor) != null ? _c : value["background-color"]) != null ? _d : ""
+      ).trim();
+    }
+    return String(value != null ? value : "").trim();
+  }
+  function normalizeHmiStateStyleMapRows(value) {
+    const source = readStateStyleMapSource(value);
+    const rows = [];
+    const pushRow = (stateKey, entry) => {
+      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
+      const record = isPlainObject(entry) ? entry : {};
+      const mappingValue = String(
+        (_f = (_e = (_d = (_c = (_b = (_a = record.value) != null ? _a : record.state) != null ? _b : record.field) != null ? _c : record.input) != null ? _d : record.key) != null ? _e : stateKey) != null ? _f : ""
+      ).trim();
+      const paint = normalizeHmiStatePaint(
+        (_m = (_l = (_k = (_j = (_i = (_h = (_g = record.color) != null ? _g : record.class) != null ? _h : record.styleClass) != null ? _i : record.className) != null ? _j : record.style) != null ? _k : record.cssClass) != null ? _l : readInlineStyleObject(record)) != null ? _m : isPlainObject(entry) ? "" : entry
+      );
+      if (!mappingValue || !paint) {
+        return;
+      }
+      rows.push({
+        value: mappingValue,
+        state: mappingValue,
+        color: paint,
+        style: readInlineStyleObject(record),
+        text: String((_o = (_n = record.text) != null ? _n : record.label) != null ? _o : "").trim()
+      });
+    };
+    if (Array.isArray(source)) {
+      source.forEach((entry, index2) => pushRow(String(index2), entry));
+      return rows;
+    }
+    if (isPlainObject(source)) {
+      Object.entries(source).forEach(([stateKey, entry]) => pushRow(stateKey, entry));
+    }
+    return rows;
+  }
+  function looksLikeHmiStateStyleTable(value) {
+    const source = readStateStyleMapSource(value);
+    if (Array.isArray(source)) {
+      return true;
+    }
+    if (!isPlainObject(source)) {
+      return false;
+    }
+    return Object.entries(source).some(([stateKey, entry]) => {
+      if (!isPlainObject(entry)) {
+        return typeof entry === "string" || typeof entry === "number";
+      }
+      const hasPaint = Object.prototype.hasOwnProperty.call(entry, "color") || Object.prototype.hasOwnProperty.call(entry, "class") || Object.prototype.hasOwnProperty.call(entry, "style") || Object.prototype.hasOwnProperty.call(entry, "styleClass") || Object.prototype.hasOwnProperty.call(entry, "className") || Object.prototype.hasOwnProperty.call(entry, "cssClass");
+      const hasExplicitState = Object.prototype.hasOwnProperty.call(entry, "value") || Object.prototype.hasOwnProperty.call(entry, "state") || Object.prototype.hasOwnProperty.call(entry, "field") || Object.prototype.hasOwnProperty.call(entry, "input") || Object.prototype.hasOwnProperty.call(entry, "key");
+      return hasPaint && (hasExplicitState || String(stateKey || "").trim() !== "");
+    });
+  }
+  function normalizeHmiStateStyleMapIndex(value) {
+    var _a;
+    const source = readStateStyleMapSource(value);
+    const entries = [];
+    const addEntry = (name, table) => {
+      const rows = normalizeHmiStateStyleMapRows(table);
+      const token = normalizeTagTypeMatchToken(name);
+      if (!rows.length) {
+        return;
+      }
+      entries.push({
+        name: String(name || "").trim(),
+        token,
+        rows
+      });
+    };
+    if (looksLikeHmiStateStyleTable(source)) {
+      addEntry("default", source);
+      return { entries, defaultRows: ((_a = entries[0]) == null ? void 0 : _a.rows) || [] };
+    }
+    if (isPlainObject(source)) {
+      Object.entries(source).forEach(([name, table]) => addEntry(name, table));
+    }
+    return {
+      entries,
+      defaultRows: entries.length === 1 ? entries[0].rows : []
+    };
+  }
+  function resolveHmiStateStyleEntryReference(entry, styles) {
+    var _a, _b, _c, _d;
+    const styleIndex = isPlainObject(styles) ? styles : {};
+    if (typeof entry === "string" || typeof entry === "number") {
+      const styleKey2 = String(entry).trim();
+      if (styleKey2 && isPlainObject(styleIndex[styleKey2])) {
+        return { ...styleIndex[styleKey2] };
+      }
+      return entry;
+    }
+    if (!isPlainObject(entry)) {
+      return entry;
+    }
+    const styleKey = String(
+      (_d = (_c = (_b = (_a = entry.styleRef) != null ? _a : entry.ref) != null ? _b : entry.styleKey) != null ? _c : entry.styleName) != null ? _d : ""
+    ).trim();
+    if (!styleKey || !isPlainObject(styleIndex[styleKey])) {
+      return entry;
+    }
+    const {
+      styleRef: _ignoredStyleRef,
+      ref: _ignoredRef,
+      styleKey: _ignoredStyleKey,
+      styleName: _ignoredStyleName,
+      ...entryWithoutRef
+    } = entry;
+    return {
+      ...styleIndex[styleKey],
+      ...entryWithoutRef
+    };
+  }
+  function resolveHmiStateStyleMapReferences(maps, styles) {
+    const source = readStateStyleMapSource(maps);
+    const styleIndex = readStateStyleMapSource(styles);
+    if (!isPlainObject(styleIndex) || !Object.keys(styleIndex).length) {
+      return source;
+    }
+    const resolveTable = (table) => {
+      const tableSource = readStateStyleMapSource(table);
+      if (Array.isArray(tableSource)) {
+        return tableSource.map((entry) => resolveHmiStateStyleEntryReference(entry, styleIndex));
+      }
+      if (isPlainObject(tableSource)) {
+        return Object.entries(tableSource).reduce((acc, [stateKey, entry]) => {
+          acc[stateKey] = resolveHmiStateStyleEntryReference(entry, styleIndex);
+          return acc;
+        }, {});
+      }
+      return table;
+    };
+    if (looksLikeHmiStateStyleTable(source)) {
+      return resolveTable(source);
+    }
+    if (isPlainObject(source)) {
+      return Object.entries(source).reduce((acc, [name, table]) => {
+        acc[name] = resolveTable(table);
+        return acc;
+      }, {});
+    }
+    return source;
+  }
+  function normalizeHmiStateStyleMapPayload(value) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    const payload = isPlainObject(value) ? value : { maps: value };
+    const rawMaps = (_e = (_d = (_c = (_b = (_a = payload.maps) != null ? _a : payload.hmiStateStyleMaps) != null ? _b : payload.udtStateStyleMaps) != null ? _c : payload.stateMaps) != null ? _d : payload.data) != null ? _e : value;
+    const styles = (_i = (_h = (_g = (_f = payload.styles) != null ? _f : payload.classes) != null ? _g : payload.styleClasses) != null ? _h : payload.styleDefinitions) != null ? _i : EMPTY_MAP;
+    const maps = resolveHmiStateStyleMapReferences(rawMaps, styles);
+    return {
+      maps: isPlainObject(maps) || Array.isArray(maps) ? maps : EMPTY_MAP,
+      styles: isPlainObject(styles) ? styles : EMPTY_MAP,
+      filePath: String((_k = (_j = payload.filePath) != null ? _j : payload.path) != null ? _k : "").trim(),
+      lastModified: Math.max(0, Number(payload.lastModified) || 0),
+      mapCount: Math.max(0, Number(payload.mapCount) || 0),
+      error: String(payload.error || "").trim()
+    };
+  }
+  function normalizeIgnitionStyleClassNameForCss(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+    const lower = raw.toLowerCase();
+    let classText = "";
+    let singleStyleName = false;
+    if (lower.startsWith("style:")) {
+      classText = raw.slice(raw.indexOf(":") + 1).trim();
+      singleStyleName = true;
+    } else if (lower.startsWith("class:")) {
+      classText = raw.slice(raw.indexOf(":") + 1).trim();
+    } else if (lower.startsWith(".")) {
+      classText = raw.slice(1).trim();
+    } else if (lower.startsWith("psc-")) {
+      classText = raw;
+    } else if (raw.includes("/")) {
+      classText = raw;
+      singleStyleName = true;
+    }
+    if (!classText) {
+      return "";
+    }
+    const entries = singleStyleName ? [classText] : classText.split(/\s+/);
+    return entries.map((entry) => {
+      const cleaned = String(entry || "").trim().replace(/^\./, "").replace(/^style:/i, "").replace(/^class:/i, "");
+      if (!cleaned) {
+        return "";
+      }
+      return cleaned.toLowerCase().startsWith("psc-") ? cleaned : `psc-${cleaned}`;
+    }).filter(Boolean).join(" ");
+  }
+  function escapeCssClassSelector(value) {
+    const className = String(value || "").trim();
+    if (!className) {
+      return "";
+    }
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+      return `.${CSS.escape(className)}`;
+    }
+    return `.${className.replace(/[^a-zA-Z0-9_-]/g, "\\$&")}`;
+  }
+  function collectStyleDefinitionClassNames(name, definition) {
+    const rawClassNames = [];
+    const add = (value) => {
+      if (Array.isArray(value)) {
+        value.forEach(add);
+        return;
+      }
+      const raw = String(value || "").trim();
+      if (raw) {
+        rawClassNames.push(raw);
+      }
+    };
+    add(definition == null ? void 0 : definition.class);
+    add(definition == null ? void 0 : definition.classes);
+    add(definition == null ? void 0 : definition.styleClass);
+    add(definition == null ? void 0 : definition.className);
+    add(definition == null ? void 0 : definition.cssClass);
+    add(definition == null ? void 0 : definition.styleClassName);
+    const nameText = String(name || "").trim();
+    if (nameText.includes("/") || nameText.toLowerCase().startsWith("psc-")) {
+      add(nameText);
+    }
+    const classNames = /* @__PURE__ */ new Set();
+    rawClassNames.forEach((raw) => {
+      normalizeIgnitionStyleClassNameForCss(raw).split(/\s+/).map((entry) => entry.trim()).filter(Boolean).forEach((entry) => classNames.add(entry));
+    });
+    return Array.from(classNames);
+  }
+  function serializeHmiStateStyleDeclaration(styleObject) {
+    const source = isPlainObject(styleObject) ? styleObject : {};
+    const declarations = [];
+    Object.entries(source).forEach(([property, rawValue]) => {
+      const cssProperty = normalizeCssPropertyName(property);
+      const cssValue = normalizeCssValue(rawValue);
+      if (!cssProperty || !cssValue) {
+        return;
+      }
+      declarations.push(`${cssProperty}: ${cssValue} !important;`);
+    });
+    return declarations.join(" ");
+  }
+  function buildHmiStateStyleDefinitionCss(styles) {
+    const source = readStateStyleMapSource(styles);
+    if (!isPlainObject(source)) {
+      return "";
+    }
+    const rules = [];
+    Object.entries(source).forEach(([name, definition]) => {
+      if (!isPlainObject(definition)) {
+        return;
+      }
+      const classNames = collectStyleDefinitionClassNames(name, definition);
+      const declaration = serializeHmiStateStyleDeclaration(readInlineStyleObject(definition));
+      if (!classNames.length || !declaration) {
+        return;
+      }
+      classNames.forEach((className) => {
+        const selector = escapeCssClassSelector(className);
+        if (selector) {
+          rules.push(`${selector} { ${declaration} }`);
+        }
+      });
+    });
+    return rules.join("\n");
+  }
+  function hasHmiStateStyleMapEntries(value) {
+    return normalizeHmiStateStyleMapIndex(value).entries.length > 0;
+  }
+  function mergeHmiStateStyleMapSources(baseMaps, overrideMaps) {
+    const baseSource = readStateStyleMapSource(baseMaps);
+    const overrideSource = readStateStyleMapSource(overrideMaps);
+    const hasBase = hasHmiStateStyleMapEntries(baseSource);
+    const hasOverride = hasHmiStateStyleMapEntries(overrideSource);
+    if (!hasOverride) {
+      return hasBase ? baseSource : EMPTY_MAP;
+    }
+    if (!hasBase) {
+      return overrideSource;
+    }
+    if (looksLikeHmiStateStyleTable(baseSource) || looksLikeHmiStateStyleTable(overrideSource)) {
+      return overrideSource;
+    }
+    return {
+      ...baseSource,
+      ...overrideSource
+    };
+  }
+  function getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex) {
+    const entries = Array.isArray(stateStyleMapIndex == null ? void 0 : stateStyleMapIndex.entries) ? stateStyleMapIndex.entries : [];
+    if (!entries.length) {
+      return [];
+    }
+    const tokenList = Array.from(collectTagTypeMatchTokens(
+      overlay == null ? void 0 : overlay.udtName,
+      overlay == null ? void 0 : overlay.udtType,
+      overlay == null ? void 0 : overlay.templateName,
+      overlay == null ? void 0 : overlay.typeId,
+      overlay == null ? void 0 : overlay.eType,
+      overlay == null ? void 0 : overlay.name,
+      overlay == null ? void 0 : overlay.sourceKey
+    )).filter(Boolean);
+    for (const token of tokenList) {
+      const exact = entries.find((entry) => entry.token && entry.token === token);
+      if (exact) {
+        return exact.rows;
+      }
+    }
+    if (tokenList.some(isDiverterTypeToken)) {
+      const diverterMatch = entries.find((entry) => isDiverterTypeToken(entry.name) || isDiverterTypeToken(entry.token));
+      if (diverterMatch) {
+        return diverterMatch.rows;
+      }
+    }
+    for (const token of tokenList) {
+      const partial = entries.find((entry) => entry.token && token.length >= 3 && (token.includes(entry.token) || entry.token.includes(token)));
+      if (partial) {
+        return partial.rows;
+      }
+    }
+    return Array.isArray(stateStyleMapIndex == null ? void 0 : stateStyleMapIndex.defaultRows) ? stateStyleMapIndex.defaultRows : [];
+  }
+  function getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    const mappings = getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex);
+    if (!mappings.length) {
+      return null;
+    }
+    const currentBinding = getOverlayFillBinding(overlay);
+    const tagPath = String(
+      (_d = (_c = (_b = (_a = currentBinding == null ? void 0 : currentBinding.tagPath) != null ? _a : currentBinding == null ? void 0 : currentBinding.path) != null ? _b : currentBinding == null ? void 0 : currentBinding.sourcePath) != null ? _c : overlay == null ? void 0 : overlay.tagPath) != null ? _d : ""
+    ).trim();
+    if (!tagPath) {
+      return null;
+    }
+    const fallbackColor = String(
+      (_h = (_g = (_f = (_e = currentBinding == null ? void 0 : currentBinding.transform) == null ? void 0 : _e.fallbackColor) != null ? _f : currentBinding == null ? void 0 : currentBinding.fallbackColor) != null ? _g : overlay == null ? void 0 : overlay.fill) != null ? _h : DEFAULT_FILL
+    ).trim() || DEFAULT_FILL;
+    return {
+      ...isPlainObject(currentBinding) ? currentBinding : {},
+      type: "tag",
+      source: "ignition",
+      property: "fill",
+      tagPath,
+      transform: {
+        ...isPlainObject(currentBinding == null ? void 0 : currentBinding.transform) ? currentBinding.transform : {},
+        type: "map",
+        inputType: "value",
+        mappings,
+        fallbackColor
+      }
+    };
+  }
+  function applyHmiStateStyleMapsToOverlays(overlays, stateStyleMapIndex) {
+    if (!Array.isArray(overlays) || !Array.isArray(stateStyleMapIndex == null ? void 0 : stateStyleMapIndex.entries) || !stateStyleMapIndex.entries.length) {
+      return overlays;
+    }
+    return overlays.map((overlay) => {
+      if (!isPlainObject(overlay) || (overlay == null ? void 0 : overlay.widget) || (overlay == null ? void 0 : overlay.embeddedView)) {
+        return overlay;
+      }
+      const fillBinding = getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex);
+      if (!fillBinding) {
+        return overlay;
+      }
+      const currentBindings = isPlainObject(overlay.bindings) ? overlay.bindings : {};
+      return withOverlayBindings(overlay, {
+        ...currentBindings,
+        fill: fillBinding
+      });
+    });
   }
   function formatSvgAttributeNumber(value) {
     const numberValue = Number(value);
@@ -23186,7 +23745,7 @@ var MesoraDrawingToolBundle = (() => {
     return null;
   }
   function resolveIgnitionStateMappingColor(mappings, rawValue) {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     const valueText = String(rawValue != null ? rawValue : "").trim();
     if (!valueText) {
       return "";
@@ -23195,8 +23754,12 @@ var MesoraDrawingToolBundle = (() => {
     const valueNum = Number(rawValue);
     const valueBool = valueLower === "true" || valueLower === "1" ? true : valueLower === "false" || valueLower === "0" ? false : null;
     for (const mapping of coerceArray(mappings)) {
-      const color2 = String((_a = mapping == null ? void 0 : mapping.color) != null ? _a : "").trim();
-      const mappingValue = String((_b = mapping == null ? void 0 : mapping.value) != null ? _b : "").trim();
+      const color2 = String(
+        (_f = (_e = (_d = (_c = (_b = (_a = mapping == null ? void 0 : mapping.color) != null ? _a : mapping == null ? void 0 : mapping.class) != null ? _b : mapping == null ? void 0 : mapping.styleClass) != null ? _c : mapping == null ? void 0 : mapping.className) != null ? _d : mapping == null ? void 0 : mapping.style) != null ? _e : mapping == null ? void 0 : mapping.cssClass) != null ? _f : ""
+      ).trim();
+      const mappingValue = String(
+        (_k = (_j = (_i = (_h = (_g = mapping == null ? void 0 : mapping.value) != null ? _g : mapping == null ? void 0 : mapping.state) != null ? _h : mapping == null ? void 0 : mapping.field) != null ? _i : mapping == null ? void 0 : mapping.input) != null ? _j : mapping == null ? void 0 : mapping.key) != null ? _k : ""
+      ).trim();
       if (!color2 || !mappingValue) {
         continue;
       }
@@ -23215,8 +23778,15 @@ var MesoraDrawingToolBundle = (() => {
     }
     return "";
   }
-  function getOverlayHmiStateColor(overlay, rawState) {
+  function getOverlayHmiStateColor(overlay, rawState, stateStyleMapIndex = null) {
     var _a, _b;
+    const hmiStateStyleMappings = getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex);
+    if (hmiStateStyleMappings.length) {
+      const mappedPaint = resolveIgnitionStateMappingColor(hmiStateStyleMappings, rawState);
+      if (mappedPaint) {
+        return mappedPaint;
+      }
+    }
     const binding = getOverlayFillBinding(overlay);
     const mappings = normalizeIgnitionFillBindingMappings(
       (_b = (_a = binding == null ? void 0 : binding.transform) == null ? void 0 : _a.mappings) != null ? _b : binding == null ? void 0 : binding.mappings
@@ -23698,7 +24268,53 @@ var MesoraDrawingToolBundle = (() => {
     const popupViewName = normalizeOverlayPopupViewName(
       (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
     );
-    return popupViewName ? `Popups/${popupViewName}` : "";
+    if (!popupViewName) {
+      return "";
+    }
+    if (/^Terra\/Popups\//i.test(popupViewName)) {
+      return popupViewName;
+    }
+    if (/^Popups\//i.test(popupViewName)) {
+      return `Terra/${popupViewName}`;
+    }
+    return `Terra/Popups/${popupViewName}`;
+  }
+  function parsePopupParamsObject(value) {
+    if (isPlainObject(value)) {
+      return cloneDeepValue(value);
+    }
+    const raw = String(value != null ? value : "").trim();
+    if (!raw) {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      return isPlainObject(parsed) ? parsed : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+  function applyPopupParamPlaceholders(value, context) {
+    if (typeof value === "string") {
+      return value.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+        var _a;
+        return Object.prototype.hasOwnProperty.call(context, key) ? String((_a = context[key]) != null ? _a : "") : match;
+      });
+    }
+    if (Array.isArray(value)) {
+      return value.map((entry) => applyPopupParamPlaceholders(entry, context));
+    }
+    if (isPlainObject(value)) {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, applyPopupParamPlaceholders(entry, context)])
+      );
+    }
+    return value;
+  }
+  function resolveOverlayPopupParams(overlay, baseParams) {
+    var _a, _b, _c, _d;
+    const rawParams = (_d = (_c = (_b = (_a = overlay == null ? void 0 : overlay.popupParamsJson) != null ? _a : overlay == null ? void 0 : overlay.popupParams) != null ? _b : overlay == null ? void 0 : overlay.popupParametersJson) != null ? _c : overlay == null ? void 0 : overlay.popupParameters) != null ? _d : {};
+    return applyPopupParamPlaceholders(parsePopupParamsObject(rawParams), baseParams);
   }
   function pointsEqual(left, right) {
     return Math.abs(Number((left == null ? void 0 : left.x) || 0) - Number((right == null ? void 0 : right.x) || 0)) < 1e-3 && Math.abs(Number((left == null ? void 0 : left.y) || 0) - Number((right == null ? void 0 : right.y) || 0)) < 1e-3;
@@ -25030,6 +25646,27 @@ var MesoraDrawingToolBundle = (() => {
     const externalSelectionMode = String(getModelValue(props, "selectionMode", "all") || "all");
     const externalStrokeNormalizeWidthRaw = Number(getModelValue(props, "strokeNormalizeWidth", NORMALIZED_SVG_STROKE_WIDTH));
     const externalStrokeNormalizeWidth = Number.isFinite(externalStrokeNormalizeWidthRaw) && externalStrokeNormalizeWidthRaw > 0 ? externalStrokeNormalizeWidthRaw : NORMALIZED_SVG_STROKE_WIDTH;
+    const propHmiStateStyleMaps = getModelValue(
+      props,
+      "hmiStateStyleMaps",
+      getModelValue(props, "udtStateStyleMaps", EMPTY_MAP)
+    );
+    const [fileHmiStateStyleMaps, setFileHmiStateStyleMaps] = useState(EMPTY_MAP);
+    const [fileHmiStateStyleDefinitions, setFileHmiStateStyleDefinitions] = useState(EMPTY_MAP);
+    const [hmiStateStyleMapFilePath, setHmiStateStyleMapFilePath] = useState("");
+    const [hmiStateStyleMapError, setHmiStateStyleMapError] = useState("");
+    const [hmiStateStyleMapRefreshing, setHmiStateStyleMapRefreshing] = useState(false);
+    const [hmiStateStyleMapLastModified, setHmiStateStyleMapLastModified] = useState(0);
+    const propHmiStateStyleMapsKey = JSON.stringify(propHmiStateStyleMaps || {});
+    const fileHmiStateStyleMapsKey = JSON.stringify(fileHmiStateStyleMaps || {});
+    const effectiveHmiStateStyleMaps = useMemo(
+      () => mergeHmiStateStyleMapSources(fileHmiStateStyleMaps, propHmiStateStyleMaps),
+      [fileHmiStateStyleMapsKey, propHmiStateStyleMapsKey]
+    );
+    const hmiStateStyleMapIndex = useMemo(
+      () => normalizeHmiStateStyleMapIndex(effectiveHmiStateStyleMaps),
+      [effectiveHmiStateStyleMaps]
+    );
     const svgLibraryEnabled = Boolean(getModelValue(props, "svgLibraryEnabled", true));
     const externalShapesKey = JSON.stringify(coerceArray(externalShapes));
     const externalOverlaysKey = JSON.stringify(coerceArray(externalOverlays));
@@ -25081,6 +25718,7 @@ var MesoraDrawingToolBundle = (() => {
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
     const svgCatalogRequestIdRef = useRef(0);
+    const hmiStateStyleMapRequestIdRef = useRef(0);
     const runtimeDocumentViewBounds = useMemo(
       () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
       [
@@ -25093,6 +25731,10 @@ var MesoraDrawingToolBundle = (() => {
       ]
     );
     const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
+    const canvasSvgOverlays = useMemo(
+      () => applyHmiStateStyleMapsToOverlays(svgOverlays, hmiStateStyleMapIndex),
+      [svgOverlays, hmiStateStyleMapIndex]
+    );
     useEffect(() => {
       shapesRef.current = shapes;
     }, [shapes]);
@@ -25190,7 +25832,7 @@ var MesoraDrawingToolBundle = (() => {
         seen.add(key);
         out.push(path);
       };
-      coerceArray(svgOverlays).forEach((overlay) => {
+      coerceArray(canvasSvgOverlays).forEach((overlay) => {
         addPath(getOverlayFillBindingTagPath(overlay));
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         addPath(basePath);
@@ -25211,7 +25853,7 @@ var MesoraDrawingToolBundle = (() => {
         addPath(String((shape == null ? void 0 : shape.tagPath) || "").trim());
       });
       return out;
-    }, [svgOverlays, shapes]);
+    }, [canvasSvgOverlays, shapes]);
     const overlayFillBindingPathsKey = JSON.stringify(overlayFillBindingPaths);
     const overlayFillBindingPathChunks = useMemo(
       () => chunkIgnitionTagValuePaths(overlayFillBindingPaths),
@@ -25317,6 +25959,18 @@ var MesoraDrawingToolBundle = (() => {
       },
       [props]
     );
+    useEffect(() => {
+      if (!designerActive || previewActive) {
+        return;
+      }
+      const source = getComponentPropSource(props);
+      const hasModelStyleMaps = isPlainObject(source.model) && Object.prototype.hasOwnProperty.call(source.model, "hmiStateStyleMaps");
+      if (hasModelStyleMaps) {
+        return;
+      }
+      const rootStyleMaps = isPlainObject(source.hmiStateStyleMaps) ? source.hmiStateStyleMaps : {};
+      writeComponentProp(props, "model.hmiStateStyleMaps", rootStyleMaps);
+    }, [designerActive, previewActive, props]);
     const persistShapes = useCallback(
       (nextShapes) => {
         persistValue("shapes", nextShapes);
@@ -25480,6 +26134,75 @@ var MesoraDrawingToolBundle = (() => {
       history.current = cloneDeepValue(next);
       applyHistorySnapshot(next);
     }, [applyHistorySnapshot]);
+    const loadHmiStateStyleMaps = useCallback(async () => {
+      const requestId = hmiStateStyleMapRequestIdRef.current + 1;
+      hmiStateStyleMapRequestIdRef.current = requestId;
+      setHmiStateStyleMapRefreshing(true);
+      setHmiStateStyleMapError("");
+      let lastError = "Failed to load HMI state style maps.";
+      for (const routePath of HMI_STATE_STYLE_MAP_ROUTE_CANDIDATES) {
+        try {
+          const requestUrl = `${routePath}${routePath.includes("?") ? "&" : "?"}t=${Date.now()}`;
+          const response = await fetch(requestUrl, {
+            cache: "no-store",
+            credentials: "same-origin"
+          });
+          if (!response.ok) {
+            lastError = `Failed to load HMI state style maps (${response.status}).`;
+            continue;
+          }
+          const payload = normalizeHmiStateStyleMapPayload(await response.json());
+          if (hmiStateStyleMapRequestIdRef.current !== requestId) {
+            return;
+          }
+          setFileHmiStateStyleMaps(payload.maps);
+          setFileHmiStateStyleDefinitions(payload.styles);
+          setHmiStateStyleMapFilePath(payload.filePath);
+          setHmiStateStyleMapLastModified(payload.lastModified);
+          setHmiStateStyleMapError(payload.error);
+          setHmiStateStyleMapRefreshing(false);
+          return;
+        } catch (error) {
+          lastError = String((error == null ? void 0 : error.message) || "Failed to load HMI state style maps.");
+        }
+      }
+      if (hmiStateStyleMapRequestIdRef.current === requestId) {
+        setFileHmiStateStyleMaps(EMPTY_MAP);
+        setFileHmiStateStyleDefinitions(EMPTY_MAP);
+        setHmiStateStyleMapFilePath("");
+        setHmiStateStyleMapLastModified(0);
+        setHmiStateStyleMapError(lastError);
+        setHmiStateStyleMapRefreshing(false);
+      }
+    }, []);
+    useEffect(() => {
+      loadHmiStateStyleMaps();
+      return void 0;
+    }, [loadHmiStateStyleMaps]);
+    useEffect(() => {
+      if (typeof document === "undefined") {
+        return void 0;
+      }
+      const styleElementId = "mesora-hmi-state-style-map-css";
+      const cssText = buildHmiStateStyleDefinitionCss(fileHmiStateStyleDefinitions);
+      let styleElement = document.getElementById(styleElementId);
+      if (!cssText) {
+        if (styleElement && styleElement.parentNode) {
+          styleElement.parentNode.removeChild(styleElement);
+        }
+        return void 0;
+      }
+      if (!styleElement) {
+        styleElement = document.createElement("style");
+        styleElement.id = styleElementId;
+        styleElement.setAttribute("data-mesora-source", "hmi-state-style-maps");
+        document.head.appendChild(styleElement);
+      }
+      if (styleElement.textContent !== cssText) {
+        styleElement.textContent = cssText;
+      }
+      return void 0;
+    }, [fileHmiStateStyleDefinitions]);
     const loadSvgCatalog = useCallback(async () => {
       const requestId = svgCatalogRequestIdRef.current + 1;
       svgCatalogRequestIdRef.current = requestId;
@@ -25609,6 +26332,9 @@ var MesoraDrawingToolBundle = (() => {
     const handleRefreshSvgLibrary = useCallback(() => {
       loadSvgCatalog();
     }, [loadSvgCatalog]);
+    const handleRefreshHmiStateStyleMaps = useCallback(() => {
+      loadHmiStateStyleMaps();
+    }, [loadHmiStateStyleMaps]);
     const svgLibraryHelpText = svgLibraryExternalDirectory ? `Drop .svg files into this folder and click Refresh:
 ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here when the catalog loads.";
     const svgLibrarySummaryText = svgLibraryExternalCount > 0 ? `${svgCatalogFiles.length} templates loaded, ${svgLibraryExternalCount} external` : `${svgCatalogFiles.length} templates loaded`;
@@ -25767,7 +26493,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           basePath,
           IGNITION_FILL_STATE_MEMBERS
         );
-        const color2 = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+        const color2 = String(getOverlayHmiStateColor(overlay, rawState, hmiStateStyleMapIndex) || "").trim();
         if (!color2) return;
         out.set(basePath, color2);
         out.set(basePath.toLowerCase(), color2);
@@ -25781,7 +26507,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         });
       });
       return out;
-    }, [svgOverlays, ignitionTagValuesByPath]);
+    }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
     const motorTagStateColorsByPath = useMemo(() => {
       const out = /* @__PURE__ */ new Map();
       coerceArray(svgOverlays).forEach((overlay) => {
@@ -25792,7 +26518,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           basePath,
           MOTOR_UDT_STATE_MEMBERS
         );
-        const color2 = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+        const color2 = String(getOverlayHmiStateColor(overlay, rawState, hmiStateStyleMapIndex) || "").trim();
         if (!color2) return;
         out.set(basePath, color2);
         out.set(basePath.toLowerCase(), color2);
@@ -25803,7 +26529,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         });
       });
       return out;
-    }, [svgOverlays, ignitionTagValuesByPath]);
+    }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
     const motorHmiStateColorByOverlayId = useMemo(() => {
       const out = {};
       coerceArray(svgOverlays).forEach((overlay) => {
@@ -25815,11 +26541,11 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           basePath,
           MOTOR_UDT_STATE_MEMBERS
         );
-        const color2 = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+        const color2 = String(getOverlayHmiStateColor(overlay, rawState, hmiStateStyleMapIndex) || "").trim();
         if (color2) out[id] = color2;
       });
       return out;
-    }, [svgOverlays, ignitionTagValuesByPath]);
+    }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
     const motorRouteColorsBySvgKey = useMemo(() => {
       const out = /* @__PURE__ */ new Map();
       coerceArray(svgOverlays).forEach((overlay) => {
@@ -26735,6 +27461,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         tagPath: "",
         eType: parsedEType,
         eTypeAuto: true,
+        popupParamsJson: "{}",
         bbox: {
           x: localViewBox.x,
           y: localViewBox.y,
@@ -27079,14 +27806,21 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       );
       const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
       const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
+      const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
+      const baseViewParams = {
+        overlayId,
+        eType: popupViewName,
+        name: popupTitle,
+        tagName: tagPath,
+        tagPath
+      };
+      const extraViewParams = resolveOverlayPopupParams(overlay, baseViewParams);
       const popupConfig = {
         id: popupId,
         viewPath,
         viewParams: {
-          overlayId,
-          eType: popupViewName,
-          name: popupTitle,
-          tagPath: String((overlay == null ? void 0 : overlay.tagPath) || "").trim()
+          ...extraViewParams,
+          ...baseViewParams
         },
         title: popupTitle,
         showCloseIcon: true,
@@ -27703,6 +28437,25 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         return String((error == null ? void 0 : error.message) || "Invalid JSON.");
       }
     }, [selectedOverlayEmbeddedView, selectedOverlayIsEmbeddedView]);
+    const selectedOverlayPopupParamsError = useMemo(() => {
+      var _a2, _b2;
+      if (!selectedOverlay || selectedOverlayIsEmbeddedView || (selectedOverlay == null ? void 0 : selectedOverlay.widget)) {
+        return "";
+      }
+      const raw = String((_b2 = (_a2 = selectedOverlay == null ? void 0 : selectedOverlay.popupParamsJson) != null ? _a2 : selectedOverlay == null ? void 0 : selectedOverlay.popupParams) != null ? _b2 : "{}").trim();
+      if (!raw) {
+        return "";
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return "Params must be a JSON object.";
+        }
+        return "";
+      } catch (error) {
+        return String((error == null ? void 0 : error.message) || "Invalid JSON.");
+      }
+    }, [selectedOverlay, selectedOverlayIsEmbeddedView]);
     const selectedOverlayIsBin = useMemo(
       () => String((selectedOverlay == null ? void 0 : selectedOverlay.eType) || "").trim().toLowerCase().startsWith("bin"),
       [selectedOverlay]
@@ -28389,6 +29142,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     );
     const svgLibraryStatusText = !svgLibraryEnabled ? "SVG library disabled" : svgLibraryError ? svgLibraryError : svgLibraryReady ? `${svgCatalogFiles.length} SVG templates ready` : "Loading SVG templates...";
     const widgetLibraryStatusText = "Mesora widgets ready";
+    const hmiStateStyleMapCount = Array.isArray(hmiStateStyleMapIndex == null ? void 0 : hmiStateStyleMapIndex.entries) ? hmiStateStyleMapIndex.entries.length : 0;
+    const hmiStateStyleMapStatusText = hmiStateStyleMapError ? hmiStateStyleMapError : hmiStateStyleMapRefreshing ? "Loading HMI state styles..." : hmiStateStyleMapCount > 0 ? `${hmiStateStyleMapCount} HMI state style maps loaded` : "No HMI state style maps loaded";
     const svgDrawerLayout = useMemo(() => {
       const maxPanelWidth = Math.max(0, Number((rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH) - TOOLBAR_INSET * 2);
       const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
@@ -28655,7 +29410,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
               onOverlayContextMenu: editorVisible ? handleOverlayContextMenu : NOOP,
               vbW: viewBox.width,
               vbH: viewBox.height,
-              svgOverlays,
+              svgOverlays: canvasSvgOverlays,
               setSvgOverlays: (updater) => updateSvgOverlays(updater, { persist: true }),
               selectedOverlayIds: editorVisible ? selectedOverlayIds : EMPTY_ARRAY,
               singleSelectedOverlayId: editorVisible && selectedOverlayIds.length === 1 ? selectedOverlayIds[0] : null,
@@ -28948,6 +29703,14 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                       children: /* @__PURE__ */ jsx("span", { children: "Widgets" })
                     }
                   ),
+                  /* @__PURE__ */ jsx(
+                    DockButton,
+                    {
+                      disabled: hmiStateStyleMapRefreshing,
+                      onClick: handleRefreshHmiStateStyleMaps,
+                      children: /* @__PURE__ */ jsx("span", { children: hmiStateStyleMapRefreshing ? "Loading Styles" : "Refresh Styles" })
+                    }
+                  ),
                   /* @__PURE__ */ jsx(DockButton, { onClick: handleAddEmbeddedView, children: /* @__PURE__ */ jsx("span", { children: "Embedded View" }) }),
                   /* @__PURE__ */ jsxs(
                     "div",
@@ -29018,11 +29781,12 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                       style: {
                         fontSize: 11,
                         lineHeight: 1.45,
-                        color: svgLibraryError ? "#fecaca" : "rgba(226, 232, 240, 0.72)"
+                        color: svgLibraryError || hmiStateStyleMapError ? "#fecaca" : "rgba(226, 232, 240, 0.72)"
                       },
                       children: [
                         svgLibraryStatusText,
                         /* @__PURE__ */ jsx("div", { children: widgetLibraryStatusText }),
+                        /* @__PURE__ */ jsx("div", { children: hmiStateStyleMapStatusText }),
                         !svgLibraryError && normalizableSvgCount ? /* @__PURE__ */ jsx("div", { children: `${normalizableSvgCount} SVGs -> ${formatPanelNumber(resolvedStrokeNormalizeWidth)}px stroke` }) : null
                       ]
                     }
@@ -29349,6 +30113,27 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                           }
                         }
                       ) : null,
+                      !selectedOverlayIsEmbeddedView && !selectedOverlay.widget ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyTextArea,
+                          {
+                            label: "Popup Params JSON",
+                            value: selectedOverlay.popupParamsJson || "{}",
+                            placeholder: '{"line":"{{tagName}}","area":"Mill"}',
+                            rows: 4,
+                            onCommit: (value) => {
+                              commitSelectedOverlayText("popupParamsJson", value);
+                            }
+                          }
+                        ),
+                        selectedOverlayPopupParamsError ? /* @__PURE__ */ jsx(
+                          PropertyReadout,
+                          {
+                            label: "Popup Params Status",
+                            value: selectedOverlayPopupParamsError
+                          }
+                        ) : null
+                      ] }) : null,
                       selectedOverlay.widget ? /* @__PURE__ */ jsxs(Fragment2, { children: [
                         /* @__PURE__ */ jsx(
                           PropertyField,
@@ -30369,7 +31154,53 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const popupViewName = normalizeOverlayPopupViewName2(
       (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
     );
-    return popupViewName ? `Popups/${popupViewName}` : "";
+    if (!popupViewName) {
+      return "";
+    }
+    if (/^Terra\/Popups\//i.test(popupViewName)) {
+      return popupViewName;
+    }
+    if (/^Popups\//i.test(popupViewName)) {
+      return `Terra/${popupViewName}`;
+    }
+    return `Terra/Popups/${popupViewName}`;
+  }
+  function parsePopupParamsObject2(value) {
+    if (isPlainObject2(value)) {
+      return cloneValue(value);
+    }
+    const raw = String(value != null ? value : "").trim();
+    if (!raw) {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      return isPlainObject2(parsed) ? parsed : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+  function applyPopupParamPlaceholders2(value, context) {
+    if (typeof value === "string") {
+      return value.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+        var _a;
+        return Object.prototype.hasOwnProperty.call(context, key) ? String((_a = context[key]) != null ? _a : "") : match;
+      });
+    }
+    if (Array.isArray(value)) {
+      return value.map((entry) => applyPopupParamPlaceholders2(entry, context));
+    }
+    if (isPlainObject2(value)) {
+      return Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, applyPopupParamPlaceholders2(entry, context)])
+      );
+    }
+    return value;
+  }
+  function resolveOverlayPopupParams2(overlay, baseParams) {
+    var _a, _b, _c, _d;
+    const rawParams = (_d = (_c = (_b = (_a = overlay == null ? void 0 : overlay.popupParamsJson) != null ? _a : overlay == null ? void 0 : overlay.popupParams) != null ? _b : overlay == null ? void 0 : overlay.popupParametersJson) != null ? _c : overlay == null ? void 0 : overlay.popupParameters) != null ? _d : {};
+    return applyPopupParamPlaceholders2(parsePopupParamsObject2(rawParams), baseParams);
   }
   function coerceArray2(value) {
     return Array.isArray(value) ? value : [];
@@ -31301,6 +32132,15 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       );
       const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
       const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
+      const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
+      const baseViewParams = {
+        overlayId,
+        eType: popupViewName,
+        name: popupTitle,
+        tagName: tagPath,
+        tagPath
+      };
+      const extraViewParams = resolveOverlayPopupParams2(overlay, baseViewParams);
       if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => (popup == null ? void 0 : popup.id) === popupId)) {
         if (typeof mounts.closePopup === "function") {
           mounts.closePopup(popupId);
@@ -31310,10 +32150,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         id: popupId,
         viewPath,
         viewParams: {
-          overlayId,
-          eType: popupViewName,
-          name: popupTitle,
-          tagPath: String((overlay == null ? void 0 : overlay.tagPath) || "").trim()
+          ...extraViewParams,
+          ...baseViewParams
         },
         title: popupTitle,
         showCloseIcon: true,

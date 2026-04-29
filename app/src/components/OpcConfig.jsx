@@ -81,6 +81,15 @@ function normalizeStateMappingRow(row, options = {}) {
   };
 }
 
+function colorInputValue(value) {
+  const raw = String(value || "").trim();
+  const shortHex = raw.match(/^#([0-9a-f]{3})$/i);
+  if (shortHex) {
+    return `#${shortHex[1].split("").map((ch) => `${ch}${ch}`).join("")}`;
+  }
+  return /^#[0-9a-f]{6}$/i.test(raw) ? raw : "#000000";
+}
+
 function TrashCanIcon({ size = 12 }) {
   return (
     <svg
@@ -339,7 +348,7 @@ export default function OpcConfig({
     },
   ]);
   const [templateStateMappings, setTemplateStateMappings] = useState([
-    { field: "State Text", state: "", color: "#000000" },
+    { field: "HMI_State", state: "", color: "#000000" },
   ]);
   const [templateParent, setTemplateParent] = useState("");
   const [editTemplate, setEditTemplate] = useState("");
@@ -795,10 +804,10 @@ export default function OpcConfig({
           }]
     );
     const nextMappings = Array.isArray(tmpl.state_mappings)
-      ? tmpl.state_mappings.map((m) => normalizeStateMappingRow(m))
+      ? tmpl.state_mappings.map((m) => normalizeStateMappingRow(m, { defaultField: "HMI_State" }))
       : [];
     setTemplateStateMappings(
-      nextMappings.length ? nextMappings : [{ field: "State Text", state: "", color: "#000000" }]
+      nextMappings.length ? nextMappings : [{ field: "HMI_State", state: "", color: "#000000" }]
     );
   }, [editTemplate, templates]);
 
@@ -2520,7 +2529,7 @@ export default function OpcConfig({
       }))
       .filter((row) => row.name || row.tagPath);
     const stateMappings = (templateStateMappings || [])
-      .map((row) => normalizeStateMappingRow(row))
+      .map((row) => normalizeStateMappingRow(row, { defaultField: "HMI_State" }))
       .filter((row) => row.state);
     const parentName = String(templateParent || "").trim();
     if (!name || !fields.length) {
@@ -2801,7 +2810,7 @@ export default function OpcConfig({
     setTemplateOriginalName("");
     setTemplateParent("");
     setTemplateFieldRows(rows);
-    setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
+    setTemplateStateMappings([{ field: "HMI_State", state: "", color: "#000000" }]);
     setTemplateEditing(true);
     setTemplateName(groupName || "NewUDT");
     setStatus(`Loaded ${rows.length} fields from group "${groupName || "Ungrouped"}".`);
@@ -3615,7 +3624,7 @@ export default function OpcConfig({
                       <tr style={{ background: "var(--bg-soft)" }}>
                         <th style={{ textAlign: "left", padding: "8px 10px" }}>State Text</th>
                         <th style={{ textAlign: "left", padding: "8px 10px" }}>PLC Value</th>
-                        <th style={{ textAlign: "left", padding: "8px 10px" }}>Color</th>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>Color / Style</th>
                         <th />
                       </tr>
                     </thead>
@@ -3648,7 +3657,7 @@ export default function OpcConfig({
                             <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", marginLeft: 8 }}>
                               <input
                                 type="color"
-                                value={row.color || "#000000"}
+                                value={colorInputValue(row.color)}
                                 onChange={(e) =>
                                   setManualTagMappings((prev) => {
                                     const next = [...prev];
@@ -3667,7 +3676,7 @@ export default function OpcConfig({
                                     return next;
                                   })
                                 }
-                                placeholder="#12b76a"
+                                placeholder="#12b76a or style:Running"
                                 style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                               />
                             </div>
@@ -5157,7 +5166,7 @@ export default function OpcConfig({
                       alarmOperator: "==",
                       alarmValue: "",
                     }]);
-                    setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
+                    setTemplateStateMappings([{ field: "HMI_State", state: "", color: "#000000" }]);
                     setTemplateEditing(true);
                   }
                 }}
@@ -5195,7 +5204,7 @@ export default function OpcConfig({
                         alarmOperator: "==",
                         alarmValue: "",
                       }]);
-                      setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
+                      setTemplateStateMappings([{ field: "HMI_State", state: "", color: "#000000" }]);
                       setTemplateEditing(true);
                     }}
                     style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px" }}
@@ -5228,7 +5237,7 @@ export default function OpcConfig({
                         alarmOperator: "==",
                         alarmValue: "",
                       }]);
-                      setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
+                      setTemplateStateMappings([{ field: "HMI_State", state: "", color: "#000000" }]);
                       setTemplateEditing(true);
                     }}
                     style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
@@ -5282,6 +5291,123 @@ export default function OpcConfig({
                 }}
               >
                 {templateFieldTreeContent}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>HMI_State Mapping</div>
+                <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", padding: "4px 12px 4px 0", boxSizing: "border-box" }}>
+                  <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: "0 6px", fontSize: 12 }}>
+                    <colgroup>
+                      <col style={{ width: "27%" }} />
+                      <col style={{ width: "18%" }} />
+                      <col style={{ width: "41%" }} />
+                      <col style={{ width: "14%" }} />
+                    </colgroup>
+                    <thead>
+                      <tr style={{ background: "var(--bg-soft)" }}>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>Field</th>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>PLC Value</th>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>Color / Style</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {templateStateMappings.map((row, idx) => (
+                        <tr key={`template-state-map-${idx}`}>
+                          <td style={{ padding: "8px 16px 8px 10px" }}>
+                            <input
+                              value={row.field ?? "HMI_State"}
+                              onChange={(e) =>
+                                setTemplateStateMappings((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = { ...next[idx], field: e.target.value };
+                                  return next;
+                                })
+                              }
+                              placeholder="HMI_State"
+                              style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
+                              disabled={!templateEditing}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 16px 8px 10px" }}>
+                            <input
+                              value={row.state ?? ""}
+                              onChange={(e) =>
+                                setTemplateStateMappings((prev) => {
+                                  const next = [...prev];
+                                  next[idx] = { ...next[idx], state: e.target.value };
+                                  return next;
+                                })
+                              }
+                              placeholder="1"
+                              style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
+                              disabled={!templateEditing}
+                            />
+                          </td>
+                          <td style={{ padding: "8px 16px 8px 10px" }}>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", marginLeft: 8 }}>
+                              <input
+                                type="color"
+                                value={colorInputValue(row.color)}
+                                onChange={(e) =>
+                                  setTemplateStateMappings((prev) => {
+                                    const next = [...prev];
+                                    next[idx] = { ...next[idx], color: e.target.value };
+                                    return next;
+                                  })
+                                }
+                                style={{ width: 36, height: 28, padding: 0, border: "none", background: "transparent" }}
+                                disabled={!templateEditing}
+                              />
+                              <input
+                                value={row.color ?? ""}
+                                onChange={(e) =>
+                                  setTemplateStateMappings((prev) => {
+                                    const next = [...prev];
+                                    next[idx] = { ...next[idx], color: e.target.value };
+                                    return next;
+                                  })
+                                }
+                                placeholder="#12b76a or style:Running"
+                                style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
+                                disabled={!templateEditing}
+                              />
+                            </div>
+                          </td>
+                          <td style={{ padding: "8px 10px 8px 14px" }}>
+                            <button
+                              onClick={() =>
+                                setTemplateStateMappings((prev) => prev.filter((_, i) => i !== idx))
+                              }
+                              style={{ ...drawerButtonStyle, width: 28, height: 28, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8 }}
+                              disabled={!templateEditing}
+                            >
+                              <TrashCanIcon />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {templateStateMappings.length === 0 && (
+                        <tr>
+                          <td colSpan={4} style={{ padding: "8px", color: "var(--text-muted)" }}>
+                            No mappings yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <button
+                  onClick={() =>
+                    setTemplateStateMappings((prev) => [
+                      ...prev,
+                      { field: "HMI_State", state: "", color: "#000000" },
+                    ])
+                  }
+                  style={{ ...drawerButtonStyle, border: "1px solid var(--border)", background: "var(--bg-elev)", borderRadius: 8, padding: "6px 10px", marginTop: 10 }}
+                  disabled={!templateEditing}
+                >
+                  Add Mapping
+                </button>
               </div>
               <div
                 style={{
@@ -5411,7 +5537,7 @@ export default function OpcConfig({
                       alarmOperator: "==",
                       alarmValue: "",
                     }]);
-                    setTemplateStateMappings([{ field: "State Text", state: "", color: "#000000" }]);
+                    setTemplateStateMappings([{ field: "HMI_State", state: "", color: "#000000" }]);
                     setTemplateEditing(true);
                   }}
                   style={{ ...drawerButtonStyle, border: "1px solid #f04438", background: "#f04438", color: "white", borderRadius: 8, padding: "6px 10px" }}
@@ -5541,7 +5667,7 @@ export default function OpcConfig({
                     <tr style={{ background: "var(--bg-soft)" }}>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>Field</th>
                       <th style={{ textAlign: "left", padding: "8px 10px" }}>PLC Value</th>
-                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Color</th>
+                      <th style={{ textAlign: "left", padding: "8px 10px" }}>Color / Style</th>
                       <th />
                     </tr>
                   </thead>
@@ -5580,7 +5706,7 @@ export default function OpcConfig({
                           <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", marginLeft: 8 }}>
                             <input
                               type="color"
-                              value={row.color || "#000000"}
+                              value={colorInputValue(row.color)}
                               onChange={(e) =>
                                 setMappingSetRows((prev) => {
                                   const next = [...prev];
@@ -5599,7 +5725,7 @@ export default function OpcConfig({
                                   return next;
                                 })
                               }
-                              placeholder="#12b76a"
+                              placeholder="#12b76a or style:Running"
                               style={{ width: "100%", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}
                             />
                           </div>

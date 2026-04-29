@@ -10,6 +10,7 @@ import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -56,11 +57,13 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
     private GatewayContext gatewayContext;
     private ComponentRegistry componentRegistry;
     private SvgLibraryGatewayService svgLibraryGatewayService;
+    private HmiStateStyleMapGatewayService hmiStateStyleMapGatewayService;
 
     @Override
     public void setup(GatewayContext context) {
         this.gatewayContext = context;
         this.svgLibraryGatewayService = new SvgLibraryGatewayService(context, logger);
+        this.hmiStateStyleMapGatewayService = new HmiStateStyleMapGatewayService(context, logger);
         logger.info("Setting up Mesora Perspective Drawing module.");
     }
 
@@ -143,6 +146,14 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
             .nocache()
             .mount();
 
+        routes.newRoute("/hmi-state-style-maps")
+            .handler((request, response) -> hmiStateStyleMaps())
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
         routes.newRoute("/svg-library-file")
             .handler((request, response) -> readExternalSvg(
                 request == null ? null : request.getParameter("path"),
@@ -158,6 +169,20 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
     @Override
     public boolean isFreeModule() {
         return true;
+    }
+
+    private HmiStateStyleMapGatewayService.HmiStateStyleMapResponse hmiStateStyleMaps() {
+        if (hmiStateStyleMapGatewayService == null) {
+            return new HmiStateStyleMapGatewayService.HmiStateStyleMapResponse(
+                Map.of(),
+                Map.of(),
+                "",
+                0,
+                0,
+                "HMI state style map service was unavailable."
+            );
+        }
+        return hmiStateStyleMapGatewayService.getStyleMaps();
     }
 
     private SvgLibraryGatewayService.SvgLibraryCatalogResponse svgLibraryCatalog() {

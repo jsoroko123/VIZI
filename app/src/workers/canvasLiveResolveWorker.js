@@ -45,9 +45,92 @@ function isStateTagKey(value) {
   return key === "state" || key === "stcode" || key === "status" || key === "stat" || key === "hmistate";
 }
 
+function tagPathLeaf(value) {
+  const raw = normalizeKey(value);
+  if (!raw) return "";
+  const parts = raw.split(/[./]/).map((entry) => entry.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : raw;
+}
+
+function isRouteIdTagPathKey(value) {
+  return isRouteIdTagKey(value) || isRouteIdTagKey(tagPathLeaf(value));
+}
+
+function isStateTagPathKey(value) {
+  return isStateTagKey(value) || isStateTagKey(tagPathLeaf(value));
+}
+
+function buildStateTagParentPathCandidates(tagPath, tagName, groupName, topicName) {
+  const out = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const value = normalizeKey(raw);
+    if (!value) return;
+    const lower = value.toLowerCase();
+    if (seen.has(lower)) return;
+    seen.add(lower);
+    out.push(value);
+  };
+  if (!(isStateTagPathKey(tagName) || isStateTagPathKey(tagPath))) return out;
+  const path = normalizeKey(tagPath);
+  const leaf = tagPathLeaf(path);
+  if (path && isStateTagPathKey(leaf)) {
+    const cut = Math.max(path.lastIndexOf("."), path.lastIndexOf("/"));
+    if (cut > 0) {
+      const parent = path.slice(0, cut);
+      push(parent);
+      if (topicName) push(`${topicName}.${parent}`);
+    }
+  }
+  push(groupName);
+  if (topicName && groupName) push(`${topicName}.${groupName}`);
+  return out;
+}
+
+function normalizeIgnitionStyleClassName(value) {
+  const raw = normalizeKey(value);
+  if (!raw) return "";
+  const lower = raw.toLowerCase();
+  if (lower.startsWith("style:") || lower.startsWith("class:")) {
+    const classText = raw.slice(raw.indexOf(":") + 1).trim();
+    return classText ? classText.split(/\s+/).map((entry) => (
+      entry.toLowerCase().startsWith("psc-") ? entry : `psc-${entry}`
+    )).join(" ") : "";
+  }
+  if (lower.startsWith(".")) {
+    const classText = raw.slice(1).trim();
+    return classText ? classText.split(/\s+/).map((entry) => (
+      entry.toLowerCase().startsWith("psc-") ? entry : `psc-${entry}`
+    )).join(" ") : "";
+  }
+  if (lower.startsWith("psc-")) return raw;
+  if (
+    raw.includes("/") &&
+    !lower.startsWith("url(") &&
+    !/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(raw) &&
+    !/^(?:rgb|hsl)a?\(/i.test(raw) &&
+    !lower.startsWith("var(")
+  ) {
+    return `psc-${raw}`;
+  }
+  return "";
+}
+
+function getStateMappingPaint(mapping) {
+  return normalizeKey(
+    mapping?.color ??
+    mapping?.class ??
+    mapping?.styleClass ??
+    mapping?.className ??
+    mapping?.style ??
+    mapping?.cssClass
+  );
+}
+
 function normalizeActiveColor(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
+  if (normalizeIgnitionStyleClassName(raw)) return "";
   const lower = raw.toLowerCase();
   if (
     lower === "#808080" ||
@@ -80,9 +163,9 @@ function matchStateMappingColor(mappings, rawValue) {
       ? false
       : null;
   for (const mapping of Array.isArray(mappings) ? mappings : []) {
-    const color = normalizeKey(mapping?.color);
+    const color = getStateMappingPaint(mapping);
     if (!color) continue;
-    const candidates = [mapping?.state, mapping?.field];
+    const candidates = [mapping?.state, mapping?.field, mapping?.value, mapping?.input, mapping?.key];
     for (const candidateRaw of candidates) {
       const candidateText = normalizeKey(candidateRaw);
       if (!candidateText) continue;
@@ -308,7 +391,7 @@ function resolveTemplateStateMappings(templateMap, name) {
       const fieldVal = normalizeKey(mapping?.field);
       const stateVal = normalizeKey(mapping?.state);
       if (!stateVal) return;
-      map.set(`${fieldVal}::${stateVal}`, normalizeKey(mapping?.color));
+      map.set(`${fieldVal}::${stateVal}`, getStateMappingPaint(mapping));
     });
   };
   walk(name);
@@ -393,7 +476,7 @@ function buildDerivedVisualState(index, scene) {
       const normalizedValue = normalizeKey(value);
       const entry = groups.get(groupPath) || { routeId: "", state: "" };
       if (normalizedValue) {
-        if (!entry.routeId && (isRouteIdTagKey(tagName) || isRouteIdTagKey(tagPath))) {
+        if (!entry.routeId && (isRouteIdTagPathKey(tagName) || isRouteIdTagPathKey(tagPath))) {
           entry.routeId = normalizedValue;
           const routeColor =
             routeColorsMap.get(normalizedValue) ||
@@ -406,7 +489,7 @@ function buildDerivedVisualState(index, scene) {
             routeStrokeMap.set(groupName.toLowerCase(), routeColor);
           }
         }
-        if (!entry.state && (isStateTagKey(tagName) || isStateTagKey(tagPath))) {
+        if (!entry.state && (isStateTagPathKey(tagName) || isStateTagPathKey(tagPath))) {
           entry.state = normalizedValue;
         }
       }
@@ -414,13 +497,14 @@ function buildDerivedVisualState(index, scene) {
     }
 
     if (value == null || value === "") return;
-    const keyCandidates = [
+    const keyCandidates = Array.from(new Set([
       tagPath,
       topicName && tagName ? `${topicName}.${tagName}` : "",
       topicName && tagPath ? `${topicName}.${tagPath}` : "",
+      ...buildStateTagParentPathCandidates(tagPath, tagName, groupName, topicName),
       groupName,
       topicName && groupName ? `${topicName}.${groupName}` : "",
-    ].map((entry) => normalizeKey(entry)).filter(Boolean);
+    ].map((entry) => normalizeKey(entry)).filter(Boolean)));
     if (!keyCandidates.length) return;
 
     const mappingKeys = [
@@ -452,7 +536,7 @@ function buildDerivedVisualState(index, scene) {
     const normalizedSetMappings = setMappings.map((mapping) => ({
       field: String(mapping?.field ?? ""),
       state: String(mapping?.state ?? ""),
-      color: String(mapping?.color ?? ""),
+      color: getStateMappingPaint(mapping),
     }));
     const templateName = normalizeKey(tag?.plcType);
     const mappings = tagMappings.length
@@ -460,7 +544,7 @@ function buildDerivedVisualState(index, scene) {
       : normalizedSetMappings.length
       ? normalizedSetMappings
       : resolveTemplateStateMappings(templateMap, templateName);
-    if ((isStateTagKey(tagName) || isStateTagKey(tagPath)) && mappings.length) {
+    if ((isStateTagPathKey(tagName) || isStateTagPathKey(tagPath)) && mappings.length) {
       keyCandidates.forEach((key) => {
         stateMappingsByPath.set(key, mappings);
         stateMappingsByPath.set(key.toLowerCase(), mappings);
