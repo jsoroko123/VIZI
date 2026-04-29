@@ -19460,13 +19460,14 @@ var MesoraDrawingToolBundle = (() => {
       return [{ color: chainColor, points }];
     };
     const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
-    const edgeReserve = showRulers ? SCROLLBAR_RESERVE : 0;
+    const rightEdgeReserve = showRulers ? SCROLLBAR_RESERVE : 0;
+    const bottomEdgeReserve = 0;
     const viewportW = Math.max(1, Number(size.w || 0));
     const viewportH = Math.max(1, Number(size.h || 0));
     const stageW = Math.max(1, viewportW);
     const stageH = Math.max(1, viewportH);
-    const innerW = Math.max(0, viewportW - rulerSize - edgeReserve);
-    const innerH = Math.max(0, viewportH - rulerSize - edgeReserve);
+    const innerW = Math.max(0, viewportW - rulerSize - rightEdgeReserve);
+    const innerH = Math.max(0, viewportH - rulerSize - bottomEdgeReserve);
     const vbWidth = Math.max(1, Number(vbW) || 1);
     const vbHeight = Math.max(1, Number(vbH) || 1);
     const preserveAspectRatioRaw = String(preserveAspectRatioMode || "xMinYMin meet").trim() || "xMinYMin meet";
@@ -19647,7 +19648,7 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [setShapes, setSvgOverlays]);
     function TopRuler() {
-      const W = Math.max(0, size.w - rulerSize - edgeReserve);
+      const W = Math.max(0, size.w - rulerSize - rightEdgeReserve);
       const H = rulerSize;
       const majorPx = 100;
       const minorPx = 20;
@@ -19735,7 +19736,7 @@ var MesoraDrawingToolBundle = (() => {
     }
     function RightRuler() {
       const W = rulerSize;
-      const H = Math.max(0, size.h - rulerSize - edgeReserve);
+      const H = Math.max(0, size.h - rulerSize - bottomEdgeReserve);
       const majorPx = 100;
       const minorPx = 20;
       const ticks = [];
@@ -19785,7 +19786,7 @@ var MesoraDrawingToolBundle = (() => {
           viewBox: `0 0 ${W} ${H}`,
           style: {
             position: "absolute",
-            right: edgeReserve,
+            right: rightEdgeReserve,
             top: rulerSize,
             background: "var(--bg-soft)",
             borderLeft: "1px solid var(--border)",
@@ -21424,8 +21425,8 @@ var MesoraDrawingToolBundle = (() => {
                 overflowX: "auto",
                 overflowY: "hidden",
                 scrollbarGutter: "stable",
-                paddingRight: edgeReserve,
-                paddingBottom: edgeReserve,
+                paddingRight: rightEdgeReserve,
+                paddingBottom: bottomEdgeReserve,
                 boxSizing: "border-box"
               },
               children: /* @__PURE__ */ jsx(
@@ -21443,8 +21444,8 @@ var MesoraDrawingToolBundle = (() => {
                         position: "absolute",
                         left: 0,
                         top: rulerSize,
-                        right: rulerSize + edgeReserve,
-                        bottom: edgeReserve,
+                        right: rulerSize + rightEdgeReserve,
+                        bottom: bottomEdgeReserve,
                         overflow: "hidden",
                         background: canvasBackgroundColor || "var(--canvas-bg)"
                       },
@@ -22010,7 +22011,7 @@ var MesoraDrawingToolBundle = (() => {
             {
               style: {
                 position: "absolute",
-                right: edgeReserve,
+                right: rightEdgeReserve,
                 top: 0,
                 width: rulerSize,
                 height: rulerSize,
@@ -22752,6 +22753,7 @@ var MesoraDrawingToolBundle = (() => {
   var LOCAL_CANVAS_ZOOM_MIN = 0.1;
   var LOCAL_CANVAS_ZOOM_MAX = 4;
   var LOCAL_CANVAS_ZOOM_STEP = 0.1;
+  var LOCAL_CANVAS_ZOOM_CACHE_PREFIX = "mesora-drawing:canvas-zoom:v1:";
   var CANVAS_RULER_SIZE = 24;
   var PROPERTY_PANEL_WIDTH = 300;
   var PROPERTY_PANEL_HEIGHT = 520;
@@ -22831,6 +22833,108 @@ var MesoraDrawingToolBundle = (() => {
       return nested;
     }
     return isPlainObject(componentProps) ? componentProps : {};
+  }
+  function readObjectPathValue(source, path) {
+    if (!source || !path) {
+      return void 0;
+    }
+    try {
+      if (typeof source.readString === "function") {
+        const value = source.readString(path, "");
+        if (value) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    try {
+      if (typeof source.read === "function") {
+        const value = source.read(path, void 0);
+        if (value != null) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    return String(path).split(".").filter(Boolean).reduce((acc, segment) => {
+      if (acc == null) {
+        return void 0;
+      }
+      return acc[segment];
+    }, source);
+  }
+  function normalizeCacheKeyPart(value) {
+    return String(value != null ? value : "").trim().replace(/\s+/g, " ");
+  }
+  function resolveCanvasZoomCacheKey(componentProps) {
+    var _a, _b;
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const stores = [
+      componentProps == null ? void 0 : componentProps.store,
+      nestedProps == null ? void 0 : nestedProps.store,
+      globalClient == null ? void 0 : globalClient.store,
+      globalDesigner == null ? void 0 : globalDesigner.store
+    ].filter(Boolean);
+    const viewPaths = [
+      "view.resourcePath",
+      "view.viewPath",
+      "view.path",
+      "view.mountPath",
+      "view.name",
+      "view.id",
+      "view.page.resourcePath",
+      "view.page.viewPath",
+      "view.page.path",
+      "view.page.url",
+      "view.page.mountPath",
+      "view.page.rootView.resourcePath",
+      "view.page.rootView.path",
+      "page.resourcePath",
+      "page.viewPath",
+      "page.path",
+      "page.url"
+    ];
+    const candidates = [];
+    stores.forEach((store) => {
+      viewPaths.forEach((path) => {
+        candidates.push(readObjectPathValue(store, path));
+      });
+    });
+    if (typeof window !== "undefined" && window.location) {
+      candidates.push(`${window.location.origin}${window.location.pathname}`);
+    }
+    candidates.push((_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.path, (_b = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _b.path);
+    const identity = candidates.map(normalizeCacheKeyPart).find(Boolean) || "default";
+    return `${LOCAL_CANVAS_ZOOM_CACHE_PREFIX}${encodeURIComponent(identity)}`;
+  }
+  function readCachedCanvasZoom(cacheKey) {
+    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
+      return null;
+    }
+    try {
+      const raw = window.localStorage.getItem(cacheKey);
+      if (raw == null || raw === "") {
+        return null;
+      }
+      return normalizeLocalCanvasZoom(Number(raw));
+    } catch (_error) {
+      return null;
+    }
+  }
+  function writeCachedCanvasZoom(cacheKey, zoomValue) {
+    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
+      return;
+    }
+    try {
+      if (zoomValue == null) {
+        window.localStorage.removeItem(cacheKey);
+        return;
+      }
+      window.localStorage.setItem(cacheKey, String(normalizeLocalCanvasZoom(zoomValue)));
+    } catch (_error) {
+    }
   }
   function coerceArray(value) {
     return Array.isArray(value) ? value : [];
@@ -24009,8 +24113,8 @@ var MesoraDrawingToolBundle = (() => {
     const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
     const availableBrowserWidth = viewportWidth > 0 ? Math.max(1, viewportWidth - rootLeft) : 0;
     const availableBrowserHeight = viewportHeight > 0 ? Math.max(1, viewportHeight - rootTop) : 0;
-    const targetWidth = toPositiveNumber(availableBrowserWidth || hostWidth) || targetViewWidth;
-    const targetHeight = toPositiveNumber(availableBrowserHeight || hostHeight) || targetViewHeight;
+    const targetWidth = toPositiveNumber(hostWidth || availableBrowserWidth) || targetViewWidth;
+    const targetHeight = toPositiveNumber(hostHeight || availableBrowserHeight) || targetViewHeight;
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
     return Math.max(0.05, Math.min(8, scaleByHeight));
@@ -26340,7 +26444,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const svgLibrarySummaryText = svgLibraryExternalCount > 0 ? `${svgCatalogFiles.length} templates loaded, ${svgLibraryExternalCount} external` : `${svgCatalogFiles.length} templates loaded`;
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
-    const [localZoom, setLocalZoom] = useState(null);
+    const localZoomCacheKey = resolveCanvasZoomCacheKey(props);
+    const [localZoom, setLocalZoom] = useState(() => readCachedCanvasZoom(resolveCanvasZoomCacheKey(props)));
     const effectiveZoom = localZoom !== null ? localZoom : zoom;
     const effectiveZoomRef = useRef(effectiveZoom);
     effectiveZoomRef.current = effectiveZoom;
@@ -26350,6 +26455,12 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       const base = normalizeLocalCanvasZoom(effectiveZoomRef.current);
       setLocalZoom(normalizeLocalCanvasZoom(base + amount * LOCAL_CANVAS_ZOOM_STEP));
     }, []);
+    useEffect(() => {
+      setLocalZoom(readCachedCanvasZoom(localZoomCacheKey));
+    }, [localZoomCacheKey]);
+    useEffect(() => {
+      writeCachedCanvasZoom(localZoomCacheKey, localZoom);
+    }, [localZoomCacheKey, localZoom]);
     const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom(
       rootRef.current,
       viewBox.width,
@@ -29219,8 +29330,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         if (!editorVisible && !browserRuntimeMode) return;
         if (!rootRef.current) return;
         if (!rootRef.current.contains(event.target)) return;
-        if (editorVisible && !event.ctrlKey && !event.metaKey) return;
-        if (browserRuntimeMode && event.altKey) return;
+        if (!event.altKey) return;
         event.preventDefault();
         event.stopPropagation();
         stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
@@ -30838,6 +30948,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
   var LOCAL_CANVAS_ZOOM_MIN2 = 0.1;
   var LOCAL_CANVAS_ZOOM_MAX2 = 4;
   var LOCAL_CANVAS_ZOOM_STEP2 = 0.1;
+  var LOCAL_CANVAS_ZOOM_CACHE_PREFIX2 = "mesora-drawing:canvas-zoom:v1:";
   function readTreeValue(tree, path, fallback) {
     try {
       if (typeof fallback === "string" && typeof tree.readString === "function") {
@@ -30864,6 +30975,108 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
   }
   function isPlainObject2(value) {
     return value != null && typeof value === "object" && !Array.isArray(value);
+  }
+  function readObjectPathValue2(source, path) {
+    if (!source || !path) {
+      return void 0;
+    }
+    try {
+      if (typeof source.readString === "function") {
+        const value = source.readString(path, "");
+        if (value) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    try {
+      if (typeof source.read === "function") {
+        const value = source.read(path, void 0);
+        if (value != null) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    return String(path).split(".").filter(Boolean).reduce((acc, segment) => {
+      if (acc == null) {
+        return void 0;
+      }
+      return acc[segment];
+    }, source);
+  }
+  function normalizeCacheKeyPart2(value) {
+    return String(value != null ? value : "").trim().replace(/\s+/g, " ");
+  }
+  function resolveCanvasZoomCacheKey2(componentProps) {
+    var _a, _b;
+    const nestedProps = getComponentPropSource2(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const stores = [
+      componentProps == null ? void 0 : componentProps.store,
+      nestedProps == null ? void 0 : nestedProps.store,
+      globalClient == null ? void 0 : globalClient.store,
+      globalDesigner == null ? void 0 : globalDesigner.store
+    ].filter(Boolean);
+    const viewPaths = [
+      "view.resourcePath",
+      "view.viewPath",
+      "view.path",
+      "view.mountPath",
+      "view.name",
+      "view.id",
+      "view.page.resourcePath",
+      "view.page.viewPath",
+      "view.page.path",
+      "view.page.url",
+      "view.page.mountPath",
+      "view.page.rootView.resourcePath",
+      "view.page.rootView.path",
+      "page.resourcePath",
+      "page.viewPath",
+      "page.path",
+      "page.url"
+    ];
+    const candidates = [];
+    stores.forEach((store) => {
+      viewPaths.forEach((path) => {
+        candidates.push(readObjectPathValue2(store, path));
+      });
+    });
+    if (typeof window !== "undefined" && window.location) {
+      candidates.push(`${window.location.origin}${window.location.pathname}`);
+    }
+    candidates.push((_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.path, (_b = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _b.path);
+    const identity = candidates.map(normalizeCacheKeyPart2).find(Boolean) || "default";
+    return `${LOCAL_CANVAS_ZOOM_CACHE_PREFIX2}${encodeURIComponent(identity)}`;
+  }
+  function readCachedCanvasZoom2(cacheKey) {
+    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
+      return null;
+    }
+    try {
+      const raw = window.localStorage.getItem(cacheKey);
+      if (raw == null || raw === "") {
+        return null;
+      }
+      return normalizeLocalCanvasZoom2(Number(raw));
+    } catch (_error) {
+      return null;
+    }
+  }
+  function writeCachedCanvasZoom2(cacheKey, zoomValue) {
+    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
+      return;
+    }
+    try {
+      if (zoomValue == null) {
+        window.localStorage.removeItem(cacheKey);
+        return;
+      }
+      window.localStorage.setItem(cacheKey, String(normalizeLocalCanvasZoom2(zoomValue)));
+    } catch (_error) {
+    }
   }
   function getComponentPropSource2(componentProps) {
     const nested = componentProps == null ? void 0 : componentProps.props;
@@ -31136,8 +31349,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const viewportHeight = toPositiveNumber2(browserViewportHeight) || 0;
     const availableBrowserWidth = viewportWidth > 0 ? Math.max(1, viewportWidth - rootLeft) : 0;
     const availableBrowserHeight = viewportHeight > 0 ? Math.max(1, viewportHeight - rootTop) : 0;
-    const targetWidth = toPositiveNumber2(availableBrowserWidth || hostWidth) || targetViewWidth;
-    const targetHeight = toPositiveNumber2(availableBrowserHeight || hostHeight) || targetViewHeight;
+    const targetWidth = toPositiveNumber2(hostWidth || availableBrowserWidth) || targetViewWidth;
+    const targetHeight = toPositiveNumber2(hostHeight || availableBrowserHeight) || targetViewHeight;
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
     return Math.max(0.05, Math.min(8, scaleByHeight));
@@ -31878,7 +32091,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const svgCatalogRequestIdRef = useRef(0);
-    const [localZoom, setLocalZoom] = useState(null);
+    const localZoomCacheKey = resolveCanvasZoomCacheKey2(props);
+    const [localZoom, setLocalZoom] = useState(() => readCachedCanvasZoom2(resolveCanvasZoomCacheKey2(props)));
     const runtimeDocumentViewBounds = useMemo(
       () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
       [
@@ -31901,6 +32115,12 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         return normalizeLocalCanvasZoom2(base + amount * LOCAL_CANVAS_ZOOM_STEP2);
       });
     }, []);
+    useEffect(() => {
+      setLocalZoom(readCachedCanvasZoom2(localZoomCacheKey));
+    }, [localZoomCacheKey]);
+    useEffect(() => {
+      writeCachedCanvasZoom2(localZoomCacheKey, localZoom);
+    }, [localZoomCacheKey, localZoom]);
     useEffect(() => {
       const node = rootRef.current;
       if (!node || typeof node.getBoundingClientRect !== "function") {
@@ -31947,7 +32167,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     useEffect(() => {
       const onWheelNonPassive = (event) => {
         if (!browserRuntimeMode) return;
-        if (event.altKey) return;
+        if (!event.altKey) return;
         if (!rootRef.current) return;
         if (!rootRef.current.contains(event.target)) return;
         event.preventDefault();
@@ -32534,6 +32754,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const rootRuntimeComponent = !designerActive && detectPerspectiveRootComponent(props);
     const useDesignerPortal = designerActive && !previewActive && hasViziCanvasModel(props);
     const rootBackgroundColor = String(viewProps.backgroundColor || "#0f172a");
+    const defaultViewSize = resolveCanvasDefaultSize2(props);
+    const rootRuntimeHeight = toPositiveNumber2(defaultViewSize == null ? void 0 : defaultViewSize.height) ? `${defaultViewSize.height}px` : "100dvh";
     const fillViewport = rootRuntimeComponent;
     const componentPath = String(
       rootProps["data-component-path"] || ((_a = props == null ? void 0 : props.store) == null ? void 0 : _a.path) || ((_b = viewProps == null ? void 0 : viewProps.store) == null ? void 0 : _b.path) || ""
@@ -32553,9 +32775,9 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
             right: fillViewport ? 0 : void 0,
             bottom: fillViewport ? 0 : void 0,
             width: fillViewport ? "100dvw" : void 0,
-            height: fillViewport ? "100dvh" : void 0,
+            height: fillViewport ? rootRuntimeHeight : void 0,
             minWidth: fillViewport ? "100vw" : void 0,
-            minHeight: fillViewport ? "100vh" : void 0,
+            minHeight: fillViewport ? rootRuntimeHeight : void 0,
             overflow: "hidden",
             background: rootBackgroundColor
           },

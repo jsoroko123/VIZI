@@ -69,6 +69,7 @@ const DEFAULT_CANVAS_HEIGHT = 1401;
 const LOCAL_CANVAS_ZOOM_MIN = 0.1;
 const LOCAL_CANVAS_ZOOM_MAX = 4;
 const LOCAL_CANVAS_ZOOM_STEP = 0.1;
+const LOCAL_CANVAS_ZOOM_CACHE_PREFIX = "mesora-drawing:canvas-zoom:v1:";
 const CANVAS_RULER_SIZE = 24;
 const PROPERTY_PANEL_WIDTH = 300;
 const PROPERTY_PANEL_HEIGHT = 520;
@@ -149,6 +150,126 @@ function getComponentPropSource(componentProps) {
         return nested;
     }
     return isPlainObject(componentProps) ? componentProps : {};
+}
+
+function readObjectPathValue(source, path) {
+    if (!source || !path) {
+        return undefined;
+    }
+
+    try {
+        if (typeof source.readString === "function") {
+            const value = source.readString(path, "");
+            if (value) {
+                return value;
+            }
+        }
+    } catch (_error) {
+    }
+
+    try {
+        if (typeof source.read === "function") {
+            const value = source.read(path, undefined);
+            if (value != null) {
+                return value;
+            }
+        }
+    } catch (_error) {
+    }
+
+    return String(path)
+        .split(".")
+        .filter(Boolean)
+        .reduce((acc, segment) => {
+            if (acc == null) {
+                return undefined;
+            }
+            return acc[segment];
+        }, source);
+}
+
+function normalizeCacheKeyPart(value) {
+    return String(value ?? "")
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+function resolveCanvasZoomCacheKey(componentProps) {
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const stores = [
+        componentProps?.store,
+        nestedProps?.store,
+        globalClient?.store,
+        globalDesigner?.store
+    ].filter(Boolean);
+    const viewPaths = [
+        "view.resourcePath",
+        "view.viewPath",
+        "view.path",
+        "view.mountPath",
+        "view.name",
+        "view.id",
+        "view.page.resourcePath",
+        "view.page.viewPath",
+        "view.page.path",
+        "view.page.url",
+        "view.page.mountPath",
+        "view.page.rootView.resourcePath",
+        "view.page.rootView.path",
+        "page.resourcePath",
+        "page.viewPath",
+        "page.path",
+        "page.url"
+    ];
+
+    const candidates = [];
+    stores.forEach((store) => {
+        viewPaths.forEach((path) => {
+            candidates.push(readObjectPathValue(store, path));
+        });
+    });
+    if (typeof window !== "undefined" && window.location) {
+        candidates.push(`${window.location.origin}${window.location.pathname}`);
+    }
+    candidates.push(componentProps?.store?.path, nestedProps?.store?.path);
+
+    const identity = candidates
+        .map(normalizeCacheKeyPart)
+        .find(Boolean) || "default";
+    return `${LOCAL_CANVAS_ZOOM_CACHE_PREFIX}${encodeURIComponent(identity)}`;
+}
+
+function readCachedCanvasZoom(cacheKey) {
+    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
+        return null;
+    }
+
+    try {
+        const raw = window.localStorage.getItem(cacheKey);
+        if (raw == null || raw === "") {
+            return null;
+        }
+        return normalizeLocalCanvasZoom(Number(raw));
+    } catch (_error) {
+        return null;
+    }
+}
+
+function writeCachedCanvasZoom(cacheKey, zoomValue) {
+    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
+        return;
+    }
+
+    try {
+        if (zoomValue == null) {
+            window.localStorage.removeItem(cacheKey);
+            return;
+        }
+        window.localStorage.setItem(cacheKey, String(normalizeLocalCanvasZoom(zoomValue)));
+    } catch (_error) {
+    }
 }
 
 function coerceArray(value) {
@@ -1644,8 +1765,8 @@ function resolveBrowserHeightCanvasZoom(
     const availableBrowserHeight = viewportHeight > 0
         ? Math.max(1, viewportHeight - rootTop)
         : 0;
-    const targetWidth = toPositiveNumber(availableBrowserWidth || hostWidth) || targetViewWidth;
-    const targetHeight = toPositiveNumber(availableBrowserHeight || hostHeight) || targetViewHeight;
+    const targetWidth = toPositiveNumber(hostWidth || availableBrowserWidth) || targetViewWidth;
+    const targetHeight = toPositiveNumber(hostHeight || availableBrowserHeight) || targetViewHeight;
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
     return Math.max(0.05, Math.min(8, scaleByHeight));
@@ -4280,7 +4401,8 @@ export default function PerspectiveViziCanvasBridge(props) {
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
 
-    const [localZoom, setLocalZoom] = useState(null);
+    const localZoomCacheKey = resolveCanvasZoomCacheKey(props);
+    const [localZoom, setLocalZoom] = useState(() => readCachedCanvasZoom(resolveCanvasZoomCacheKey(props)));
     const effectiveZoom = localZoom !== null ? localZoom : zoom;
     const effectiveZoomRef = useRef(effectiveZoom);
     effectiveZoomRef.current = effectiveZoom;
@@ -4290,6 +4412,12 @@ export default function PerspectiveViziCanvasBridge(props) {
         const base = normalizeLocalCanvasZoom(effectiveZoomRef.current);
         setLocalZoom(normalizeLocalCanvasZoom(base + (amount * LOCAL_CANVAS_ZOOM_STEP)));
     }, []);
+    useEffect(() => {
+        setLocalZoom(readCachedCanvasZoom(localZoomCacheKey));
+    }, [localZoomCacheKey]);
+    useEffect(() => {
+        writeCachedCanvasZoom(localZoomCacheKey, localZoom);
+    }, [localZoomCacheKey, localZoom]);
     const liveCanvasZoom = browserRuntimeMode
         ? resolveBrowserHeightCanvasZoom(
             rootRef.current,
@@ -7502,8 +7630,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             if (!editorVisible && !browserRuntimeMode) return;
             if (!rootRef.current) return;
             if (!rootRef.current.contains(event.target)) return;
-            if (editorVisible && !event.ctrlKey && !event.metaKey) return;
-            if (browserRuntimeMode && event.altKey) return;
+            if (!event.altKey) return;
             event.preventDefault();
             event.stopPropagation();
             stepCanvasZoom(event.deltaY < 0 ? 1 : -1);

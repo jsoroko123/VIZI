@@ -6799,13 +6799,14 @@ function CanvasSvg({
   };
 
   const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
-  const edgeReserve = showRulers ? SCROLLBAR_RESERVE : 0;
+  const rightEdgeReserve = showRulers ? SCROLLBAR_RESERVE : 0;
+  const bottomEdgeReserve = 0;
   const viewportW = Math.max(1, Number(size.w || 0));
   const viewportH = Math.max(1, Number(size.h || 0));
   const stageW = Math.max(1, viewportW);
   const stageH = Math.max(1, viewportH);
-  const innerW = Math.max(0, viewportW - rulerSize - edgeReserve);
-  const innerH = Math.max(0, viewportH - rulerSize - edgeReserve);
+  const innerW = Math.max(0, viewportW - rulerSize - rightEdgeReserve);
+  const innerH = Math.max(0, viewportH - rulerSize - bottomEdgeReserve);
   const vbWidth = Math.max(1, Number(vbW) || 1);
   const vbHeight = Math.max(1, Number(vbH) || 1);
   const preserveAspectRatioRaw = String(preserveAspectRatioMode || "xMinYMin meet").trim() || "xMinYMin meet";
@@ -7058,7 +7059,7 @@ function CanvasSvg({
      RULERS (SCREEN-PIXEL)
      ============================ */
   function TopRuler() {
-    const W = Math.max(0, size.w - rulerSize - edgeReserve);
+    const W = Math.max(0, size.w - rulerSize - rightEdgeReserve);
     const H = rulerSize;
 
     const majorPx = 100;
@@ -7141,7 +7142,7 @@ function CanvasSvg({
 
   function RightRuler() {
     const W = rulerSize;
-    const H = Math.max(0, size.h - rulerSize - edgeReserve);
+    const H = Math.max(0, size.h - rulerSize - bottomEdgeReserve);
     const majorPx = 100;
     const minorPx = 20;
 
@@ -7186,7 +7187,7 @@ function CanvasSvg({
         viewBox={`0 0 ${W} ${H}`}
         style={{
           position: "absolute",
-          right: edgeReserve,
+          right: rightEdgeReserve,
           top: rulerSize,
           background: "var(--bg-soft)",
           borderLeft: "1px solid var(--border)",
@@ -8999,8 +9000,8 @@ function CanvasSvg({
           overflowX: "auto",
           overflowY: "hidden",
           scrollbarGutter: "stable",
-          paddingRight: edgeReserve,
-          paddingBottom: edgeReserve,
+          paddingRight: rightEdgeReserve,
+          paddingBottom: bottomEdgeReserve,
           boxSizing: "border-box",
         }}
       >
@@ -9016,8 +9017,8 @@ function CanvasSvg({
           position: "absolute",
           left: 0,
           top: rulerSize,
-          right: rulerSize + edgeReserve,
-          bottom: edgeReserve,
+          right: rulerSize + rightEdgeReserve,
+          bottom: bottomEdgeReserve,
           overflow: "hidden",
           background: canvasBackgroundColor || "var(--canvas-bg)",
         }}
@@ -9625,7 +9626,7 @@ function CanvasSvg({
         <div
           style={{
             position: "absolute",
-            right: edgeReserve,
+            right: rightEdgeReserve,
             top: 0,
             width: rulerSize,
             height: rulerSize,

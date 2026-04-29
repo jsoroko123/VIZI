@@ -25,6 +25,7 @@ const DEFAULT_CANVAS_HEIGHT = 1401;
 const LOCAL_CANVAS_ZOOM_MIN = 0.1;
 const LOCAL_CANVAS_ZOOM_MAX = 4;
 const LOCAL_CANVAS_ZOOM_STEP = 0.1;
+const LOCAL_CANVAS_ZOOM_CACHE_PREFIX = "mesora-drawing:canvas-zoom:v1:";
 
 function readTreeValue(tree, path, fallback) {
     try {
@@ -53,6 +54,126 @@ function readTreeValue(tree, path, fallback) {
 
 function isPlainObject(value) {
     return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function readObjectPathValue(source, path) {
+    if (!source || !path) {
+        return undefined;
+    }
+
+    try {
+        if (typeof source.readString === "function") {
+            const value = source.readString(path, "");
+            if (value) {
+                return value;
+            }
+        }
+    } catch (_error) {
+    }
+
+    try {
+        if (typeof source.read === "function") {
+            const value = source.read(path, undefined);
+            if (value != null) {
+                return value;
+            }
+        }
+    } catch (_error) {
+    }
+
+    return String(path)
+        .split(".")
+        .filter(Boolean)
+        .reduce((acc, segment) => {
+            if (acc == null) {
+                return undefined;
+            }
+            return acc[segment];
+        }, source);
+}
+
+function normalizeCacheKeyPart(value) {
+    return String(value ?? "")
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+function resolveCanvasZoomCacheKey(componentProps) {
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const stores = [
+        componentProps?.store,
+        nestedProps?.store,
+        globalClient?.store,
+        globalDesigner?.store
+    ].filter(Boolean);
+    const viewPaths = [
+        "view.resourcePath",
+        "view.viewPath",
+        "view.path",
+        "view.mountPath",
+        "view.name",
+        "view.id",
+        "view.page.resourcePath",
+        "view.page.viewPath",
+        "view.page.path",
+        "view.page.url",
+        "view.page.mountPath",
+        "view.page.rootView.resourcePath",
+        "view.page.rootView.path",
+        "page.resourcePath",
+        "page.viewPath",
+        "page.path",
+        "page.url"
+    ];
+
+    const candidates = [];
+    stores.forEach((store) => {
+        viewPaths.forEach((path) => {
+            candidates.push(readObjectPathValue(store, path));
+        });
+    });
+    if (typeof window !== "undefined" && window.location) {
+        candidates.push(`${window.location.origin}${window.location.pathname}`);
+    }
+    candidates.push(componentProps?.store?.path, nestedProps?.store?.path);
+
+    const identity = candidates
+        .map(normalizeCacheKeyPart)
+        .find(Boolean) || "default";
+    return `${LOCAL_CANVAS_ZOOM_CACHE_PREFIX}${encodeURIComponent(identity)}`;
+}
+
+function readCachedCanvasZoom(cacheKey) {
+    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
+        return null;
+    }
+
+    try {
+        const raw = window.localStorage.getItem(cacheKey);
+        if (raw == null || raw === "") {
+            return null;
+        }
+        return normalizeLocalCanvasZoom(Number(raw));
+    } catch (_error) {
+        return null;
+    }
+}
+
+function writeCachedCanvasZoom(cacheKey, zoomValue) {
+    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
+        return;
+    }
+
+    try {
+        if (zoomValue == null) {
+            window.localStorage.removeItem(cacheKey);
+            return;
+        }
+        window.localStorage.setItem(cacheKey, String(normalizeLocalCanvasZoom(zoomValue)));
+    } catch (_error) {
+    }
 }
 
 function getComponentPropSource(componentProps) {
@@ -393,8 +514,8 @@ function resolveBrowserHeightCanvasZoom(
     const availableBrowserHeight = viewportHeight > 0
         ? Math.max(1, viewportHeight - rootTop)
         : 0;
-    const targetWidth = toPositiveNumber(availableBrowserWidth || hostWidth) || targetViewWidth;
-    const targetHeight = toPositiveNumber(availableBrowserHeight || hostHeight) || targetViewHeight;
+    const targetWidth = toPositiveNumber(hostWidth || availableBrowserWidth) || targetViewWidth;
+    const targetHeight = toPositiveNumber(hostHeight || availableBrowserHeight) || targetViewHeight;
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
     return Math.max(0.05, Math.min(8, scaleByHeight));
@@ -1303,7 +1424,8 @@ function ViziCanvasBridge(props) {
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const svgCatalogRequestIdRef = useRef(0);
-    const [localZoom, setLocalZoom] = useState(null);
+    const localZoomCacheKey = resolveCanvasZoomCacheKey(props);
+    const [localZoom, setLocalZoom] = useState(() => readCachedCanvasZoom(resolveCanvasZoomCacheKey(props)));
     const runtimeDocumentViewBounds = useMemo(
         () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
         [
@@ -1326,6 +1448,14 @@ function ViziCanvasBridge(props) {
             return normalizeLocalCanvasZoom(base + (amount * LOCAL_CANVAS_ZOOM_STEP));
         });
     }, []);
+
+    useEffect(() => {
+        setLocalZoom(readCachedCanvasZoom(localZoomCacheKey));
+    }, [localZoomCacheKey]);
+
+    useEffect(() => {
+        writeCachedCanvasZoom(localZoomCacheKey, localZoom);
+    }, [localZoomCacheKey, localZoom]);
 
     useEffect(() => {
         const node = rootRef.current;
@@ -1384,7 +1514,7 @@ function ViziCanvasBridge(props) {
     useEffect(() => {
         const onWheelNonPassive = (event) => {
             if (!browserRuntimeMode) return;
-            if (event.altKey) return;
+            if (!event.altKey) return;
             if (!rootRef.current) return;
             if (!rootRef.current.contains(event.target)) return;
             event.preventDefault();
@@ -2045,6 +2175,10 @@ function MesoraDrawingTool(props) {
     const rootRuntimeComponent = !designerActive && detectPerspectiveRootComponent(props);
     const useDesignerPortal = designerActive && !previewActive && hasViziCanvasModel(props);
     const rootBackgroundColor = String(viewProps.backgroundColor || "#0f172a");
+    const defaultViewSize = resolveCanvasDefaultSize(props);
+    const rootRuntimeHeight = toPositiveNumber(defaultViewSize?.height)
+        ? `${defaultViewSize.height}px`
+        : "100dvh";
     const fillViewport = rootRuntimeComponent;
     const componentPath = String(
         rootProps["data-component-path"]
@@ -2072,9 +2206,9 @@ function MesoraDrawingTool(props) {
                     right: fillViewport ? 0 : undefined,
                     bottom: fillViewport ? 0 : undefined,
                     width: fillViewport ? "100dvw" : undefined,
-                    height: fillViewport ? "100dvh" : undefined,
+                    height: fillViewport ? rootRuntimeHeight : undefined,
                     minWidth: fillViewport ? "100vw" : undefined,
-                    minHeight: fillViewport ? "100vh" : undefined,
+                    minHeight: fillViewport ? rootRuntimeHeight : undefined,
                     overflow: "hidden",
                     background: rootBackgroundColor
                 }}
