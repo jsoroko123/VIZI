@@ -1,0 +1,41 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.29499999in"
+  height="0.19in"
+  viewBox="0 0 7.4930003 4.8259999"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="58.09"
+  keheight="37.41"
+  eType="BinVibro"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="binVibroBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="binVibroConeFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <path
+      id="body"
+      d="M0.54 0.42H6.96V1.62L5.56 3.08L5.06 4.08H2.44L1.94 3.08L0.54 1.62Z"
+      fill="url(#binVibroBodyFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M0.54 1.62H6.96" fill="none" stroke="#808080" stroke-width="0.08" />
+    <path d="M2.06 3.08H5.44" fill="none" stroke="#808080" stroke-width="0.08" />
+
+    <path d="M2.60 3.08H4.90L4.52 4.08H2.98Z" fill="url(#binVibroConeFill)" stroke-width="0.10" />
+
+    <path d="M1.52 4.30H2.44" fill="none" stroke="#808080" stroke-width="0.13" />
+    <path d="M2.68 4.30H3.60" fill="none" stroke="#808080" stroke-width="0.13" />
+    <path d="M3.84 4.30H4.76" fill="none" stroke="#808080" stroke-width="0.13" />
+    <path d="M5.00 4.30H5.92" fill="none" stroke="#808080" stroke-width="0.13" />
+  </g>
+</svg>

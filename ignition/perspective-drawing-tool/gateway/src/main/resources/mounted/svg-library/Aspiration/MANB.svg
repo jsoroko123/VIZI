@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 11.002883 15.548127" preserveAspectRatio="xMinYMin" kewidth="70.77" keheight="100" eType="MANB" stroke="#808080" stroke-width="0.2332" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-5.3159357,-0.11930236)">
+    <path d="M 11.361033,0.25180187 C 8.1821968,0.25163267 7.2678908,2.7617739 5.4774128,8.5655085 c 1.621393,0.709716 2.343139,1.121807 2.814034,1.406624 L 10.21541,6.3308259 c 2.20197,8.0741971 2.819322,9.6678611 3.017298,9.1011301 0.701467,-2.008034 1.662365,-4.844676 2.571844,-8.2084467 1.004545,-3.715375 0.185536,-6.88826533 -4.443519,-6.97170043 z" id="Body" stroke-width="0.2332" fill="#D7DADE" />
+    <ellipse cx="13.012748" cy="3.742806" id="Circle1" rx="1.6535672" ry="1.6535673" fill="#D7DADE" stroke="#808080" stroke-width="0.2332" />
+    <ellipse cx="13.141" cy="2.6178055" id="Circle2" rx="0.51353747" ry="0.51353735" fill="#D7DADE" stroke="#808080" stroke-width="0.2332" />
+    <ellipse cx="13.065936" cy="11.738636" id="CircleDirty" rx="0.61624497" ry="0.61624491" fill="#D7DADE" stroke="#808080" stroke-width="0.2332" />
+  </g>
+</svg>

@@ -232,6 +232,102 @@ function inferGroupNameFromTag(tag) {
   return "";
 }
 
+function cleanTypeDisplayName(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withoutProvider = raw.replace(/^\[[^\]]+\]/, "").trim();
+  const parts = withoutProvider.split(/[\\/]/).map((part) => part.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : withoutProvider;
+}
+
+const NON_UDT_TYPE_IDS = new Set([
+  "atomic",
+  "client",
+  "derived",
+  "document",
+  "expression",
+  "folder",
+  "memory",
+  "opc",
+  "query",
+  "reference",
+  "system",
+]);
+
+function isUdtTypeCandidate(typeId, objectType) {
+  const cleaned = cleanTypeDisplayName(typeId);
+  if (!cleaned) return false;
+  const objectText = String(objectType || "").trim().toLowerCase();
+  if (objectText.includes("udt")) return true;
+  return !NON_UDT_TYPE_IDS.has(cleaned.toLowerCase());
+}
+
+function getTagTypeDisplayName(tag) {
+  const explicit = cleanTypeDisplayName(tag?.udtName || tag?.udtType || tag?.templateName || "");
+  if (explicit) return explicit;
+  const typeId = cleanTypeDisplayName(tag?.typeId || "");
+  if (isUdtTypeCandidate(typeId, tag?.objectType)) return typeId;
+  return cleanTypeDisplayName(
+    tag?.dataType ||
+      tag?.plcType ||
+      tag?.uaType ||
+      typeId ||
+      ""
+  );
+}
+
+function normalizeTypeMatchToken(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\[[^\]]+\]/, "")
+    .replace(/\.(svg|json)$/i, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function collectTypeMatchTokens(...values) {
+  const tokens = new Set();
+  values.forEach((value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return;
+    const whole = normalizeTypeMatchToken(raw);
+    if (whole) tokens.add(whole);
+    raw
+      .replace(/^\[[^\]]+\]/, "")
+      .split(/[\s._:/\\|()[\]{}<>-]+/)
+      .map(normalizeTypeMatchToken)
+      .filter(Boolean)
+      .forEach((token) => {
+        tokens.add(token);
+        if (token.startsWith("udt") && token.length > 3) {
+          tokens.add(token.slice(3));
+        }
+      });
+  });
+  return tokens;
+}
+
+function tagMatchesEType(tag, eType) {
+  const filterToken = normalizeTypeMatchToken(eType);
+  if (!filterToken) return true;
+  const typeTokens = collectTypeMatchTokens(
+    tag?.udtName,
+    tag?.udtType,
+    tag?.templateName,
+    tag?.typeId,
+    tag?.dataType,
+    tag?.plcType,
+    tag?.uaType
+  );
+  if (!typeTokens.size) return false;
+  if (typeTokens.has(filterToken)) return true;
+  for (const token of typeTokens) {
+    if (filterToken.length >= 3 && token.endsWith(filterToken)) return true;
+    if (token.length >= 3 && filterToken.endsWith(token)) return true;
+  }
+  return false;
+}
+
 export default function PropertiesPanel({
   showHUD,
   setShowHUD,
@@ -325,7 +421,10 @@ export default function PropertiesPanel({
       if (seen.has(dedupe)) return;
       seen.add(dedupe);
       const name = String(tag?.name || raw).trim();
-      options.push({ value: raw, label: name || raw, group: topic });
+      const typeName = getTagTypeDisplayName(tag);
+      const group = typeName || topic || "Tags";
+      const label = typeName && typeName !== name ? `${name || raw} (${typeName})` : name || raw;
+      options.push({ value: raw, label, group, udtName: typeName });
     });
     return options;
   }, [opcTags]);
@@ -347,9 +446,12 @@ export default function PropertiesPanel({
   }, [baseTagOptionValueSet, baseTagOptions, hudFields?.tagPath]);
 
   const baseSvgTagGroupOptions = useMemo(() => {
-    const options = [{ value: "", label: "Select tag group" }];
+    const eType = String(hudFields?.eType || "").trim();
+    const emptyLabel = eType ? `Select ${eType} tag` : "Select tag group";
+    const options = [{ value: "", label: emptyLabel }];
     const seen = new Set([""]);
     (opcTags || []).forEach((tag) => {
+      if (!tagMatchesEType(tag, eType)) return;
       const topic = String(tag?.topic || "Default").trim() || "Default";
       const groupName = inferGroupNameFromTag(tag);
       if (!groupName) return;
@@ -357,10 +459,12 @@ export default function PropertiesPanel({
       const dedupe = value.toLowerCase();
       if (seen.has(dedupe)) return;
       seen.add(dedupe);
-      options.push({ value, label: groupName, group: topic });
+      const typeName = getTagTypeDisplayName(tag);
+      const label = typeName && typeName !== groupName ? `${groupName} (${typeName})` : groupName;
+      options.push({ value, label, group: typeName || topic, udtName: typeName });
     });
     return options;
-  }, [opcTags]);
+  }, [hudFields?.eType, opcTags]);
 
   const baseSvgTagGroupValueSet = useMemo(
     () =>
@@ -1649,7 +1753,7 @@ export default function PropertiesPanel({
                 type="number"
                 value={hudFields.strokeWidth}
                 onChange={(v) => setHudFields((p) => ({ ...p, strokeWidth: v }))}
-                onBlur={() => {}}
+                onBlur={() => applySingleSvgStrokeWidth?.(hudFields.strokeWidth)}
                 placeholder=""
               />
             )}

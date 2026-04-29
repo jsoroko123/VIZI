@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 72.26 39.84" preserveAspectRatio="none" kewidth="100" keheight="55.134" eType="Distributor3pos" stroke="#808080" stroke-width="1.0839" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <path d="M1.14,15.96l-.14,12.38c0,.88.35,1.73.98,2.36l4.19,4.19c.62.62,1.47.98,2.36.98h55.21c.88,0,1.73-.35,2.36-.98l4.19-4.19c.62-.62.98-1.47.98-2.36l-.23-12.38L46.32,1h-19.76L1.14,15.96Z" id="body" fill="#D7DADE" stroke-width="1.0839" stroke-linejoin="round" />
+  <line id="Divider_Line" x1="71.02" x2="1.14" y1="15.96" y2="15.96" fill="transparent" stroke-width="1.0839" stroke-linejoin="round" />
+  <circle cx="21.07" cy="35.88" id="Position_1" r="3.34" stroke-width="1.0839" stroke-linejoin="round" fill="#D7DADE" />
+  <circle cx="36" cy="35.88" id="Position_2" r="3.34" stroke-width="1.0839" stroke-linejoin="round" fill="#D7DADE" />
+  <circle cx="51.09" cy="35.88" id="Position_3" r="3.34" stroke-width="1.0839" stroke-linejoin="round" fill="#D7DADE" />
+</svg>

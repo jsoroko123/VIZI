@@ -661,7 +661,13 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
                 continue;
             }
 
+            String objectType = String.valueOf(node.getObjectType() == null ? "" : node.getObjectType()).trim();
+            if ("UdtType".equalsIgnoreCase(objectType)) {
+                continue;
+            }
+
             String typeId = String.valueOf(node.getSubTypeId() == null ? "" : node.getSubTypeId()).trim();
+            String dataType = readNodeText(node, "getDataType", "getDataTypeId");
 
             byPath.put(
                 key,
@@ -669,12 +675,36 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
                     fullPathString,
                     provider,
                     String.valueOf(node.getName() == null ? "" : node.getName()).trim(),
-                    String.valueOf(node.getObjectType() == null ? "" : node.getObjectType()).trim(),
+                    objectType,
                     typeId,
+                    dataType,
                     node.hasChildren()
                 )
             );
         }
+    }
+
+    private String readNodeText(NodeDescription node, String... methodNames) {
+        if (node == null || methodNames == null) {
+            return "";
+        }
+
+        for (String methodName : methodNames) {
+            String name = String.valueOf(methodName).trim();
+            if (name.isBlank()) {
+                continue;
+            }
+            try {
+                Object value = node.getClass().getMethod(name).invoke(node);
+                String text = String.valueOf(value == null ? "" : value).trim();
+                if (!text.isBlank()) {
+                    return text;
+                }
+            } catch (Exception _ignored) {
+            }
+        }
+
+        return "";
     }
 
     private TagPath coerceNodePath(TagPath parentPath, NodeDescription node) {
@@ -716,6 +746,7 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         String name,
         String objectType,
         String typeId,
+        String dataType,
         boolean hasChildren
     ) {
     }

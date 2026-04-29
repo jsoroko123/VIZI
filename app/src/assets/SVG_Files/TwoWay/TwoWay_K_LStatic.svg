@@ -1,0 +1,7 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 46.22 52" preserveAspectRatio="xMidYMid meet" kewidth="88.885" keheight="100" eType="TwoWay_K_LStatic" stroke="#808080" stroke-width="0.78" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1" />
+  <polygon id="body" points="21,12.57 21,1 1,1 1,51 21,51 21,40.85 31.08,50.93 45.22,36.79 " transform="matrix(-1,0,0,1,46.219959,0)" fill="#D7DADE" stroke="#808080" stroke-width="0.78" stroke-linejoin="round" />
+  <line id="Left_Valve" x1="35.219959" x2="35.219959" y1="9.0299997" y2="42.970001" fill="transparent" stroke="#808080" stroke-width="0.78" stroke-linecap="round" stroke-linejoin="round" />
+  <polyline id="Right_Valve" points="32.6 38.31 11.01 16.72 11.01 9.03" transform="matrix(-1,0,0,1,46.219959,0)" fill="transparent" stroke-width="0.78" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

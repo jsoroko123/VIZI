@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" ?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 0.51032403 0.51032498" width="15" height="15" kewidth="100" keheight="100" eType="DIC" stroke="#808080" stroke-width="0.0077" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-16.119254,-14.719355)">
+    <path id="body" d="m 16.139254,14.739355 v 0.470325 h 0.470324 v -0.470325 z" style="fill:#D7DADE;stroke:#808080;stroke-width:0.0077;stroke-dasharray:none"/>
+    <path id="path2" d="m 16.240153,14.83975 0.140854,0.189427 0.140854,-0.189427 z" style="fill:none;stroke:#808080;stroke-width:0.0077;stroke-dasharray:none"/>
+    <path id="path3" d="m 16.222164,15.038112 h 0.315752" style="fill:none;stroke:#808080;stroke-width:0.0077;stroke-dasharray:none"/>
+  </g>
+</svg>

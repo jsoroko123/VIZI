@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 30.699984 45.199986" preserveAspectRatio="xMidYMid meet" kewidth="67.92" keheight="100" eType="ElevatorHeadR" stroke="#808080" stroke-width="0.678" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="swatch14">
+      <stop id="stop14" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="swatch7">
+      <stop id="stop8" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-107.91158,324.93998)">
+    <path d="m 138.26156,-280.08998 h -5 l -6.99999,-13 h -1 v 7 h -17 v -21.99999 c 0,-22 29.99999,-22 29.99999,0 z" id="body" fill="#D7DADE" stroke-width="0.678" stroke-dasharray="none" stroke-opacity="1" />
+  </g>
+</svg>

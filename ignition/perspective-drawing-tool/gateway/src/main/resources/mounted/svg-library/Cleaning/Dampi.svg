@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 5.5809447 9.9854219" preserveAspectRatio="xMidYMid meet" kewidth="55.891" keheight="100" eType="Dampi" stroke="#808080" stroke-width="0.1498" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-13.152977,-10.068614)">
+    <g id="group1" transform="matrix(1.2507261,0,0,0.99761904,-3.9977301,0.03586037)">
+      <path d="m 15.389624,10.146222 v 0.674377 0 l -0.529167,0.831992 v 0.529166 l -0.529167,0.558046 v 0.577285 l -0.529166,0.529167 v 1.514636 l 1.5875,4.097424 v 0 0.518114 h 1.107425 v -0.518114 0 l 1.5875,-4.160469 V 13.846255 L 17.555383,13.317088 V 12.72237 l -0.529167,-0.540613 v -0.529166 l -0.529167,-0.831992 v 0 -0.674377 z" id="body" stroke-width="0.1498" stroke-dasharray="none" fill="#D7DADE" />
+      <path d="m 15.304183,19.557008 h 1.283081 z" id="path31" fill="#D7DADE" stroke="#808080" stroke-width="0.1498" stroke-dasharray="none" />
+      <path d="m 13.716683,15.210632 h 4.458081 z" id="path32" fill="#D7DADE" stroke="#808080" stroke-width="0.1498" stroke-dasharray="none" />
+      <path d="m 13.716683,13.98839 h 4.458081 z" id="path33" fill="#D7DADE" stroke="#808080" stroke-width="0.1498" stroke-dasharray="none" />
+      <path d="m 14.24585,13.250099 h 3.399747 z" id="path34" fill="#D7DADE" stroke="#808080" stroke-width="0.1498" stroke-dasharray="none" />
+      <path d="m 14.24585,12.856592 h 3.399747 z" id="path35" fill="#D7DADE" stroke="#808080" stroke-width="0.1498" stroke-dasharray="none" />
+      <path d="M 14.775017,12.118301 H 17.11643 Z" id="path36" fill="#D7DADE" stroke="#808080" stroke-width="0.1498" stroke-dasharray="none" />
+      <path d="M 14.775017,11.758694 H 17.11643 Z" id="path37" fill="#D7DADE" stroke="#808080" stroke-width="0.1498" stroke-dasharray="none" />
+      <path d="m 15.304184,10.75688 h 1.283079 z" id="path38" fill="#D7DADE" stroke="#808080" stroke-width="0.1498" stroke-dasharray="none" />
+    </g>
+  </g>
+</svg>

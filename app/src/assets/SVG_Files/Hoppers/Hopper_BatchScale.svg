@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 72 148.83" preserveAspectRatio="none" kewidth="48.377" keheight="100" eType="Hopper_BatchScale" stroke="#808080" stroke-width="2.2325" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs">
+    <linearGradient gradient-units="userSpaceOnUse" id="linear-gradient" x1="36" x2="36" y1="147.83" y2="1">
+      <stop id="stop"  stop-color="#e7e9ec"/>
+      <stop offset="0" id="stop" stop-color="#e7e9ec" />
+    </linearGradient>
+  </defs>
+  <g id="Bin_Small_Cylinder">
+    <path d="M71,4.61c0-1.99-15.67-3.61-35-3.61S1,2.62,1,4.61v117.03l24.16,26.19h21.67l24.16-26.19V4.61Z" id="body" stroke="#808080" stroke-width="2.2325" stroke-linejoin="round" style="background-color:#FFAE44" fill="#D7DADE" />
+  </g>
+</svg>

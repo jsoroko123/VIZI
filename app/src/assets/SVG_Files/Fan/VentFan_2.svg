@@ -1,0 +1,6 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 33.65 32.79" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="97.444" eType="VentFan_2" stroke="#808080" stroke-width="0.5048" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1" />
+  <line id="Roof_Line" x1="1" x2="31.48" y1="6.74" y2="31.79" fill="transparent" stroke-width="0.5048" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M31.89,15.53c.49-1.22.76-2.55.76-3.94,0-5.85-4.74-10.59-10.59-10.59s-10.59,4.74-10.59,10.59v3.76l10,8.21v-8.03h10.42Z" id="body" stroke-width="0.5048" stroke-linejoin="round" fill="#D7DADE" />
+</svg>

@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1.954612 1.0202993" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="52.2" eType="ValveShutOff" stroke="#808080" stroke-width="0.0293" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-16.045675,-14.722407)">
+    <path d="m 16.065675,14.742406 v 0.980302 l 0.956531,-0.489893 z m 1.914612,0 -0.956531,0.490409 0.956531,0.489893 z" id="body" stroke-width="0.0293" stroke-linejoin="round" fill="#D7DADE" />
+    <path d="m 17.024427,15.613309 v -0.866097 h 0.37207 -0.725598" id="handle" fill="transparent" stroke="#808080" stroke-width="0.0293" stroke-linecap="square" stroke-linejoin="miter" />
+  </g>
+</svg>

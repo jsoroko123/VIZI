@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3.8177051 3.912383" preserveAspectRatio="xMinYMin" kewidth="41.69" keheight="41.69" eType="Airlock" stroke="#808080" stroke-width="0.139" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs190486" />
+  <g id="layer1" transform="translate(-73.943337,-39.664277)">
+    <circle cx="1594.5" cy="735.5" id="Body" r="6.5" transform="matrix(0.27853899,0,0,0.28544666,-368.27823,-168.32555)" stroke-width="0.139" stroke-dasharray="none" stroke-miterlimit="4" fill="#D7DADE" />
+    <g id="InsideLines" transform="matrix(0.18179549,0,0,0.18630394,45.904536,9.1139584)">
+      <path d="m 160.21681,182.37464 c 1.46928,-2.55262 2.70055,-4.69172 3.73236,-6.4843 m 1.60926,-2.79581 c 3.72828,-6.47721 3.72828,-6.47721 3.72828,-6.47721" id="path3" fill="transparent" stroke="#808080" stroke-width="0.139" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+      <path d="m 169.32042,182.34472 c -1.46393,-2.54331 -2.69157,-4.67612 -3.72107,-6.46469 m -1.61476,-2.80536 c -3.73407,-6.48727 -3.73407,-6.48727 -3.73407,-6.48727" id="path2" fill="transparent" stroke="#808080" stroke-width="0.139" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+      <path d="m 155.66286,174.45788 c 2.94365,0 5.40961,0 7.47541,0 m 3.24827,0 c 7.41612,0 7.41612,0 7.41612,0" id="path1" fill="transparent" stroke="#808080" stroke-width="0.139" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+      <circle cx="3874.5" cy="70.5" id="Axis" r="1.5" transform="translate(-3709.7514,103.9695)" fill="transparent" stroke="#808080" stroke-width="0.139" stroke-dasharray="none" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" />
+      <circle cx="164.7486" cy="181.22299" id="circleDirty" r="1.5" fill="#D7DADE" stroke="#808080" stroke-width="0.139" stroke-dasharray="none" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4" />
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,7 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 77 22" preserveAspectRatio="none" kewidth="100" keheight="28.571" eType="DIC" stroke="#808080" stroke-width="1.155" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <rect height="20" id="Motor" transform="translate(12 22) rotate(180)" width="10" x="1" y="1" fill="transparent" stroke="#808080" stroke-width="1.155" stroke-linejoin="round"  />
+  <rect height="15" id="body" width="65" x="11" y="6" fill="#D7DADE" stroke="#808080" stroke-width="1.155" stroke-linejoin="round"  />
+  <polyline id="Auger" points="11 9.23 15.98 17.77 21 9.23 25.98 17.77 31 9.23 35.98 17.77 41 9.23 45.98 17.77 51 9.23 55.98 17.77 60.98 9.23 65.97 17.77 70.48 9.23" fill="transparent" stroke="#808080" stroke-width="1.155" stroke-linejoin="round"  />
+  <line id="Auger_Shaft" x1="76" x2="11" y1="13.5" y2="13.5" fill="transparent" stroke="#808080" stroke-width="1.155" stroke-linejoin="round"  />
+</svg>

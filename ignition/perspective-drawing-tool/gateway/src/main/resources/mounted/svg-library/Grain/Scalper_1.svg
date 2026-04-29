@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 67 27" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="40.299" eType="Scalper_1" stroke="#808080" stroke-width="1.005" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <rect height="9.54" id="body" transform="translate(37 -30) rotate(90)" width="5" x="31" y="-1.27" stroke-width="1.005" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="15" id="Main_Container" width="65" x="1" y="6" stroke-width="1.005" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="9.54" id="Outfeed_Left" transform="translate(34.27 12.73) rotate(90)" width="5" x="8.27" y="18.73" stroke-width="1.005" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="9.54" id="Outfeed_Middle" transform="translate(49.73 -2.73) rotate(90)" width="5" x="23.73" y="18.73" stroke-width="1.005" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="9.54" id="Outfeed_Right" transform="translate(79.73 -32.73) rotate(90)" width="5" x="53.73" y="18.73" stroke-width="1.005" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+</svg>

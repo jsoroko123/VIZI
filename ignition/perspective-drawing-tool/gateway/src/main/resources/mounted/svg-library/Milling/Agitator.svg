@@ -1,0 +1,58 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.23in"
+  height="0.19in"
+  viewBox="0 0 5.8420004 4.8259998"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="73.38"
+  keheight="60.61"
+  eType="Agitator"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="motorFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="steelFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="steelDark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="liquidFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" stop-opacity="0.92" />
+      <stop offset="100%" stop-color="#b8bdc4" stop-opacity="0.94" />
+    </linearGradient>
+    <clipPath id="bodyClip">
+      <path d="M0.56 1.03H5.28L5.02 4.32H0.82Z" />
+    </clipPath>
+  </defs>
+
+  <g stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="1.88" y="0.10" width="2.08" height="0.58" rx="0.09" fill="url(#motorFill)" stroke-width="0.11" />
+    <rect x="2.10" y="0.68" width="1.64" height="0.17" rx="0.05" fill="#D7DADE" stroke-width="0.08" />
+    <rect x="2.46" y="0.85" width="0.92" height="0.16" rx="0.04" fill="url(#steelDark)" stroke-width="0.07" />
+
+    <path
+      id="body"
+      d="M0.56 1.03H5.28L5.02 4.32H0.82Z"
+      fill="url(#steelFill)"
+      stroke-width="0.11"
+    />
+    <g clip-path="url(#bodyClip)">
+      <path d="M0.68 1.88H5.16L5.06 3.06H0.78Z" fill="url(#liquidFill)" stroke="#808080" stroke-width="0.08" />
+      <path d="M0.82 2.06c0.54-0.13 1.07-0.11 1.59 0.03 0.52 0.14 1.05 0.14 1.57-0.01 0.52-0.15 1.03-0.16 1.55-0.01" fill="none" stroke="#808080" stroke-width="0.07" />
+      <path d="M0.80 2.30c0.52-0.12 1.03-0.10 1.54 0.03 0.51 0.13 1.03 0.14 1.54-0.00 0.51-0.14 1.02-0.15 1.53-0.01" fill="none" stroke="#808080" stroke-width="0.07" />
+      <path d="M2.92 1.01V3.16" stroke="#808080" stroke-width="0.14" />
+      <path d="M2.26 2.82l0.66-0.28 0.66 0.28-0.66 0.28z" fill="#D7DADE" stroke-width="0.08" />
+      <path d="M2.26 2.82l-0.44 0.18 1.10 0.48 1.10-0.48-0.44-0.18" fill="#D7DADE" stroke-width="0.08" />
+    </g>
+
+    <path d="M0.56 1.03h4.72" stroke="#808080" stroke-width="0.08" />
+    <circle cx="0.88" cy="1.19" r="0.07" fill="#D7DADE" stroke-width="0.06" />
+    <circle cx="4.96" cy="1.19" r="0.07" fill="#D7DADE" stroke-width="0.06" />
+  </g>
+</svg>

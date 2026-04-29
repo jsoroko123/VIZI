@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.17073083in"
+  height="0.16356745in"
+  viewBox="0 0 4.3365633 4.1546132"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="100"
+  keheight="95.804"
+  eType="Purifier"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="purifierFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <path
+      id="body"
+      d="M1.03 0.20L0.28 0.90V3.65H0.66L0.78 2.95H3.55L3.67 3.65H4.06V0.90L3.30 0.20ZM0.28 1.35H4.06M0.28 2.00H4.06M0.15 3.68H4.18V4.05H0.15Z"
+      fill="url(#purifierFill)"
+      stroke-width="0.10"
+    />
+  </g>
+</svg>

@@ -1,0 +1,26 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 9.4226036 21.470553" preserveAspectRatio="xMidYMid meet" kewidth="43.886" keheight="100" eType="Densi" stroke="#808080" stroke-width="0.3221" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-11.262744,-5.1377447)">
+    <path d="m 11.339916,13.76234 v 0.077 l 1.706233,1.058333 v 1.066602 l -1.673677,1.058333 c -0.0032,1.618362 -0.0061,3.236696 -0.01964,4.855001 l 1.693314,1.5875 V 25.4469 h 2.9334 v -1.981791 l 1.693314,-1.5875 C 17.6569,20.259331 17.65753,18.640947 17.65322,17.022608 l -1.673677,-1.058333 v -1.066602 l 1.706233,-1.058333 v -0.077 z" id="body" stroke-width="0.3221" style="opacity:1" fill="#D7DADE" />
+    <path d="m 13.525819,5.2377447 -1.843298,1.693404 V 9.257105 l 1.314131,2.108398 v 0.217558 1.18649 h 3.075264 v -1.18649 -0.217558 L 17.386047,9.2485783 V 6.9466034 L 15.542749,5.2377447 Z" id="Hopper" fill="#D7DADE" stroke="#808080" stroke-width="0.3221" stroke-dasharray="none" style="opacity:1" />
+    <path d="m 13.019487,12.775642 1.455249,0.626177 1.573783,-0.626177 z" id="path17" fill="#D7DADE" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 11.398834,11.521772 v 2.206584 h 6.235278 v -2.206584 z" id="path10" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 18.583402,12.21062 v 0.828374 h 2.001945 V 12.21062 Z" id="path6" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 17.625562,12.605946 0.965774,-0.01602 c -0.393975,-0.0042 -0.572404,-0.0039 -0.965774,0.01602 z" id="path7" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 13.833117,19.770295 0.628838,-1.056271 0.621819,1.056271 z" id="path23" fill="transparent" stroke="#808080" stroke-width="0.3221" stroke-dasharray="none" style="opacity:1" />
+    <rect height="0.023981094" id="rect24" width="1.2802278" x="13.824228" y="18.514572" fill="transparent" stroke="#808080" stroke-width="0.3221" stroke-dasharray="none" style="opacity:1" />
+    <path d="m 11.739285,9.1863997 5.60082,-0.01602 z" id="path8" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 11.755271,7.0583642 5.600886,-0.01602 z" id="path9" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 12.996877,25.483187 1.455249,0.626176 1.573783,-0.626176 z" id="path5" fill="#D7DADE" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 11.398834,24.301715 v 2.206584 h 6.235278 v -2.206584 z" id="path12" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 18.583402,24.990563 v 0.828374 h 2.001945 v -0.828374 z" id="path13" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 17.625562,25.385889 0.965774,-0.01602 c -0.393975,-0.0042 -0.572404,-0.0039 -0.965774,0.01602 z" id="path14" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 11.398834,13.687989 v 10.60772 h 6.235278 v -10.60772 z" id="path15" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+    <path d="m 17.314364,22.210327 v -8.149279 m -5.595782,0 v 8.149279" id="path16" fill="transparent" stroke="#808080" stroke-width="0.3221" style="opacity:1" />
+  </g>
+</svg>

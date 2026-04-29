@@ -1,0 +1,73 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.36741698in"
+  height="0.84454238in"
+  viewBox="0 0 9.3323921 21.451376"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="53.66"
+  keheight="123.33"
+  eType="Cervo"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="cervoShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="cervoCoreFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="cervoHopperFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <path
+      id="Hopper"
+      d="M2.04 0.48H7.30V3.36L6.18 4.92V6.22H3.16V4.92L2.04 3.36Z"
+      fill="url(#cervoHopperFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M2.22 2.34H7.12" fill="none" stroke="#808080" stroke-width="0.08" />
+    <path d="M2.22 3.06H7.12" fill="none" stroke="#808080" stroke-width="0.08" />
+
+    <rect
+      id="BodyOuter"
+      x="1.38"
+      y="6.24"
+      width="6.58"
+      height="10.64"
+      rx="0.20"
+      fill="url(#cervoShellFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M1.38 8.00H7.96" fill="none" stroke="#808080" stroke-width="0.08" />
+
+    <path
+      id="BodyInner"
+      d="M2.10 6.96H7.24V15.98H5.82L4.66 14.70L3.56 15.98H2.10Z"
+      fill="url(#cervoCoreFill)"
+      stroke-width="0.12"
+    />
+
+    <path d="M3.82 12.98H5.50" fill="none" stroke="#808080" stroke-width="0.10" />
+    <path d="M4.14 11.52L4.66 10.70L5.18 11.52Z" fill="none" stroke="#808080" stroke-width="0.10" />
+
+    <rect x="0.20" y="8.66" width="1.12" height="0.72" rx="0.10" fill="#D7DADE" stroke-width="0.12" />
+    <rect x="0.20" y="15.18" width="1.12" height="0.72" rx="0.10" fill="#D7DADE" stroke-width="0.12" />
+
+    <path
+      id="Outlet"
+      d="M1.38 16.88H7.96V18.00H1.38ZM1.38 18.08H7.96V18.66L6.24 20.98H3.10L1.38 18.66Z"
+      fill="url(#cervoShellFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M2.06 18.08H7.28" fill="none" stroke="#808080" stroke-width="0.08" />
+  </g>
+</svg>

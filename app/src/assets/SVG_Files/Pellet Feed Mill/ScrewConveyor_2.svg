@@ -1,0 +1,10 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 31.88 16.94" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="53.137" eType="ScrewConveyor_2" stroke="#808080" stroke-width="0.4782" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1" />
+  <line id="Top_Horizontal_Line" x1="1" x2="30.88" y1="1" y2="1" fill="transparent" stroke-width="0.4782" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="m 27.15,1 v 7.4 c 0,3.737397 -5.450859,8.090536 -10.936,8.24139 C 10.503672,16.798438 4.7492166,12.594144 4.7495,8.4 L 4.75,1" id="body" stroke-width="0.4782" stroke-linejoin="round" fill="#D7DADE" />
+  <g id="g4">
+    <line id="Top_Horizontal_Line-3" x1="15.94975" x2="15.94975" y1="2" y2="15.4" fill="transparent" stroke-width="0.4782" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="m 15.914647,3.0038535 -3.928116,1.0109122 8.087297,2.1, -8.029531,2.5 8.029531,1.9929417 -6.989736,1.992941 6.094357,1.5, -4.130299,1.5 0.866497,0.259949" id="path4" fill="#D7DADE" stroke-width="0.4782" stroke-dasharray="none" stroke-opacity="1" />
+  </g>
+</svg>

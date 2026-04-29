@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 102 98.07" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="96.147" eType="SurgeHopperBatchScale" stroke="#808080" stroke-width="1.53" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs">
+    <linearGradient gradient-units="userSpaceOnUse" id="linear-gradient" x1="51" x2="51" y1="97.07" y2="1">
+      <stop id="stop"  stop-color="#e7e9ec"/>
+      <stop offset="0" id="stop" stop-color="#e7e9ec" />
+    </linearGradient>
+  </defs>
+  <path d="M97.43,87.38c0,5.35-4.34,9.69-9.69,9.69s-9.69-4.34-9.69-9.69c0-.26.01-.51.03-.77l12.42-8.53c4.01,1.19,6.94,4.9,6.94,9.3Z" id="Circle" fill="transparent" stroke="#808080" stroke-width="1.53" stroke-linejoin="round" />
+  <path d="M101,4.61v66.27l-38.24,26.19h-23.52L1,70.88V4.61c0-1.99,22.39-3.61,50-3.61s50,1.62,50,3.61Z" id="body" stroke="#808080" stroke-width="1.53" stroke-linejoin="round" fill="#D7DADE" />
+  <path d="M1,4.61c0,1.99,22.39,3.61,50,3.61s50-1.62,50-3.61" id="Bin_Top_Outline" fill="transparent" stroke="#808080" stroke-width="1.53" stroke-linejoin="round" />
+</svg>

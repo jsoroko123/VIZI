@@ -9,7 +9,7 @@ import {
   subscribeOpcLiveKeys,
 } from "../state/opcLiveStore";
 import { normalizeTagValue } from "../utils/appDataTransforms";
-import { isRouteIdTagKey, isStateTagKey } from "../utils/appUiHelpers";
+import { isDiverterEType, isRouteIdTagKey, isStateTagKey } from "../utils/appUiHelpers";
 import { resolveWidgetOpcServer, resolveWidgetWriteMode } from "../utils/widgetTemplates";
 import {
   Chart as ChartJS,
@@ -28,8 +28,11 @@ const RULER = 24; // ruler thickness (px)
 const SCROLLBAR_RESERVE = 14; // keep native scrollbars visible (not under rulers)
 const LIVE_ROUTE_ID_MEMBER_ALIASES = ["RouteID", "RouteNumber", "RouteNo", "Route"];
 const LIVE_STATE_MEMBER_ALIASES = [
+  "HMI State",
   "HMI_State",
+  "hmi_state",
   "HMIState",
+  "hmistate",
   "i_HMIState",
   "o_HMIState",
   "State",
@@ -168,6 +171,7 @@ function CanvasSvg({
   binLevelRatioByOverlayId,
   binLockedInByOverlayId,
   binLockedOutByOverlayId,
+  overlayHmiStateColorByOverlayId,
   onWidgetDurationPresetChange,
   onTrendTagDrop,
   hiddenTagBubbleIds,
@@ -273,7 +277,7 @@ function CanvasSvg({
   const isLineMode = tool === "polyline" || tool === "rect" || tool === "circle";
   const isCrosshair = isLineMode || marquee;
   const themeStrokeDefault = "#808080";
-  const themeFillDefault = "#cccccc";
+  const themeFillDefault = "#D7DADE";
   const isDarkTheme = String(theme || "").toLowerCase() === "dark";
   const [hoverOverlayId, setHoverOverlayId] = useState(null);
   const [viewportScroll, setViewportScroll] = useState({ x: 0, y: 0 });
@@ -418,6 +422,9 @@ function CanvasSvg({
     const lower = raw.toLowerCase();
     if (
       lower === "#808080" ||
+      lower === "#d7dade" ||
+      lower === "rgb(215,218,222)" ||
+      lower === "rgba(215,218,222,1)" ||
       lower === "rgb(128,128,128)" ||
       lower === "gray" ||
       lower === "grey" ||
@@ -689,12 +696,46 @@ function CanvasSvg({
     }
     return undefined;
   };
+  const readIgnitionMemberValueForPath = (rawTagPath, aliases = []) => {
+    const candidates = buildTagPathMemberCandidates(rawTagPath, aliases);
+    for (const candidate of candidates) {
+      const value = readIgnitionTagValueForPath(candidate);
+      if (value != null && String(value).trim() !== "") {
+        return value;
+      }
+    }
+    return undefined;
+  };
   const readOverlayFillBindingValue = (overlay) => {
     const key = getOverlayFillBindingTagPath(overlay);
-    return readIgnitionTagValueForPath(key);
+    const direct = readIgnitionTagValueForPath(key);
+    if (direct != null && String(direct).trim() !== "") {
+      return direct;
+    }
+
+    const keyLeaf = String(key || "").split(/[/.]/).filter(Boolean).pop() || "";
+    if (key && !isStateTagKey(keyLeaf)) {
+      const memberValue = readIgnitionMemberValueForPath(key, LIVE_STATE_MEMBER_ALIASES);
+      if (memberValue != null && String(memberValue).trim() !== "") {
+        return memberValue;
+      }
+    }
+
+    const overlayTagPath = String(overlay?.tagPath || "").trim();
+    if (overlayTagPath && overlayTagPath.toLowerCase() !== String(key || "").toLowerCase()) {
+      const overlayLeaf = overlayTagPath.split(/[/.]/).filter(Boolean).pop() || "";
+      if (!isStateTagKey(overlayLeaf)) {
+        const overlayMemberValue = readIgnitionMemberValueForPath(overlayTagPath, LIVE_STATE_MEMBER_ALIASES);
+        if (overlayMemberValue != null && String(overlayMemberValue).trim() !== "") {
+          return overlayMemberValue;
+        }
+      }
+    }
+
+    return direct;
   };
   const getOverlayBoundFillColor = (overlay) => {
-    if (String(overlay?.eType || "").trim().toLowerCase().includes("diverter")) return "";
+    if (isDiverterEType(overlay?.eType)) return "";
     const binding = getOverlayFillBinding(overlay);
     if (!binding) return "";
     const rawValue = readOverlayFillBindingValue(overlay);
@@ -705,7 +746,7 @@ function CanvasSvg({
     return matchStateMappingColor(getOverlayFillBindingMappings(overlay), rawValue) || fallbackColor;
   };
   const getOverlayBoundActiveFillColor = (overlay) => {
-    if (String(overlay?.eType || "").trim().toLowerCase().includes("diverter")) return "";
+    if (isDiverterEType(overlay?.eType)) return "";
     const binding = getOverlayFillBinding(overlay);
     if (!binding) return "";
     const rawValue = readOverlayFillBindingValue(overlay);
@@ -717,7 +758,7 @@ function CanvasSvg({
     );
   };
   const getOverlayDisplayedFlowFillColor = (overlay) => {
-    if (String(overlay?.eType || "").trim().toLowerCase().includes("diverter")) return "";
+    if (isDiverterEType(overlay?.eType)) return "";
     return normalizeOverlayActiveFillColor(
       getOverlayBoundFillColor(overlay) ||
       overlay?.fill ||
@@ -4991,13 +5032,38 @@ function CanvasSvg({
     let out = String(inner);
 
     if (nextFill) {
+      const isDefaultRecolorFill = (value) => {
+        const fill = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+        return fill === "#d7dade" ||
+          fill === "rgb(215,218,222)" ||
+          fill === "rgba(215,218,222,1)" ||
+          fill === "#808080" ||
+          fill === "#888" ||
+          fill === "gray" ||
+          fill === "grey" ||
+          fill === "rgb(128,128,128)" ||
+          fill === "rgba(128,128,128,1)" ||
+          fill === "#cccccc" ||
+          fill === "#ccc" ||
+          fill === "rgb(204,204,204)" ||
+          fill === "rgba(204,204,204,1)";
+      };
       const shouldRecolorPrimaryElement = (elementStart) => {
+        const fillAttrMatch = String(elementStart || "").match(/\bfill\s*=\s*(["'])([^"']*)\1/i);
+        if (isDefaultRecolorFill(fillAttrMatch?.[2])) {
+          return true;
+        }
+        const styleMatch = String(elementStart || "").match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
+        const styleFillMatch = String(styleMatch?.[2] || "").match(/(?:^|;)\s*fill\s*:\s*([^;]+)/i);
+        if (isDefaultRecolorFill(styleFillMatch?.[1])) {
+          return true;
+        }
         const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
         const elementId = String(idMatch?.[2] || "").trim().toLowerCase();
         if (!elementId) {
           return false;
         }
-        return /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine)$/i.test(elementId);
+        return /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|rect5|path4|vent|vent_open|vent_closed)$/i.test(elementId);
       };
       out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, _tag, end) => {
         if (!shouldRecolorPrimaryElement(start)) {
@@ -5055,6 +5121,113 @@ function CanvasSvg({
     });
 
     return out;
+  };
+
+  const applyOverlayOuterStrokeColor = (inner, color) => {
+    if (!inner || !color) return inner;
+    const PRIMARY_ELEMENT_ID_RE = /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine)$/i;
+    const EXCLUDED_ANCESTOR_ID_RE = /^(insidelines|bargraph|lock_filling|lock_discharge|lockfill|lockdischarge)$/i;
+    const SHAPE_SELECTOR = "path,rect,circle,ellipse,polygon,polyline,line";
+    const isProtectedStroke = (value) => {
+      const v = String(value || "").trim().toLowerCase();
+      return (
+        !v ||
+        v === "none" ||
+        v === "transparent" ||
+        v === "currentcolor" ||
+        v === "inherit" ||
+        v.startsWith("url(")
+      );
+    };
+    const isProtectedFill = (value) => {
+      const v = String(value || "").trim().toLowerCase();
+      return !v || v === "none" || v === "transparent";
+    };
+    const readStylePaint = (el, name) => {
+      const style = String(el?.getAttribute?.("style") || "");
+      if (!style) return "";
+      const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+      return String(match?.[1] || "").trim();
+    };
+    const readPaint = (el, name) => {
+      const attrValue = String(el?.getAttribute?.(name) || "").trim();
+      if (attrValue) return attrValue;
+      return readStylePaint(el, name);
+    };
+    const setPaint = (el, name, value) => {
+      if (!el) return;
+      el.setAttribute(name, value);
+      const style = String(el.getAttribute("style") || "");
+      if (!style) return;
+      if (new RegExp(`${name}\\s*:`, "i").test(style)) {
+        el.setAttribute(
+          "style",
+          style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+        );
+      }
+    };
+    const hasExcludedAncestor = (el, root) => {
+      let node = el?.parentNode || null;
+      while (node && node !== root) {
+        if (node?.nodeType === 1) {
+          const id = String(node.getAttribute?.("id") || "").trim();
+          if (id && EXCLUDED_ANCESTOR_ID_RE.test(id)) {
+            return true;
+          }
+        }
+        node = node.parentNode || null;
+      }
+      return false;
+    };
+
+    try {
+      const wrapped = `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`;
+      const doc = new DOMParser().parseFromString(wrapped, "image/svg+xml");
+      if (doc.querySelector("parsererror")) return inner;
+      const root = doc.documentElement;
+      if (!root) return inner;
+      const shapes = Array.from(root.querySelectorAll(SHAPE_SELECTOR));
+      if (!shapes.length) return inner;
+
+      const primaryTargets = shapes.filter((el) => {
+        const id = String(el.getAttribute("id") || "").trim();
+        return id && PRIMARY_ELEMENT_ID_RE.test(id) && !hasExcludedAncestor(el, root);
+      });
+
+      const targetElements = primaryTargets.length
+        ? primaryTargets
+        : (() => {
+            let best = null;
+            let bestScore = Number.NEGATIVE_INFINITY;
+            shapes.forEach((el, index) => {
+              if (hasExcludedAncestor(el, root)) return;
+              const id = String(el.getAttribute("id") || "").trim();
+              const fillValue = readPaint(el, "fill");
+              const strokeValue = readPaint(el, "stroke");
+              let score = 0;
+              if (id && PRIMARY_ELEMENT_ID_RE.test(id)) score += 1000;
+              if (!isProtectedFill(fillValue)) score += 80;
+              if (!isProtectedStroke(strokeValue)) score += 60;
+              if (index === 0) score += 20;
+              if (String(el.tagName || "").toLowerCase() === "rect") score += 10;
+              if (score > bestScore) {
+                best = el;
+                bestScore = score;
+              }
+            });
+            return best ? [best] : [];
+          })();
+
+      if (!targetElements.length) return inner;
+      targetElements.forEach((el) => setPaint(el, "stroke", color));
+
+      const serializer = new XMLSerializer();
+      return Array.from(root.childNodes)
+        .map((node) => serializer.serializeToString(node))
+        .join("");
+    } catch {
+      return inner;
+    }
   };
 
   const forceSvgStrokeColor = (inner, color) => {
@@ -5157,7 +5330,7 @@ function CanvasSvg({
 
   const getEffectiveOverlayFlowColor = (overlay, overlayEType, entryColor = "") => {
     const incomingEntryColor = normalizeActiveLineColor(entryColor);
-    if (String(overlayEType || "").includes("diverter")) {
+    if (isDiverterEType(overlayEType)) {
       return incomingEntryColor;
     }
     return normalizeActiveLineColor(
@@ -5426,6 +5599,9 @@ function CanvasSvg({
     }
   };
 
+  const OVERLAY_TOUCH_COLOR_THRESHOLD = 8;
+  const SPLIT_CARRY_TOUCH_THRESHOLD = 16;
+
   const getOverlayColorAtPoint = (pt, options = {}) => {
     if (!pt || !svgOverlays?.length) return "";
     const excludedOverlayIds = new Set(
@@ -5440,14 +5616,14 @@ function CanvasSvg({
       const overlayId = String(o?.id || "").trim();
       if (overlayId && excludedOverlayIds.has(overlayId)) continue;
       const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
-      const entryColor = overlayEType.includes("diverter")
+      const entryColor = isDiverterEType(overlayEType)
         ? getDirectEntryActiveColorForDiverter(o, {
             excludedOverlayIds: [...excludedOverlayIds, overlayId],
           })
         : "";
       const incomingEntryColor = normalizeActiveLineColor(entryColor);
       const color = getEffectiveOverlayFlowColor(o, overlayEType, entryColor);
-      if (overlayEType.includes("diverter") && !incomingEntryColor) continue;
+      if (isDiverterEType(overlayEType) && !incomingEntryColor) continue;
       if (!color) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
@@ -5457,7 +5633,7 @@ function CanvasSvg({
       const w = wr.w;
       const h = wr.h;
       if (pt.x >= x && pt.x <= x + w && pt.y >= y && pt.y <= y + h) {
-        if (overlayEType.includes("diverter")) {
+        if (isDiverterEType(overlayEType)) {
           const sx = overlayScaleX(o);
           const sy = overlayScaleY(o);
           const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(0.0001, sx);
@@ -5495,16 +5671,16 @@ function CanvasSvg({
       const dist = distancePointToRect(pt, wr);
       if (dist > threshold || dist >= bestDistance) continue;
       const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
-      const entryColor = overlayEType.includes("diverter")
+      const entryColor = isDiverterEType(overlayEType)
         ? getDirectEntryActiveColorForDiverter(o, {
             excludedOverlayIds: [...excludedOverlayIds, overlayId],
           })
         : "";
       const incomingEntryColor = normalizeActiveLineColor(entryColor);
       const color = getEffectiveOverlayFlowColor(o, overlayEType, entryColor);
-      if (overlayEType.includes("diverter") && !incomingEntryColor) continue;
+      if (isDiverterEType(overlayEType) && !incomingEntryColor) continue;
       if (!color) continue;
-      if (overlayEType.includes("diverter")) {
+      if (isDiverterEType(overlayEType)) {
         const sx = overlayScaleX(o);
         const sy = overlayScaleY(o);
         const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(0.0001, sx);
@@ -5525,12 +5701,12 @@ function CanvasSvg({
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const o of svgOverlays) {
       const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
-      if (!overlayEType.includes("diverter")) continue;
+      if (!isDiverterEType(overlayEType)) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
       const wr = overlayWorldRect(o, bb);
       const dist = distancePointToRect(pt, wr);
-      if (dist > 28 || dist >= bestDistance) continue;
+      if (dist > OVERLAY_TOUCH_COLOR_THRESHOLD || dist >= bestDistance) continue;
 
       const incomingEntryColor = normalizeActiveLineColor(
         getDirectEntryActiveColorForDiverter(o, {
@@ -5567,7 +5743,7 @@ function CanvasSvg({
     let best = { matched: false, active: false, color: "", dist: Number.POSITIVE_INFINITY };
     for (const o of svgOverlays) {
       const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
-      if (!overlayEType.includes("diverter")) continue;
+      if (!isDiverterEType(overlayEType)) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
       const wr = overlayWorldRect(o, bb);
@@ -5603,7 +5779,7 @@ function CanvasSvg({
     if (!pt || !Array.isArray(svgOverlays) || !svgOverlays.length) return false;
     for (const o of svgOverlays) {
       const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
-      if (!overlayEType.includes("diverter")) continue;
+      if (!isDiverterEType(overlayEType)) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
       const wr = overlayWorldRect(o, bb);
@@ -5618,12 +5794,12 @@ function CanvasSvg({
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const o of svgOverlays) {
       const overlayEType = String(o?.eType || o?.name || "").trim().toLowerCase();
-      if (overlayEType.includes("diverter")) continue;
+      if (isDiverterEType(overlayEType)) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
       const wr = overlayWorldRect(o, bb);
       const dist = distancePointToRect(pt, wr);
-      if (dist > 28 || dist >= bestDistance) continue;
+      if (dist > OVERLAY_TOUCH_COLOR_THRESHOLD || dist >= bestDistance) continue;
       const color = normalizeActiveLineColor(
         getRouteColorForOverlay(o) ||
         getTagColor(o.tagPath) ||
@@ -5652,7 +5828,7 @@ function CanvasSvg({
         : null;
     }
     const directOverlayColor = normalizeActiveLineColor(
-      getOverlayColorNearPoint(pt, 28, {
+      getOverlayColorNearPoint(pt, OVERLAY_TOUCH_COLOR_THRESHOLD, {
         ...options,
         allowDiverterPolylineFallback: false,
       })
@@ -6020,31 +6196,22 @@ function CanvasSvg({
     const endOverlayColor = normalizeActiveLineColor(endPt ? getOverlayColorAtPoint(endPt, options) : "");
     if (endOverlayColor) return endOverlayColor;
     const nearStartColor = normalizeActiveLineColor(
-      startPt ? getOverlayColorNearPoint(startPt, 18, options) : ""
+      startPt ? getOverlayColorNearPoint(startPt, OVERLAY_TOUCH_COLOR_THRESHOLD, options) : ""
     );
     if (nearStartColor) return nearStartColor;
     const nearEndColor = normalizeActiveLineColor(
-      endPt ? getOverlayColorNearPoint(endPt, 18, options) : ""
+      endPt ? getOverlayColorNearPoint(endPt, OVERLAY_TOUCH_COLOR_THRESHOLD, options) : ""
     );
     if (nearEndColor) return nearEndColor;
     // Active indication can be centered on the branch node, not only endpoints.
-    // Scan branch vertices and segment midpoints with a tight radius.
+    // Keep this tight so a line that only passes near equipment does not inherit color.
     const pts = Array.isArray(polyline.points) ? polyline.points : [];
     for (let i = 0; i < pts.length; i += 1) {
       const p = pts[i];
       const c = normalizeActiveLineColor(
-        getOverlayColorAtPoint(p, options) || getOverlayColorNearPoint(p, 14, options)
+        getOverlayColorAtPoint(p, options) || getOverlayColorNearPoint(p, OVERLAY_TOUCH_COLOR_THRESHOLD, options)
       );
       if (c) return c;
-      if (i < pts.length - 1) {
-        const n = pts[i + 1];
-        const mid = {
-          x: ((Number(p?.x) || 0) + (Number(n?.x) || 0)) / 2,
-          y: ((Number(p?.y) || 0) + (Number(n?.y) || 0)) / 2,
-        };
-        const mc = normalizeActiveLineColor(getOverlayColorNearPoint(mid, 14, options));
-        if (mc) return mc;
-      }
     }
     return "";
   };
@@ -6101,8 +6268,7 @@ function CanvasSvg({
       }
       return candidates;
     };
-    let candidates = collect(16);
-    if (!candidates.length) candidates = collect(140);
+    const candidates = collect(SPLIT_CARRY_TOUCH_THRESHOLD);
     candidates.sort(
       (a, b) =>
         Number(a.downstreamProgress || 0) - Number(b.downstreamProgress || 0) ||
@@ -7042,7 +7208,7 @@ function CanvasSvg({
       }
 
       const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
-      const isDiverterOverlay = overlayEType.includes("diverter");
+      const isDiverterOverlay = isDiverterEType(overlayEType);
       const isBinOverlay = overlayEType === "bin" || overlayEType.startsWith("bin");
       const dynamicBinProductLabel = String(
         binProductLabelByOverlayId?.[id] || ""
@@ -7058,6 +7224,14 @@ function CanvasSvg({
       const binLockedOut = binLockedOutByOverlayId?.[id] === true;
       const shouldReplaceBinText =
         isBinOverlay && (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
+      const overlayStateColor = normalizeOverlayActiveFillColor(
+        overlayHmiStateColorByOverlayId?.[id] || ""
+      );
+      const routeOutlineStroke = isBinOverlay
+        ? ""
+        : normalizeActiveLineColor(
+            getRouteColorForOverlay(overlay) || getRouteStrokeColorForOverlay(overlay)
+          );
       const strokeModeRaw = String(overlay?.strokeMode || "").trim().toLowerCase();
       const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
       if (!renderLiveVisuals) {
@@ -7114,14 +7288,25 @@ function CanvasSvg({
           return;
         }
         out.set(id, {
-          inner: applyOverlayPaintOverrides(inner, {
-            fillColor: hasCustomOverlayFill ? overlayFill : "",
-            strokeColor: hasCustomOverlayStroke ? overlayStroke : "",
-            strokeWidth: overlayStrokeWidth,
-          }),
+          inner: (() => {
+            const strokeColor = hasCustomOverlayStroke ? overlayStroke : "";
+            const defaultOverlayFill = hasCustomOverlayFill ? overlayFill : themeFillDefault;
+            let nextInner = applyOverlayPaintOverrides(inner, {
+              fillColor: isBinOverlay ? "" : (overlayStateColor || defaultOverlayFill),
+              strokeColor,
+              strokeWidth: overlayStrokeWidth,
+            });
+            if (strokeColor) {
+              nextInner = forceSvgStrokeColor(nextInner, strokeColor);
+            }
+            if (routeOutlineStroke) {
+              nextInner = applyOverlayOuterStrokeColor(nextInner, routeOutlineStroke);
+            }
+            return nextInner;
+          })(),
           className: undefined,
           style: {
-            fill: hasCustomOverlayFill ? overlayFill : undefined,
+            fill: isBinOverlay ? undefined : (overlayStateColor || (hasCustomOverlayFill ? overlayFill : undefined)),
             stroke: hasCustomOverlayStroke ? overlayStroke : undefined,
             strokeWidth: overlayStrokeWidth,
             pointerEvents: "visiblePainted",
@@ -7131,10 +7316,10 @@ function CanvasSvg({
         return;
       }
 
-      const boundFill = String(getOverlayBoundFillColor(overlay) || "").trim();
-      const tagFill = isDiverterOverlay
+      const boundActiveFill = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
+      const tagFill = isDiverterOverlay || isBinOverlay
         ? ""
-        : normalizeOverlayActiveFillColor(boundFill || getTagColor(overlay.tagPath));
+        : normalizeOverlayActiveFillColor(boundActiveFill || getTagColor(overlay.tagPath) || overlayStateColor);
       const routeStroke = normalizeActiveLineColor(getRouteStrokeColorForOverlay(overlay));
       const diverterIncomingColor =
         isDiverterOverlay
@@ -7173,10 +7358,12 @@ function CanvasSvg({
       const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
       const effectiveFillColor = isDiverterOverlay
         ? ""
-        : (tagFill || (hasCustomOverlayFill ? overlayFill : ""));
+        : isBinOverlay
+        ? ""
+        : (tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : themeFillDefault));
       const effectiveStrokeColor = isDiverterOverlay
         ? ""
-        : (hasCustomOverlayStroke ? overlayStroke : (useForcedStroke ? routeStroke : ""));
+        : (routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : (useForcedStroke ? routeStroke : "")));
 
       if (tagFill) {
         const key = String(overlay.tagPath || overlay.id || "");
@@ -7213,7 +7400,7 @@ function CanvasSvg({
       if (isDiverterOverlay) {
         inner = applyDiverterModeToSvg(inner, liveDiverterMode);
       }
-      if (isFaultSimulated) {
+      if (isFaultSimulated && !isBinOverlay) {
         inner = inner
           .replace(/fill=['"][^'"]*['"]/gi, `fill="${faultColor}"`)
           .replace(/fill:\s*[^;\"']+/gi, `fill:${faultColor}`);
@@ -7221,12 +7408,15 @@ function CanvasSvg({
       if (!isDiverterOverlay) {
         inner = applyOverlayPaintOverrides(inner, {
           fillColor: isFaultSimulated ? "" : effectiveFillColor,
-          strokeColor: effectiveStrokeColor,
+          strokeColor: hasCustomOverlayStroke ? overlayStroke : "",
           strokeWidth: overlayStrokeWidth,
         });
       }
-      if (!isDiverterOverlay && effectiveStrokeColor) {
-        inner = forceSvgStrokeColor(inner, effectiveStrokeColor);
+      if (!isDiverterOverlay && hasCustomOverlayStroke) {
+        inner = forceSvgStrokeColor(inner, overlayStroke);
+      }
+      if (!isDiverterOverlay && routeOutlineStroke) {
+        inner = applyOverlayOuterStrokeColor(inner, routeOutlineStroke);
       }
       if (isDiverterOverlay) {
         inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode);
@@ -7265,6 +7455,7 @@ function CanvasSvg({
     binLevelRatioByOverlayId,
     binLockedInByOverlayId,
     binLockedOutByOverlayId,
+    overlayHmiStateColorByOverlayId,
     themeStrokeDefault,
   ]);
   const staticOverlayRenderOverlays = useMemo(
@@ -7946,9 +8137,9 @@ function CanvasSvg({
                 y={s.y}
                 fill={
                   dynamicColor ||
-                  (theme === "dark" && (!s.fill || String(s.fill).toLowerCase() === "#808080")
+                  (theme === "dark" && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase()))
                     ? "#ffffff"
-                    : s.fill || "#808080")
+                    : s.fill || "#D7DADE")
                 }
                 fontSize={s.fontSize || 24}
                 fontFamily={s.fontFamily || "system-ui"}
@@ -8728,9 +8919,9 @@ function CanvasSvg({
                       y={s.y}
                       fill={
                         dynamicColor ||
-                        (theme === "dark" && (!s.fill || String(s.fill).toLowerCase() === "#808080")
+                        (theme === "dark" && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase()))
                           ? "#ffffff"
-                          : s.fill || "#808080")
+                          : s.fill || "#D7DADE")
                       }
                       fontSize={s.fontSize || 24}
                       fontFamily={s.fontFamily || "system-ui"}

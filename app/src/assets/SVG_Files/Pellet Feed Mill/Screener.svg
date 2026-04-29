@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 52 52" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="100" eType="Screener" stroke="#808080" stroke-width="0.78" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <polygon id="body" points="1 26 15.98 11 36.02 11 51 26 30.97 51 21.03 51 1 26" stroke-width="0.78" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="10" id="Screener-Top" width="10" x="21" y="1" stroke-width="0.78" stroke-linejoin="round" fill="#D7DADE" />
+  <line id="Horizontal-Line" x1="1" x2="51" y1="26" y2="26" fill="transparent" stroke-width="0.78" stroke-linejoin="round" />
+  <line id="Left-Leg" x1="1" x2="1" y1="51" y2="26" fill="#D7DADE" stroke-width="0.78" stroke-linecap="round" stroke-linejoin="round" />
+  <line id="Right-Leg" x1="51" x2="51" y1="51" y2="26" fill="#D7DADE" stroke-width="0.78" stroke-linecap="round" stroke-linejoin="round" />
+  <rect height="5" id="Horizontal-Leg-Brace" width="50" x="1" y="42.57" stroke-width="0.78" stroke-linejoin="round" fill="#D7DADE" />
+</svg>

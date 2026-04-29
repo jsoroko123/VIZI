@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 7.4930003 4.8259999" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="64.407" eType="DOC" stroke="#808080" stroke-width="0.1124" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-13.156118,-2.2327176)">
+    <g id="g11405-3-6-5" transform="matrix(0.26458333,0,0,0.26458333,-166.70155,-106.22087)">
+      <g id="g11407-0-81-9" stroke-width="0.1124" stroke-dasharray="none" stroke-linejoin="miter" stroke-miterlimit="4">
+        <path d="m 5503.5,1481.86 h 27 v 5 l -7,7 -2,5 h -9 l -2,-5 -7,-7 z" id="body" transform="translate(-4823,-1071.3622)" stroke-width="0.1124" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 5503.5,1486.86 h 27" id="path11411-5-2-11" transform="translate(-4823,-1071.3622)" stroke-width="0.1124" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 5510.5,1493.86 h 13 -13" id="path11413-1-71-8" transform="translate(-4823,-1071.3622)" stroke-width="0.1124" style="enable-background:accumulate" fill="#D7DADE" />
+      </g>
+      <rect height="4" id="rect11415-34-97-57" width="10" x="689" y="425" style="visibility:hidden" fill="#D7DADE" />
+    </g>
+  </g>
+</svg>

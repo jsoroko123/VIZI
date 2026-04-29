@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 19.67918 2.1332762" preserveAspectRatio="none" kewidth="100" keheight="10.84" eType="ConveyorScrew_2_" stroke="#808080" stroke-width="0.2952" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-6.2225274,-0.70096745)">
+    <rect height="1.9332762" id="body" width="19.479177" x="6.3225274" y="0.80096745" stroke-width="0.2952" stroke-dasharray="none" style="opacity:1" fill="#D7DADE" />
+    <path d="m 12.264254,2.2627678 0.999616,-0.9953415 0.987223,0.9912199 1.014246,-0.9922871 0.993741,0.9950443 1.004797,-1.0015834 0.994929,0.9954462 1.004362,-0.9841411 0.999311,0.9939915 0.996029,-1.0050468 0.93009,0.9985764 1.014246,-0.9922871 0.993741,0.9950443 1.004797,-1.0015834" id="path14" fill="transparent" stroke="#808080" stroke-width="0.2952" stroke-dasharray="none" style="opacity:1" />
+  </g>
+</svg>

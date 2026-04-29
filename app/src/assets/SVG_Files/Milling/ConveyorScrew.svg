@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.7747708in"
+  height="0.083987251in"
+  viewBox="0 0 19.67918 2.1332762"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="372.72"
+  keheight="40.4"
+  eType="ConveyorScrew"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="screwShell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <clipPath id="screwBodyClip">
+      <rect x="0.10" y="0.10" width="19.48" height="1.93" rx="0.35" />
+    </clipPath>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <rect id="body" x="0.10" y="0.10" width="19.48" height="1.93" rx="0.35" fill="url(#screwShell)" stroke-width="0.16" />
+    <g clip-path="url(#screwBodyClip)">
+      <path d="M0.62 1.06H19.06" fill="none" stroke="#808080" stroke-width="0.07" />
+      <path
+        id="path14"
+        d="M0.90 1.06Q1.35 0.44 1.80 1.06T2.70 1.06T3.60 1.06T4.50 1.06T5.40 1.06T6.30 1.06T7.20 1.06T8.10 1.06T9.00 1.06T9.90 1.06T10.80 1.06T11.70 1.06T12.60 1.06T13.50 1.06T14.40 1.06T15.30 1.06T16.20 1.06T17.10 1.06T18.00 1.06"
+        fill="none"
+        stroke="#808080"
+        stroke-width="0.15"
+      />
+    </g>
+
+    <circle cx="0.64" cy="1.06" r="0.10" fill="#D7DADE" stroke-width="0.06" />
+    <circle cx="19.04" cy="1.06" r="0.10" fill="#D7DADE" stroke-width="0.06" />
+  </g>
+</svg>

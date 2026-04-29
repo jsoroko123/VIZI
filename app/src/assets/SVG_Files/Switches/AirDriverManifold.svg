@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 32.48 43.07" width="41" height="50" kewidth="75.412" keheight="100" eType="DIC" stroke="#808080" stroke-width="0.6461" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1" />
+  <line id="Roof_Line" x1="1" x2="31.48" y1="30.79" y2="42.07" fill="none" stroke="#808080" stroke-linecap="round" stroke-linejoin="round" stroke-width="0.6461" />
+  <polygon id="body" points="21.48 18.27 21.48 38.37 11.48 34.67 11.48 18.27 21.48 18.27" fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-width="0.6461" />
+  <rect id="Vent_Open" height="5" transform="translate(-4.3 22.25) rotate(-90)" width="10" x="3.98" y="10.77" fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-width="0.6461" />
+  <rect id="Vent_Closed" height="5" width="10" x="11.48" y="13.27" fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-width="0.6461" />
+  <path id="Vent_Pressure_Release" d="M12.99,1c0,4.14,2.85,5.27,2.85,9.32s-2.61,7.96-2.61,7.96h4.12s2.61-3.91,2.61-7.96-2.85-5.18-2.85-9.32" fill="none" stroke="#808080" stroke-linecap="round" stroke-linejoin="round" stroke-width="0.6461" />
+</svg>

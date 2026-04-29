@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 121.25 16.25" preserveAspectRatio="none" kewidth="100" keheight="13.402" eType="ConveyorPaddle2" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <g id="Layer_14">
+    <g id="Conveyor_1">
+      <rect height="15" width="120" x=".62" y=".62" id="body" fill="#D7DADE" stroke-width="1.8188" stroke-linejoin="round"  />
+      <g id="group">
+        <line x1="115.97" x2="50.94" y1="8.12" y2="8.12" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+        <g id="group">
+          <line x1="110.61" x2="110.61" y1="8.12" y2="3.86" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="100.62" x2="100.62" y1="8.12" y2="3.86" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="90.62" x2="90.62" y1="8.12" y2="3.86" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="80.62" x2="80.62" y1="8.12" y2="3.86" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="70.62" x2="70.62" y1="8.12" y2="3.86" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="60.62" x2="60.62" y1="8.12" y2="3.86" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+        </g>
+        <g id="group">
+          <line x1="105.62" x2="105.62" y1="12.39" y2="8.12" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="95.64" x2="95.64" y1="12.39" y2="8.12" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="85.64" x2="85.64" y1="12.39" y2="8.12" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="75.64" x2="75.64" y1="12.39" y2="8.12" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="65.64" x2="65.64" y1="12.39" y2="8.12" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+          <line x1="55.64" x2="55.64" y1="12.39" y2="8.12" id="line" fill="transparent" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round"  />
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

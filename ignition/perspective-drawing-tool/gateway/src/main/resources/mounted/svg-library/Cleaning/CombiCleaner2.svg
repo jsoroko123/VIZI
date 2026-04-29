@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 5.3339998 6.1467998" preserveAspectRatio="xMidYMid meet" kewidth="86.777" keheight="100" eType="CombiCleaner2" stroke="#808080" stroke-width="0.0922" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-16.119254,-14.719355)">
+    <g id="g11619-4-6" transform="matrix(-0.12472538,0,0,0.12472538,254.77491,-21.428926)">
+      <g id="g11598-8-4" stroke-width="0.0922" stroke-linejoin="miter">
+        <path d="m 1897.5,290.5 v 8 l -25,7 v 21 h -1 v 4 h 2 v -2 h 2 v 10 h 2 v -1 h 10 v 1 h 25 v -44 h -7 v -2 h 1 v -2 z" id="body" stroke-width="0.0922" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1912.5,308.5 v 1 l -5,5 v 17" id="path10952-4-3" fill="transparent" stroke-width="0.0922" stroke-dasharray="none" stroke-linecap="square" style="enable-background:accumulate" />
+        <path d="m 1872.5,308.5 36,-10" id="path10978-5-2" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1908.5,300.5 -36,10" id="path10976-5-2" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1908.5,294.5 v 13 l -5,5 v 17 l -4,-7 h -27" id="path10954-1-1" fill="transparent" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" />
+        <path d="m 1903.5,319.5 -4,3" id="path10956-7-6" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1872.5,325.5 15,4 v 9" id="path10958-1-8" fill="transparent" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" />
+        <path d="m 1872.5,323.5 26,6 v 9" id="path10960-1-5" fill="transparent" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" />
+        <path d="m 1875.5,328.5 h 2 v 9" id="path10962-5-7" fill="transparent" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" />
+        <path d="m 1877.5,335.5 h 10" id="path10964-2-6" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1877.5,330.5 10,3" id="path10966-7-1" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1877.5,328.5 16,5" id="path10968-6-8" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1880.5,317.5 v 5" id="path10970-1-9" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1881.5,312.5 27,-7" id="path10972-4-2" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1908.5,302.5 -36,10" id="path10974-2-7" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1897.5,292.5 v 23 h -16 v -3 h -2 v 5 h 21 v -25 h 5" id="path10950-3-9" fill="transparent" stroke-width="0.0922" style="enable-background:accumulate" />
+      </g>
+    </g>
+  </g>
+</svg>

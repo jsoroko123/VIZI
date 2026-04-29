@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 52 27" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="51.923" eType="CrumbRoller" stroke="#808080" stroke-width="0.78" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1" />
+  <polygon id="body" points="39.96 23.22 51 14.89 51 1 1 1 1 14.89 9.96 23.22 9.96 26 39.96 26 39.96 23.22" stroke-width="0.78" stroke-linejoin="round" fill="#D7DADE" />
+  <g id="Rollers" transform="translate(-0.19999941)">
+    <circle cx="18.309999" cy="9.1900005" id="Left-Roller" r="7.6900001" fill="#D7DADE" stroke-width="0.78" stroke-linejoin="round" />
+    <circle cx="33.689999" cy="9.1900005" id="circle1" r="7.6900001" fill="#D7DADE" stroke-width="0.78" stroke-linejoin="round" />
+  </g>
+</svg>

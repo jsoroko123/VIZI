@@ -1,0 +1,37 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.21972221in"
+  height="0.39312685in"
+  viewBox="0 0 5.5809447 9.9854219"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="55.891"
+  keheight="100"
+  eType="Dampi"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="dampiBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(-13.152977,-10.068614)">
+    <g transform="matrix(1.2507261,0,0,0.99761904,-3.9977301,0.03586037)" stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+      <path
+        id="body"
+        d="m 15.389624,10.146222 v 0.674377 0 l -0.529167,0.831992 v 0.529166 l -0.529167,0.558046 v 0.577285 l -0.529166,0.529167 v 1.514636 l 1.5875,4.097424 v 0 0.518114 h 1.107425 v -0.518114 0 l 1.5875,-4.160469 V 13.846255 L 17.555383,13.317088 V 12.72237 l -0.529167,-0.540613 v -0.529166 l -0.529167,-0.831992 v 0 -0.674377 z"
+        fill="url(#dampiBodyFill)"
+        stroke-width="0.179047"
+      />
+      <path d="m 15.304183,19.557008 h 1.283081 z" fill="none" stroke-width="0.179047" />
+      <path d="m 13.716683,15.210632 h 4.458081 z" fill="none" stroke-width="0.179047" />
+      <path d="m 13.716683,13.98839 h 4.458081 z" fill="none" stroke-width="0.179047" />
+      <path d="m 14.24585,13.250099 h 3.399747 z" fill="none" stroke-width="0.179047" />
+      <path d="m 14.24585,12.856592 h 3.399747 z" fill="none" stroke-width="0.179047" />
+      <path d="M 14.775017,12.118301 H 17.11643 Z" fill="none" stroke-width="0.179047" />
+      <path d="M 14.775017,11.758694 H 17.11643 Z" fill="none" stroke-width="0.179047" />
+      <path d="m 15.304184,10.75688 h 1.283079 z" fill="none" stroke-width="0.179047" />
+    </g>
+  </g>
+</svg>

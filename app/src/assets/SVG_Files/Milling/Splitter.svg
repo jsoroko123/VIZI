@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.039999999in"
+  height="0.020091536in"
+  viewBox="0 0 1.016 0.51032498"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="100"
+  keheight="50.229"
+  eType="Splitter"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="splitterBodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <rect id="body" x="0.02" y="0.02" width="0.976" height="0.470" rx="0.04" fill="url(#splitterBodyFill)" stroke-width="0.04" />
+    <path d="M0.07 0.09H0.95V0.17H0.07Z" fill="#4e545d" stroke="none" />
+    <path d="M0.07 0.25H0.50V0.43H0.07Z" fill="#D7DADE" stroke="#808080" stroke-width="0.02" />
+    <path d="M0.52 0.25H0.95V0.43H0.52Z" fill="#D7DADE" stroke="#808080" stroke-width="0.02" />
+  </g>
+</svg>

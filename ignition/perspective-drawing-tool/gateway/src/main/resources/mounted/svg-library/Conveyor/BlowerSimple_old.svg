@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3.908554 3.908548" preserveAspectRatio="xMinYMin" kewidth="100" keheight="100" eType="BlowerSimple_old" stroke="#808080" stroke-width="0.0586" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs190486" />
+  <g id="layer1" transform="translate(-73.898125,-39.711305)">
+    <path d="m 75.852143,39.811305 a 1.8542381,1.8542943 0 0 0 -1.854018,1.854009 1.8542381,1.8542943 0 0 0 1.854018,1.854539 1.8542381,1.8542943 0 0 0 1.854536,-1.854539 1.8542381,1.8542943 0 0 0 -1.854536,-1.854009 z" id="body" stroke-width="0.0586" stroke-dasharray="none" fill="#D7DADE" />
+    <g id="InsideLines" transform="matrix(0,0.18179549,-0.18630394,0,108.3587,11.673168)">
+      <path d="m 155.50498,177.65371 6.63905,-12.59266" id="path2" fill="transparent" stroke="#808080" stroke-width="0.0586" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+      <path d="m 174.37701,177.73404 -6.88603,-12.67299" id="path1" fill="transparent" stroke="#808080" stroke-width="0.0586" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+    </g>
+  </g>
+</svg>

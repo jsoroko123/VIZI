@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 42 62" preserveAspectRatio="xMidYMid meet" kewidth="67.742" keheight="100" eType="Dust_Collector" stroke="#808080" stroke-width="0.93" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <rect height="5" id="body" width="30" x="6" y="1" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="5" id="Intake" width="5" x="1" y="1" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="30" id="Main_Container" width="30" x="6" y="6" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <g id="Top_Filters">
+    <line id="Top_Filter_1" x1="11" x2="11" y1="16" y2="6" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Top_Filter_2" x1="16" x2="16" y1="16" y2="6" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Top_Filter_3" x1="21" x2="21" y1="16" y2="6" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Top_Filter_4" x1="26" x2="26" y1="16" y2="6" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Top_Filter_5" x1="31" x2="31" y1="16" y2="6" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+  <g id="Bottom_Filters">
+    <line id="Bottom_Filter_1" x1="11" x2="11" y1="36" y2="26" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Bottom_Filter_2" x1="16" x2="16" y1="36" y2="26" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Bottom_Filter_3" x1="21" x2="21" y1="36" y2="26" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Bottom_Filter_4" x1="26" x2="26" y1="36" y2="26" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Bottom_Filter_5" x1="31" x2="31" y1="36" y2="26" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+  <rect height="5" id="Bottom_Bar" width="30" x="6" y="36" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="5" id="Outfeed" width="5" x="36" y="36" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <polygon id="Dust_Collector_Cone" points="21 61 6 41 36 41 21 61" stroke-width="0.93" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+</svg>

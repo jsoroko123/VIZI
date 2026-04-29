@@ -1,0 +1,29 @@
+﻿<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+
+<svg
+   width="0.1850187in"
+   height="0.18145147in"
+   viewBox="0 0 4.6994753 4.6088673"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg" kewidth="100" keheight="98.072" eType="Sterilator" fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  
+  <defs
+     id="defs1">
+    <linearGradient
+       id="swatch1">
+      <stop
+         style="stop-color:#e7e9ec;stop-opacity:1"
+         offset="0"
+         id="stop1" />
+    </linearGradient>
+  </defs>
+  <g
+     id="layer1"
+     transform="translate(-14.226064,-4.1221417)">
+    <path
+       id="body"
+       style="fill:#D7DADE;fill-opacity:1;stroke:#808080;stroke-width:0.2;stroke-linecap:square"
+       d="m 15.759572,4.2221417 v 0.8140224 h 1.650546 V 4.2221417 Z m -1.433508,0.8594976 v 1.1983765 h 4.499475 V 5.0816393 Z m 1.198381,1.2205973 V 8.631009 h 2.102714 V 6.3022366 Z" />
+  </g>
+</svg>

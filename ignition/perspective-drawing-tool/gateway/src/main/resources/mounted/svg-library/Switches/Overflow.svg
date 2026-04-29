@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" ?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 1.7839611 1.8197689" width="23" height="22" kewidth="98.032" keheight="100" eType="DIC" stroke="#808080" stroke-width="0.0273" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-15.391651,-14.4186)">
+    <path id="body" d="m 16.521254,14.4811 c -0.227462,1.41e-4 -0.41177,0.184449 -0.411726,0.411727 -4.3e-5,0.227278 0.184264,0.411585 0.411726,0.411726 0.227462,-1.41e-4 0.411769,-0.184448 0.411726,-0.411726 4.4e-5,-0.227278 -0.184264,-0.411586 -0.411726,-0.411727 z" style="fill:none;stroke:#808080;stroke-width:0.0273;stroke-dasharray:none"/>
+    <path id="path3" d="m 15.391651,16.175869 h 0.670462 l 1.085155,-0.552167" style="fill:none;stroke:#808080;stroke-width:0.0273;stroke-dasharray:none"/>
+    <path id="path4" d="m 16.522648,15.304636 v 0.654266" style="fill:none;stroke:#808080;stroke-width:0.0273;stroke-dasharray:none"/>
+  </g>
+</svg>

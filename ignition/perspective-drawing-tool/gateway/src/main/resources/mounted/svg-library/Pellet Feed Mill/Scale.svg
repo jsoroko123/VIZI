@@ -1,0 +1,18 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 42 92" preserveAspectRatio="none" kewidth="45.652" keheight="100" eType="Scale" stroke="#808080" stroke-width="1.38" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1" />
+  <g id="Scale_Top">
+    <rect height="20" id="body" width="30" x="6" y="1" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <polygon id="Scale_Top_Funnel" points="26 31 16 31 6 21 36 21 26 31" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+  <g id="Scale_Middle">
+    <rect height="5" id="Scale_Middle_Small_Rectangle" width="20" x="11" y="31" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <rect height="10" id="Scale_Middle_Large_Rectangle" width="40" x="1" y="36" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <polygon id="Scale_Middle_Funnel" points="26 56 16 56 1 46 41 46 26 56" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+  <g id="Scale_Bottom">
+    <rect height="5" id="Scale_Bottom_Small_Rectangle" width="20" x="11" y="56" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <rect height="20" id="Scale_Bottom_Large_Rectangle" width="30" x="6" y="61" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <polygon id="Scale_Bottom_Funnel" points="26 91 16 91 6 81 36 81 26 91" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+</svg>

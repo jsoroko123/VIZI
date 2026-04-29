@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 47 64.37" preserveAspectRatio="xMidYMid meet" kewidth="73.015" keheight="100" eType="Hammer_Mill_1" stroke="#808080" stroke-width="0.9656" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <polygon id="body" points="27.41 13.83 14.59 13.83 14.59 1 33.83 1 27.41 13.83" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <path d="M14.12,13.83h13.75c7.24,0,13.12,5.88,13.12,13.12v26.88H1v-26.88c0-7.24,5.88-13.12,13.12-13.12Z" id="Main_Container" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <g id="Hammer">
+    <circle cx="21" cy="33.83" id="Hammer_Container" r="14.72" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+    <g id="Hammer_Blades">
+      <polyline id="Top_Blade" points="19.3 29.6 19.3 22.45 22.67 22.45 22.67 29.6" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" />
+      <polyline id="Right_Blade" points="25.25 32.15 32.4 32.15 32.4 35.51 25.25 35.51" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" />
+      <polyline id="Bottom_Blade" points="22.67 38.06 22.67 45.21 19.3 45.21 19.3 38.06" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" />
+      <polyline id="Left_Blade" points="16.75 35.51 9.6 35.51 9.6 32.15 16.75 32.15" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" />
+    </g>
+    <circle cx="21" cy="33.83" id="Hammer_Shaft" r="4.57" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  </g>
+  <rect height="9.54" id="Base" width="40" x="1" y="53.83" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  <rect height="9.54" id="Outfeed" width="5" x="41" y="53.83" stroke-width="0.9656" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+</svg>

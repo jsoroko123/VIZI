@@ -112,6 +112,11 @@ export function isBinEType(value) {
   return key === "bin" || key.startsWith("bin");
 }
 
+export function isDiverterEType(value) {
+  const key = normalizeRouteTagKey(value);
+  return key.includes("diverter") || key.includes("twoway");
+}
+
 export function isOverlayETypeAutoManaged(overlay) {
   if (!overlay || typeof overlay !== "object") return false;
   if (overlay.eTypeAuto === false) return false;

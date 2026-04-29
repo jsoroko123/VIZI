@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 17 16.79" preserveAspectRatio="xMinYMin" kewidth="100" keheight="98.765" eType="ValveShutOff_Inco" stroke="#808080" stroke-width="0.255" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <g id="Top">
+    <line id="Top_Plate" x1="1" x2="16" y1="1" y2="1" fill="transparent" stroke-width="0.255" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M5.84,5.05L3.08,1h10.83s-2.76,4.04-2.76,4.04h0c-.73-.58-1.65-.92-2.65-.92s-1.93.35-2.66.93h0Z" id="body" stroke-width="0.255" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  </g>
+  <g id="Bottom">
+    <line id="Bottom_Plate" x1="1" x2="16" y1="15.79" y2="15.79" fill="transparent" stroke-width="0.255" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M5.84,11.74l-2.76,4.05h10.83s-2.76-4.04-2.76-4.04h0c-.73.58-1.65.92-2.65.92s-1.93-.35-2.66-.93h0Z" id="Bottom_Funnel" stroke-width="0.255" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+  </g>
+  <g id="Lock">
+    <circle cx="8.5" cy="8.4" id="Lock_Container" r="4.27" stroke-width="0.255" stroke-linecap="round" stroke-linejoin="round" fill="#D7DADE" />
+    <line id="Lock_Line_1" x1="11.52" x2="5.48" y1="5.37" y2="11.42" fill="transparent" stroke-width="0.255" stroke-linecap="round" stroke-linejoin="round" />
+    <line id="Lock_Line_2" x1="11.52" x2="5.48" y1="11.42" y2="5.37" fill="transparent" stroke-width="0.255" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+</svg>

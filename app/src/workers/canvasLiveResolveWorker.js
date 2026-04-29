@@ -46,6 +46,9 @@ function normalizeActiveColor(value) {
   const lower = raw.toLowerCase();
   if (
     lower === "#808080" ||
+    lower === "#d7dade" ||
+    lower === "rgb(215,218,222)" ||
+    lower === "rgba(215,218,222,1)" ||
     lower === "rgb(128,128,128)" ||
     lower === "gray" ||
     lower === "grey" ||

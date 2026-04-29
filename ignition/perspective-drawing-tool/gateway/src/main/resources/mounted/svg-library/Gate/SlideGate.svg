@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 2.1166668 0.52916665" preserveAspectRatio="none" kewidth="100" keheight="25" eType="SlideGate" stroke="#808080" stroke-width="0.0318" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-16.00407,-14.456591)">
+    <rect height="0.4762722" id="body" ry="7.2847122e-08" width="2.0637722" x="16.030518" y="14.483038" stroke-width="0.0318" stroke-dasharray="none" stroke-linecap="round" fill="#D7DADE" />
+  </g>
+</svg>

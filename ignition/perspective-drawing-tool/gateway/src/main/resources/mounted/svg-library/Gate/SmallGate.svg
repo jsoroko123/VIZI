@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 50 20" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="40" eType="SmallGate" stroke="#808080" stroke-width="0.75" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <rect height="24.575689" id="body" width="22.677164" x="230.55119" y="428.96762" fill="#D7DADE" />
+  </defs>
+  <g id="layer1">
+    <rect height="13.793503" id="innerH" width="14.767916" x="5.2320852" y="3.1032486" stroke="#808080" stroke-width="0.75" stroke-dasharray="none" stroke-opacity="1" style="opacity:0.99" fill="#D7DADE" />
+    <rect height="16.537895" id="Gate" width="16.537899" x="25.969194" y="1.7310524" style="stroke:#808080" fill="#D7DADE" />
+    <text id="text1" transform="matrix(0.75964259,0,0,0.68060922,-171.13364,-289.37757)" x="7.020822" y="0" fill="#000000" stroke-width="0.75" stroke-dasharray="none" style="font-size:20px;opacity:0.99;shape-inside:url(#rect2);text-align:center;white-space:pre">
+      <tspan id="tspan2" y="447.2134" />
+    </text>
+  </g>
+</svg>

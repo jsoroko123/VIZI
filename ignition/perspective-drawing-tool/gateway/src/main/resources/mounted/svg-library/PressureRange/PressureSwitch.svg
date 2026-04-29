@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 0.50782903 0.823352" preserveAspectRatio="xMinYMin" kewidth="61.678" keheight="100" eType="PressureSwitch" stroke="#808080" stroke-width="0.0124" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-16.124139,-14.724211)">
+    <path d="m 16.378053,14.744211 a 0.23398485,0.23383937 0 0 0 -0.233914,0.233914 0.23398485,0.23383937 0 0 0 0.233914,0.233915 0.23398485,0.23383937 0 0 0 0.233915,-0.233915 0.23398485,0.23383937 0 0 0 -0.233915,-0.233914 z" id="body" stroke-width="0.0124" stroke-dasharray="none" fill="#D7DADE" />
+    <path d="m 16.257063,14.856548 0.06349,0.10661 0.0431,-0.0431 z" id="path10" fill="#000000" stroke="#808080" stroke-width="0.0124" stroke-dasharray="none" />
+    <path d="m 16.340663,14.939181 0.159874,0.149882" id="path11" fill="#000000" stroke="#808080" stroke-width="0.0124" stroke-dasharray="none" />
+    <path d="m 16.379936,15.211827 v 0.335736" id="path12" fill="#000000" stroke="#808080" stroke-width="0.0124" stroke-dasharray="none" />
+  </g>
+</svg>

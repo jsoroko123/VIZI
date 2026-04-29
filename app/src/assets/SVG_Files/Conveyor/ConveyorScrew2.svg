@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 121.25 16.25" preserveAspectRatio="none" kewidth="100" keheight="13.402" eType="ConveyorScrew2" stroke="#808080" stroke-width="1.8188" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <g id="Layer_14">
+    <g id="Conveyor_2">
+      <rect height="15" width="120" x=".62" y=".62" id="body" fill="#D7DADE" stroke-width="1.8188" stroke-linejoin="round"  />
+      <polyline points="55.64 3.86 60.62 12.39 65.64 3.86 70.62 12.39 75.64 3.86 80.62 12.39 85.64 3.86 90.62 12.39 95.64 3.86 100.62 12.39 105.62 3.86 110.61 12.39 115.13 3.86" id="polyline" fill="transparent" stroke-width="1.8188" stroke-linejoin="round"  />
+    </g>
+  </g>
+</svg>

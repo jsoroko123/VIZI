@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 15.537754 10.090996" preserveAspectRatio="xMidYMid meet" kewidth="90.91" keheight="100" eType="CombiCleaner" stroke="#808080" stroke-width="0.1903" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-11.110398,-0.9212446)">
+    <path d="M 14.304783,2.5543621 V 4.8317005 L 26.531473,6.546905 25.946452,9.8251057 12.797898,8.1416812 11.210398,6.0819241 v -3.527562 z" id="Body" stroke-width="0.1903" stroke-dasharray="none" style="opacity:1" fill="#D7DADE" />
+    <path d="M 25.929286,7.5854931 11.366933,5.5200766" id="path1" fill="transparent" stroke="#808080" stroke-width="0.1903" stroke-dasharray="1.15574, 1.15574" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+    <path d="M 25.91701,8.6447754 11.685735,6.737335" id="path3" fill="transparent" stroke="#808080" stroke-width="0.1903" stroke-dasharray="1.14435, 1.14435" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+    <rect height="1.1891803" id="rect3" width="2.5001488" x="11.806044" y="1.3306049" fill="#D7DADE" stroke="#808080" stroke-width="0.1903" stroke-dasharray="none" style="opacity:1" />
+    <path d="m 11.221626,1.0212446 v 0.5958296 h 2.605914 v 9.2951668 h 0.596346 V 10.03581 h 8.883696 v 0.876431 h 0.595829 V 8.3656286 h -0.595829 v 1.074353 h -8.883696 v -8.418737 h -0.591695 z" id="Frame" fill="#D7DADE" stroke="#808080" stroke-width="0.1903" stroke-dasharray="none" style="opacity:1;fill:#D7DADE" />
+  </g>
+</svg>

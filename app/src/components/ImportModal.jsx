@@ -77,6 +77,9 @@ export default function ImportModal({
   const mutedColor = darkDrawer ? "rgba(200, 214, 236, 0.74)" : "var(--text-muted, rgba(226, 232, 240, 0.72))";
   const rowBg = darkDrawer ? "rgba(13, 22, 40, 0.95)" : softBg;
   const rowBorder = darkDrawer ? "rgba(124, 144, 180, 0.65)" : borderColor;
+  const stopInteractiveEvent = (event) => {
+    event?.stopPropagation?.();
+  };
 
   const closeBtnStyle = {
     border: `1px solid ${borderColor}`,
@@ -298,6 +301,8 @@ export default function ImportModal({
                 <button
                   type="button"
                   title="Refresh SVG library"
+                  onPointerDown={stopInteractiveEvent}
+                  onMouseDown={stopInteractiveEvent}
                   onClick={onRefresh}
                   disabled={refreshDisabled}
                   style={{
@@ -309,7 +314,13 @@ export default function ImportModal({
                   {refreshDisabled ? "Refreshing" : "Refresh"}
                 </button>
               ) : null}
-              <button title="Close" onClick={() => setImportOpen(false)} style={closeBtnStyle}>
+              <button
+                title="Close"
+                onPointerDown={stopInteractiveEvent}
+                onMouseDown={stopInteractiveEvent}
+                onClick={() => setImportOpen(false)}
+                style={closeBtnStyle}
+              >
                 X
               </button>
             </div>
@@ -348,7 +359,16 @@ export default function ImportModal({
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                onPointerDown={stopInteractiveEvent}
+                onMouseDown={stopInteractiveEvent}
+                onClick={stopInteractiveEvent}
+                onDoubleClick={stopInteractiveEvent}
+                onKeyDown={stopInteractiveEvent}
+                onKeyUp={stopInteractiveEvent}
+                onWheel={stopInteractiveEvent}
                 placeholder="Search..."
+                autoComplete="off"
+                spellCheck={false}
                 style={{
                   width: "100%",
                   border: `1px solid ${borderColor}`,
@@ -367,6 +387,8 @@ export default function ImportModal({
                 <button
                   type="button"
                   title="Clear"
+                  onPointerDown={stopInteractiveEvent}
+                  onMouseDown={stopInteractiveEvent}
                   onClick={() => setQuery("")}
                   style={{
                     position: "absolute",

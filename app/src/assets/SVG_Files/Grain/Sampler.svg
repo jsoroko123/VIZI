@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 37 36.4" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="98.378" eType="Sampler" stroke="#808080" stroke-width="0.555" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1" />
+  <rect height="4.4" id="body" width="15" x="11" y="1" fill="#D7DADE" stroke="#808080" stroke-width="0.555" stroke-linejoin="round" style="classes:Terra/EquipmentStyles/Motor/Stopped" />
+  <polygon id="Sampler_Container" points="36 15.4 26 35.4 11 35.4 1 15.4 1 5.4 36 5.4 36 15.4" fill="#D7DADE" stroke="#808080" stroke-width="0.555" stroke-linejoin="round" />
+  <line id="Bottom_Line" x1="6" x2="31" y1="35.4" y2="35.4" stroke="#808080" stroke-width="0.555" stroke-linecap="round" stroke-linejoin="round" />
+  <rect height="15" id="Door_Panel" width="15" x="11" y="10.4" fill="#D7DADE" stroke="#808080" stroke-width="0.555" stroke-linejoin="round" />
+  <line id="Door_Handle" x1="16" x2="16" y1="15.4" y2="20.4" stroke="#808080" stroke-width="0.555" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

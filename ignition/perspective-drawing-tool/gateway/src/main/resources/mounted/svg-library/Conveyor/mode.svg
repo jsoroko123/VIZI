@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 16.029726 15.055315" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="93.921" eType="mode" stroke="#808080" stroke-width="0.2404" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="swatch14">
+      <stop id="stop14" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="swatch7">
+      <stop id="stop8" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+    <rect height="24.575689" id="body" width="22.677164" x="230.55119" y="428.96762" fill="#D7DADE" />
+  </defs>
+  <g id="layer1" transform="translate(-108.91102,-32.191623)">
+    <rect height="13.793503" id="innerH" width="14.767916" x="109.54192" y="32.822529" stroke="#808080" stroke-width="0.2404" stroke-dasharray="none" stroke-opacity="1" style="opacity:0.99" fill="#D7DADE" />
+    <text id="text1" transform="matrix(0.75964259,0,0,0.68060922,-66.823805,-259.65829)" x="7.020822" y="0" fill="#000000" stroke-width="0.2404" stroke-dasharray="none" style="font-size:20px;opacity:0.99;shape-inside:url(#rect2);text-align:center;white-space:pre">
+      <tspan id="tspan1" y="447.2134" />
+    </text>
+  </g>
+</svg>

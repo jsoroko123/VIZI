@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.84645671in"
+  height="0.51213902in"
+  viewBox="0 0 21.500002 13.008331"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="100"
+  keheight="60.504"
+  eType="Sifter4Bay_Simple"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="sifter4BodyFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <path id="body" d="M0.30 0.30H21.20V10.90L19.90 12.70H1.60L0.30 10.90Z" fill="url(#sifter4BodyFill)" stroke-width="0.24" />
+    <path id="path1" d="M0.95 3.85H20.55" fill="none" stroke="#808080" stroke-width="0.18" />
+    <path id="path2" d="M0.95 7.00H20.55" fill="none" stroke="#808080" stroke-width="0.18" />
+    <path id="path3" d="M3.20 2.20V10.30M8.30 2.20V10.30M13.40 2.20V10.30M18.50 2.20V10.30" fill="none" stroke="#808080" stroke-width="0.14" />
+  </g>
+</svg>

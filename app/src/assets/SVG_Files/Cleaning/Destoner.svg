@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10.615157 10.882535" preserveAspectRatio="xMidYMid meet" kewidth="97.543" keheight="100" eType="Destoner" stroke="#808080" stroke-width="0.1632" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-10.732279,-1.0723294)">
+    <rect height="5.686307" id="rect7" width="0.59699535" x="11.697767" y="6.1685572" fill="#D7DADE" stroke="#808080" stroke-width="0.1632" stroke-dasharray="none" style="opacity:1" />
+    <path d="m 17.47978,2.5543621 3.760023,2.4050429 -0.585021,4.336534 -4.0751,0.011227 -0.02534,-2.0073568 -5.713241,-1.2178851 0.369293,-3.527562 z" id="Body" stroke-width="0.1632" stroke-dasharray="none" style="opacity:1" fill="#D7DADE" />
+    <path d="M 21.115681,5.8082788 11.074637,3.8013749" id="path1" fill="transparent" stroke="#808080" stroke-width="0.1632" stroke-dasharray="1.15203, 1.15203" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+    <rect height="0.94047475" id="rect3" width="1.2157172" x="11.806044" y="1.6019201" fill="#D7DADE" stroke="#808080" stroke-width="0.1632" stroke-dasharray="none" style="opacity:1" />
+    <path d="M 19.012986,9.2180128 18.999732,6.5812159 11.074637,5.0405851" id="path7" fill="transparent" stroke="#808080" stroke-width="0.1632" stroke-dasharray="1.15203, 1.15203" stroke-linecap="round" stroke-linejoin="miter" stroke-miterlimit="4" stroke-opacity="1" style="marker-start:none" />
+    <path d="m 11.320062,1.1723294 v 0.5978972 h 1.563871 v 8.8486744 h -0.586724 v 0.597897 h 5.210224 v 0.636944 H 18.10533 V 9.3058011 h -0.597897 v 1.3130999 h -4.02612 V 1.7702266 h 0.587561 V 1.1723294 Z" id="rect9" fill="#D7DADE" stroke="#808080" stroke-width="0.1632" stroke-dasharray="none" style="opacity:1" />
+  </g>
+</svg>

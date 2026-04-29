@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 35.739334 25.004145" preserveAspectRatio="xMinYMin" kewidth="100" keheight="69.963" eType="AutoMan_TwoWay" stroke="#808080" stroke-width="0.5361" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <rect height="24.575689" id="body" width="22.677164" x="230.55119" y="428.96762" fill="#D7DADE" />
+  </defs>
+  <g id="layer1" transform="translate(0.00414169,0.00414169)">
+    <rect height="23.929724" id="outerH" width="24.929726" x="0.5330683" y="0.5330683" fill="#D7DADE" stroke="#808080" stroke-width="0.5361" stroke-dasharray="none" stroke-opacity="1" />
+    <rect height="13.793503" id="innerH" width="14.767916" x="5.6011782" y="5.6011786" stroke="#808080" stroke-width="0.5361" stroke-dasharray="none" stroke-opacity="1" fill="#D7DADE" />
+    <text id="text1" transform="matrix(0.81597117,0,0,0.68770985,-184.38984,-290.05513)" x="7.020822" y="0" fill="#000000" style="font-family:sans-serif;font-size:18px;opacity:0.99;shape-inside:url(#rect2);text-align:middle;white-space:pre">
+      <tspan id="tspan1" y="447.2134" />
+    </text>
+  </g>
+</svg>

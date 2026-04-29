@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.375in"
+  height="0.62535244in"
+  viewBox="0 0 9.5250007 15.883952"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="59.966"
+  keheight="100"
+  eType="Sortex_2Channel"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="sortexBodyFill2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="sortexCellFill2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <path id="rect12" d="M0.30 0.20H9.22V5.70L8.55 6.35H0.98L0.30 5.70Z" fill="url(#sortexBodyFill2)" stroke-width="0.20" />
+    <path id="path20" d="M3.35 2.80H6.15V3.45H3.35Z" fill="#D7DADE" stroke-width="0.13" />
+
+    <path id="Channel1" d="M0.55 7.35H4.35L4.00 9.70V13.55H0.90V9.70Z" fill="url(#sortexCellFill2)" stroke-width="0.18" />
+    <path id="rect6" d="M1.10 8.10H3.80V8.95H1.10Z" fill="#D7DADE" stroke-width="0.12" />
+    <path id="path16" d="M1.00 6.60H3.90V7.20H1.00Z" fill="#D7DADE" stroke-width="0.12" />
+    <path id="Channel1Outlet" d="M0.45 13.55H4.45V15.00L3.95 15.45L3.35 15.10L2.70 15.45L2.05 15.10L1.40 15.45L0.95 15.00Z" fill="url(#sortexCellFill2)" stroke-width="0.18" />
+
+    <path id="Channel2" d="M5.15 7.35H8.95L8.60 9.70V13.55H5.50V9.70Z" fill="url(#sortexCellFill2)" stroke-width="0.18" />
+    <path id="path9" d="M5.70 8.10H8.40V8.95H5.70Z" fill="#D7DADE" stroke-width="0.12" />
+    <path id="path21" d="M5.60 6.60H8.50V7.20H5.60Z" fill="#D7DADE" stroke-width="0.12" />
+    <path id="Channel2Outlet" d="M5.05 13.55H9.05V15.00L8.55 15.45L7.95 15.10L7.30 15.45L6.65 15.10L6.00 15.45L5.55 15.00Z" fill="url(#sortexCellFill2)" stroke-width="0.18" />
+
+    <path id="path1" d="M0.90 5.25H8.60" fill="none" stroke="#808080" stroke-width="0.14" />
+  </g>
+</svg>

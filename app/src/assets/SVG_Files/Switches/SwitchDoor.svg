@@ -1,0 +1,4 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 24 24" width="20" height="20" kewidth="100" keheight="100" eType="DIC" stroke="#808080" stroke-width="0.36" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <path fill="#D7DADE" d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM18 20H6V4h12v16zM13 13h2v-2h-2v2z" id="body" />
+</svg>

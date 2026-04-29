@@ -1,0 +1,55 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="5.4255261mm"
+  height="12.330794mm"
+  viewBox="0 0 5.4255261 12.330794"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="44"
+  keheight="100"
+  eType="CycloneAirlock"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="cycAirShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="cycAirConeFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="1.72" y="0.12" width="2.00" height="0.52" rx="0.08" fill="#D7DADE" stroke-width="0.12" />
+
+    <path
+      id="cyclone"
+      d="M1.12 0.66H4.30V2.98L3.74 3.58V6.06L2.72 9.72H2.52L1.58 6.06V3.58L1.12 2.98Z"
+      fill="url(#cycAirShellFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M0.18 1.26H1.12V2.24H0.18Z" fill="#D7DADE" stroke-width="0.12" />
+    <path d="M1.30 1.66H3.98" fill="none" stroke="#808080" stroke-width="0.08" />
+    <path d="M1.58 3.58H3.74L3.14 6.06H2.10Z" fill="url(#cycAirConeFill)" stroke-width="0.10" />
+
+    <circle
+      id="Body"
+      cx="2.62"
+      cy="10.52"
+      r="1.02"
+      fill="#D7DADE"
+      stroke-width="0.14"
+    />
+
+    <g id="InsideLines" fill="none" stroke="#808080" stroke-width="0.12">
+      <path d="M2.62 9.84V11.20" />
+      <path d="M1.94 10.52H3.30" />
+      <path d="M2.12 10.02L3.12 11.02" />
+      <path d="M3.12 10.02L2.12 11.02" />
+    </g>
+
+    <circle id="Axis" cx="2.62" cy="10.52" r="0.20" fill="#D7DADE" stroke-width="0.10" />
+  </g>
+</svg>

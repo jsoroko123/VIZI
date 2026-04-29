@@ -19,6 +19,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import com.inductiveautomation.ignition.common.gson.Gson;
 import com.inductiveautomation.ignition.common.gson.GsonBuilder;
@@ -30,12 +32,27 @@ final class SvgLibraryGatewayService {
     private static final Gson gson = new GsonBuilder().create();
     private static final String BUILTIN_MANIFEST_RESOURCE = "mounted/svg-library/manifest.json";
     private static final String README_FILE_NAME = "README.txt";
+    private static final String DEFAULT_SVG_FILL = "#D7DADE";
+    private static final String DEFAULT_SVG_STROKE = "#808080";
+    private static final String DEFAULT_SVG_GRADIENT_START = "#e7e9ec";
+    private static final String DEFAULT_SVG_GRADIENT_END = "#b8bdc4";
+    private static final double DEFAULT_SVG_WORLD_STROKE_WIDTH = 1.5d;
+    private static final Pattern SVG_TAG_PATTERN = Pattern.compile("<svg\\b[^>]*>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern STOP_TAG_PATTERN = Pattern.compile("<stop\\b[^>]*>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern STYLE_ATTR_PATTERN = Pattern.compile("\\bstyle\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern STOP_COLOR_ATTR_PATTERN = Pattern.compile("\\bstop-color\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern STROKE_ATTR_PATTERN = Pattern.compile("\\bstroke\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern FILL_ATTR_PATTERN = Pattern.compile("\\bfill\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern STROKE_WIDTH_ATTR_PATTERN = Pattern.compile("\\bstroke-width\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern SHAPE_TAG_PATTERN = Pattern.compile("<(path|rect|circle|ellipse|polygon|polyline|line)\\b([^>]*?)(/?)>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern NUMBER_PATTERN = Pattern.compile("[-+]?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?");
     private static final String README_TEXT = String.join(
         System.lineSeparator(),
         "Mesora Drawing Tool External SVG Library",
         "",
         "Drop additional .svg files into this folder or any subfolder.",
         "Then reopen or refresh the SVG Library drawer in Perspective.",
+        "Refresh normalizes external SVGs to the module baseline style: fill #D7DADE, stroke #808080, and matched stroke width.",
         "No module rebuild is required after this feature is installed.",
         "",
         "Files in this folder appear under the 'External' group in the SVG Library."
@@ -82,7 +99,7 @@ final class SvgLibraryGatewayService {
         if (resolvedPath == null || !Files.isRegularFile(resolvedPath)) {
             return null;
         }
-        return Files.readString(resolvedPath, StandardCharsets.UTF_8);
+        return normalizeExternalSvgFile(resolvedPath, normalizeRelativePath(rawRelativePath));
     }
 
     private Path resolveExternalLibraryDirectory(GatewayContext gatewayContext) {
@@ -186,6 +203,16 @@ final class SvgLibraryGatewayService {
                         return;
                     }
 
+                    try {
+                        normalizeExternalSvgFile(path, relativePath);
+                    } catch (IOException e) {
+                        logger.warnf(
+                            "Failed to normalize external SVG '%s': %s",
+                            path,
+                            String.valueOf(e.getMessage())
+                        );
+                    }
+
                     String key = "./assets/SVG_Files/External/" + relativePath;
                     String name = trimToEmpty(path.getFileName() == null ? "" : path.getFileName().toString());
                     byKey.put(
@@ -275,6 +302,376 @@ final class SvgLibraryGatewayService {
         }
     }
 
+    private String normalizeExternalSvgFile(Path path, String relativePath) throws IOException {
+        String rawSvg = Files.readString(path, StandardCharsets.UTF_8);
+        String normalized = normalizeExternalSvgMarkup(rawSvg, relativePath);
+        if (!normalized.equals(rawSvg)) {
+            Files.writeString(path, normalized, StandardCharsets.UTF_8);
+        }
+        return normalized;
+    }
+
+    private String normalizeExternalSvgMarkup(String rawSvg, String relativePath) {
+        String original = rawSvg == null ? "" : rawSvg;
+        Matcher svgMatcher = SVG_TAG_PATTERN.matcher(original);
+        if (!svgMatcher.find()) {
+            return original;
+        }
+
+        SvgDimensions dimensions = resolveSvgDimensions(svgMatcher.group());
+        String localStrokeWidth = formatSvgNumber(
+            DEFAULT_SVG_WORLD_STROKE_WIDTH / Math.max(0.0001d, dimensions.scale())
+        );
+
+        String normalized = removeVectorEffect(original);
+        normalized = replaceStrokeAttributes(normalized);
+        normalized = replaceDefaultFillAttributes(normalized);
+        normalized = replaceStrokeWidthAttributes(normalized, localStrokeWidth);
+        normalized = normalizeStyleAttributes(normalized, localStrokeWidth);
+        normalized = ensureShapeStrokeWidths(normalized, localStrokeWidth);
+
+        Matcher refreshedSvgMatcher = SVG_TAG_PATTERN.matcher(normalized);
+        if (refreshedSvgMatcher.find()) {
+            String rootTag = refreshedSvgMatcher.group();
+            String eType = trimToEmpty(readAttribute(rootTag, "eType"));
+            if (eType.isBlank()) {
+                eType = inferExternalEType(relativePath);
+            }
+
+            String updatedRootTag = rootTag;
+            updatedRootTag = upsertAttribute(updatedRootTag, "kewidth", formatSvgNumber(dimensions.keyWidth()));
+            updatedRootTag = upsertAttribute(updatedRootTag, "keheight", formatSvgNumber(dimensions.keyHeight()));
+            updatedRootTag = upsertAttribute(updatedRootTag, "eType", eType);
+            updatedRootTag = upsertAttribute(updatedRootTag, "fill", DEFAULT_SVG_FILL);
+            updatedRootTag = upsertAttribute(updatedRootTag, "stroke", DEFAULT_SVG_STROKE);
+            updatedRootTag = upsertAttribute(updatedRootTag, "stroke-width", localStrokeWidth);
+            updatedRootTag = upsertAttribute(updatedRootTag, "stroke-linejoin", "round");
+            updatedRootTag = upsertAttribute(updatedRootTag, "stroke-linecap", "round");
+
+            normalized =
+                normalized.substring(0, refreshedSvgMatcher.start()) +
+                updatedRootTag +
+                normalized.substring(refreshedSvgMatcher.end());
+        }
+
+        return normalized;
+    }
+
+    private String replaceStrokeAttributes(String text) {
+        return STROKE_ATTR_PATTERN.matcher(text).replaceAll((match) -> {
+            String value = trimToEmpty(match.group(2));
+            if (shouldPreservePaint(value)) {
+                return match.group();
+            }
+            String quote = match.group(1);
+            return "stroke=" + quote + DEFAULT_SVG_STROKE + quote;
+        });
+    }
+
+    private String replaceDefaultFillAttributes(String text) {
+        return FILL_ATTR_PATTERN.matcher(text).replaceAll((match) -> {
+            String value = trimToEmpty(match.group(2));
+            if (!shouldNormalizeFill(value)) {
+                return match.group();
+            }
+            String quote = match.group(1);
+            return "fill=" + quote + DEFAULT_SVG_FILL + quote;
+        });
+    }
+
+    private String replaceStrokeWidthAttributes(String text, String localStrokeWidth) {
+        return STROKE_WIDTH_ATTR_PATTERN.matcher(text).replaceAll((match) -> {
+            double value = firstNumber(match.group(2));
+            if (isFinite(value) && value <= 0d) {
+                return match.group();
+            }
+            String quote = match.group(1);
+            return "stroke-width=" + quote + localStrokeWidth + quote;
+        });
+    }
+
+    private String normalizeStyleAttributes(String text, String localStrokeWidth) {
+        return STYLE_ATTR_PATTERN.matcher(text).replaceAll((match) -> {
+            String quote = match.group(1);
+            String[] declarations = String.valueOf(match.group(2)).split(";");
+            List<String> nextDeclarations = new ArrayList<>();
+            for (String declaration : declarations) {
+                String trimmed = trimToEmpty(declaration);
+                if (trimmed.isBlank()) {
+                    continue;
+                }
+                int colonIndex = trimmed.indexOf(':');
+                if (colonIndex <= 0) {
+                    nextDeclarations.add(trimmed);
+                    continue;
+                }
+                String property = trimToEmpty(trimmed.substring(0, colonIndex));
+                String value = trimToEmpty(trimmed.substring(colonIndex + 1));
+                String propertyKey = property.toLowerCase(Locale.ROOT);
+                if ("vector-effect".equals(propertyKey)) {
+                    continue;
+                }
+                if ("stroke".equals(propertyKey) && !shouldPreservePaint(value)) {
+                    value = DEFAULT_SVG_STROKE;
+                } else if ("fill".equals(propertyKey) && shouldNormalizeFill(value)) {
+                    value = DEFAULT_SVG_FILL;
+                } else if ("stroke-width".equals(propertyKey)) {
+                    double width = firstNumber(value);
+                    if (!isFinite(width) || width > 0d) {
+                        value = localStrokeWidth;
+                    }
+                }
+                nextDeclarations.add(property + ":" + value);
+            }
+            if (nextDeclarations.isEmpty()) {
+                return "";
+            }
+            return "style=" + quote + String.join(";", nextDeclarations) + quote;
+        });
+    }
+
+    private String ensureShapeStrokeWidths(String text, String localStrokeWidth) {
+        return SHAPE_TAG_PATTERN.matcher(text).replaceAll((match) -> {
+            String attrs = String.valueOf(match.group(2));
+            if (
+                hasAttribute(attrs, "stroke-width") ||
+                hasStyleProperty(attrs, "stroke-width") ||
+                shapeStrokeIsDisabled(attrs)
+            ) {
+                return match.group();
+            }
+            return "<" + match.group(1) + attrs + " stroke-width=\"" + localStrokeWidth + "\"" + match.group(3) + ">";
+        });
+    }
+
+    private String removeVectorEffect(String text) {
+        String next = String.valueOf(text);
+        next = next.replaceAll("\\s+vector-effect\\s*=\\s*([\"']).*?\\1", "");
+        return next;
+    }
+
+    private SvgDimensions resolveSvgDimensions(String svgTag) {
+        List<Double> viewBoxNumbers = readNumbers(readAttribute(svgTag, "viewBox"), 4);
+        double viewBoxWidth = viewBoxNumbers.size() >= 4 ? viewBoxNumbers.get(2) : Double.NaN;
+        double viewBoxHeight = viewBoxNumbers.size() >= 4 ? viewBoxNumbers.get(3) : Double.NaN;
+
+        double width = firstNumber(readAttribute(svgTag, "width"));
+        double height = firstNumber(readAttribute(svgTag, "height"));
+        if (!isFinite(viewBoxWidth) || viewBoxWidth <= 0d) {
+            viewBoxWidth = isFinite(width) && width > 0d ? width : 100d;
+        }
+        if (!isFinite(viewBoxHeight) || viewBoxHeight <= 0d) {
+            viewBoxHeight = isFinite(height) && height > 0d ? height : viewBoxWidth;
+        }
+
+        double keyWidth = firstNumber(readAttribute(svgTag, "kewidth"));
+        double keyHeight = firstNumber(readAttribute(svgTag, "keheight"));
+        if (!isFinite(keyWidth) || keyWidth <= 0d) {
+            keyWidth = 100d;
+        }
+        if (!isFinite(keyHeight) || keyHeight <= 0d) {
+            keyHeight = viewBoxWidth > 0d ? keyWidth * (viewBoxHeight / viewBoxWidth) : keyWidth;
+        }
+
+        double scaleX = viewBoxWidth > 0d ? keyWidth / viewBoxWidth : 1d;
+        double scaleY = viewBoxHeight > 0d ? keyHeight / viewBoxHeight : scaleX;
+        double scale = (Math.abs(scaleX) + Math.abs(scaleY)) / 2d;
+        if (!isFinite(scale) || scale <= 0d) {
+            scale = 1d;
+        }
+
+        return new SvgDimensions(viewBoxWidth, viewBoxHeight, keyWidth, keyHeight, scale);
+    }
+
+    private String inferExternalEType(String relativePath) {
+        String path = normalizeRelativePath(relativePath).toLowerCase(Locale.ROOT);
+        if (path.startsWith("switches/") || path.contains("/switches/") || path.startsWith("dic/") || path.contains("/dic/")) {
+            return "DIC";
+        }
+        if (path.startsWith("bins/") || path.contains("/bins/") || path.contains("bin")) {
+            return "Bin";
+        }
+        if (path.contains("diverter") || path.contains("distributor") || path.contains("twoway") || path.contains("two_way")) {
+            return "TwoWay_DiscreteV2";
+        }
+
+        String name = fallbackNameFromKey(path).replaceFirst("(?i)\\.svg$", "");
+        String cleaned = name.replaceAll("[^A-Za-z0-9_]+", "_").replaceAll("_+", "_");
+        cleaned = cleaned.replaceAll("^_+|_+$", "");
+        return cleaned.isBlank() ? "DIC" : cleaned;
+    }
+
+    private boolean shouldNormalizeFill(String value) {
+        String text = trimToEmpty(value);
+        if (text.isBlank() || shouldPreservePaint(text)) {
+            return false;
+        }
+        String lower = text.replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+        if ("currentcolor".equals(lower) || "inherit".equals(lower)) {
+            return false;
+        }
+        if (
+            "#d7dade".equals(lower) ||
+            "white".equals(lower) ||
+            "gray".equals(lower) ||
+            "grey".equals(lower) ||
+            "silver".equals(lower) ||
+            "lightgray".equals(lower) ||
+            "lightgrey".equals(lower)
+        ) {
+            return true;
+        }
+        if (lower.matches("#[0-9a-f]{3}")) {
+            int r = Integer.parseInt(lower.substring(1, 2) + lower.substring(1, 2), 16);
+            int g = Integer.parseInt(lower.substring(2, 3) + lower.substring(2, 3), 16);
+            int b = Integer.parseInt(lower.substring(3, 4) + lower.substring(3, 4), 16);
+            return isLightNeutral(r, g, b);
+        }
+        if (lower.matches("#[0-9a-f]{6}")) {
+            int r = Integer.parseInt(lower.substring(1, 3), 16);
+            int g = Integer.parseInt(lower.substring(3, 5), 16);
+            int b = Integer.parseInt(lower.substring(5, 7), 16);
+            return isLightNeutral(r, g, b);
+        }
+        if (lower.startsWith("rgb(") || lower.startsWith("rgba(")) {
+            List<Double> numbers = readNumbers(lower, 4);
+            if (numbers.size() >= 3) {
+                int r = (int) Math.round(numbers.get(0));
+                int g = (int) Math.round(numbers.get(1));
+                int b = (int) Math.round(numbers.get(2));
+                return isLightNeutral(r, g, b);
+            }
+        }
+        return false;
+    }
+
+    private boolean isLightNeutral(int r, int g, int b) {
+        int max = Math.max(r, Math.max(g, b));
+        int min = Math.min(r, Math.min(g, b));
+        return max >= 120 && max - min <= 12;
+    }
+
+    private boolean shouldPreservePaint(String value) {
+        String lower = trimToEmpty(value).replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+        return lower.equals("none") ||
+            lower.equals("transparent") ||
+            lower.startsWith("url(") ||
+            (lower.startsWith("rgba(") && lower.endsWith(",0)")) ||
+            (lower.startsWith("hsla(") && lower.endsWith(",0)"));
+    }
+
+    private String readAttribute(String text, String name) {
+        if (trimToEmpty(text).isBlank() || trimToEmpty(name).isBlank()) {
+            return "";
+        }
+        Pattern pattern = Pattern.compile("\\b" + Pattern.quote(name) + "\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher matcher = pattern.matcher(text);
+        return matcher.find() ? trimToEmpty(matcher.group(2)) : "";
+    }
+
+    private boolean hasAttribute(String text, String name) {
+        if (trimToEmpty(text).isBlank() || trimToEmpty(name).isBlank()) {
+            return false;
+        }
+        Pattern pattern = Pattern.compile("\\b" + Pattern.quote(name) + "\\s*=", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        return pattern.matcher(text).find();
+    }
+
+    private boolean hasStyleProperty(String attrs, String propertyName) {
+        Matcher matcher = STYLE_ATTR_PATTERN.matcher(String.valueOf(attrs));
+        if (!matcher.find()) {
+            return false;
+        }
+        String target = trimToEmpty(propertyName).toLowerCase(Locale.ROOT);
+        for (String declaration : String.valueOf(matcher.group(2)).split(";")) {
+            int colonIndex = declaration.indexOf(':');
+            if (colonIndex <= 0) {
+                continue;
+            }
+            String property = trimToEmpty(declaration.substring(0, colonIndex)).toLowerCase(Locale.ROOT);
+            if (target.equals(property)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean shapeStrokeIsDisabled(String attrs) {
+        String stroke = readAttribute(attrs, "stroke");
+        if (shouldPreservePaint(stroke)) {
+            return true;
+        }
+        Matcher matcher = STYLE_ATTR_PATTERN.matcher(String.valueOf(attrs));
+        if (!matcher.find()) {
+            return false;
+        }
+        for (String declaration : String.valueOf(matcher.group(2)).split(";")) {
+            int colonIndex = declaration.indexOf(':');
+            if (colonIndex <= 0) {
+                continue;
+            }
+            String property = trimToEmpty(declaration.substring(0, colonIndex)).toLowerCase(Locale.ROOT);
+            if (!"stroke".equals(property)) {
+                continue;
+            }
+            return shouldPreservePaint(declaration.substring(colonIndex + 1));
+        }
+        return false;
+    }
+
+    private String upsertAttribute(String tag, String name, String value) {
+        String attr = name + "=\"" + value + "\"";
+        Pattern pattern = Pattern.compile("\\b" + Pattern.quote(name) + "\\s*=\\s*([\"']).*?\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher matcher = pattern.matcher(tag);
+        if (matcher.find()) {
+            return matcher.replaceFirst(Matcher.quoteReplacement(attr));
+        }
+        int insertIndex = tag.lastIndexOf('>');
+        if (insertIndex < 0) {
+            return tag;
+        }
+        if (insertIndex > 0 && tag.charAt(insertIndex - 1) == '/') {
+            insertIndex -= 1;
+        }
+        return tag.substring(0, insertIndex) + " " + attr + tag.substring(insertIndex);
+    }
+
+    private List<Double> readNumbers(String value, int limit) {
+        List<Double> numbers = new ArrayList<>();
+        Matcher matcher = NUMBER_PATTERN.matcher(trimToEmpty(value));
+        while (matcher.find() && numbers.size() < limit) {
+            try {
+                numbers.add(Double.parseDouble(matcher.group()));
+            } catch (NumberFormatException _ignored) {
+                // Skip malformed numeric fragments.
+            }
+        }
+        return numbers;
+    }
+
+    private double firstNumber(String value) {
+        List<Double> numbers = readNumbers(value, 1);
+        return numbers.isEmpty() ? Double.NaN : numbers.get(0);
+    }
+
+    private boolean isFinite(double value) {
+        return !Double.isNaN(value) && !Double.isInfinite(value);
+    }
+
+    private String formatSvgNumber(double value) {
+        if (!isFinite(value)) {
+            return "0";
+        }
+        String text = String.format(Locale.ROOT, "%.4f", value);
+        while (text.contains(".") && text.endsWith("0")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        if (text.endsWith(".")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return "-0".equals(text) ? "0" : text;
+    }
+
     private String fallbackNameFromKey(String key) {
         String text = trimToEmpty(key).replace('\\', '/');
         int slashIndex = text.lastIndexOf('/');
@@ -299,6 +696,15 @@ final class SvgLibraryGatewayService {
         int builtInCount,
         int externalCount,
         String error
+    ) {
+    }
+
+    private record SvgDimensions(
+        double viewBoxWidth,
+        double viewBoxHeight,
+        double keyWidth,
+        double keyHeight,
+        double scale
     ) {
     }
 

@@ -46,7 +46,7 @@ const SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES = [
     `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`
 ];
 const SVG_RAW_CACHE_MAX = 80;
-const DEFAULT_FILL = "#CCCCCC";
+const DEFAULT_FILL = "#D7DADE";
 const DEFAULT_STROKE = "#808080";
 const NORMALIZED_SVG_STROKE_WIDTH = 1.5;
 const DEFAULT_IGNITION_FILL_MAP = Object.freeze([
@@ -69,7 +69,7 @@ const PROPERTY_PANEL_HEIGHT = 520;
 const PROPERTY_PANEL_MIN_HEIGHT = 240;
 const QUICK_TAG_PANEL_WIDTH = 360;
 const QUICK_TAG_PANEL_HEIGHT = 124;
-const TOOLBAR_WIDTH = 220;
+const TOOLBAR_WIDTH = 300;
 const COLLAPSED_TOOLBAR_WIDTH = 116;
 const TOOLBAR_INSET = 16;
 const TOOLBAR_DRAWER_GAP = -6;
@@ -149,6 +149,131 @@ function coerceArray(value) {
     return Array.isArray(value) ? value : [];
 }
 
+function cleanTagTypeDisplayName(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+    const withoutProvider = raw.replace(/^\[[^\]]+\]/, "").trim();
+    const parts = withoutProvider.split(/[\\/]/).map((part) => part.trim()).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : withoutProvider;
+}
+
+const NON_UDT_TYPE_IDS = new Set([
+    "atomic",
+    "client",
+    "derived",
+    "document",
+    "expression",
+    "folder",
+    "memory",
+    "opc",
+    "query",
+    "reference",
+    "system"
+]);
+
+function isUdtTypeCandidate(typeId, objectType) {
+    const cleaned = cleanTagTypeDisplayName(typeId);
+    if (!cleaned) {
+        return false;
+    }
+    const objectText = String(objectType || "").trim().toLowerCase();
+    if (objectText.includes("udt")) {
+        return true;
+    }
+    return !NON_UDT_TYPE_IDS.has(cleaned.toLowerCase());
+}
+
+function getTagTypeDisplayName(entry) {
+    const explicit = cleanTagTypeDisplayName(entry?.udtName || entry?.udtType || entry?.templateName || "");
+    if (explicit) {
+        return explicit;
+    }
+    const typeId = cleanTagTypeDisplayName(entry?.typeId || "");
+    if (isUdtTypeCandidate(typeId, entry?.objectType)) {
+        return typeId;
+    }
+    return cleanTagTypeDisplayName(
+        entry?.dataType
+        || entry?.plcType
+        || entry?.uaType
+        || typeId
+        || ""
+    );
+}
+
+function normalizeTagTypeMatchToken(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/^\[[^\]]+\]/, "")
+        .replace(/\.(svg|json)$/i, "")
+        .replace(/[^a-z0-9]+/g, "");
+}
+
+function collectTagTypeMatchTokens(...values) {
+    const tokens = new Set();
+    values.forEach((value) => {
+        const raw = String(value || "").trim();
+        if (!raw) {
+            return;
+        }
+
+        const whole = normalizeTagTypeMatchToken(raw);
+        if (whole) {
+            tokens.add(whole);
+        }
+
+        raw
+            .replace(/^\[[^\]]+\]/, "")
+            .split(/[\s._:/\\|()[\]{}<>-]+/)
+            .map(normalizeTagTypeMatchToken)
+            .filter(Boolean)
+            .forEach((token) => {
+                tokens.add(token);
+                if (token.startsWith("udt") && token.length > 3) {
+                    tokens.add(token.slice(3));
+                }
+            });
+    });
+    return tokens;
+}
+
+function tagMatchesTypeFilter(entry, typeFilter) {
+    const filterToken = normalizeTagTypeMatchToken(typeFilter);
+    if (!filterToken) {
+        return true;
+    }
+
+    const typeTokens = collectTagTypeMatchTokens(
+        entry?.udtName,
+        entry?.udtType,
+        entry?.templateName,
+        entry?.typeId,
+        entry?.dataType,
+        entry?.plcType,
+        entry?.uaType
+    );
+    if (!typeTokens.size) {
+        return false;
+    }
+    if (typeTokens.has(filterToken)) {
+        return true;
+    }
+
+    for (const token of typeTokens) {
+        if (filterToken.length >= 3 && token.endsWith(filterToken)) {
+            return true;
+        }
+        if (token.length >= 3 && filterToken.endsWith(token)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function normalizeIgnitionTagEntries(payload) {
     const rawEntries = coerceArray(payload?.tags ?? payload);
     const seen = new Set();
@@ -168,13 +293,18 @@ function normalizeIgnitionTagEntries(payload) {
 
         const provider = String(entry?.provider || "").trim()
             || ((path.match(/^\[([^\]]+)\]/)?.[1] || "").trim());
+        const dataType = String(entry?.dataType || entry?.plcType || entry?.uaType || "").trim();
+        const typeId = String(entry?.typeId || "").trim();
+        const typeName = getTagTypeDisplayName({ ...entry, typeId, dataType });
 
         out.push({
             path,
             provider: provider || "Tags",
             name: String(entry?.name || "").trim() || path,
             objectType: String(entry?.objectType || "").trim(),
-            typeId: String(entry?.typeId || "").trim(),
+            typeId,
+            dataType,
+            udtName: typeName,
             hasChildren: Boolean(entry?.hasChildren)
         });
     });
@@ -227,17 +357,35 @@ function normalizeIgnitionFillBindingMappings(value) {
     return normalized.length ? normalized : cloneDefaultIgnitionFillMappings();
 }
 
+function formatSvgAttributeNumber(value) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return "0";
+    return Number(numberValue.toFixed(4)).toString();
+}
+
+function stripSvgVectorEffect(inner) {
+    let next = String(inner || "");
+    next = next.replace(/\svector-effect\s*=\s*['"][^'"]*['"]/gi, "");
+    next = next.replace(/\bstyle\s*=\s*(["'])([^"']*)\1/gi, (_match, quote, styleBody) => {
+        const cleaned = String(styleBody || "")
+            .split(";")
+            .map((part) => part.trim())
+            .filter((part) => part && !/^vector-effect\s*:/i.test(part))
+            .join(";");
+        return cleaned ? `style=${quote}${cleaned}${quote}` : "";
+    });
+    return next;
+}
+
 function updateSvgInnerStrokeWidth(inner, strokeWidth) {
     if (!inner) return inner;
     const sw = Number.parseFloat(strokeWidth);
     if (!Number.isFinite(sw) || sw <= 0) return inner;
-    const value = String(sw);
+    const value = formatSvgAttributeNumber(sw);
 
-    let next = String(inner);
+    let next = stripSvgVectorEffect(inner);
     next = next.replace(/stroke-width\s*=\s*['"][^'"]*['"]/gi, `stroke-width="${value}"`);
     next = next.replace(/stroke-width\s*:\s*[^;\"']+/gi, `stroke-width:${value}`);
-    next = next.replace(/vector-effect\s*=\s*['"][^'"]*['"]/gi, 'vector-effect="non-scaling-stroke"');
-    next = next.replace(/vector-effect\s*:\s*[^;\"']+/gi, "vector-effect:non-scaling-stroke");
 
     next = next.replace(
         /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*?)(\/?)>/gi,
@@ -250,9 +398,8 @@ function updateSvgInnerStrokeWidth(inner, strokeWidth) {
             if (!/stroke-width\s*=|stroke-width\s*:/i.test(nextAttrs)) {
                 nextAttrs += ` stroke-width="${value}"`;
             }
-
             if (!/vector-effect\s*=|vector-effect\s*:/i.test(nextAttrs)) {
-                nextAttrs += ' vector-effect="non-scaling-stroke"';
+                nextAttrs += ` vector-effect="non-scaling-stroke"`;
             }
 
             return `<${tag}${nextAttrs}${selfClose}>`;
@@ -460,6 +607,37 @@ function normalizeIgnitionTagValues(payload) {
     return out;
 }
 
+function chunkIgnitionTagValuePaths(paths, maxEncodedChars = 6000) {
+    const source = coerceArray(paths)
+        .map((path) => String(path || "").trim())
+        .filter(Boolean);
+
+    if (!source.length) {
+        return [];
+    }
+
+    const chunks = [];
+    let current = [];
+
+    const getEncodedLength = (entries) => encodeURIComponent(JSON.stringify(entries)).length;
+
+    source.forEach((path) => {
+        const next = [...current, path];
+        if (current.length > 0 && getEncodedLength(next) > maxEncodedChars) {
+            chunks.push(current);
+            current = [path];
+            return;
+        }
+        current = next;
+    });
+
+    if (current.length) {
+        chunks.push(current);
+    }
+
+    return chunks;
+}
+
 const BIN_UDT_MEMBERS = [
     "FriendlyName",
     "CurrentLevel",
@@ -470,15 +648,120 @@ const BIN_UDT_MEMBERS = [
     "AssignedProductName",
     "BinNo"
 ];
+const IGNITION_FILL_STATE_MEMBERS = [
+    "HMI State",
+    "HMI_State",
+    "hmi_state",
+    "HMIState",
+    "hmistate",
+    "i_HMIState",
+    "o_HMIState",
+    "State"
+];
+const MOTOR_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
+const MOTOR_UDT_ROUTE_COLOR_MEMBERS = [
+    "RouteColor",
+    "Route Color"
+];
+const MOTOR_UDT_MEMBERS = Array.from(
+    new Set([...MOTOR_UDT_STATE_MEMBERS, ...MOTOR_UDT_ROUTE_COLOR_MEMBERS])
+);
 
 function isBinOverlay(overlay) {
     const eType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
     return eType === "bin" || eType.startsWith("bin");
 }
 
+function isMotorOverlay(overlay) {
+    const eType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
+    return eType === "motor" || eType.startsWith("motor");
+}
+
+function shouldQueryOverlayFillStateMembers(overlay) {
+    if (overlay?.widget) {
+        return false;
+    }
+    return !isBinOverlay(overlay);
+}
+
 function getIgnitionTagValue(tagValMap, basePath, member) {
-    const full = `${basePath}/${member}`;
-    return tagValMap.get(full) ?? tagValMap.get(full.toLowerCase()) ?? null;
+    const root = String(basePath || "").trim();
+    const child = String(member || "").trim();
+    if (!root || !child) {
+        return null;
+    }
+    const slashPath = `${root}/${child}`;
+    const dotPath = `${root}.${child}`;
+    return tagValMap.get(slashPath)
+        ?? tagValMap.get(slashPath.toLowerCase())
+        ?? tagValMap.get(dotPath)
+        ?? tagValMap.get(dotPath.toLowerCase())
+        ?? null;
+}
+
+function getIgnitionTagValueForMembers(tagValMap, basePath, members) {
+    for (const member of coerceArray(members)) {
+        const value = getIgnitionTagValue(tagValMap, basePath, member);
+        if (value != null && String(value).trim() !== "") {
+            return value;
+        }
+    }
+    return null;
+}
+
+function resolveIgnitionStateMappingColor(mappings, rawValue) {
+    const valueText = String(rawValue ?? "").trim();
+    if (!valueText) {
+        return "";
+    }
+
+    const valueLower = valueText.toLowerCase();
+    const valueNum = Number(rawValue);
+    const valueBool =
+        valueLower === "true" || valueLower === "1"
+            ? true
+            : valueLower === "false" || valueLower === "0"
+                ? false
+                : null;
+
+    for (const mapping of coerceArray(mappings)) {
+        const color = String(mapping?.color ?? "").trim();
+        const mappingValue = String(mapping?.value ?? "").trim();
+        if (!color || !mappingValue) {
+            continue;
+        }
+
+        if (mappingValue === valueText || mappingValue.toLowerCase() === valueLower) {
+            return color;
+        }
+
+        const mappingNum = Number(mappingValue);
+        if (Number.isFinite(valueNum) && Number.isFinite(mappingNum) && mappingNum === valueNum) {
+            return color;
+        }
+
+        const mappingLower = mappingValue.toLowerCase();
+        const mappingBool =
+            mappingLower === "true" || mappingLower === "1"
+                ? true
+                : mappingLower === "false" || mappingLower === "0"
+                    ? false
+                    : null;
+        if (valueBool != null && mappingBool != null && mappingBool === valueBool) {
+            return color;
+        }
+    }
+
+    return "";
+}
+
+function getOverlayHmiStateColor(overlay, rawState) {
+    const binding = getOverlayFillBinding(overlay);
+    const mappings = normalizeIgnitionFillBindingMappings(
+        binding?.transform?.mappings
+        ?? binding?.mappings
+    );
+    return resolveIgnitionStateMappingColor(mappings, rawState);
 }
 
 function toPositiveNumber(value) {
@@ -1275,7 +1558,7 @@ function cloneDeepValue(value) {
 
 function DockSection({ children, title }) {
     return (
-        <div style={{ display: "grid", gap: 8 }}>
+        <div style={{ display: "grid", gap: 6 }}>
             {title ? (
                 <div
                     style={{
@@ -1289,7 +1572,7 @@ function DockSection({ children, title }) {
                     {title}
                 </div>
             ) : null}
-            <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "grid", gap: 6 }}>
                 {children}
             </div>
         </div>
@@ -1307,14 +1590,14 @@ function DockButton({ active = false, children, disabled = false, onClick }) {
                 border: active ? "1px solid rgba(96, 165, 250, 0.8)" : "1px solid rgba(71, 85, 105, 0.9)",
                 background: active ? "linear-gradient(180deg, #4f8cff 0%, #3567f3 100%)" : "rgba(15, 23, 42, 0.9)",
                 color: "#f8fafc",
-                borderRadius: 12,
-                padding: "10px 12px",
-                minHeight: 40,
+                borderRadius: 10,
+                padding: "7px 10px",
+                minHeight: 34,
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
                 cursor: disabled ? "default" : "pointer",
-                fontSize: 13,
+                fontSize: 12,
                 fontWeight: 700,
                 boxShadow: active ? "0 10px 24px rgba(37, 99, 235, 0.28)" : "none",
                 opacity: disabled ? 0.58 : 1
@@ -1713,6 +1996,7 @@ function PropertyTagPathField({
     onOpen,
     onCommit,
     options = EMPTY_ARRAY,
+    typeFilter = "",
     value = ""
 }) {
     const rootRef = useRef(null);
@@ -1724,6 +2008,7 @@ function PropertyTagPathField({
     const [query, setQuery] = useState("");
     const [menuRect, setMenuRect] = useState(null);
     const currentValue = value == null ? "" : String(value);
+    const normalizedTypeFilter = String(typeFilter || "").trim();
     const normalizedOptions = useMemo(
         () => coerceArray(options).map((option) => {
             const path = String(option?.path || "").trim();
@@ -1732,22 +2017,31 @@ function PropertyTagPathField({
             }
             const provider = String(option?.provider || "Tags").trim() || "Tags";
             const name = String(option?.name || "").trim() || path;
+            const typeId = String(option?.typeId || "").trim();
+            const dataType = String(option?.dataType || option?.plcType || option?.uaType || "").trim();
+            const udtName = getTagTypeDisplayName({ ...option, typeId, dataType });
+            const groupLabel = udtName || provider;
             return {
                 value: path,
                 path,
                 provider,
                 name,
-                searchText: `${provider} ${name} ${path}`.toLowerCase()
+                objectType: String(option?.objectType || "").trim(),
+                typeId,
+                dataType,
+                udtName,
+                groupLabel,
+                searchText: `${provider} ${groupLabel} ${udtName} ${dataType} ${typeId} ${name} ${path}`.toLowerCase()
             };
-        }).filter(Boolean),
-        [options]
+        }).filter(Boolean).filter((option) => tagMatchesTypeFilter(option, normalizedTypeFilter)),
+        [normalizedTypeFilter, options]
     );
     const groupedOptions = useMemo(
         () => normalizedOptions.reduce((acc, option) => {
-            if (!acc[option.provider]) {
-                acc[option.provider] = [];
+            if (!acc[option.groupLabel]) {
+                acc[option.groupLabel] = [];
             }
-            acc[option.provider].push(option);
+            acc[option.groupLabel].push(option);
             return acc;
         }, {}),
         [normalizedOptions]
@@ -1770,14 +2064,21 @@ function PropertyTagPathField({
             items: groupedOptions[provider]
         }));
     const triggerLabel = selectedOption?.path
-        || (currentValue ? `${currentValue} (current)` : "Select tag...");
+        ? (
+            selectedOption.udtName
+                ? `${selectedOption.path} (${selectedOption.udtName})`
+                : selectedOption.path
+        )
+        : (currentValue ? `${currentValue} (current)` : "Select tag...");
     const resultSummary = loading
         ? "Loading Ignition tags..."
         : !loaded
             ? "Open to load Ignition tags"
             : queryText
                 ? `${filteredOptions.length} match${filteredOptions.length === 1 ? "" : "es"}`
-                : `${normalizedOptions.length} Ignition tags available`;
+                : normalizedTypeFilter
+                    ? `${normalizedOptions.length} ${normalizedTypeFilter} tag${normalizedOptions.length === 1 ? "" : "s"} available`
+                    : `${normalizedOptions.length} Ignition tags available`;
     const helperText = error
         ? error
         : loading
@@ -2022,7 +2323,7 @@ function PropertyTagPathField({
                                 ref={searchRef}
                                 type="text"
                                 value={query}
-                                placeholder="Search tags by name, path, or provider..."
+                                placeholder="Search tags by name, path, UDT, or provider..."
                                 onChange={(event) => {
                                     setQuery(event.target.value);
                                 }}
@@ -2186,7 +2487,7 @@ function PropertyTagPathField({
                                                         color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
                                                     }}
                                                 >
-                                                    {item.path}
+                                                    {item.udtName ? `${item.udtName} | ${item.path}` : item.path}
                                                 </span>
                                             </button>
                                         );
@@ -2702,8 +3003,14 @@ export default function PerspectiveViziCanvasBridge(props) {
             addPath(getOverlayFillBindingTagPath(overlay));
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             addPath(basePath);
+            if (basePath && shouldQueryOverlayFillStateMembers(overlay)) {
+                IGNITION_FILL_STATE_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
+            }
             if (basePath && isBinOverlay(overlay)) {
                 BIN_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
+            }
+            if (basePath && isMotorOverlay(overlay)) {
+                MOTOR_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
             }
         });
 
@@ -2714,6 +3021,11 @@ export default function PerspectiveViziCanvasBridge(props) {
         return out;
     }, [svgOverlays, shapes]);
     const overlayFillBindingPathsKey = JSON.stringify(overlayFillBindingPaths);
+    const overlayFillBindingPathChunks = useMemo(
+        () => chunkIgnitionTagValuePaths(overlayFillBindingPaths),
+        [overlayFillBindingPathsKey]
+    );
+    const overlayFillBindingPathChunksKey = JSON.stringify(overlayFillBindingPathChunks);
     const ignitionTagRequestIdRef = useRef(0);
 
     const loadIgnitionTags = useCallback(async () => {
@@ -2758,33 +3070,50 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, []);
 
     useEffect(() => {
-        if (!overlayFillBindingPaths.length) {
+        if (!overlayFillBindingPathChunks.length) {
             setIgnitionTagValuesByPath((previous) => (previous.size ? new Map() : previous));
             return undefined;
         }
 
         let cancelled = false;
         let timerId = 0;
-        const queryValue = encodeURIComponent(JSON.stringify(overlayFillBindingPaths));
 
         const loadIgnitionTagValues = async () => {
+            const mergedValues = new Map();
+            let anyChunkLoaded = false;
+
             for (const routePath of MODULE_TAG_VALUE_ROUTE_CANDIDATES) {
+                mergedValues.clear();
+                anyChunkLoaded = false;
+
                 try {
-                    const response = await fetch(`${routePath}?paths=${queryValue}`, {
-                        cache: "no-store",
-                        credentials: "same-origin"
-                    });
-                    if (!response.ok) {
-                        continue;
+                    for (const pathChunk of overlayFillBindingPathChunks) {
+                        const queryValue = encodeURIComponent(JSON.stringify(pathChunk));
+                        const response = await fetch(`${routePath}?paths=${queryValue}`, {
+                            cache: "no-store",
+                            credentials: "same-origin"
+                        });
+                        if (!response.ok) {
+                            anyChunkLoaded = false;
+                            mergedValues.clear();
+                            break;
+                        }
+
+                        const payload = await response.json();
+                        if (cancelled) {
+                            return;
+                        }
+
+                        normalizeIgnitionTagValues(payload).forEach((value, key) => {
+                            mergedValues.set(key, value);
+                        });
+                        anyChunkLoaded = true;
                     }
 
-                    const payload = await response.json();
-                    if (cancelled) {
+                    if (anyChunkLoaded) {
+                        setIgnitionTagValuesByPath(new Map(mergedValues));
                         return;
                     }
-
-                    setIgnitionTagValuesByPath(normalizeIgnitionTagValues(payload));
-                    return;
                 } catch (_error) {
                 }
             }
@@ -2806,7 +3135,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 window.clearInterval(timerId);
             }
         };
-    }, [overlayFillBindingPathsKey]);
+    }, [overlayFillBindingPathChunksKey]);
 
     const persistValue = useCallback(
         (path, value) => {
@@ -3327,6 +3656,122 @@ export default function PerspectiveViziCanvasBridge(props) {
         });
         return out;
     }, [svgOverlays, ignitionTagValuesByPath, trunkBinMappings, isBinFlowing]);
+
+    const genericHmiTagStateColorsByPath = useMemo(() => {
+        const out = new Map();
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!basePath || !shouldQueryOverlayFillStateMembers(overlay)) return;
+
+            const rawState = getIgnitionTagValueForMembers(
+                ignitionTagValuesByPath,
+                basePath,
+                IGNITION_FILL_STATE_MEMBERS
+            );
+            const color = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+            if (!color) return;
+
+            out.set(basePath, color);
+            out.set(basePath.toLowerCase(), color);
+            IGNITION_FILL_STATE_MEMBERS.forEach((member) => {
+                const slashPath = `${basePath}/${member}`;
+                const dotPath = `${basePath}.${member}`;
+                out.set(slashPath, color);
+                out.set(slashPath.toLowerCase(), color);
+                out.set(dotPath, color);
+                out.set(dotPath.toLowerCase(), color);
+            });
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
+    const motorTagStateColorsByPath = useMemo(() => {
+        const out = new Map();
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!basePath || !isMotorOverlay(overlay)) return;
+            const rawState = getIgnitionTagValueForMembers(
+                ignitionTagValuesByPath,
+                basePath,
+                MOTOR_UDT_STATE_MEMBERS
+            );
+            const color = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+            if (!color) return;
+            out.set(basePath, color);
+            out.set(basePath.toLowerCase(), color);
+            MOTOR_UDT_STATE_MEMBERS.forEach((member) => {
+                const fullPath = `${basePath}/${member}`;
+                out.set(fullPath, color);
+                out.set(fullPath.toLowerCase(), color);
+            });
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
+    const motorHmiStateColorByOverlayId = useMemo(() => {
+        const out = {};
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const id = String(overlay?.id || "").trim();
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!id || !basePath || !isMotorOverlay(overlay)) return;
+            const rawState = getIgnitionTagValueForMembers(
+                ignitionTagValuesByPath,
+                basePath,
+                MOTOR_UDT_STATE_MEMBERS
+            );
+            const color = String(getOverlayHmiStateColor(overlay, rawState) || "").trim();
+            if (color) out[id] = color;
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
+    const motorRouteColorsBySvgKey = useMemo(() => {
+        const out = new Map();
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const id = String(overlay?.id || "").trim();
+            const name = String(overlay?.name || "").trim();
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!basePath || !isMotorOverlay(overlay)) return;
+            const color = String(
+                getIgnitionTagValueForMembers(
+                    ignitionTagValuesByPath,
+                    basePath,
+                    MOTOR_UDT_ROUTE_COLOR_MEMBERS
+                ) || ""
+            ).trim();
+            if (!color) return;
+            out.set(basePath, color);
+            out.set(basePath.toLowerCase(), color);
+            if (id) {
+                out.set(id, color);
+                out.set(id.toLowerCase(), color);
+            }
+            if (name) {
+                out.set(name, color);
+                out.set(name.toLowerCase(), color);
+            }
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
+    const overlayTagStateColorsByPath = useMemo(() => {
+        const out = new Map();
+        genericHmiTagStateColorsByPath.forEach((value, key) => {
+            out.set(key, value);
+        });
+        motorTagStateColorsByPath.forEach((value, key) => {
+            out.set(key, value);
+        });
+        return out;
+    }, [genericHmiTagStateColorsByPath, motorTagStateColorsByPath]);
+
+    const overlayRouteColorsBySvgKey = useMemo(() => {
+        const out = new Map(binTagStateColorsByPath);
+        motorRouteColorsBySvgKey.forEach((value, key) => {
+            out.set(key, value);
+        });
+        return out;
+    }, [binTagStateColorsByPath, motorRouteColorsBySvgKey]);
 
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
@@ -4256,9 +4701,13 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         let inner = parsed.inner;
+        let sourceScaleX = 1;
+        let sourceScaleY = 1;
         if (keySize && baseViewBox?.w > 0 && baseViewBox?.h > 0) {
             const scaleX = keySize.w / baseViewBox.w;
             const scaleY = keySize.h / baseViewBox.h;
+            sourceScaleX = scaleX;
+            sourceScaleY = scaleY;
             inner = `
       <g transform="translate(${-baseViewBox.x},${-baseViewBox.y}) scale(${scaleX},${scaleY})">
         ${parsed.inner}
@@ -4300,6 +4749,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 width: localViewBox.w,
                 height: localViewBox.h
             },
+            sourceScaleX,
+            sourceScaleY,
             ...extraOverlay
         };
     }, [viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
@@ -5924,10 +6375,16 @@ export default function PerspectiveViziCanvasBridge(props) {
             return;
         }
         const value = options.min != null ? Math.max(options.min, next) : next;
-        updateSelectedOverlay((overlay) => ({
-            ...overlay,
-            [field]: value
-        }));
+        updateSelectedOverlay((overlay) => {
+            const nextOverlay = {
+                ...overlay,
+                [field]: value
+            };
+            if (field === "strokeWidth" && !overlay?.widget && !overlay?.embeddedView) {
+                nextOverlay.inner = updateSvgInnerStrokeWidth(overlay?.inner, value);
+            }
+            return nextOverlay;
+        });
     }, [updateSelectedOverlay]);
 
     const commitSelectedOverlayPosition = useCallback((axis, rawValue) => {
@@ -6399,8 +6856,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 overlayLocalBBox={overlayLocalBBox}
                 importAnchor={null}
                 onCanvasDoubleClick={NOOP}
-                tagStateColorsByPath={binTagStateColorsByPath}
-                routeColorsBySvgKey={binTagStateColorsByPath}
+                tagStateColorsByPath={overlayTagStateColorsByPath}
+                routeColorsBySvgKey={overlayRouteColorsBySvgKey}
                 routeStrokeColorByGroupPath={EMPTY_MAP}
                 svgLiveValuesByGroupPath={EMPTY_MAP}
                 ignitionTagValuesByPath={ignitionTagValuesByPath}
@@ -6417,6 +6874,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 binLevelRatioByOverlayId={binLevelRatioByOverlayId}
                 binLockedInByOverlayId={binLockedInByOverlayId}
                 binLockedOutByOverlayId={binLockedOutByOverlayId}
+                overlayHmiStateColorByOverlayId={motorHmiStateColorByOverlayId}
                 onWidgetDurationPresetChange={NOOP}
                 onTrendTagDrop={NOOP}
                 hiddenTagBubbleIds={EMPTY_ARRAY}
@@ -6494,11 +6952,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                             zIndex: 60,
                             width: TOOLBAR_WIDTH,
                             maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
-                            maxHeight: `calc(100% - ${TOOLBAR_INSET * 2}px)`,
-                            overflowY: "auto",
+                            overflowY: "visible",
                             display: "grid",
-                            gap: 12,
-                            padding: 14,
+                            gap: 10,
+                            padding: 12,
                             borderRadius: 18,
                             border: "1px solid rgba(51, 65, 85, 0.95)",
                             background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
@@ -6822,6 +7279,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                         label="Tag Path"
                         value={quickTagPickerOverlay.tagPath || ""}
                         options={ignitionTagOptionsForQuickPicker}
+                        typeFilter={quickTagPickerOverlay?.widget ? "" : quickTagPickerOverlay?.eType}
                         loaded={ignitionTagsLoaded}
                         loading={ignitionTagsLoading}
                         error={ignitionTagsError}
@@ -7004,6 +7462,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                                         label="Tag Path"
                                         value={selectedOverlay.tagPath || ""}
                                         options={ignitionTagOptionsForOverlay}
+                                        typeFilter={selectedOverlay.widget ? "" : selectedOverlay.eType}
                                         loaded={ignitionTagsLoaded}
                                         loading={ignitionTagsLoading}
                                         error={ignitionTagsError}

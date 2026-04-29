@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="3.9085541mm"
+  height="3.9085481mm"
+  viewBox="0 0 3.908554 3.908548"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="46.01"
+  keheight="46.01"
+  eType="BlowerSimple"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="blowerShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <circle
+      id="body"
+      cx="1.954277"
+      cy="1.954274"
+      r="1.78"
+      fill="url(#blowerShellFill)"
+      stroke-width="0.18"
+    />
+
+    <path d="M2.82 1.18H3.70V2.12H2.82" fill="#D7DADE" stroke-width="0.14" />
+
+    <circle cx="1.954277" cy="1.954274" r="0.92" fill="none" stroke="#808080" stroke-width="0.10" />
+    <circle cx="1.954277" cy="1.954274" r="0.24" fill="#D7DADE" stroke-width="0.10" />
+
+    <g id="InsideLines" fill="none" stroke="#808080" stroke-width="0.14">
+      <path d="M1.52 1.52L2.40 2.40" />
+      <path d="M2.40 1.52L1.52 2.40" />
+    </g>
+  </g>
+</svg>

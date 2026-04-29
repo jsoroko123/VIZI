@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 32.168128 32.237438" preserveAspectRatio="xMidYMid meet" kewidth="99.785" keheight="100" eType="Fan_Main_Auto_Sequence" stroke="#808080" stroke-width="0.4836" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1" />
+  <g id="Fan" transform="translate(0.24193614,0.24193518)">
+    <g id="Fan-2">
+      <g id="Fan-3">
+        <g id="Fan_Frame">
+          <circle cx="16" cy="16" id="body" r="15" stroke-width="0.4836" style="classes:" fill="#D7DADE" />
+          <circle cx="16" cy="16" id="Fan_Frame-3" r="15" stroke-width="0.4836" style="classes:" fill="#D7DADE" />
+        </g>
+        <path d="m 15.96,15.97 c 0,0 5.35,-1.23 5.35,-5.88 0,-3.61 -2.75,-6.07 -5.76,-6.07 -1.9,0 -3.19,0.74 -4.03,1.54 -0.74,0.7 -0.46,1.95 0.5,2.3 4.52,1.64 3.96,8.1 3.96,8.1" id="path4" style="classes:" fill="#D7DADE" />
+        <path d="m 15.95,15.94 c 0,0 -1.23,-5.35 -5.88,-5.35 -3.61,0 -6.07,2.75 -6.07,5.76 0,1.9 0.74,3.19 1.54,4.03 0.7,0.74 1.95,0.46 2.3,-0.5 1.64,-4.52 8.1,-3.96 8.1,-3.96" id="Fan_Blade" style="classes:" fill="#D7DADE" />
+        <path d="m 15.93,15.95 c 0,0 -5.35,1.23 -5.35,5.88 0,3.61 2.75,6.07 5.76,6.07 1.9,0 3.19,-0.74 4.03,-1.54 0.74,-0.7 0.46,-1.95 -0.5,-2.3 -4.52,-1.64 -3.96,-8.1 -3.96,-8.1" id="Fan_Blade-2" style="classes:" fill="#D7DADE" />
+        <path d="m 15.93,15.97 c 0,0 1.23,5.35 5.88,5.35 3.61,0 6.07,-2.75 6.07,-5.76 0,-1.9 -0.74,-3.19 -1.54,-4.03 -0.7,-0.74 -1.95,-0.46 -2.3,0.5 -1.64,4.52 -8.1,3.96 -8.1,3.96" id="Fan_Blade-3" style="classes:" fill="#D7DADE" />
+        <circle cx="16" cy="16" id="Fan_Hub" r="2.6099999" style="classes:" fill="#D7DADE" />
+      </g>
+    </g>
+  </g>
+</svg>

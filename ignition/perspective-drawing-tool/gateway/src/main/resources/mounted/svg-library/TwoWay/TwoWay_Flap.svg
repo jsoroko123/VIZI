@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 0.9279134 1.1804978" preserveAspectRatio="xMinYMin" kewidth="78.604" keheight="100" eType="TwoWay_Flap" stroke="#808080" stroke-width="0.0177" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-16.002478,-14.63108)">
+    <path d="m 16.022478,14.65108 v 1.138949 h 0.331359 v -0.369486 l 0.371037,0.371036 0.185518,-0.239778 -0.556813,-0.559914 2.58e-4,-0.340807 z" id="body" stroke-width="0.0177" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" fill="#D7DADE" />
+    <path d="m 16.038557,14.66862 v 1.103869 h 0.296279 c 6.77e-4,-1.909512 -0.0017,1.179081 0,-1.103869 z" id="straightPath" fill="#D7DADE" stroke="#808080" stroke-width="0.0177" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" />
+    <path d="m 16.040018,14.65108 v 0.434387 l 0.319666,0.314613 0.359343,0.36519 0.173825,-0.201776 -0.556813,-0.571607 2.58e-4,-0.340807 z" id="divertPath" fill="#D7DADE" stroke="#808080" stroke-width="0.0177" stroke-dasharray="none" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="1" />
+  </g>
+</svg>

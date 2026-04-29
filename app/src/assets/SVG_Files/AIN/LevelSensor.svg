@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 0.51032403 0.51032498" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="100" eType="LevelSensor" stroke="#808080" stroke-width="0.0077" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-16.119254,-14.719355)">
+    <path d="m 16.139254,14.747349 v 0.470325 h 0.470324 v -0.470325 z" id="body" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none" fill="#D7DADE" />
+    <path d="m 16.21654,14.842266 h 0.315752" id="path3" fill="transparent" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none" />
+    <path d="M 16.481124,14.919372 H 16.267709" id="path1" fill="transparent" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none" />
+    <path d="m 16.312465,14.992898 h 0.123903" id="path2" fill="transparent" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none" />
+    <path d="m 16.346438,15.060844 h 0.06195" id="path4" fill="transparent" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none" />
+  </g>
+</svg>

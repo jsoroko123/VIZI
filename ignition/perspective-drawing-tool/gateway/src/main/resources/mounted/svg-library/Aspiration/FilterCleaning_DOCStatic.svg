@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3.2747474 8.4615899" preserveAspectRatio="xMinYMin" kewidth="38.701" keheight="100" eType="FilterCleaning_DOCStatic" stroke="#808080" stroke-width="0.1269" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="filterShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="filterPanelFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+  <g id="layer1" transform="translate(-14.277188,-10.651006)">
+    <path d="m 14.377188,11.320217 v 4.947501 l 1.537373,2.645833 1.537374,-2.645833 v -4.947501 l -1.537374,-0.562723 z" id="body" stroke="#808080" stroke-width="0.1269" style="classes:Terra/EquipmentStyles/DOC/Stopped" fill="url(#filterShellFill)" />
+    <path d="m 14.474775,12.41887 h 2.878328 z" id="path37" fill="none" stroke="#808080" stroke-width="0.1269" stroke-dasharray="none" />
+    <path d="m 14.474775,11.469115 h 2.878328 z" id="path6" fill="none" stroke="#808080" stroke-width="0.1269" stroke-dasharray="none" />
+    <path d="m 14.474775,16.128691 h 2.878328 z" id="path7" fill="none" stroke="#808080" stroke-width="0.1269" stroke-dasharray="none" />
+    <path d="m 17.373874,12.898514 h -1.518771 v 1.101613 l 1.526765,0.738585" id="path8" fill="url(#filterPanelFill)" stroke="#808080" stroke-width="0.1269" stroke-dasharray="none" />
+  </g>
+</svg>

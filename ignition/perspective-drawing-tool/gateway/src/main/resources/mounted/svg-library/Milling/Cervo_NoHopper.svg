@@ -1,0 +1,66 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  width="0.3663483in"
+  height="0.59758043in"
+  viewBox="0 0 9.3052476 15.178543"
+  version="1.1"
+  xmlns="http://www.w3.org/2000/svg"
+  kewidth="61.305"
+  keheight="100"
+  eType="Cervo_NoHopper"
+ fill="#D7DADE" stroke="#808080" stroke-linejoin="round" stroke-linecap="round">
+  <defs>
+    <linearGradient id="cervoNoHopShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="cervoNoHopCoreFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+  </defs>
+
+  <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
+    <path
+      id="Hopper"
+      d="M2.64 0.28H6.66V1.42H2.64Z"
+      fill="#D7DADE"
+      stroke-width="0.12"
+    />
+
+    <rect
+      id="BodyOuter"
+      x="1.38"
+      y="1.46"
+      width="6.54"
+      height="9.84"
+      rx="0.20"
+      fill="url(#cervoNoHopShellFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M1.38 3.08H7.92" fill="none" stroke="#808080" stroke-width="0.08" />
+
+    <path
+      id="BodyInner"
+      d="M2.08 2.16H7.20V10.54H5.80L4.66 9.34L3.56 10.54H2.08Z"
+      fill="url(#cervoNoHopCoreFill)"
+      stroke-width="0.12"
+    />
+
+    <path d="M3.82 7.88H5.48" fill="none" stroke="#808080" stroke-width="0.10" />
+    <path d="M4.14 6.56L4.66 5.80L5.18 6.56Z" fill="none" stroke="#808080" stroke-width="0.10" />
+
+    <rect x="0.20" y="3.74" width="1.12" height="0.70" rx="0.10" fill="#D7DADE" stroke-width="0.12" />
+    <rect x="0.20" y="9.20" width="1.12" height="0.70" rx="0.10" fill="#D7DADE" stroke-width="0.12" />
+
+    <path
+      id="Outlet"
+      d="M1.38 11.30H7.92V12.36H1.38ZM1.38 12.42H7.92V12.96L6.22 14.72H3.08L1.38 12.96Z"
+      fill="url(#cervoNoHopShellFill)"
+      stroke-width="0.14"
+    />
+
+    <path d="M2.04 12.42H7.26" fill="none" stroke="#808080" stroke-width="0.08" />
+  </g>
+</svg>

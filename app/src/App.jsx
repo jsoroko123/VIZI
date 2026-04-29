@@ -74,6 +74,7 @@ import {
   getMainDrawerWidthForView,
   inferETypeFromFileKey,
   isBinEType,
+  isDiverterEType,
   isMotorEType,
   isOverlayETypeAutoManaged,
   isRouteIdTagKey,
@@ -467,7 +468,7 @@ export default function App() {
   const initialStoredProjectId = readStoredActiveProjectId();
   const [tool, setTool] = useState("select"); // "select" | "polyline" | "rect" | "circle"
   const DEFAULT_STROKE = "#808080";
-  const DEFAULT_FILL = "#CCCCCC";
+  const DEFAULT_FILL = "#D7DADE";
 const HOME_SCREEN_ID = "screen-home";
 const HOME_SCREEN_NAME = "Home";
 const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
@@ -3852,7 +3853,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const overlayId = String(overlay?.id || "").trim();
     if (!overlayId) return null;
     const eType = String(resolveOverlayEType(overlay) || "").trim().toLowerCase();
-    if (!eType.includes("diverter")) return null;
+    if (!isDiverterEType(eType)) return null;
     const writeStateKeyFor = (action) =>
       `${overlayId}::${normalizeRouteTagKey(String(action || "command"))}`;
     const isActionBusy = (action) => liveEquipmentWriteBusyByOverlay?.[writeStateKeyFor(action)] === true;
@@ -4247,7 +4248,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     };
     if (eType) {
       const rawEType = String(eType || "").trim().toLowerCase();
-      rows.push({ key: "UDT", value: rawEType.includes("diverter") ? "TwoWay_DiscreteV2" : eType });
+      rows.push({ key: "UDT", value: isDiverterEType(rawEType) ? "TwoWay_DiscreteV2" : eType });
     }
     const popupTagValueEnabled = (() => {
       if (!path) return true;
@@ -8536,7 +8537,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       .map((t) => {
         const x = Number(t.x ?? 0) - minX;
         const y = Number(t.y ?? 0) - minY;
-        const fill = t.fill || "#808080";
+        const fill = t.fill || "#D7DADE";
         const fontSize = Number(t.fontSize ?? 24);
         const fontFamily = t.fontFamily || "system-ui";
         const fontWeight = t.fontWeight || "400";
@@ -9805,7 +9806,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       y: p.y,
       text: "Text",
       fontSize: 24,
-      fill: theme === "dark" ? "#ffffff" : "#808080",
+      fill: theme === "dark" ? "#ffffff" : "#D7DADE",
       fontFamily: "system-ui",
       fontWeight: "400",
       anchor: "start", // start | middle | end
@@ -9830,7 +9831,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       y: p.y,
       width: 0,
       height: 0,
-      stroke: "#808080",
+      stroke: DEFAULT_STROKE,
       strokeWidth: 3,
       fill: "transparent",
       lineStyle: "solid",
@@ -11111,9 +11112,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
 
     let inner = parsed.inner;
+    let sourceScaleX = 1;
+    let sourceScaleY = 1;
     if (key && baseVb?.w > 0 && baseVb?.h > 0) {
       const sx = key.w / baseVb.w;
       const sy = key.h / baseVb.h;
+      sourceScaleX = sx;
+      sourceScaleY = sy;
       inner = `
       <g transform="translate(${-baseVb.x},${-baseVb.y}) scale(${sx},${sy})">
         ${parsed.inner}
@@ -11144,6 +11149,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
       eType,
       eTypeAuto: true,
       bbox,
+      sourceScaleX,
+      sourceScaleY,
     };
   }
 
@@ -11608,7 +11615,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       type: "polyline",
       tagPath: "",
       points: [start, start, start],
-      stroke: "#808080",
+      stroke: DEFAULT_STROKE,
       fill: "transparent",
       strokeWidth: 3,
       lineStyle: "solid",
@@ -11652,7 +11659,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       type: "polyline",
       tagPath: "", // ? NEW
       points: [startPoint, { x: startPoint.x, y: startPoint.y }], // last is preview
-      stroke: "#808080",
+      stroke: DEFAULT_STROKE,
       fill: "transparent",
       strokeWidth: 3,
       lineStyle: "solid",
@@ -12287,10 +12294,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     // ? Normalize inner so geometry matches localVb
     let inner = parsed.inner;
+    let sourceScaleX = 1;
+    let sourceScaleY = 1;
 
     if (key && baseVb?.w > 0 && baseVb?.h > 0) {
       const sx = key.w / baseVb.w;
       const sy = key.h / baseVb.h;
+      sourceScaleX = sx;
+      sourceScaleY = sy;
 
       inner = `
       <g transform="translate(${-baseVb.x},${-baseVb.y}) scale(${sx},${sy})">
@@ -12336,6 +12347,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
         eType: String(overlayExtras?.eType || parsedEType || "").trim(),
         eTypeAuto: overlayExtras?.eType != null ? false : true,
         bbox,
+        sourceScaleX,
+        sourceScaleY,
         ...overlayExtras,
         stroke: DEFAULT_STROKE,
         strokeMode: "preserve",
@@ -13057,7 +13070,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (t) {
         idText = t.id;
         tagPath = t.tagPath || "";
-        fill = t.fill ?? "#808080";
+        fill = t.fill ?? "#D7DADE";
         stroke = t.stroke ?? "#808080"; // optional if you support stroke on text
 
         commitHudFields({
@@ -13699,17 +13712,35 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return next;
   }
 
+  function formatSvgAttributeNumber(value) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return "0";
+    return Number(numberValue.toFixed(4)).toString();
+  }
+
+  function stripSvgVectorEffect(inner) {
+    let next = String(inner || "");
+    next = next.replace(/\svector-effect\s*=\s*['"][^'"]*['"]/gi, "");
+    next = next.replace(/\bstyle\s*=\s*(["'])([^"']*)\1/gi, (_match, quote, styleBody) => {
+      const cleaned = String(styleBody || "")
+        .split(";")
+        .map((part) => part.trim())
+        .filter((part) => part && !/^vector-effect\s*:/i.test(part))
+        .join(";");
+      return cleaned ? `style=${quote}${cleaned}${quote}` : "";
+    });
+    return next;
+  }
+
   function updateSvgInnerStrokeWidth(inner, strokeWidth) {
     if (!inner) return inner;
     const sw = Number.parseFloat(strokeWidth);
     if (!Number.isFinite(sw) || sw <= 0) return inner;
-    const value = String(sw);
+    const value = formatSvgAttributeNumber(sw);
 
-    let next = inner;
+    let next = stripSvgVectorEffect(inner);
     next = next.replace(/stroke-width\s*=\s*['"][^'"]*['"]/gi, `stroke-width="${value}"`);
     next = next.replace(/stroke-width\s*:\s*[^;\"']+/gi, `stroke-width:${value}`);
-    next = next.replace(/vector-effect\s*=\s*['"][^'"]*['"]/gi, `vector-effect="non-scaling-stroke"`);
-    next = next.replace(/vector-effect\s*:\s*[^;\"']+/gi, `vector-effect:non-scaling-stroke`);
 
     next = next.replace(
       /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*?)(\/?)>/gi,
@@ -14801,8 +14832,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
         }
       }
 
-      if (!drawing) startPolylineAt(p2, { disableSnap: !!e.altKey });
-      else addPolylinePoint(p2, { disableSnap: !!e.altKey });
+      if (!drawing) {
+        startPolylineAt(p2, { disableSnap: !!e.altKey });
+      } else if (Number(e.detail) > 1) {
+        // second click of a double-click — let onSvgDoubleClick finish the line, skip adding a point
+      } else {
+        addPolylinePoint(p2, { disableSnap: !!e.altKey });
+      }
       return;
     }
 
@@ -17254,7 +17290,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       y: p.y,
       width: 0,
       height: 0,
-      stroke: "#808080",
+      stroke: DEFAULT_STROKE,
       strokeWidth: 3,
       fill: "transparent",
       lineStyle: "solid",
@@ -17820,7 +17856,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     ? (isLiveMobile ? 0 : showLiveMenuDrawer ? liveMenuExpandedWidthPx : 0)
     : 0;
   const liveMenuLayoutInsetPx = isLiveMode ? (isLiveMobile ? 0 : liveMenuRailWidthPx) : 0;
-  const designDockWidthPx = !isLiveMode && showZoom ? (designDockExpanded ? 228 : 44) : 0;
+  const designDockWidthPx = !isLiveMode && showZoom ? (designDockExpanded ? 280 : 44) : 0;
   const sideDockWidthPx = isMobileViewport
     ? Math.min(320, Math.max(250, Math.floor((winW || 0) * 0.86)))
     : 320;
@@ -19007,9 +19043,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
             border: "1px solid var(--border)",
             borderRadius: isLiveMode ? 12 : 0,
             alignItems: isLiveMode ? "center" : "stretch",
-            overflowY: isLiveMode ? "visible" : "auto",
-            overflowX: "hidden",
-            width: isLiveMode ? undefined : designDockExpanded ? 228 : 44,
+            overflowY: "visible",
+            overflowX: "visible",
+            width: isLiveMode ? undefined : designDockExpanded ? 280 : 44,
             boxSizing: "border-box",
             transition: isLiveMode ? "none" : "width 220ms ease, padding 220ms ease",
           }}

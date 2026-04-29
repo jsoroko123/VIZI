@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 81.674061 16.108367" preserveAspectRatio="none" kewidth="100" keheight="19.723" eType="SlideGate_Analog" stroke="#808080" stroke-width="1.2251" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <g id="Gate" transform="translate(-51.358128,-2.9306002)">
+    <g id="Gate-2">
+      <text id="Tage_Name" transform="translate(51.88,14.87)" fill="#231f20" style="classes:;text-align:center">
+        <tspan id="tspan1" x="5" y="2">100%</tspan>
+      </text>
+      <g id="Gate-3" />
+      <rect height="15.108367" id="body" width="80.674065" x="51.858128" y="3.4306002" stroke-linejoin="round" fill="#D7DADE" />
+    </g>
+  </g>
+</svg>
