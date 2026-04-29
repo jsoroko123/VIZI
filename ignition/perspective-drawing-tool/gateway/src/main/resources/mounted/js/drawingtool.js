@@ -13485,6 +13485,7 @@ var MesoraDrawingToolBundle = (() => {
   var RULER = 24;
   var SCROLLBAR_RESERVE = 14;
   var LIVE_ROUTE_ID_MEMBER_ALIASES = ["RouteID", "RouteNumber", "RouteNo", "Route"];
+  var LIVE_ROUTE_COLOR_MEMBER_ALIASES = ["RouteColor", "Route Color", "routeColor", "route_color"];
   var LIVE_STATE_MEMBER_ALIASES = [
     "HMI State",
     "HMI_State",
@@ -14236,10 +14237,28 @@ var MesoraDrawingToolBundle = (() => {
       return resolved;
     };
     const getRouteColorForOverlay = (overlay) => {
-      if (!routeColorsBySvgKey) return "";
+      var _a2, _b, _c;
       const cacheKey = String((overlay == null ? void 0 : overlay.id) || (overlay == null ? void 0 : overlay.tagPath) || (overlay == null ? void 0 : overlay.name) || "").trim().toLowerCase();
       if (cacheKey && renderRouteColorCache.has(cacheKey)) {
         return renderRouteColorCache.get(cacheKey);
+      }
+      const routeColorFromIgnition = String(
+        (_b = (_a2 = readIgnitionMemberValueForPath(overlay == null ? void 0 : overlay.tagPath, LIVE_ROUTE_COLOR_MEMBER_ALIASES)) != null ? _a2 : readIgnitionMemberValueForPath(getOverlayFillBindingTagPath2(overlay), LIVE_ROUTE_COLOR_MEMBER_ALIASES)) != null ? _b : ""
+      ).trim();
+      if (routeColorFromIgnition) {
+        if (cacheKey) renderRouteColorCache.set(cacheKey, routeColorFromIgnition);
+        return routeColorFromIgnition;
+      }
+      const routeColorFromLive = String(
+        (_c = getLiveMemberValueForTagPath(overlay == null ? void 0 : overlay.tagPath, LIVE_ROUTE_COLOR_MEMBER_ALIASES)) != null ? _c : ""
+      ).trim();
+      if (routeColorFromLive) {
+        if (cacheKey) renderRouteColorCache.set(cacheKey, routeColorFromLive);
+        return routeColorFromLive;
+      }
+      if (!routeColorsBySvgKey) {
+        if (cacheKey) renderRouteColorCache.set(cacheKey, "");
+        return "";
       }
       const lookup = (raw) => {
         const key = String(raw || "").replace(/\r?\n/g, "").trim();
@@ -14533,6 +14552,7 @@ var MesoraDrawingToolBundle = (() => {
             id: String((overlay == null ? void 0 : overlay.id) || "").trim(),
             tagPath: String((overlay == null ? void 0 : overlay.tagPath) || "").trim(),
             name: String((overlay == null ? void 0 : overlay.name) || "").trim(),
+            sourceKey: String((overlay == null ? void 0 : overlay.sourceKey) || "").trim(),
             eType: String((overlay == null ? void 0 : overlay.eType) || "").trim(),
             diverterMode: String((overlay == null ? void 0 : overlay.diverterMode) || "").trim(),
             tx: Number(overlay == null ? void 0 : overlay.tx) || 0,
@@ -17714,8 +17734,23 @@ var MesoraDrawingToolBundle = (() => {
     const getOverlayDiverterState = (overlay) => {
       var _a2;
       if (overlay == null ? void 0 : overlay.widget) return "";
-      const directIgnitionState = parseDiverterStateValue(readIgnitionTagValueForPath(overlay == null ? void 0 : overlay.tagPath));
+      const directIgnitionState = parseDiverterStateValue(
+        readIgnitionMemberValueForPath(overlay == null ? void 0 : overlay.tagPath, LIVE_STATE_MEMBER_ALIASES)
+      );
       if (directIgnitionState) return directIgnitionState;
+      const bindingPath = getOverlayFillBindingTagPath2(overlay);
+      if (bindingPath && bindingPath.toLowerCase() !== String((overlay == null ? void 0 : overlay.tagPath) || "").trim().toLowerCase()) {
+        const bindingIgnitionState = parseDiverterStateValue(
+          readIgnitionMemberValueForPath(bindingPath, LIVE_STATE_MEMBER_ALIASES)
+        );
+        if (bindingIgnitionState) return bindingIgnitionState;
+      }
+      const directLiveState = parseDiverterStateValue(
+        getLiveMemberValueForTagPath(overlay == null ? void 0 : overlay.tagPath, LIVE_STATE_MEMBER_ALIASES)
+      );
+      if (directLiveState) return directLiveState;
+      const directTagState = parseDiverterStateValue(readIgnitionTagValueForPath(overlay == null ? void 0 : overlay.tagPath));
+      if (directTagState) return directTagState;
       const boundState = parseDiverterStateValue(readOverlayFillBindingValue(overlay));
       if (boundState) return boundState;
       const groupState = parseDiverterStateValue(
@@ -17771,6 +17806,24 @@ var MesoraDrawingToolBundle = (() => {
         }
       }
       return bestDist <= threshold ? best : "";
+    };
+    const isDiverterEntryPoint = (overlay, pt, bb) => {
+      if (!overlay || !pt || !bb) return false;
+      const sx = overlayScaleX(overlay);
+      const sy = overlayScaleY(overlay);
+      const bx = Number(bb == null ? void 0 : bb.x) || 0;
+      const by = Number(bb == null ? void 0 : bb.y) || 0;
+      const bw = Math.max(1e-4, Number(bb == null ? void 0 : bb.width) || 1);
+      const bh = Math.max(1e-4, Number(bb == null ? void 0 : bb.height) || 1);
+      const localX = (Number(pt.x) - Number((overlay == null ? void 0 : overlay.tx) || 0)) / Math.max(1e-4, sx);
+      const localY = (Number(pt.y) - Number((overlay == null ? void 0 : overlay.ty) || 0)) / Math.max(1e-4, sy);
+      const nx = (localX - bx) / bw;
+      const ny = (localY - by) / bh;
+      if (!Number.isFinite(nx) || !Number.isFinite(ny)) return false;
+      if (nx <= 0.32 && ny >= -0.28 && ny <= 0.72) return true;
+      const mirroredKey = String((overlay == null ? void 0 : overlay.sourceKey) || (overlay == null ? void 0 : overlay.name) || "").toLowerCase();
+      if (mirroredKey.includes("mirrored") && nx >= 0.68 && ny >= -0.28 && ny <= 0.72) return true;
+      return false;
     };
     const getDiverterOutputBranchAtWorldPoint = (overlay, pt, bb, threshold = 40) => {
       if (!overlay || !pt || !bb) return "";
@@ -18173,6 +18226,9 @@ var MesoraDrawingToolBundle = (() => {
     const DIVERTER_POSITION_COLOR = "#22c55e";
     const DIVERTER_NEUTRAL_STROKE = "#2c2f34";
     const DIVERTER_NEUTRAL_FILL = "#ffffff";
+    const DIVERTER_ENTRY_ELEMENT_IDS = ["entryPath", "EntryPath", "entry", "Entry"];
+    const DIVERTER_STRAIGHT_ELEMENT_IDS = ["straightPath", "StraightPath", "Straight_Path", "Left_Valve", "Straight_Valve"];
+    const DIVERTER_DIVERT_ELEMENT_IDS = ["divertPath", "DivertPath", "Divert_Path", "Right_Valve", "Divert_Valve"];
     const getEffectiveOverlayFlowColor = (overlay, overlayEType, entryColor = "") => {
       const incomingEntryColor = normalizeActiveLineColor(entryColor);
       if (isDiverterEType(overlayEType)) {
@@ -18182,7 +18238,7 @@ var MesoraDrawingToolBundle = (() => {
         getRouteColorForOverlay(overlay) || getTagColor(overlay == null ? void 0 : overlay.tagPath) || getOverlayBoundActiveFillColor(overlay) || getOverlayDisplayedFlowFillColor(overlay) || getRouteStrokeColorForOverlay(overlay)
       );
     };
-    const applyDiverterFlowColorToSvg = (inner, color2, modeRaw) => {
+    const applyDiverterFlowColorToSvg = (inner, color2, modeRaw, outerStrokeColor = "") => {
       if (!inner) return inner;
       try {
         const wrapped = `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`;
@@ -18192,7 +18248,32 @@ var MesoraDrawingToolBundle = (() => {
         if (!root) return inner;
         const mode = parseDiverterStateValue(modeRaw);
         const flowColor = normalizeActiveLineColor(color2);
-        const activeBranchId = mode === "divert" ? "divertPath" : mode === "straight" ? "straightPath" : "";
+        const outlineStrokeColor = String(outerStrokeColor || "").trim() || DIVERTER_NEUTRAL_STROKE;
+        const activeBranchIds = mode === "divert" ? DIVERTER_DIVERT_ELEMENT_IDS : mode === "straight" ? DIVERTER_STRAIGHT_ELEMENT_IDS : [];
+        const getNodesByIds = (ids) => (Array.isArray(ids) ? ids : []).map((id) => doc.getElementById(id)).filter(Boolean);
+        const paintBranchNode = (node, nextColor = "") => {
+          if (!node) return;
+          const id = String(node.getAttribute("id") || "");
+          const lineLike = /valve/i.test(id) || ["line", "polyline"].includes(String(node.tagName || "").toLowerCase());
+          if (lineLike) {
+            node.setAttribute("fill", "transparent");
+            node.setAttribute("stroke", nextColor || DIVERTER_NEUTRAL_STROKE);
+            return;
+          }
+          node.setAttribute("fill", nextColor || DIVERTER_NEUTRAL_FILL);
+          node.setAttribute("stroke", "none");
+        };
+        const setNodesVisible = (ids, visible) => {
+          getNodesByIds(ids).forEach((node) => {
+            if (visible) {
+              node.removeAttribute("display");
+              node.removeAttribute("visibility");
+            } else {
+              node.setAttribute("display", "none");
+              node.setAttribute("visibility", "hidden");
+            }
+          });
+        };
         const body = doc.getElementById("body");
         if (body) {
           const gradientId = Array.from(root.querySelectorAll("linearGradient[id]")).map((node) => {
@@ -18202,47 +18283,26 @@ var MesoraDrawingToolBundle = (() => {
           if (gradientId) {
             body.setAttribute("fill", `url(#${gradientId})`);
           }
-          body.setAttribute("stroke", DIVERTER_NEUTRAL_STROKE);
+          body.setAttribute("stroke", outlineStrokeColor);
         }
-        ["entryPath", "straightPath", "divertPath"].forEach((id) => {
-          const node = doc.getElementById(id);
-          if (!node) return;
-          node.setAttribute("fill", DIVERTER_NEUTRAL_FILL);
-          node.setAttribute("stroke", "none");
-        });
-        const straightPath = doc.getElementById("straightPath");
-        const divertPath = doc.getElementById("divertPath");
-        if (straightPath) {
-          if (mode === "straight") {
-            straightPath.removeAttribute("display");
-            straightPath.removeAttribute("visibility");
-          } else if (mode === "divert") {
-            straightPath.setAttribute("display", "none");
-            straightPath.setAttribute("visibility", "hidden");
-          }
-        }
-        if (divertPath) {
-          if (mode === "divert") {
-            divertPath.removeAttribute("display");
-            divertPath.removeAttribute("visibility");
-          } else if (mode === "straight") {
-            divertPath.setAttribute("display", "none");
-            divertPath.setAttribute("visibility", "hidden");
-          }
+        [
+          ...DIVERTER_ENTRY_ELEMENT_IDS,
+          ...DIVERTER_STRAIGHT_ELEMENT_IDS,
+          ...DIVERTER_DIVERT_ELEMENT_IDS
+        ].forEach((id) => paintBranchNode(doc.getElementById(id)));
+        if (mode === "straight" || mode === "divert") {
+          setNodesVisible(DIVERTER_STRAIGHT_ELEMENT_IDS, mode === "straight");
+          setNodesVisible(DIVERTER_DIVERT_ELEMENT_IDS, mode === "divert");
         }
         if (flowColor) {
-          const entryNode = doc.getElementById("entryPath");
-          if (entryNode) {
-            entryNode.setAttribute("fill", flowColor || DIVERTER_POSITION_COLOR);
-            entryNode.setAttribute("stroke", "none");
-          }
+          getNodesByIds(DIVERTER_ENTRY_ELEMENT_IDS).forEach(
+            (node) => paintBranchNode(node, flowColor || DIVERTER_POSITION_COLOR)
+          );
         }
-        if (activeBranchId && flowColor) {
-          const node = doc.getElementById(activeBranchId);
-          if (node) {
-            node.setAttribute("fill", flowColor || DIVERTER_POSITION_COLOR);
-            node.setAttribute("stroke", "none");
-          }
+        if (activeBranchIds.length && flowColor) {
+          getNodesByIds(activeBranchIds).forEach(
+            (node) => paintBranchNode(node, flowColor || DIVERTER_POSITION_COLOR)
+          );
         }
         const serializer = new XMLSerializer();
         return Array.from(root.childNodes).map((node) => serializer.serializeToString(node)).join("");
@@ -18283,8 +18343,12 @@ var MesoraDrawingToolBundle = (() => {
       const mode = parseDiverterStateValue(modeRaw);
       let out = String(inner || "");
       if (mode !== "straight" && mode !== "divert") return out;
-      out = setSvgElementVisibleById(out, "straightPath", mode === "straight");
-      out = setSvgElementVisibleById(out, "divertPath", mode === "divert");
+      DIVERTER_STRAIGHT_ELEMENT_IDS.forEach((id) => {
+        out = setSvgElementVisibleById(out, id, mode === "straight");
+      });
+      DIVERTER_DIVERT_ELEMENT_IDS.forEach((id) => {
+        out = setSvgElementVisibleById(out, id, mode === "divert");
+      });
       return out;
     };
     const overlayScaleX = (o) => {
@@ -18366,7 +18430,7 @@ var MesoraDrawingToolBundle = (() => {
             const localX = (Number(pt == null ? void 0 : pt.x) - Number((overlay == null ? void 0 : overlay.tx) || 0)) / Math.max(1e-4, sx);
             const localY = (Number(pt == null ? void 0 : pt.y) - Number((overlay == null ? void 0 : overlay.ty) || 0)) / Math.max(1e-4, sy);
             const branch = getDiverterBranchAtWorldPointByConnector(overlay, pt, bb, 40) || getDiverterBranchAtLocalPoint(localX, localY, bb);
-            if (branch !== "entry") continue;
+            if (branch !== "entry" && !isDiverterEntryPoint(overlay, pt, bb)) continue;
             const oppositePt = idx === 0 ? s.points[s.points.length - 1] : s.points[0];
             const upstreamActiveColor = normalizeActiveLineColor(
               oppositePt ? getOverlayColorAtPoint(oppositePt, {
@@ -18377,8 +18441,11 @@ var MesoraDrawingToolBundle = (() => {
                 excludeOverlayId: overlay == null ? void 0 : overlay.id
               }) : ""
             );
+            const workerResolvedColor = normalizeActiveLineColor(
+              liveResolvedPolylineColorByIdRef.current.get(String((s == null ? void 0 : s.id) || "")) || ""
+            );
             const c = normalizeActiveLineColor(
-              upstreamActiveColor || getTagColor(s == null ? void 0 : s.tagPath) || (s == null ? void 0 : s.stroke)
+              upstreamActiveColor || workerResolvedColor || getTagColor(s == null ? void 0 : s.tagPath) || (s == null ? void 0 : s.stroke)
             );
             if (!c) continue;
             bestDistance = dist;
@@ -19842,9 +19909,10 @@ var MesoraDrawingToolBundle = (() => {
         const overlayStateColor = normalizeOverlayActiveFillColor(
           (overlayHmiStateColorByOverlayId == null ? void 0 : overlayHmiStateColorByOverlayId[id]) || ""
         );
-        const routeOutlineStroke = isBinOverlay2 ? "" : normalizeActiveLineColor(
+        const routeOutlineStroke = isBinOverlay2 || isDiverterOverlay2 ? "" : normalizeActiveLineColor(
           getRouteColorForOverlay(overlay) || getRouteStrokeColorForOverlay(overlay)
         );
+        const diverterOuterStroke = isDiverterOverlay2 ? String(getRouteColorForOverlay(overlay) || getRouteStrokeColorForOverlay(overlay) || "").trim() : "";
         const strokeModeRaw = String((overlay == null ? void 0 : overlay.strokeMode) || "").trim().toLowerCase();
         const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
         if (!renderLiveVisuals) {
@@ -19875,7 +19943,7 @@ var MesoraDrawingToolBundle = (() => {
               })
             );
             inner2 = applyDiverterModeToSvg(inner2, diverterMode);
-            inner2 = applyDiverterFlowColorToSvg(inner2, diverterFlowColor2, diverterMode);
+            inner2 = applyDiverterFlowColorToSvg(inner2, diverterFlowColor2, diverterMode, diverterOuterStroke);
             out.set(id, {
               inner: inner2,
               className: void 0,
@@ -19978,7 +20046,7 @@ var MesoraDrawingToolBundle = (() => {
           inner = applyOverlayOuterStrokeColor(inner, routeOutlineStroke);
         }
         if (isDiverterOverlay2) {
-          inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode);
+          inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode, diverterOuterStroke);
         }
         out.set(id, {
           inner,
@@ -22576,7 +22644,7 @@ var MesoraDrawingToolBundle = (() => {
       title: "Getting Started",
       items: Object.freeze([
         "Use Move to select, drag, resize, and open properties for items on the canvas.",
-        "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click or Enter finishes the line.",
+        "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click, Enter, or Shift plus right click finishes the line.",
         "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path."
       ])
     }),
@@ -22705,6 +22773,10 @@ var MesoraDrawingToolBundle = (() => {
     });
     return tokens;
   }
+  function isDiverterTypeToken(value) {
+    const token = normalizeTagTypeMatchToken(value);
+    return token.includes("diverter") || token.includes("twoway");
+  }
   function tagMatchesTypeFilter(entry, typeFilter) {
     const filterToken = normalizeTagTypeMatchToken(typeFilter);
     if (!filterToken) {
@@ -22724,6 +22796,13 @@ var MesoraDrawingToolBundle = (() => {
     }
     if (typeTokens.has(filterToken)) {
       return true;
+    }
+    if (isDiverterTypeToken(filterToken)) {
+      for (const token of typeTokens) {
+        if (isDiverterTypeToken(token)) {
+          return true;
+        }
+      }
     }
     for (const token of typeTokens) {
       if (filterToken.length >= 3 && token.endsWith(filterToken)) {
@@ -22863,7 +22942,7 @@ var MesoraDrawingToolBundle = (() => {
     return tagPath;
   }
   function isDiverterOverlay(overlay) {
-    return String((overlay == null ? void 0 : overlay.eType) || "").trim().toLowerCase().includes("diverter");
+    return isDiverterTypeToken(overlay == null ? void 0 : overlay.eType);
   }
   function createIgnitionFillBinding(tagPath, fallbackColor, existingBinding = null) {
     var _a, _b;
@@ -23060,10 +23139,17 @@ var MesoraDrawingToolBundle = (() => {
   var MOTOR_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
   var MOTOR_UDT_ROUTE_COLOR_MEMBERS = [
     "RouteColor",
-    "Route Color"
+    "Route Color",
+    "routeColor",
+    "route_color"
   ];
   var MOTOR_UDT_MEMBERS = Array.from(
     /* @__PURE__ */ new Set([...MOTOR_UDT_STATE_MEMBERS, ...MOTOR_UDT_ROUTE_COLOR_MEMBERS])
+  );
+  var DIVERTER_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
+  var DIVERTER_UDT_ROUTE_COLOR_MEMBERS = MOTOR_UDT_ROUTE_COLOR_MEMBERS;
+  var DIVERTER_UDT_MEMBERS = Array.from(
+    /* @__PURE__ */ new Set([...DIVERTER_UDT_STATE_MEMBERS, ...DIVERTER_UDT_ROUTE_COLOR_MEMBERS])
   );
   function isBinOverlay(overlay) {
     const eType = String((overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || "").trim().toLowerCase();
@@ -25117,6 +25203,9 @@ var MesoraDrawingToolBundle = (() => {
         if (basePath && isMotorOverlay(overlay)) {
           MOTOR_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
         }
+        if (basePath && isDiverterOverlay(overlay)) {
+          DIVERTER_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
+        }
       });
       coerceArray(shapes).forEach((shape) => {
         addPath(String((shape == null ? void 0 : shape.tagPath) || "").trim());
@@ -25759,6 +25848,34 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       });
       return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
+    const diverterRouteColorsBySvgKey = useMemo(() => {
+      const out = /* @__PURE__ */ new Map();
+      coerceArray(svgOverlays).forEach((overlay) => {
+        const id = String((overlay == null ? void 0 : overlay.id) || "").trim();
+        const name = String((overlay == null ? void 0 : overlay.name) || "").trim();
+        const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
+        if (!basePath || !isDiverterOverlay(overlay)) return;
+        const color2 = String(
+          getIgnitionTagValueForMembers(
+            ignitionTagValuesByPath,
+            basePath,
+            DIVERTER_UDT_ROUTE_COLOR_MEMBERS
+          ) || ""
+        ).trim();
+        if (!color2) return;
+        out.set(basePath, color2);
+        out.set(basePath.toLowerCase(), color2);
+        if (id) {
+          out.set(id, color2);
+          out.set(id.toLowerCase(), color2);
+        }
+        if (name) {
+          out.set(name, color2);
+          out.set(name.toLowerCase(), color2);
+        }
+      });
+      return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
     const overlayTagStateColorsByPath = useMemo(() => {
       const out = /* @__PURE__ */ new Map();
       genericHmiTagStateColorsByPath.forEach((value, key) => {
@@ -25774,8 +25891,11 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       motorRouteColorsBySvgKey.forEach((value, key) => {
         out.set(key, value);
       });
+      diverterRouteColorsBySvgKey.forEach((value, key) => {
+        out.set(key, value);
+      });
       return out;
-    }, [binTagStateColorsByPath, motorRouteColorsBySvgKey]);
+    }, [binTagStateColorsByPath, motorRouteColorsBySvgKey, diverterRouteColorsBySvgKey]);
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
       getModelValue(
@@ -27475,10 +27595,20 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       var _a2, _b2;
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
-      if (tool === "polyline" || tool === "trunkconn" && (drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id) {
+      const isDrawingPolyline = (drawing == null ? void 0 : drawing.kind) === "polyline" && drawing.id;
+      if ((tool === "polyline" || tool === "trunkconn") && isDrawingPolyline) {
+        if (event == null ? void 0 : event.shiftKey) {
+          finishActivePolylineAt(drawing.id, pointFromEvent(event), {
+            altKey: event == null ? void 0 : event.altKey,
+            ctrlKey: event == null ? void 0 : event.ctrlKey,
+            metaKey: event == null ? void 0 : event.metaKey,
+            shiftKey: false
+          });
+          return;
+        }
         removeCurrentPolylineSegment();
       }
-    }, [drawing, removeCurrentPolylineSegment, tool]);
+    }, [drawing, finishActivePolylineAt, pointFromEvent, removeCurrentPolylineSegment, tool]);
     const worldToPanelPoint = useCallback((worldX, worldY) => {
       var _a2;
       const svg = svgRef.current;

@@ -243,8 +243,13 @@ const LIVE_EQUIPMENT_STATUS_TAG_ALIASES = [
 ];
 const LIVE_CANVAS_PRIMARY_STATUS_TAG_ALIASES = [
   "HMI_State",
+  "hmi_state",
+  "HMIState",
+  "hmistate",
   "HMI_ModeStatus",
   "i_RouteID",
+  "RouteColor",
+  "Route Color",
 ];
 const POLYLINE_OVERLAY_SNAP_RADIUS_PX = 7;
 const POLYLINE_CONNECTION_SNAP_THRESHOLD = 10;
@@ -14981,9 +14986,50 @@ const CONTENT_FIT_HEADROOM = 0.94;
       setSelectedOverlayIds([]);
     }
 
-    // ? While drawing: right-click removes the last SAVED segment (2 entries back)
+    // ? While drawing: Shift + right-click finishes, plain right-click removes the last SAVED segment.
     if (tool === "polyline" && drawing?.mode === "draw-poly") {
       const id = drawing.id;
+      if (e.shiftKey) {
+        if (mouseMoveRafRef.current) {
+          window.cancelAnimationFrame(mouseMoveRafRef.current);
+          mouseMoveRafRef.current = 0;
+        }
+        pendingMouseMoveRef.current = null;
+
+        const finishEvent = {
+          clientX: Number(e.clientX) || 0,
+          clientY: Number(e.clientY) || 0,
+          altKey: !!e.altKey,
+          shiftKey: false,
+        };
+        const curShape = shapesRef.current?.find((s) => s.id === id);
+        if (curShape?.type === "polyline" && Array.isArray(curShape.points) && curShape.points.length >= 2) {
+          const pts0 = curShape.points;
+          const fixed0 = pts0.slice(0, -1);
+          const last0 = fixed0[fixed0.length - 1] || pts0[0];
+          const first0 = fixed0[0];
+          let nextP = svgPoint(finishEvent, { snapToGrid: true, disablePolylineSnap: true });
+          if (finishEvent.altKey && last0) {
+            nextP = constrainHV(last0, nextP);
+          }
+          if (!finishEvent.altKey) {
+            const endpointSnap = getNearestPolylineEndpointSnap(
+              nextP,
+              POLYLINE_ENDPOINT_SNAP_THRESHOLD,
+              { excludeShapeId: id, excludeIndexes: [0, pts0.length - 1] }
+            );
+            nextP = endpointSnap.point;
+          }
+          if (first0 && distance(nextP, first0) <= 12) {
+            nextP = { x: first0.x, y: first0.y };
+          }
+          const newPts = pts0.slice();
+          newPts[newPts.length - 1] = { x: Number(nextP?.x) || 0, y: Number(nextP?.y) || 0 };
+          applyShapeDrawPreview(id, { points: newPts });
+        }
+        finishPolyline();
+        return;
+      }
 
       setShapes((prev) =>
         prev.map((s) => {

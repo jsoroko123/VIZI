@@ -85,7 +85,7 @@ const IGNITION_TOOL_HELP_SECTIONS = Object.freeze([
         title: "Getting Started",
         items: Object.freeze([
             "Use Move to select, drag, resize, and open properties for items on the canvas.",
-            "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click or Enter finishes the line.",
+            "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click, Enter, or Shift plus right click finishes the line.",
             "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path."
         ])
     }),
@@ -240,6 +240,11 @@ function collectTagTypeMatchTokens(...values) {
     return tokens;
 }
 
+function isDiverterTypeToken(value) {
+    const token = normalizeTagTypeMatchToken(value);
+    return token.includes("diverter") || token.includes("twoway");
+}
+
 function tagMatchesTypeFilter(entry, typeFilter) {
     const filterToken = normalizeTagTypeMatchToken(typeFilter);
     if (!filterToken) {
@@ -260,6 +265,13 @@ function tagMatchesTypeFilter(entry, typeFilter) {
     }
     if (typeTokens.has(filterToken)) {
         return true;
+    }
+    if (isDiverterTypeToken(filterToken)) {
+        for (const token of typeTokens) {
+            if (isDiverterTypeToken(token)) {
+                return true;
+            }
+        }
     }
 
     for (const token of typeTokens) {
@@ -434,7 +446,7 @@ function getOverlayFillBindingTagPath(overlay) {
 }
 
 function isDiverterOverlay(overlay) {
-    return String(overlay?.eType || "").trim().toLowerCase().includes("diverter");
+    return isDiverterTypeToken(overlay?.eType);
 }
 
 function createIgnitionFillBinding(tagPath, fallbackColor, existingBinding = null) {
@@ -661,10 +673,17 @@ const IGNITION_FILL_STATE_MEMBERS = [
 const MOTOR_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
 const MOTOR_UDT_ROUTE_COLOR_MEMBERS = [
     "RouteColor",
-    "Route Color"
+    "Route Color",
+    "routeColor",
+    "route_color"
 ];
 const MOTOR_UDT_MEMBERS = Array.from(
     new Set([...MOTOR_UDT_STATE_MEMBERS, ...MOTOR_UDT_ROUTE_COLOR_MEMBERS])
+);
+const DIVERTER_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
+const DIVERTER_UDT_ROUTE_COLOR_MEMBERS = MOTOR_UDT_ROUTE_COLOR_MEMBERS;
+const DIVERTER_UDT_MEMBERS = Array.from(
+    new Set([...DIVERTER_UDT_STATE_MEMBERS, ...DIVERTER_UDT_ROUTE_COLOR_MEMBERS])
 );
 
 function isBinOverlay(overlay) {
@@ -3012,6 +3031,9 @@ export default function PerspectiveViziCanvasBridge(props) {
             if (basePath && isMotorOverlay(overlay)) {
                 MOTOR_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
             }
+            if (basePath && isDiverterOverlay(overlay)) {
+                DIVERTER_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
+            }
         });
 
         coerceArray(shapes).forEach((shape) => {
@@ -3754,6 +3776,35 @@ export default function PerspectiveViziCanvasBridge(props) {
         return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
 
+    const diverterRouteColorsBySvgKey = useMemo(() => {
+        const out = new Map();
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const id = String(overlay?.id || "").trim();
+            const name = String(overlay?.name || "").trim();
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!basePath || !isDiverterOverlay(overlay)) return;
+            const color = String(
+                getIgnitionTagValueForMembers(
+                    ignitionTagValuesByPath,
+                    basePath,
+                    DIVERTER_UDT_ROUTE_COLOR_MEMBERS
+                ) || ""
+            ).trim();
+            if (!color) return;
+            out.set(basePath, color);
+            out.set(basePath.toLowerCase(), color);
+            if (id) {
+                out.set(id, color);
+                out.set(id.toLowerCase(), color);
+            }
+            if (name) {
+                out.set(name, color);
+                out.set(name.toLowerCase(), color);
+            }
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
     const overlayTagStateColorsByPath = useMemo(() => {
         const out = new Map();
         genericHmiTagStateColorsByPath.forEach((value, key) => {
@@ -3770,8 +3821,11 @@ export default function PerspectiveViziCanvasBridge(props) {
         motorRouteColorsBySvgKey.forEach((value, key) => {
             out.set(key, value);
         });
+        diverterRouteColorsBySvgKey.forEach((value, key) => {
+            out.set(key, value);
+        });
         return out;
-    }, [binTagStateColorsByPath, motorRouteColorsBySvgKey]);
+    }, [binTagStateColorsByPath, motorRouteColorsBySvgKey, diverterRouteColorsBySvgKey]);
 
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
@@ -5695,10 +5749,20 @@ export default function PerspectiveViziCanvasBridge(props) {
         event?.preventDefault?.();
         event?.stopPropagation?.();
 
-        if (tool === "polyline" || tool === "trunkconn" && drawing?.kind === "polyline" && drawing.id) {
+        const isDrawingPolyline = drawing?.kind === "polyline" && drawing.id;
+        if ((tool === "polyline" || tool === "trunkconn") && isDrawingPolyline) {
+            if (event?.shiftKey) {
+                finishActivePolylineAt(drawing.id, pointFromEvent(event), {
+                    altKey: event?.altKey,
+                    ctrlKey: event?.ctrlKey,
+                    metaKey: event?.metaKey,
+                    shiftKey: false
+                });
+                return;
+            }
             removeCurrentPolylineSegment();
         }
-    }, [drawing, removeCurrentPolylineSegment, tool]);
+    }, [drawing, finishActivePolylineAt, pointFromEvent, removeCurrentPolylineSegment, tool]);
 
     const worldToPanelPoint = useCallback((worldX, worldY) => {
         const svg = svgRef.current;

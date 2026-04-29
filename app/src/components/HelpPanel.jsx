@@ -65,7 +65,7 @@ export default function HelpPanel({ showHelp = true, setShowHelp, inline = false
         summary: "Draw paths quickly and refine points in edit mode.",
         items: [
           "Choose Polyline tool to start drawing segments.",
-          "Press Enter or double-click to finish current polyline.",
+          "Press Enter, double-click, or Shift plus right-click to finish current polyline.",
           "Double-click an existing polyline to enter point edit mode.",
           "Right-click a point handle to delete segment entries.",
           "Hold Alt during drawing to constrain horizontal or vertical movement.",

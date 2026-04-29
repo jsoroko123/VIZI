@@ -307,6 +307,11 @@ function collectTypeMatchTokens(...values) {
   return tokens;
 }
 
+function isDiverterTypeToken(value) {
+  const token = normalizeTypeMatchToken(value);
+  return token.includes("diverter") || token.includes("twoway");
+}
+
 function tagMatchesEType(tag, eType) {
   const filterToken = normalizeTypeMatchToken(eType);
   if (!filterToken) return true;
@@ -321,6 +326,11 @@ function tagMatchesEType(tag, eType) {
   );
   if (!typeTokens.size) return false;
   if (typeTokens.has(filterToken)) return true;
+  if (isDiverterTypeToken(filterToken)) {
+    for (const token of typeTokens) {
+      if (isDiverterTypeToken(token)) return true;
+    }
+  }
   for (const token of typeTokens) {
     if (filterToken.length >= 3 && token.endsWith(filterToken)) return true;
     if (token.length >= 3 && filterToken.endsWith(token)) return true;
@@ -650,7 +660,7 @@ export default function PropertiesPanel({
   const isPoly = isSingle && singleKind === "Polyline";
   const isText = isSingle && singleKind === "Text";
   const isBinSvg = isSvg && String(hudFields?.eType || "").trim().toLowerCase().startsWith("bin");
-  const isDiverterSvg = isSvg && String(hudFields?.eType || "").trim().toLowerCase().includes("diverter");
+  const isDiverterSvg = isSvg && isDiverterTypeToken(hudFields?.eType);
   const isShapeGroup = !isSingle && (Array.isArray(selectedIds) ? selectedIds.length : 0) > 0;
   const isOverlayGroup = !isSingle && (Array.isArray(selectedOverlayIds) ? selectedOverlayIds.length : 0) > 0;
   const isStrokeGroup = !isSingle && (isShapeGroup || isOverlayGroup);

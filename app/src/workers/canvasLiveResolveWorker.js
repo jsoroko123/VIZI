@@ -1,5 +1,5 @@
 const EMPTY_VALUES = Object.freeze({});
-const LIVE_STATE_MEMBER_ALIASES = ["HMI_State", "HMIState", "i_HMIState", "o_HMIState", "State"];
+const LIVE_STATE_MEMBER_ALIASES = ["HMI_State", "hmi_state", "HMIState", "hmistate", "i_HMIState", "o_HMIState", "State"];
 const LIVE_ROUTE_ID_MEMBER_ALIASES = ["RouteID", "RouteNumber", "RouteNo", "Route"];
 
 let sceneState = {
@@ -28,6 +28,11 @@ function hasValue(value) {
 
 function normalizeRouteTagKey(value) {
   return normalizeKey(value).replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function isDiverterEType(value) {
+  const key = normalizeRouteTagKey(value);
+  return key.includes("diverter") || key.includes("twoway");
 }
 
 function isRouteIdTagKey(value) {
@@ -340,6 +345,7 @@ function normalizeScene(sceneRaw) {
         id,
         tagPath: normalizeKey(overlay?.tagPath),
         name: normalizeKey(overlay?.name),
+        sourceKey: normalizeKey(overlay?.sourceKey),
         eType: normalizeKey(overlay?.eType),
         diverterMode: normalizeKey(overlay?.diverterMode),
         tx: Number.isFinite(Number(overlay?.tx)) ? Number(overlay.tx) : 0,
@@ -582,7 +588,12 @@ function resolveLiveVisualState(index, scene) {
   const parseDiverterStateValue = (raw) => {
     if (raw == null || raw === "") return "";
     const text = String(raw).trim();
+    if (!text) return "";
     const lower = text.toLowerCase();
+    if (lower.includes("fault")) return "";
+    if (lower.includes("no position")) return "";
+    if (lower.includes("moving straight")) return "straight";
+    if (lower.includes("moving divert")) return "divert";
     if (lower.includes("straight")) return "straight";
     if (lower.includes("divert")) return "divert";
     const num = Number(text);
@@ -674,6 +685,25 @@ function resolveLiveVisualState(index, scene) {
     return bestDist <= threshold ? best : "";
   };
 
+  const isDiverterEntryPoint = (overlay, pt) => {
+    if (!overlay || !pt || !overlay?.bbox) return false;
+    const bbox = overlay.bbox;
+    const sx = overlayScaleX(overlay);
+    const sy = overlayScaleY(overlay);
+    const bx = Number(bbox?.x) || 0;
+    const by = Number(bbox?.y) || 0;
+    const bw = Math.max(0.0001, Number(bbox?.width) || 1);
+    const bh = Math.max(0.0001, Number(bbox?.height) || 1);
+    const localX = (Number(pt.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
+    const localY = (Number(pt.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
+    const nx = (localX - bx) / bw;
+    const ny = (localY - by) / bh;
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) return false;
+    if (nx <= 0.32 && ny >= -0.28 && ny <= 0.72) return true;
+    const mirroredKey = String(overlay?.sourceKey || overlay?.name || "").toLowerCase();
+    return mirroredKey.includes("mirrored") && nx >= 0.68 && ny >= -0.28 && ny <= 0.72;
+  };
+
   const outputBranchAtPoint = (overlay, pt, threshold = 40) => {
     const bbox = overlay?.bbox;
     if (!overlay || !pt || !bbox) return "";
@@ -706,7 +736,7 @@ function resolveLiveVisualState(index, scene) {
   const overlayFlowColorFor = (overlay, entryColor = "") => {
     const overlayType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
     const incomingEntryColor = normalizeActiveColor(entryColor);
-    if (overlayType.includes("diverter")) return incomingEntryColor;
+    if (isDiverterEType(overlayType)) return incomingEntryColor;
     return normalizeActiveColor(routeColorForOverlay(overlay) || tagColorFor(overlay?.tagPath) || routeStrokeForOverlay(overlay));
   };
 
@@ -774,7 +804,7 @@ function resolveLiveVisualState(index, scene) {
         const localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, overlayScaleX(overlay));
         const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, overlayScaleY(overlay));
         const branch = branchByConnector(overlay, pt, 40) || branchAtLocalPoint(localX, localY, overlay.bbox);
-        if (branch !== "entry") continue;
+        if (branch !== "entry" && !isDiverterEntryPoint(overlay, pt)) continue;
         const entryEndpointIndex = idx === 0 ? 0 : shape.points.length - 1;
         const connectedIncomingColor = normalizeActiveColor(
           connectedColorFromPolyline(shape, entryEndpointIndex, {
@@ -787,7 +817,8 @@ function resolveLiveVisualState(index, scene) {
           bestColor = connectedIncomingColor;
           continue;
         }
-        const fallbackColor = normalizeActiveColor(tagColorFor(shape?.tagPath) || shape?.stroke);
+        const prepassColor = normalizeActiveColor(prepassPolylineColorById[String(shape?.id || "")]);
+        const fallbackColor = normalizeActiveColor(prepassColor || tagColorFor(shape?.tagPath) || shape?.stroke);
         if (!fallbackColor) continue;
         bestDistance = dist;
         bestColor = fallbackColor;
@@ -805,7 +836,7 @@ function resolveLiveVisualState(index, scene) {
     let best = { matched: false, active: false, color: "", dist: Number.POSITIVE_INFINITY };
     for (const overlay of overlays) {
       const overlayType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
-      if (!overlayType.includes("diverter")) continue;
+      if (!isDiverterEType(overlayType)) continue;
       const rect = overlayWorldRect(overlay);
       if (!rect) continue;
       const dist = distancePointToRect(pt, rect);
@@ -843,12 +874,13 @@ function resolveLiveVisualState(index, scene) {
       const dist = distancePointToRect(pt, rect);
       if (dist > threshold || dist >= bestDistance) continue;
       const overlayType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
-      const entryColor = overlayType.includes("diverter")
+      const isDiverterOverlay = isDiverterEType(overlayType);
+      const entryColor = isDiverterOverlay
         ? diverterEntryColorFor(overlay, { excludedOverlayIds: [...excludedOverlayIds, overlayId] })
         : "";
       const incomingEntryColor = normalizeActiveColor(entryColor);
       const color = overlayFlowColorFor(overlay, entryColor);
-      if (overlayType.includes("diverter") && !incomingEntryColor) continue;
+      if (isDiverterOverlay && !incomingEntryColor) continue;
       if (!color) continue;
       bestDistance = dist;
       bestColor = color;
@@ -1247,7 +1279,7 @@ function resolveLiveVisualState(index, scene) {
   const diverterEntryColorById = {};
   overlays.forEach((overlay) => {
     const overlayType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
-    if (!overlayType.includes("diverter")) return;
+    if (!isDiverterEType(overlayType)) return;
     diverterEntryColorById[String(overlay.id || "")] = normalizeActiveColor(
       diverterEntryColorFor(overlay, { excludedOverlayIds: [String(overlay.id || "")] })
     );
