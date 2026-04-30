@@ -100,9 +100,13 @@
       "class": "Terra/EquipmentStyles/AutoManButton/Auto",
       "text": "Auto"
     },
+    "AutoManButtonMaintenance": {
+      "class": "Terra/EquipmentStyles/AutoManButton/Maintenance",
+      "text": "Maintenance"
+    },
     "AutoManButtonMainentenance": {
-      "class": "Terra/EquipmentStyles/AutoManButton/Mainentenance",
-      "text": "Mainentenance"
+      "class": "Terra/EquipmentStyles/AutoManButton/Maintenance",
+      "text": "Maintenance"
     },
     "AutoManButtonManual": {
       "class": "Terra/EquipmentStyles/AutoManButton/Manual",
@@ -668,7 +672,7 @@
     },
     "AutoManButton": {
       "1": "AutoManButtonAuto",
-      "2": "AutoManButtonMainentenance",
+      "2": "AutoManButtonMaintenance",
       "3": "AutoManButtonManual"
     },
     "BatchScale": {

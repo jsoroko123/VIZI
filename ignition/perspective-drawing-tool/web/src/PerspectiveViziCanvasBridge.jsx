@@ -1428,16 +1428,19 @@ const MOTOR_UDT_ROUTE_COLOR_MEMBERS = [
 const MOTOR_UDT_MEMBERS = Array.from(
     new Set([...MOTOR_UDT_STATE_MEMBERS, ...MOTOR_UDT_ROUTE_COLOR_MEMBERS])
 );
+const MOTOR_UDT_CONNECTION_MEMBERS = MOTOR_UDT_STATE_MEMBERS;
 const DIVERTER_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
 const DIVERTER_UDT_ROUTE_COLOR_MEMBERS = MOTOR_UDT_ROUTE_COLOR_MEMBERS;
 const DIVERTER_UDT_MEMBERS = Array.from(
     new Set([...DIVERTER_UDT_STATE_MEMBERS, ...DIVERTER_UDT_ROUTE_COLOR_MEMBERS])
 );
+const DIVERTER_UDT_CONNECTION_MEMBERS = DIVERTER_UDT_STATE_MEMBERS;
 const DOC_DIC_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
 const DOC_DIC_UDT_ROUTE_COLOR_MEMBERS = MOTOR_UDT_ROUTE_COLOR_MEMBERS;
 const DOC_DIC_UDT_MEMBERS = Array.from(
     new Set([...DOC_DIC_UDT_STATE_MEMBERS, ...DOC_DIC_UDT_ROUTE_COLOR_MEMBERS])
 );
+const DOC_DIC_UDT_CONNECTION_MEMBERS = DOC_DIC_UDT_STATE_MEMBERS;
 
 function isBinOverlay(overlay) {
     const eType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
@@ -1631,17 +1634,19 @@ function getOverlayConnectionCheckPaths(overlay) {
         });
     };
 
+    push(basePath);
+
     const leaf = basePath.split(/[/.]/).map((entry) => entry.trim()).filter(Boolean).pop() || "";
     if (isIgnitionFillStateMemberName(leaf)) {
-        push(basePath);
+        return out;
     } else if (isBinOverlay(overlay)) {
         pushMembers(BIN_UDT_MEMBERS);
     } else if (isMotorOverlay(overlay)) {
-        pushMembers(MOTOR_UDT_MEMBERS);
+        pushMembers(MOTOR_UDT_CONNECTION_MEMBERS);
     } else if (isDiverterOverlay(overlay)) {
-        pushMembers(DIVERTER_UDT_MEMBERS);
+        pushMembers(DIVERTER_UDT_CONNECTION_MEMBERS);
     } else if (isDocOrDicOverlay(overlay)) {
-        pushMembers(DOC_DIC_UDT_MEMBERS);
+        pushMembers(DOC_DIC_UDT_CONNECTION_MEMBERS);
     } else if (shouldQueryOverlayFillStateMembers(overlay)) {
         pushMembers(IGNITION_FILL_STATE_MEMBERS);
     }
@@ -1654,13 +1659,21 @@ function getOverlayConnectionCheckPaths(overlay) {
 
 function getOverlayConnectionIssue(overlay, tagMetaMap) {
     const paths = getOverlayConnectionCheckPaths(overlay);
+    let firstIssue = null;
     for (const path of paths) {
+        const meta = getIgnitionTagMeta(tagMetaMap, path);
+        if (!meta) {
+            continue;
+        }
         const issue = getIgnitionTagQualityIssue(tagMetaMap, path);
-        if (issue) {
-            return issue;
+        if (!issue) {
+            return null;
+        }
+        if (!firstIssue) {
+            firstIssue = issue;
         }
     }
-    return null;
+    return firstIssue;
 }
 
 function resolveIgnitionStateMappingColor(mappings, rawValue) {

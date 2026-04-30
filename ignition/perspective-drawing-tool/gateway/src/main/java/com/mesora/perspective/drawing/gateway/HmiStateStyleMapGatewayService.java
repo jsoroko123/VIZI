@@ -3,6 +3,7 @@ package com.mesora.perspective.drawing.gateway;
 import static com.mesora.perspective.drawing.common.MesoraPerspectiveDrawing.MODULE_ID;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,8 +20,9 @@ final class HmiStateStyleMapGatewayService {
 
     private static final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     private static final String FILE_NAME = "hmi-state-style-maps.json";
+    private static final String DEFAULT_RESOURCE_NAME = "/" + FILE_NAME;
     private static final String README_FILE_NAME = "README-hmi-state-style-maps.txt";
-    private static final String DEFAULT_JSON = String.join(
+    private static final String FALLBACK_DEFAULT_JSON = String.join(
         System.lineSeparator(),
         "{",
         "  \"classes\": {",
@@ -138,7 +140,9 @@ final class HmiStateStyleMapGatewayService {
         try {
             Files.createDirectories(configDirectory);
             if (!Files.exists(styleMapFile)) {
-                Files.writeString(styleMapFile, DEFAULT_JSON, StandardCharsets.UTF_8);
+                Files.writeString(styleMapFile, loadDefaultJson(), StandardCharsets.UTF_8);
+            } else if (isLegacyBundledDefault(styleMapFile)) {
+                Files.writeString(styleMapFile, loadDefaultJson(), StandardCharsets.UTF_8);
             }
 
             Path readmePath = configDirectory.resolve(README_FILE_NAME);
@@ -152,6 +156,34 @@ final class HmiStateStyleMapGatewayService {
                 String.valueOf(e.getMessage())
             );
         }
+    }
+
+    private String loadDefaultJson() {
+        try (InputStream stream = HmiStateStyleMapGatewayService.class.getResourceAsStream(DEFAULT_RESOURCE_NAME)) {
+            if (stream != null) {
+                return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            }
+        } catch (IOException e) {
+            logger.warnf(
+                "Failed to load bundled HMI state style map defaults '%s': %s",
+                DEFAULT_RESOURCE_NAME,
+                String.valueOf(e.getMessage())
+            );
+        }
+        return FALLBACK_DEFAULT_JSON;
+    }
+
+    private boolean isLegacyBundledDefault(Path file) {
+        try {
+            String raw = Files.readString(file, StandardCharsets.UTF_8);
+            return normalizeJsonText(raw).equals(normalizeJsonText(FALLBACK_DEFAULT_JSON));
+        } catch (IOException _ignored) {
+            return false;
+        }
+    }
+
+    private String normalizeJsonText(String value) {
+        return value == null ? "" : value.replace("\r\n", "\n").trim();
     }
 
     private String resolveStyleMapDisplayPath(Path resolvedPath) {

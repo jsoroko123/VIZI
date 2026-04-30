@@ -138,6 +138,18 @@ For a local dev certificate chain on Windows, you can generate a root CA + signe
 
 That writes `private/mykeys.pfx`, `private/certificates.p7b`, and a matching local `sign.props`.
 
+For production, use a code-signing certificate issued by a Certificate Authority. Once you have a `.pfx` or `.p12` containing the private key and a full `.p7b` certificate chain from the CA, configure the project with:
+
+```powershell
+.\scripts\setup-production-signing.ps1 `
+  -PfxPath "C:\path\to\prod-signing.pfx" `
+  -ChainPath "C:\path\to\prod-chain.p7b" `
+  -Alias "your-cert-alias" `
+  -BuildSigned
+```
+
+If the PFX contains exactly one private key entry, `-Alias` can be omitted and the script will detect it. The script copies the certificate files into `private/`, validates them with `keytool`, writes `sign.props`, and can run `buildSigned`.
+
 Useful commands:
 
 ```powershell
@@ -147,6 +159,32 @@ Useful commands:
 ```
 
 With signing configured, the signed module will be emitted from `build/` instead of only `MesoraPerspectiveDrawingTool.unsigned.modl`.
+
+## Local Gateway Install
+
+Use the local installer script when deploying to a Windows Ignition Gateway outside Docker. It discovers the install directory from the `Ignition` Windows service, `IGNITION_HOME`, common install paths, or an explicit `-IgnitionHome` parameter. It then copies the built module into that Gateway's `user-lib\modules` folder and updates that Gateway's `data\modules.json` entry so it does not keep pointing at a stale path.
+
+Typical dev install:
+
+```powershell
+cd ignition\perspective-drawing-tool
+.\gradlew buildSigned
+.\scripts\install-local-module.ps1 -AllowUnsignedDev -Restart
+```
+
+Install to a specific Gateway:
+
+```powershell
+.\scripts\install-local-module.ps1 -IgnitionHome "C:\IgnitionDev" -AllowUnsignedDev -Restart
+```
+
+Preview without changing files:
+
+```powershell
+.\scripts\install-local-module.ps1 -IgnitionHome "C:\IgnitionDev" -AllowUnsignedDev -Restart -DryRun
+```
+
+`-AllowUnsignedDev` adds `-Dignition.allowunsignedmodules=true` to that Gateway's `data\ignition.conf`. Use it only for local development or self-signed development certificates. For production, install a module signed with a certificate chain accepted by the target Gateway and omit that flag.
 
 ## Docker Dev Gateway
 

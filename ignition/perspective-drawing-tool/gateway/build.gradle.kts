@@ -16,3 +16,9 @@ dependencies {
     compileOnly(libs.ignition.perspective.common)
     compileOnly(libs.ia.gson)
 }
+
+tasks.named<ProcessResources>("processResources") {
+    from(projectDir.resolve("hmi-state-style-maps.json")) {
+        into("")
+    }
+}
