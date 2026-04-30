@@ -54,6 +54,11 @@ const LIVE_MANUAL_MODE_MEMBER_ALIASES = [
   "ManualMode",
   "StsManual",
   "ManualActive",
+  "i_HandMode",
+  "o_HandMode",
+  "HandMode",
+  "StsHand",
+  "HandActive",
 ];
 const LIVE_AUTO_MODE_MEMBER_ALIASES = [
   "i_AutoMode",
@@ -151,6 +156,11 @@ const normalizeIgnitionStyleClassName = (value) => {
 };
 
 const isIgnitionStyleReference = (value) => Boolean(normalizeIgnitionStyleClassName(value));
+
+const isDocOrDicStatePaintEType = (value) => {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return key.startsWith("doc") || key.startsWith("dic");
+};
 
 ChartJS.register(
   CategoryScale,
@@ -253,6 +263,7 @@ function CanvasSvg({
   binLockedInByOverlayId,
   binLockedOutByOverlayId,
   overlayHmiStateColorByOverlayId,
+  overlayConnectionIssueByOverlayId = {},
   onWidgetDurationPresetChange,
   onTrendTagDrop,
   hiddenTagBubbleIds,
@@ -4685,7 +4696,7 @@ function CanvasSvg({
     if (Number.isFinite(Number(value))) return Number(value) !== 0;
     const text = String(value || "").trim().toLowerCase();
     if (!text) return null;
-    if (["true", "on", "yes", "manual"].includes(text)) return true;
+    if (["true", "on", "yes", "manual", "hand"].includes(text)) return true;
     if (["false", "off", "no", "auto"].includes(text)) return false;
     return null;
   };
@@ -4693,9 +4704,13 @@ function CanvasSvg({
   const getLiveValueForExactOrSuffixKey = (rawKey) => {
     const key = String(rawKey || "").replace(/\r?\n/g, "").trim();
     if (!key) return null;
+    const ignitionExact = readIgnitionTagValueForPath(key);
+    if (ignitionExact != null) return ignitionExact;
     const exact = readLiveValue(key);
     if (exact != null) return exact;
     const lowerKey = key.toLowerCase();
+    const ignitionLowerExact = readIgnitionTagValueForPath(lowerKey);
+    if (ignitionLowerExact != null) return ignitionLowerExact;
     const lowerExact = readLiveValue(lowerKey);
     if (lowerExact != null) return lowerExact;
     const dotSuffix = `.${lowerKey}`;
@@ -4783,11 +4798,12 @@ function CanvasSvg({
       if (raw == null || raw === "") return "";
       const text = String(raw || "").trim();
       const lower = text.toLowerCase();
-      if (lower.includes("manual")) return "manual";
+      if (lower.includes("manual") || lower.includes("hand")) return "manual";
       if (lower.includes("auto")) return "auto";
       if (lower.includes("maint")) return "maintenance";
       const num = Number(text);
       if (Number.isFinite(num)) {
+        if (num === 3) return "manual";
         const mask = Math.trunc(num);
         if ((mask & 8) === 8) return "maintenance";
         if ((mask & 4) === 4) return "manual";
@@ -5606,6 +5622,24 @@ function CanvasSvg({
       .join("; ");
   };
 
+  const stripSvgStylePaintProperty = (styleText, propertyName) => {
+    const property = String(propertyName || "").trim().toLowerCase();
+    if (!property) return String(styleText || "").trim();
+    return String(styleText || "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => {
+        if (!part) return false;
+        const colon = part.indexOf(":");
+        if (colon < 0) return true;
+        const name = part.slice(0, colon).trim().toLowerCase();
+        if (name !== property) return true;
+        const value = part.slice(colon + 1).trim().toLowerCase();
+        return value === "none" || value === "transparent";
+      })
+      .join("; ");
+  };
+
   const applyIgnitionStyleClassToSvg = (inner, className) => {
     const classText = String(className || "").trim();
     const source = String(inner || "");
@@ -5619,11 +5653,14 @@ function CanvasSvg({
       nodes.forEach((node) => {
         const fillAttr = String(node.getAttribute("fill") || "").trim().toLowerCase();
         const styleAttr = String(node.getAttribute("style") || "");
-        if (fillAttr === "none" || /(?:^|;)\s*fill\s*:\s*none\s*(?:;|$)/i.test(styleAttr)) return;
+        const hasFillNone = fillAttr === "none" || /(?:^|;)\s*fill\s*:\s*none\s*(?:;|$)/i.test(styleAttr);
+        if (hasFillNone) return;
         appendSvgClassName(node, classText);
-        if (node.hasAttribute("fill")) node.removeAttribute("fill");
+        if (node.hasAttribute("fill") && fillAttr !== "none" && fillAttr !== "transparent") {
+          node.removeAttribute("fill");
+        }
         if (styleAttr) {
-          const nextStyle = stripSvgStyleProperty(styleAttr, "fill");
+          const nextStyle = stripSvgStylePaintProperty(styleAttr, "fill");
           if (nextStyle) node.setAttribute("style", nextStyle);
           else node.removeAttribute("style");
         }
@@ -7428,6 +7465,7 @@ function CanvasSvg({
       const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
       const isDiverterOverlay = isDiverterEType(overlayEType);
       const isBinOverlay = overlayEType === "bin" || overlayEType.startsWith("bin");
+      const statePaintsStroke = isDocOrDicStatePaintEType(overlayEType);
       const dynamicBinProductLabel = String(
         binProductLabelByOverlayId?.[id] || ""
       ).trim();
@@ -7529,11 +7567,14 @@ function CanvasSvg({
         }
         out.set(id, {
           inner: (() => {
-            const strokeColor = hasCustomOverlayStroke ? overlayStroke : "";
             const defaultOverlayFill = hasCustomOverlayFill ? overlayFill : themeFillDefault;
             const stateStyleClass = isBinOverlay
               ? ""
               : (overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass);
+            const stateStrokeColor = statePaintsStroke && !stateStyleClass
+              ? (overlayStateColor || boundActiveFillColor || "")
+              : "";
+            const strokeColor = hasCustomOverlayStroke ? overlayStroke : stateStrokeColor;
             let nextInner = applyOverlayPaintOverrides(inner, {
               fillColor: isBinOverlay || stateStyleClass ? "" : (overlayStateColor || defaultOverlayFill),
               strokeColor,
@@ -7627,6 +7668,9 @@ function CanvasSvg({
       const effectiveStrokeColor = isDiverterOverlay
         ? ""
         : (routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : (useForcedStroke ? routeStroke : "")));
+      const stateStrokeColor = statePaintsStroke && !activeFillStyleClass
+        ? (tagFill || overlayStateColor || "")
+        : "";
 
       if (tagFill) {
         const key = String(overlay.tagPath || overlay.id || "");
@@ -7671,7 +7715,7 @@ function CanvasSvg({
       if (!isDiverterOverlay) {
         inner = applyOverlayPaintOverrides(inner, {
           fillColor: isFaultSimulated ? "" : effectiveFillColor,
-          strokeColor: hasCustomOverlayStroke ? overlayStroke : "",
+          strokeColor: hasCustomOverlayStroke ? overlayStroke : (isFaultSimulated ? "" : stateStrokeColor),
           strokeWidth: overlayStrokeWidth,
         });
       }
@@ -8239,18 +8283,27 @@ function CanvasSvg({
     overlayRenderOverlays,
     liveRenderTick,
     effectiveSvgLiveValuesByGroupPath,
+    ignitionTagValuesByPath,
     liveLookupKeyList,
     overlayLocalBBox,
     inv,
   ]);
   const overlayIndicatorLayer = useMemo(() => {
-    if (renderLiveVisuals || liveTopologyStressMode || interactionActive || !overlayRenderOverlays.length) {
+    if (liveTopologyStressMode || interactionActive || !overlayRenderOverlays.length) {
       return null;
     }
     return (
       <g>
         {overlayRenderOverlays.map((o) => {
           if (o?.embeddedView) return null;
+          const overlayId = String(o?.id || "").trim();
+          const connectionIssue = renderLiveVisuals && overlayId
+            ? overlayConnectionIssueByOverlayId?.[overlayId]
+            : null;
+          const connectionWarning = String(connectionIssue?.message || "").trim();
+          const connectionPath = String(connectionIssue?.path || "").trim();
+          const connectionQuality = String(connectionIssue?.quality || "").trim();
+          const connectionError = String(connectionIssue?.error || "").trim();
           const overlayTagPath = String(o?.tagPath || "").trim();
           const overlayEType = String(o?.eType || o?.name || "").trim();
           const widgetKind = String(o?.widget?.kind || "").trim().toLowerCase();
@@ -8269,23 +8322,37 @@ function CanvasSvg({
             !!String(o?.binBindingKey || "").trim() ||
             !!String(binNameLabelByOverlayId?.[String(o?.id || "")] || "").trim() ||
             !!String(binProductLabelByOverlayId?.[String(o?.id || "")] || "").trim();
-          const overlayTagWarning = isBinOverlay
-            ? hasBinDbBinding
-              ? ""
-              : "Bin not bound to database row"
-            : widgetUsesSeriesTags
-            ? !widgetSeriesTags.length
-              ? "Widget series tags missing"
-              : ""
-            : !overlayTagPath
-            ? "SVG not tagged"
-            : !hasKnownOverlayTagPath(overlayTagPath)
-            ? "Bad tag mapping"
-            : "";
+          const designTagWarning = renderLiveVisuals
+            ? ""
+            : isBinOverlay
+              ? hasBinDbBinding
+                ? ""
+                : "Bin not bound to database row"
+              : widgetUsesSeriesTags
+              ? !widgetSeriesTags.length
+                ? "Widget series tags missing"
+                : ""
+              : !overlayTagPath
+              ? "SVG not tagged"
+              : !hasKnownOverlayTagPath(overlayTagPath)
+              ? "Bad tag mapping"
+              : "";
+          const overlayTagWarning = connectionWarning || designTagWarning;
           if (!overlayTagWarning) return null;
           const bb = o?.bbox || overlayLocalBBox(o.id);
           if (!bb) return null;
           const wr = overlayWorldRect(o, bb);
+          const isConnectionWarning = Boolean(connectionWarning);
+          const badgeStroke = isConnectionWarning ? "#dc2626" : "#ef4444";
+          const badgeFill = isConnectionWarning ? "rgba(254,242,242,0.98)" : "rgba(255,245,245,0.98)";
+          const badgeText = isConnectionWarning ? "!" : "!";
+          const titlePath = connectionPath || overlayTagPath || "-";
+          const titleDetail = isConnectionWarning
+            ? [
+                connectionQuality ? `Quality: ${connectionQuality}` : "",
+                connectionError ? `Error: ${connectionError}` : "",
+              ].filter(Boolean).join(" | ")
+            : "";
           const r = 8 * inv;
           const cx = wr.x + wr.w + 12 * inv;
           const cy = wr.y + Math.max(10 * inv, r + 1 * inv);
@@ -8305,7 +8372,7 @@ function CanvasSvg({
                 y1={anchorY}
                 x2={lineEndX}
                 y2={lineEndY}
-                stroke="#ef4444"
+                stroke={badgeStroke}
                 strokeWidth={1.15 * inv}
                 strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
@@ -8314,8 +8381,8 @@ function CanvasSvg({
                 cx={cx}
                 cy={cy}
                 r={r}
-                fill="rgba(255,245,245,0.98)"
-                stroke="#ef4444"
+                fill={badgeFill}
+                stroke={badgeStroke}
                 strokeWidth={1.2 * inv}
                 vectorEffect="non-scaling-stroke"
               />
@@ -8329,22 +8396,23 @@ function CanvasSvg({
                 fontWeight={900}
                 pointerEvents="none"
               >
-                !
+                {badgeText}
               </text>
-              <title>{`${overlayTagWarning}: ${overlayTagPath || "-"}`}</title>
+              <title>{`${overlayTagWarning}: ${titlePath}${titleDetail ? ` (${titleDetail})` : ""}`}</title>
             </g>
           );
         })}
       </g>
     );
   }, [
-    isLiveMode,
+    renderLiveVisuals,
     liveTopologyStressMode,
     interactionActive,
     overlayRenderOverlays,
     binNameLabelByOverlayId,
     binProductLabelByOverlayId,
     knownOverlayTagPaths,
+    overlayConnectionIssueByOverlayId,
     inv,
   ]);
   const handleDelegatedShapeMouseDown = useCallback((e) => {

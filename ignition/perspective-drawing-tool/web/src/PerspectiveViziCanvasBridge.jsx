@@ -1289,19 +1289,37 @@ function withIncrementedOverlayTagPath(overlay, amount = 1) {
     return applyOverlayIgnitionFillBinding(overlay, nextTagPath);
 }
 
-function normalizeIgnitionTagValues(payload) {
-    const out = new Map();
+function normalizeIgnitionTagValuePayload(payload) {
+    const values = new Map();
+    const meta = new Map();
 
     coerceArray(payload?.values ?? payload).forEach((entry) => {
         const path = String(entry?.path ?? "").trim();
         if (!path) {
             return;
         }
-        out.set(path, entry?.value ?? null);
-        out.set(path.toLowerCase(), entry?.value ?? null);
+        const value = entry?.value ?? null;
+        const quality = String(entry?.quality ?? "").trim();
+        const timestamp = String(entry?.timestamp ?? "").trim();
+        const error = String(entry?.error ?? "").trim();
+        const record = {
+            path,
+            value,
+            quality,
+            timestamp,
+            error
+        };
+        values.set(path, value);
+        values.set(path.toLowerCase(), value);
+        meta.set(path, record);
+        meta.set(path.toLowerCase(), record);
     });
 
-    return out;
+    return { values, meta };
+}
+
+function normalizeIgnitionTagValues(payload) {
+    return normalizeIgnitionTagValuePayload(payload).values;
 }
 
 function chunkIgnitionTagValuePaths(paths, maxEncodedChars = 6000) {
@@ -1355,6 +1373,51 @@ const IGNITION_FILL_STATE_MEMBERS = [
     "o_HMIState",
     "State"
 ];
+const IGNITION_MODE_STATUS_MEMBERS = [
+    "Mode_Status",
+    "ModeStatus",
+    "Control_Status",
+    "ControlStatus",
+    "i_ModeStatus",
+    "o_ModeStatus",
+    "StsMode",
+    "HMI_ModeStatus"
+];
+const IGNITION_MANUAL_MODE_MEMBERS = [
+    "i_ManualMode",
+    "o_ManualMode",
+    "ManualMode",
+    "StsManual",
+    "ManualActive",
+    "i_HandMode",
+    "o_HandMode",
+    "HandMode",
+    "StsHand",
+    "HandActive"
+];
+const IGNITION_AUTO_MODE_MEMBERS = [
+    "i_AutoMode",
+    "o_AutoMode",
+    "AutoMode",
+    "StsAuto",
+    "AutoActive"
+];
+const IGNITION_MAINTENANCE_MODE_MEMBERS = [
+    "i_MaintenanceMode",
+    "o_MaintenanceMode",
+    "MaintenanceMode",
+    "MaintMode",
+    "StsMaint",
+    "MaintActive"
+];
+const IGNITION_MODE_MEMBERS = Array.from(
+    new Set([
+        ...IGNITION_MODE_STATUS_MEMBERS,
+        ...IGNITION_MANUAL_MODE_MEMBERS,
+        ...IGNITION_AUTO_MODE_MEMBERS,
+        ...IGNITION_MAINTENANCE_MODE_MEMBERS
+    ])
+);
 const MOTOR_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
 const MOTOR_UDT_ROUTE_COLOR_MEMBERS = [
     "RouteColor",
@@ -1370,6 +1433,11 @@ const DIVERTER_UDT_ROUTE_COLOR_MEMBERS = MOTOR_UDT_ROUTE_COLOR_MEMBERS;
 const DIVERTER_UDT_MEMBERS = Array.from(
     new Set([...DIVERTER_UDT_STATE_MEMBERS, ...DIVERTER_UDT_ROUTE_COLOR_MEMBERS])
 );
+const DOC_DIC_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
+const DOC_DIC_UDT_ROUTE_COLOR_MEMBERS = MOTOR_UDT_ROUTE_COLOR_MEMBERS;
+const DOC_DIC_UDT_MEMBERS = Array.from(
+    new Set([...DOC_DIC_UDT_STATE_MEMBERS, ...DOC_DIC_UDT_ROUTE_COLOR_MEMBERS])
+);
 
 function isBinOverlay(overlay) {
     const eType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
@@ -1381,8 +1449,40 @@ function isMotorOverlay(overlay) {
     return eType === "motor" || eType.startsWith("motor");
 }
 
+function isDocOrDicTypeToken(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+        return false;
+    }
+    const parts = raw.split(/[^a-z0-9]+/).filter(Boolean);
+    if (parts.includes("doc") || parts.includes("dic")) {
+        return true;
+    }
+    const compact = raw.replace(/[^a-z0-9]/g, "");
+    return compact === "doc" || compact === "dic" || compact.endsWith("doc") || compact.endsWith("dic");
+}
+
+function isDocOrDicOverlay(overlay) {
+    return [
+        overlay?.eType,
+        overlay?.udtName,
+        overlay?.udtType,
+        overlay?.templateName,
+        overlay?.typeId,
+        overlay?.name,
+        overlay?.sourceKey
+    ].some(isDocOrDicTypeToken);
+}
+
 function shouldQueryOverlayFillStateMembers(overlay) {
     if (overlay?.widget) {
+        return false;
+    }
+    return !isBinOverlay(overlay);
+}
+
+function shouldQueryOverlayModeMembers(overlay) {
+    if (overlay?.widget || overlay?.embeddedView) {
         return false;
     }
     return !isBinOverlay(overlay);
@@ -1403,11 +1503,161 @@ function getIgnitionTagValue(tagValMap, basePath, member) {
         ?? null;
 }
 
+const IGNITION_FILL_STATE_MEMBER_KEYS = new Set(
+    IGNITION_FILL_STATE_MEMBERS.map((member) => String(member || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase())
+);
+
+function isIgnitionFillStateMemberName(value) {
+    const key = String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+    return Boolean(key && IGNITION_FILL_STATE_MEMBER_KEYS.has(key));
+}
+
+function getIgnitionTagDirectValue(tagValMap, rawPath) {
+    const path = String(rawPath || "").trim();
+    if (!path || !tagValMap) {
+        return null;
+    }
+    return tagValMap.get(path)
+        ?? tagValMap.get(path.toLowerCase())
+        ?? null;
+}
+
 function getIgnitionTagValueForMembers(tagValMap, basePath, members) {
     for (const member of coerceArray(members)) {
         const value = getIgnitionTagValue(tagValMap, basePath, member);
         if (value != null && String(value).trim() !== "") {
             return value;
+        }
+    }
+    return null;
+}
+
+function getIgnitionHmiStateValueForBase(tagValMap, basePath, members = IGNITION_FILL_STATE_MEMBERS) {
+    const path = String(basePath || "").trim();
+    if (!path) {
+        return null;
+    }
+    const leaf = path.split(/[/.]/).map((entry) => entry.trim()).filter(Boolean).pop() || "";
+    if (isIgnitionFillStateMemberName(leaf)) {
+        const directValue = getIgnitionTagDirectValue(tagValMap, path);
+        if (directValue != null && String(directValue).trim() !== "") {
+            return directValue;
+        }
+    }
+    return getIgnitionTagValueForMembers(tagValMap, path, members);
+}
+
+function getIgnitionTagMeta(tagMetaMap, rawPath) {
+    const path = String(rawPath || "").trim();
+    if (!path || !tagMetaMap) {
+        return null;
+    }
+    return tagMetaMap.get(path)
+        ?? tagMetaMap.get(path.toLowerCase())
+        ?? null;
+}
+
+function describeIgnitionTagQualityIssue(meta) {
+    const error = String(meta?.error ?? "").trim();
+    if (error) {
+        return "No OPC/PLC connection";
+    }
+
+    const quality = String(meta?.quality ?? "").trim();
+    if (!quality) {
+        return "";
+    }
+
+    const qualityKey = quality.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!qualityKey || qualityKey.startsWith("good")) {
+        return "";
+    }
+
+    if (
+        qualityKey.includes("bad")
+        || qualityKey.includes("error")
+        || qualityKey.includes("fault")
+        || qualityKey.includes("timeout")
+        || qualityKey.includes("stale")
+        || qualityKey.includes("notconnected")
+        || qualityKey.includes("comm")
+        || qualityKey.includes("uncertain")
+    ) {
+        return "No OPC/PLC connection";
+    }
+
+    return "";
+}
+
+function getIgnitionTagQualityIssue(tagMetaMap, rawPath) {
+    const path = String(rawPath || "").trim();
+    const meta = getIgnitionTagMeta(tagMetaMap, path);
+    const message = describeIgnitionTagQualityIssue(meta);
+    if (!message) {
+        return null;
+    }
+    return {
+        path: String(meta?.path || path).trim(),
+        quality: String(meta?.quality || "").trim(),
+        error: String(meta?.error || "").trim(),
+        message
+    };
+}
+
+function getOverlayConnectionCheckPaths(overlay) {
+    const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+    if (!basePath || overlay?.embeddedView) {
+        return [];
+    }
+
+    const out = [];
+    const seen = new Set();
+    const push = (rawPath) => {
+        const path = String(rawPath || "").trim();
+        if (!path) {
+            return;
+        }
+        const key = path.toLowerCase();
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        out.push(path);
+    };
+    const pushMembers = (members) => {
+        coerceArray(members).forEach((member) => {
+            push(`${basePath}/${member}`);
+            push(`${basePath}.${member}`);
+        });
+    };
+
+    const leaf = basePath.split(/[/.]/).map((entry) => entry.trim()).filter(Boolean).pop() || "";
+    if (isIgnitionFillStateMemberName(leaf)) {
+        push(basePath);
+    } else if (isBinOverlay(overlay)) {
+        pushMembers(BIN_UDT_MEMBERS);
+    } else if (isMotorOverlay(overlay)) {
+        pushMembers(MOTOR_UDT_MEMBERS);
+    } else if (isDiverterOverlay(overlay)) {
+        pushMembers(DIVERTER_UDT_MEMBERS);
+    } else if (isDocOrDicOverlay(overlay)) {
+        pushMembers(DOC_DIC_UDT_MEMBERS);
+    } else if (shouldQueryOverlayFillStateMembers(overlay)) {
+        pushMembers(IGNITION_FILL_STATE_MEMBERS);
+    }
+
+    if (!out.length) {
+        push(basePath);
+    }
+    return out;
+}
+
+function getOverlayConnectionIssue(overlay, tagMetaMap) {
+    const paths = getOverlayConnectionCheckPaths(overlay);
+    for (const path of paths) {
+        const issue = getIgnitionTagQualityIssue(tagMetaMap, path);
+        if (issue) {
+            return issue;
         }
     }
     return null;
@@ -2327,6 +2577,8 @@ function closestPointOnSegment(point, start, end) {
 
 function resizeCursorForCorner(corner) {
     const key = String(corner || "").toUpperCase();
+    if (key === "L" || key === "R") return "ew-resize";
+    if (key === "T" || key === "B") return "ns-resize";
     return key === "TR" || key === "BL" ? "nesw-resize" : "nwse-resize";
 }
 
@@ -3395,12 +3647,13 @@ function getOverlayBounds(overlay) {
     if (!bbox || typeof bbox !== "object") {
         return null;
     }
-    const scale = Math.max(0.0001, Math.abs(Number(overlay?.scale || 1)));
+    const scaleX = overlayScaleX(overlay);
+    const scaleY = overlayScaleY(overlay);
     return {
-        x: Number(overlay?.tx || 0) + scale * Number(bbox.x || 0),
-        y: Number(overlay?.ty || 0) + scale * Number(bbox.y || 0),
-        width: Math.max(1, scale * Number(bbox.width || 0)),
-        height: Math.max(1, scale * Number(bbox.height || 0))
+        x: Number(overlay?.tx || 0) + scaleX * Number(bbox.x || 0),
+        y: Number(overlay?.ty || 0) + scaleY * Number(bbox.y || 0),
+        width: Math.max(1, scaleX * Number(bbox.width || 0)),
+        height: Math.max(1, scaleY * Number(bbox.height || 0))
     };
 }
 
@@ -3535,11 +3788,26 @@ function overlayScale(overlay) {
     return Math.max(0.0001, Math.abs(Number(overlay?.scale || 1)));
 }
 
+function overlayScaleX(overlay) {
+    const scaleX = Number(overlay?.scaleX);
+    return Number.isFinite(scaleX) && scaleX !== 0
+        ? Math.max(0.0001, Math.abs(scaleX))
+        : overlayScale(overlay);
+}
+
+function overlayScaleY(overlay) {
+    const scaleY = Number(overlay?.scaleY);
+    return Number.isFinite(scaleY) && scaleY !== 0
+        ? Math.max(0.0001, Math.abs(scaleY))
+        : overlayScale(overlay);
+}
+
 function worldFromLocal(overlay, x, y) {
-    const scale = overlayScale(overlay);
+    const scaleX = overlayScaleX(overlay);
+    const scaleY = overlayScaleY(overlay);
     return {
-        x: Number(overlay?.tx || 0) + scale * Number(x || 0),
-        y: Number(overlay?.ty || 0) + scale * Number(y || 0)
+        x: Number(overlay?.tx || 0) + scaleX * Number(x || 0),
+        y: Number(overlay?.ty || 0) + scaleY * Number(y || 0)
     };
 }
 
@@ -3628,6 +3896,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [toolbarCollapsed, setToolbarCollapsedState] = useState(externalToolbarCollapsed);
     const [showRulers, setShowRulersState] = useState(externalShowRulers);
     const [showTagPaths, setShowTagPathsState] = useState(externalShowTagPaths);
+    const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
     const [selectionMode, setSelectionModeState] = useState(externalSelectionMode);
     const [strokeNormalizeWidthDraft, setStrokeNormalizeWidthDraft] = useState(formatPanelNumber(externalStrokeNormalizeWidth));
     const [drawing, setDrawing] = useState(null);
@@ -3646,6 +3915,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [ignitionTagOptions, setIgnitionTagOptions] = useState(EMPTY_ARRAY);
     const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => new Map());
+    const [ignitionTagMetaByPath, setIgnitionTagMetaByPath] = useState(() => new Map());
     const [ignitionTagsError, setIgnitionTagsError] = useState("");
     const [ignitionTagsLoading, setIgnitionTagsLoading] = useState(false);
     const [ignitionTagsLoaded, setIgnitionTagsLoaded] = useState(false);
@@ -3784,6 +4054,12 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [externalShowTagPaths]);
 
     useEffect(() => {
+        if (!showTagPaths && hiddenTagBubbleIds.length) {
+            setHiddenTagBubbleIds([]);
+        }
+    }, [hiddenTagBubbleIds.length, showTagPaths]);
+
+    useEffect(() => {
         setToolbarCollapsedState(externalToolbarCollapsed);
     }, [externalToolbarCollapsed]);
 
@@ -3813,6 +4089,9 @@ export default function PerspectiveViziCanvasBridge(props) {
             if (basePath && shouldQueryOverlayFillStateMembers(overlay)) {
                 IGNITION_FILL_STATE_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
             }
+            if (basePath && shouldQueryOverlayModeMembers(overlay)) {
+                IGNITION_MODE_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
+            }
             if (basePath && isBinOverlay(overlay)) {
                 BIN_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
             }
@@ -3821,6 +4100,9 @@ export default function PerspectiveViziCanvasBridge(props) {
             }
             if (basePath && isDiverterOverlay(overlay)) {
                 DIVERTER_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
+            }
+            if (basePath && isDocOrDicOverlay(overlay)) {
+                DOC_DIC_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
             }
         });
 
@@ -3882,6 +4164,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     useEffect(() => {
         if (!overlayFillBindingPathChunks.length) {
             setIgnitionTagValuesByPath((previous) => (previous.size ? new Map() : previous));
+            setIgnitionTagMetaByPath((previous) => (previous.size ? new Map() : previous));
             return undefined;
         }
 
@@ -3890,10 +4173,12 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         const loadIgnitionTagValues = async () => {
             const mergedValues = new Map();
+            const mergedMeta = new Map();
             let anyChunkLoaded = false;
 
             for (const routePath of MODULE_TAG_VALUE_ROUTE_CANDIDATES) {
                 mergedValues.clear();
+                mergedMeta.clear();
                 anyChunkLoaded = false;
 
                 try {
@@ -3906,6 +4191,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                         if (!response.ok) {
                             anyChunkLoaded = false;
                             mergedValues.clear();
+                            mergedMeta.clear();
                             break;
                         }
 
@@ -3914,14 +4200,19 @@ export default function PerspectiveViziCanvasBridge(props) {
                             return;
                         }
 
-                        normalizeIgnitionTagValues(payload).forEach((value, key) => {
+                        const normalized = normalizeIgnitionTagValuePayload(payload);
+                        normalized.values.forEach((value, key) => {
                             mergedValues.set(key, value);
+                        });
+                        normalized.meta.forEach((value, key) => {
+                            mergedMeta.set(key, value);
                         });
                         anyChunkLoaded = true;
                     }
 
                     if (anyChunkLoaded) {
                         setIgnitionTagValuesByPath(new Map(mergedValues));
+                        setIgnitionTagMetaByPath(new Map(mergedMeta));
                         return;
                     }
                 } catch (_error) {
@@ -3930,6 +4221,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
             if (!cancelled) {
                 setIgnitionTagValuesByPath(new Map());
+                setIgnitionTagMetaByPath(new Map());
             }
         };
 
@@ -4052,6 +4344,16 @@ export default function PerspectiveViziCanvasBridge(props) {
         setShowTagPathsState(value);
         persistValue("showTagPaths", value);
     }, [persistValue]);
+
+    const handleHideTagBubble = useCallback((id) => {
+        const bubbleId = String(id || "").trim();
+        if (!bubbleId) {
+            return;
+        }
+        setHiddenTagBubbleIds((previous) => (
+            previous.includes(bubbleId) ? previous : [...previous, bubbleId]
+        ));
+    }, []);
 
     const setSelectionMode = useCallback((nextMode) => {
         const value = String(nextMode || "all");
@@ -4581,7 +4883,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             if (!basePath || !shouldQueryOverlayFillStateMembers(overlay)) return;
 
-            const rawState = getIgnitionTagValueForMembers(
+            const rawState = getIgnitionHmiStateValueForBase(
                 ignitionTagValuesByPath,
                 basePath,
                 IGNITION_FILL_STATE_MEMBERS
@@ -4608,7 +4910,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         coerceArray(svgOverlays).forEach((overlay) => {
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             if (!basePath || !isMotorOverlay(overlay)) return;
-            const rawState = getIgnitionTagValueForMembers(
+            const rawState = getIgnitionHmiStateValueForBase(
                 ignitionTagValuesByPath,
                 basePath,
                 MOTOR_UDT_STATE_MEMBERS
@@ -4626,16 +4928,16 @@ export default function PerspectiveViziCanvasBridge(props) {
         return out;
     }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
 
-    const motorHmiStateColorByOverlayId = useMemo(() => {
+    const overlayHmiStateColorByOverlayId = useMemo(() => {
         const out = {};
         coerceArray(svgOverlays).forEach((overlay) => {
             const id = String(overlay?.id || "").trim();
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
-            if (!id || !basePath || !isMotorOverlay(overlay)) return;
-            const rawState = getIgnitionTagValueForMembers(
+            if (!id || !basePath || !shouldQueryOverlayFillStateMembers(overlay)) return;
+            const rawState = getIgnitionHmiStateValueForBase(
                 ignitionTagValuesByPath,
                 basePath,
-                MOTOR_UDT_STATE_MEMBERS
+                IGNITION_FILL_STATE_MEMBERS
             );
             const color = String(getOverlayHmiStateColor(overlay, rawState, hmiStateStyleMapIndex) || "").trim();
             if (color) out[id] = color;
@@ -4701,6 +5003,35 @@ export default function PerspectiveViziCanvasBridge(props) {
         return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
 
+    const docDicRouteColorsBySvgKey = useMemo(() => {
+        const out = new Map();
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const id = String(overlay?.id || "").trim();
+            const name = String(overlay?.name || "").trim();
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!basePath || !isDocOrDicOverlay(overlay)) return;
+            const color = String(
+                getIgnitionTagValueForMembers(
+                    ignitionTagValuesByPath,
+                    basePath,
+                    DOC_DIC_UDT_ROUTE_COLOR_MEMBERS
+                ) || ""
+            ).trim();
+            if (!color) return;
+            out.set(basePath, color);
+            out.set(basePath.toLowerCase(), color);
+            if (id) {
+                out.set(id, color);
+                out.set(id.toLowerCase(), color);
+            }
+            if (name) {
+                out.set(name, color);
+                out.set(name.toLowerCase(), color);
+            }
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
     const overlayTagStateColorsByPath = useMemo(() => {
         const out = new Map();
         genericHmiTagStateColorsByPath.forEach((value, key) => {
@@ -4720,8 +5051,29 @@ export default function PerspectiveViziCanvasBridge(props) {
         diverterRouteColorsBySvgKey.forEach((value, key) => {
             out.set(key, value);
         });
+        docDicRouteColorsBySvgKey.forEach((value, key) => {
+            out.set(key, value);
+        });
         return out;
-    }, [binTagStateColorsByPath, motorRouteColorsBySvgKey, diverterRouteColorsBySvgKey]);
+    }, [binTagStateColorsByPath, motorRouteColorsBySvgKey, diverterRouteColorsBySvgKey, docDicRouteColorsBySvgKey]);
+
+    const overlayConnectionIssueByOverlayId = useMemo(() => {
+        const out = {};
+        if (!(ignitionTagMetaByPath instanceof Map) || ignitionTagMetaByPath.size === 0) {
+            return out;
+        }
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const id = String(overlay?.id || "").trim();
+            if (!id) {
+                return;
+            }
+            const issue = getOverlayConnectionIssue(overlay, ignitionTagMetaByPath);
+            if (issue) {
+                out[id] = issue;
+            }
+        });
+        return out;
+    }, [svgOverlays, ignitionTagMetaByPath]);
 
     const theme = String(getModelValue(props, "theme", "light") || "light");
     const canvasBackgroundColor = String(
@@ -4787,6 +5139,45 @@ export default function PerspectiveViziCanvasBridge(props) {
             y: Number(to?.y || 0)
         };
     }, []);
+
+    const constrainPolylineHandleMove = useCallback((points, index, target) => {
+        const pts = Array.isArray(points) ? points : [];
+        const idx = Number(index);
+        const nextPoint = {
+            x: Number(target?.x) || 0,
+            y: Number(target?.y) || 0
+        };
+        if (!Number.isInteger(idx) || idx < 0 || idx >= pts.length) {
+            return nextPoint;
+        }
+
+        const anchors = [];
+        if (idx > 0) {
+            anchors.push(pts[idx - 1]);
+        }
+        if (idx < pts.length - 1) {
+            anchors.push(pts[idx + 1]);
+        }
+
+        const candidates = anchors
+            .filter(Boolean)
+            .map((anchor) => {
+                const constrained = constrainHV(anchor, nextPoint);
+                return {
+                    point: constrained,
+                    score: Math.hypot(
+                        Number(constrained?.x || 0) - nextPoint.x,
+                        Number(constrained?.y || 0) - nextPoint.y
+                    )
+                };
+            });
+
+        if (!candidates.length) {
+            return nextPoint;
+        }
+        candidates.sort((a, b) => Number(a?.score || 0) - Number(b?.score || 0));
+        return candidates[0]?.point || nextPoint;
+    }, [constrainHV]);
 
     const constrainTo45DegreeAngle = useCallback((from, to) => {
         const startX = Number(from?.x || 0);
@@ -5687,6 +6078,8 @@ export default function PerspectiveViziCanvasBridge(props) {
             tx: anchor.x - (scale * srcCenterX),
             ty: anchor.y - (scale * srcCenterY),
             scale,
+            scaleX: scale,
+            scaleY: scale,
             fill: DEFAULT_FILL,
             stroke: DEFAULT_STROKE,
             strokeMode: "preserve",
@@ -6168,15 +6561,6 @@ export default function PerspectiveViziCanvasBridge(props) {
         event?.stopPropagation?.();
         const shapeId = String(id || "");
         const segmentIndex = Number(index || 0);
-        if (event?.altKey) {
-            insertPointOnPolyline(shapeId, pointFromEvent(event));
-            setSelectedIds([shapeId]);
-            setSelectedOverlayIds([]);
-            setEditingId(shapeId);
-            setSelectedSegment(null);
-            setDragSegment(null);
-            return;
-        }
         const shape = shapesRef.current.find((item) => String(item?.id || "") === shapeId);
         const points = clonePoints(shape?.points);
         const startPoint = points[segmentIndex];
@@ -6195,12 +6579,13 @@ export default function PerspectiveViziCanvasBridge(props) {
             index: segmentIndex,
             startPointer: pointFromEvent(event),
             startPoints: [startPoint, endPoint],
+            startPolylinePoints: points,
             keepHorizontal
         });
         setDragHandle(null);
         setDragState(null);
         setMarquee(null);
-    }, [appendPolylinePoint, drawing, insertPointOnPolyline, maybeConstrainPolylinePoint, pointFromEvent, tool]);
+    }, [appendPolylinePoint, drawing, maybeConstrainPolylinePoint, pointFromEvent, tool]);
 
     const handlePolylineHandleMouseDown = useCallback((event, id, index) => {
         if (tool !== "select") {
@@ -6245,17 +6630,32 @@ export default function PerspectiveViziCanvasBridge(props) {
         const topRight = { x: bbox.x + bbox.width, y: bbox.y };
         const bottomRight = { x: bbox.x + bbox.width, y: bbox.y + bbox.height };
         const bottomLeft = { x: bbox.x, y: bbox.y + bbox.height };
-        const corners = { TL: topLeft, TR: topRight, BR: bottomRight, BL: bottomLeft };
-        const oppositeCorners = { TL: bottomRight, TR: bottomLeft, BR: topLeft, BL: topRight };
+        const centerX = bbox.x + bbox.width / 2;
+        const centerY = bbox.y + bbox.height / 2;
+        const top = { x: centerX, y: bbox.y };
+        const right = { x: bbox.x + bbox.width, y: centerY };
+        const bottom = { x: centerX, y: bbox.y + bbox.height };
+        const left = { x: bbox.x, y: centerY };
+        const handles = { TL: topLeft, T: top, TR: topRight, R: right, BR: bottomRight, B: bottom, BL: bottomLeft, L: left };
+        const oppositeHandles = { TL: bottomRight, T: bottom, TR: bottomLeft, R: left, BR: topLeft, B: top, BL: topRight, L: right };
+        const axesByHandle = {
+            TL: { x: true, y: true },
+            T: { x: false, y: true },
+            TR: { x: true, y: true },
+            R: { x: true, y: false },
+            BR: { x: true, y: true },
+            B: { x: false, y: true },
+            BL: { x: true, y: true },
+            L: { x: true, y: false }
+        };
         const key = String(corner || "").toUpperCase();
-        const anchorLocal = oppositeCorners[key];
-        const startLocal = corners[key];
+        const anchorLocal = oppositeHandles[key];
+        const startLocal = handles[key];
         if (!anchorLocal || !startLocal) {
             return;
         }
 
         const anchorWorld = worldFromLocal(overlay, anchorLocal.x, anchorLocal.y);
-        const startWorld = worldFromLocal(overlay, startLocal.x, startLocal.y);
         setSelectedOverlayIds([overlayId]);
         setSelectedIds([]);
         setEditingId(null);
@@ -6263,10 +6663,13 @@ export default function PerspectiveViziCanvasBridge(props) {
         setOverlayResize({
             kind: "single",
             id: overlayId,
+            handle: key,
+            axes: axesByHandle[key] || { x: true, y: true },
             anchorLocal,
             anchorWorld,
-            startDist: Math.max(1, distance(startWorld, anchorWorld)),
-            originalScale: overlayScale(overlay),
+            handleLocal: startLocal,
+            originalScaleX: overlayScaleX(overlay),
+            originalScaleY: overlayScaleY(overlay),
             bbox
         });
         setDragState(null);
@@ -6359,7 +6762,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 id: String(overlayId || ""),
                 tx: Number(overlay.tx || 0),
                 ty: Number(overlay.ty || 0),
-                scale: overlayScale(overlay),
+                scaleX: overlayScaleX(overlay),
+                scaleY: overlayScaleY(overlay),
                 bbox
             };
         });
@@ -6380,6 +6784,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const handleMouseMove = useCallback((event) => {
         const point = pointFromEvent(event);
+        const isAltDown = Boolean(event?.altKey);
 
         if (dragSegment?.id) {
             updateShapes((previous) => previous.map((shape) => {
@@ -6387,7 +6792,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                     return shape;
                 }
                 const segmentIndex = Number(dragSegment.index || 0);
-                const nextPoints = clonePoints(shape.points);
+                const sourcePoints = clonePoints(dragSegment.startPolylinePoints || shape.points);
+                const nextPoints = clonePoints(sourcePoints);
                 if (segmentIndex < 0 || segmentIndex >= nextPoints.length - 1) {
                     return shape;
                 }
@@ -6400,16 +6806,65 @@ export default function PerspectiveViziCanvasBridge(props) {
 
                 const deltaX = Number(point?.x || 0) - Number(startPointer?.x || 0);
                 const deltaY = Number(point?.y || 0) - Number(startPointer?.y || 0);
-                if (dragSegment.keepHorizontal) {
+                if (isAltDown && dragSegment.keepHorizontal) {
                     const baseY = (Number(startPoint?.y || 0) + Number(endPoint?.y || 0)) / 2;
                     const nextY = Math.max(0, Math.min(viewBox.height, baseY + deltaY));
                     nextPoints[segmentIndex] = { x: Number(startPoint?.x || 0), y: nextY };
                     nextPoints[segmentIndex + 1] = { x: Number(endPoint?.x || 0), y: nextY };
-                } else {
+                    const tolerance = 1;
+                    for (let idx = segmentIndex - 1; idx >= 0; idx -= 1) {
+                        const left = sourcePoints[idx];
+                        const right = sourcePoints[idx + 1];
+                        if (!left || !right || Math.abs(Number(left.y || 0) - Number(right.y || 0)) > tolerance) {
+                            break;
+                        }
+                        nextPoints[idx] = { ...nextPoints[idx], y: nextY };
+                    }
+                    for (let idx = segmentIndex + 1; idx < sourcePoints.length - 1; idx += 1) {
+                        const left = sourcePoints[idx];
+                        const right = sourcePoints[idx + 1];
+                        if (!left || !right || Math.abs(Number(left.y || 0) - Number(right.y || 0)) > tolerance) {
+                            break;
+                        }
+                        nextPoints[idx + 1] = { ...nextPoints[idx + 1], y: nextY };
+                    }
+                } else if (isAltDown) {
                     const baseX = (Number(startPoint?.x || 0) + Number(endPoint?.x || 0)) / 2;
                     const nextX = Math.max(0, Math.min(viewBox.width, baseX + deltaX));
                     nextPoints[segmentIndex] = { x: nextX, y: Number(startPoint?.y || 0) };
                     nextPoints[segmentIndex + 1] = { x: nextX, y: Number(endPoint?.y || 0) };
+                    const tolerance = 1;
+                    for (let idx = segmentIndex - 1; idx >= 0; idx -= 1) {
+                        const left = sourcePoints[idx];
+                        const right = sourcePoints[idx + 1];
+                        if (!left || !right || Math.abs(Number(left.x || 0) - Number(right.x || 0)) > tolerance) {
+                            break;
+                        }
+                        nextPoints[idx] = { ...nextPoints[idx], x: nextX };
+                    }
+                    for (let idx = segmentIndex + 1; idx < sourcePoints.length - 1; idx += 1) {
+                        const left = sourcePoints[idx];
+                        const right = sourcePoints[idx + 1];
+                        if (!left || !right || Math.abs(Number(left.x || 0) - Number(right.x || 0)) > tolerance) {
+                            break;
+                        }
+                        nextPoints[idx + 1] = { ...nextPoints[idx + 1], x: nextX };
+                    }
+                } else {
+                    const minStartX = Math.min(Number(startPoint?.x || 0), Number(endPoint?.x || 0));
+                    const maxStartX = Math.max(Number(startPoint?.x || 0), Number(endPoint?.x || 0));
+                    const minStartY = Math.min(Number(startPoint?.y || 0), Number(endPoint?.y || 0));
+                    const maxStartY = Math.max(Number(startPoint?.y || 0), Number(endPoint?.y || 0));
+                    const nextDeltaX = clamp(deltaX, -minStartX, Math.max(0, viewBox.width - maxStartX));
+                    const nextDeltaY = clamp(deltaY, -minStartY, Math.max(0, viewBox.height - maxStartY));
+                    nextPoints[segmentIndex] = {
+                        x: Number(startPoint?.x || 0) + nextDeltaX,
+                        y: Number(startPoint?.y || 0) + nextDeltaY
+                    };
+                    nextPoints[segmentIndex + 1] = {
+                        x: Number(endPoint?.x || 0) + nextDeltaX,
+                        y: Number(endPoint?.y || 0) + nextDeltaY
+                    };
                 }
                 return {
                     ...shape,
@@ -6428,7 +6883,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                 if (dragHandle.index < 0 || dragHandle.index >= nextPoints.length) {
                     return shape;
                 }
-                nextPoints[dragHandle.index] = point;
+                const nextPoint = isAltDown
+                    ? constrainPolylineHandleMove(shape.points, dragHandle.index, point)
+                    : point;
+                nextPoints[dragHandle.index] = nextPoint;
                 return {
                     ...shape,
                     points: nextPoints
@@ -6449,17 +6907,31 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         if (overlayResize?.kind === "single") {
-            const ratio = clamp(distance(point, overlayResize.anchorWorld) / Math.max(1, overlayResize.startDist), 0.05, 100);
             updateSvgOverlays((previous) => previous.map((overlay) => {
                 if (String(overlay?.id || "") !== String(overlayResize.id || "")) {
                     return overlay;
                 }
-                const scale = Math.max(0.0001, Number(overlayResize.originalScale || 1) * ratio);
+                const axes = isPlainObject(overlayResize.axes) ? overlayResize.axes : { x: true, y: true };
+                const anchorWorld = overlayResize.anchorWorld || { x: 0, y: 0 };
+                const anchorLocal = overlayResize.anchorLocal || { x: 0, y: 0 };
+                const handleLocal = overlayResize.handleLocal || anchorLocal;
+                const originalScaleX = Math.max(0.0001, Number(overlayResize.originalScaleX || overlayScaleX(overlay)));
+                const originalScaleY = Math.max(0.0001, Number(overlayResize.originalScaleY || overlayScaleY(overlay)));
+                const localSpanX = Number(handleLocal.x || 0) - Number(anchorLocal.x || 0);
+                const localSpanY = Number(handleLocal.y || 0) - Number(anchorLocal.y || 0);
+                const scaleX = axes.x && Math.abs(localSpanX) > 1e-9
+                    ? clamp(Math.abs((Number(point.x || 0) - Number(anchorWorld.x || 0)) / localSpanX), 0.05, 100)
+                    : originalScaleX;
+                const scaleY = axes.y && Math.abs(localSpanY) > 1e-9
+                    ? clamp(Math.abs((Number(point.y || 0) - Number(anchorWorld.y || 0)) / localSpanY), 0.05, 100)
+                    : originalScaleY;
                 return {
                     ...overlay,
-                    scale,
-                    tx: Number(overlayResize.anchorWorld?.x || 0) - scale * Number(overlayResize.anchorLocal?.x || 0),
-                    ty: Number(overlayResize.anchorWorld?.y || 0) - scale * Number(overlayResize.anchorLocal?.y || 0)
+                    scale: scaleX,
+                    scaleX,
+                    scaleY,
+                    tx: Number(anchorWorld.x || 0) - scaleX * Number(anchorLocal.x || 0),
+                    ty: Number(anchorWorld.y || 0) - scaleY * Number(anchorLocal.y || 0)
                 };
             }), { persist: false });
             return;
@@ -6473,10 +6945,13 @@ export default function PerspectiveViziCanvasBridge(props) {
                     return overlay;
                 }
 
-                const nextScale = Math.max(0.0001, Number(snapshot.scale || 1) * ratio);
+                const snapshotScaleX = Math.max(0.0001, Number(snapshot.scaleX || snapshot.scale || 1));
+                const snapshotScaleY = Math.max(0.0001, Number(snapshot.scaleY || snapshot.scale || 1));
+                const nextScaleX = Math.max(0.0001, snapshotScaleX * ratio);
+                const nextScaleY = Math.max(0.0001, snapshotScaleY * ratio);
                 const startTopLeft = {
-                    x: Number(snapshot.tx || 0) + Number(snapshot.scale || 1) * Number(snapshot.bbox.x || 0),
-                    y: Number(snapshot.ty || 0) + Number(snapshot.scale || 1) * Number(snapshot.bbox.y || 0)
+                    x: Number(snapshot.tx || 0) + snapshotScaleX * Number(snapshot.bbox.x || 0),
+                    y: Number(snapshot.ty || 0) + snapshotScaleY * Number(snapshot.bbox.y || 0)
                 };
                 const nextTopLeft = {
                     x: Number(overlayResize.anchorWorld?.x || 0) + (startTopLeft.x - Number(overlayResize.anchorWorld?.x || 0)) * ratio,
@@ -6485,9 +6960,11 @@ export default function PerspectiveViziCanvasBridge(props) {
 
                 return {
                     ...overlay,
-                    scale: nextScale,
-                    tx: nextTopLeft.x - nextScale * Number(snapshot.bbox.x || 0),
-                    ty: nextTopLeft.y - nextScale * Number(snapshot.bbox.y || 0)
+                    scale: nextScaleX,
+                    scaleX: nextScaleX,
+                    scaleY: nextScaleY,
+                    tx: nextTopLeft.x - nextScaleX * Number(snapshot.bbox.x || 0),
+                    ty: nextTopLeft.y - nextScaleY * Number(snapshot.bbox.y || 0)
                 };
             }), { persist: false });
             return;
@@ -6559,7 +7036,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 return { ...shape, points };
             }), { persist: false });
         }
-    }, [dragHandle, dragSegment, dragState, drawing, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, shapeResize, updateShapes, updateSvgOverlays, viewBox.height, viewBox.width]);
+    }, [constrainPolylineHandleMove, dragHandle, dragSegment, dragState, drawing, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, shapeResize, updateShapes, updateSvgOverlays, viewBox.height, viewBox.width]);
 
     const handleMouseUp = useCallback(() => {
         if (dragSegment?.id) {
@@ -6983,9 +7460,13 @@ export default function PerspectiveViziCanvasBridge(props) {
         const height = Math.max(1, Number(bounds.height || 0));
         const corners = [
             { key: "TL", cx: x, cy: y },
+            { key: "T", cx: x + width / 2, cy: y },
             { key: "TR", cx: x + width, cy: y },
+            { key: "R", cx: x + width, cy: y + height / 2 },
             { key: "BR", cx: x + width, cy: y + height },
-            { key: "BL", cx: x, cy: y + height }
+            { key: "B", cx: x + width / 2, cy: y + height },
+            { key: "BL", cx: x, cy: y + height },
+            { key: "L", cx: x, cy: y + height / 2 }
         ];
 
         return (
@@ -7362,6 +7843,36 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
         const value = options.min != null ? Math.max(options.min, next) : next;
         updateSelectedOverlay((overlay) => {
+            if (field === "scale") {
+                const bbox = overlay?.bbox;
+                const currentBounds = getOverlayBounds(overlay);
+                if (bbox && currentBounds) {
+                    return {
+                        ...overlay,
+                        scale: value,
+                        scaleX: value,
+                        scaleY: value,
+                        tx: Number(currentBounds.x || 0) - value * Number(bbox.x || 0),
+                        ty: Number(currentBounds.y || 0) - value * Number(bbox.y || 0)
+                    };
+                }
+            }
+            if (field === "scaleX" || field === "scaleY") {
+                const bbox = overlay?.bbox;
+                const currentBounds = getOverlayBounds(overlay);
+                if (bbox && currentBounds) {
+                    const nextScaleX = field === "scaleX" ? value : overlayScaleX(overlay);
+                    const nextScaleY = field === "scaleY" ? value : overlayScaleY(overlay);
+                    return {
+                        ...overlay,
+                        scale: nextScaleX,
+                        scaleX: nextScaleX,
+                        scaleY: nextScaleY,
+                        tx: Number(currentBounds.x || 0) - nextScaleX * Number(bbox.x || 0),
+                        ty: Number(currentBounds.y || 0) - nextScaleY * Number(bbox.y || 0)
+                    };
+                }
+            }
             const nextOverlay = {
                 ...overlay,
                 [field]: value
@@ -7383,10 +7894,11 @@ export default function PerspectiveViziCanvasBridge(props) {
             if (!bbox || typeof bbox !== "object") {
                 return overlay;
             }
-            const scale = Math.max(0.0001, Math.abs(Number(overlay?.scale || 1)));
+            const scaleX = overlayScaleX(overlay);
+            const scaleY = overlayScaleY(overlay);
             return axis === "x"
-                ? { ...overlay, tx: next - scale * Number(bbox.x || 0) }
-                : { ...overlay, ty: next - scale * Number(bbox.y || 0) };
+                ? { ...overlay, tx: next - scaleX * Number(bbox.x || 0) }
+                : { ...overlay, ty: next - scaleY * Number(bbox.y || 0) };
         });
     }, [updateSelectedOverlay]);
 
@@ -7406,11 +7918,17 @@ export default function PerspectiveViziCanvasBridge(props) {
             if (!currentBounds) {
                 return overlay;
             }
+            const currentScaleX = overlayScaleX(overlay);
+            const currentScaleY = overlayScaleY(overlay);
+            const nextScaleX = axis === "width" ? nextScale : currentScaleX;
+            const nextScaleY = axis === "height" ? nextScale : currentScaleY;
             return {
                 ...overlay,
-                scale: nextScale,
-                tx: Number(currentBounds.x || 0) - nextScale * Number(bbox.x || 0),
-                ty: Number(currentBounds.y || 0) - nextScale * Number(bbox.y || 0)
+                scale: nextScaleX,
+                scaleX: nextScaleX,
+                scaleY: nextScaleY,
+                tx: Number(currentBounds.x || 0) - nextScaleX * Number(bbox.x || 0),
+                ty: Number(currentBounds.y || 0) - nextScaleY * Number(bbox.y || 0)
             };
         });
     }, [updateSelectedOverlay]);
@@ -7869,11 +8387,12 @@ export default function PerspectiveViziCanvasBridge(props) {
                 binLevelRatioByOverlayId={binLevelRatioByOverlayId}
                 binLockedInByOverlayId={binLockedInByOverlayId}
                 binLockedOutByOverlayId={binLockedOutByOverlayId}
-                overlayHmiStateColorByOverlayId={motorHmiStateColorByOverlayId}
+                overlayHmiStateColorByOverlayId={overlayHmiStateColorByOverlayId}
+                overlayConnectionIssueByOverlayId={overlayConnectionIssueByOverlayId}
                 onWidgetDurationPresetChange={NOOP}
                 onTrendTagDrop={NOOP}
-                hiddenTagBubbleIds={EMPTY_ARRAY}
-                onHideTagBubble={NOOP}
+                hiddenTagBubbleIds={hiddenTagBubbleIds}
+                onHideTagBubble={handleHideTagBubble}
                 onSvgDoubleClick={editorVisible ? handleSvgDoubleClick : NOOP}
                 collaboratorCursors={EMPTY_ARRAY}
                 liveUpdatesEnabled={liveUpdatesEnabled}
@@ -8592,8 +9111,24 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     <>
                                         <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
                                             <PropertyField
+                                                label="Scale X"
+                                                value={formatPanelNumber(overlayScaleX(selectedOverlay))}
+                                                onCommit={(value) => {
+                                                    commitSelectedOverlayNumber("scaleX", value, { min: 0.05 });
+                                                }}
+                                            />
+                                            <PropertyField
+                                                label="Scale Y"
+                                                value={formatPanelNumber(overlayScaleY(selectedOverlay))}
+                                                onCommit={(value) => {
+                                                    commitSelectedOverlayNumber("scaleY", value, { min: 0.05 });
+                                                }}
+                                            />
+                                        </div>
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <PropertyField
                                                 label="Scale"
-                                                value={formatPanelNumber(selectedOverlay.scale || 1)}
+                                                value={formatPanelNumber(selectedOverlay.scale || overlayScaleX(selectedOverlay))}
                                                 onCommit={(value) => {
                                                     commitSelectedOverlayNumber("scale", value, { min: 0.05 });
                                                 }}
