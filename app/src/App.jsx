@@ -19925,6 +19925,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
             zIndex: 200,
             outline: "none",
             minWidth: inlineEditPos.width,
+            cursor: inlineEdit.kind === "shape" ? "move" : "text",
           }}
         />
       )}

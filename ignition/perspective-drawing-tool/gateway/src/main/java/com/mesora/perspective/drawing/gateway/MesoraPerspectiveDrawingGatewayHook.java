@@ -10,6 +10,7 @@ import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -720,6 +721,17 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
                 continue;
             }
 
+            String objectType = String.valueOf(node.getObjectType() == null ? "" : node.getObjectType()).trim();
+            if ("UdtType".equalsIgnoreCase(objectType)) {
+                continue;
+            }
+
+            String typeId = String.valueOf(node.getSubTypeId() == null ? "" : node.getSubTypeId()).trim();
+            String dataType = readNodeText(node, "getDataType", "getDataTypeId");
+            if (isDocumentTagNode(objectType, typeId, dataType)) {
+                continue;
+            }
+
             if (node.getObjectType() == TagObjectType.Folder) {
                 String folderKey = fullPathString.toLowerCase();
                 if (visitedFolders.add(folderKey)) {
@@ -728,18 +740,17 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
                 continue;
             }
 
+            if (node.hasChildren()) {
+                String childKey = fullPathString.toLowerCase();
+                if (visitedFolders.add(childKey)) {
+                    pendingFolders.add(fullPath);
+                }
+            }
+
             String key = fullPathString.toLowerCase();
             if (byPath.containsKey(key)) {
                 continue;
             }
-
-            String objectType = String.valueOf(node.getObjectType() == null ? "" : node.getObjectType()).trim();
-            if ("UdtType".equalsIgnoreCase(objectType)) {
-                continue;
-            }
-
-            String typeId = String.valueOf(node.getSubTypeId() == null ? "" : node.getSubTypeId()).trim();
-            String dataType = readNodeText(node, "getDataType", "getDataTypeId");
 
             byPath.put(
                 key,
@@ -754,6 +765,34 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
                 )
             );
         }
+    }
+
+    private boolean isDocumentTagNode(String objectType, String typeId, String dataType) {
+        String objectText = String.valueOf(objectType).trim().toLowerCase(Locale.ROOT);
+        String typeText = cleanTagTypeName(typeId).toLowerCase(Locale.ROOT);
+        String dataText = cleanTagTypeName(dataType).toLowerCase(Locale.ROOT);
+        return "document".equals(objectText)
+            || "documenttag".equals(objectText)
+            || objectText.contains("documenttag")
+            || "document".equals(typeText)
+            || "document".equals(dataText);
+    }
+
+    private String cleanTagTypeName(String value) {
+        String raw = String.valueOf(value).trim();
+        if (raw.isBlank()) {
+            return "";
+        }
+
+        String withoutProvider = raw.replaceFirst("^\\[[^\\]]+\\]", "").trim();
+        String[] parts = withoutProvider.split("[\\\\/]");
+        for (int index = parts.length - 1; index >= 0; index -= 1) {
+            String part = parts[index] == null ? "" : parts[index].trim();
+            if (!part.isBlank()) {
+                return part;
+            }
+        }
+        return withoutProvider;
     }
 
     private String readNodeText(NodeDescription node, String... methodNames) {

@@ -342,6 +342,17 @@ function getTagTypeDisplayName(entry) {
     );
 }
 
+function isIgnitionDocumentTagEntry(entry) {
+    const objectType = String(entry?.objectType || "").trim().toLowerCase();
+    const dataType = cleanTagTypeDisplayName(entry?.dataType || entry?.plcType || entry?.uaType || "").toLowerCase();
+    const typeId = cleanTagTypeDisplayName(entry?.typeId || "").toLowerCase();
+    return objectType === "document"
+        || objectType === "documenttag"
+        || objectType.includes("documenttag")
+        || dataType === "document"
+        || typeId === "document";
+}
+
 function buildUdtTypeOptions({ tags = EMPTY_ARRAY, styleMapIndex = EMPTY_MAP, currentValues = EMPTY_ARRAY } = {}) {
     const seen = new Set();
     const out = [];
@@ -472,6 +483,9 @@ function normalizeIgnitionTagEntries(payload) {
     rawEntries.forEach((entry) => {
         const path = String(entry?.path || "").trim();
         if (!path) {
+            return;
+        }
+        if (isIgnitionDocumentTagEntry(entry)) {
             return;
         }
 
@@ -1689,12 +1703,16 @@ function getIgnitionTagValue(tagValMap, basePath, member) {
         ?? null;
 }
 
+function normalizeIgnitionMemberName(value) {
+    return String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
 const IGNITION_FILL_STATE_MEMBER_KEYS = new Set(
-    IGNITION_FILL_STATE_MEMBERS.map((member) => String(member || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase())
+    IGNITION_FILL_STATE_MEMBERS.map(normalizeIgnitionMemberName)
 );
 
 function isIgnitionFillStateMemberName(value) {
-    const key = String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+    const key = normalizeIgnitionMemberName(value);
     return Boolean(key && IGNITION_FILL_STATE_MEMBER_KEYS.has(key));
 }
 
@@ -1718,6 +1736,41 @@ function getIgnitionTagValueForMembers(tagValMap, basePath, members) {
     return null;
 }
 
+function getIgnitionTagValueForMembersDeep(tagValMap, basePath, members) {
+    const direct = getIgnitionTagValueForMembers(tagValMap, basePath, members);
+    if (direct != null && String(direct).trim() !== "") {
+        return direct;
+    }
+
+    const path = String(basePath || "").trim();
+    if (!path || !tagValMap || typeof tagValMap.entries !== "function") {
+        return null;
+    }
+
+    const memberKeys = new Set(coerceArray(members).map(normalizeIgnitionMemberName).filter(Boolean));
+    if (!memberKeys.size) {
+        return null;
+    }
+
+    const lowerPath = path.toLowerCase();
+    const prefixes = [`${lowerPath}/`, `${lowerPath}.`];
+    for (const [rawKey, value] of tagValMap.entries()) {
+        if (value == null || String(value).trim() === "") {
+            continue;
+        }
+        const key = String(rawKey || "").trim().toLowerCase();
+        if (!prefixes.some((prefix) => key.startsWith(prefix))) {
+            continue;
+        }
+        const leaf = key.split(/[/.]/).filter(Boolean).pop() || "";
+        if (memberKeys.has(normalizeIgnitionMemberName(leaf))) {
+            return value;
+        }
+    }
+
+    return null;
+}
+
 function getIgnitionHmiStateValueForBase(tagValMap, basePath, members = IGNITION_FILL_STATE_MEMBERS) {
     const path = String(basePath || "").trim();
     if (!path) {
@@ -1730,7 +1783,7 @@ function getIgnitionHmiStateValueForBase(tagValMap, basePath, members = IGNITION
             return directValue;
         }
     }
-    return getIgnitionTagValueForMembers(tagValMap, path, members);
+    return getIgnitionTagValueForMembersDeep(tagValMap, path, members);
 }
 
 function getIgnitionTagMeta(tagMetaMap, rawPath) {
@@ -3372,6 +3425,54 @@ function PropertyTextArea({ disabled = false, label, onCommit, placeholder = "",
     );
 }
 
+function splitIgnitionProviderPath(rawPath) {
+    const path = String(rawPath || "").replace(/\r?\n/g, "").trim();
+    const providerMatch = path.match(/^(\[[^\]]+\])(.*)$/);
+    if (!providerMatch) {
+        return { prefix: "", body: path };
+    }
+    return {
+        prefix: providerMatch[1],
+        body: String(providerMatch[2] || "").replace(/^[\\/]+/, "")
+    };
+}
+
+function getIgnitionTagParentPath(rawPath) {
+    const { prefix, body } = splitIgnitionProviderPath(rawPath);
+    const text = String(body || "").trim();
+    if (!text) {
+        return "";
+    }
+    const slashIndex = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+    const dotIndex = text.lastIndexOf(".");
+    const splitIndex = Math.max(slashIndex, dotIndex);
+    if (splitIndex <= 0) {
+        return "";
+    }
+    return `${prefix}${text.slice(0, splitIndex)}`;
+}
+
+function getIgnitionTagAncestorPaths(rawPath) {
+    const out = [];
+    let parent = getIgnitionTagParentPath(rawPath);
+    const seen = new Set();
+    while (parent && !seen.has(parent.toLowerCase())) {
+        out.push(parent);
+        seen.add(parent.toLowerCase());
+        parent = getIgnitionTagParentPath(parent);
+    }
+    return out;
+}
+
+function getIgnitionTagLeafName(rawPath) {
+    const { body } = splitIgnitionProviderPath(rawPath);
+    const text = String(body || rawPath || "").trim();
+    const slashIndex = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+    const dotIndex = text.lastIndexOf(".");
+    const splitIndex = Math.max(slashIndex, dotIndex);
+    return splitIndex >= 0 ? text.slice(splitIndex + 1) : text;
+}
+
 function EditorDropdownField({
     disabled = false,
     helperText = "",
@@ -3667,10 +3768,12 @@ function PropertyTagPathField({
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [menuRect, setMenuRect] = useState(null);
+    const [expandedTagPaths, setExpandedTagPaths] = useState(() => new Set());
     const currentValue = value == null ? "" : String(value);
     const normalizedTypeFilter = String(typeFilter || "").trim();
     const normalizedOptions = useMemo(
-        () => coerceArray(options).map((option) => {
+        () => {
+            const mapped = coerceArray(options).map((option) => {
             const path = String(option?.path || "").trim();
             if (!path) {
                 return null;
@@ -3684,6 +3787,8 @@ function PropertyTagPathField({
             return {
                 value: path,
                 path,
+                parentPath: getIgnitionTagParentPath(path),
+                leafName: getIgnitionTagLeafName(path),
                 provider,
                 name,
                 objectType: String(option?.objectType || "").trim(),
@@ -3693,19 +3798,113 @@ function PropertyTagPathField({
                 groupLabel,
                 searchText: `${provider} ${groupLabel} ${udtName} ${dataType} ${typeId} ${name} ${path}`.toLowerCase()
             };
-        }).filter(Boolean).filter((option) => tagMatchesTypeFilter(option, normalizedTypeFilter)),
+            }).filter(Boolean);
+            const allByPath = new Map();
+            mapped.forEach((option) => {
+                allByPath.set(String(option.path || "").toLowerCase(), option);
+            });
+            return mapped.filter((option) => {
+                if (tagMatchesTypeFilter(option, normalizedTypeFilter)) {
+                    return true;
+                }
+                let parent = option.parentPath;
+                const seenParents = new Set();
+                while (parent && !seenParents.has(parent.toLowerCase())) {
+                    seenParents.add(parent.toLowerCase());
+                    const parentOption = allByPath.get(parent.toLowerCase());
+                    if (!parentOption) {
+                        break;
+                    }
+                    if (tagMatchesTypeFilter(parentOption, normalizedTypeFilter)) {
+                        return true;
+                    }
+                    parent = parentOption.parentPath;
+                }
+                return false;
+            });
+        },
         [normalizedTypeFilter, options]
     );
+    const optionByPath = useMemo(() => {
+        const map = new Map();
+        normalizedOptions.forEach((option) => {
+            map.set(String(option.path || "").toLowerCase(), option);
+        });
+        return map;
+    }, [normalizedOptions]);
     const groupedOptions = useMemo(
         () => normalizedOptions.reduce((acc, option) => {
-            if (!acc[option.groupLabel]) {
-                acc[option.groupLabel] = [];
+            let groupLabel = option.groupLabel;
+            let parent = option.parentPath;
+            const seenParents = new Set();
+            while (parent && !seenParents.has(parent.toLowerCase())) {
+                seenParents.add(parent.toLowerCase());
+                const parentOption = optionByPath.get(parent.toLowerCase());
+                if (!parentOption) {
+                    break;
+                }
+                if (parentOption.udtName || parentOption.groupLabel) {
+                    groupLabel = parentOption.groupLabel || parentOption.udtName || groupLabel;
+                    break;
+                }
+                parent = parentOption.parentPath;
             }
-            acc[option.groupLabel].push(option);
+            if (!acc[groupLabel]) {
+                acc[groupLabel] = [];
+            }
+            acc[groupLabel].push(option);
             return acc;
         }, {}),
-        [normalizedOptions]
+        [normalizedOptions, optionByPath]
     );
+    const buildVisibleTagTreeRows = useCallback((items) => {
+        const list = coerceArray(items);
+        const localByPath = new Map();
+        list.forEach((item) => {
+            localByPath.set(String(item.path || "").toLowerCase(), item);
+        });
+        const childrenByParent = new Map();
+        list.forEach((item) => {
+            const parentKey = String(item.parentPath || "").toLowerCase();
+            if (!parentKey || !localByPath.has(parentKey)) {
+                return;
+            }
+            if (!childrenByParent.has(parentKey)) {
+                childrenByParent.set(parentKey, []);
+            }
+            childrenByParent.get(parentKey).push(item);
+        });
+        const compareRows = (left, right) =>
+            String(left.leafName || left.name || left.path || "").localeCompare(
+                String(right.leafName || right.name || right.path || ""),
+                undefined,
+                { sensitivity: "base", numeric: true }
+            );
+        const roots = list
+            .filter((item) => {
+                const parentKey = String(item.parentPath || "").toLowerCase();
+                return !parentKey || !localByPath.has(parentKey);
+            })
+            .sort(compareRows);
+        const rows = [];
+        const walk = (item, depth) => {
+            const key = String(item.path || "").toLowerCase();
+            const children = (childrenByParent.get(key) || []).slice().sort(compareRows);
+            const expanded = expandedTagPaths.has(key);
+            rows.push({
+                ...item,
+                depth,
+                childCount: children.length,
+                hasTreeChildren: children.length > 0,
+                expanded
+            });
+            if (children.length && expanded) {
+                children.forEach((child) => walk(child, depth + 1));
+            }
+        };
+        roots.forEach((item) => walk(item, 0));
+        return rows;
+    }, [expandedTagPaths]);
     const hasCurrentOption = normalizedOptions.some((option) => option.path === currentValue);
     const selectedOption = normalizedOptions.find((option) => option.path === currentValue) || null;
     const queryText = String(query || "").trim().toLowerCase();
@@ -3716,12 +3915,18 @@ function PropertyTagPathField({
         ? [
             {
                 label: filteredOptions.length ? "Results" : "",
-                items: filteredOptions
+                items: filteredOptions.map((item) => ({
+                    ...item,
+                    depth: 0,
+                    childCount: 0,
+                    hasTreeChildren: false,
+                    expanded: false
+                }))
             }
         ]
         : Object.keys(groupedOptions).map((provider) => ({
             label: provider,
-            items: groupedOptions[provider]
+            items: buildVisibleTagTreeRows(groupedOptions[provider])
         }));
     const triggerLabel = selectedOption?.path
         ? (
@@ -3850,6 +4055,21 @@ function PropertyTagPathField({
     useEffect(() => {
         if (!open || queryText || !currentValue) {
             return undefined;
+        }
+        const ancestors = getIgnitionTagAncestorPaths(currentValue);
+        if (ancestors.length) {
+            setExpandedTagPaths((previous) => {
+                const next = new Set(previous);
+                let changed = false;
+                ancestors.forEach((path) => {
+                    const key = String(path || "").toLowerCase();
+                    if (key && !next.has(key)) {
+                        next.add(key);
+                        changed = true;
+                    }
+                });
+                return changed ? next : previous;
+            });
         }
         const scrollSelected = () => {
             const selectedNode = selectedOptionRef.current;
@@ -4145,61 +4365,116 @@ function PropertyTagPathField({
                                     ) : null}
                                     {section.items.map((item) => {
                                         const active = item.value === currentValue;
+                                        const depth = Math.max(0, Number(item.depth || 0));
+                                        const hasTreeChildren = Boolean(item.hasTreeChildren);
                                         return (
-                                            <button
-                                                ref={active ? selectedOptionRef : undefined}
-                                                data-tag-path={item.value}
+                                            <div
                                                 key={`${section.label || "option"}-${item.value}`}
-                                                type="button"
-                                                onClick={(event) => {
-                                                    stopInteractivePropagation(event);
-                                                    closeMenu();
-                                                    if (typeof onCommit === "function") {
-                                                        onCommit(item.value);
-                                                    }
-                                                }}
-                                                onPointerDown={stopInteractivePropagation}
-                                                onMouseDown={stopInteractivePropagation}
-                                                onMouseUp={stopInteractivePropagation}
-                                                onContextMenu={(event) => {
-                                                    event.preventDefault();
-                                                    stopInteractivePropagation(event);
-                                                    copyTextToClipboard(item.value);
-                                                }}
                                                 style={{
-                                                    width: "100%",
-                                                    border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
-                                                    background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
-                                                    color: "#f8fafc",
-                                                    borderRadius: 8,
-                                                    padding: "6px 8px",
-                                                    fontSize: 11,
-                                                    fontWeight: active ? 700 : 600,
-                                                    textAlign: "left",
-                                                    cursor: "pointer",
                                                     display: "grid",
-                                                    gap: 1,
-                                                    lineHeight: 1.1
+                                                    gridTemplateColumns: `${depth * 14 + 22}px minmax(0, 1fr)`,
+                                                    gap: 4,
+                                                    alignItems: "stretch"
                                                 }}
                                             >
-                                                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                                    {item.name}
-                                                </span>
-                                                <span
+                                                <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+                                                    {hasTreeChildren ? (
+                                                        <button
+                                                            type="button"
+                                                            aria-label={item.expanded ? "Collapse tag" : "Expand tag"}
+                                                            title={item.expanded ? "Collapse" : "Expand"}
+                                                            onClick={(event) => {
+                                                                stopInteractivePropagation(event);
+                                                                setExpandedTagPaths((previous) => {
+                                                                    const next = new Set(previous);
+                                                                    const key = String(item.value || "").toLowerCase();
+                                                                    if (next.has(key)) {
+                                                                        next.delete(key);
+                                                                    } else {
+                                                                        next.add(key);
+                                                                    }
+                                                                    return next;
+                                                                });
+                                                            }}
+                                                            onPointerDown={stopInteractivePropagation}
+                                                            onMouseDown={stopInteractivePropagation}
+                                                            onMouseUp={stopInteractivePropagation}
+                                                            style={{
+                                                                width: 20,
+                                                                height: 28,
+                                                                borderRadius: 7,
+                                                                border: "1px solid rgba(51, 65, 85, 0.92)",
+                                                                background: "rgba(15, 23, 42, 0.92)",
+                                                                color: "#f8fafc",
+                                                                cursor: "pointer",
+                                                                fontSize: 12,
+                                                                fontWeight: 800,
+                                                                lineHeight: 1
+                                                            }}
+                                                        >
+                                                            {item.expanded ? "-" : "+"}
+                                                        </button>
+                                                    ) : null}
+                                                </div>
+                                                <button
+                                                    ref={active ? selectedOptionRef : undefined}
+                                                    data-tag-path={item.value}
+                                                    type="button"
+                                                    onClick={(event) => {
+                                                        stopInteractivePropagation(event);
+                                                        closeMenu();
+                                                        if (typeof onCommit === "function") {
+                                                            onCommit(item.value);
+                                                        }
+                                                    }}
+                                                    onPointerDown={stopInteractivePropagation}
+                                                    onMouseDown={stopInteractivePropagation}
+                                                    onMouseUp={stopInteractivePropagation}
+                                                    onContextMenu={(event) => {
+                                                        event.preventDefault();
+                                                        stopInteractivePropagation(event);
+                                                        copyTextToClipboard(item.value);
+                                                    }}
                                                     style={{
-                                                        minWidth: 0,
-                                                        overflow: "hidden",
-                                                        textOverflow: "ellipsis",
-                                                        whiteSpace: "nowrap",
-                                                        fontSize: 9,
-                                                        fontWeight: 600,
-                                                        lineHeight: 1.05,
-                                                        color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
+                                                        width: "100%",
+                                                        border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
+                                                        background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
+                                                        color: "#f8fafc",
+                                                        borderRadius: 8,
+                                                        padding: "6px 8px",
+                                                        fontSize: 11,
+                                                        fontWeight: active ? 700 : 600,
+                                                        textAlign: "left",
+                                                        cursor: "pointer",
+                                                        display: "grid",
+                                                        gap: 1,
+                                                        lineHeight: 1.1
                                                     }}
                                                 >
-                                                    {item.udtName ? `${item.udtName} | ${item.path}` : item.path}
-                                                </span>
-                                            </button>
+                                                    <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                        {item.name}
+                                                        {hasTreeChildren ? (
+                                                            <span style={{ marginLeft: 6, fontSize: 9, color: active ? "rgba(239, 246, 255, 0.82)" : "rgba(148, 163, 184, 0.85)" }}>
+                                                                {item.childCount}
+                                                            </span>
+                                                        ) : null}
+                                                    </span>
+                                                    <span
+                                                        style={{
+                                                            minWidth: 0,
+                                                            overflow: "hidden",
+                                                            textOverflow: "ellipsis",
+                                                            whiteSpace: "nowrap",
+                                                            fontSize: 9,
+                                                            fontWeight: 600,
+                                                            lineHeight: 1.05,
+                                                            color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
+                                                        }}
+                                                    >
+                                                        {item.udtName ? `${item.udtName} | ${item.path}` : item.path}
+                                                    </span>
+                                                </button>
+                                            </div>
                                         );
                                     })}
                                 </div>
@@ -5028,11 +5303,28 @@ export default function PerspectiveViziCanvasBridge(props) {
             seen.add(key);
             out.push(path);
         };
+        const addBrowsedChildPaths = (basePath) => {
+            const root = String(basePath || "").trim();
+            if (!root) return;
+            const lowerRoot = root.toLowerCase();
+            const prefixes = [`${lowerRoot}/`, `${lowerRoot}.`];
+            let added = 0;
+            coerceArray(ignitionTagOptions).forEach((option) => {
+                if (added >= 250) return;
+                const path = String(option?.path || "").trim();
+                const lower = path.toLowerCase();
+                if (!path || lower === lowerRoot) return;
+                if (!prefixes.some((prefix) => lower.startsWith(prefix))) return;
+                addPath(path);
+                added += 1;
+            });
+        };
 
         coerceArray(canvasSvgOverlays).forEach((overlay) => {
             addPath(getOverlayFillBindingTagPath(overlay));
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             addPath(basePath);
+            addBrowsedChildPaths(basePath);
             if (basePath && !overlay?.widget && !overlay?.embeddedView) {
                 IGNITION_DESCRIPTION_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
             }
@@ -5061,7 +5353,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         });
 
         return out;
-    }, [canvasSvgOverlays, shapes]);
+    }, [canvasSvgOverlays, ignitionTagOptions, shapes]);
     const overlayFillBindingPathsKey = JSON.stringify(overlayFillBindingPaths);
     const overlayFillBindingPathChunks = useMemo(
         () => chunkIgnitionTagValuePaths(overlayFillBindingPaths),
@@ -6038,7 +6330,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             if (!basePath || !isMotorOverlay(overlay)) return;
             const color = String(
-                getIgnitionTagValueForMembers(
+                getIgnitionTagValueForMembersDeep(
                     ignitionTagValuesByPath,
                     basePath,
                     MOTOR_UDT_ROUTE_COLOR_MEMBERS
@@ -6067,7 +6359,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             if (!basePath || !isDiverterOverlay(overlay)) return;
             const color = String(
-                getIgnitionTagValueForMembers(
+                getIgnitionTagValueForMembersDeep(
                     ignitionTagValuesByPath,
                     basePath,
                     DIVERTER_UDT_ROUTE_COLOR_MEMBERS
@@ -6096,7 +6388,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             if (!basePath || !isDocOrDicOverlay(overlay)) return;
             const color = String(
-                getIgnitionTagValueForMembers(
+                getIgnitionTagValueForMembersDeep(
                     ignitionTagValuesByPath,
                     basePath,
                     DOC_DIC_UDT_ROUTE_COLOR_MEMBERS

@@ -15013,31 +15013,39 @@ var MesoraDrawingToolBundle = (() => {
     };
     const getTextShapeValueForShape = (shape) => {
       var _a2, _b, _c, _d, _e, _f, _g, _h;
+      const appendTextUnit = (value) => {
+        const text = String(value != null ? value : "");
+        const unit = String((shape == null ? void 0 : shape.unit) || "").trim();
+        if (!unit) return text;
+        const trimmed = text.trim();
+        if (!trimmed) return unit;
+        if (trimmed.toLowerCase().endsWith(unit.toLowerCase())) return text;
+        return `${text} ${unit}`;
+      };
       const tagPath = String((shape == null ? void 0 : shape.tagPath) || "").trim();
-      if (!tagPath) return String((shape == null ? void 0 : shape.text) || "");
+      if (!tagPath) return appendTextUnit((shape == null ? void 0 : shape.text) || "");
       const ignitionValue = readIgnitionTagValueForPath(tagPath);
       const rawValue = ignitionValue !== void 0 ? ignitionValue : getLiveValueForTagPath(tagPath);
       if (rawValue == null || rawValue === "") {
-        return String((shape == null ? void 0 : shape.text) || "");
+        return appendTextUnit((shape == null ? void 0 : shape.text) || "");
       }
       const rawText = rawValue != null && typeof rawValue === "object" ? String(
         (_f = (_e = (_d = (_c = (_b = (_a2 = rawValue == null ? void 0 : rawValue.value) != null ? _a2 : rawValue == null ? void 0 : rawValue.v) != null ? _b : rawValue == null ? void 0 : rawValue.state) != null ? _c : rawValue == null ? void 0 : rawValue.State) != null ? _d : rawValue == null ? void 0 : rawValue.rawValue) != null ? _e : rawValue == null ? void 0 : rawValue.raw) != null ? _f : ""
       ).trim() : String(rawValue).trim();
       if (!rawText) {
-        return String((shape == null ? void 0 : shape.text) || "");
+        return appendTextUnit((shape == null ? void 0 : shape.text) || "");
       }
       const scaleFactorRaw = Number.parseFloat(String((_g = shape == null ? void 0 : shape.scaleFactor) != null ? _g : "").trim());
       const scaleFactor = Number.isFinite(scaleFactorRaw) ? scaleFactorRaw : 1;
       const decimalsRaw = Number.parseInt(String((_h = shape == null ? void 0 : shape.decimals) != null ? _h : "").trim(), 10);
       const decimals = Number.isInteger(decimalsRaw) ? Math.max(0, Math.min(6, decimalsRaw)) : null;
-      const unit = String((shape == null ? void 0 : shape.unit) || "").trim();
       const numericValue = Number(rawText);
       let displayValue = rawText;
       if (Number.isFinite(numericValue)) {
         const scaledValue = numericValue * scaleFactor;
         displayValue = decimals == null ? String(scaledValue) : scaledValue.toFixed(decimals);
       }
-      return unit ? `${displayValue} ${unit}` : displayValue;
+      return appendTextUnit(displayValue);
     };
     const toNumberOrNull = (value) => {
       if (value == null) return null;
@@ -21266,7 +21274,8 @@ var MesoraDrawingToolBundle = (() => {
         if (s.type === "text") {
           const isInline = inlineEditId === s.id;
           const displayText = getTextShapeValueForShape(s);
-          return /* @__PURE__ */ jsxs("g", { "data-shape-id": s.id, children: [
+          const textCursor = isLiveMode ? "default" : tool === "select" ? "move" : "crosshair";
+          return /* @__PURE__ */ jsxs("g", { "data-shape-id": s.id, style: { cursor: textCursor }, children: [
             (() => {
               const tb = getTextBounds(s);
               if (!tb) return null;
@@ -21278,7 +21287,8 @@ var MesoraDrawingToolBundle = (() => {
                   width: tb.w + 12,
                   height: tb.h + 12,
                   fill: "rgba(0,0,0,0.001)",
-                  pointerEvents: "all"
+                  pointerEvents: "all",
+                  style: { cursor: textCursor }
                 }
               );
             })(),
@@ -21293,7 +21303,7 @@ var MesoraDrawingToolBundle = (() => {
                 fontWeight: s.fontWeight || "400",
                 textAnchor: s.anchor || "start",
                 dominantBaseline: "text-before-edge",
-                style: { userSelect: "none", visibility: isInline ? "hidden" : "visible" },
+                style: { userSelect: "none", visibility: isInline ? "hidden" : "visible", cursor: textCursor },
                 children: displayText
               }
             )
@@ -23529,6 +23539,12 @@ var MesoraDrawingToolBundle = (() => {
       (entry == null ? void 0 : entry.dataType) || (entry == null ? void 0 : entry.plcType) || (entry == null ? void 0 : entry.uaType) || typeId || ""
     );
   }
+  function isIgnitionDocumentTagEntry(entry) {
+    const objectType = String((entry == null ? void 0 : entry.objectType) || "").trim().toLowerCase();
+    const dataType = cleanTagTypeDisplayName((entry == null ? void 0 : entry.dataType) || (entry == null ? void 0 : entry.plcType) || (entry == null ? void 0 : entry.uaType) || "").toLowerCase();
+    const typeId = cleanTagTypeDisplayName((entry == null ? void 0 : entry.typeId) || "").toLowerCase();
+    return objectType === "document" || objectType === "documenttag" || objectType.includes("documenttag") || dataType === "document" || typeId === "document";
+  }
   function buildUdtTypeOptions({ tags = EMPTY_ARRAY, styleMapIndex = EMPTY_MAP, currentValues = EMPTY_ARRAY } = {}) {
     const seen = /* @__PURE__ */ new Set();
     const out = [];
@@ -23635,6 +23651,9 @@ var MesoraDrawingToolBundle = (() => {
       var _a2;
       const path = String((entry == null ? void 0 : entry.path) || "").trim();
       if (!path) {
+        return;
+      }
+      if (isIgnitionDocumentTagEntry(entry)) {
         return;
       }
       const key = path.toLowerCase();
@@ -24616,11 +24635,14 @@ var MesoraDrawingToolBundle = (() => {
     const dotPath = `${root}.${child}`;
     return (_d = (_c = (_b = (_a = tagValMap.get(slashPath)) != null ? _a : tagValMap.get(slashPath.toLowerCase())) != null ? _b : tagValMap.get(dotPath)) != null ? _c : tagValMap.get(dotPath.toLowerCase())) != null ? _d : null;
   }
+  function normalizeIgnitionMemberName(value) {
+    return String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  }
   var IGNITION_FILL_STATE_MEMBER_KEYS = new Set(
-    IGNITION_FILL_STATE_MEMBERS.map((member) => String(member || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase())
+    IGNITION_FILL_STATE_MEMBERS.map(normalizeIgnitionMemberName)
   );
   function isIgnitionFillStateMemberName(value) {
-    const key = String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+    const key = normalizeIgnitionMemberName(value);
     return Boolean(key && IGNITION_FILL_STATE_MEMBER_KEYS.has(key));
   }
   function getIgnitionTagDirectValue(tagValMap, rawPath) {
@@ -24640,6 +24662,36 @@ var MesoraDrawingToolBundle = (() => {
     }
     return null;
   }
+  function getIgnitionTagValueForMembersDeep(tagValMap, basePath, members) {
+    const direct = getIgnitionTagValueForMembers(tagValMap, basePath, members);
+    if (direct != null && String(direct).trim() !== "") {
+      return direct;
+    }
+    const path = String(basePath || "").trim();
+    if (!path || !tagValMap || typeof tagValMap.entries !== "function") {
+      return null;
+    }
+    const memberKeys = new Set(coerceArray(members).map(normalizeIgnitionMemberName).filter(Boolean));
+    if (!memberKeys.size) {
+      return null;
+    }
+    const lowerPath = path.toLowerCase();
+    const prefixes = [`${lowerPath}/`, `${lowerPath}.`];
+    for (const [rawKey, value] of tagValMap.entries()) {
+      if (value == null || String(value).trim() === "") {
+        continue;
+      }
+      const key = String(rawKey || "").trim().toLowerCase();
+      if (!prefixes.some((prefix) => key.startsWith(prefix))) {
+        continue;
+      }
+      const leaf = key.split(/[/.]/).filter(Boolean).pop() || "";
+      if (memberKeys.has(normalizeIgnitionMemberName(leaf))) {
+        return value;
+      }
+    }
+    return null;
+  }
   function getIgnitionHmiStateValueForBase(tagValMap, basePath, members = IGNITION_FILL_STATE_MEMBERS) {
     const path = String(basePath || "").trim();
     if (!path) {
@@ -24652,7 +24704,7 @@ var MesoraDrawingToolBundle = (() => {
         return directValue;
       }
     }
-    return getIgnitionTagValueForMembers(tagValMap, path, members);
+    return getIgnitionTagValueForMembersDeep(tagValMap, path, members);
   }
   function getIgnitionTagMeta(tagMetaMap, rawPath) {
     var _a, _b;
@@ -26008,6 +26060,50 @@ var MesoraDrawingToolBundle = (() => {
       }
     );
   }
+  function splitIgnitionProviderPath(rawPath) {
+    const path = String(rawPath || "").replace(/\r?\n/g, "").trim();
+    const providerMatch = path.match(/^(\[[^\]]+\])(.*)$/);
+    if (!providerMatch) {
+      return { prefix: "", body: path };
+    }
+    return {
+      prefix: providerMatch[1],
+      body: String(providerMatch[2] || "").replace(/^[\\/]+/, "")
+    };
+  }
+  function getIgnitionTagParentPath(rawPath) {
+    const { prefix, body } = splitIgnitionProviderPath(rawPath);
+    const text = String(body || "").trim();
+    if (!text) {
+      return "";
+    }
+    const slashIndex = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+    const dotIndex = text.lastIndexOf(".");
+    const splitIndex = Math.max(slashIndex, dotIndex);
+    if (splitIndex <= 0) {
+      return "";
+    }
+    return `${prefix}${text.slice(0, splitIndex)}`;
+  }
+  function getIgnitionTagAncestorPaths(rawPath) {
+    const out = [];
+    let parent = getIgnitionTagParentPath(rawPath);
+    const seen = /* @__PURE__ */ new Set();
+    while (parent && !seen.has(parent.toLowerCase())) {
+      out.push(parent);
+      seen.add(parent.toLowerCase());
+      parent = getIgnitionTagParentPath(parent);
+    }
+    return out;
+  }
+  function getIgnitionTagLeafName(rawPath) {
+    const { body } = splitIgnitionProviderPath(rawPath);
+    const text = String(body || rawPath || "").trim();
+    const slashIndex = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+    const dotIndex = text.lastIndexOf(".");
+    const splitIndex = Math.max(slashIndex, dotIndex);
+    return splitIndex >= 0 ? text.slice(splitIndex + 1) : text;
+  }
   function EditorDropdownField({
     disabled = false,
     helperText = "",
@@ -26294,45 +26390,140 @@ var MesoraDrawingToolBundle = (() => {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [menuRect, setMenuRect] = useState(null);
+    const [expandedTagPaths, setExpandedTagPaths] = useState(() => /* @__PURE__ */ new Set());
     const currentValue = value == null ? "" : String(value);
     const normalizedTypeFilter = String(typeFilter || "").trim();
     const normalizedOptions = useMemo(
-      () => coerceArray(options).map((option) => {
-        const path = String((option == null ? void 0 : option.path) || "").trim();
-        if (!path) {
-          return null;
-        }
-        const provider = String((option == null ? void 0 : option.provider) || "Tags").trim() || "Tags";
-        const name = String((option == null ? void 0 : option.name) || "").trim() || path;
-        const typeId = String((option == null ? void 0 : option.typeId) || "").trim();
-        const dataType = String((option == null ? void 0 : option.dataType) || (option == null ? void 0 : option.plcType) || (option == null ? void 0 : option.uaType) || "").trim();
-        const udtName = getTagTypeDisplayName({ ...option, typeId, dataType });
-        const groupLabel = udtName || provider;
-        return {
-          value: path,
-          path,
-          provider,
-          name,
-          objectType: String((option == null ? void 0 : option.objectType) || "").trim(),
-          typeId,
-          dataType,
-          udtName,
-          groupLabel,
-          searchText: `${provider} ${groupLabel} ${udtName} ${dataType} ${typeId} ${name} ${path}`.toLowerCase()
-        };
-      }).filter(Boolean).filter((option) => tagMatchesTypeFilter(option, normalizedTypeFilter)),
+      () => {
+        const mapped = coerceArray(options).map((option) => {
+          const path = String((option == null ? void 0 : option.path) || "").trim();
+          if (!path) {
+            return null;
+          }
+          const provider = String((option == null ? void 0 : option.provider) || "Tags").trim() || "Tags";
+          const name = String((option == null ? void 0 : option.name) || "").trim() || path;
+          const typeId = String((option == null ? void 0 : option.typeId) || "").trim();
+          const dataType = String((option == null ? void 0 : option.dataType) || (option == null ? void 0 : option.plcType) || (option == null ? void 0 : option.uaType) || "").trim();
+          const udtName = getTagTypeDisplayName({ ...option, typeId, dataType });
+          const groupLabel = udtName || provider;
+          return {
+            value: path,
+            path,
+            parentPath: getIgnitionTagParentPath(path),
+            leafName: getIgnitionTagLeafName(path),
+            provider,
+            name,
+            objectType: String((option == null ? void 0 : option.objectType) || "").trim(),
+            typeId,
+            dataType,
+            udtName,
+            groupLabel,
+            searchText: `${provider} ${groupLabel} ${udtName} ${dataType} ${typeId} ${name} ${path}`.toLowerCase()
+          };
+        }).filter(Boolean);
+        const allByPath = /* @__PURE__ */ new Map();
+        mapped.forEach((option) => {
+          allByPath.set(String(option.path || "").toLowerCase(), option);
+        });
+        return mapped.filter((option) => {
+          if (tagMatchesTypeFilter(option, normalizedTypeFilter)) {
+            return true;
+          }
+          let parent = option.parentPath;
+          const seenParents = /* @__PURE__ */ new Set();
+          while (parent && !seenParents.has(parent.toLowerCase())) {
+            seenParents.add(parent.toLowerCase());
+            const parentOption = allByPath.get(parent.toLowerCase());
+            if (!parentOption) {
+              break;
+            }
+            if (tagMatchesTypeFilter(parentOption, normalizedTypeFilter)) {
+              return true;
+            }
+            parent = parentOption.parentPath;
+          }
+          return false;
+        });
+      },
       [normalizedTypeFilter, options]
     );
+    const optionByPath = useMemo(() => {
+      const map2 = /* @__PURE__ */ new Map();
+      normalizedOptions.forEach((option) => {
+        map2.set(String(option.path || "").toLowerCase(), option);
+      });
+      return map2;
+    }, [normalizedOptions]);
     const groupedOptions = useMemo(
       () => normalizedOptions.reduce((acc, option) => {
-        if (!acc[option.groupLabel]) {
-          acc[option.groupLabel] = [];
+        let groupLabel = option.groupLabel;
+        let parent = option.parentPath;
+        const seenParents = /* @__PURE__ */ new Set();
+        while (parent && !seenParents.has(parent.toLowerCase())) {
+          seenParents.add(parent.toLowerCase());
+          const parentOption = optionByPath.get(parent.toLowerCase());
+          if (!parentOption) {
+            break;
+          }
+          if (parentOption.udtName || parentOption.groupLabel) {
+            groupLabel = parentOption.groupLabel || parentOption.udtName || groupLabel;
+            break;
+          }
+          parent = parentOption.parentPath;
         }
-        acc[option.groupLabel].push(option);
+        if (!acc[groupLabel]) {
+          acc[groupLabel] = [];
+        }
+        acc[groupLabel].push(option);
         return acc;
       }, {}),
-      [normalizedOptions]
+      [normalizedOptions, optionByPath]
     );
+    const buildVisibleTagTreeRows = useCallback((items) => {
+      const list = coerceArray(items);
+      const localByPath = /* @__PURE__ */ new Map();
+      list.forEach((item) => {
+        localByPath.set(String(item.path || "").toLowerCase(), item);
+      });
+      const childrenByParent = /* @__PURE__ */ new Map();
+      list.forEach((item) => {
+        const parentKey = String(item.parentPath || "").toLowerCase();
+        if (!parentKey || !localByPath.has(parentKey)) {
+          return;
+        }
+        if (!childrenByParent.has(parentKey)) {
+          childrenByParent.set(parentKey, []);
+        }
+        childrenByParent.get(parentKey).push(item);
+      });
+      const compareRows = (left, right) => String(left.leafName || left.name || left.path || "").localeCompare(
+        String(right.leafName || right.name || right.path || ""),
+        void 0,
+        { sensitivity: "base", numeric: true }
+      );
+      const roots = list.filter((item) => {
+        const parentKey = String(item.parentPath || "").toLowerCase();
+        return !parentKey || !localByPath.has(parentKey);
+      }).sort(compareRows);
+      const rows = [];
+      const walk = (item, depth) => {
+        const key = String(item.path || "").toLowerCase();
+        const children = (childrenByParent.get(key) || []).slice().sort(compareRows);
+        const expanded = expandedTagPaths.has(key);
+        rows.push({
+          ...item,
+          depth,
+          childCount: children.length,
+          hasTreeChildren: children.length > 0,
+          expanded
+        });
+        if (children.length && expanded) {
+          children.forEach((child) => walk(child, depth + 1));
+        }
+      };
+      roots.forEach((item) => walk(item, 0));
+      return rows;
+    }, [expandedTagPaths]);
     const hasCurrentOption = normalizedOptions.some((option) => option.path === currentValue);
     const selectedOption = normalizedOptions.find((option) => option.path === currentValue) || null;
     const queryText = String(query || "").trim().toLowerCase();
@@ -26340,11 +26531,17 @@ var MesoraDrawingToolBundle = (() => {
     const groupedFilteredSections = queryText ? [
       {
         label: filteredOptions.length ? "Results" : "",
-        items: filteredOptions
+        items: filteredOptions.map((item) => ({
+          ...item,
+          depth: 0,
+          childCount: 0,
+          hasTreeChildren: false,
+          expanded: false
+        }))
       }
     ] : Object.keys(groupedOptions).map((provider) => ({
       label: provider,
-      items: groupedOptions[provider]
+      items: buildVisibleTagTreeRows(groupedOptions[provider])
     }));
     const triggerLabel = (selectedOption == null ? void 0 : selectedOption.path) ? selectedOption.udtName ? `${selectedOption.path} (${selectedOption.udtName})` : selectedOption.path : currentValue ? `${currentValue} (current)` : "Select tag...";
     const resultSummary = loading ? "Loading Ignition tags..." : !loaded ? "Open to load Ignition tags" : queryText ? `${filteredOptions.length} match${filteredOptions.length === 1 ? "" : "es"}` : normalizedTypeFilter ? `${normalizedOptions.length} ${normalizedTypeFilter} tag${normalizedOptions.length === 1 ? "" : "s"} available` : `${normalizedOptions.length} Ignition tags available`;
@@ -26447,6 +26644,21 @@ var MesoraDrawingToolBundle = (() => {
     useEffect(() => {
       if (!open || queryText || !currentValue) {
         return void 0;
+      }
+      const ancestors = getIgnitionTagAncestorPaths(currentValue);
+      if (ancestors.length) {
+        setExpandedTagPaths((previous) => {
+          const next = new Set(previous);
+          let changed = false;
+          ancestors.forEach((path) => {
+            const key = String(path || "").toLowerCase();
+            if (key && !next.has(key)) {
+              next.add(key);
+              changed = true;
+            }
+          });
+          return changed ? next : previous;
+        });
       }
       const scrollSelected = () => {
         const selectedNode = selectedOptionRef.current;
@@ -26755,58 +26967,113 @@ var MesoraDrawingToolBundle = (() => {
                           ) : null,
                           section.items.map((item) => {
                             const active = item.value === currentValue;
+                            const depth = Math.max(0, Number(item.depth || 0));
+                            const hasTreeChildren = Boolean(item.hasTreeChildren);
                             return /* @__PURE__ */ jsxs(
-                              "button",
+                              "div",
                               {
-                                ref: active ? selectedOptionRef : void 0,
-                                "data-tag-path": item.value,
-                                type: "button",
-                                onClick: (event) => {
-                                  stopInteractivePropagation(event);
-                                  closeMenu();
-                                  if (typeof onCommit === "function") {
-                                    onCommit(item.value);
-                                  }
-                                },
-                                onPointerDown: stopInteractivePropagation,
-                                onMouseDown: stopInteractivePropagation,
-                                onMouseUp: stopInteractivePropagation,
-                                onContextMenu: (event) => {
-                                  event.preventDefault();
-                                  stopInteractivePropagation(event);
-                                  copyTextToClipboard(item.value);
-                                },
                                 style: {
-                                  width: "100%",
-                                  border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
-                                  background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
-                                  color: "#f8fafc",
-                                  borderRadius: 8,
-                                  padding: "6px 8px",
-                                  fontSize: 11,
-                                  fontWeight: active ? 700 : 600,
-                                  textAlign: "left",
-                                  cursor: "pointer",
                                   display: "grid",
-                                  gap: 1,
-                                  lineHeight: 1.1
+                                  gridTemplateColumns: `${depth * 14 + 22}px minmax(0, 1fr)`,
+                                  gap: 4,
+                                  alignItems: "stretch"
                                 },
                                 children: [
-                                  /* @__PURE__ */ jsx("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: item.name }),
-                                  /* @__PURE__ */ jsx(
-                                    "span",
+                                  /* @__PURE__ */ jsx("div", { style: { display: "flex", justifyContent: "flex-end", alignItems: "center" }, children: hasTreeChildren ? /* @__PURE__ */ jsx(
+                                    "button",
                                     {
-                                      style: {
-                                        minWidth: 0,
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                        fontSize: 9,
-                                        fontWeight: 600,
-                                        lineHeight: 1.05,
-                                        color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
+                                      type: "button",
+                                      "aria-label": item.expanded ? "Collapse tag" : "Expand tag",
+                                      title: item.expanded ? "Collapse" : "Expand",
+                                      onClick: (event) => {
+                                        stopInteractivePropagation(event);
+                                        setExpandedTagPaths((previous) => {
+                                          const next = new Set(previous);
+                                          const key = String(item.value || "").toLowerCase();
+                                          if (next.has(key)) {
+                                            next.delete(key);
+                                          } else {
+                                            next.add(key);
+                                          }
+                                          return next;
+                                        });
                                       },
-                                      children: item.udtName ? `${item.udtName} | ${item.path}` : item.path
+                                      onPointerDown: stopInteractivePropagation,
+                                      onMouseDown: stopInteractivePropagation,
+                                      onMouseUp: stopInteractivePropagation,
+                                      style: {
+                                        width: 20,
+                                        height: 28,
+                                        borderRadius: 7,
+                                        border: "1px solid rgba(51, 65, 85, 0.92)",
+                                        background: "rgba(15, 23, 42, 0.92)",
+                                        color: "#f8fafc",
+                                        cursor: "pointer",
+                                        fontSize: 12,
+                                        fontWeight: 800,
+                                        lineHeight: 1
+                                      },
+                                      children: item.expanded ? "-" : "+"
+                                    }
+                                  ) : null }),
+                                  /* @__PURE__ */ jsxs(
+                                    "button",
+                                    {
+                                      ref: active ? selectedOptionRef : void 0,
+                                      "data-tag-path": item.value,
+                                      type: "button",
+                                      onClick: (event) => {
+                                        stopInteractivePropagation(event);
+                                        closeMenu();
+                                        if (typeof onCommit === "function") {
+                                          onCommit(item.value);
+                                        }
+                                      },
+                                      onPointerDown: stopInteractivePropagation,
+                                      onMouseDown: stopInteractivePropagation,
+                                      onMouseUp: stopInteractivePropagation,
+                                      onContextMenu: (event) => {
+                                        event.preventDefault();
+                                        stopInteractivePropagation(event);
+                                        copyTextToClipboard(item.value);
+                                      },
+                                      style: {
+                                        width: "100%",
+                                        border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
+                                        background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
+                                        color: "#f8fafc",
+                                        borderRadius: 8,
+                                        padding: "6px 8px",
+                                        fontSize: 11,
+                                        fontWeight: active ? 700 : 600,
+                                        textAlign: "left",
+                                        cursor: "pointer",
+                                        display: "grid",
+                                        gap: 1,
+                                        lineHeight: 1.1
+                                      },
+                                      children: [
+                                        /* @__PURE__ */ jsxs("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: [
+                                          item.name,
+                                          hasTreeChildren ? /* @__PURE__ */ jsx("span", { style: { marginLeft: 6, fontSize: 9, color: active ? "rgba(239, 246, 255, 0.82)" : "rgba(148, 163, 184, 0.85)" }, children: item.childCount }) : null
+                                        ] }),
+                                        /* @__PURE__ */ jsx(
+                                          "span",
+                                          {
+                                            style: {
+                                              minWidth: 0,
+                                              overflow: "hidden",
+                                              textOverflow: "ellipsis",
+                                              whiteSpace: "nowrap",
+                                              fontSize: 9,
+                                              fontWeight: 600,
+                                              lineHeight: 1.05,
+                                              color: active ? "rgba(239, 246, 255, 0.9)" : "rgba(148, 163, 184, 0.92)"
+                                            },
+                                            children: item.udtName ? `${item.udtName} | ${item.path}` : item.path
+                                          }
+                                        )
+                                      ]
                                     }
                                   )
                                 ]
@@ -27521,10 +27788,27 @@ var MesoraDrawingToolBundle = (() => {
         seen.add(key);
         out.push(path);
       };
+      const addBrowsedChildPaths = (basePath) => {
+        const root = String(basePath || "").trim();
+        if (!root) return;
+        const lowerRoot = root.toLowerCase();
+        const prefixes = [`${lowerRoot}/`, `${lowerRoot}.`];
+        let added = 0;
+        coerceArray(ignitionTagOptions).forEach((option) => {
+          if (added >= 250) return;
+          const path = String((option == null ? void 0 : option.path) || "").trim();
+          const lower = path.toLowerCase();
+          if (!path || lower === lowerRoot) return;
+          if (!prefixes.some((prefix) => lower.startsWith(prefix))) return;
+          addPath(path);
+          added += 1;
+        });
+      };
       coerceArray(canvasSvgOverlays).forEach((overlay) => {
         addPath(getOverlayFillBindingTagPath(overlay));
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         addPath(basePath);
+        addBrowsedChildPaths(basePath);
         if (basePath && !(overlay == null ? void 0 : overlay.widget) && !(overlay == null ? void 0 : overlay.embeddedView)) {
           IGNITION_DESCRIPTION_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
         }
@@ -27551,7 +27835,7 @@ var MesoraDrawingToolBundle = (() => {
         addPath(String((shape == null ? void 0 : shape.tagPath) || "").trim());
       });
       return out;
-    }, [canvasSvgOverlays, shapes]);
+    }, [canvasSvgOverlays, ignitionTagOptions, shapes]);
     const overlayFillBindingPathsKey = JSON.stringify(overlayFillBindingPaths);
     const overlayFillBindingPathChunks = useMemo(
       () => chunkIgnitionTagValuePaths(overlayFillBindingPaths),
@@ -28398,7 +28682,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!basePath || !isMotorOverlay(overlay)) return;
         const color2 = String(
-          getIgnitionTagValueForMembers(
+          getIgnitionTagValueForMembersDeep(
             ignitionTagValuesByPath,
             basePath,
             MOTOR_UDT_ROUTE_COLOR_MEMBERS
@@ -28426,7 +28710,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!basePath || !isDiverterOverlay(overlay)) return;
         const color2 = String(
-          getIgnitionTagValueForMembers(
+          getIgnitionTagValueForMembersDeep(
             ignitionTagValuesByPath,
             basePath,
             DIVERTER_UDT_ROUTE_COLOR_MEMBERS
@@ -28454,7 +28738,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!basePath || !isDocOrDicOverlay(overlay)) return;
         const color2 = String(
-          getIgnitionTagValueForMembers(
+          getIgnitionTagValueForMembersDeep(
             ignitionTagValuesByPath,
             basePath,
             DOC_DIC_UDT_ROUTE_COLOR_MEMBERS

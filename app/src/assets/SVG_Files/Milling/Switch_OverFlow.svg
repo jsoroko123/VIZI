@@ -23,7 +23,8 @@
      transform="translate(-15.391651,-14.4186)">
     <path
        d="m 16.521254,14.4811 c -0.227462,1.41e-4 -0.41177,0.184449 -0.411726,0.411727 -4.3e-5,0.227278 0.184264,0.411585 0.411726,0.411726 0.227462,-1.41e-4 0.411769,-0.184448 0.411726,-0.411726 4.4e-5,-0.227278 -0.184264,-0.411586 -0.411726,-0.411727 z"
-       style="fill:none;stroke:#808080;stroke-width:0.125;stroke-dasharray:none"
+       style="fill:#D7DADE;stroke:#808080;stroke-width:0.125;stroke-dasharray:none"
+       data-vizi-fill-target="true"
        id="body" />
     <path
        style="fill:none;stroke:#808080;stroke-width:0.125;stroke-dasharray:none"

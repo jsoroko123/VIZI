@@ -1750,13 +1750,22 @@ function CanvasSvg({
     return getLiveValueForTagPath(tagPath);
   };
   const getTextShapeValueForShape = (shape) => {
+    const appendTextUnit = (value) => {
+      const text = String(value ?? "");
+      const unit = String(shape?.unit || "").trim();
+      if (!unit) return text;
+      const trimmed = text.trim();
+      if (!trimmed) return unit;
+      if (trimmed.toLowerCase().endsWith(unit.toLowerCase())) return text;
+      return `${text} ${unit}`;
+    };
     const tagPath = String(shape?.tagPath || "").trim();
-    if (!tagPath) return String(shape?.text || "");
+    if (!tagPath) return appendTextUnit(shape?.text || "");
 
     const ignitionValue = readIgnitionTagValueForPath(tagPath);
     const rawValue = ignitionValue !== undefined ? ignitionValue : getLiveValueForTagPath(tagPath);
     if (rawValue == null || rawValue === "") {
-      return String(shape?.text || "");
+      return appendTextUnit(shape?.text || "");
     }
 
     const rawText =
@@ -1772,14 +1781,13 @@ function CanvasSvg({
           ).trim()
         : String(rawValue).trim();
     if (!rawText) {
-      return String(shape?.text || "");
+      return appendTextUnit(shape?.text || "");
     }
 
     const scaleFactorRaw = Number.parseFloat(String(shape?.scaleFactor ?? "").trim());
     const scaleFactor = Number.isFinite(scaleFactorRaw) ? scaleFactorRaw : 1;
     const decimalsRaw = Number.parseInt(String(shape?.decimals ?? "").trim(), 10);
     const decimals = Number.isInteger(decimalsRaw) ? Math.max(0, Math.min(6, decimalsRaw)) : null;
-    const unit = String(shape?.unit || "").trim();
     const numericValue = Number(rawText);
 
     let displayValue = rawText;
@@ -1791,7 +1799,7 @@ function CanvasSvg({
           : scaledValue.toFixed(decimals);
     }
 
-    return unit ? `${displayValue} ${unit}` : displayValue;
+    return appendTextUnit(displayValue);
   };
   const toNumberOrNull = (value) => {
     if (value == null) return null;
@@ -8879,8 +8887,13 @@ function CanvasSvg({
         if (s.type === "text") {
           const isInline = inlineEditId === s.id;
           const displayText = getTextShapeValueForShape(s);
+          const textCursor = isLiveMode
+            ? "default"
+            : tool === "select"
+            ? "move"
+            : "crosshair";
           return (
-            <g key={s.id} data-shape-id={s.id}>
+            <g key={s.id} data-shape-id={s.id} style={{ cursor: textCursor }}>
               {(() => {
                 const tb = getTextBounds(s);
                 if (!tb) return null;
@@ -8892,6 +8905,7 @@ function CanvasSvg({
                     height={tb.h + 12}
                     fill="rgba(0,0,0,0.001)"
                     pointerEvents="all"
+                    style={{ cursor: textCursor }}
                   />
                 );
               })()}
@@ -8909,7 +8923,7 @@ function CanvasSvg({
                 fontWeight={s.fontWeight || "400"}
                 textAnchor={s.anchor || "start"}
                 dominantBaseline="text-before-edge"
-                style={{ userSelect: "none", visibility: isInline ? "hidden" : "visible" }}
+                style={{ userSelect: "none", visibility: isInline ? "hidden" : "visible", cursor: textCursor }}
               >
                 {displayText}
               </text>
