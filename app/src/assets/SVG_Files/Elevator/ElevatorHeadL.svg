@@ -12,6 +12,6 @@
     </linearGradient>
   </defs>
   <g id="layer1" transform="translate(-95.166993,324.93998)">
-    <path d="M 95.516993,-280.08998 H 100.517 l 7,-13 h 1 v 7 h 16.99999 v -21.99999 c 0,-22 -29.999997,-22 -29.999997,0 z" id="body" fill="#D7DADE" stroke-width="0.678" stroke-dasharray="none" stroke-opacity="1" />
+    <path d="M 95.516993,-280.08998 H 100.517 l 7,-13 h 1 v 7 h 16.99999 v -21.99999 c 0,-22 -29.999997,-22 -29.999997,0 z" id="body" fill="#D7DADE" stroke="#808080" stroke-width="0.678" stroke-dasharray="none" stroke-opacity="1" />
   </g>
 </svg>

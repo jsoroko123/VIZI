@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 48" preserveAspectRatio="xMidYMid meet" kewidth="100" keheight="13.333" eType="TruckScale" stroke="#808080" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <g id="layer1">
+    <path id="body" d="M 28,10 H 332 V 18 H 28 Z" fill="#D7DADE" />
+    <path id="deckFace" d="M 24,18 H 336 V 33 H 24 Z" fill="#D7DADE" />
+    <path id="leftEndPost" d="M 2,10 H 25 V 33 H 58" fill="transparent" />
+    <path id="rightEndPost" d="M 358,10 H 335 V 33 H 302" fill="transparent" />
+    <path id="leftPier" d="M 61,33 L 80,18 L 99,33 Z" fill="#D7DADE" />
+    <path id="rightPier" d="M 261,33 L 280,18 L 299,33 Z" fill="#D7DADE" />
+    <path id="leftPierCenter" d="M 80,18 L 80,33" fill="transparent" opacity="0.58" />
+    <path id="rightPierCenter" d="M 280,18 L 280,33" fill="transparent" opacity="0.58" />
+    <path id="deckSeam" d="M 33,13 H 327" fill="transparent" stroke-width="1.2" opacity="0.72" />
+    <path id="foundationLine" d="M 18,33 H 342" fill="transparent" opacity="0.42" />
+  </g>
+</svg>

@@ -290,6 +290,17 @@ var MesoraDrawingToolBundle = (() => {
   }
 
   // ../../app/src/utils/appDataTransforms.js
+  function getFolderFromKey(key) {
+    const parts = String(key).split("/");
+    const i = parts.findIndex((p) => p === "SVG_Files" || p === "SVG Files");
+    if (i >= 0) {
+      const rest = parts.slice(i + 1);
+      if (rest.length <= 1) return "Root";
+      return rest.slice(0, -1).join(" / ");
+    }
+    if (parts.length <= 2) return "Root";
+    return parts.slice(0, -1).slice(-1)[0] || "Root";
+  }
   function normalizeTagValue(value) {
     return String(value || "").replace(/\r?\n/g, "").trim();
   }
@@ -386,6 +397,7 @@ var MesoraDrawingToolBundle = (() => {
       kind: kind || "lineChart",
       title: "",
       titleFontSize: "",
+      textColor: "",
       writeMode: DEFAULT_WIDGET_WRITE_MODE,
       opcServer: DEFAULT_WIDGET_OPC_SERVER,
       writeValue: 1,
@@ -6351,7 +6363,7 @@ var MesoraDrawingToolBundle = (() => {
     }
     return DomPlatform;
   }
-  var Element = class {
+  var Element2 = class {
     constructor() {
       __publicField(this, "x");
       __publicField(this, "y");
@@ -6384,8 +6396,8 @@ var MesoraDrawingToolBundle = (() => {
       return ret;
     }
   };
-  __publicField(Element, "defaults", {});
-  __publicField(Element, "defaultRoutes");
+  __publicField(Element2, "defaults", {});
+  __publicField(Element2, "defaultRoutes");
   function autoSkip(scale, ticks) {
     const tickOpts = scale.options.ticks;
     const determinedMaxTicks = determineMaxTicks(scale);
@@ -6614,7 +6626,7 @@ var MesoraDrawingToolBundle = (() => {
       rotation
     };
   }
-  var Scale = class _Scale extends Element {
+  var Scale = class _Scale extends Element2 {
     constructor(cfg) {
       super();
       this.id = cfg.id;
@@ -7851,7 +7863,7 @@ var MesoraDrawingToolBundle = (() => {
   var Registry = class {
     constructor() {
       this.controllers = new TypedRegistry(DatasetController, "datasets", true);
-      this.elements = new TypedRegistry(Element, "elements");
+      this.elements = new TypedRegistry(Element2, "elements");
       this.plugins = new TypedRegistry(Object, "plugins");
       this.scales = new TypedRegistry(Scale, "scales");
       this._typedRegistries = [
@@ -9480,7 +9492,7 @@ var MesoraDrawingToolBundle = (() => {
       ctx.stroke();
     }
   }
-  var ArcElement = class extends Element {
+  var ArcElement = class extends Element2 {
     constructor(cfg) {
       super();
       __publicField(this, "circumference");
@@ -9741,7 +9753,7 @@ var MesoraDrawingToolBundle = (() => {
       strokePathDirect(ctx, line, start, count);
     }
   }
-  var LineElement = class extends Element {
+  var LineElement = class extends Element2 {
     constructor(cfg) {
       super();
       this.animated = true;
@@ -9881,7 +9893,7 @@ var MesoraDrawingToolBundle = (() => {
     ], useFinalPosition);
     return Math.abs(pos - value) < options.radius + options.hitRadius;
   }
-  var PointElement = class extends Element {
+  var PointElement = class extends Element2 {
     constructor(cfg) {
       super();
       __publicField(this, "parsed");
@@ -10074,7 +10086,7 @@ var MesoraDrawingToolBundle = (() => {
       radius: rect.radius
     };
   }
-  var BarElement = class extends Element {
+  var BarElement = class extends Element2 {
     constructor(cfg) {
       super();
       this.options = void 0;
@@ -11099,7 +11111,7 @@ var MesoraDrawingToolBundle = (() => {
     }
     return result;
   }
-  var Tooltip = class extends Element {
+  var Tooltip = class extends Element2 {
     constructor(config) {
       super();
       this.opacity = 0;
@@ -13533,6 +13545,33 @@ var MesoraDrawingToolBundle = (() => {
     "StsMaint",
     "MaintActive"
   ];
+  var LIVE_FORCE_MODE_MEMBER_ALIASES = [
+    "Force",
+    "ForceTrue",
+    "i_Force",
+    "o_Force",
+    "i_ForceTrue",
+    "o_ForceTrue",
+    "ForceMode",
+    "i_ForceMode",
+    "o_ForceMode",
+    "StsForce",
+    "ForceActive"
+  ];
+  var LIVE_DESCRIPTION_MEMBER_ALIASES = [
+    "Description",
+    "description",
+    "Desc",
+    "desc",
+    "EquipmentDescription",
+    "equipmentDescription",
+    "equipment_description",
+    "HMI_Description",
+    "HMIDescription",
+    "Tooltip",
+    "ToolTip",
+    "tooltip"
+  ];
   var BIN_LOCK_FILL_GROUP_IDS = ["Lock_Filling", "LockFill"];
   var BIN_LOCK_DISCHARGE_GROUP_IDS = ["Lock_Discharge", "LockDischarge"];
   var getTagPathLeaf = (value) => {
@@ -14504,17 +14543,20 @@ var MesoraDrawingToolBundle = (() => {
       (event, overlay) => {
         var _a2, _b;
         if (widgetInteractionEnabled && (overlay == null ? void 0 : overlay.widget)) return;
+        if (isLiveMode && isStaticSvgOverlay2(overlay)) return;
         (_b = (_a2 = overlayHandlerRefs.current).onOverlayMouseDown) == null ? void 0 : _b.call(_a2, event, overlay == null ? void 0 : overlay.id);
       },
-      [widgetInteractionEnabled]
+      [isLiveMode, widgetInteractionEnabled]
     );
     const handleOverlayDoubleClick = useCallback(
       (event, overlay, options = {}) => {
         var _a2, _b;
+        if (String((event == null ? void 0 : event.type) || "").toLowerCase() !== "dblclick" || Number((event == null ? void 0 : event.button) || 0) !== 0) return;
         if (!options.force && widgetInteractionEnabled && (overlay == null ? void 0 : overlay.widget)) return;
+        if (isLiveMode && isStaticSvgOverlay2(overlay)) return;
         (_b = (_a2 = overlayHandlerRefs.current).onOverlayDoubleClick) == null ? void 0 : _b.call(_a2, event, overlay == null ? void 0 : overlay.id);
       },
-      [widgetInteractionEnabled]
+      [isLiveMode, widgetInteractionEnabled]
     );
     const opcTagCount = Array.isArray(opcTags) ? opcTags.length : 0;
     const shapeCount = Array.isArray(shapes) ? shapes.length : 0;
@@ -14639,6 +14681,8 @@ var MesoraDrawingToolBundle = (() => {
             scale: Number(overlay == null ? void 0 : overlay.scale) || 1,
             scaleX: Number.isFinite(Number(overlay == null ? void 0 : overlay.scaleX)) ? Number(overlay.scaleX) : null,
             scaleY: Number.isFinite(Number(overlay == null ? void 0 : overlay.scaleY)) ? Number(overlay.scaleY) : null,
+            flipX: Boolean((overlay == null ? void 0 : overlay.flipX) || (overlay == null ? void 0 : overlay.flippedX) || (overlay == null ? void 0 : overlay.mirrorX)),
+            flipY: Boolean((overlay == null ? void 0 : overlay.flipY) || (overlay == null ? void 0 : overlay.flippedY) || (overlay == null ? void 0 : overlay.mirrorY)),
             bbox: (overlay == null ? void 0 : overlay.bbox) ? {
               x: Number((_a2 = overlay.bbox) == null ? void 0 : _a2.x) || 0,
               y: Number((_b = overlay.bbox) == null ? void 0 : _b.y) || 0,
@@ -15910,7 +15954,7 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [svgOverlays, liveUpdatesEnabled, disableWidgetBackgroundWork]);
     const renderWidgetOverlay = (overlay) => {
-      var _a2, _b, _c, _d, _e, _f;
+      var _a2, _b, _c, _d, _e, _f, _g, _h;
       if (!(overlay == null ? void 0 : overlay.widget)) return null;
       const kind = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.kind) || "").trim();
       const cfg = (overlay == null ? void 0 : overlay.widget) || {};
@@ -15919,6 +15963,14 @@ var MesoraDrawingToolBundle = (() => {
       const decimals = Math.max(0, Math.min(6, Number(cfg == null ? void 0 : cfg.decimals) || 0));
       const unit = String((cfg == null ? void 0 : cfg.unit) || "").trim();
       const title = String((cfg == null ? void 0 : cfg.title) || "").trim();
+      const normalizeWidgetTextColor = (value) => {
+        const text = String(value != null ? value : "").trim();
+        if (!text || text.toLowerCase() === "auto" || text.toLowerCase() === "theme") return "";
+        return text;
+      };
+      const widgetTextColor = normalizeWidgetTextColor(
+        (_c = (_b = cfg == null ? void 0 : cfg.textColor) != null ? _b : cfg == null ? void 0 : cfg.fontColor) != null ? _c : cfg == null ? void 0 : cfg.titleColor
+      );
       const minCfg = Number.isFinite(Number(cfg == null ? void 0 : cfg.min)) ? Number(cfg.min) : 0;
       const maxCfg = Number.isFinite(Number(cfg == null ? void 0 : cfg.max)) ? Number(cfg.max) : 100;
       const rowCount = Math.max(1, Math.min(20, Number(cfg == null ? void 0 : cfg.rowCount) || 4));
@@ -16030,7 +16082,7 @@ var MesoraDrawingToolBundle = (() => {
       const dense = w < 160 || h < 100;
       const widgetScale = Math.max(0.68, Math.min(1.15, Math.min(w, h) / 220));
       const scaledFont = (base, min = 7, max = 40) => Math.max(min, Math.min(max, Math.round(Number(base || 0) * widgetScale)));
-      const explicitTitleFontSizeRaw = Number.parseFloat(String((_b = cfg == null ? void 0 : cfg.titleFontSize) != null ? _b : "").trim());
+      const explicitTitleFontSizeRaw = Number.parseFloat(String((_d = cfg == null ? void 0 : cfg.titleFontSize) != null ? _d : "").trim());
       const explicitTitleFontSize = Number.isFinite(explicitTitleFontSizeRaw) && explicitTitleFontSizeRaw > 0 ? explicitTitleFontSizeRaw : null;
       const resolveWidgetTitleFontSize = (fallback, min = 7, max = 40) => {
         if (explicitTitleFontSize == null) return fallback;
@@ -16049,10 +16101,13 @@ var MesoraDrawingToolBundle = (() => {
       const cardTitle = title || "";
       const titleSize = resolveWidgetTitleFontSize(dense ? 8 : compact ? 9 : 10, 7, 40);
       const valueSize = scaledFont(dense ? 12 : compact ? 16 : 19, 9, 36);
-      const valueColor = "var(--text)";
+      const widgetRootStyle = typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
+      const themedTextColor = ((_e = widgetRootStyle == null ? void 0 : widgetRootStyle.getPropertyValue("--text")) == null ? void 0 : _e.trim()) || (isDarkTheme ? "#e2e8f0" : "#111827");
+      const valueColor = widgetTextColor || "var(--text)";
       const accent = "#2b8cff";
-      const accentSoft = "#2b8cff33";
-      const subdued = "var(--text-muted)";
+      const subdued = widgetTextColor || "var(--text-muted)";
+      const widgetHtmlTextColor = widgetTextColor || themedTextColor;
+      const widgetButtonTextColor = widgetTextColor || "rgba(255,255,255,0.98)";
       const formatTime = (ts) => {
         const nTs = Number(ts);
         if (!Number.isFinite(nTs)) return "--:--:--";
@@ -16145,9 +16200,8 @@ var MesoraDrawingToolBundle = (() => {
           Math.min(8, (window.devicePixelRatio || 1) * viewScale2 * overlayScale3 * viewportDprBoost2)
         ) : 1;
         const gaugeKey = `g-${overlay.id}-${kind}-${gaugeW}x${gaugeH}-z${viewScale2.toFixed(3)}-s${overlayScale3.toFixed(3)}-vp${viewportDprBoost2.toFixed(3)}`;
-        const rootStyle2 = typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
-        const borderColor = ((_c = rootStyle2 == null ? void 0 : rootStyle2.getPropertyValue("--border")) == null ? void 0 : _c.trim()) || "#334155";
-        const textColor2 = ((_d = rootStyle2 == null ? void 0 : rootStyle2.getPropertyValue("--text")) == null ? void 0 : _d.trim()) || "#e2e8f0";
+        const borderColor = ((_f = widgetRootStyle == null ? void 0 : widgetRootStyle.getPropertyValue("--border")) == null ? void 0 : _f.trim()) || "#334155";
+        const textColor2 = widgetHtmlTextColor;
         const gaugeData = {
           datasets: [
             {
@@ -16245,9 +16299,9 @@ var MesoraDrawingToolBundle = (() => {
           /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: "var(--bg-elev)" }),
           /* @__PURE__ */ jsx("text", { x: x + pad, y: y + headH - 7, fill: subdued, fontSize: titleSize, fontFamily: "system-ui", fontWeight: 700, children: cardTitle }),
           /* @__PURE__ */ jsx("line", { x1: x + pad, y1: startY - 8, x2: x + w - pad, y2: startY - 8, stroke: "var(--border)" }),
-          /* @__PURE__ */ jsx("text", { x: x + pad, y: startY, fill: "var(--text)", fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, children: "Source" }),
-          /* @__PURE__ */ jsx("text", { x: x + Math.max(108, w * 0.43), y: startY, fill: "var(--text)", fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, children: "Value" }),
-          /* @__PURE__ */ jsx("text", { x: x + w - pad, y: startY, fill: "var(--text)", fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, textAnchor: "end", children: "Time" }),
+          /* @__PURE__ */ jsx("text", { x: x + pad, y: startY, fill: valueColor, fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, children: "Source" }),
+          /* @__PURE__ */ jsx("text", { x: x + Math.max(108, w * 0.43), y: startY, fill: valueColor, fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, children: "Value" }),
+          /* @__PURE__ */ jsx("text", { x: x + w - pad, y: startY, fill: valueColor, fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, textAnchor: "end", children: "Time" }),
           /* @__PURE__ */ jsx("text", { x: x + pad, y: startY + rowStep, fill: subdued, fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", children: label }),
           /* @__PURE__ */ jsx("text", { x: x + Math.max(108, w * 0.43), y: startY + rowStep, fill: valueColor, fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, children: showVal }),
           /* @__PURE__ */ jsx("text", { x: x + w - pad, y: startY + rowStep, fill: subdued, fontSize: scaledFont(dense ? 7 : 8, 6, 14), fontFamily: "system-ui", textAnchor: "end", children: latestTime }),
@@ -16341,7 +16395,7 @@ var MesoraDrawingToolBundle = (() => {
             {
               x: barX + barW / 2,
               y: barY + barH / 2 + Math.max(2, Math.round(barH * 0.16)),
-              fill: theme === "dark" ? "#ffffff" : "#111827",
+              fill: widgetTextColor || (theme === "dark" ? "#ffffff" : "#111827"),
               fontSize: valueFont,
               fontFamily: "system-ui",
               fontWeight: 800,
@@ -16356,7 +16410,7 @@ var MesoraDrawingToolBundle = (() => {
         const tagPath = getWritableWidgetTagPath(overlay);
         const canWrite = Boolean(tagPath);
         const initialDraft = displayN != null ? String(Number(displayN)) : rawVal !== "" ? String(rawVal) : "";
-        const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId) ? String((_e = widgetWriteDraftByOverlay[overlayId]) != null ? _e : "") : initialDraft;
+        const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId) ? String((_g = widgetWriteDraftByOverlay[overlayId]) != null ? _g : "") : initialDraft;
         const writeBusy = (widgetWriteBusyByOverlay == null ? void 0 : widgetWriteBusyByOverlay[overlayId]) === true;
         const writeError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
         const inputH = dense ? 22 : 26;
@@ -16436,7 +16490,7 @@ var MesoraDrawingToolBundle = (() => {
                           height: "100%",
                           border: "1px solid var(--border)",
                           background: "var(--bg-elev)",
-                          color: "var(--text)",
+                          color: widgetHtmlTextColor,
                           borderRadius: 7,
                           padding: "0 8px",
                           fontSize: dense ? 11 : 12,
@@ -16464,7 +16518,7 @@ var MesoraDrawingToolBundle = (() => {
                           height: "100%",
                           border: "1px solid #2b6cff",
                           background: "#2b6cff",
-                          color: "white",
+                          color: widgetButtonTextColor,
                           borderRadius: 7,
                           fontSize: dense ? 10 : 11,
                           fontWeight: 700,
@@ -16515,7 +16569,7 @@ var MesoraDrawingToolBundle = (() => {
             {
               x: buttonX + buttonW / 2,
               y: titleY,
-              fill: "rgba(248, 250, 252, 0.96)",
+              fill: widgetTextColor || "rgba(248, 250, 252, 0.96)",
               fontSize: titleFont,
               fontFamily: "system-ui",
               fontWeight: 800,
@@ -16595,7 +16649,7 @@ var MesoraDrawingToolBundle = (() => {
                         border: "none",
                         borderRadius: Math.max(8, Math.round(buttonH * 0.22)),
                         background: visualPressed ? "linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%)" : "linear-gradient(180deg, #4f8dff 0%, #2b6cff 100%)",
-                        color: "white",
+                        color: widgetButtonTextColor,
                         fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                         fontWeight: 800,
                         cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : writeBusy ? "default" : "pointer",
@@ -16618,7 +16672,7 @@ var MesoraDrawingToolBundle = (() => {
                             fontWeight: 900,
                             letterSpacing: "0.08em",
                             textTransform: "uppercase",
-                            color: "rgba(255,255,255,0.98)",
+                            color: widgetButtonTextColor,
                             whiteSpace: "nowrap"
                           },
                           children: writeBusy ? "Writing..." : visualPressed ? "Pressed" : "Press"
@@ -16700,7 +16754,7 @@ var MesoraDrawingToolBundle = (() => {
             {
               x: buttonX + buttonW / 2,
               y: titleY,
-              fill: "rgba(248, 250, 252, 0.96)",
+              fill: widgetTextColor || "rgba(248, 250, 252, 0.96)",
               fontSize: titleFont,
               fontFamily: "system-ui",
               fontWeight: 800,
@@ -16754,7 +16808,7 @@ var MesoraDrawingToolBundle = (() => {
                         border: "none",
                         borderRadius: 0,
                         background: "transparent",
-                        color: "white",
+                        color: widgetButtonTextColor,
                         fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                         fontWeight: 800,
                         cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : writeBusy ? "default" : "pointer",
@@ -16780,7 +16834,7 @@ var MesoraDrawingToolBundle = (() => {
                               background: isOn ? "linear-gradient(180deg, #22c55e 0%, #16a34a 100%)" : "linear-gradient(180deg, rgba(51, 65, 85, 0.92) 0%, rgba(30, 41, 59, 0.94) 100%)",
                               border: isOn ? "1px solid rgba(187, 247, 208, 0.65)" : "1px solid rgba(100, 116, 139, 0.6)",
                               boxShadow: isOn ? "inset 0 1px 0 rgba(255,255,255,0.28), 0 6px 14px rgba(22,163,74,0.22)" : "inset 0 1px 0 rgba(255,255,255,0.08)",
-                              color: "rgba(255,255,255,0.98)",
+                              color: widgetButtonTextColor,
                               fontSize: Math.max(9, Math.min(16, Math.round(buttonH * 0.28))),
                               fontWeight: 900,
                               letterSpacing: "0.06em",
@@ -16801,7 +16855,7 @@ var MesoraDrawingToolBundle = (() => {
                               background: !isOn ? "linear-gradient(180deg, #64748b 0%, #334155 100%)" : "linear-gradient(180deg, rgba(51, 65, 85, 0.92) 0%, rgba(30, 41, 59, 0.94) 100%)",
                               border: !isOn ? "1px solid rgba(203, 213, 225, 0.55)" : "1px solid rgba(100, 116, 139, 0.6)",
                               boxShadow: !isOn ? "inset 0 1px 0 rgba(255,255,255,0.18), 0 6px 14px rgba(51,65,85,0.22)" : "inset 0 1px 0 rgba(255,255,255,0.08)",
-                              color: "rgba(255,255,255,0.98)",
+                              color: widgetButtonTextColor,
                               fontSize: Math.max(9, Math.min(16, Math.round(buttonH * 0.28))),
                               fontWeight: 900,
                               letterSpacing: "0.06em",
@@ -17070,16 +17124,16 @@ var MesoraDrawingToolBundle = (() => {
       const chartKey = `c-${overlay.id}-${kind}-${chartW}x${chartH}-z${viewScale.toFixed(3)}-s${overlayScale2.toFixed(3)}-vp${viewportDprBoost.toFixed(3)}`;
       const rootStyle = typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
       const isDark = String(theme || "").toLowerCase() === "dark";
-      const textColor = ((_f = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text-muted")) == null ? void 0 : _f.trim()) || (isDark ? "#b7c4d8" : "#5d6b82");
+      const textColor = widgetTextColor || ((_h = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text-muted")) == null ? void 0 : _h.trim()) || (isDark ? "#b7c4d8" : "#5d6b82");
       const chartPanelFill = isDark ? "#0b1220" : "#ffffff";
       const gridColor = isDark ? "rgba(148,163,184,0.24)" : "rgba(100,116,139,0.22)";
-      const axisColor = isDark ? "#d4deee" : "#334155";
+      const axisColor = widgetTextColor || (isDark ? "#d4deee" : "#334155");
       const accentLine = isDark ? "#22d3ee" : "#2563eb";
       const accentFillTop = isDark ? "rgba(34,211,238,0.42)" : "rgba(37,99,235,0.32)";
       const accentFillBottom = isDark ? "rgba(34,211,238,0.06)" : "rgba(37,99,235,0.05)";
       const barFill = isDark ? "rgba(45,212,191,0.9)" : "rgba(59,130,246,0.9)";
       const tooltipBg = isDark ? "rgba(8,14,24,0.96)" : "rgba(255,255,255,0.96)";
-      const tooltipText = isDark ? "#e6eefc" : "#1b2a41";
+      const tooltipText = widgetTextColor || (isDark ? "#e6eefc" : "#1b2a41");
       const tooltipBorder = isDark ? "rgba(118,149,195,0.32)" : "rgba(54,96,163,0.22)";
       const trimTick = (nVal, maxFractionDigits) => {
         const safeDigits = Math.max(0, Math.min(3, Number(maxFractionDigits) || 0));
@@ -17476,7 +17530,7 @@ var MesoraDrawingToolBundle = (() => {
                         borderRadius: 6,
                         border: "1px solid var(--border)",
                         background: "var(--bg-elev)",
-                        color: "var(--text)",
+                        color: widgetHtmlTextColor,
                         fontSize: 9,
                         padding: "0 4px",
                         boxSizing: "border-box"
@@ -17497,7 +17551,7 @@ var MesoraDrawingToolBundle = (() => {
                         borderRadius: 6,
                         border: "1px solid var(--border)",
                         background: "var(--bg-elev)",
-                        color: "var(--text)",
+                        color: widgetHtmlTextColor,
                         fontSize: 9,
                         padding: "0 4px",
                         boxSizing: "border-box"
@@ -17717,6 +17771,7 @@ var MesoraDrawingToolBundle = (() => {
         overlay,
         LIVE_MAINTENANCE_MODE_MEMBER_ALIASES
       );
+      const forceCandidates = buildOverlayMemberCandidates(overlay, LIVE_FORCE_MODE_MEMBER_ALIASES);
       const manualValue = parseLiveBool(
         manualCandidates.map((key) => getLiveValueForExactOrSuffixKey(key)).find((v) => v != null && String(v) !== "")
       );
@@ -17726,6 +17781,9 @@ var MesoraDrawingToolBundle = (() => {
       const maintenanceValue = parseLiveBool(
         maintenanceCandidates.map((key) => getLiveValueForExactOrSuffixKey(key)).find((v) => v != null && String(v) !== "")
       );
+      const forceValue = parseLiveBool(
+        forceCandidates.map((key) => getLiveValueForExactOrSuffixKey(key)).find((v) => v != null && String(v) !== "")
+      );
       const parsedModeFromStatus = (() => {
         const raw = modeStatusCandidates.map((key) => getLiveValueForExactOrSuffixKey(key)).find((v) => v != null && String(v) !== "");
         if (raw == null || raw === "") return "";
@@ -17733,6 +17791,7 @@ var MesoraDrawingToolBundle = (() => {
         const lower = text.toLowerCase();
         if (lower.includes("manual") || lower.includes("hand")) return "manual";
         if (lower.includes("auto")) return "auto";
+        if (lower.includes("force")) return "force";
         if (lower.includes("maint")) return "maintenance";
         const num = Number(text);
         if (Number.isFinite(num)) {
@@ -17744,11 +17803,32 @@ var MesoraDrawingToolBundle = (() => {
         }
         return "";
       })();
+      if (forceValue === true) return "force";
       if (maintenanceValue === true) return "maintenance";
       if (manualValue === true) return "manual";
       if (autoValue === true) return "auto";
       if (parsedModeFromStatus) return parsedModeFromStatus;
       return "";
+    };
+    const normalizeTooltipText = (value) => {
+      var _a2, _b, _c, _d;
+      if (value == null) return "";
+      if (typeof value === "object") {
+        const nested = (_d = (_c = (_b = (_a2 = value == null ? void 0 : value.value) != null ? _a2 : value == null ? void 0 : value.text) != null ? _b : value == null ? void 0 : value.description) != null ? _c : value == null ? void 0 : value.label) != null ? _d : "";
+        return normalizeTooltipText(nested);
+      }
+      return String(value || "").replace(/\s+/g, " ").trim();
+    };
+    const getOverlayDescriptionTooltip = (overlay) => {
+      var _a2, _b, _c;
+      if (!renderLiveVisuals || (overlay == null ? void 0 : overlay.widget) || (overlay == null ? void 0 : overlay.embeddedView)) return "";
+      const candidates = buildOverlayMemberCandidates(overlay, LIVE_DESCRIPTION_MEMBER_ALIASES);
+      const liveDescription = candidates.map((key) => getLiveValueForExactOrSuffixKey(key)).find((v) => v != null && String(v).trim() !== "");
+      const tooltip = normalizeTooltipText(liveDescription);
+      if (tooltip) return tooltip;
+      return normalizeTooltipText(
+        (_c = (_b = (_a2 = overlay == null ? void 0 : overlay.description) != null ? _a2 : overlay == null ? void 0 : overlay.tooltip) != null ? _b : overlay == null ? void 0 : overlay.label) != null ? _c : ""
+      );
     };
     const applyBinVisualStateToSvg = (innerSvg, options = {}) => {
       const source = String(innerSvg || "");
@@ -17865,20 +17945,16 @@ var MesoraDrawingToolBundle = (() => {
     };
     const getDiverterBranchAtWorldPointByConnector = (overlay, pt, bb, threshold = 24) => {
       if (!overlay || !pt || !bb) return "";
-      const sx = overlayScaleX2(overlay);
-      const sy = overlayScaleY2(overlay);
       const bx = Number(bb == null ? void 0 : bb.x) || 0;
       const by = Number(bb == null ? void 0 : bb.y) || 0;
       const bw = Math.max(1e-4, Number(bb == null ? void 0 : bb.width) || 1);
       const bh = Math.max(1e-4, Number(bb == null ? void 0 : bb.height) || 1);
-      const tx = Number((overlay == null ? void 0 : overlay.tx) || 0);
-      const ty = Number((overlay == null ? void 0 : overlay.ty) || 0);
       const px = Number((pt == null ? void 0 : pt.x) || 0);
       const py = Number((pt == null ? void 0 : pt.y) || 0);
       const connectors = [
-        { branch: "entry", x: tx + sx * (bx + bw * 0.12), y: ty + sy * (by + bh * 0.25) },
-        { branch: "straight", x: tx + sx * (bx + bw * 0.92), y: ty + sy * (by + bh * 0.18) },
-        { branch: "divert", x: tx + sx * (bx + bw * 0.82), y: ty + sy * (by + bh * 0.78) }
+        { branch: "entry", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.12, by + bh * 0.25) },
+        { branch: "straight", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.92, by + bh * 0.18) },
+        { branch: "divert", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.82, by + bh * 0.78) }
       ];
       let best = "";
       let bestDist = Number.POSITIVE_INFINITY;
@@ -17893,14 +17969,13 @@ var MesoraDrawingToolBundle = (() => {
     };
     const isDiverterEntryPoint = (overlay, pt, bb) => {
       if (!overlay || !pt || !bb) return false;
-      const sx = overlayScaleX2(overlay);
-      const sy = overlayScaleY2(overlay);
       const bx = Number(bb == null ? void 0 : bb.x) || 0;
       const by = Number(bb == null ? void 0 : bb.y) || 0;
       const bw = Math.max(1e-4, Number(bb == null ? void 0 : bb.width) || 1);
       const bh = Math.max(1e-4, Number(bb == null ? void 0 : bb.height) || 1);
-      const localX = (Number(pt.x) - Number((overlay == null ? void 0 : overlay.tx) || 0)) / Math.max(1e-4, sx);
-      const localY = (Number(pt.y) - Number((overlay == null ? void 0 : overlay.ty) || 0)) / Math.max(1e-4, sy);
+      const local = overlaySourceLocalPointFromWorld(overlay, bb, pt);
+      const localX = local.x;
+      const localY = local.y;
       const nx = (localX - bx) / bw;
       const ny = (localY - by) / bh;
       if (!Number.isFinite(nx) || !Number.isFinite(ny)) return false;
@@ -17911,19 +17986,15 @@ var MesoraDrawingToolBundle = (() => {
     };
     const getDiverterOutputBranchAtWorldPoint = (overlay, pt, bb, threshold = 40) => {
       if (!overlay || !pt || !bb) return "";
-      const sx = overlayScaleX2(overlay);
-      const sy = overlayScaleY2(overlay);
       const bx = Number(bb == null ? void 0 : bb.x) || 0;
       const by = Number(bb == null ? void 0 : bb.y) || 0;
       const bw = Math.max(1e-4, Number(bb == null ? void 0 : bb.width) || 1);
       const bh = Math.max(1e-4, Number(bb == null ? void 0 : bb.height) || 1);
-      const tx = Number((overlay == null ? void 0 : overlay.tx) || 0);
-      const ty = Number((overlay == null ? void 0 : overlay.ty) || 0);
       const px = Number((pt == null ? void 0 : pt.x) || 0);
       const py = Number((pt == null ? void 0 : pt.y) || 0);
       const outputs = [
-        { branch: "straight", x: tx + sx * (bx + bw * 0.92), y: ty + sy * (by + bh * 0.18) },
-        { branch: "divert", x: tx + sx * (bx + bw * 0.82), y: ty + sy * (by + bh * 0.78) }
+        { branch: "straight", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.92, by + bh * 0.18) },
+        { branch: "divert", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.82, by + bh * 0.78) }
       ];
       let best = "";
       let bestDist = Number.POSITIVE_INFINITY;
@@ -18059,7 +18130,7 @@ var MesoraDrawingToolBundle = (() => {
       });
       return out;
     };
-    const applyOverlayPaintOverrides = (inner, { fillColor = "", strokeColor = "", strokeWidth } = {}) => {
+    const applyOverlayPaintOverrides = (inner, { fillColor = "", strokeColor = "", strokeWidth, allowStrokeOnlyFillTargets = false } = {}) => {
       if (!inner) return inner;
       const nextFill = String(fillColor || "").trim();
       const nextStroke = String(strokeColor || "").trim();
@@ -18081,14 +18152,39 @@ var MesoraDrawingToolBundle = (() => {
           const fill2 = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
           return fill2 === "#d7dade" || fill2 === "rgb(215,218,222)" || fill2 === "rgba(215,218,222,1)" || fill2 === "#808080" || fill2 === "#888" || fill2 === "gray" || fill2 === "grey" || fill2 === "rgb(128,128,128)" || fill2 === "rgba(128,128,128,1)" || fill2 === "#cccccc" || fill2 === "#ccc" || fill2 === "rgb(204,204,204)" || fill2 === "rgba(204,204,204,1)";
         };
-        const shouldRecolorPrimaryElement = (elementStart) => {
+        const isRecolorableFill = (value) => {
+          const fill2 = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+          return isDefaultRecolorFill(fill2) || fill2.startsWith("url(");
+        };
+        const PRIMARY_FILL_TARGET_ID_RE = /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|hopper|tank|silo|bin|chute|rect5|path4|vent|vent_open|vent_closed|body[-_].*|.*[-_]body)$/i;
+        const EXCLUDED_FILL_TARGET_ID_RE = /(arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator)/i;
+        const FILLABLE_TAG_RE = /^(path|rect|circle|ellipse|polygon)$/i;
+        const STROKE_ONLY_FILLABLE_TAG_RE = /^(rect|circle|ellipse|polygon)$/i;
+        const canUseStrokeOnlyFillTarget = (elementStart, tagName) => {
+          if (!allowStrokeOnlyFillTargets || !STROKE_ONLY_FILLABLE_TAG_RE.test(String(tagName || ""))) {
+            return false;
+          }
+          const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+          const elementId = String((idMatch == null ? void 0 : idMatch[2]) || "").trim();
+          return !(elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId));
+        };
+        const shouldRecolorPrimaryElement = (elementStart, tagName) => {
+          if (/\bdata-vizi-fill-target\s*=\s*(["'])true\1/i.test(String(elementStart || ""))) {
+            return true;
+          }
           const fillAttrMatch = String(elementStart || "").match(/\bfill\s*=\s*(["'])([^"']*)\1/i);
-          if (isDefaultRecolorFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2])) {
+          if (isRecolorableFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2])) {
+            return true;
+          }
+          if (isProtectedFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
             return true;
           }
           const styleMatch = String(elementStart || "").match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
           const styleFillMatch = String((styleMatch == null ? void 0 : styleMatch[2]) || "").match(/(?:^|;)\s*fill\s*:\s*([^;]+)/i);
-          if (isDefaultRecolorFill(styleFillMatch == null ? void 0 : styleFillMatch[1])) {
+          if (isRecolorableFill(styleFillMatch == null ? void 0 : styleFillMatch[1])) {
+            return true;
+          }
+          if (isProtectedFill(styleFillMatch == null ? void 0 : styleFillMatch[1]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
             return true;
           }
           const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
@@ -18096,27 +18192,58 @@ var MesoraDrawingToolBundle = (() => {
           if (!elementId) {
             return false;
           }
-          return /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|rect5|path4|vent|vent_open|vent_closed)$/i.test(elementId);
+          if (PRIMARY_FILL_TARGET_ID_RE.test(elementId)) {
+            return true;
+          }
+          return FILLABLE_TAG_RE.test(String(tagName || "")) && !EXCLUDED_FILL_TARGET_ID_RE.test(elementId);
         };
-        out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, _tag, end) => {
-          if (!shouldRecolorPrimaryElement(start)) {
+        let fillChanged = false;
+        out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, tag, end) => {
+          if (!shouldRecolorPrimaryElement(start, tag)) {
             return match;
           }
           let next = String(start || "");
+          let changedThisElement = false;
           if (/\bfill\s*=/.test(next)) {
-            next = next.replace(/\bfill\s*=\s*(["'])([^"']*)\1/gi, (fillMatch, quote, fillValue) => isProtectedFill(fillValue) ? fillMatch : `fill=${quote}${nextFill}${quote}`);
+            next = next.replace(/\bfill\s*=\s*(["'])([^"']*)\1/gi, (fillMatch, quote, fillValue) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget(start, tag) ? fillMatch : (() => {
+              changedThisElement = true;
+              return `fill=${quote}${nextFill}${quote}`;
+            })());
           } else {
             next += ` fill="${nextFill}"`;
+            changedThisElement = true;
           }
           next = next.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (styleMatch, quote, styleBody) => {
             let cleaned = String(styleBody || "").replace(
               /fill\s*:\s*([^;]+)(;?)/gi,
-              (fillStyleMatch, fillValue, suffix) => isProtectedFill(fillValue) ? fillStyleMatch : `fill:${nextFill}${suffix || ";"}`
+              (fillStyleMatch, fillValue, suffix) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget(start, tag) ? fillStyleMatch : (() => {
+                changedThisElement = true;
+                return `fill:${nextFill}${suffix || ";"}`;
+              })()
             );
             return `style=${quote}${cleaned}${quote}`;
           });
+          fillChanged = fillChanged || changedThisElement;
           return `${next}${end}`;
         });
+        if (!fillChanged) {
+          let fallbackApplied = false;
+          out = out.replace(/(<(path|rect|circle|ellipse|polygon)\b[^>]*)(\/?>)/gi, (match, start, tag, end) => {
+            if (fallbackApplied) {
+              return match;
+            }
+            const idMatch = String(start || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+            const elementId = String((idMatch == null ? void 0 : idMatch[2]) || "").trim();
+            if (elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId)) {
+              return match;
+            }
+            if (/\bfill\s*=\s*(["'])(none|transparent)\1/i.test(String(start || ""))) {
+              return match;
+            }
+            fallbackApplied = true;
+            return `${start} fill="${nextFill}"${end}`;
+          });
+        }
       }
       if (nextStroke) {
         out = out.replace(/\bstroke\s*=\s*(["'])([^"']*)\1/gi, (match, quote, strokeValue) => isProtectedStroke(strokeValue) ? match : `stroke=${quote}${nextStroke}${quote}`);
@@ -18165,6 +18292,16 @@ var MesoraDrawingToolBundle = (() => {
         if (attrValue) return attrValue;
         return readStylePaint(el, name);
       };
+      const readInheritedPaint = (el, root, name) => {
+        let node = el;
+        while (node && node.nodeType === 1) {
+          const value = readPaint(node, name);
+          if (value) return value;
+          if (node === root) break;
+          node = node.parentNode || null;
+        }
+        return "";
+      };
       const setPaint = (el, name, value) => {
         if (!el) return;
         el.setAttribute(name, value);
@@ -18199,18 +18336,32 @@ var MesoraDrawingToolBundle = (() => {
         if (!root) return inner;
         const shapes2 = Array.from(root.querySelectorAll(SHAPE_SELECTOR));
         if (!shapes2.length) return inner;
+        const fillTargetElements = shapes2.filter((el) => String(el.getAttribute("data-vizi-fill-target") || "").trim().toLowerCase() === "true" && !hasExcludedAncestor(el, root));
         const primaryTargets = shapes2.filter((el) => {
           const id = String(el.getAttribute("id") || "").trim();
           return id && PRIMARY_ELEMENT_ID_RE.test(id) && !hasExcludedAncestor(el, root);
         });
-        const targetElements = primaryTargets.length ? primaryTargets : (() => {
+        const closedBodyTargets = shapes2.filter((el) => {
+          if (hasExcludedAncestor(el, root)) return false;
+          const tagName = String(el.tagName || "").toLowerCase();
+          if (!["path", "rect", "circle", "ellipse", "polygon"].includes(tagName)) return false;
+          const id = String(el.getAttribute("id") || "").trim();
+          if (id && /arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator/i.test(id)) {
+            return PRIMARY_ELEMENT_ID_RE.test(id);
+          }
+          const strokeValue = readInheritedPaint(el, root, "stroke");
+          if (isProtectedStroke(strokeValue)) return false;
+          const fillValue = readInheritedPaint(el, root, "fill");
+          return !isProtectedFill(fillValue) || PRIMARY_ELEMENT_ID_RE.test(id);
+        });
+        const targetElements = fillTargetElements.length ? fillTargetElements : primaryTargets.length ? primaryTargets : closedBodyTargets.length > 1 ? closedBodyTargets : (() => {
           let best = null;
           let bestScore = Number.NEGATIVE_INFINITY;
           shapes2.forEach((el, index2) => {
             if (hasExcludedAncestor(el, root)) return;
             const id = String(el.getAttribute("id") || "").trim();
-            const fillValue = readPaint(el, "fill");
-            const strokeValue = readPaint(el, "stroke");
+            const fillValue = readInheritedPaint(el, root, "fill");
+            const strokeValue = readInheritedPaint(el, root, "stroke");
             let score = 0;
             if (id && PRIMARY_ELEMENT_ID_RE.test(id)) score += 1e3;
             if (!isProtectedFill(fillValue)) score += 80;
@@ -18234,10 +18385,78 @@ var MesoraDrawingToolBundle = (() => {
     };
     const forceSvgStrokeColor = (inner, color2) => {
       if (!inner || !color2) return inner;
+      const SHAPE_SELECTOR = "path,rect,circle,ellipse,polygon,polyline,line";
       const isProtectedStroke = (value) => {
         const v = String(value || "").trim().toLowerCase();
         return !v || v === "none" || v === "transparent" || v === "currentcolor" || v === "inherit" || v.startsWith("url(");
       };
+      const readStylePaint = (el, name) => {
+        var _a2;
+        const style = String(((_a2 = el == null ? void 0 : el.getAttribute) == null ? void 0 : _a2.call(el, "style")) || "");
+        if (!style) return "";
+        const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+        return String((match == null ? void 0 : match[1]) || "").trim();
+      };
+      const readPaint = (el, name) => {
+        var _a2;
+        const attrValue = String(((_a2 = el == null ? void 0 : el.getAttribute) == null ? void 0 : _a2.call(el, name)) || "").trim();
+        if (attrValue) return attrValue;
+        return readStylePaint(el, name);
+      };
+      const readInheritedPaint = (el, root, name) => {
+        let node = el;
+        while (node && node.nodeType === 1) {
+          const value = readPaint(node, name);
+          if (value) return value;
+          if (node === root) break;
+          node = node.parentNode || null;
+        }
+        return "";
+      };
+      const setPaint = (el, name, value) => {
+        if (!el) return;
+        el.setAttribute(name, value);
+        const style = String(el.getAttribute("style") || "");
+        if (!style) return;
+        if (new RegExp(`${name}\\s*:`, "i").test(style)) {
+          el.setAttribute(
+            "style",
+            style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+          );
+        }
+      };
+      try {
+        const wrapped = `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`;
+        const doc = new DOMParser().parseFromString(wrapped, "image/svg+xml");
+        if (!doc.querySelector("parsererror")) {
+          const root = doc.documentElement;
+          const strokeElements = Array.from(root.querySelectorAll(`${SHAPE_SELECTOR},g`));
+          const shapes2 = Array.from(root.querySelectorAll(SHAPE_SELECTOR));
+          let changed = false;
+          strokeElements.forEach((el) => {
+            const directStroke = readPaint(el, "stroke");
+            if (!isProtectedStroke(directStroke)) {
+              setPaint(el, "stroke", color2);
+              changed = true;
+            }
+          });
+          shapes2.forEach((el) => {
+            const directStroke = readPaint(el, "stroke");
+            if (directStroke) return;
+            const inheritedStroke = readInheritedPaint(el.parentNode || el, root, "stroke");
+            if (!isProtectedStroke(inheritedStroke)) {
+              setPaint(el, "stroke", color2);
+              changed = true;
+            }
+          });
+          if (!changed && shapes2.length) {
+            setPaint(shapes2[0], "stroke", color2);
+          }
+          const serializer = new XMLSerializer();
+          return Array.from(root.childNodes).map((node) => serializer.serializeToString(node)).join("");
+        }
+      } catch {
+      }
       const strokeAttrRe = /stroke\s*=\s*(["'])([^"']*)\1/gi;
       const styleAttrRe = /style\s*=\s*(["'])([^"']*)\1/gi;
       let out = inner.replace(strokeAttrRe, (match, quote, strokeValue) => {
@@ -18502,6 +18721,71 @@ var MesoraDrawingToolBundle = (() => {
       const s = Number(o == null ? void 0 : o.scale);
       return Number.isFinite(s) && s > 0 ? s : 1;
     };
+    const isStaticSvgOverlay2 = (o) => Boolean((o == null ? void 0 : o.static) || (o == null ? void 0 : o.isStatic) || (o == null ? void 0 : o.staticSvg));
+    const overlayFlipX = (o) => Boolean((o == null ? void 0 : o.flipX) || (o == null ? void 0 : o.flippedX) || (o == null ? void 0 : o.mirrorX));
+    const overlayFlipY = (o) => Boolean((o == null ? void 0 : o.flipY) || (o == null ? void 0 : o.flippedY) || (o == null ? void 0 : o.mirrorY));
+    const overlayRotationDegrees2 = (o) => {
+      var _a2, _b;
+      const value = Number((_b = (_a2 = o == null ? void 0 : o.rotation) != null ? _a2 : o == null ? void 0 : o.rotate) != null ? _b : o == null ? void 0 : o.angle);
+      if (!Number.isFinite(value)) return 0;
+      const normalized = value % 360;
+      return Math.abs(normalized) < 1e-4 ? 0 : normalized;
+    };
+    const overlayMirrorTransform = (o, bb) => {
+      const flipX = overlayFlipX(o);
+      const flipY = overlayFlipY(o);
+      if (!flipX && !flipY) return "";
+      if (!bb) return "";
+      const x = Number(bb == null ? void 0 : bb.x) || 0;
+      const y = Number(bb == null ? void 0 : bb.y) || 0;
+      const w = Math.max(1e-4, Number(bb == null ? void 0 : bb.width) || 1);
+      const h = Math.max(1e-4, Number(bb == null ? void 0 : bb.height) || 1);
+      const tx = flipX ? 2 * x + w : 0;
+      const ty = flipY ? 2 * y + h : 0;
+      return `translate(${tx} ${ty}) scale(${flipX ? -1 : 1} ${flipY ? -1 : 1})`;
+    };
+    const overlayTransform = (o, bb) => {
+      const sx = overlayScaleX2(o);
+      const sy = overlayScaleY2(o);
+      const rotation = overlayRotationDegrees2(o);
+      if (!rotation || !bb) {
+        return `translate(${Number((o == null ? void 0 : o.tx) || 0)} ${Number((o == null ? void 0 : o.ty) || 0)}) scale(${sx} ${sy})`;
+      }
+      const cx = Number((bb == null ? void 0 : bb.x) || 0) + Math.max(1e-4, Number((bb == null ? void 0 : bb.width) || 0)) / 2;
+      const cy = Number((bb == null ? void 0 : bb.y) || 0) + Math.max(1e-4, Number((bb == null ? void 0 : bb.height) || 0)) / 2;
+      const worldCx = Number((o == null ? void 0 : o.tx) || 0) + sx * cx;
+      const worldCy = Number((o == null ? void 0 : o.ty) || 0) + sy * cy;
+      return `translate(${worldCx} ${worldCy}) rotate(${rotation}) scale(${sx} ${sy}) translate(${-cx} ${-cy})`;
+    };
+    const mirrorOverlayLocalPoint = (o, bb, x, y) => {
+      if (!bb) {
+        return { x: Number(x || 0), y: Number(y || 0) };
+      }
+      const bx = Number(bb == null ? void 0 : bb.x) || 0;
+      const by = Number(bb == null ? void 0 : bb.y) || 0;
+      const bw = Math.max(1e-4, Number(bb == null ? void 0 : bb.width) || 1);
+      const bh = Math.max(1e-4, Number(bb == null ? void 0 : bb.height) || 1);
+      return {
+        x: overlayFlipX(o) ? 2 * bx + bw - Number(x || 0) : Number(x || 0),
+        y: overlayFlipY(o) ? 2 * by + bh - Number(y || 0) : Number(y || 0)
+      };
+    };
+    const overlaySourceLocalPointFromWorld = (o, bb, pt) => {
+      const sx = overlayScaleX2(o);
+      const sy = overlayScaleY2(o);
+      const localX = (Number(pt == null ? void 0 : pt.x) - Number((o == null ? void 0 : o.tx) || 0)) / Math.max(1e-4, sx);
+      const localY = (Number(pt == null ? void 0 : pt.y) - Number((o == null ? void 0 : o.ty) || 0)) / Math.max(1e-4, sy);
+      return mirrorOverlayLocalPoint(o, bb, localX, localY);
+    };
+    const overlayWorldPointFromSourceLocal = (o, bb, x, y) => {
+      const sx = overlayScaleX2(o);
+      const sy = overlayScaleY2(o);
+      const local = mirrorOverlayLocalPoint(o, bb, x, y);
+      return {
+        x: Number((o == null ? void 0 : o.tx) || 0) + sx * local.x,
+        y: Number((o == null ? void 0 : o.ty) || 0) + sy * local.y
+      };
+    };
     const overlayWorldRect = (o, bb) => {
       const sx = overlayScaleX2(o);
       const sy = overlayScaleY2(o);
@@ -18516,16 +18800,11 @@ var MesoraDrawingToolBundle = (() => {
     const _diverterVisiting = /* @__PURE__ */ new Set();
     const getDiverterEntryConnectorWorldPoint = (overlay, bb) => {
       if (!overlay || !bb) return null;
-      const sx = overlayScaleX2(overlay);
-      const sy = overlayScaleY2(overlay);
       const bx = Number(bb == null ? void 0 : bb.x) || 0;
       const by = Number(bb == null ? void 0 : bb.y) || 0;
       const bw = Math.max(1e-4, Number(bb == null ? void 0 : bb.width) || 1);
       const bh = Math.max(1e-4, Number(bb == null ? void 0 : bb.height) || 1);
-      return {
-        x: Number((overlay == null ? void 0 : overlay.tx) || 0) + sx * (bx + bw * 0.12),
-        y: Number((overlay == null ? void 0 : overlay.ty) || 0) + sy * (by + bh * 0.25)
-      };
+      return overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.12, by + bh * 0.25);
     };
     const getDirectEntryActiveColorForDiverter = (overlay, options = {}) => {
       const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
@@ -18564,10 +18843,9 @@ var MesoraDrawingToolBundle = (() => {
             const pt = endpoints[idx];
             const dist = distancePointToRect(pt, wr);
             if (dist > threshold || dist >= bestDistance) continue;
-            const sx = overlayScaleX2(overlay);
-            const sy = overlayScaleY2(overlay);
-            const localX = (Number(pt == null ? void 0 : pt.x) - Number((overlay == null ? void 0 : overlay.tx) || 0)) / Math.max(1e-4, sx);
-            const localY = (Number(pt == null ? void 0 : pt.y) - Number((overlay == null ? void 0 : overlay.ty) || 0)) / Math.max(1e-4, sy);
+            const local = overlaySourceLocalPointFromWorld(overlay, bb, pt);
+            const localX = local.x;
+            const localY = local.y;
             const branch = getDiverterBranchAtWorldPointByConnector(overlay, pt, bb, 40) || getDiverterBranchAtLocalPoint(localX, localY, bb);
             if (branch !== "entry" && !isDiverterEntryPoint(overlay, pt, bb)) continue;
             const oppositePt = idx === 0 ? s.points[s.points.length - 1] : s.points[0];
@@ -18637,10 +18915,9 @@ var MesoraDrawingToolBundle = (() => {
         const h = wr.h;
         if (pt.x >= x && pt.x <= x + w && pt.y >= y && pt.y <= y + h) {
           if (isDiverterEType(overlayEType)) {
-            const sx = overlayScaleX2(o);
-            const sy = overlayScaleY2(o);
-            const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(1e-4, sx);
-            const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(1e-4, sy);
+            const local = overlaySourceLocalPointFromWorld(o, bb, pt);
+            const localX = local.x;
+            const localY = local.y;
             const branch = getDiverterBranchAtLocalPoint(localX, localY, bb);
             const activeBranch = getEffectiveDiverterState(o);
             if (branch === "entry") return color2;
@@ -18679,10 +18956,9 @@ var MesoraDrawingToolBundle = (() => {
         if (isDiverterEType(overlayEType) && !incomingEntryColor) continue;
         if (!color2) continue;
         if (isDiverterEType(overlayEType)) {
-          const sx = overlayScaleX2(o);
-          const sy = overlayScaleY2(o);
-          const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(1e-4, sx);
-          const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(1e-4, sy);
+          const local = overlaySourceLocalPointFromWorld(o, bb, pt);
+          const localX = local.x;
+          const localY = local.y;
           const branch = getDiverterBranchAtLocalPoint(localX, localY, bb);
           const activeBranch = getEffectiveDiverterState(o);
           if (!(branch === "entry" || branch && activeBranch && branch === activeBranch)) continue;
@@ -18711,10 +18987,9 @@ var MesoraDrawingToolBundle = (() => {
           })
         );
         if (!incomingEntryColor) continue;
-        const sx = overlayScaleX2(o);
-        const sy = overlayScaleY2(o);
-        const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(1e-4, sx);
-        const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(1e-4, sy);
+        const local = overlaySourceLocalPointFromWorld(o, bb, pt);
+        const localX = local.x;
+        const localY = local.y;
         const connectorOutputBranch = getDiverterOutputBranchAtWorldPoint(o, pt, bb, 30);
         const localBranch = getDiverterBranchAtLocalPoint(localX, localY, bb);
         const branch = connectorOutputBranch || (localBranch === "straight" || localBranch === "divert" ? localBranch : "");
@@ -18740,10 +19015,9 @@ var MesoraDrawingToolBundle = (() => {
         const wr = overlayWorldRect(o, bb);
         const dist = distancePointToRect(pt, wr);
         if (dist > 42 || dist >= best.dist) continue;
-        const sx = overlayScaleX2(o);
-        const sy = overlayScaleY2(o);
-        const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(1e-4, sx);
-        const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(1e-4, sy);
+        const local = overlaySourceLocalPointFromWorld(o, bb, pt);
+        const localX = local.x;
+        const localY = local.y;
         const branch = getDiverterOutputBranchAtWorldPoint(o, pt, bb, 42) || (["straight", "divert"].includes(getDiverterBranchAtLocalPoint(localX, localY, bb)) ? getDiverterBranchAtLocalPoint(localX, localY, bb) : "");
         if (!branch) continue;
         const incomingEntryColor = normalizeActiveLineColor(
@@ -18998,10 +19272,9 @@ var MesoraDrawingToolBundle = (() => {
           const dist = distancePointToRect(pt, wr);
           if (dist > threshold) continue;
           if (normalizedBranchFilter) {
-            const sx = overlayScaleX2(overlay);
-            const sy = overlayScaleY2(overlay);
-            const localX = (Number(pt.x) - Number((overlay == null ? void 0 : overlay.tx) || 0)) / Math.max(1e-4, sx);
-            const localY = (Number(pt.y) - Number((overlay == null ? void 0 : overlay.ty) || 0)) / Math.max(1e-4, sy);
+            const local = overlaySourceLocalPointFromWorld(overlay, bb, pt);
+            const localX = local.x;
+            const localY = local.y;
             const branch = getDiverterBranchAtLocalPoint(localX, localY, bb);
             if (branch !== normalizedBranchFilter) continue;
           }
@@ -19875,22 +20148,27 @@ var MesoraDrawingToolBundle = (() => {
       if (val === "in") return "url(#arrow-rev)";
       return void 0;
     };
-    const renderTagBubble = ({ key, bubbleId, x, anchorY, lines, anchor = "middle" }) => {
+    const renderTagBubble = ({ key, bubbleId, x, anchorY, lines, anchor = "middle", highlight = false, title = "" }) => {
       if (!Array.isArray(lines) || lines.length === 0) return null;
-      const fontSize = 8 * inv;
-      const lineH = 9.5 * inv;
-      const padX = 4 * inv;
-      const padY = 3.5 * inv;
-      const radius = 7 * inv;
+      const fontSize = 9 * inv;
+      const lineH = 10.5 * inv;
+      const padX = 5 * inv;
+      const padY = 4 * inv;
+      const radius = 8 * inv;
       const maxChars = lines.reduce((m, line) => Math.max(m, String(line || "").length), 0);
-      const textW = Math.max(22 * inv, maxChars * 5.4 * inv);
+      const textW = Math.max(26 * inv, maxChars * 6.1 * inv);
       const w = textW + padX * 2;
       const h = lineH * lines.length + padY * 2;
       const top = anchorY - h - 8 * inv;
       const left = anchor === "start" ? x : x - w / 2;
       const textX = anchor === "start" ? x + padX : x;
       const textAnchor = anchor === "start" ? "start" : "middle";
+      const lineStroke = highlight ? "#d97706" : "#0f172a";
+      const bubbleFill = highlight ? "rgba(255,247,237,0.96)" : "rgba(255,255,255,0.92)";
+      const bubbleStroke = highlight ? "rgba(217,119,6,0.9)" : "rgba(15,23,42,0.35)";
+      const textFill = highlight ? "#7c2d12" : "#0f172a";
       return /* @__PURE__ */ jsxs("g", { children: [
+        title ? /* @__PURE__ */ jsx("title", { children: title }) : null,
         /* @__PURE__ */ jsx(
           "line",
           {
@@ -19898,7 +20176,7 @@ var MesoraDrawingToolBundle = (() => {
             y1: top + h,
             x2: x,
             y2: anchorY,
-            stroke: "#0f172a",
+            stroke: lineStroke,
             strokeWidth: 1.2 * inv,
             strokeLinecap: "round",
             vectorEffect: "non-scaling-stroke"
@@ -19913,8 +20191,8 @@ var MesoraDrawingToolBundle = (() => {
             height: h,
             rx: radius,
             ry: radius,
-            fill: "rgba(255,255,255,0.92)",
-            stroke: "rgba(15,23,42,0.35)",
+            fill: bubbleFill,
+            stroke: bubbleStroke,
             strokeWidth: 1 * inv,
             vectorEffect: "non-scaling-stroke",
             style: { cursor: onHideTagBubble ? "pointer" : "default" },
@@ -19930,7 +20208,7 @@ var MesoraDrawingToolBundle = (() => {
             x: textX,
             y: top + padY,
             fontSize,
-            fill: "#0f172a",
+            fill: textFill,
             textAnchor,
             dominantBaseline: "hanging",
             pointerEvents: "none",
@@ -20031,6 +20309,7 @@ var MesoraDrawingToolBundle = (() => {
           return;
         }
         const overlayEType = String((overlay == null ? void 0 : overlay.eType) || "").trim().toLowerCase();
+        const isStaticOverlay = isStaticSvgOverlay2(overlay);
         const isDiverterOverlay2 = isDiverterEType(overlayEType);
         const isBinOverlay2 = overlayEType === "bin" || overlayEType.startsWith("bin");
         const statePaintsStroke = isDocOrDicStatePaintEType(overlayEType);
@@ -20056,6 +20335,34 @@ var MesoraDrawingToolBundle = (() => {
         const diverterOuterStroke = isDiverterOverlay2 ? String(getRouteColorForOverlay(overlay) || getRouteStrokeColorForOverlay(overlay) || "").trim() : "";
         const strokeModeRaw = String((overlay == null ? void 0 : overlay.strokeMode) || "").trim().toLowerCase();
         const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
+        const allowStrokeOnlyFillTargets = /(?:^|[\\/])External(?:[\\/]|$)/i.test(String((overlay == null ? void 0 : overlay.sourceKey) || ""));
+        const sourceHadEType = (overlay == null ? void 0 : overlay.sourceHadEType) === true;
+        const shouldTreatDefaultPaintAsCustom = (overlay == null ? void 0 : overlay.sourceHadEType) === false;
+        const defaultFillColor = sourceHadEType ? "" : themeFillDefault;
+        const defaultStrokeColor = sourceHadEType ? "" : themeStrokeDefault;
+        if (isStaticOverlay) {
+          const staticFill = String((overlay == null ? void 0 : overlay.fill) || "").trim() || defaultFillColor;
+          const staticStroke = String((overlay == null ? void 0 : overlay.stroke) || "").trim() || defaultStrokeColor;
+          const staticStrokeWidth = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
+          const inner2 = applyOverlayPaintOverrides(String((overlay == null ? void 0 : overlay.inner) || ""), {
+            fillColor: staticFill,
+            strokeColor: staticStroke,
+            strokeWidth: staticStrokeWidth,
+            allowStrokeOnlyFillTargets: true
+          });
+          out.set(id, {
+            inner: inner2,
+            className: void 0,
+            style: {
+              fill: staticFill || void 0,
+              stroke: staticStroke || void 0,
+              strokeWidth: staticStrokeWidth,
+              pointerEvents: "visiblePainted"
+            },
+            isConveyorScrew: false
+          });
+          return;
+        }
         if (!renderLiveVisuals) {
           const boundActiveFillPaint = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
           const boundFillPaint = String(getOverlayBoundFillColor(overlay) || "").trim();
@@ -20066,8 +20373,8 @@ var MesoraDrawingToolBundle = (() => {
           const overlayFill2 = String(boundActiveFillColor || boundFillColor || (overlay == null ? void 0 : overlay.fill) || "").trim();
           const overlayStroke2 = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
           const overlayStrokeWidth2 = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
-          const hasCustomOverlayFill2 = Boolean(overlayFill2) && (!preserveStrokeMode || overlayFill2.toLowerCase() !== themeFillDefault);
-          const hasCustomOverlayStroke2 = Boolean(overlayStroke2) && (!preserveStrokeMode || overlayStroke2.toLowerCase() !== themeStrokeDefault.toLowerCase());
+          const hasCustomOverlayFill2 = Boolean(overlayFill2) && (sourceHadEType || shouldTreatDefaultPaintAsCustom || !preserveStrokeMode || overlayFill2.toLowerCase() !== themeFillDefault);
+          const hasCustomOverlayStroke2 = Boolean(overlayStroke2) && (sourceHadEType || shouldTreatDefaultPaintAsCustom || !preserveStrokeMode || overlayStroke2.toLowerCase() !== themeStrokeDefault.toLowerCase());
           let inner2 = String((overlay == null ? void 0 : overlay.inner) || "");
           if (shouldReplaceBinText) {
             inner2 = replaceSvgTextPlaceholders(inner2, {
@@ -20103,14 +20410,15 @@ var MesoraDrawingToolBundle = (() => {
           }
           out.set(id, {
             inner: (() => {
-              const defaultOverlayFill = hasCustomOverlayFill2 ? overlayFill2 : themeFillDefault;
+              const defaultOverlayFill = hasCustomOverlayFill2 ? overlayFill2 : defaultFillColor;
               const stateStyleClass = isBinOverlay2 ? "" : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass;
               const stateStrokeColor2 = statePaintsStroke && !stateStyleClass ? overlayStateColor || boundActiveFillColor || "" : "";
               const strokeColor = hasCustomOverlayStroke2 ? overlayStroke2 : stateStrokeColor2;
               let nextInner = applyOverlayPaintOverrides(inner2, {
                 fillColor: isBinOverlay2 || stateStyleClass ? "" : overlayStateColor || defaultOverlayFill,
                 strokeColor,
-                strokeWidth: overlayStrokeWidth2
+                strokeWidth: overlayStrokeWidth2,
+                allowStrokeOnlyFillTargets
               });
               if (stateStyleClass) {
                 nextInner = applyIgnitionStyleClassToSvg(nextInner, stateStyleClass);
@@ -20125,7 +20433,7 @@ var MesoraDrawingToolBundle = (() => {
             })(),
             className: (isBinOverlay2 ? "" : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass) || void 0,
             style: {
-              fill: isBinOverlay2 ? void 0 : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass ? hasCustomOverlayFill2 ? overlayFill2 : themeFillDefault : overlayStateColor || (hasCustomOverlayFill2 ? overlayFill2 : void 0),
+              fill: isBinOverlay2 ? void 0 : overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass ? hasCustomOverlayFill2 ? overlayFill2 : defaultFillColor || void 0 : overlayStateColor || (hasCustomOverlayFill2 ? overlayFill2 : void 0),
               stroke: hasCustomOverlayStroke2 ? overlayStroke2 : void 0,
               strokeWidth: overlayStrokeWidth2,
               pointerEvents: "visiblePainted"
@@ -20155,10 +20463,10 @@ var MesoraDrawingToolBundle = (() => {
         const overlayFill = String((overlay == null ? void 0 : overlay.fill) || "").trim();
         const overlayStroke = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
         const overlayStrokeWidth = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
-        const hasCustomOverlayFill = Boolean(overlayFill) && (!preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
-        const hasCustomOverlayStroke = Boolean(overlayStroke) && (!preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
+        const hasCustomOverlayFill = Boolean(overlayFill) && (sourceHadEType || shouldTreatDefaultPaintAsCustom || !preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
+        const hasCustomOverlayStroke = Boolean(overlayStroke) && (sourceHadEType || shouldTreatDefaultPaintAsCustom || !preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
         const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
-        const effectiveFillColor = isDiverterOverlay2 ? "" : isBinOverlay2 ? "" : activeFillStyleClass ? "" : tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : themeFillDefault);
+        const effectiveFillColor = isDiverterOverlay2 ? "" : isBinOverlay2 ? "" : activeFillStyleClass ? "" : tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : defaultFillColor);
         const effectiveStrokeColor = isDiverterOverlay2 ? "" : routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : useForcedStroke ? routeStroke : "");
         const stateStrokeColor = statePaintsStroke && !activeFillStyleClass ? tagFill || overlayStateColor || "" : "";
         if (tagFill) {
@@ -20192,7 +20500,8 @@ var MesoraDrawingToolBundle = (() => {
           inner = applyOverlayPaintOverrides(inner, {
             fillColor: isFaultSimulated ? "" : effectiveFillColor,
             strokeColor: hasCustomOverlayStroke ? overlayStroke : isFaultSimulated ? "" : stateStrokeColor,
-            strokeWidth: overlayStrokeWidth
+            strokeWidth: overlayStrokeWidth,
+            allowStrokeOnlyFillTargets
           });
         }
         if (!isDiverterOverlay2 && activeFillStyleClass && !isFaultSimulated) {
@@ -20213,7 +20522,7 @@ var MesoraDrawingToolBundle = (() => {
           style: isDiverterOverlay2 ? {
             pointerEvents: "visiblePainted"
           } : {
-            fill: activeFillStyleClass ? hasCustomOverlayFill ? overlayFill : themeFillDefault : void 0,
+            fill: activeFillStyleClass ? hasCustomOverlayFill ? overlayFill : defaultFillColor || void 0 : void 0,
             pointerEvents: "visiblePainted"
           },
           isConveyorScrew
@@ -20260,18 +20569,23 @@ var MesoraDrawingToolBundle = (() => {
       () => staticOverlayRenderOverlays.map((o) => {
         var _a2;
         const overlayVisual = overlayVisualById.get(String((o == null ? void 0 : o.id) || "").trim());
-        const overlayCursor = isLiveMode ? "pointer" : tool === "select" ? "move" : "crosshair";
+        const overlayBounds = (o == null ? void 0 : o.bbox) || overlayLocalBBox(o.id);
+        const mirrorTransform = overlayMirrorTransform(o, overlayBounds);
+        const staticInLive = isLiveMode && isStaticSvgOverlay2(o);
+        const overlayTooltip = getOverlayDescriptionTooltip(o);
+        const overlayTooltipRect = overlayTooltip && overlayBounds ? overlayWorldRect(o, overlayBounds) : null;
+        const overlayCursor = isLiveMode ? staticInLive ? "default" : "pointer" : tool === "select" ? "move" : "crosshair";
         return /* @__PURE__ */ jsxs(
           "g",
           {
             "data-overlay-id": o.id,
             onDoubleClick: (e) => handleOverlayDoubleClick(e, o, { force: true }),
             children: [
-              /* @__PURE__ */ jsx(
+              /* @__PURE__ */ jsxs(
                 "g",
                 {
                   ref: (node) => applyOverlayNodeRef(o.id, node),
-                  transform: `translate(${o.tx} ${o.ty}) scale(${overlayScaleX2(o)} ${overlayScaleY2(o)})`,
+                  transform: overlayTransform(o, overlayBounds),
                   onMouseDown: (e) => handleOverlayMouseDown(e, o),
                   onDoubleClick: (e) => handleOverlayDoubleClick(e, o),
                   onContextMenu: (e) => onOverlayContextMenu == null ? void 0 : onOverlayContextMenu(e, o),
@@ -20279,23 +20593,43 @@ var MesoraDrawingToolBundle = (() => {
                   onMouseLeave: isLineMode ? () => setHoverOverlayId((prev) => prev === o.id ? null : prev) : void 0,
                   style: {
                     cursor: overlayCursor,
-                    pointerEvents: "visiblePainted"
+                    pointerEvents: staticInLive && !overlayTooltip ? "none" : "visiblePainted"
                   },
-                  children: /* @__PURE__ */ jsx(
-                    "g",
-                    {
-                      className: overlayVisual == null ? void 0 : overlayVisual.className,
-                      style: (overlayVisual == null ? void 0 : overlayVisual.style) || {
-                        fill: o.fill || "none",
-                        stroke: themeStrokeDefault,
-                        strokeWidth: Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0 ? Number(o.strokeWidth) : void 0,
-                        pointerEvents: "visiblePainted"
-                      },
-                      children: /* @__PURE__ */ jsx("g", { dangerouslySetInnerHTML: { __html: (_a2 = overlayVisual == null ? void 0 : overlayVisual.inner) != null ? _a2 : String(o.inner || "") } })
-                    }
-                  )
+                  children: [
+                    overlayTooltip ? /* @__PURE__ */ jsx("title", { children: overlayTooltip }) : null,
+                    /* @__PURE__ */ jsx("g", { transform: mirrorTransform || void 0, children: /* @__PURE__ */ jsx(
+                      "g",
+                      {
+                        className: overlayVisual == null ? void 0 : overlayVisual.className,
+                        style: (overlayVisual == null ? void 0 : overlayVisual.style) || {
+                          fill: o.fill || "none",
+                          stroke: themeStrokeDefault,
+                          strokeWidth: Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0 ? Number(o.strokeWidth) : void 0,
+                          pointerEvents: "visiblePainted"
+                        },
+                        children: /* @__PURE__ */ jsx("g", { dangerouslySetInnerHTML: { __html: (_a2 = overlayVisual == null ? void 0 : overlayVisual.inner) != null ? _a2 : String(o.inner || "") } })
+                      }
+                    ) })
+                  ]
                 }
               ),
+              renderLiveVisuals && overlayTooltipRect ? /* @__PURE__ */ jsx(
+                "rect",
+                {
+                  x: overlayTooltipRect.x,
+                  y: overlayTooltipRect.y,
+                  width: Math.max(1e-4, overlayTooltipRect.w),
+                  height: Math.max(1e-4, overlayTooltipRect.h),
+                  fill: "transparent",
+                  stroke: "none",
+                  pointerEvents: "all",
+                  style: { cursor: overlayCursor },
+                  onMouseDown: staticInLive ? void 0 : (e) => handleOverlayMouseDown(e, o),
+                  onDoubleClick: staticInLive ? void 0 : (e) => handleOverlayDoubleClick(e, o),
+                  onContextMenu: staticInLive ? void 0 : (e) => onOverlayContextMenu == null ? void 0 : onOverlayContextMenu(e, o),
+                  children: /* @__PURE__ */ jsx("title", { children: overlayTooltip })
+                }
+              ) : null,
               isLineMode && (() => {
                 const bb = overlayLocalBBox(o.id);
                 if (!bb) return null;
@@ -20327,6 +20661,10 @@ var MesoraDrawingToolBundle = (() => {
         overlayVisualById,
         isLiveMode,
         liveClickable,
+        renderLiveVisuals,
+        liveRenderTick,
+        ignitionTagValuesByPath,
+        liveLookupKeyList,
         tool,
         isLineMode,
         themeStrokeDefault,
@@ -20355,7 +20693,7 @@ var MesoraDrawingToolBundle = (() => {
               "g",
               {
                 ref: (node) => applyOverlayNodeRef(o.id, node),
-                transform: `translate(${o.tx} ${o.ty}) scale(${overlayScaleX2(o)} ${overlayScaleY2(o)})`,
+                transform: overlayTransform(o, widgetBounds),
                 onMouseDown: (e) => handleOverlayMouseDown(e, o),
                 onDoubleClick: (e) => handleOverlayDoubleClick(e, o),
                 onMouseEnter: isLineMode ? () => setHoverOverlayId(o.id) : void 0,
@@ -20571,6 +20909,14 @@ var MesoraDrawingToolBundle = (() => {
     const tagBubbleLayer = useMemo(() => {
       if (!showTagPaths || interactionActive) return null;
       const includeLiveOverlayLines = renderLiveVisuals;
+      const normalizeDuplicateTagPathKey = (raw) => String(raw || "").replace(/\r?\n/g, "").trim().replace(/[\\/]+/g, ".").replace(/\.+/g, ".").toLowerCase();
+      const duplicateOverlayTagPathCounts = /* @__PURE__ */ new Map();
+      overlayRenderOverlays.forEach((overlay) => {
+        if ((overlay == null ? void 0 : overlay.widget) || (overlay == null ? void 0 : overlay.embeddedView) || isStaticSvgOverlay2(overlay)) return;
+        const key = normalizeDuplicateTagPathKey(overlay == null ? void 0 : overlay.tagPath);
+        if (!key) return;
+        duplicateOverlayTagPathCounts.set(key, (duplicateOverlayTagPathCounts.get(key) || 0) + 1);
+      });
       return /* @__PURE__ */ jsxs("g", { children: [
         shapes.map((s) => {
           var _a2, _b, _c, _d, _e, _f;
@@ -20620,8 +20966,12 @@ var MesoraDrawingToolBundle = (() => {
         }),
         overlayRenderOverlays.map((o) => {
           if (o == null ? void 0 : o.embeddedView) return null;
+          if (isStaticSvgOverlay2(o)) return null;
           if (hiddenBubbleSet.has(o.id)) return null;
           const text = getOverlayGroupLabel(o);
+          const duplicateTagPathKey = normalizeDuplicateTagPathKey(o == null ? void 0 : o.tagPath);
+          const duplicateTagPathCount = duplicateTagPathKey ? duplicateOverlayTagPathCounts.get(duplicateTagPathKey) || 0 : 0;
+          const duplicateTagPath = duplicateTagPathCount > 1;
           const lines = [];
           if (text) lines.push(text);
           if (includeLiveOverlayLines) {
@@ -20647,7 +20997,9 @@ var MesoraDrawingToolBundle = (() => {
             x,
             anchorY,
             lines,
-            anchor: "middle"
+            anchor: "middle",
+            highlight: duplicateTagPath,
+            title: duplicateTagPath ? `${duplicateTagPathCount} SVGs use this TagPath` : ""
           });
         })
       ] });
@@ -20671,17 +21023,22 @@ var MesoraDrawingToolBundle = (() => {
       }
       return /* @__PURE__ */ jsx("g", { children: overlayRenderOverlays.map((o) => {
         if (o == null ? void 0 : o.widget) return null;
+        if (isStaticSvgOverlay2(o)) return null;
         const overlayModeState = getOverlayModeState(o);
-        if (overlayModeState !== "manual" && overlayModeState !== "maintenance") return null;
+        if (overlayModeState !== "manual" && overlayModeState !== "maintenance" && overlayModeState !== "force") return null;
         const bb = (o == null ? void 0 : o.bbox) || overlayLocalBBox(o.id);
         if (!bb) return null;
         const wr = overlayWorldRect(o, bb);
         const isMaintenance = overlayModeState === "maintenance";
-        const bubbleR = 9 * inv;
-        const bubbleCx = wr.x + wr.w + 12 * inv;
-        const bubbleCy = wr.y + 10 * inv;
-        const anchorX = wr.x + wr.w;
-        const anchorY = wr.y + Math.max(6 * inv, Math.min(wr.h - 6 * inv, 10 * inv));
+        const isForce = overlayModeState === "force";
+        const modeStroke = isForce ? "#dc2626" : isMaintenance ? "#f59e0b" : "#a855f7";
+        const modeLineStroke = isForce ? "#b91c1c" : isMaintenance ? "#b45309" : "#7e22ce";
+        const modeFill = isForce ? "rgba(254,242,242,0.98)" : isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)";
+        const bubbleR = 10.5 * inv;
+        const bubbleCx = wr.x + wr.w + 14 * inv;
+        const bubbleCy = wr.y + 12 * inv;
+        const anchorX = wr.x + wr.w / 2;
+        const anchorY = wr.y + wr.h / 2;
         const dx = bubbleCx - anchorX;
         const dy = bubbleCy - anchorY;
         const dist = Math.max(1e-6, Math.hypot(dx, dy));
@@ -20689,7 +21046,9 @@ var MesoraDrawingToolBundle = (() => {
         const uy = dy / dist;
         const lineEndX = bubbleCx - ux * bubbleR;
         const lineEndY = bubbleCy - uy * bubbleR;
-        return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", "aria-hidden": "true", children: [
+        const modeTitle = isForce ? "Force" : isMaintenance ? "Maintenance" : "Manual";
+        const modeTooltip = `${modeTitle}${(o == null ? void 0 : o.tagPath) ? `: ${String(o.tagPath).trim()}` : ""}`;
+        return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
           /* @__PURE__ */ jsx(
             "line",
             {
@@ -20697,45 +21056,62 @@ var MesoraDrawingToolBundle = (() => {
               y1: anchorY,
               x2: lineEndX,
               y2: lineEndY,
-              stroke: isMaintenance ? "#b45309" : "#7e22ce",
-              strokeWidth: 1.35 * inv,
+              stroke: modeLineStroke,
+              strokeWidth: 1.45 * inv,
               strokeLinecap: "round",
               vectorEffect: "non-scaling-stroke"
             }
           ),
-          /* @__PURE__ */ jsx(
-            "circle",
-            {
-              cx: bubbleCx,
-              cy: bubbleCy,
-              r: bubbleR,
-              fill: isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)",
-              stroke: isMaintenance ? "#f59e0b" : "#a855f7",
-              strokeWidth: 1.25 * inv,
-              vectorEffect: "non-scaling-stroke"
-            }
-          ),
-          /* @__PURE__ */ jsx(
-            "g",
-            {
-              transform: `translate(${bubbleCx} ${bubbleCy}) scale(${0.6 * inv}) translate(-12 -12)`,
-              fill: "none",
-              stroke: isMaintenance ? "#b45309" : "#7e22ce",
-              strokeWidth: 1.9,
-              strokeLinecap: "round",
-              strokeLinejoin: "round",
-              children: isMaintenance ? /* @__PURE__ */ jsxs(Fragment2, { children: [
-                /* @__PURE__ */ jsx("path", { d: "M20 4.5 14.2 10.3" }),
-                /* @__PURE__ */ jsx("path", { d: "M10.2 14.3 4.2 20.3 2.7 18.8l6-6" }),
-                /* @__PURE__ */ jsx("path", { d: "M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" })
-              ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
-                /* @__PURE__ */ jsx("path", { d: "M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" }),
-                /* @__PURE__ */ jsx("path", { d: "M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" }),
-                /* @__PURE__ */ jsx("path", { d: "M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" }),
-                /* @__PURE__ */ jsx("path", { d: "M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" })
-              ] })
-            }
-          )
+          /* @__PURE__ */ jsxs("g", { pointerEvents: "auto", "aria-label": modeTooltip, children: [
+            /* @__PURE__ */ jsx("title", { children: modeTooltip }),
+            /* @__PURE__ */ jsx(
+              "circle",
+              {
+                cx: bubbleCx,
+                cy: bubbleCy,
+                r: bubbleR,
+                fill: modeFill,
+                stroke: modeStroke,
+                strokeWidth: 1.35 * inv,
+                vectorEffect: "non-scaling-stroke"
+              }
+            ),
+            isForce ? /* @__PURE__ */ jsx(
+              "text",
+              {
+                x: bubbleCx,
+                y: bubbleCy + 0.5 * inv,
+                textAnchor: "middle",
+                dominantBaseline: "middle",
+                fill: modeLineStroke,
+                fontSize: 12 * inv,
+                fontWeight: 900,
+                pointerEvents: "none",
+                children: "F"
+              }
+            ) : /* @__PURE__ */ jsx(
+              "g",
+              {
+                transform: `translate(${bubbleCx} ${bubbleCy}) scale(${0.68 * inv}) translate(-12 -12)`,
+                fill: "none",
+                stroke: modeLineStroke,
+                strokeWidth: 1.9,
+                strokeLinecap: "round",
+                strokeLinejoin: "round",
+                pointerEvents: "none",
+                children: isMaintenance ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                  /* @__PURE__ */ jsx("path", { d: "M20 4.5 14.2 10.3" }),
+                  /* @__PURE__ */ jsx("path", { d: "M10.2 14.3 4.2 20.3 2.7 18.8l6-6" }),
+                  /* @__PURE__ */ jsx("path", { d: "M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" })
+                ] }) : /* @__PURE__ */ jsxs(Fragment2, { children: [
+                  /* @__PURE__ */ jsx("path", { d: "M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" }),
+                  /* @__PURE__ */ jsx("path", { d: "M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" }),
+                  /* @__PURE__ */ jsx("path", { d: "M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" }),
+                  /* @__PURE__ */ jsx("path", { d: "M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" })
+                ] })
+              }
+            )
+          ] })
         ] }, `overlay-mode-badge-${o.id}`);
       }) });
     }, [
@@ -20756,6 +21132,7 @@ var MesoraDrawingToolBundle = (() => {
       return /* @__PURE__ */ jsx("g", { children: overlayRenderOverlays.map((o) => {
         var _a2, _b;
         if (o == null ? void 0 : o.embeddedView) return null;
+        if (isStaticSvgOverlay2(o)) return null;
         const overlayId = String((o == null ? void 0 : o.id) || "").trim();
         const connectionIssue = renderLiveVisuals && overlayId ? overlayConnectionIssueByOverlayId == null ? void 0 : overlayConnectionIssueByOverlayId[overlayId] : null;
         const connectionWarning = String((connectionIssue == null ? void 0 : connectionIssue.message) || "").trim();
@@ -20785,11 +21162,11 @@ var MesoraDrawingToolBundle = (() => {
           connectionQuality ? `Quality: ${connectionQuality}` : "",
           connectionError ? `Error: ${connectionError}` : ""
         ].filter(Boolean).join(" | ") : "";
-        const r = 8 * inv;
-        const cx = wr.x + wr.w + 12 * inv;
-        const cy = wr.y + Math.max(10 * inv, r + 1 * inv);
-        const anchorX = wr.x + wr.w;
-        const anchorY = wr.y + Math.max(r, Math.min(wr.h - r, 10 * inv));
+        const r = 10 * inv;
+        const cx = wr.x + wr.w + 14 * inv;
+        const cy = wr.y + Math.max(12 * inv, r + 1.5 * inv);
+        const anchorX = wr.x + wr.w / 2;
+        const anchorY = wr.y + wr.h / 2;
         const dx = cx - anchorX;
         const dy = cy - anchorY;
         const dist = Math.max(1e-6, Math.hypot(dx, dy));
@@ -20797,7 +21174,8 @@ var MesoraDrawingToolBundle = (() => {
         const uy = dy / dist;
         const lineEndX = cx - ux * r;
         const lineEndY = cy - uy * r;
-        return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", "aria-hidden": "true", children: [
+        const warningTooltip = `${overlayTagWarning}: ${titlePath}${titleDetail ? ` (${titleDetail})` : ""}`;
+        return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
           /* @__PURE__ */ jsx(
             "line",
             {
@@ -20806,38 +21184,40 @@ var MesoraDrawingToolBundle = (() => {
               x2: lineEndX,
               y2: lineEndY,
               stroke: badgeStroke,
-              strokeWidth: 1.15 * inv,
+              strokeWidth: 1.3 * inv,
               strokeLinecap: "round",
               vectorEffect: "non-scaling-stroke"
             }
           ),
-          /* @__PURE__ */ jsx(
-            "circle",
-            {
-              cx,
-              cy,
-              r,
-              fill: badgeFill,
-              stroke: badgeStroke,
-              strokeWidth: 1.2 * inv,
-              vectorEffect: "non-scaling-stroke"
-            }
-          ),
-          /* @__PURE__ */ jsx(
-            "text",
-            {
-              x: cx,
-              y: cy + 0.5 * inv,
-              textAnchor: "middle",
-              dominantBaseline: "middle",
-              fill: "#b91c1c",
-              fontSize: 10 * inv,
-              fontWeight: 900,
-              pointerEvents: "none",
-              children: badgeText
-            }
-          ),
-          /* @__PURE__ */ jsx("title", { children: `${overlayTagWarning}: ${titlePath}${titleDetail ? ` (${titleDetail})` : ""}` })
+          /* @__PURE__ */ jsxs("g", { pointerEvents: "auto", "aria-label": warningTooltip, children: [
+            /* @__PURE__ */ jsx("title", { children: warningTooltip }),
+            /* @__PURE__ */ jsx(
+              "circle",
+              {
+                cx,
+                cy,
+                r,
+                fill: badgeFill,
+                stroke: badgeStroke,
+                strokeWidth: 1.35 * inv,
+                vectorEffect: "non-scaling-stroke"
+              }
+            ),
+            /* @__PURE__ */ jsx(
+              "text",
+              {
+                x: cx,
+                y: cy + 0.5 * inv,
+                textAnchor: "middle",
+                dominantBaseline: "middle",
+                fill: "#b91c1c",
+                fontSize: 12 * inv,
+                fontWeight: 900,
+                pointerEvents: "none",
+                children: badgeText
+              }
+            )
+          ] })
         ] }, `overlay-warning-badge-${o.id}`);
       }) });
     }, [
@@ -22095,6 +22475,36 @@ var MesoraDrawingToolBundle = (() => {
     if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return { x: 0, y: 0, w, h };
     return { x: 0, y: 0, w: VB_W, h: VB_H };
   }
+  var ROOT_PRESENTATION_ATTRS = [
+    "class",
+    "style",
+    "fill",
+    "fill-opacity",
+    "fill-rule",
+    "opacity",
+    "stroke",
+    "stroke-width",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-miterlimit",
+    "stroke-dasharray",
+    "stroke-dashoffset",
+    "stroke-opacity",
+    "vector-effect",
+    "color"
+  ];
+  function preserveRootPresentation(svgEl, inner) {
+    const attrs = ROOT_PRESENTATION_ATTRS.map((name) => {
+      const value = svgEl.getAttribute(name);
+      return value == null || value === "" ? null : [name, value];
+    }).filter(Boolean);
+    if (!attrs.length) return inner;
+    const doc = svgEl.ownerDocument;
+    const wrapper = doc.createElementNS("http://www.w3.org/2000/svg", "g");
+    attrs.forEach(([name, value]) => wrapper.setAttribute(name, value));
+    wrapper.innerHTML = inner;
+    return wrapper.outerHTML;
+  }
   function stripOuterSvg(svgText) {
     const doc = new DOMParser().parseFromString(svgText, "image/svg+xml");
     const svgEl = doc.querySelector("svg");
@@ -22106,13 +22516,13 @@ var MesoraDrawingToolBundle = (() => {
         if (a.name.toLowerCase().startsWith("on")) el.removeAttribute(a.name);
       });
     });
-    const inner = svgEl.innerHTML;
+    const inner = preserveRootPresentation(svgEl, svgEl.innerHTML);
     const vb = parseViewBox(svgEl);
     return { inner, vb };
   }
 
   // ../../app/src/components/ImportModal.jsx
-  function getFolderFromKey(key) {
+  function getFolderFromKey2(key) {
     const parts = String(key).split("/");
     const i = parts.findIndex((p) => p === "SVG_Files" || p === "SVG Files");
     if (i >= 0) {
@@ -22133,6 +22543,9 @@ var MesoraDrawingToolBundle = (() => {
     loadSvgRaw,
     helpText = "",
     librarySummary = "",
+    onImportFile = null,
+    importDisabled = false,
+    importing = false,
     onRefresh = null,
     refreshDisabled = false,
     docked = false,
@@ -22149,16 +22562,19 @@ var MesoraDrawingToolBundle = (() => {
     const cacheRef = useRef(/* @__PURE__ */ new Map());
     const hoverTimerRef = useRef(null);
     const hoverTokenRef = useRef(0);
+    const uploadInputRef = useRef(null);
     const [hoverKey, setHoverKey] = useState(null);
     const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
     const [preview, setPreview] = useState(null);
     const [previewLoading, setPreviewLoading] = useState(false);
+    const [importError, setImportError] = useState("");
     useEffect(() => {
       if (!importOpen) {
         setHoverKey(null);
         setPreview(null);
         setPreviewLoading(false);
         setQuery("");
+        setImportError("");
       }
     }, [importOpen]);
     useEffect(() => {
@@ -22195,6 +22611,26 @@ var MesoraDrawingToolBundle = (() => {
       fontSize: 12,
       fontWeight: 700
     };
+    const canImportFile = typeof onImportFile === "function";
+    async function handleImportFileChange(event) {
+      var _a, _b;
+      const file = ((_b = (_a = event == null ? void 0 : event.target) == null ? void 0 : _a.files) == null ? void 0 : _b[0]) || null;
+      if (event == null ? void 0 : event.target) {
+        event.target.value = "";
+      }
+      if (!file || !canImportFile) {
+        return;
+      }
+      setImportError("");
+      try {
+        const imported = await onImportFile(file);
+        if (imported) {
+          setQuery(String(file.name || "").replace(/\.svg$/i, ""));
+        }
+      } catch (error) {
+        setImportError(String((error == null ? void 0 : error.message) || "Failed to import SVG."));
+      }
+    }
     const grouped = useMemo(() => {
       const q = String(query || "").trim().toLowerCase();
       const list2 = Array.isArray(svgFiles) ? svgFiles : [];
@@ -22206,7 +22642,7 @@ var MesoraDrawingToolBundle = (() => {
       });
       const map2 = /* @__PURE__ */ new Map();
       for (const f of filtered) {
-        const folder = getFolderFromKey(f.key);
+        const folder = getFolderFromKey2(f.key);
         if (!map2.has(folder)) map2.set(folder, []);
         map2.get(folder).push(f);
       }
@@ -22366,6 +22802,38 @@ var MesoraDrawingToolBundle = (() => {
                           /* @__PURE__ */ jsxs("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 }, children: [
                             /* @__PURE__ */ jsx("div", { style: { fontWeight: 800, fontSize: 16, color: textColor, letterSpacing: "0.01em" }, children: "Import SVG" }),
                             /* @__PURE__ */ jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+                              canImportFile ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                                /* @__PURE__ */ jsx(
+                                  "input",
+                                  {
+                                    ref: uploadInputRef,
+                                    type: "file",
+                                    accept: ".svg,image/svg+xml",
+                                    onChange: handleImportFileChange,
+                                    style: { display: "none" }
+                                  }
+                                ),
+                                /* @__PURE__ */ jsx(
+                                  "button",
+                                  {
+                                    type: "button",
+                                    title: "Import SVG file",
+                                    onPointerDown: stopInteractiveEvent,
+                                    onMouseDown: stopInteractiveEvent,
+                                    onClick: () => {
+                                      var _a, _b;
+                                      return (_b = (_a = uploadInputRef.current) == null ? void 0 : _a.click) == null ? void 0 : _b.call(_a);
+                                    },
+                                    disabled: importDisabled || importing,
+                                    style: {
+                                      ...secondaryBtnStyle,
+                                      opacity: importDisabled || importing ? 0.72 : 1,
+                                      cursor: importDisabled || importing ? "default" : "pointer"
+                                    },
+                                    children: importing ? "Importing" : "Import"
+                                  }
+                                )
+                              ] }) : null,
                               typeof onRefresh === "function" ? /* @__PURE__ */ jsx(
                                 "button",
                                 {
@@ -22415,6 +22883,19 @@ var MesoraDrawingToolBundle = (() => {
                                 fontFamily: "Consolas, 'Courier New', monospace"
                               },
                               children: helpText
+                            }
+                          ) : null,
+                          importError ? /* @__PURE__ */ jsx(
+                            "div",
+                            {
+                              style: {
+                                marginTop: 8,
+                                color: "#fecaca",
+                                fontSize: 11,
+                                lineHeight: 1.35,
+                                fontWeight: 700
+                              },
+                              children: importError
                             }
                           ) : null,
                           /* @__PURE__ */ jsx("div", { style: { marginTop: 10 }, children: /* @__PURE__ */ jsxs("div", { style: { position: "relative" }, children: [
@@ -22781,6 +23262,12 @@ var MesoraDrawingToolBundle = (() => {
     `/main/data/${MODULE_ID}/svg-library-catalog`,
     `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`
   ];
+  var SVG_LIBRARY_UPLOAD_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/svg-library-upload`,
+    `/main/data/${MODULE_URL_ALIAS}/svg-library-upload`,
+    `/data/${MODULE_ID}/svg-library-upload`,
+    `/main/data/${MODULE_ID}/svg-library-upload`
+  ];
   var HMI_STATE_STYLE_MAP_ROUTE_CANDIDATES = [
     `/data/${MODULE_URL_ALIAS}/hmi-state-style-maps`,
     `/main/data/${MODULE_URL_ALIAS}/hmi-state-style-maps`,
@@ -22808,10 +23295,15 @@ var MesoraDrawingToolBundle = (() => {
   var LOCAL_CANVAS_ZOOM_CACHE_PREFIX = "mesora-drawing:canvas-zoom:v1:";
   var CANVAS_RULER_SIZE = 24;
   var PROPERTY_PANEL_WIDTH = 300;
+  var PROPERTY_PANEL_MIN_WIDTH = 280;
+  var PROPERTY_PANEL_MAX_WIDTH = 560;
+  var PROPERTY_PANEL_WIDTH_STORAGE_KEY = "mesora-drawing:property-panel-width:v1";
   var PROPERTY_PANEL_HEIGHT = 520;
   var PROPERTY_PANEL_MIN_HEIGHT = 240;
   var QUICK_TAG_PANEL_WIDTH = 360;
   var QUICK_TAG_PANEL_HEIGHT = 124;
+  var QUICK_SVG_PANEL_WIDTH = 300;
+  var QUICK_SVG_PANEL_HEIGHT = 420;
   var TOOLBAR_WIDTH = 300;
   var COLLAPSED_TOOLBAR_WIDTH = 116;
   var TOOLBAR_INSET = 16;
@@ -23036,6 +23528,39 @@ var MesoraDrawingToolBundle = (() => {
     return cleanTagTypeDisplayName(
       (entry == null ? void 0 : entry.dataType) || (entry == null ? void 0 : entry.plcType) || (entry == null ? void 0 : entry.uaType) || typeId || ""
     );
+  }
+  function buildUdtTypeOptions({ tags = EMPTY_ARRAY, styleMapIndex = EMPTY_MAP, currentValues = EMPTY_ARRAY } = {}) {
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    const add = (value, group = "Ignition UDTs") => {
+      const clean = cleanTagTypeDisplayName(value);
+      if (!clean) {
+        return;
+      }
+      const key = clean.toLowerCase();
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      out.push({ value: clean, label: clean, group });
+    };
+    coerceArray(tags).forEach((tag) => {
+      add(getTagTypeDisplayName(tag), "Ignition UDTs");
+    });
+    coerceArray(styleMapIndex == null ? void 0 : styleMapIndex.entries).forEach((entry) => {
+      add(entry == null ? void 0 : entry.name, "State Maps");
+    });
+    coerceArray(currentValues).forEach((value) => {
+      add(value, "Current");
+    });
+    out.sort((left, right) => {
+      const groupCompare = String(left.group || "").localeCompare(String(right.group || ""), void 0, { sensitivity: "base" });
+      if (groupCompare !== 0) {
+        return groupCompare;
+      }
+      return String(left.label || "").localeCompare(String(right.label || ""), void 0, { sensitivity: "base" });
+    });
+    return out;
   }
   function normalizeTagTypeMatchToken(value) {
     return String(value || "").trim().toLowerCase().replace(/^\[[^\]]+\]/, "").replace(/\.(svg|json)$/i, "").replace(/[^a-z0-9]+/g, "");
@@ -23579,28 +24104,75 @@ var MesoraDrawingToolBundle = (() => {
     };
   }
   function applyHmiStateStyleMapsToOverlays(overlays, stateStyleMapIndex) {
-    if (!Array.isArray(overlays) || !Array.isArray(stateStyleMapIndex == null ? void 0 : stateStyleMapIndex.entries) || !stateStyleMapIndex.entries.length) {
+    if (!Array.isArray(overlays)) {
       return overlays;
     }
+    const hasStateStyleEntries = Array.isArray(stateStyleMapIndex == null ? void 0 : stateStyleMapIndex.entries) && stateStyleMapIndex.entries.length > 0;
     return overlays.map((overlay) => {
       if (!isPlainObject(overlay) || (overlay == null ? void 0 : overlay.widget) || (overlay == null ? void 0 : overlay.embeddedView)) {
         return overlay;
       }
-      const fillBinding = getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex);
-      if (!fillBinding) {
+      const fillBinding = hasStateStyleEntries ? getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex) : null;
+      const currentBindings = isPlainObject(overlay.bindings) ? overlay.bindings : {};
+      if (fillBinding) {
+        return withOverlayBindings(overlay, {
+          ...currentBindings,
+          fill: fillBinding
+        });
+      }
+      if (getOverlayFillBinding(overlay) || isStaticSvgOverlay(overlay) || isDiverterOverlay(overlay) || isBinOverlay(overlay)) {
         return overlay;
       }
-      const currentBindings = isPlainObject(overlay.bindings) ? overlay.bindings : {};
-      return withOverlayBindings(overlay, {
-        ...currentBindings,
-        fill: fillBinding
-      });
+      const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
+      return tagPath ? applyOverlayIgnitionFillBinding(overlay, tagPath) : overlay;
     });
   }
   function formatSvgAttributeNumber(value) {
     const numberValue = Number(value);
     if (!Number.isFinite(numberValue)) return "0";
     return Number(numberValue.toFixed(4)).toString();
+  }
+  var SVG_STROKE_TARGET_SELECTOR = "path,rect,circle,ellipse,polygon,polyline,line";
+  function isProtectedSvgStroke(value) {
+    const v = String(value || "").trim().toLowerCase();
+    return !v || v === "none" || v === "transparent" || v === "currentcolor" || v === "inherit" || v.startsWith("url(");
+  }
+  function readSvgStylePaint(el, name) {
+    var _a;
+    const style = String(((_a = el == null ? void 0 : el.getAttribute) == null ? void 0 : _a.call(el, "style")) || "");
+    if (!style) return "";
+    const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+    return String((match == null ? void 0 : match[1]) || "").trim();
+  }
+  function readSvgPaint(el, name) {
+    var _a;
+    const attrValue = String(((_a = el == null ? void 0 : el.getAttribute) == null ? void 0 : _a.call(el, name)) || "").trim();
+    if (attrValue) return attrValue;
+    return readSvgStylePaint(el, name);
+  }
+  function readInheritedSvgPaint(el, root, name) {
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const value = readSvgPaint(node, name);
+      if (value) return value;
+      if (node === root) break;
+      node = node.parentNode || null;
+    }
+    return "";
+  }
+  function setSvgPaint(el, name, value) {
+    if (!el) return;
+    el.setAttribute(name, value);
+    const style = String(el.getAttribute("style") || "");
+    if (!style || !new RegExp(`${name}\\s*:`, "i").test(style)) return;
+    el.setAttribute(
+      "style",
+      style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+    );
+  }
+  function serializeSvgInner(root) {
+    const serializer = new XMLSerializer();
+    return Array.from(root.childNodes).map((node) => serializer.serializeToString(node)).join("");
   }
   function stripSvgVectorEffect(inner) {
     let next = String(inner || "");
@@ -23616,7 +24188,36 @@ var MesoraDrawingToolBundle = (() => {
     const sw = Number.parseFloat(strokeWidth);
     if (!Number.isFinite(sw) || sw <= 0) return inner;
     const value = formatSvgAttributeNumber(sw);
-    let next = stripSvgVectorEffect(inner);
+    const stripped = stripSvgVectorEffect(inner);
+    try {
+      const doc = new DOMParser().parseFromString(
+        `<svg xmlns="http://www.w3.org/2000/svg">${String(stripped || "")}</svg>`,
+        "image/svg+xml"
+      );
+      if (!doc.querySelector("parsererror")) {
+        const root = doc.documentElement;
+        Array.from(root.querySelectorAll("*")).forEach((el) => {
+          if (readSvgPaint(el, "stroke-width")) {
+            setSvgPaint(el, "stroke-width", value);
+          }
+        });
+        Array.from(root.querySelectorAll(SVG_STROKE_TARGET_SELECTOR)).forEach((el) => {
+          const directStroke = readSvgPaint(el, "stroke");
+          if (directStroke && isProtectedSvgStroke(directStroke)) return;
+          if (!directStroke) {
+            const inheritedStroke = readInheritedSvgPaint(el.parentNode || el, root, "stroke");
+            if (!isProtectedSvgStroke(inheritedStroke)) {
+              setSvgPaint(el, "stroke", inheritedStroke);
+            }
+          }
+          setSvgPaint(el, "stroke-width", value);
+          el.setAttribute("vector-effect", "non-scaling-stroke");
+        });
+        return serializeSvgInner(root);
+      }
+    } catch {
+    }
+    let next = stripped;
     next = next.replace(/stroke-width\s*=\s*['"][^'"]*['"]/gi, `stroke-width="${value}"`);
     next = next.replace(/stroke-width\s*:\s*[^;\"']+/gi, `stroke-width:${value}`);
     next = next.replace(
@@ -23902,12 +24503,40 @@ var MesoraDrawingToolBundle = (() => {
     "StsMaint",
     "MaintActive"
   ];
+  var IGNITION_FORCE_MODE_MEMBERS = [
+    "Force",
+    "ForceTrue",
+    "i_Force",
+    "o_Force",
+    "i_ForceTrue",
+    "o_ForceTrue",
+    "ForceMode",
+    "i_ForceMode",
+    "o_ForceMode",
+    "StsForce",
+    "ForceActive"
+  ];
+  var IGNITION_DESCRIPTION_MEMBERS = [
+    "Description",
+    "description",
+    "Desc",
+    "desc",
+    "EquipmentDescription",
+    "equipmentDescription",
+    "equipment_description",
+    "HMI_Description",
+    "HMIDescription",
+    "Tooltip",
+    "ToolTip",
+    "tooltip"
+  ];
   var IGNITION_MODE_MEMBERS = Array.from(
     /* @__PURE__ */ new Set([
       ...IGNITION_MODE_STATUS_MEMBERS,
       ...IGNITION_MANUAL_MODE_MEMBERS,
       ...IGNITION_AUTO_MODE_MEMBERS,
-      ...IGNITION_MAINTENANCE_MODE_MEMBERS
+      ...IGNITION_MAINTENANCE_MODE_MEMBERS,
+      ...IGNITION_FORCE_MODE_MEMBERS
     ])
   );
   var MOTOR_UDT_STATE_MEMBERS = IGNITION_FILL_STATE_MEMBERS;
@@ -24112,6 +24741,9 @@ var MesoraDrawingToolBundle = (() => {
     return out;
   }
   function getOverlayConnectionIssue(overlay, tagMetaMap) {
+    if (isStaticSvgOverlay(overlay)) {
+      return null;
+    }
     const paths = getOverlayConnectionCheckPaths(overlay);
     let firstIssue = null;
     for (const path of paths) {
@@ -24128,6 +24760,9 @@ var MesoraDrawingToolBundle = (() => {
       }
     }
     return firstIssue;
+  }
+  function isStaticSvgOverlay(overlay) {
+    return Boolean((overlay == null ? void 0 : overlay.static) || (overlay == null ? void 0 : overlay.isStatic) || (overlay == null ? void 0 : overlay.staticSvg));
   }
   function resolveIgnitionStateMappingColor(mappings, rawValue) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
@@ -24522,6 +25157,22 @@ var MesoraDrawingToolBundle = (() => {
     }
     return inferETypeFromFileKey(fileKey);
   }
+  function hasExplicitSvgEType(rawSvg) {
+    try {
+      const doc = new DOMParser().parseFromString(String(rawSvg || ""), "image/svg+xml");
+      const svg = doc.querySelector("svg");
+      if (!svg) {
+        return false;
+      }
+      const direct = String(svg.getAttribute("eType") || "").trim() || String(svg.getAttribute("etype") || "").trim() || String(svg.getAttribute("data-etype") || "").trim();
+      if (direct) {
+        return true;
+      }
+      return Boolean(svg.querySelector("[eType],[etype],[data-etype]"));
+    } catch (_error) {
+      return false;
+    }
+  }
   function extractKeySize(rawSvg) {
     try {
       const doc = new DOMParser().parseFromString(rawSvg, "image/svg+xml");
@@ -24557,6 +25208,111 @@ var MesoraDrawingToolBundle = (() => {
     } catch (_error) {
     }
     return null;
+  }
+  function isOverlayETypeAutoManaged(overlay) {
+    const value = overlay == null ? void 0 : overlay.eTypeAuto;
+    if (value === false) {
+      return false;
+    }
+    if (typeof value === "string" && value.trim().toLowerCase() === "false") {
+      return false;
+    }
+    return true;
+  }
+  function buildOverlaySourcePayload(raw, fileKey = "") {
+    if (typeof raw !== "string") {
+      return null;
+    }
+    const parsed = stripOuterSvg(raw);
+    if (!(parsed == null ? void 0 : parsed.inner)) {
+      return null;
+    }
+    const keySize = extractKeySize(raw);
+    const parsedEType = extractSvgEType(raw, fileKey);
+    const sourceHadEType = hasExplicitSvgEType(raw);
+    const baseViewBox = parsed.vb;
+    let localViewBox = keySize ? { x: 0, y: 0, w: keySize.w, h: keySize.h } : baseViewBox;
+    if (!localViewBox || !Number.isFinite(localViewBox.w) || !Number.isFinite(localViewBox.h) || localViewBox.w <= 0 || localViewBox.h <= 0) {
+      localViewBox = { x: 0, y: 0, w: 100, h: 100 };
+    }
+    let inner = parsed.inner;
+    let sourceScaleX = 1;
+    let sourceScaleY = 1;
+    if (keySize && (baseViewBox == null ? void 0 : baseViewBox.w) > 0 && (baseViewBox == null ? void 0 : baseViewBox.h) > 0) {
+      const scaleX = keySize.w / baseViewBox.w;
+      const scaleY = keySize.h / baseViewBox.h;
+      sourceScaleX = scaleX;
+      sourceScaleY = scaleY;
+      inner = `
+      <g transform="translate(${-baseViewBox.x},${-baseViewBox.y}) scale(${scaleX},${scaleY})">
+        ${parsed.inner}
+      </g>
+    `;
+    }
+    return {
+      inner,
+      eType: parsedEType,
+      sourceHadEType,
+      bbox: {
+        x: localViewBox.x,
+        y: localViewBox.y,
+        width: localViewBox.w,
+        height: localViewBox.h
+      },
+      sourceScaleX,
+      sourceScaleY
+    };
+  }
+  function nearlyEqual(left, right, epsilon = 1e-4) {
+    return Math.abs(Number(left || 0) - Number(right || 0)) <= epsilon;
+  }
+  function sameOverlayBbox(left, right) {
+    return Boolean(left && right) && nearlyEqual(left.x, right.x) && nearlyEqual(left.y, right.y) && nearlyEqual(left.width, right.width) && nearlyEqual(left.height, right.height);
+  }
+  function refreshOverlayFromSourcePayload(overlay, payload) {
+    var _a;
+    if (!overlay || !(payload == null ? void 0 : payload.inner) || !(payload == null ? void 0 : payload.bbox)) {
+      return overlay;
+    }
+    const previousBounds = getOverlayBounds(overlay);
+    const nextBbox = payload.bbox;
+    const nextScaleX = previousBounds ? Math.max(1e-4, Number(previousBounds.width || 0) / Math.max(1e-6, Number(nextBbox.width || 0))) : overlayScaleX(overlay);
+    const nextScaleY = previousBounds ? Math.max(1e-4, Number(previousBounds.height || 0) / Math.max(1e-6, Number(nextBbox.height || 0))) : overlayScaleY(overlay);
+    const nextTx = previousBounds ? Number(previousBounds.x || 0) - nextScaleX * Number(nextBbox.x || 0) : Number((overlay == null ? void 0 : overlay.tx) || 0);
+    const nextTy = previousBounds ? Number(previousBounds.y || 0) - nextScaleY * Number(nextBbox.y || 0) : Number((overlay == null ? void 0 : overlay.ty) || 0);
+    const nextEType = isOverlayETypeAutoManaged(overlay) ? String(payload.eType || (overlay == null ? void 0 : overlay.eType) || "").trim() : String((overlay == null ? void 0 : overlay.eType) || payload.eType || "").trim();
+    const sourceHadEType = Boolean((_a = payload.sourceHadEType) != null ? _a : overlay == null ? void 0 : overlay.sourceHadEType);
+    const defaultFill = sourceHadEType ? "" : DEFAULT_FILL;
+    const defaultStroke = sourceHadEType ? "" : DEFAULT_STROKE;
+    let nextOverlay = {
+      ...overlay,
+      inner: payload.inner,
+      bbox: nextBbox,
+      tx: nextTx,
+      ty: nextTy,
+      scale: nextScaleX,
+      scaleX: nextScaleX,
+      scaleY: nextScaleY,
+      fill: (overlay == null ? void 0 : overlay.fill) || defaultFill,
+      stroke: (overlay == null ? void 0 : overlay.stroke) || defaultStroke,
+      strokeMode: (overlay == null ? void 0 : overlay.strokeMode) || "preserve",
+      eType: nextEType,
+      eTypeAuto: isOverlayETypeAutoManaged(overlay),
+      sourceHadEType,
+      popupParamsJson: (overlay == null ? void 0 : overlay.popupParamsJson) || "{}",
+      sourceScaleX: payload.sourceScaleX,
+      sourceScaleY: payload.sourceScaleY
+    };
+    const tagPath = String(nextOverlay.tagPath || getOverlayFillBindingTagPath(nextOverlay) || "").trim();
+    const bindingPath = String(getOverlayFillBindingTagPath(overlay) || "").trim();
+    const needsFillBinding = Boolean(
+      tagPath && !nextOverlay.widget && !nextOverlay.embeddedView && !isStaticSvgOverlay(nextOverlay) && (!getOverlayFillBinding(overlay) || bindingPath !== tagPath)
+    );
+    if (needsFillBinding) {
+      nextOverlay = applyOverlayIgnitionFillBinding(nextOverlay, tagPath);
+    }
+    const changed = String((overlay == null ? void 0 : overlay.inner) || "") !== String(nextOverlay.inner || "") || !sameOverlayBbox(overlay == null ? void 0 : overlay.bbox, nextOverlay.bbox) || !nearlyEqual(overlay == null ? void 0 : overlay.tx, nextOverlay.tx, 1e-3) || !nearlyEqual(overlay == null ? void 0 : overlay.ty, nextOverlay.ty, 1e-3) || !nearlyEqual(overlayScaleX(overlay), overlayScaleX(nextOverlay)) || !nearlyEqual(overlayScaleY(overlay), overlayScaleY(nextOverlay)) || String((overlay == null ? void 0 : overlay.eType) || "") !== String(nextOverlay.eType || "") || Boolean(overlay == null ? void 0 : overlay.sourceHadEType) !== Boolean(nextOverlay.sourceHadEType) || String((overlay == null ? void 0 : overlay.strokeMode) || "") !== String(nextOverlay.strokeMode || "") || String((overlay == null ? void 0 : overlay.popupParamsJson) || "") !== String(nextOverlay.popupParamsJson || "") || !nearlyEqual((overlay == null ? void 0 : overlay.sourceScaleX) || 1, nextOverlay.sourceScaleX || 1) || !nearlyEqual((overlay == null ? void 0 : overlay.sourceScaleY) || 1, nextOverlay.sourceScaleY || 1) || JSON.stringify((overlay == null ? void 0 : overlay.bindings) || null) !== JSON.stringify(nextOverlay.bindings || null);
+    return changed ? nextOverlay : overlay;
   }
   function createId(prefix = "id") {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
@@ -24916,11 +25672,40 @@ var MesoraDrawingToolBundle = (() => {
     if (tag === "input" || tag === "textarea" || tag === "select" || tag === "button" || target.isContentEditable === true) {
       return true;
     }
-    return typeof target.closest === "function" && Boolean(target.closest("[data-vizi-properties-panel='1'], [data-vizi-import-drawer='1'], [data-vizi-widget-drawer='1'], [data-vizi-dropdown='1'], [data-vizi-dropdown-menu='1']"));
+    return typeof target.closest === "function" && Boolean(target.closest("[data-vizi-properties-panel='1'], [data-vizi-import-drawer='1'], [data-vizi-widget-drawer='1'], [data-vizi-dropdown='1'], [data-vizi-dropdown-menu='1'], [data-vizi-quick-svg-picker='1'], [data-vizi-quick-tag-picker='1']"));
   }
   function stopInteractivePropagation(event) {
     var _a;
     (_a = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _a.call(event);
+  }
+  function copyTextToClipboard(value) {
+    var _a, _b;
+    const text = String(value != null ? value : "").trim();
+    if (!text || typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+    if ((_b = (_a = window.navigator) == null ? void 0 : _a.clipboard) == null ? void 0 : _b.writeText) {
+      window.navigator.clipboard.writeText(text).catch(() => {
+        copyTextToClipboardFallback(text);
+      });
+      return;
+    }
+    copyTextToClipboardFallback(text);
+  }
+  function copyTextToClipboardFallback(text) {
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = String(text != null ? text : "");
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.top = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    } catch (_error) {
+    }
   }
   function PropertySection({ children, title }) {
     return /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10 }, children: [
@@ -25005,6 +25790,164 @@ var MesoraDrawingToolBundle = (() => {
       }
     );
   }
+  function PropertyColorField({ disabled = false, label, onCommit, placeholder = "#e2e8f0", value = "" }) {
+    const [draft, setDraft] = useState(value == null ? "" : String(value));
+    useEffect(() => {
+      setDraft(value == null ? "" : String(value));
+    }, [value]);
+    const swatchValue = useMemo(() => {
+      const text = String(draft || "").trim();
+      if (/^#[0-9a-f]{6}$/i.test(text)) {
+        return text;
+      }
+      if (/^#[0-9a-f]{3}$/i.test(text)) {
+        return `#${text.slice(1).split("").map((ch) => `${ch}${ch}`).join("")}`;
+      }
+      return placeholder;
+    }, [draft, placeholder]);
+    const commit = useCallback((nextValue = draft) => {
+      if (disabled || typeof onCommit !== "function") {
+        return;
+      }
+      onCommit(String(nextValue != null ? nextValue : "").trim());
+    }, [disabled, draft, onCommit]);
+    return /* @__PURE__ */ jsxs(
+      "label",
+      {
+        style: { display: "grid", gap: 5 },
+        onMouseDown: stopInteractivePropagation,
+        onClick: stopInteractivePropagation,
+        onDoubleClick: stopInteractivePropagation,
+        children: [
+          /* @__PURE__ */ jsx("span", { style: { fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }, children: label }),
+          /* @__PURE__ */ jsxs("div", { style: { display: "grid", gridTemplateColumns: "40px minmax(0, 1fr)", gap: 8 }, children: [
+            /* @__PURE__ */ jsx(
+              "input",
+              {
+                type: "color",
+                value: swatchValue,
+                disabled,
+                onChange: (event) => {
+                  const next = event.target.value;
+                  setDraft(next);
+                  commit(next);
+                },
+                onFocus: stopInteractivePropagation,
+                onPointerDown: stopInteractivePropagation,
+                onMouseDown: stopInteractivePropagation,
+                onMouseUp: stopInteractivePropagation,
+                onClick: stopInteractivePropagation,
+                onDoubleClick: stopInteractivePropagation,
+                style: {
+                  width: "100%",
+                  height: 36,
+                  boxSizing: "border-box",
+                  borderRadius: 10,
+                  border: "1px solid rgba(71, 85, 105, 0.9)",
+                  background: disabled ? "rgba(15, 23, 42, 0.55)" : "rgba(15, 23, 42, 0.92)",
+                  padding: 4,
+                  cursor: disabled ? "default" : "pointer",
+                  opacity: disabled ? 0.78 : 1
+                }
+              }
+            ),
+            /* @__PURE__ */ jsx(
+              "input",
+              {
+                type: "text",
+                value: draft,
+                disabled,
+                placeholder,
+                onChange: (event) => {
+                  setDraft(event.target.value);
+                },
+                onBlur: () => commit(),
+                onFocus: stopInteractivePropagation,
+                onPointerDown: stopInteractivePropagation,
+                onMouseDown: stopInteractivePropagation,
+                onMouseUp: stopInteractivePropagation,
+                onClick: stopInteractivePropagation,
+                onDoubleClick: stopInteractivePropagation,
+                onKeyDown: (event) => {
+                  stopInteractivePropagation(event);
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commit();
+                    event.currentTarget.blur();
+                  }
+                },
+                onKeyUp: stopInteractivePropagation,
+                style: {
+                  width: "100%",
+                  height: 36,
+                  boxSizing: "border-box",
+                  borderRadius: 10,
+                  border: "1px solid rgba(71, 85, 105, 0.9)",
+                  background: disabled ? "rgba(15, 23, 42, 0.55)" : "rgba(15, 23, 42, 0.92)",
+                  color: "#f8fafc",
+                  padding: "0 10px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  opacity: disabled ? 0.78 : 1
+                }
+              }
+            )
+          ] })
+        ]
+      }
+    );
+  }
+  function PropertyCheckbox({ checked = false, disabled = false, label, onChange }) {
+    return /* @__PURE__ */ jsxs(
+      "label",
+      {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          minHeight: 36,
+          color: "#f8fafc",
+          fontSize: 12,
+          fontWeight: 800,
+          cursor: disabled ? "default" : "pointer",
+          opacity: disabled ? 0.72 : 1
+        },
+        onMouseDown: stopInteractivePropagation,
+        onClick: stopInteractivePropagation,
+        onDoubleClick: stopInteractivePropagation,
+        children: [
+          /* @__PURE__ */ jsx(
+            "input",
+            {
+              type: "checkbox",
+              checked: Boolean(checked),
+              disabled,
+              onChange: (event) => {
+                if (!disabled && typeof onChange === "function") {
+                  onChange(Boolean(event.target.checked));
+                }
+              },
+              onFocus: stopInteractivePropagation,
+              onPointerDown: stopInteractivePropagation,
+              onMouseDown: stopInteractivePropagation,
+              onMouseUp: stopInteractivePropagation,
+              onClick: stopInteractivePropagation,
+              onDoubleClick: stopInteractivePropagation,
+              onKeyDown: stopInteractivePropagation,
+              onKeyUp: stopInteractivePropagation,
+              style: {
+                width: 16,
+                height: 16,
+                accentColor: "#2563eb",
+                cursor: disabled ? "default" : "pointer"
+              }
+            }
+          ),
+          /* @__PURE__ */ jsx("span", { children: label })
+        ]
+      }
+    );
+  }
   function PropertyTextArea({ disabled = false, label, onCommit, placeholder = "", rows = 5, value = "" }) {
     const [draft, setDraft] = useState(value == null ? "" : String(value));
     useEffect(() => {
@@ -25071,12 +26014,16 @@ var MesoraDrawingToolBundle = (() => {
     helperTone = "muted",
     label,
     onChange,
+    onOpen,
     placeholder = "Select...",
+    searchable = false,
+    searchPlaceholder = "Search...",
     sections = EMPTY_ARRAY,
     value = ""
   }) {
     const rootRef = useRef(null);
     const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
     const normalizedValue = value == null ? "" : String(value);
     const normalizedSections = coerceArray(sections).map((section) => ({
       label: String((section == null ? void 0 : section.label) || "").trim(),
@@ -25095,6 +26042,13 @@ var MesoraDrawingToolBundle = (() => {
     })).filter((section) => section.items.length > 0);
     const selectedItem = normalizedSections.flatMap((section) => section.items).find((item) => item.value === normalizedValue);
     const displayLabel = (selectedItem == null ? void 0 : selectedItem.label) || placeholder;
+    const queryText = String(query || "").trim().toLowerCase();
+    const visibleSections = queryText ? normalizedSections.map((section) => ({
+      ...section,
+      items: section.items.filter(
+        (item) => `${section.label || ""} ${item.label || ""} ${item.value || ""}`.toLowerCase().includes(queryText)
+      )
+    })).filter((section) => section.items.length > 0) : normalizedSections;
     useEffect(() => {
       if (!open) {
         return void 0;
@@ -25105,6 +26059,7 @@ var MesoraDrawingToolBundle = (() => {
           return;
         }
         setOpen(false);
+        setQuery("");
       };
       window.addEventListener("pointerdown", handleWindowPointerDown, true);
       return () => {
@@ -25131,7 +26086,16 @@ var MesoraDrawingToolBundle = (() => {
                 onClick: (event) => {
                   stopInteractivePropagation(event);
                   if (!disabled) {
-                    setOpen((current) => !current);
+                    setOpen((current) => {
+                      const next = !current;
+                      if (next && typeof onOpen === "function") {
+                        onOpen();
+                      }
+                      if (!next) {
+                        setQuery("");
+                      }
+                      return next;
+                    });
                   }
                 },
                 onPointerDown: stopInteractivePropagation,
@@ -25174,7 +26138,7 @@ var MesoraDrawingToolBundle = (() => {
                 ]
               }
             ),
-            open && !disabled ? /* @__PURE__ */ jsx(
+            open && !disabled ? /* @__PURE__ */ jsxs(
               "div",
               {
                 "data-vizi-dropdown-menu": "1",
@@ -25196,55 +26160,99 @@ var MesoraDrawingToolBundle = (() => {
                 onMouseUp: stopInteractivePropagation,
                 onClick: stopInteractivePropagation,
                 onDoubleClick: stopInteractivePropagation,
-                children: normalizedSections.map((section, sectionIndex) => /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
-                  section.label ? /* @__PURE__ */ jsx(
+                children: [
+                  searchable ? /* @__PURE__ */ jsx(
+                    "input",
+                    {
+                      type: "text",
+                      value: query,
+                      placeholder: searchPlaceholder,
+                      onChange: (event) => setQuery(event.target.value),
+                      onPointerDown: stopInteractivePropagation,
+                      onMouseDown: stopInteractivePropagation,
+                      onMouseUp: stopInteractivePropagation,
+                      onClick: stopInteractivePropagation,
+                      style: {
+                        width: "100%",
+                        minHeight: 32,
+                        boxSizing: "border-box",
+                        borderRadius: 9,
+                        border: "1px solid rgba(71, 85, 105, 0.9)",
+                        background: "rgba(15, 23, 42, 0.95)",
+                        color: "#f8fafc",
+                        padding: "7px 9px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        outline: "none"
+                      }
+                    }
+                  ) : null,
+                  visibleSections.map((section, sectionIndex) => /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 4 }, children: [
+                    section.label ? /* @__PURE__ */ jsx(
+                      "div",
+                      {
+                        style: {
+                          padding: "2px 6px 4px",
+                          fontSize: 10,
+                          fontWeight: 800,
+                          letterSpacing: "0.08em",
+                          textTransform: "uppercase",
+                          color: "rgba(148, 163, 184, 0.88)"
+                        },
+                        children: section.label
+                      }
+                    ) : null,
+                    section.items.map((item) => {
+                      const active = item.value === normalizedValue;
+                      return /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: (event) => {
+                            stopInteractivePropagation(event);
+                            setOpen(false);
+                            setQuery("");
+                            if (typeof onChange === "function") {
+                              onChange(item.value);
+                            }
+                          },
+                          onPointerDown: stopInteractivePropagation,
+                          onMouseDown: stopInteractivePropagation,
+                          onMouseUp: stopInteractivePropagation,
+                          style: {
+                            width: "100%",
+                            border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
+                            background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
+                            color: "#f8fafc",
+                            borderRadius: 10,
+                            padding: "8px 10px",
+                            fontSize: 12,
+                            fontWeight: active ? 700 : 600,
+                            textAlign: "left",
+                            cursor: "pointer"
+                          },
+                          children: item.label
+                        },
+                        `${section.label || "option"}-${item.value}-${item.label}`
+                      );
+                    })
+                  ] }, `${section.label || "section"}-${sectionIndex}`)),
+                  !visibleSections.length ? /* @__PURE__ */ jsx(
                     "div",
                     {
                       style: {
-                        padding: "2px 6px 4px",
+                        borderRadius: 8,
+                        border: "1px dashed rgba(71, 85, 105, 0.78)",
+                        padding: "10px 8px",
                         fontSize: 10,
-                        fontWeight: 800,
-                        letterSpacing: "0.08em",
-                        textTransform: "uppercase",
-                        color: "rgba(148, 163, 184, 0.88)"
+                        fontWeight: 600,
+                        color: "rgba(148, 163, 184, 0.9)",
+                        textAlign: "center"
                       },
-                      children: section.label
+                      children: "No matches."
                     }
-                  ) : null,
-                  section.items.map((item) => {
-                    const active = item.value === normalizedValue;
-                    return /* @__PURE__ */ jsx(
-                      "button",
-                      {
-                        type: "button",
-                        onClick: (event) => {
-                          stopInteractivePropagation(event);
-                          setOpen(false);
-                          if (typeof onChange === "function") {
-                            onChange(item.value);
-                          }
-                        },
-                        onPointerDown: stopInteractivePropagation,
-                        onMouseDown: stopInteractivePropagation,
-                        onMouseUp: stopInteractivePropagation,
-                        style: {
-                          width: "100%",
-                          border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
-                          background: active ? "linear-gradient(180deg, rgba(79, 140, 255, 0.95) 0%, rgba(53, 103, 243, 0.95) 100%)" : "rgba(15, 23, 42, 0.94)",
-                          color: "#f8fafc",
-                          borderRadius: 10,
-                          padding: "8px 10px",
-                          fontSize: 12,
-                          fontWeight: active ? 700 : 600,
-                          textAlign: "left",
-                          cursor: "pointer"
-                        },
-                        children: item.label
-                      },
-                      `${section.label || "option"}-${item.value}-${item.label}`
-                    );
-                  })
-                ] }, `${section.label || "section"}-${sectionIndex}`))
+                  ) : null
+                ]
               }
             ) : null
           ] }),
@@ -25280,6 +26288,8 @@ var MesoraDrawingToolBundle = (() => {
     const triggerRef = useRef(null);
     const menuRef = useRef(null);
     const searchRef = useRef(null);
+    const listRef = useRef(null);
+    const selectedOptionRef = useRef(null);
     const lastAutoOpenTokenRef = useRef(0);
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
@@ -25435,6 +26445,31 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [open]);
     useEffect(() => {
+      if (!open || queryText || !currentValue) {
+        return void 0;
+      }
+      const scrollSelected = () => {
+        const selectedNode = selectedOptionRef.current;
+        const listNode = listRef.current;
+        if (!selectedNode || !listNode) {
+          return;
+        }
+        if (String(selectedNode.getAttribute("data-tag-path") || "") !== currentValue) {
+          return;
+        }
+        selectedNode.scrollIntoView({
+          block: "center",
+          inline: "nearest"
+        });
+      };
+      const timer = window.setTimeout(scrollSelected, 0);
+      const frame = window.requestAnimationFrame(scrollSelected);
+      return () => {
+        window.clearTimeout(timer);
+        window.cancelAnimationFrame(frame);
+      };
+    }, [currentValue, normalizedOptions.length, open, queryText]);
+    useEffect(() => {
       const nextToken = Number(autoOpenToken) || 0;
       if (!nextToken || disabled || lastAutoOpenTokenRef.current === nextToken) {
         return;
@@ -25492,6 +26527,15 @@ var MesoraDrawingToolBundle = (() => {
               onMouseDown: stopInteractivePropagation,
               onMouseUp: stopInteractivePropagation,
               onDoubleClick: stopInteractivePropagation,
+              onContextMenu: (event) => {
+                event.preventDefault();
+                if (!currentValue) {
+                  stopInteractivePropagation(event);
+                  return;
+                }
+                stopInteractivePropagation(event);
+                copyTextToClipboard(currentValue);
+              },
               style: {
                 width: "100%",
                 minHeight: 36,
@@ -25551,6 +26595,7 @@ var MesoraDrawingToolBundle = (() => {
                   top: menuRect.top,
                   width: menuRect.width,
                   maxHeight: menuRect.maxHeight,
+                  boxSizing: "border-box",
                   zIndex: 2147483200,
                   borderRadius: 10,
                   border: "1px solid rgba(71, 85, 105, 0.96)",
@@ -25568,6 +26613,7 @@ var MesoraDrawingToolBundle = (() => {
                 onDoubleClick: stopInteractivePropagation,
                 onKeyDown: stopInteractivePropagation,
                 onKeyUp: stopInteractivePropagation,
+                onContextMenu: stopInteractivePropagation,
                 children: [
                   /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 6 }, children: [
                     /* @__PURE__ */ jsx(
@@ -25627,11 +26673,12 @@ var MesoraDrawingToolBundle = (() => {
                   /* @__PURE__ */ jsxs(
                     "div",
                     {
+                      ref: listRef,
                       className: "vizi-scroll",
                       style: {
                         display: "grid",
                         gap: 6,
-                        maxHeight: Math.max(120, Number(menuRect.maxHeight || 320) - 68),
+                        maxHeight: Math.max(96, Number(menuRect.maxHeight || 320) - 92),
                         overflowY: "auto",
                         paddingRight: 2
                       },
@@ -25670,6 +26717,11 @@ var MesoraDrawingToolBundle = (() => {
                           !hasCurrentOption && currentValue ? /* @__PURE__ */ jsxs(
                             "div",
                             {
+                              onContextMenu: (event) => {
+                                event.preventDefault();
+                                stopInteractivePropagation(event);
+                                copyTextToClipboard(currentValue);
+                              },
                               style: {
                                 border: "1px solid rgba(71, 85, 105, 0.76)",
                                 background: "rgba(15, 23, 42, 0.9)",
@@ -25706,6 +26758,8 @@ var MesoraDrawingToolBundle = (() => {
                             return /* @__PURE__ */ jsxs(
                               "button",
                               {
+                                ref: active ? selectedOptionRef : void 0,
+                                "data-tag-path": item.value,
                                 type: "button",
                                 onClick: (event) => {
                                   stopInteractivePropagation(event);
@@ -25717,6 +26771,11 @@ var MesoraDrawingToolBundle = (() => {
                                 onPointerDown: stopInteractivePropagation,
                                 onMouseDown: stopInteractivePropagation,
                                 onMouseUp: stopInteractivePropagation,
+                                onContextMenu: (event) => {
+                                  event.preventDefault();
+                                  stopInteractivePropagation(event);
+                                  copyTextToClipboard(item.value);
+                                },
                                 style: {
                                   width: "100%",
                                   border: active ? "1px solid rgba(96, 165, 250, 0.85)" : "1px solid rgba(51, 65, 85, 0.92)",
@@ -25875,6 +26934,26 @@ var MesoraDrawingToolBundle = (() => {
     }
     const scaleX = overlayScaleX(overlay);
     const scaleY = overlayScaleY(overlay);
+    if (overlayRotationDegrees(overlay)) {
+      const corners = [
+        worldFromLocal(overlay, Number(bbox.x || 0), Number(bbox.y || 0)),
+        worldFromLocal(overlay, Number(bbox.x || 0) + Number(bbox.width || 0), Number(bbox.y || 0)),
+        worldFromLocal(overlay, Number(bbox.x || 0) + Number(bbox.width || 0), Number(bbox.y || 0) + Number(bbox.height || 0)),
+        worldFromLocal(overlay, Number(bbox.x || 0), Number(bbox.y || 0) + Number(bbox.height || 0))
+      ];
+      const xs = corners.map((point) => Number(point.x || 0));
+      const ys = corners.map((point) => Number(point.y || 0));
+      const minX = Math.min(...xs);
+      const minY = Math.min(...ys);
+      const maxX = Math.max(...xs);
+      const maxY = Math.max(...ys);
+      return {
+        x: minX,
+        y: minY,
+        width: Math.max(1, maxX - minX),
+        height: Math.max(1, maxY - minY)
+      };
+    }
     return {
       x: Number((overlay == null ? void 0 : overlay.tx) || 0) + scaleX * Number(bbox.x || 0),
       y: Number((overlay == null ? void 0 : overlay.ty) || 0) + scaleY * Number(bbox.y || 0),
@@ -25924,6 +27003,32 @@ var MesoraDrawingToolBundle = (() => {
   }
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+  }
+  function clampPropertyPanelWidth(value, viewportWidth = 0) {
+    const width = Number(value);
+    const vpW = Number(viewportWidth) || DEFAULT_CANVAS_WIDTH;
+    const maxWidth = Math.max(
+      PROPERTY_PANEL_MIN_WIDTH,
+      Math.min(PROPERTY_PANEL_MAX_WIDTH, Math.floor(vpW * 0.72))
+    );
+    return clamp(
+      Number.isFinite(width) ? width : PROPERTY_PANEL_WIDTH,
+      PROPERTY_PANEL_MIN_WIDTH,
+      maxWidth
+    );
+  }
+  function readStoredPropertyPanelWidth() {
+    if (typeof window === "undefined" || !window.localStorage) {
+      return PROPERTY_PANEL_WIDTH;
+    }
+    try {
+      return clampPropertyPanelWidth(
+        window.localStorage.getItem(PROPERTY_PANEL_WIDTH_STORAGE_KEY),
+        window.innerWidth
+      );
+    } catch (_error) {
+      return PROPERTY_PANEL_WIDTH;
+    }
   }
   function toggleIn(list, id) {
     const key = String(id || "").trim();
@@ -25993,12 +27098,63 @@ var MesoraDrawingToolBundle = (() => {
     const scaleY = Number(overlay == null ? void 0 : overlay.scaleY);
     return Number.isFinite(scaleY) && scaleY !== 0 ? Math.max(1e-4, Math.abs(scaleY)) : overlayScale(overlay);
   }
+  function overlayRotationDegrees(overlay) {
+    var _a, _b;
+    const value = Number((_b = (_a = overlay == null ? void 0 : overlay.rotation) != null ? _a : overlay == null ? void 0 : overlay.rotate) != null ? _b : overlay == null ? void 0 : overlay.angle);
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    const normalized = value % 360;
+    return Math.abs(normalized) < 1e-4 ? 0 : normalized;
+  }
   function worldFromLocal(overlay, x, y) {
     const scaleX = overlayScaleX(overlay);
     const scaleY = overlayScaleY(overlay);
+    const rotation = overlayRotationDegrees(overlay);
+    const bbox = overlay == null ? void 0 : overlay.bbox;
+    if (rotation && bbox && typeof bbox === "object") {
+      const cx = Number(bbox.x || 0) + Math.max(1e-4, Number(bbox.width || 0)) / 2;
+      const cy = Number(bbox.y || 0) + Math.max(1e-4, Number(bbox.height || 0)) / 2;
+      const worldCx = Number((overlay == null ? void 0 : overlay.tx) || 0) + scaleX * cx;
+      const worldCy = Number((overlay == null ? void 0 : overlay.ty) || 0) + scaleY * cy;
+      const radians = rotation * Math.PI / 180;
+      const dx = (Number(x || 0) - cx) * scaleX;
+      const dy = (Number(y || 0) - cy) * scaleY;
+      return {
+        x: worldCx + dx * Math.cos(radians) - dy * Math.sin(radians),
+        y: worldCy + dx * Math.sin(radians) + dy * Math.cos(radians)
+      };
+    }
     return {
       x: Number((overlay == null ? void 0 : overlay.tx) || 0) + scaleX * Number(x || 0),
       y: Number((overlay == null ? void 0 : overlay.ty) || 0) + scaleY * Number(y || 0)
+    };
+  }
+  function overlayTranslationForLocalPoint(overlay, localPoint, worldPoint, scaleX, scaleY, bboxOverride = null) {
+    const bbox = bboxOverride || (overlay == null ? void 0 : overlay.bbox);
+    const sx = Math.max(1e-4, Number(scaleX || 1));
+    const sy = Math.max(1e-4, Number(scaleY || 1));
+    const lx = Number((localPoint == null ? void 0 : localPoint.x) || 0);
+    const ly = Number((localPoint == null ? void 0 : localPoint.y) || 0);
+    const wx = Number((worldPoint == null ? void 0 : worldPoint.x) || 0);
+    const wy = Number((worldPoint == null ? void 0 : worldPoint.y) || 0);
+    const rotation = overlayRotationDegrees(overlay);
+    if (rotation && bbox && typeof bbox === "object") {
+      const cx = Number(bbox.x || 0) + Math.max(1e-4, Number(bbox.width || 0)) / 2;
+      const cy = Number(bbox.y || 0) + Math.max(1e-4, Number(bbox.height || 0)) / 2;
+      const radians = rotation * Math.PI / 180;
+      const dx = (lx - cx) * sx;
+      const dy = (ly - cy) * sy;
+      const rotatedX = dx * Math.cos(radians) - dy * Math.sin(radians);
+      const rotatedY = dx * Math.sin(radians) + dy * Math.cos(radians);
+      return {
+        tx: wx - sx * cx - rotatedX,
+        ty: wy - sy * cy - rotatedY
+      };
+    }
+    return {
+      tx: wx - sx * lx,
+      ty: wy - sy * ly
     };
   }
   function distance(left, right) {
@@ -26007,7 +27163,7 @@ var MesoraDrawingToolBundle = (() => {
     return Math.hypot(dx, dy);
   }
   function PerspectiveViziCanvasBridge(props) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(/* @__PURE__ */ new Map());
@@ -26095,6 +27251,7 @@ var MesoraDrawingToolBundle = (() => {
     const [svgLibraryExternalDirectory, setSvgLibraryExternalDirectory] = useState("");
     const [svgLibraryExternalCount, setSvgLibraryExternalCount] = useState(0);
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
+    const [svgLibraryUploading, setSvgLibraryUploading] = useState(false);
     const [ignitionTagOptions, setIgnitionTagOptions] = useState(EMPTY_ARRAY);
     const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => /* @__PURE__ */ new Map());
     const [ignitionTagMetaByPath, setIgnitionTagMetaByPath] = useState(() => /* @__PURE__ */ new Map());
@@ -26103,21 +27260,33 @@ var MesoraDrawingToolBundle = (() => {
     const [ignitionTagsLoaded, setIgnitionTagsLoaded] = useState(false);
     const [quickTagPickerState, setQuickTagPickerState] = useState({
       overlayId: "",
+      overlayIds: EMPTY_ARRAY,
       nonce: 0,
       clientX: 0,
       clientY: 0
     });
+    const [quickSvgPickerState, setQuickSvgPickerState] = useState({
+      open: false,
+      clientX: 0,
+      clientY: 0,
+      worldPoint: null
+    });
+    const [quickSvgPickerQuery, setQuickSvgPickerQuery] = useState("");
     const [importOpen, setImportOpen] = useState(false);
     const [widgetOpen, setWidgetOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
     const [propertiesSelectionKey, setPropertiesSelectionKey] = useState("");
+    const [propertyPanelWidth, setPropertyPanelWidth] = useState(readStoredPropertyPanelWidth);
+    const [propertyPanelResizing, setPropertyPanelResizing] = useState(false);
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
+    const propertyPanelResizeRef = useRef({ resizing: false, startX: 0, startWidth: PROPERTY_PANEL_WIDTH });
     const svgCatalogRequestIdRef = useRef(0);
     const hmiStateStyleMapRequestIdRef = useRef(0);
+    const quickSvgPickerInputRef = useRef(null);
     const runtimeDocumentViewBounds = useMemo(
       () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
       [
@@ -26130,9 +27299,64 @@ var MesoraDrawingToolBundle = (() => {
       ]
     );
     const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
+    const ignitionTagOptionByPath = useMemo(() => {
+      const out = /* @__PURE__ */ new Map();
+      coerceArray(ignitionTagOptions).forEach((option) => {
+        const path = String((option == null ? void 0 : option.path) || "").trim();
+        if (!path) {
+          return;
+        }
+        out.set(path, option);
+        out.set(path.toLowerCase(), option);
+      });
+      return out;
+    }, [ignitionTagOptions]);
+    const applyIgnitionTagMetadataToOverlay = useCallback((overlay, rawTagPath = null) => {
+      var _a2, _b2;
+      if (!isPlainObject(overlay)) {
+        return overlay;
+      }
+      const tagPath = String((_b2 = (_a2 = rawTagPath != null ? rawTagPath : overlay == null ? void 0 : overlay.tagPath) != null ? _a2 : getOverlayFillBindingTagPath(overlay)) != null ? _b2 : "").trim();
+      if (!tagPath) {
+        return overlay;
+      }
+      const option = ignitionTagOptionByPath.get(tagPath) || ignitionTagOptionByPath.get(tagPath.toLowerCase());
+      if (!option) {
+        return overlay;
+      }
+      const typeId = String((option == null ? void 0 : option.typeId) || "").trim();
+      const udtName = String((option == null ? void 0 : option.udtName) || "").trim();
+      const dataType = String((option == null ? void 0 : option.dataType) || "").trim();
+      const objectType = String((option == null ? void 0 : option.objectType) || "").trim();
+      const next = { ...overlay };
+      let changed = false;
+      if (typeId && String(next.typeId || "") !== typeId) {
+        next.typeId = typeId;
+        changed = true;
+      }
+      if (udtName && String(next.udtName || "") !== udtName) {
+        next.udtName = udtName;
+        next.udtType = String(next.udtType || "").trim() || udtName;
+        next.templateName = String(next.templateName || "").trim() || udtName;
+        changed = true;
+      }
+      if (dataType && String(next.dataType || "") !== dataType) {
+        next.dataType = dataType;
+        changed = true;
+      }
+      if (objectType && String(next.objectType || "") !== objectType) {
+        next.objectType = objectType;
+        changed = true;
+      }
+      return changed ? next : overlay;
+    }, [ignitionTagOptionByPath]);
+    const svgOverlaysWithTagMetadata = useMemo(
+      () => coerceArray(svgOverlays).map((overlay) => applyIgnitionTagMetadataToOverlay(overlay)),
+      [svgOverlays, applyIgnitionTagMetadataToOverlay]
+    );
     const canvasSvgOverlays = useMemo(
-      () => applyHmiStateStyleMapsToOverlays(svgOverlays, hmiStateStyleMapIndex),
-      [svgOverlays, hmiStateStyleMapIndex]
+      () => applyHmiStateStyleMapsToOverlays(svgOverlaysWithTagMetadata, hmiStateStyleMapIndex),
+      [svgOverlaysWithTagMetadata, hmiStateStyleMapIndex]
     );
     useEffect(() => {
       shapesRef.current = shapes;
@@ -26185,6 +27409,67 @@ var MesoraDrawingToolBundle = (() => {
         (_b3 = (_a3 = window.visualViewport) == null ? void 0 : _a3.removeEventListener) == null ? void 0 : _b3.call(_a3, "resize", updateViewportHeight);
       };
     }, []);
+    useEffect(() => {
+      if (typeof window === "undefined" || !window.localStorage) {
+        return;
+      }
+      try {
+        window.localStorage.setItem(PROPERTY_PANEL_WIDTH_STORAGE_KEY, String(Math.round(propertyPanelWidth)));
+      } catch (_error) {
+      }
+    }, [propertyPanelWidth]);
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return void 0;
+      }
+      const clampToRoot = (value) => clampPropertyPanelWidth(
+        value,
+        Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+      );
+      function onMove(event) {
+        if (!propertyPanelResizeRef.current.resizing) {
+          return;
+        }
+        const nextWidth = clampToRoot(
+          propertyPanelResizeRef.current.startWidth + (Number(event.clientX) - propertyPanelResizeRef.current.startX)
+        );
+        setPropertyPanelWidth(nextWidth);
+      }
+      function onUp() {
+        if (!propertyPanelResizeRef.current.resizing) {
+          return;
+        }
+        propertyPanelResizeRef.current.resizing = false;
+        setPropertyPanelResizing(false);
+      }
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+      return () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+    }, [browserViewportWidth, rootSize]);
+    useEffect(() => {
+      setPropertyPanelWidth(
+        (previous) => clampPropertyPanelWidth(
+          previous,
+          Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+        )
+      );
+    }, [browserViewportWidth, rootSize]);
+    useEffect(() => {
+      if (!propertyPanelResizing || typeof document === "undefined") {
+        return void 0;
+      }
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      return () => {
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+      };
+    }, [propertyPanelResizing]);
     useEffect(() => {
       const next = coerceArray(externalShapes);
       shapesRef.current = next;
@@ -26240,6 +27525,9 @@ var MesoraDrawingToolBundle = (() => {
         addPath(getOverlayFillBindingTagPath(overlay));
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         addPath(basePath);
+        if (basePath && !(overlay == null ? void 0 : overlay.widget) && !(overlay == null ? void 0 : overlay.embeddedView)) {
+          IGNITION_DESCRIPTION_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
+        }
         if (basePath && shouldQueryOverlayFillStateMembers(overlay)) {
           IGNITION_FILL_STATE_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
         }
@@ -26677,6 +27965,7 @@ var MesoraDrawingToolBundle = (() => {
         setSvgLibraryExternalDirectory("");
         setSvgLibraryExternalCount(0);
         setSvgLibraryRefreshing(false);
+        setSvgLibraryUploading(false);
         setImportOpen(false);
         return void 0;
       }
@@ -26756,14 +28045,131 @@ var MesoraDrawingToolBundle = (() => {
       () => svgCatalogFiles.map((entry) => ({ key: entry.key, name: entry.name })).sort((left, right) => left.name.localeCompare(right.name)),
       [svgCatalogFiles]
     );
+    const svgTemplateSections = useMemo(() => {
+      const byFolder = /* @__PURE__ */ new Map();
+      coerceArray(svgFiles).forEach((entry) => {
+        const key = String((entry == null ? void 0 : entry.key) || "").trim();
+        const name = String((entry == null ? void 0 : entry.name) || key).trim();
+        if (!key || !name) {
+          return;
+        }
+        const folder = getFolderFromKey(key);
+        if (!byFolder.has(folder)) {
+          byFolder.set(folder, []);
+        }
+        byFolder.get(folder).push({ value: key, label: name });
+      });
+      return Array.from(byFolder.keys()).sort((left, right) => {
+        if (left === "Root") return -1;
+        if (right === "Root") return 1;
+        return String(left || "").localeCompare(String(right || ""), void 0, { sensitivity: "base" });
+      }).map((folder) => ({
+        label: folder,
+        items: byFolder.get(folder).slice().sort(
+          (left, right) => String((left == null ? void 0 : left.label) || "").localeCompare(String((right == null ? void 0 : right.label) || ""), void 0, { sensitivity: "base" })
+        )
+      }));
+    }, [svgFiles]);
+    const quickSvgGrouped = useMemo(() => {
+      const query = String(quickSvgPickerQuery || "").trim().toLowerCase();
+      const filtered = coerceArray(svgFiles).filter((entry) => {
+        if (!query) {
+          return true;
+        }
+        const name = String((entry == null ? void 0 : entry.name) || "").toLowerCase();
+        const key = String((entry == null ? void 0 : entry.key) || "").toLowerCase();
+        return name.includes(query) || key.includes(query);
+      });
+      const byFolder = /* @__PURE__ */ new Map();
+      filtered.forEach((entry) => {
+        const folder = getFolderFromKey((entry == null ? void 0 : entry.key) || "");
+        if (!byFolder.has(folder)) {
+          byFolder.set(folder, []);
+        }
+        byFolder.get(folder).push(entry);
+      });
+      return Array.from(byFolder.keys()).sort((left, right) => {
+        if (left === "Root") return -1;
+        if (right === "Root") return 1;
+        return String(left || "").localeCompare(String(right || ""), void 0, { sensitivity: "base" });
+      }).map((folder) => ({
+        folder,
+        files: byFolder.get(folder).slice().sort(
+          (left, right) => String((left == null ? void 0 : left.name) || "").localeCompare(String((right == null ? void 0 : right.name) || ""), void 0, { sensitivity: "base" })
+        )
+      }));
+    }, [quickSvgPickerQuery, svgFiles]);
     const handleRefreshSvgLibrary = useCallback(() => {
       loadSvgCatalog();
+    }, [loadSvgCatalog]);
+    const handleImportSvgLibraryFile = useCallback(async (file) => {
+      if (!file) {
+        return false;
+      }
+      const fileName = String(file.name || "").trim();
+      if (!/\.svg$/i.test(fileName)) {
+        setSvgLibraryError("Only .svg files can be imported.");
+        return false;
+      }
+      let content = "";
+      try {
+        content = await file.text();
+      } catch (error) {
+        setSvgLibraryError(String((error == null ? void 0 : error.message) || "Failed to read selected SVG file."));
+        return false;
+      }
+      if (!/<svg\b/i.test(content)) {
+        setSvgLibraryError("The selected file does not contain an SVG root element.");
+        return false;
+      }
+      setSvgLibraryUploading(true);
+      setSvgLibraryError("");
+      let lastError = "Failed to import SVG.";
+      try {
+        for (const routePath of SVG_LIBRARY_UPLOAD_ROUTE_CANDIDATES) {
+          try {
+            const response = await fetch(routePath, {
+              method: "POST",
+              cache: "no-store",
+              credentials: "same-origin",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                fileName,
+                folder: "",
+                content
+              })
+            });
+            let payload = null;
+            try {
+              payload = await response.json();
+            } catch (_error) {
+              payload = null;
+            }
+            if (!response.ok || (payload == null ? void 0 : payload.ok) === false) {
+              lastError = String((payload == null ? void 0 : payload.error) || `Failed to import SVG (${response.status}).`);
+              continue;
+            }
+            svgRawCacheRef.current.clear();
+            await loadSvgCatalog();
+            setSvgLibraryUploading(false);
+            return true;
+          } catch (error) {
+            lastError = String((error == null ? void 0 : error.message) || "Failed to import SVG.");
+          }
+        }
+      } finally {
+        setSvgLibraryUploading(false);
+      }
+      setSvgLibraryError(lastError);
+      return false;
     }, [loadSvgCatalog]);
     const handleRefreshHmiStateStyleMaps = useCallback(() => {
       loadHmiStateStyleMaps();
     }, [loadHmiStateStyleMaps]);
-    const svgLibraryHelpText = svgLibraryExternalDirectory ? `Drop .svg files into this folder and click Refresh:
-${svgLibraryExternalDirectory}` : "External SVG folder path will appear here when the catalog loads.";
+    const svgLibraryHelpText = svgLibraryExternalDirectory ? `Import an SVG here, or drop .svg files into this folder and click Refresh:
+${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path will appear when the catalog loads.";
     const svgLibrarySummaryText = svgLibraryExternalCount > 0 ? `${svgCatalogFiles.length} templates loaded, ${svgLibraryExternalCount} external` : `${svgCatalogFiles.length} templates loaded`;
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
@@ -26802,6 +28208,10 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     ) : 1;
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
+    const editorZoom = isLiveMode ? 1 : Math.max(1e-9, Number(effectiveZoom) || 1);
+    const editorPanX = isLiveMode || !isPlainObject(pan) ? 0 : Number(pan.x) || 0;
+    const editorPanY = isLiveMode || !isPlainObject(pan) ? 0 : Number(pan.y) || 0;
+    const editorPan = useMemo(() => ({ x: editorPanX, y: editorPanY }), [editorPanX, editorPanY]);
     const binNameLabelByOverlayId = useMemo(() => {
       const out = {};
       coerceArray(svgOverlays).forEach((overlay) => {
@@ -26919,7 +28329,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     }, [svgOverlays, ignitionTagValuesByPath, trunkBinMappings, isBinFlowing]);
     const genericHmiTagStateColorsByPath = useMemo(() => {
       const out = /* @__PURE__ */ new Map();
-      coerceArray(svgOverlays).forEach((overlay) => {
+      coerceArray(canvasSvgOverlays).forEach((overlay) => {
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!basePath || !shouldQueryOverlayFillStateMembers(overlay)) return;
         const rawState = getIgnitionHmiStateValueForBase(
@@ -26941,7 +28351,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         });
       });
       return out;
-    }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
+    }, [canvasSvgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
     const motorTagStateColorsByPath = useMemo(() => {
       const out = /* @__PURE__ */ new Map();
       coerceArray(svgOverlays).forEach((overlay) => {
@@ -26966,7 +28376,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
     const overlayHmiStateColorByOverlayId = useMemo(() => {
       const out = {};
-      coerceArray(svgOverlays).forEach((overlay) => {
+      coerceArray(canvasSvgOverlays).forEach((overlay) => {
         const id = String((overlay == null ? void 0 : overlay.id) || "").trim();
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!id || !basePath || !shouldQueryOverlayFillStateMembers(overlay)) return;
@@ -26979,7 +28389,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         if (color2) out[id] = color2;
       });
       return out;
-    }, [svgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
+    }, [canvasSvgOverlays, ignitionTagValuesByPath, hmiStateStyleMapIndex]);
     const motorRouteColorsBySvgKey = useMemo(() => {
       const out = /* @__PURE__ */ new Map();
       coerceArray(svgOverlays).forEach((overlay) => {
@@ -27120,35 +28530,43 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       }
       let svgX;
       let svgY;
-      try {
-        if (typeof svg.createSVGPoint === "function") {
-          const point = svg.createSVGPoint();
-          point.x = Number((event == null ? void 0 : event.clientX) || 0);
-          point.y = Number((event == null ? void 0 : event.clientY) || 0);
-          const ctm = (_a2 = svg.getScreenCTM) == null ? void 0 : _a2.call(svg);
-          if (ctm && typeof ctm.inverse === "function") {
-            const localPoint = point.matrixTransform(ctm.inverse());
-            svgX = Number(localPoint == null ? void 0 : localPoint.x);
-            svgY = Number(localPoint == null ? void 0 : localPoint.y);
+      const rect = (_a2 = svg.getBoundingClientRect) == null ? void 0 : _a2.call(svg);
+      const rectWidth = Number(rect == null ? void 0 : rect.width) || 0;
+      const rectHeight = Number(rect == null ? void 0 : rect.height) || 0;
+      const boxWidth = Math.max(1e-9, Number(viewBox.width) || 1);
+      const boxHeight = Math.max(1e-9, Number(viewBox.height) || 1);
+      if (rect && rectWidth > 0 && rectHeight > 0) {
+        const relX = Number((event == null ? void 0 : event.clientX) || 0) - Number(rect.left || 0);
+        const relY = Number((event == null ? void 0 : event.clientY) || 0) - Number(rect.top || 0);
+        const scale = Math.max(1e-9, Math.min(rectWidth / boxWidth, rectHeight / boxHeight));
+        svgX = relX / scale;
+        svgY = relY / scale;
+      } else {
+        try {
+          if (typeof svg.createSVGPoint === "function") {
+            const point = svg.createSVGPoint();
+            point.x = Number((event == null ? void 0 : event.clientX) || 0);
+            point.y = Number((event == null ? void 0 : event.clientY) || 0);
+            const ctm = (_b2 = svg.getScreenCTM) == null ? void 0 : _b2.call(svg);
+            if (ctm && typeof ctm.inverse === "function") {
+              const localPoint = point.matrixTransform(ctm.inverse());
+              svgX = Number(localPoint == null ? void 0 : localPoint.x);
+              svgY = Number(localPoint == null ? void 0 : localPoint.y);
+            }
           }
+        } catch (_error) {
         }
-      } catch (_error) {
       }
       if (!Number.isFinite(svgX) || !Number.isFinite(svgY)) {
-        const rect = (_b2 = svg.getBoundingClientRect) == null ? void 0 : _b2.call(svg);
-        if (!rect || rect.width <= 0 || rect.height <= 0) {
-          return { x: viewBox.width / 2, y: viewBox.height / 2 };
-        }
-        svgX = (Number((event == null ? void 0 : event.clientX) || 0) - Number(rect.left || 0)) / rect.width * viewBox.width;
-        svgY = (Number((event == null ? void 0 : event.clientY) || 0) - Number(rect.top || 0)) / rect.height * viewBox.height;
+        return { x: viewBox.width / 2, y: viewBox.height / 2 };
       }
-      const nextX = (svgX - Number((pan == null ? void 0 : pan.x) || 0)) / zoom;
-      const nextY = (svgY - Number((pan == null ? void 0 : pan.y) || 0)) / zoom;
+      const nextX = (svgX - editorPanX) / editorZoom;
+      const nextY = (svgY - editorPanY) / editorZoom;
       return {
         x: Math.max(0, Math.min(viewBox.width, nextX)),
         y: Math.max(0, Math.min(viewBox.height, nextY))
       };
-    }, [pan, viewBox.height, viewBox.width, zoom]);
+    }, [editorPanX, editorPanY, editorZoom, viewBox.height, viewBox.width]);
     const constrainHV = useCallback((from2, to2) => {
       const dx = Number((to2 == null ? void 0 : to2.x) || 0) - Number((from2 == null ? void 0 : from2.x) || 0);
       const dy = Number((to2 == null ? void 0 : to2.y) || 0) - Number((from2 == null ? void 0 : from2.y) || 0);
@@ -27363,6 +28781,10 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       () => svgOverlays.filter((overlay) => selectedOverlayIds.includes(String((overlay == null ? void 0 : overlay.id) || ""))),
       [selectedOverlayIds, svgOverlays]
     );
+    const selectedOverlayGroup = useMemo(
+      () => selectedIds.length === 0 && selectedOverlayItems.length > 1 ? selectedOverlayItems : EMPTY_ARRAY,
+      [selectedIds.length, selectedOverlayItems]
+    );
     const selectedBBox = useMemo(
       () => unionBounds([
         ...selectedShapeItems.map((shape) => getShapeBounds(shape)),
@@ -27392,10 +28814,27 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       return "";
     }, [selectedOverlay, selectedShape]);
     const propertiesVisible = editorVisible && Boolean(singleSelectionKey) && propertiesSelectionKey === singleSelectionKey;
+    const quickTagPickerOverlayIds = useMemo(() => {
+      const ids = coerceArray(quickTagPickerState == null ? void 0 : quickTagPickerState.overlayIds).map((id) => String(id || "").trim()).filter(Boolean);
+      if (ids.length) {
+        return ids;
+      }
+      const fallbackId = String((quickTagPickerState == null ? void 0 : quickTagPickerState.overlayId) || "").trim();
+      return fallbackId ? [fallbackId] : EMPTY_ARRAY;
+    }, [quickTagPickerState]);
+    const quickTagPickerTargetOverlays = useMemo(() => {
+      if (!quickTagPickerOverlayIds.length) {
+        return EMPTY_ARRAY;
+      }
+      const ids = new Set(quickTagPickerOverlayIds);
+      return svgOverlays.filter((overlay) => ids.has(String((overlay == null ? void 0 : overlay.id) || "").trim()));
+    }, [quickTagPickerOverlayIds, svgOverlays]);
     const quickTagPickerOverlay = useMemo(
-      () => svgOverlays.find((overlay) => String((overlay == null ? void 0 : overlay.id) || "") === String((quickTagPickerState == null ? void 0 : quickTagPickerState.overlayId) || "")) || null,
-      [quickTagPickerState, svgOverlays]
+      () => quickTagPickerTargetOverlays.length === 1 ? quickTagPickerTargetOverlays[0] : null,
+      [quickTagPickerTargetOverlays]
     );
+    const quickTagPickerHasTarget = quickTagPickerTargetOverlays.length > 0;
+    const quickTagPickerIsGroup = quickTagPickerTargetOverlays.length > 1;
     const quickTagPickerRef = useRef(null);
     const quickTagPickerAutoOpenToken = Number((quickTagPickerState == null ? void 0 : quickTagPickerState.nonce) || 0);
     const finishPolyline = useCallback(() => {
@@ -27440,10 +28879,20 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const closeQuickTagPicker = useCallback(() => {
       setQuickTagPickerState({
         overlayId: "",
+        overlayIds: EMPTY_ARRAY,
         nonce: 0,
         clientX: 0,
         clientY: 0
       });
+    }, []);
+    const closeQuickSvgPicker = useCallback(() => {
+      setQuickSvgPickerState({
+        open: false,
+        clientX: 0,
+        clientY: 0,
+        worldPoint: null
+      });
+      setQuickSvgPickerQuery("");
     }, []);
     const appendPolylinePoint = useCallback((id, point) => {
       const shapeId = String(id || "");
@@ -27713,7 +29162,15 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         pasteCount: 0
       };
     }, [selectedIds, selectedOverlayIds]);
-    const pasteClipboard = useCallback(() => {
+    const cutSelection = useCallback(() => {
+      const hasSelection = coerceArray(selectedIds).length > 0 || coerceArray(selectedOverlayIds).length > 0;
+      if (!hasSelection) {
+        return;
+      }
+      copySelection();
+      deleteSelected();
+    }, [copySelection, deleteSelected, selectedIds, selectedOverlayIds]);
+    const pasteClipboard = useCallback((anchorPoint = null) => {
       const clipboard = clipboardRef.current;
       const shapeCopies = coerceArray(clipboard == null ? void 0 : clipboard.shapes);
       const overlayCopies = coerceArray(clipboard == null ? void 0 : clipboard.overlays);
@@ -27721,10 +29178,23 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         return;
       }
       const pasteCount = Number((clipboard == null ? void 0 : clipboard.pasteCount) || 0) + 1;
-      const dx = 20 * pasteCount;
-      const dy = 20 * pasteCount;
+      const anchor = anchorPoint && Number.isFinite(Number(anchorPoint.x)) && Number.isFinite(Number(anchorPoint.y)) ? { x: Number(anchorPoint.x), y: Number(anchorPoint.y) } : null;
+      let dx = anchor ? 0 : 20 * pasteCount;
+      let dy = anchor ? 0 : 20 * pasteCount;
       const nextShapeIds = [];
       const nextOverlayIds = [];
+      if (anchor) {
+        const bounds = [
+          ...shapeCopies.map((shape) => getShapeBounds(shape)),
+          ...overlayCopies.map((overlay) => getOverlayBounds(overlay))
+        ].filter(Boolean);
+        if (bounds.length) {
+          const minX = Math.min(...bounds.map((box) => Number(box.x || 0)));
+          const minY = Math.min(...bounds.map((box) => Number(box.y || 0)));
+          dx = anchor.x - minX;
+          dy = anchor.y - minY;
+        }
+      }
       const nextShapes = shapeCopies.map((shape) => {
         const id = createId("shape");
         nextShapeIds.push(id);
@@ -27828,6 +29298,100 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       setSelectedOverlayIds(nextOverlayIds);
       setEditingId(null);
     }, [selectedIds, selectedOverlayIds, updateShapes, updateSvgOverlays]);
+    const reorderSelectedOverlays = useCallback((mode) => {
+      const selectedIdsList = coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean);
+      const selectedSet = new Set(selectedIdsList);
+      if (!selectedSet.size) {
+        return;
+      }
+      let nextSelectionOrder = selectedIdsList;
+      updateSvgOverlays((previous) => {
+        var _a2, _b2, _c2, _d2;
+        const list = coerceArray(previous);
+        const orderedSelected = list.filter((overlay) => selectedSet.has(String((overlay == null ? void 0 : overlay.id) || ""))).map((overlay) => String((overlay == null ? void 0 : overlay.id) || ""));
+        if (!orderedSelected.length) {
+          return list;
+        }
+        nextSelectionOrder = orderedSelected;
+        if (mode === "front") {
+          return [
+            ...list.filter((overlay) => !selectedSet.has(String((overlay == null ? void 0 : overlay.id) || ""))),
+            ...list.filter((overlay) => selectedSet.has(String((overlay == null ? void 0 : overlay.id) || "")))
+          ];
+        }
+        if (mode === "back") {
+          return [
+            ...list.filter((overlay) => selectedSet.has(String((overlay == null ? void 0 : overlay.id) || ""))),
+            ...list.filter((overlay) => !selectedSet.has(String((overlay == null ? void 0 : overlay.id) || "")))
+          ];
+        }
+        const reordered = [...list];
+        let changed = false;
+        if (mode === "forward") {
+          for (let i = reordered.length - 2; i >= 0; i -= 1) {
+            const currentSelected = selectedSet.has(String(((_a2 = reordered[i]) == null ? void 0 : _a2.id) || ""));
+            const nextSelected = selectedSet.has(String(((_b2 = reordered[i + 1]) == null ? void 0 : _b2.id) || ""));
+            if (currentSelected && !nextSelected) {
+              [reordered[i], reordered[i + 1]] = [reordered[i + 1], reordered[i]];
+              changed = true;
+            }
+          }
+        } else if (mode === "backward") {
+          for (let i = 1; i < reordered.length; i += 1) {
+            const currentSelected = selectedSet.has(String(((_c2 = reordered[i]) == null ? void 0 : _c2.id) || ""));
+            const previousSelected = selectedSet.has(String(((_d2 = reordered[i - 1]) == null ? void 0 : _d2.id) || ""));
+            if (currentSelected && !previousSelected) {
+              [reordered[i - 1], reordered[i]] = [reordered[i], reordered[i - 1]];
+              changed = true;
+            }
+          }
+        }
+        return changed ? reordered : list;
+      }, { persist: true });
+      if (nextSelectionOrder.length) {
+        setSelectedOverlayIds(nextSelectionOrder);
+      }
+    }, [selectedOverlayIds, updateSvgOverlays]);
+    const alignSelectedOverlays = useCallback((axis = "horizontal") => {
+      const selectedIdsList = coerceArray(selectedOverlayIds).map((id) => String(id || "").trim()).filter(Boolean);
+      if (selectedIds.length > 0 || selectedIdsList.length < 2) {
+        return;
+      }
+      const selectedSet = new Set(selectedIdsList);
+      const items = overlaysRef.current.filter((overlay) => selectedSet.has(String((overlay == null ? void 0 : overlay.id) || ""))).map((overlay) => {
+        const bounds = getOverlayBounds(overlay);
+        if (!bounds) return null;
+        return {
+          id: String((overlay == null ? void 0 : overlay.id) || ""),
+          centerX: Number(bounds.x || 0) + Number(bounds.width || 0) / 2,
+          centerY: Number(bounds.y || 0) + Number(bounds.height || 0) / 2
+        };
+      }).filter(Boolean);
+      if (items.length < 2) {
+        return;
+      }
+      const horizontal = String(axis || "").toLowerCase().startsWith("h");
+      const centers = items.map((item) => horizontal ? item.centerY : item.centerX);
+      const target = (Math.min(...centers) + Math.max(...centers)) / 2;
+      if (!Number.isFinite(target)) {
+        return;
+      }
+      const deltaById = /* @__PURE__ */ new Map();
+      items.forEach((item) => {
+        deltaById.set(item.id, horizontal ? { dx: 0, dy: target - item.centerY } : { dx: target - item.centerX, dy: 0 });
+      });
+      updateSvgOverlays((previous) => previous.map((overlay) => {
+        const delta = deltaById.get(String((overlay == null ? void 0 : overlay.id) || ""));
+        if (!delta) {
+          return overlay;
+        }
+        return {
+          ...overlay,
+          tx: Number((overlay == null ? void 0 : overlay.tx) || 0) + delta.dx,
+          ty: Number((overlay == null ? void 0 : overlay.ty) || 0) + delta.dy
+        };
+      }), { persist: true });
+    }, [selectedIds.length, selectedOverlayIds, updateSvgOverlays]);
     const beginSelectionDrag = useCallback((start, shapeIds = EMPTY_ARRAY, overlayIds = EMPTY_ARRAY) => {
       const shapeSnapshotsById = {};
       coerceArray(shapeIds).forEach((shapeId) => {
@@ -27930,6 +29494,9 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       const extraOverlay = isPlainObject(options.extraOverlay) ? options.extraOverlay : {};
       const keySize = extractKeySize(raw);
       const parsedEType = extractSvgEType(raw, fileKey);
+      const sourceHadEType = hasExplicitSvgEType(raw);
+      const defaultFill = sourceHadEType ? "" : DEFAULT_FILL;
+      const defaultStroke = sourceHadEType ? "" : DEFAULT_STROKE;
       const baseViewBox = parsed.vb;
       let localViewBox = keySize ? { x: 0, y: 0, w: keySize.w, h: keySize.h } : baseViewBox;
       if (!localViewBox || !Number.isFinite(localViewBox.w) || !Number.isFinite(localViewBox.h) || localViewBox.w <= 0 || localViewBox.h <= 0) {
@@ -27973,12 +29540,13 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         scale,
         scaleX: scale,
         scaleY: scale,
-        fill: DEFAULT_FILL,
-        stroke: DEFAULT_STROKE,
+        fill: defaultFill,
+        stroke: defaultStroke,
         strokeMode: "preserve",
         tagPath: "",
         eType: parsedEType,
         eTypeAuto: true,
+        sourceHadEType,
         popupParamsJson: "{}",
         bbox: {
           x: localViewBox.x,
@@ -27991,11 +29559,23 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         ...extraOverlay
       };
     }, [viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
-    const onPickSvg = useCallback(async (fileKey) => {
+    const onPickSvg = useCallback(async (fileKey, anchorPoint = null) => {
       const raw = await readSvgRawByKey(fileKey, { forceFresh: false });
-      const nextOverlay = createOverlayFromRawMarkup(raw, { fileKey });
+      let nextOverlay = createOverlayFromRawMarkup(raw, { fileKey });
       if (!nextOverlay) {
         return;
+      }
+      if (anchorPoint && Number.isFinite(Number(anchorPoint.x)) && Number.isFinite(Number(anchorPoint.y)) && (nextOverlay == null ? void 0 : nextOverlay.bbox)) {
+        const scaleX = overlayScaleX(nextOverlay);
+        const scaleY = overlayScaleY(nextOverlay);
+        const bbox = nextOverlay.bbox;
+        const centerX = Number(bbox.x || 0) + Number(bbox.width || 0) / 2;
+        const centerY = Number(bbox.y || 0) + Number(bbox.height || 0) / 2;
+        nextOverlay = {
+          ...nextOverlay,
+          tx: Number(anchorPoint.x) - scaleX * centerX,
+          ty: Number(anchorPoint.y) - scaleY * centerY
+        };
       }
       updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
       setSelectedOverlayIds([nextOverlay.id]);
@@ -28003,6 +29583,35 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       setImportOpen(false);
       setWidgetOpen(false);
     }, [createOverlayFromRawMarkup, readSvgRawByKey, updateSvgOverlays]);
+    const swapSelectedOverlaySvgTemplate = useCallback(async (fileKey) => {
+      const targetKey = String(fileKey || "").trim();
+      if (!targetKey || !selectedOverlay || (selectedOverlay == null ? void 0 : selectedOverlay.widget) || (selectedOverlay == null ? void 0 : selectedOverlay.embeddedView)) {
+        return;
+      }
+      try {
+        const raw = await readSvgRawByKey(targetKey, { forceFresh: false });
+        const payload = buildOverlaySourcePayload(raw, targetKey);
+        if (!payload) {
+          throw new Error("Failed to parse selected SVG.");
+        }
+        const targetEntry = coerceArray(svgFiles).find((entry) => String((entry == null ? void 0 : entry.key) || "") === targetKey);
+        const nextName = String((targetEntry == null ? void 0 : targetEntry.name) || targetKey.split("/").pop() || targetKey).trim() || "SVG Overlay";
+        const selectedId = String(selectedOverlay.id || "");
+        updateSvgOverlays((previous) => previous.map((overlay) => {
+          if (String((overlay == null ? void 0 : overlay.id) || "") !== selectedId) {
+            return overlay;
+          }
+          return {
+            ...refreshOverlayFromSourcePayload(overlay, payload),
+            id: overlay.id,
+            sourceKey: targetKey,
+            name: nextName
+          };
+        }), { persist: true });
+      } catch (error) {
+        setSvgLibraryError(String((error == null ? void 0 : error.message) || "Failed to swap SVG template."));
+      }
+    }, [readSvgRawByKey, selectedOverlay, svgFiles, updateSvgOverlays]);
     const handleWidgetToggle = useCallback(() => {
       setImportOpen(false);
       setHelpOpen(false);
@@ -28235,6 +29844,9 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     }, [beginSelectionDrag, closePropertiesPanel, overlaysSelectable, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
     const handleShapeDoubleClick = useCallback((event, id) => {
       var _a2, _b2;
+      if (String((event == null ? void 0 : event.type) || "").toLowerCase() !== "dblclick" || Number((event == null ? void 0 : event.button) || 0) !== 0) {
+        return;
+      }
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       const shapeId = String(id || "");
@@ -28259,6 +29871,9 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     }, [drawing, finishActivePolylineAt, isShapeSelectableByMode, openPropertiesForSelection, pointFromEvent, tool]);
     const handleOverlayDoubleClick = useCallback((event, overlayOrId) => {
       var _a2, _b2;
+      if (String((event == null ? void 0 : event.type) || "").toLowerCase() !== "dblclick" || Number((event == null ? void 0 : event.button) || 0) !== 0) {
+        return;
+      }
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
       (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       if (!overlaysSelectable || tool !== "select") {
@@ -28276,8 +29891,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       setEditingId(null);
       setSelectedSegment(null);
       closeQuickTagPicker();
-      const selectionKey = `overlay:${overlayId}`;
-      openPropertiesForSelection(selectionKey);
+      openPropertiesForSelection(`overlay:${overlayId}`);
     }, [closeQuickTagPicker, openPropertiesForSelection, overlaysSelectable, tool]);
     const handleOverlayContextMenu = useCallback((event, overlayOrId) => {
       var _a2, _b2;
@@ -28293,20 +29907,28 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       if (!overlay || overlay.widget || overlay.embeddedView) {
         return;
       }
-      setSelectedOverlayIds([overlayId]);
+      const selectedOverlayIdList = coerceArray(selectedOverlayIds).map((id) => String(id || "").trim()).filter(Boolean);
+      const isCurrentMultiOverlaySelection = Boolean(
+        selectedIds.length === 0 && selectedOverlayIdList.length > 1 && selectedOverlayIdList.includes(overlayId)
+      );
+      const targetOverlayIds = isCurrentMultiOverlaySelection ? selectedOverlayIdList : [overlayId];
+      if (!isCurrentMultiOverlaySelection) {
+        setSelectedOverlayIds([overlayId]);
+      }
       setSelectedIds([]);
       setEditingId(null);
       setSelectedSegment(null);
       closePropertiesPanel();
       setQuickTagPickerState({
-        overlayId,
+        overlayId: targetOverlayIds[0] || overlayId,
+        overlayIds: targetOverlayIds,
         nonce: Date.now(),
         clientX: Number((event == null ? void 0 : event.clientX) || 0),
         clientY: Number((event == null ? void 0 : event.clientY) || 0)
       });
-    }, [closePropertiesPanel, overlaysSelectable, tool]);
+    }, [closePropertiesPanel, overlaysSelectable, selectedIds.length, selectedOverlayIds, tool]);
     const openOverlayPopup = useCallback((overlay) => {
-      if (!overlay || overlay.widget || overlay.embeddedView) {
+      if (!overlay || overlay.widget || overlay.embeddedView || isStaticSvgOverlay(overlay)) {
         return false;
       }
       const viewPath = resolveOverlayPopupViewPath(overlay);
@@ -28365,7 +29987,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         return;
       }
       const overlay = overlaysRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === overlayId);
-      if (!overlay || overlay.widget || overlay.embeddedView) {
+      if (!overlay || overlay.widget || overlay.embeddedView || isStaticSvgOverlay(overlay)) {
         return;
       }
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
@@ -28497,6 +30119,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         return;
       }
       const anchorWorld = worldFromLocal(overlay, anchorLocal.x, anchorLocal.y);
+      const startWorld = worldFromLocal(overlay, startLocal.x, startLocal.y);
+      const startPointerWorld = pointFromEvent(event);
       setSelectedOverlayIds([overlayId]);
       setSelectedIds([]);
       setEditingId(null);
@@ -28509,13 +30133,17 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         anchorLocal,
         anchorWorld,
         handleLocal: startLocal,
+        startWorld,
+        startPointerWorld,
+        startDist: Math.max(1, distance(startWorld, anchorWorld)),
         originalScaleX: overlayScaleX(overlay),
         originalScaleY: overlayScaleY(overlay),
-        bbox
+        bbox,
+        startBounds: getOverlayBounds(overlay)
       });
       setDragState(null);
       setMarquee(null);
-    }, [overlayLocalBBox, overlaysSelectable, tool]);
+    }, [overlayLocalBBox, overlaysSelectable, pointFromEvent, tool]);
     const handleShapeResizeHandleDown = useCallback((event, corner) => {
       var _a2, _b2;
       if (tool !== "select" || !selectedBBox || !selectedIds.length || selectedOverlayIds.length) {
@@ -28608,12 +30236,14 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       setOverlayResize({
         kind: "group",
         anchorWorld,
+        startWorld,
+        startPointerWorld: pointFromEvent(event),
         startDist: Math.max(1, distance(startWorld, anchorWorld)),
         originalsById
       });
       setDragState(null);
       setMarquee(null);
-    }, [overlayLocalBBox, selectedBBox, selectedIds.length, selectedOverlayIds, tool]);
+    }, [overlayLocalBBox, pointFromEvent, selectedBBox, selectedIds.length, selectedOverlayIds, tool]);
     const handleMouseMove = useCallback((event) => {
       var _a2, _b2;
       const point = pointFromEvent(event);
@@ -28740,25 +30370,62 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           const anchorWorld = overlayResize.anchorWorld || { x: 0, y: 0 };
           const anchorLocal = overlayResize.anchorLocal || { x: 0, y: 0 };
           const handleLocal = overlayResize.handleLocal || anchorLocal;
+          const handle = String(overlayResize.handle || "").toUpperCase();
+          const startWorld = overlayResize.startWorld || null;
+          const startPointerWorld = overlayResize.startPointerWorld || null;
+          const resizePoint = startWorld && startPointerWorld ? {
+            x: Number(startWorld.x || 0) + (Number(point.x || 0) - Number(startPointerWorld.x || 0)),
+            y: Number(startWorld.y || 0) + (Number(point.y || 0) - Number(startPointerWorld.y || 0))
+          } : point;
           const originalScaleX = Math.max(1e-4, Number(overlayResize.originalScaleX || overlayScaleX(overlay)));
           const originalScaleY = Math.max(1e-4, Number(overlayResize.originalScaleY || overlayScaleY(overlay)));
           const localSpanX = Number(handleLocal.x || 0) - Number(anchorLocal.x || 0);
           const localSpanY = Number(handleLocal.y || 0) - Number(anchorLocal.y || 0);
-          const scaleX = axes.x && Math.abs(localSpanX) > 1e-9 ? clamp(Math.abs((Number(point.x || 0) - Number(anchorWorld.x || 0)) / localSpanX), 0.05, 100) : originalScaleX;
-          const scaleY = axes.y && Math.abs(localSpanY) > 1e-9 ? clamp(Math.abs((Number(point.y || 0) - Number(anchorWorld.y || 0)) / localSpanY), 0.05, 100) : originalScaleY;
+          if (axes.x && axes.y && !(overlay == null ? void 0 : overlay.widget) && !(overlay == null ? void 0 : overlay.embeddedView)) {
+            const ratio = clamp(
+              distance(resizePoint, anchorWorld) / Math.max(1, Number(overlayResize.startDist || 1)),
+              0.05,
+              100
+            );
+            const scaleX2 = clamp(originalScaleX * ratio, 0.05, 100);
+            const scaleY2 = clamp(originalScaleY * ratio, 0.05, 100);
+            const nextTranslation = overlayTranslationForLocalPoint(
+              overlay,
+              anchorLocal,
+              anchorWorld,
+              scaleX2,
+              scaleY2,
+              overlayResize.bbox || (overlay == null ? void 0 : overlay.bbox)
+            );
+            return {
+              ...overlay,
+              scale: scaleX2,
+              scaleX: scaleX2,
+              scaleY: scaleY2,
+              tx: nextTranslation.tx,
+              ty: nextTranslation.ty
+            };
+          }
+          const scaleX = axes.x && Math.abs(localSpanX) > 1e-9 ? clamp(Math.abs((Number(resizePoint.x || 0) - Number(anchorWorld.x || 0)) / localSpanX), 0.05, 100) : originalScaleX;
+          const scaleY = axes.y && Math.abs(localSpanY) > 1e-9 ? clamp(Math.abs((Number(resizePoint.y || 0) - Number(anchorWorld.y || 0)) / localSpanY), 0.05, 100) : originalScaleY;
           return {
             ...overlay,
             scale: scaleX,
             scaleX,
             scaleY,
-            tx: Number(anchorWorld.x || 0) - scaleX * Number(anchorLocal.x || 0),
-            ty: Number(anchorWorld.y || 0) - scaleY * Number(anchorLocal.y || 0)
+            ...overlayTranslationForLocalPoint(overlay, anchorLocal, anchorWorld, scaleX, scaleY, overlayResize.bbox || (overlay == null ? void 0 : overlay.bbox))
           };
         }), { persist: false });
         return;
       }
       if ((overlayResize == null ? void 0 : overlayResize.kind) === "group") {
-        const ratio = clamp(distance(point, overlayResize.anchorWorld) / Math.max(1, overlayResize.startDist), 0.05, 100);
+        const startWorld = overlayResize.startWorld || null;
+        const startPointerWorld = overlayResize.startPointerWorld || null;
+        const resizePoint = startWorld && startPointerWorld ? {
+          x: Number(startWorld.x || 0) + (Number(point.x || 0) - Number(startPointerWorld.x || 0)),
+          y: Number(startWorld.y || 0) + (Number(point.y || 0) - Number(startPointerWorld.y || 0))
+        } : point;
+        const ratio = clamp(distance(resizePoint, overlayResize.anchorWorld) / Math.max(1, overlayResize.startDist), 0.05, 100);
         updateSvgOverlays((previous) => previous.map((overlay) => {
           var _a3, _b3, _c2, _d2;
           const snapshot2 = overlayResize.originalsById[String((overlay == null ? void 0 : overlay.id) || "")];
@@ -28936,8 +30603,29 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           return;
         }
         removeCurrentPolylineSegment();
+        return;
       }
-    }, [drawing, finishActivePolylineAt, pointFromEvent, removeCurrentPolylineSegment, tool]);
+      const target = event == null ? void 0 : event.target;
+      const hitElement = target instanceof Element && Boolean(target.closest("[data-shape-id], [data-overlay-id], [data-overlay-selection-ui], [data-mixed-selection-ui]"));
+      if (hitElement || tool !== "select") {
+        closeQuickSvgPicker();
+        return;
+      }
+      const worldPoint = pointFromEvent(event);
+      setQuickSvgPickerState({
+        open: true,
+        clientX: Number((event == null ? void 0 : event.clientX) || 0),
+        clientY: Number((event == null ? void 0 : event.clientY) || 0),
+        worldPoint
+      });
+      setQuickSvgPickerQuery("");
+      closeQuickTagPicker();
+      closePropertiesPanel();
+      window.requestAnimationFrame(() => {
+        var _a3, _b3;
+        return (_b3 = (_a3 = quickSvgPickerInputRef.current) == null ? void 0 : _a3.focus) == null ? void 0 : _b3.call(_a3);
+      });
+    }, [closePropertiesPanel, closeQuickSvgPicker, closeQuickTagPicker, drawing, finishActivePolylineAt, pointFromEvent, removeCurrentPolylineSegment, tool]);
     const worldToPanelPoint = useCallback((worldX, worldY) => {
       var _a2;
       const svg = svgRef.current;
@@ -28993,6 +30681,71 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       () => Boolean(selectedOverlay == null ? void 0 : selectedOverlay.embeddedView),
       [selectedOverlay]
     );
+    const selectedOverlayIsStatic = useMemo(
+      () => isStaticSvgOverlay(selectedOverlay),
+      [selectedOverlay]
+    );
+    const selectedOverlayTemplateKey = useMemo(() => {
+      var _a2;
+      if (!selectedOverlay || (selectedOverlay == null ? void 0 : selectedOverlay.widget) || (selectedOverlay == null ? void 0 : selectedOverlay.embeddedView)) {
+        return "";
+      }
+      const explicitKey = String((selectedOverlay == null ? void 0 : selectedOverlay.sourceKey) || (selectedOverlay == null ? void 0 : selectedOverlay.fileKey) || (selectedOverlay == null ? void 0 : selectedOverlay.key) || "").trim();
+      if (explicitKey) {
+        return explicitKey;
+      }
+      const overlayName = String((selectedOverlay == null ? void 0 : selectedOverlay.name) || "").trim();
+      if (!overlayName) {
+        return "";
+      }
+      return ((_a2 = coerceArray(svgFiles).find(
+        (entry) => String((entry == null ? void 0 : entry.name) || "").trim().toLowerCase() === overlayName.toLowerCase()
+      )) == null ? void 0 : _a2.key) || "";
+    }, [selectedOverlay, svgFiles]);
+    const selectedOverlayTemplateSections = useMemo(() => {
+      if (!selectedOverlayTemplateKey) {
+        return svgTemplateSections;
+      }
+      const hasCurrent = coerceArray(svgTemplateSections).some(
+        (section) => coerceArray(section == null ? void 0 : section.items).some((item) => String((item == null ? void 0 : item.value) || "") === selectedOverlayTemplateKey)
+      );
+      if (hasCurrent) {
+        return svgTemplateSections;
+      }
+      const label = String((selectedOverlay == null ? void 0 : selectedOverlay.name) || selectedOverlayTemplateKey.split("/").pop() || selectedOverlayTemplateKey).trim();
+      return [
+        { label: "Current", items: [{ value: selectedOverlayTemplateKey, label }] },
+        ...svgTemplateSections
+      ];
+    }, [selectedOverlay, selectedOverlayTemplateKey, svgTemplateSections]);
+    const editableSelectedOverlayGroup = useMemo(
+      () => selectedOverlayGroup.filter((overlay) => overlay && !overlay.embeddedView && (overlay.widget || !isStaticSvgOverlay(overlay))),
+      [selectedOverlayGroup]
+    );
+    const selectedOverlayGroupCommonTagPath = useMemo(() => {
+      if (!editableSelectedOverlayGroup.length) {
+        return "";
+      }
+      const values = editableSelectedOverlayGroup.map((overlay) => String((overlay == null ? void 0 : overlay.tagPath) || "").trim());
+      const first = values[0] || "";
+      return values.every((value) => value === first) ? first : "";
+    }, [editableSelectedOverlayGroup]);
+    const selectedOverlayGroupHasMixedTagPaths = useMemo(() => {
+      if (editableSelectedOverlayGroup.length < 2) {
+        return false;
+      }
+      const values = editableSelectedOverlayGroup.map((overlay) => String((overlay == null ? void 0 : overlay.tagPath) || "").trim());
+      const first = values[0] || "";
+      return values.some((value) => value !== first);
+    }, [editableSelectedOverlayGroup]);
+    const selectedOverlayGroupCommonEType = useMemo(() => {
+      const values = editableSelectedOverlayGroup.filter((overlay) => !(overlay == null ? void 0 : overlay.widget)).map((overlay) => String((overlay == null ? void 0 : overlay.eType) || "").trim()).filter(Boolean);
+      if (!values.length) {
+        return "";
+      }
+      const first = values[0] || "";
+      return values.every((value) => value.toLowerCase() === first.toLowerCase()) ? first : "";
+    }, [editableSelectedOverlayGroup]);
     const selectedOverlayEmbeddedView = useMemo(
       () => isPlainObject(selectedOverlay == null ? void 0 : selectedOverlay.embeddedView) ? selectedOverlay.embeddedView : EMPTY_MAP,
       [selectedOverlay]
@@ -29063,9 +30816,79 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       }) : ignitionTagOptions,
       [ignitionTagOptions, selectedOverlayIsBin]
     );
+    const selectedOverlayGroupIsBin = useMemo(
+      () => String(selectedOverlayGroupCommonEType || "").trim().toLowerCase().startsWith("bin"),
+      [selectedOverlayGroupCommonEType]
+    );
+    const ignitionTagOptionsForOverlayGroup = useMemo(
+      () => selectedOverlayGroupIsBin ? ignitionTagOptions.filter((opt) => {
+        const objectType = String((opt == null ? void 0 : opt.objectType) || "").toLowerCase();
+        const typeId = String((opt == null ? void 0 : opt.typeId) || "").toLowerCase();
+        return objectType.includes("bin") || typeId.includes("bin");
+      }) : ignitionTagOptions,
+      [ignitionTagOptions, selectedOverlayGroupIsBin]
+    );
+    const svgETypeOptions = useMemo(
+      () => buildUdtTypeOptions({
+        tags: ignitionTagOptions,
+        styleMapIndex: hmiStateStyleMapIndex,
+        currentValues: [
+          selectedOverlay == null ? void 0 : selectedOverlay.eType,
+          ...coerceArray(svgOverlays).map((overlay) => overlay == null ? void 0 : overlay.eType)
+        ]
+      }),
+      [hmiStateStyleMapIndex, ignitionTagOptions, selectedOverlay == null ? void 0 : selectedOverlay.eType, svgOverlays]
+    );
+    const svgETypeSections = useMemo(() => {
+      const grouped = /* @__PURE__ */ new Map();
+      coerceArray(svgETypeOptions).forEach((option) => {
+        const group = String((option == null ? void 0 : option.group) || "UDTs").trim() || "UDTs";
+        if (!grouped.has(group)) {
+          grouped.set(group, []);
+        }
+        grouped.get(group).push({
+          value: String((option == null ? void 0 : option.value) || "").trim(),
+          label: String((option == null ? void 0 : option.label) || (option == null ? void 0 : option.value) || "").trim()
+        });
+      });
+      return [
+        { label: "", items: [{ value: "", label: "None" }] },
+        ...Array.from(grouped.entries()).map(([label, items]) => ({ label, items }))
+      ];
+    }, [svgETypeOptions]);
+    const svgETypeHelperText = ignitionTagsLoading ? "Loading UDTs..." : ignitionTagsLoaded ? `${svgETypeOptions.length} UDT${svgETypeOptions.length === 1 ? "" : "s"} available` : "Open to load UDTs from Ignition tags.";
+    const editableQuickTagPickerTargetOverlays = useMemo(
+      () => quickTagPickerTargetOverlays.filter((overlay) => overlay && !overlay.embeddedView && (overlay.widget || !isStaticSvgOverlay(overlay))),
+      [quickTagPickerTargetOverlays]
+    );
+    const quickTagPickerCommonTagPath = useMemo(() => {
+      if (!editableQuickTagPickerTargetOverlays.length) {
+        return "";
+      }
+      const values = editableQuickTagPickerTargetOverlays.map((overlay) => String((overlay == null ? void 0 : overlay.tagPath) || "").trim());
+      const first = values[0] || "";
+      return values.every((value) => value === first) ? first : "";
+    }, [editableQuickTagPickerTargetOverlays]);
+    const quickTagPickerHasMixedTagPaths = useMemo(() => {
+      if (editableQuickTagPickerTargetOverlays.length < 2) {
+        return false;
+      }
+      const values = editableQuickTagPickerTargetOverlays.map((overlay) => String((overlay == null ? void 0 : overlay.tagPath) || "").trim());
+      const first = values[0] || "";
+      return values.some((value) => value !== first);
+    }, [editableQuickTagPickerTargetOverlays]);
+    const quickTagPickerCommonEType = useMemo(() => {
+      const values = editableQuickTagPickerTargetOverlays.filter((overlay) => !(overlay == null ? void 0 : overlay.widget)).map((overlay) => String((overlay == null ? void 0 : overlay.eType) || "").trim()).filter(Boolean);
+      if (!values.length) {
+        return "";
+      }
+      const first = values[0] || "";
+      return values.every((value) => value.toLowerCase() === first.toLowerCase()) ? first : "";
+    }, [editableQuickTagPickerTargetOverlays]);
+    const quickTagPickerTypeFilter = quickTagPickerIsGroup ? quickTagPickerCommonEType : (quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.widget) ? "" : quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.eType;
     const quickTagPickerOverlayIsBin = useMemo(
-      () => String((quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.eType) || "").trim().toLowerCase().startsWith("bin"),
-      [quickTagPickerOverlay]
+      () => String(quickTagPickerTypeFilter || "").trim().toLowerCase().startsWith("bin"),
+      [quickTagPickerTypeFilter]
     );
     const ignitionTagOptionsForQuickPicker = useMemo(
       () => quickTagPickerOverlayIsBin ? ignitionTagOptions.filter((opt) => {
@@ -29091,26 +30914,26 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       const rootWidth = Number((rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH);
       const rootHeight = Number((rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT);
       const rulerInset = showRulers ? CANVAS_RULER_SIZE : 0;
-      const fallbackLeft = rootWidth - PROPERTY_PANEL_WIDTH - 16;
+      const panelWidth = clampPropertyPanelWidth(propertyPanelWidth, rootWidth);
+      const fallbackLeft = rootWidth - panelWidth - 16;
       const fallbackTop = 16 + rulerInset;
       const anchorLeft = Number((topLeft == null ? void 0 : topLeft.x) || fallbackLeft);
       const anchorRight = Number((topRight == null ? void 0 : topRight.x) || anchorLeft + 120);
       const anchorTop = Number((topLeft == null ? void 0 : topLeft.y) || fallbackTop);
       const preferredLeft = anchorRight + 12;
-      const maxLeft = Math.max(16, rootWidth - PROPERTY_PANEL_WIDTH - 16);
-      const left = preferredLeft <= maxLeft ? preferredLeft : clamp(anchorLeft - PROPERTY_PANEL_WIDTH - 12, 16, maxLeft);
-      const top = clamp(anchorTop, 16 + rulerInset, Math.max(16 + rulerInset, rootHeight - 220));
-      const availableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - top - 16);
-      const panelHeight = Math.max(
-        PROPERTY_PANEL_MIN_HEIGHT,
-        Math.min(PROPERTY_PANEL_HEIGHT, availableHeight)
-      );
+      const maxLeft = Math.max(16, rootWidth - panelWidth - 16);
+      const left = preferredLeft <= maxLeft ? preferredLeft : clamp(anchorLeft - panelWidth - 12, 16, maxLeft);
+      const minTop = 16 + rulerInset;
+      const maxUsableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - minTop - 16);
+      const panelHeight = Math.min(PROPERTY_PANEL_HEIGHT, maxUsableHeight);
+      const maxTop = Math.max(minTop, rootHeight - panelHeight - 16);
+      const top = clamp(anchorTop, minTop, maxTop);
       return {
         position: "absolute",
         left,
         top,
         zIndex: 70,
-        width: PROPERTY_PANEL_WIDTH,
+        width: panelWidth,
         maxWidth: `calc(100% - ${left + 16}px)`,
         height: panelHeight,
         maxHeight: panelHeight,
@@ -29124,7 +30947,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
         boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
       };
-    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers]);
+    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers, propertyPanelWidth]);
     const fixedPropertyPanelStyle = useMemo(() => {
       var _a2, _b2;
       if (!floatingPropertyPanelStyle) {
@@ -29137,12 +30960,13 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       const viewportWidth = typeof window !== "undefined" ? window.innerWidth : Number(rootRect.width || 0);
       const viewportHeight = typeof window !== "undefined" ? window.innerHeight : Number(rootRect.height || 0);
       const left = Number(rootRect.left || 0) + Number(floatingPropertyPanelStyle.left || 0);
-      const top = Number(rootRect.top || 0) + Number(floatingPropertyPanelStyle.top || 0);
-      const availableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, viewportHeight - top - 16);
-      const panelHeight = Math.max(
-        PROPERTY_PANEL_MIN_HEIGHT,
-        Math.min(PROPERTY_PANEL_HEIGHT, availableHeight)
-      );
+      const desiredTop = Number(rootRect.top || 0) + Number(floatingPropertyPanelStyle.top || 0);
+      const minTop = Math.max(16, Number(rootRect.top || 0) + 16 + (showRulers ? CANVAS_RULER_SIZE : 0));
+      const desiredHeight = Number(floatingPropertyPanelStyle.height || PROPERTY_PANEL_HEIGHT);
+      const maxUsableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, viewportHeight - minTop - 16);
+      const panelHeight = Math.min(desiredHeight, maxUsableHeight);
+      const maxTop = Math.max(minTop, viewportHeight - panelHeight - 16);
+      const top = clamp(desiredTop, minTop, maxTop);
       return {
         ...floatingPropertyPanelStyle,
         position: "fixed",
@@ -29152,10 +30976,56 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         height: panelHeight,
         maxHeight: panelHeight
       };
-    }, [floatingPropertyPanelStyle, rootSize]);
+    }, [floatingPropertyPanelStyle, rootSize, showRulers]);
+    const quickSvgPickerStyle = useMemo(() => {
+      var _a2, _b2;
+      if (!editorVisible || !(quickSvgPickerState == null ? void 0 : quickSvgPickerState.open)) {
+        return null;
+      }
+      const rootRect = (_b2 = (_a2 = rootRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2);
+      const viewportWidth = typeof window !== "undefined" ? window.innerWidth : Number((rootRect == null ? void 0 : rootRect.width) || DEFAULT_CANVAS_WIDTH);
+      const viewportHeight = typeof window !== "undefined" ? window.innerHeight : Number((rootRect == null ? void 0 : rootRect.height) || DEFAULT_CANVAS_HEIGHT);
+      const rootLeft = Number((rootRect == null ? void 0 : rootRect.left) || 0);
+      const rootTop = Number((rootRect == null ? void 0 : rootRect.top) || 0);
+      const rootRight = rootLeft + Number((rootRect == null ? void 0 : rootRect.width) || viewportWidth);
+      const rootBottom = rootTop + Number((rootRect == null ? void 0 : rootRect.height) || viewportHeight);
+      const width = Math.min(QUICK_SVG_PANEL_WIDTH, Math.max(240, rootRight - rootLeft - 24));
+      const maxHeight = Math.min(
+        QUICK_SVG_PANEL_HEIGHT,
+        Math.max(220, rootBottom - rootTop - 24)
+      );
+      const preferredLeft = Number((quickSvgPickerState == null ? void 0 : quickSvgPickerState.clientX) || 0) + 8;
+      const preferredTop = Number((quickSvgPickerState == null ? void 0 : quickSvgPickerState.clientY) || 0) + 8;
+      const left = clamp(
+        preferredLeft,
+        rootLeft + 12,
+        Math.max(rootLeft + 12, Math.min(rootRight - width - 12, viewportWidth - width - 12))
+      );
+      const top = clamp(
+        preferredTop,
+        rootTop + 12,
+        Math.max(rootTop + 12, Math.min(rootBottom - maxHeight - 12, viewportHeight - maxHeight - 12))
+      );
+      return {
+        position: "fixed",
+        left,
+        top,
+        zIndex: 94,
+        width,
+        maxWidth: Math.max(220, viewportWidth - left - 12),
+        maxHeight,
+        overflow: "hidden",
+        display: "grid",
+        gridTemplateRows: "auto minmax(0, 1fr)",
+        borderRadius: 16,
+        border: "1px solid rgba(51, 65, 85, 0.95)",
+        background: "linear-gradient(180deg, rgba(2, 6, 23, 0.97) 0%, rgba(15, 23, 42, 0.95) 100%)",
+        boxShadow: "0 18px 44px rgba(2, 6, 23, 0.34)"
+      };
+    }, [editorVisible, quickSvgPickerState, rootSize]);
     const quickTagPickerStyle = useMemo(() => {
       var _a2, _b2;
-      if (!editorVisible || !quickTagPickerOverlay) {
+      if (!editorVisible || !quickTagPickerHasTarget) {
         return null;
       }
       const rootRect = (_b2 = (_a2 = rootRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2);
@@ -29203,9 +31073,43 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         background: "linear-gradient(180deg, rgba(2, 6, 23, 0.96) 0%, rgba(15, 23, 42, 0.94) 100%)",
         boxShadow: "0 18px 44px rgba(2, 6, 23, 0.34)"
       };
-    }, [editorVisible, quickTagPickerOverlay, quickTagPickerState, rootSize]);
+    }, [editorVisible, quickTagPickerHasTarget, quickTagPickerState, rootSize]);
     useEffect(() => {
-      if (!quickTagPickerOverlay) {
+      if (!(quickSvgPickerState == null ? void 0 : quickSvgPickerState.open)) {
+        return void 0;
+      }
+      const focusSearch = () => {
+        var _a2, _b2, _c2, _d2;
+        (_b2 = (_a2 = quickSvgPickerInputRef.current) == null ? void 0 : _a2.focus) == null ? void 0 : _b2.call(_a2);
+        (_d2 = (_c2 = quickSvgPickerInputRef.current) == null ? void 0 : _c2.select) == null ? void 0 : _d2.call(_c2);
+      };
+      const focusTimer = window.setTimeout(focusSearch, 0);
+      const focusFrame = window.requestAnimationFrame(focusSearch);
+      const handlePointerDown = (event) => {
+        var _a2;
+        const target = event == null ? void 0 : event.target;
+        if ((_a2 = target == null ? void 0 : target.closest) == null ? void 0 : _a2.call(target, "[data-vizi-quick-svg-picker='1']")) {
+          return;
+        }
+        closeQuickSvgPicker();
+      };
+      const handleEscape = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeQuickSvgPicker();
+        }
+      };
+      window.addEventListener("pointerdown", handlePointerDown, true);
+      window.addEventListener("keydown", handleEscape, true);
+      return () => {
+        window.clearTimeout(focusTimer);
+        window.cancelAnimationFrame(focusFrame);
+        window.removeEventListener("pointerdown", handlePointerDown, true);
+        window.removeEventListener("keydown", handleEscape, true);
+      };
+    }, [closeQuickSvgPicker, quickSvgPickerState == null ? void 0 : quickSvgPickerState.open]);
+    useEffect(() => {
+      if (!quickTagPickerHasTarget) {
         return void 0;
       }
       const handlePointerDown = (event) => {
@@ -29229,7 +31133,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         window.removeEventListener("pointerdown", handlePointerDown, true);
         window.removeEventListener("keydown", handleEscape, true);
       };
-    }, [closeQuickTagPicker, quickTagPickerOverlay]);
+    }, [closeQuickTagPicker, quickTagPickerHasTarget]);
     const overlaySelectionUI = useCallback((overlay) => {
       const bounds = getOverlayBounds(overlay);
       if (!bounds) {
@@ -29249,7 +31153,23 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         { key: "BL", cx: x, cy: y + height },
         { key: "L", cx: x, cy: y + height / 2 }
       ];
+      const minSide = Math.max(0, Math.min(Math.abs(width), Math.abs(height)));
+      const handleHitRadius = minSide > 0 ? Math.max(3, Math.min(12, minSide * 0.18)) : 12;
       return /* @__PURE__ */ jsxs("g", { "data-overlay-selection-ui": String((overlay == null ? void 0 : overlay.id) || ""), children: [
+        /* @__PURE__ */ jsx(
+          "rect",
+          {
+            x,
+            y,
+            width,
+            height,
+            fill: "transparent",
+            pointerEvents: "all",
+            style: { cursor: "move" },
+            onMouseDown: (event) => handleOverlayMouseDown(event, overlay == null ? void 0 : overlay.id),
+            onDoubleClick: (event) => handleOverlayDoubleClick(event, overlay == null ? void 0 : overlay.id)
+          }
+        ),
         /* @__PURE__ */ jsx(
           "rect",
           {
@@ -29273,7 +31193,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
               r: 6,
               fill: "white",
               stroke: "#2b6cff",
-              strokeWidth: 2
+              strokeWidth: 2,
+              pointerEvents: "none"
             }
           ),
           /* @__PURE__ */ jsx(
@@ -29281,7 +31202,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
             {
               cx: corner.cx,
               cy: corner.cy,
-              r: 14,
+              r: handleHitRadius,
               fill: "transparent",
               style: { cursor: resizeCursorForCorner(corner.key) },
               onMouseDown: (event) => handleOverlayHandleDown(event, overlay == null ? void 0 : overlay.id, corner.key)
@@ -29289,7 +31210,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           )
         ] }, `${String((overlay == null ? void 0 : overlay.id) || "")}-${corner.key}`))
       ] });
-    }, [handleOverlayHandleDown]);
+    }, [handleOverlayDoubleClick, handleOverlayHandleDown, handleOverlayMouseDown]);
     const overlayGroupSelectionUI = useCallback(() => {
       if (!selectedBBox || selectedIds.length > 0 || selectedOverlayIds.length < 2) {
         return null;
@@ -29566,9 +31487,12 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
             restBindings
           );
         }
-        return applyOverlayIgnitionFillBinding(overlay, rawValue);
+        return applyOverlayIgnitionFillBinding(
+          applyIgnitionTagMetadataToOverlay(overlay, rawValue),
+          rawValue
+        );
       });
-    }, [updateSelectedOverlay]);
+    }, [applyIgnitionTagMetadataToOverlay, updateSelectedOverlay]);
     const commitOverlayTagPathById = useCallback((overlayId, rawValue) => {
       updateOverlayById(overlayId, (overlay) => {
         if (overlay == null ? void 0 : overlay.widget) {
@@ -29583,9 +31507,72 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
             restBindings
           );
         }
-        return applyOverlayIgnitionFillBinding(overlay, rawValue);
+        return applyOverlayIgnitionFillBinding(
+          applyIgnitionTagMetadataToOverlay(overlay, rawValue),
+          rawValue
+        );
       });
-    }, [updateOverlayById]);
+    }, [applyIgnitionTagMetadataToOverlay, updateOverlayById]);
+    const commitSelectedOverlayGroupTagPath = useCallback((rawValue) => {
+      const editableIds = new Set(
+        editableSelectedOverlayGroup.map((overlay) => String((overlay == null ? void 0 : overlay.id) || "").trim()).filter(Boolean)
+      );
+      if (!editableIds.size) {
+        return;
+      }
+      updateSvgOverlays((previous) => previous.map((overlay) => {
+        const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
+        if (!editableIds.has(overlayId)) {
+          return overlay;
+        }
+        if (overlay == null ? void 0 : overlay.widget) {
+          const nextTagPath = String(rawValue != null ? rawValue : "").trim();
+          const currentBindings = isPlainObject(overlay == null ? void 0 : overlay.bindings) ? overlay.bindings : {};
+          const { fill: _removedFillBinding, ...restBindings } = currentBindings;
+          return withOverlayBindings(
+            {
+              ...overlay,
+              tagPath: nextTagPath
+            },
+            restBindings
+          );
+        }
+        return applyOverlayIgnitionFillBinding(
+          applyIgnitionTagMetadataToOverlay(overlay, rawValue),
+          rawValue
+        );
+      }), { persist: true });
+    }, [applyIgnitionTagMetadataToOverlay, editableSelectedOverlayGroup, updateSvgOverlays]);
+    const commitQuickTagPickerGroupTagPath = useCallback((rawValue) => {
+      const editableIds = new Set(
+        editableQuickTagPickerTargetOverlays.map((overlay) => String((overlay == null ? void 0 : overlay.id) || "").trim()).filter(Boolean)
+      );
+      if (!editableIds.size) {
+        return;
+      }
+      updateSvgOverlays((previous) => previous.map((overlay) => {
+        const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
+        if (!editableIds.has(overlayId)) {
+          return overlay;
+        }
+        if (overlay == null ? void 0 : overlay.widget) {
+          const nextTagPath = String(rawValue != null ? rawValue : "").trim();
+          const currentBindings = isPlainObject(overlay == null ? void 0 : overlay.bindings) ? overlay.bindings : {};
+          const { fill: _removedFillBinding, ...restBindings } = currentBindings;
+          return withOverlayBindings(
+            {
+              ...overlay,
+              tagPath: nextTagPath
+            },
+            restBindings
+          );
+        }
+        return applyOverlayIgnitionFillBinding(
+          applyIgnitionTagMetadataToOverlay(overlay, rawValue),
+          rawValue
+        );
+      }), { persist: true });
+    }, [applyIgnitionTagMetadataToOverlay, editableQuickTagPickerTargetOverlays, updateSvgOverlays]);
     const commitSelectedOverlayFill = useCallback((rawValue) => {
       updateSelectedOverlay((overlay) => applyOverlayFillFallbackColor(overlay, rawValue));
     }, [updateSelectedOverlay]);
@@ -29635,6 +31622,22 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         }
         return nextOverlay;
       });
+    }, [updateSelectedOverlay]);
+    const toggleSelectedOverlayFlip = useCallback((axis) => {
+      const isY = String(axis || "").trim().toLowerCase() === "y";
+      const field = isY ? "flipY" : "flipX";
+      updateSelectedOverlay((overlay) => ({
+        ...overlay,
+        [field]: !Boolean(
+          (overlay == null ? void 0 : overlay[field]) || (isY ? (overlay == null ? void 0 : overlay.flippedY) || (overlay == null ? void 0 : overlay.mirrorY) : (overlay == null ? void 0 : overlay.flippedX) || (overlay == null ? void 0 : overlay.mirrorX))
+        )
+      }));
+    }, [updateSelectedOverlay]);
+    const toggleSelectedOverlayStatic = useCallback(() => {
+      updateSelectedOverlay((overlay) => ({
+        ...overlay,
+        static: !isStaticSvgOverlay(overlay)
+      }));
     }, [updateSelectedOverlay]);
     const commitSelectedOverlayPosition = useCallback((axis, rawValue) => {
       const next = parsePanelNumber(rawValue);
@@ -29776,7 +31779,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       () => coerceArray(svgOverlays).filter((overlay) => overlay && !overlay.widget && !overlay.embeddedView).length,
       [svgOverlays]
     );
-    const svgLibraryStatusText = !svgLibraryEnabled ? "SVG library disabled" : svgLibraryError ? svgLibraryError : svgLibraryReady ? `${svgCatalogFiles.length} SVG templates ready` : "Loading SVG templates...";
+    const svgLibraryStatusText = !svgLibraryEnabled ? "SVG library disabled" : svgLibraryError ? svgLibraryError : svgLibraryUploading ? "Importing SVG..." : svgLibraryRefreshing ? "Refreshing SVG templates..." : svgLibraryReady ? `${svgCatalogFiles.length} SVG templates ready` : "Loading SVG templates...";
     const widgetLibraryStatusText = "Mesora widgets ready";
     const hmiStateStyleMapCount = Array.isArray(hmiStateStyleMapIndex == null ? void 0 : hmiStateStyleMapIndex.entries) ? hmiStateStyleMapIndex.entries.length : 0;
     const hmiStateStyleMapStatusText = hmiStateStyleMapError ? hmiStateStyleMapError : hmiStateStyleMapRefreshing ? "Loading HMI state styles..." : hmiStateStyleMapCount > 0 ? `${hmiStateStyleMapCount} HMI state style maps loaded` : "No HMI state style maps loaded";
@@ -29879,6 +31882,19 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           event.stopPropagation();
           (_a2 = event.stopImmediatePropagation) == null ? void 0 : _a2.call(event);
         };
+        if (!event.altKey && !event.ctrlKey && !event.metaKey && (event.key === "PageUp" || event.key === "PageDown")) {
+          const hasOverlaySelection = coerceArray(selectedOverlayIds).length > 0;
+          if (!hasOverlaySelection) {
+            return;
+          }
+          consumeShortcutEvent();
+          if (event.key === "PageUp") {
+            reorderSelectedOverlays(event.shiftKey ? "front" : "forward");
+          } else {
+            reorderSelectedOverlays(event.shiftKey ? "back" : "backward");
+          }
+          return;
+        }
         if (alternate) {
           if (key === "m") {
             consumeShortcutEvent();
@@ -29898,6 +31914,11 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
           if (key === "c") {
             consumeShortcutEvent();
             copySelection();
+            return;
+          }
+          if (key === "x") {
+            consumeShortcutEvent();
+            cutSelection();
             return;
           }
           if (key === "v") {
@@ -29942,7 +31963,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       };
       window.addEventListener("keydown", onKeyDown, true);
       return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [activateTool, cancelPolyline, copySelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, undo]);
+    }, [activateTool, cancelPolyline, copySelection, cutSelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, reorderSelectedOverlays, selectedOverlayIds, undo]);
     useEffect(() => {
       const onKeyUp = (event) => {
         var _a2;
@@ -29954,7 +31975,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         if (!alternate) {
           return;
         }
-        if (key === "c" || key === "v" || key === "z" || key === "y" || key === "d" || key === "m" || key === "p" || key === "t" || String(event.code || "") === "KeyD") {
+        if (key === "c" || key === "x" || key === "v" || key === "z" || key === "y" || key === "d" || key === "m" || key === "p" || key === "t" || String(event.code || "") === "KeyD") {
           event.preventDefault();
           event.stopPropagation();
           (_a2 = event.stopImmediatePropagation) == null ? void 0 : _a2.call(event);
@@ -29968,6 +31989,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         return;
       }
       setImportOpen(false);
+      closeQuickSvgPicker();
       setDragState(null);
       setDragSegment(null);
       setDragHandle(null);
@@ -29979,12 +32001,21 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
       setDrawing(null);
       setHelpOpen(false);
       clearSelection();
-    }, [clearSelection, editorVisible]);
+    }, [clearSelection, closeQuickSvgPicker, editorVisible]);
     return /* @__PURE__ */ jsxs(
       "div",
       {
         ref: rootRef,
         "data-vizi-canvas-root": "1",
+        onMouseDownCapture: (event) => {
+          if (!editorVisible || !propertiesSelectionKey || Number((event == null ? void 0 : event.button) || 0) !== 0) {
+            return;
+          }
+          if (isInteractiveEditorTarget(event == null ? void 0 : event.target)) {
+            return;
+          }
+          closePropertiesPanel();
+        },
         style: {
           position: "relative",
           width: "100%",
@@ -30014,8 +32045,8 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
             CanvasSvg_default,
             {
               svgRef,
-              zoom: isLiveMode ? 1 : effectiveZoom,
-              pan: isLiveMode ? { x: 0, y: 0 } : isPlainObject(pan) ? pan : { x: 0, y: 0 },
+              zoom: editorZoom,
+              pan: editorPan,
               onWheel: NOOP,
               marquee: editorVisible ? marquee : null,
               tool: editorVisible ? tool : "select",
@@ -30438,7 +32469,153 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
               ]
             }
           ) : null,
-          editorVisible && quickTagPickerOverlay && quickTagPickerStyle ? /* @__PURE__ */ jsxs(
+          editorVisible && quickSvgPickerStyle ? /* @__PURE__ */ jsxs(
+            "div",
+            {
+              "data-vizi-quick-svg-picker": "1",
+              style: quickSvgPickerStyle,
+              onPointerDown: stopInteractivePropagation,
+              onMouseDown: stopInteractivePropagation,
+              onMouseUp: stopInteractivePropagation,
+              onClick: stopInteractivePropagation,
+              onDoubleClick: stopInteractivePropagation,
+              onKeyDown: stopInteractivePropagation,
+              onKeyUp: stopInteractivePropagation,
+              onContextMenu: (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              },
+              children: [
+                /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    style: {
+                      padding: 10,
+                      borderBottom: "1px solid rgba(71, 85, 105, 0.72)",
+                      display: "grid",
+                      gap: 8
+                    },
+                    children: [
+                      /* @__PURE__ */ jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }, children: [
+                        /* @__PURE__ */ jsx("div", { style: { fontSize: 12, fontWeight: 800, color: "#f8fafc" }, children: "SVG Files" }),
+                        /* @__PURE__ */ jsx(
+                          "button",
+                          {
+                            type: "button",
+                            onClick: closeQuickSvgPicker,
+                            style: {
+                              border: "1px solid rgba(71, 85, 105, 0.9)",
+                              background: "rgba(15, 23, 42, 0.88)",
+                              color: "#f8fafc",
+                              width: 24,
+                              height: 24,
+                              borderRadius: 999,
+                              fontSize: 13,
+                              fontWeight: 700,
+                              cursor: "pointer"
+                            },
+                            children: "x"
+                          }
+                        )
+                      ] }),
+                      /* @__PURE__ */ jsx(
+                        "input",
+                        {
+                          ref: quickSvgPickerInputRef,
+                          value: quickSvgPickerQuery,
+                          onChange: (event) => setQuickSvgPickerQuery(event.target.value),
+                          onPointerDown: stopInteractivePropagation,
+                          onMouseDown: stopInteractivePropagation,
+                          onClick: stopInteractivePropagation,
+                          onKeyDown: stopInteractivePropagation,
+                          onKeyUp: stopInteractivePropagation,
+                          placeholder: "Search...",
+                          style: {
+                            width: "100%",
+                            boxSizing: "border-box",
+                            border: "1px solid rgba(71, 85, 105, 0.9)",
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#f8fafc",
+                            borderRadius: 10,
+                            padding: "8px 10px",
+                            outline: "none",
+                            fontSize: 12
+                          }
+                        }
+                      )
+                    ]
+                  }
+                ),
+                /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    className: "vizi-scroll",
+                    style: {
+                      minHeight: 0,
+                      overflow: "auto",
+                      padding: 10,
+                      display: "grid",
+                      gap: 8,
+                      alignContent: "start"
+                    },
+                    children: [
+                      clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0 ? /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => {
+                            pasteClipboard(quickSvgPickerState.worldPoint);
+                            closeQuickSvgPicker();
+                          },
+                          style: {
+                            width: "100%",
+                            textAlign: "left",
+                            padding: "8px 10px",
+                            borderRadius: 10,
+                            border: "1px solid rgba(59, 130, 246, 0.72)",
+                            background: "rgba(37, 99, 235, 0.28)",
+                            color: "#bfdbfe",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: 800
+                          },
+                          children: "Paste"
+                        }
+                      ) : null,
+                      quickSvgGrouped.length === 0 ? /* @__PURE__ */ jsx("div", { style: { color: "rgba(226, 232, 240, 0.72)", fontSize: 12 }, children: "No matches." }) : quickSvgGrouped.map((group) => /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 6 }, children: [
+                        /* @__PURE__ */ jsx("div", { style: { color: "rgba(226, 232, 240, 0.62)", fontSize: 11, fontWeight: 800 }, children: group.folder }),
+                        group.files.map((file) => /* @__PURE__ */ jsx(
+                          "button",
+                          {
+                            type: "button",
+                            title: file.key,
+                            onClick: () => {
+                              onPickSvg(file.key, quickSvgPickerState.worldPoint);
+                              closeQuickSvgPicker();
+                            },
+                            style: {
+                              width: "100%",
+                              textAlign: "left",
+                              padding: "8px 10px",
+                              borderRadius: 10,
+                              border: "1px solid rgba(71, 85, 105, 0.85)",
+                              background: "rgba(15, 23, 42, 0.72)",
+                              color: "#f8fafc",
+                              cursor: "pointer",
+                              fontSize: 12
+                            },
+                            children: file.name
+                          },
+                          file.key
+                        ))
+                      ] }, `quick-svg-group-${group.folder}`))
+                    ]
+                  }
+                )
+              ]
+            }
+          ) : null,
+          editorVisible && quickTagPickerHasTarget && quickTagPickerStyle ? /* @__PURE__ */ jsxs(
             "div",
             {
               ref: quickTagPickerRef,
@@ -30488,7 +32665,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                               textOverflow: "ellipsis",
                               whiteSpace: "nowrap"
                             },
-                            children: quickTagPickerOverlay.name || quickTagPickerOverlay.id || "SVG Overlay"
+                            children: quickTagPickerIsGroup ? `${quickTagPickerTargetOverlays.length} SVGs selected` : (quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.name) || (quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.id) || "SVG Overlay"
                           }
                         )
                       ] }),
@@ -30515,20 +32692,78 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                     ]
                   }
                 ),
+                quickTagPickerIsGroup ? /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    style: {
+                      display: "grid",
+                      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                      gap: 8
+                    },
+                    children: [
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => {
+                            alignSelectedOverlays("horizontal");
+                            closeQuickTagPicker();
+                          },
+                          style: {
+                            border: "1px solid rgba(71, 85, 105, 0.9)",
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#e2e8f0",
+                            minHeight: 30,
+                            borderRadius: 10,
+                            fontSize: 11,
+                            fontWeight: 800,
+                            cursor: "pointer"
+                          },
+                          children: "Align H"
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => {
+                            alignSelectedOverlays("vertical");
+                            closeQuickTagPicker();
+                          },
+                          style: {
+                            border: "1px solid rgba(71, 85, 105, 0.9)",
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#e2e8f0",
+                            minHeight: 30,
+                            borderRadius: 10,
+                            fontSize: 11,
+                            fontWeight: 800,
+                            cursor: "pointer"
+                          },
+                          children: "Align V"
+                        }
+                      )
+                    ]
+                  }
+                ) : null,
                 /* @__PURE__ */ jsx(
                   PropertyTagPathField,
                   {
                     autoOpenToken: quickTagPickerAutoOpenToken,
-                    label: "Tag Path",
-                    value: quickTagPickerOverlay.tagPath || "",
+                    label: quickTagPickerIsGroup && quickTagPickerHasMixedTagPaths ? "Tag Path (mixed)" : "Tag Path",
+                    value: quickTagPickerIsGroup ? quickTagPickerCommonTagPath : (quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.tagPath) || "",
                     options: ignitionTagOptionsForQuickPicker,
-                    typeFilter: (quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.widget) ? "" : quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.eType,
+                    typeFilter: quickTagPickerTypeFilter,
                     loaded: ignitionTagsLoaded,
                     loading: ignitionTagsLoading,
                     error: ignitionTagsError,
                     onOpen: loadIgnitionTags,
                     onCommit: (value) => {
-                      commitOverlayTagPathById(quickTagPickerOverlay.id, value);
+                      if (quickTagPickerIsGroup) {
+                        commitQuickTagPickerGroupTagPath(value);
+                      } else if (quickTagPickerOverlay == null ? void 0 : quickTagPickerOverlay.id) {
+                        commitOverlayTagPathById(quickTagPickerOverlay.id, value);
+                      }
                       closeQuickTagPicker();
                     }
                   }
@@ -30557,6 +32792,41 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                     .vizi-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.72); }
                     .vizi-scroll { scrollbar-width: thin; scrollbar-color: rgba(71, 85, 105, 0.4) transparent; }
                 ` }),
+                /* @__PURE__ */ jsx(
+                  "div",
+                  {
+                    role: "separator",
+                    "aria-orientation": "vertical",
+                    "aria-label": "Resize properties panel",
+                    title: "Resize properties panel",
+                    onMouseDown: (event) => {
+                      if (event.button !== 0) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.stopPropagation();
+                      propertyPanelResizeRef.current = {
+                        resizing: true,
+                        startX: event.clientX,
+                        startWidth: clampPropertyPanelWidth(
+                          propertyPanelWidth,
+                          Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+                        )
+                      };
+                      setPropertyPanelResizing(true);
+                    },
+                    style: {
+                      position: "absolute",
+                      top: 0,
+                      right: 0,
+                      bottom: 0,
+                      width: 10,
+                      cursor: "col-resize",
+                      zIndex: 1,
+                      background: propertyPanelResizing ? "rgba(56, 189, 248, 0.28)" : "transparent"
+                    }
+                  }
+                ),
                 /* @__PURE__ */ jsxs(
                   "div",
                   {
@@ -30637,6 +32907,36 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                           }
                         }
                       ),
+                      !selectedOverlayIsEmbeddedView && !selectedOverlay.widget ? /* @__PURE__ */ jsx(
+                        EditorDropdownField,
+                        {
+                          label: "SVG",
+                          value: selectedOverlayTemplateKey,
+                          placeholder: "Select SVG...",
+                          searchable: true,
+                          searchPlaceholder: "Search SVG library...",
+                          sections: selectedOverlayTemplateSections,
+                          disabled: !svgLibraryEnabled || svgLibraryRefreshing || !svgFiles.length,
+                          helperText: svgLibraryRefreshing ? "Loading SVG library..." : svgLibraryError || `${svgFiles.length} SVG template${svgFiles.length === 1 ? "" : "s"} available`,
+                          helperTone: svgLibraryError ? "error" : "muted",
+                          onOpen: () => {
+                            if (svgLibraryEnabled && !svgLibraryRefreshing) {
+                              loadSvgCatalog();
+                            }
+                          },
+                          onChange: (value) => {
+                            swapSelectedOverlaySvgTemplate(value);
+                          }
+                        }
+                      ) : null,
+                      !selectedOverlayIsEmbeddedView && !selectedOverlay.widget ? /* @__PURE__ */ jsx(
+                        PropertyCheckbox,
+                        {
+                          label: "Static",
+                          checked: selectedOverlayIsStatic,
+                          onChange: toggleSelectedOverlayStatic
+                        }
+                      ) : null,
                       selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsxs(Fragment2, { children: [
                         /* @__PURE__ */ jsx(
                           PropertyField,
@@ -30723,7 +33023,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                             }
                           }
                         )
-                      ] }) : !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsx(
+                      ] }) : !selectedOverlayIsEmbeddedView && !(selectedOverlayIsStatic && !selectedOverlay.widget) ? /* @__PURE__ */ jsx(
                         PropertyTagPathField,
                         {
                           label: "Tag Path",
@@ -30740,16 +33040,27 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                         }
                       ) : null,
                       !selectedOverlayIsEmbeddedView ? /* @__PURE__ */ jsx(
-                        PropertyField,
+                        EditorDropdownField,
                         {
                           label: "EType",
                           value: selectedOverlay.eType || "",
-                          onCommit: (value) => {
+                          placeholder: "Select UDT...",
+                          searchable: true,
+                          searchPlaceholder: "Search UDTs...",
+                          sections: svgETypeSections,
+                          helperText: ignitionTagsError || svgETypeHelperText,
+                          helperTone: ignitionTagsError ? "error" : "muted",
+                          onOpen: () => {
+                            if (!ignitionTagsLoaded && !ignitionTagsLoading) {
+                              loadIgnitionTags();
+                            }
+                          },
+                          onChange: (value) => {
                             commitSelectedOverlayText("eType", value);
                           }
                         }
                       ) : null,
-                      !selectedOverlayIsEmbeddedView && !selectedOverlay.widget ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                      !selectedOverlayIsEmbeddedView && !selectedOverlay.widget && !selectedOverlayIsStatic ? /* @__PURE__ */ jsxs(Fragment2, { children: [
                         /* @__PURE__ */ jsx(
                           PropertyTextArea,
                           {
@@ -30801,7 +33112,18 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                             }
                           }
                         ),
-                        String(((_d = selectedOverlay.widget) == null ? void 0 : _d.kind) || "").trim().toLowerCase() === "pushbutton" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyColorField,
+                          {
+                            label: "Text Color",
+                            value: ((_d = selectedOverlay.widget) == null ? void 0 : _d.textColor) || "",
+                            placeholder: "#e2e8f0",
+                            onCommit: (value) => {
+                              commitSelectedOverlayWidgetField("textColor", String(value != null ? value : "").trim());
+                            }
+                          }
+                        ),
+                        String(((_e = selectedOverlay.widget) == null ? void 0 : _e.kind) || "").trim().toLowerCase() === "pushbutton" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
                           /* @__PURE__ */ jsx(
                             PropertyField,
                             {
@@ -30895,6 +33217,50 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                             }
                           )
                         ] }),
+                        /* @__PURE__ */ jsx(
+                          PropertyField,
+                          {
+                            label: "Rotation",
+                            value: formatPanelNumber(selectedOverlay.rotation || 0),
+                            onCommit: (value) => {
+                              commitSelectedOverlayNumber("rotation", value);
+                            }
+                          }
+                        ),
+                        !selectedOverlay.widget ? /* @__PURE__ */ jsx(
+                          "div",
+                          {
+                            style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" },
+                            onMouseDown: stopInteractivePropagation,
+                            onClick: stopInteractivePropagation,
+                            onDoubleClick: stopInteractivePropagation,
+                            children: [
+                              ["x", "Flip H", Boolean(selectedOverlay.flipX || selectedOverlay.flippedX || selectedOverlay.mirrorX)],
+                              ["y", "Flip V", Boolean(selectedOverlay.flipY || selectedOverlay.flippedY || selectedOverlay.mirrorY)]
+                            ].map(([axis, label, active]) => /* @__PURE__ */ jsx(
+                              "button",
+                              {
+                                type: "button",
+                                onClick: (event) => {
+                                  stopInteractivePropagation(event);
+                                  toggleSelectedOverlayFlip(axis);
+                                },
+                                style: {
+                                  height: 36,
+                                  borderRadius: 10,
+                                  border: `1px solid ${active ? "rgba(96, 165, 250, 0.9)" : "rgba(71, 85, 105, 0.9)"}`,
+                                  background: active ? "rgba(37, 99, 235, 0.52)" : "rgba(15, 23, 42, 0.92)",
+                                  color: "#f8fafc",
+                                  fontSize: 12,
+                                  fontWeight: 800,
+                                  cursor: "pointer"
+                                },
+                                children: label
+                              },
+                              axis
+                            ))
+                          }
+                        ) : null,
                         /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
                           /* @__PURE__ */ jsx(
                             PropertyField,
@@ -30938,6 +33304,60 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                           }
                         )
                       ] }) : null
+                    ] }) : selectedOverlayGroup.length > 1 ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                      /* @__PURE__ */ jsx(
+                        PropertyReadout,
+                        {
+                          label: "Selection",
+                          value: `${selectedOverlayGroup.length} SVGs selected`
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        PropertyReadout,
+                        {
+                          label: "Tag Writable",
+                          value: `${editableSelectedOverlayGroup.length} SVGs`
+                        }
+                      ),
+                      editableSelectedOverlayGroup.length ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsx(
+                          PropertyTagPathField,
+                          {
+                            label: selectedOverlayGroupHasMixedTagPaths ? "Tag Path (mixed)" : "Tag Path",
+                            value: selectedOverlayGroupCommonTagPath,
+                            options: ignitionTagOptionsForOverlayGroup,
+                            typeFilter: selectedOverlayGroupCommonEType,
+                            loaded: ignitionTagsLoaded,
+                            loading: ignitionTagsLoading,
+                            error: ignitionTagsError,
+                            onOpen: loadIgnitionTags,
+                            onCommit: (value) => {
+                              commitSelectedOverlayGroupTagPath(value);
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          "div",
+                          {
+                            style: {
+                              fontSize: 12,
+                              lineHeight: 1.5,
+                              color: "rgba(226, 232, 240, 0.72)"
+                            },
+                            children: "The selected tag path will be applied to all selected non-static SVG overlays."
+                          }
+                        )
+                      ] }) : /* @__PURE__ */ jsx(
+                        "div",
+                        {
+                          style: {
+                            fontSize: 12,
+                            lineHeight: 1.5,
+                            color: "rgba(226, 232, 240, 0.72)"
+                          },
+                          children: "Static SVGs and embedded views do not use tag paths."
+                        }
+                      )
                     ] }) : selectedShape ? /* @__PURE__ */ jsxs(Fragment2, { children: [
                       /* @__PURE__ */ jsx(PropertyReadout, { label: "Type", value: selectedShapeLabel }),
                       /* @__PURE__ */ jsx(PropertyReadout, { label: "ID", value: selectedShape.id }),
@@ -31225,7 +33645,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                   {
                     style: {
                       display: "grid",
-                      gridTemplateColumns: "1fr 1fr",
+                      gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
                       gap: 8,
                       paddingTop: 4,
                       borderTop: "1px solid rgba(71, 85, 105, 0.5)"
@@ -31235,17 +33655,80 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                         "button",
                         {
                           type: "button",
+                          onClick: copySelection,
+                          style: {
+                            background: "rgba(15, 23, 42, 0.82)",
+                            border: "1px solid rgba(71, 85, 105, 0.78)",
+                            color: "#e2e8f0",
+                            height: 32,
+                            borderRadius: 10,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            letterSpacing: "0.03em"
+                          },
+                          children: "Copy"
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => {
+                            cutSelection();
+                            closePropertiesPanel();
+                          },
+                          style: {
+                            background: "rgba(15, 23, 42, 0.82)",
+                            border: "1px solid rgba(71, 85, 105, 0.78)",
+                            color: "#e2e8f0",
+                            height: 32,
+                            borderRadius: 10,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            letterSpacing: "0.03em"
+                          },
+                          children: "Cut"
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => {
+                            duplicateSelected();
+                            closePropertiesPanel();
+                          },
+                          style: {
+                            background: "rgba(15, 23, 42, 0.82)",
+                            border: "1px solid rgba(71, 85, 105, 0.78)",
+                            color: "#e2e8f0",
+                            height: 32,
+                            borderRadius: 10,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            letterSpacing: "0.03em"
+                          },
+                          children: "Duplicate"
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
                           onClick: closePropertiesPanel,
                           style: {
                             background: "rgba(30, 58, 138, 0.72)",
                             border: "1px solid rgba(59, 130, 246, 0.55)",
                             color: "#bfdbfe",
-                            height: 34,
+                            height: 32,
                             borderRadius: 10,
-                            fontSize: 12,
+                            fontSize: 11,
                             fontWeight: 700,
                             cursor: "pointer",
-                            letterSpacing: "0.04em"
+                            letterSpacing: "0.03em"
                           },
                           children: "Save"
                         }
@@ -31262,12 +33745,12 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                             background: "rgba(127, 29, 29, 0.6)",
                             border: "1px solid rgba(239, 68, 68, 0.5)",
                             color: "#fca5a5",
-                            height: 34,
+                            height: 32,
                             borderRadius: 10,
-                            fontSize: 12,
+                            fontSize: 11,
                             fontWeight: 700,
                             cursor: "pointer",
-                            letterSpacing: "0.04em"
+                            letterSpacing: "0.03em"
                           },
                           children: "Delete"
                         }
@@ -31299,8 +33782,11 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
                   onPickSvg,
                   helpText: svgLibraryHelpText,
                   librarySummary: svgLibrarySummaryText,
+                  onImportFile: handleImportSvgLibraryFile,
+                  importDisabled: svgLibraryRefreshing,
+                  importing: svgLibraryUploading,
                   onRefresh: handleRefreshSvgLibrary,
-                  refreshDisabled: svgLibraryRefreshing,
+                  refreshDisabled: svgLibraryRefreshing || svgLibraryUploading,
                   docked: true,
                   absoluteDocked: true,
                   appearance: "ignition-drawer",
@@ -31487,6 +33973,12 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     `/data/${MODULE_ID2}/svg-library-catalog`,
     `/main/data/${MODULE_ID2}/svg-library-catalog`,
     `${MODULE_RESOURCE_BASE2}/svg-library/manifest.json`
+  ];
+  var SVG_LIBRARY_UPLOAD_ROUTE_CANDIDATES2 = [
+    `/data/${MODULE_URL_ALIAS2}/svg-library-upload`,
+    `/main/data/${MODULE_URL_ALIAS2}/svg-library-upload`,
+    `/data/${MODULE_ID2}/svg-library-upload`,
+    `/main/data/${MODULE_ID2}/svg-library-upload`
   ];
   var SVG_RAW_CACHE_MAX2 = 80;
   var DEFAULT_FILL2 = "#D7DADE";
@@ -32637,6 +35129,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const [svgLibraryExternalDirectory, setSvgLibraryExternalDirectory] = useState("");
     const [svgLibraryExternalCount, setSvgLibraryExternalCount] = useState(0);
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
+    const [svgLibraryUploading, setSvgLibraryUploading] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const svgCatalogRequestIdRef = useRef(0);
     const localZoomCacheKey = resolveCanvasZoomCacheKey2(props);
@@ -32781,6 +35274,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         setSvgLibraryExternalDirectory("");
         setSvgLibraryExternalCount(0);
         setSvgLibraryRefreshing(false);
+        setSvgLibraryUploading(false);
         setImportOpen(false);
         return void 0;
       }
@@ -32971,8 +35465,71 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
     const handleRefreshSvgLibrary = useCallback(() => {
       loadSvgCatalog();
     }, [loadSvgCatalog]);
-    const svgLibraryHelpText = svgLibraryExternalDirectory ? `Drop .svg files into this folder and click Refresh:
-${svgLibraryExternalDirectory}` : "External SVG folder path will appear here when the catalog loads.";
+    const handleImportSvgLibraryFile = useCallback(async (file) => {
+      if (!file) {
+        return false;
+      }
+      const fileName = String(file.name || "").trim();
+      if (!/\.svg$/i.test(fileName)) {
+        setSvgLibraryError("Only .svg files can be imported.");
+        return false;
+      }
+      let content = "";
+      try {
+        content = await file.text();
+      } catch (error) {
+        setSvgLibraryError(String((error == null ? void 0 : error.message) || "Failed to read selected SVG file."));
+        return false;
+      }
+      if (!/<svg\b/i.test(content)) {
+        setSvgLibraryError("The selected file does not contain an SVG root element.");
+        return false;
+      }
+      setSvgLibraryUploading(true);
+      setSvgLibraryError("");
+      let lastError = "Failed to import SVG.";
+      try {
+        for (const routePath of SVG_LIBRARY_UPLOAD_ROUTE_CANDIDATES2) {
+          try {
+            const response = await fetch(routePath, {
+              method: "POST",
+              cache: "no-store",
+              credentials: "same-origin",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                fileName,
+                folder: "",
+                content
+              })
+            });
+            let payload = null;
+            try {
+              payload = await response.json();
+            } catch (_error) {
+              payload = null;
+            }
+            if (!response.ok || (payload == null ? void 0 : payload.ok) === false) {
+              lastError = String((payload == null ? void 0 : payload.error) || `Failed to import SVG (${response.status}).`);
+              continue;
+            }
+            svgRawCacheRef.current.clear();
+            await loadSvgCatalog();
+            setSvgLibraryUploading(false);
+            return true;
+          } catch (error) {
+            lastError = String((error == null ? void 0 : error.message) || "Failed to import SVG.");
+          }
+        }
+      } finally {
+        setSvgLibraryUploading(false);
+      }
+      setSvgLibraryError(lastError);
+      return false;
+    }, [loadSvgCatalog]);
+    const svgLibraryHelpText = svgLibraryExternalDirectory ? `Import an SVG here, or drop .svg files into this folder and click Refresh:
+${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path will appear when the catalog loads.";
     const svgLibrarySummaryText = svgLibraryExternalCount > 0 ? `${svgCatalogFiles.length} templates loaded, ${svgLibraryExternalCount} external` : `${svgCatalogFiles.length} templates loaded`;
     const handleImportToggle = useCallback(() => {
       if (!svgLibraryEnabled || !svgCatalogFiles.length) {
@@ -33077,7 +35634,7 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
         height
       };
     }, [svgOverlays]);
-    const libraryButtonLabel = svgLibraryError ? "SVG Library Unavailable" : svgCatalogFiles.length > 0 ? `SVG Library (${svgCatalogFiles.length})` : "Loading SVG Library...";
+    const libraryButtonLabel = svgLibraryError ? "SVG Library Unavailable" : svgLibraryUploading ? "Importing SVG..." : svgLibraryRefreshing ? "Refreshing SVG Library..." : svgCatalogFiles.length > 0 ? `SVG Library (${svgCatalogFiles.length})` : "Loading SVG Library...";
     const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom2(
       rootRef.current,
       viewBox.width,
@@ -33277,8 +35834,11 @@ ${svgLibraryExternalDirectory}` : "External SVG folder path will appear here whe
               onPickSvg,
               helpText: svgLibraryHelpText,
               librarySummary: svgLibrarySummaryText,
+              onImportFile: handleImportSvgLibraryFile,
+              importDisabled: svgLibraryRefreshing,
+              importing: svgLibraryUploading,
               onRefresh: handleRefreshSvgLibrary,
-              refreshDisabled: svgLibraryRefreshing
+              refreshDisabled: svgLibraryRefreshing || svgLibraryUploading
             }
           ) : null
         ]

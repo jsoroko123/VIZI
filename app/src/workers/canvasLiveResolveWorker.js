@@ -636,6 +636,36 @@ function resolveLiveVisualState(index, scene) {
     return Number.isFinite(scale) && scale > 0 ? scale : 1;
   };
 
+  const overlayFlipX = (overlay) => Boolean(overlay?.flipX || overlay?.flippedX || overlay?.mirrorX);
+  const overlayFlipY = (overlay) => Boolean(overlay?.flipY || overlay?.flippedY || overlay?.mirrorY);
+
+  const mirrorOverlayLocalPoint = (overlay, bbox, x, y) => {
+    if (!bbox) return { x: Number(x || 0), y: Number(y || 0) };
+    const bx = Number(bbox?.x) || 0;
+    const by = Number(bbox?.y) || 0;
+    const bw = Math.max(0.0001, Number(bbox?.width) || 1);
+    const bh = Math.max(0.0001, Number(bbox?.height) || 1);
+    return {
+      x: overlayFlipX(overlay) ? 2 * bx + bw - Number(x || 0) : Number(x || 0),
+      y: overlayFlipY(overlay) ? 2 * by + bh - Number(y || 0) : Number(y || 0),
+    };
+  };
+
+  const overlaySourceLocalPointFromWorld = (overlay, pt) => {
+    const bbox = overlay?.bbox;
+    const localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, overlayScaleX(overlay));
+    const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, overlayScaleY(overlay));
+    return mirrorOverlayLocalPoint(overlay, bbox, localX, localY);
+  };
+
+  const overlayWorldPointFromSourceLocal = (overlay, x, y) => {
+    const local = mirrorOverlayLocalPoint(overlay, overlay?.bbox, x, y);
+    return {
+      x: Number(overlay?.tx || 0) + overlayScaleX(overlay) * local.x,
+      y: Number(overlay?.ty || 0) + overlayScaleY(overlay) * local.y,
+    };
+  };
+
   const overlayWorldRect = (overlay) => {
     const bbox = overlay?.bbox;
     if (!bbox) return null;
@@ -742,20 +772,16 @@ function resolveLiveVisualState(index, scene) {
   const branchByConnector = (overlay, pt, threshold = 24) => {
     const bbox = overlay?.bbox;
     if (!overlay || !pt || !bbox) return "";
-    const sx = overlayScaleX(overlay);
-    const sy = overlayScaleY(overlay);
     const bx = Number(bbox?.x) || 0;
     const by = Number(bbox?.y) || 0;
     const bw = Math.max(0.0001, Number(bbox?.width) || 1);
     const bh = Math.max(0.0001, Number(bbox?.height) || 1);
-    const tx = Number(overlay?.tx || 0);
-    const ty = Number(overlay?.ty || 0);
     const px = Number(pt?.x || 0);
     const py = Number(pt?.y || 0);
     const connectors = [
-      { branch: "entry", x: tx + sx * (bx + bw * 0.12), y: ty + sy * (by + bh * 0.25) },
-      { branch: "straight", x: tx + sx * (bx + bw * 0.92), y: ty + sy * (by + bh * 0.18) },
-      { branch: "divert", x: tx + sx * (bx + bw * 0.82), y: ty + sy * (by + bh * 0.78) },
+      { branch: "entry", ...overlayWorldPointFromSourceLocal(overlay, bx + bw * 0.12, by + bh * 0.25) },
+      { branch: "straight", ...overlayWorldPointFromSourceLocal(overlay, bx + bw * 0.92, by + bh * 0.18) },
+      { branch: "divert", ...overlayWorldPointFromSourceLocal(overlay, bx + bw * 0.82, by + bh * 0.78) },
     ];
     let best = "";
     let bestDist = Number.POSITIVE_INFINITY;
@@ -772,14 +798,13 @@ function resolveLiveVisualState(index, scene) {
   const isDiverterEntryPoint = (overlay, pt) => {
     if (!overlay || !pt || !overlay?.bbox) return false;
     const bbox = overlay.bbox;
-    const sx = overlayScaleX(overlay);
-    const sy = overlayScaleY(overlay);
     const bx = Number(bbox?.x) || 0;
     const by = Number(bbox?.y) || 0;
     const bw = Math.max(0.0001, Number(bbox?.width) || 1);
     const bh = Math.max(0.0001, Number(bbox?.height) || 1);
-    const localX = (Number(pt.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
-    const localY = (Number(pt.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
+    const local = overlaySourceLocalPointFromWorld(overlay, pt);
+    const localX = local.x;
+    const localY = local.y;
     const nx = (localX - bx) / bw;
     const ny = (localY - by) / bh;
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) return false;
@@ -791,19 +816,15 @@ function resolveLiveVisualState(index, scene) {
   const outputBranchAtPoint = (overlay, pt, threshold = 40) => {
     const bbox = overlay?.bbox;
     if (!overlay || !pt || !bbox) return "";
-    const sx = overlayScaleX(overlay);
-    const sy = overlayScaleY(overlay);
     const bx = Number(bbox?.x) || 0;
     const by = Number(bbox?.y) || 0;
     const bw = Math.max(0.0001, Number(bbox?.width) || 1);
     const bh = Math.max(0.0001, Number(bbox?.height) || 1);
-    const tx = Number(overlay?.tx || 0);
-    const ty = Number(overlay?.ty || 0);
     const px = Number(pt?.x || 0);
     const py = Number(pt?.y || 0);
     const outputs = [
-      { branch: "straight", x: tx + sx * (bx + bw * 0.92), y: ty + sy * (by + bh * 0.18) },
-      { branch: "divert", x: tx + sx * (bx + bw * 0.82), y: ty + sy * (by + bh * 0.78) },
+      { branch: "straight", ...overlayWorldPointFromSourceLocal(overlay, bx + bw * 0.92, by + bh * 0.18) },
+      { branch: "divert", ...overlayWorldPointFromSourceLocal(overlay, bx + bw * 0.82, by + bh * 0.78) },
     ];
     let best = "";
     let bestDist = Number.POSITIVE_INFINITY;
@@ -885,8 +906,9 @@ function resolveLiveVisualState(index, scene) {
         const pt = endpoints[idx];
         const dist = distancePointToRect(pt, rect);
         if (dist > 28 || dist >= bestDistance) continue;
-        const localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, overlayScaleX(overlay));
-        const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, overlayScaleY(overlay));
+        const local = overlaySourceLocalPointFromWorld(overlay, pt);
+        const localX = local.x;
+        const localY = local.y;
         const branch = branchByConnector(overlay, pt, 40) || branchAtLocalPoint(localX, localY, overlay.bbox);
         if (branch !== "entry" && !isDiverterEntryPoint(overlay, pt)) continue;
         const entryEndpointIndex = idx === 0 ? 0 : shape.points.length - 1;
@@ -925,8 +947,9 @@ function resolveLiveVisualState(index, scene) {
       if (!rect) continue;
       const dist = distancePointToRect(pt, rect);
       if (dist > 42 || dist >= best.dist) continue;
-      const localX = (Number(pt.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, overlayScaleX(overlay));
-      const localY = (Number(pt.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, overlayScaleY(overlay));
+      const local = overlaySourceLocalPointFromWorld(overlay, pt);
+      const localX = local.x;
+      const localY = local.y;
       const localBranch = branchAtLocalPoint(localX, localY, overlay.bbox);
       const branch = outputBranchAtPoint(overlay, pt, 42) || (localBranch === "straight" || localBranch === "divert" ? localBranch : "");
       if (!branch) continue;

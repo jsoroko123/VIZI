@@ -14,6 +14,41 @@ function parseViewBox(svgEl) {
   return { x: 0, y: 0, w: VB_W, h: VB_H };
 }
 
+const ROOT_PRESENTATION_ATTRS = [
+  "class",
+  "style",
+  "fill",
+  "fill-opacity",
+  "fill-rule",
+  "opacity",
+  "stroke",
+  "stroke-width",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "stroke-miterlimit",
+  "stroke-dasharray",
+  "stroke-dashoffset",
+  "stroke-opacity",
+  "vector-effect",
+  "color",
+];
+
+function preserveRootPresentation(svgEl, inner) {
+  const attrs = ROOT_PRESENTATION_ATTRS
+    .map((name) => {
+      const value = svgEl.getAttribute(name);
+      return value == null || value === "" ? null : [name, value];
+    })
+    .filter(Boolean);
+  if (!attrs.length) return inner;
+
+  const doc = svgEl.ownerDocument;
+  const wrapper = doc.createElementNS("http://www.w3.org/2000/svg", "g");
+  attrs.forEach(([name, value]) => wrapper.setAttribute(name, value));
+  wrapper.innerHTML = inner;
+  return wrapper.outerHTML;
+}
+
 export function stripOuterSvg(svgText) {
   const doc = new DOMParser().parseFromString(svgText, "image/svg+xml");
   const svgEl = doc.querySelector("svg");
@@ -30,7 +65,7 @@ export function stripOuterSvg(svgText) {
     });
   });
 
-  const inner = svgEl.innerHTML;
+  const inner = preserveRootPresentation(svgEl, svgEl.innerHTML);
   const vb = parseViewBox(svgEl);
   return { inner, vb };
 }

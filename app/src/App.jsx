@@ -100,7 +100,6 @@ import {
   listAllRoutes,
   listDbTables,
   listEquipmentByProject,
-  listEquipmentTypes,
   listRoutesByProject,
   listTableRecords,
   listTableRecordsUnscoped,
@@ -174,6 +173,10 @@ const DESIGN_LIVE_UPDATES_DISABLED_KEY = "vizi_design_live_updates_disabled";
 const LIVE_SAVED_TRENDS_KEY = "vizi_live_saved_trends";
 const DRAWER_SIZES_KEY = "vizi_drawer_sizes";
 const DRAWER_FULLSCREEN_KEY = "vizi_drawer_fullscreen";
+const PROPERTIES_DOCK_WIDTH_KEY = "vizi_properties_dock_width";
+const PROPERTIES_DOCK_WIDTH_DEFAULT = 360;
+const PROPERTIES_DOCK_WIDTH_MIN = 300;
+const PROPERTIES_DOCK_WIDTH_MAX = 640;
 const SVG_RAW_CACHE_MAX = 96;
 const LIVE_ALARM_BAR_H = 34;
 const LIVE_ALARM_MARQUEE_DURATION_SEC = 30;
@@ -199,6 +202,17 @@ const OPC_UI_HIGH_LOAD_TAG_THRESHOLD = 400;
 const OPC_LIVE_KEY_HARD_CAP = 400;
 const OPC_CANVAS_KEY_HARD_CAP = 400;
 const OPC_STATUS_STREAM_KEY_LIMIT = 400;
+
+function clampPropertiesDockWidth(value, viewportWidth = 1400) {
+  const width = Number(value);
+  const vpW = Number(viewportWidth) || 1400;
+  const max = Math.max(
+    PROPERTIES_DOCK_WIDTH_MIN,
+    Math.min(PROPERTIES_DOCK_WIDTH_MAX, Math.floor(vpW * 0.5))
+  );
+  if (!Number.isFinite(width)) return Math.min(PROPERTIES_DOCK_WIDTH_DEFAULT, max);
+  return Math.min(max, Math.max(PROPERTIES_DOCK_WIDTH_MIN, width));
+}
 const LIVE_MODE_LOADING_TOAST_ID = "vizi-live-mode-loading";
 const LIVE_EQUIPMENT_STATUS_TAG_ALIASES = [
   "Mode_Status",
@@ -230,6 +244,29 @@ const LIVE_EQUIPMENT_STATUS_TAG_ALIASES = [
   "MaintMode",
   "StsMaint",
   "MaintActive",
+  "Force",
+  "ForceTrue",
+  "i_Force",
+  "o_Force",
+  "i_ForceTrue",
+  "o_ForceTrue",
+  "ForceMode",
+  "i_ForceMode",
+  "o_ForceMode",
+  "StsForce",
+  "ForceActive",
+  "Description",
+  "description",
+  "Desc",
+  "desc",
+  "EquipmentDescription",
+  "equipmentDescription",
+  "equipment_description",
+  "HMI_Description",
+  "HMIDescription",
+  "Tooltip",
+  "ToolTip",
+  "tooltip",
   "HMI_Control",
   "hmi_control",
   "HMIControl",
@@ -250,6 +287,24 @@ const LIVE_CANVAS_PRIMARY_STATUS_TAG_ALIASES = [
   "i_RouteID",
   "RouteColor",
   "Route Color",
+  "Force",
+  "ForceTrue",
+  "i_Force",
+  "o_Force",
+  "i_ForceTrue",
+  "o_ForceTrue",
+  "Description",
+  "description",
+  "Desc",
+  "desc",
+  "EquipmentDescription",
+  "equipmentDescription",
+  "equipment_description",
+  "HMI_Description",
+  "HMIDescription",
+  "Tooltip",
+  "ToolTip",
+  "tooltip",
 ];
 
 const getTagPathLeaf = (value) => {
@@ -261,6 +316,72 @@ const getTagPathLeaf = (value) => {
 
 const isRouteIdTagPathKey = (value) => isRouteIdTagKey(value) || isRouteIdTagKey(getTagPathLeaf(value));
 const isStateTagPathKey = (value) => isStateTagKey(value) || isStateTagKey(getTagPathLeaf(value));
+
+function cleanUdtTypeDisplayName(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withoutProvider = raw.replace(/^\[[^\]]+\]/, "").trim();
+  const parts = withoutProvider.split(/[\\/]/).map((part) => part.trim()).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : withoutProvider;
+}
+
+const NON_UDT_TYPE_IDS = new Set([
+  "atomic",
+  "client",
+  "derived",
+  "document",
+  "expression",
+  "folder",
+  "memory",
+  "opc",
+  "query",
+  "reference",
+  "system",
+]);
+
+function isUdtTypeIdCandidate(typeId, objectType) {
+  const cleaned = cleanUdtTypeDisplayName(typeId);
+  if (!cleaned) return false;
+  const objectText = String(objectType || "").trim().toLowerCase();
+  if (objectText.includes("udt")) return true;
+  return !NON_UDT_TYPE_IDS.has(cleaned.toLowerCase());
+}
+
+function getUdtTypeDisplayName(entry) {
+  const explicit = cleanUdtTypeDisplayName(
+    entry?.udtName || entry?.udtType || entry?.templateName || ""
+  );
+  if (explicit) return explicit;
+  const typeId = cleanUdtTypeDisplayName(entry?.typeId || "");
+  if (isUdtTypeIdCandidate(typeId, entry?.objectType)) return typeId;
+  return "";
+}
+
+function buildSvgETypeOptionsFromUdts({ templates = [], tags = [], currentValues = [] } = {}) {
+  const seen = new Set();
+  const out = [];
+  const add = (value) => {
+    const clean = cleanUdtTypeDisplayName(value);
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(clean);
+  };
+
+  (Array.isArray(templates) ? templates : []).forEach((template) => {
+    add(template?.name || template?.typeName || template?.udtName || template?.path);
+  });
+
+  (Array.isArray(tags) ? tags : []).forEach((tag) => {
+    add(getUdtTypeDisplayName(tag));
+  });
+
+  (Array.isArray(currentValues) ? currentValues : []).forEach(add);
+
+  out.sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+  return out;
+}
 
 const buildStateTagParentPathCandidates = (tagPath, tagName, groupName, topicName) => {
   const out = [];
@@ -642,6 +763,17 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [exportBasis, setExportBasis] = useState({ w: 1600, h: 900 }); // affects Perspective "basis"
   const [showZoom, setShowZoom] = useState(true);
   const [designDockExpanded, setDesignDockExpanded] = useState(false);
+  const [propertiesDockWidth, setPropertiesDockWidth] = useState(() => {
+    if (typeof window === "undefined") return PROPERTIES_DOCK_WIDTH_DEFAULT;
+    try {
+      return clampPropertiesDockWidth(
+        localStorage.getItem(PROPERTIES_DOCK_WIDTH_KEY),
+        window.innerWidth
+      );
+    } catch {
+      return PROPERTIES_DOCK_WIDTH_DEFAULT;
+    }
+  });
   const [showGrid, setShowGrid] = useState(() => {
     if (typeof window === "undefined") return true;
     try {
@@ -1132,7 +1264,6 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   const [databaseEmbeddedRouteName, setDatabaseEmbeddedRouteName] = useState("");
   const [databaseDataOnlyMode, setDatabaseDataOnlyMode] = useState(false);
   const [databaseTablesForMenu, setDatabaseTablesForMenu] = useState([]);
-  const [svgETypeOptions, setSvgETypeOptions] = useState([]);
   const [securityRolesForMenu, setSecurityRolesForMenu] = useState([]);
   const [showTeamChat, setShowTeamChat] = useState(false);
   const {
@@ -1483,36 +1614,6 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       if (alive) setDatabaseTablesForMenu([]);
     }
     loadDbTablesForMenu();
-    return () => {
-      alive = false;
-    };
-  }, [isPageVisible]);
-
-  useEffect(() => {
-    let alive = true;
-    async function loadSvgETypeOptions() {
-      try {
-        const data = await listEquipmentTypes(200);
-        if (!alive) return;
-        const rows = Array.isArray(data?.rows) ? data.rows : [];
-        const seen = new Set();
-        const out = [];
-        for (const row of rows) {
-          const value = String(
-            row?.name ?? row?.etype ?? row?.type ?? row?.value ?? row?.label ?? ""
-          ).trim();
-          if (!value) continue;
-          const key = value.toLowerCase();
-          if (seen.has(key)) continue;
-          seen.add(key);
-          out.push(value);
-        }
-        if (alive) setSvgETypeOptions(out);
-      } catch {
-        if (alive) setSvgETypeOptions([]);
-      }
-    }
-    loadSvgETypeOptions();
     return () => {
       alive = false;
     };
@@ -2294,6 +2395,18 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     });
     return map;
   }, [opcTemplates]);
+
+  const svgETypeOptions = useMemo(
+    () =>
+      buildSvgETypeOptionsFromUdts({
+        templates: opcTemplates,
+        tags: Array.isArray(opcTagsAllRef.current) && opcTagsAllRef.current.length
+          ? opcTagsAllRef.current
+          : opcTags,
+        currentValues: (Array.isArray(svgOverlays) ? svgOverlays : []).map((overlay) => overlay?.eType),
+      }),
+    [opcTags, opcTemplates, svgOverlays]
+  );
 
   const opcTagMappingMap = useMemo(() => {
     const map = new Map();
@@ -5690,11 +5803,19 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   );
 
   const selectedOverlayTagGroupPath = useMemo(() => {
-    const currentOverlay =
-      selectedOverlayIds.length === 1 && selectedIds.length === 0
-        ? svgOverlayById.get(String(selectedOverlayIds[0] || "")) || null
-        : null;
-    return normalizeTagValue(currentOverlay?.tagPath || "");
+    if (selectedIds.length !== 0 || selectedOverlayIds.length === 0) {
+      return "";
+    }
+    const selectedOverlays = selectedOverlayIds
+      .map((id) => svgOverlayById.get(String(id || "")) || null)
+      .filter(Boolean)
+      .filter((overlay) => !overlay?.embeddedView && (overlay?.widget || !isStaticSvgOverlay(overlay)));
+    if (!selectedOverlays.length) {
+      return "";
+    }
+    const values = selectedOverlays.map((overlay) => normalizeTagValue(overlay?.tagPath || ""));
+    const first = values[0] || "";
+    return values.every((value) => value === first) ? first : "";
   }, [selectedOverlayIds, selectedIds, svgOverlayById]);
 
   const svgTagGroupMenuOptions = useMemo(() => {
@@ -7499,6 +7620,9 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       if (key === "c") {
         e.preventDefault();
         copySelection();
+      } else if (key === "x") {
+        e.preventDefault();
+        cutSelection();
       } else if (key === "v") {
         e.preventDefault();
         pasteClipboard();
@@ -7895,6 +8019,24 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
+      localStorage.setItem(PROPERTIES_DOCK_WIDTH_KEY, String(Math.round(propertiesDockWidth)));
+    } catch {
+      // ignore storage write errors
+    }
+  }, [propertiesDockWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onResize = () => {
+      setPropertiesDockWidth((prev) => clampPropertiesDockWidth(prev, window.innerWidth));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
       localStorage.setItem(
         DRAWER_FULLSCREEN_KEY,
         JSON.stringify({
@@ -8008,13 +8150,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       setHiddenTagBubbleIds([]);
     }
   }, [showTagPaths, hiddenTagBubbleIds.length]);
-  const svgPropertiesStickyOpen =
-    showHUD &&
-    selectedIds.length === 0 &&
-    selectedOverlayIds.length === 1 &&
-    !!svgOverlays.find(
-      (o) => String(o?.id || "") === String(selectedOverlayIds[0] || "") && !o?.widget
-    );
+  const svgPropertiesStickyOpen = false;
   useEffect(() => {
     if (importOpen && !svgPropertiesStickyOpen) setShowHUD(false);
   }, [importOpen, svgPropertiesStickyOpen]);
@@ -9280,6 +9416,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return inferETypeFromFileKey(fileKey);
   }
 
+  function hasExplicitSvgEType(rawSvg) {
+    try {
+      const doc = new DOMParser().parseFromString(String(rawSvg || ""), "image/svg+xml");
+      const svg = doc.querySelector("svg");
+      if (!svg) return false;
+      const direct =
+        String(svg.getAttribute("eType") || "").trim() ||
+        String(svg.getAttribute("etype") || "").trim() ||
+        String(svg.getAttribute("data-etype") || "").trim();
+      if (direct) return true;
+      return Boolean(svg.querySelector("[eType],[etype],[data-etype]"));
+    } catch {
+      return false;
+    }
+  }
+
   function extractKeySize(rawSvg) {
     try {
       const doc = new DOMParser().parseFromString(rawSvg, "image/svg+xml");
@@ -9328,6 +9480,43 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const x2 = Math.max(a.x, b.x);
     const y2 = Math.max(a.y, b.y);
     return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  }
+
+  function rectFromAspectLockedCorner(anchor, pointer, startBounds, corner, options = {}) {
+    const key = String(corner || "").toUpperCase();
+    const ax = Number(anchor?.x || 0);
+    const ay = Number(anchor?.y || 0);
+    const px = Number(pointer?.x || ax);
+    const py = Number(pointer?.y || ay);
+    const baseW = Math.max(1e-6, Number(startBounds?.w ?? startBounds?.width ?? 1));
+    const baseH = Math.max(1e-6, Number(startBounds?.h ?? startBounds?.height ?? 1));
+    const minW = Math.max(1e-6, Number(options?.minW || 1));
+    const minH = Math.max(1e-6, Number(options?.minH || 1));
+    const rawW = Math.max(1e-6, Math.abs(px - ax));
+    const rawH = Math.max(1e-6, Math.abs(py - ay));
+    const scale = Math.max(rawW / baseW, rawH / baseH, minW / baseW, minH / baseH);
+    const w = Math.max(minW, baseW * scale);
+    const h = Math.max(minH, baseH * scale);
+    let x = ax;
+    let y = ay;
+
+    if (key === "TL") {
+      x = ax - w;
+      y = ay - h;
+    } else if (key === "TR") {
+      x = ax;
+      y = ay - h;
+    } else if (key === "BR") {
+      x = ax;
+      y = ay;
+    } else if (key === "BL") {
+      x = ax - w;
+      y = ay;
+    } else {
+      return rectFrom2Points(anchor, pointer);
+    }
+
+    return { x, y, w, h, width: w, height: h };
   }
 
   function constrainHV(from, to) {
@@ -9698,14 +9887,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setSelectedOverlayIds([]);
   }
 
-  const preserveSvgSelectionWhileHudOpen =
-    showHUD &&
-    selectedIds.length === 0 &&
-    selectedOverlayIds.length === 1 &&
-    !!(() => {
-      const overlay = svgOverlayById.get(String(selectedOverlayIds[0] || ""));
-      return overlay && !overlay?.widget;
-    })();
+  const preserveSvgSelectionWhileHudOpen = false;
 
   function isShapeSelectableByMode(shape) {
     if (!shape || typeof shape !== "object") return false;
@@ -9986,6 +10168,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return Number.isFinite(s) && s > 0 ? s : 1;
   }
 
+  function isStaticSvgOverlay(overlay) {
+    return Boolean(overlay?.static || overlay?.isStatic || overlay?.staticSvg);
+  }
+
   function isConveyorScrewOverlay(overlay) {
     const raw = String(resolveOverlayEType(overlay) || overlay?.eType || "").trim().toLowerCase();
     if (!raw) return false;
@@ -9993,9 +10179,31 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return compact.includes("conveyorscrew") || (compact.includes("conveyor") && compact.includes("screw"));
   }
 
+  function overlayRotationDegrees(overlay) {
+    const value = Number(overlay?.rotation ?? overlay?.rotate ?? overlay?.angle);
+    if (!Number.isFinite(value)) return 0;
+    const normalized = value % 360;
+    return Math.abs(normalized) < 0.0001 ? 0 : normalized;
+  }
+
   function overlayWorldRect(o, bb) {
     const sx = overlayScaleX(o);
     const sy = overlayScaleY(o);
+    if (overlayRotationDegrees(o) && bb) {
+      const points = [
+        worldFromLocal(o, Number(bb.x || 0), Number(bb.y || 0)),
+        worldFromLocal(o, Number(bb.x || 0) + Number(bb.width || 0), Number(bb.y || 0)),
+        worldFromLocal(o, Number(bb.x || 0) + Number(bb.width || 0), Number(bb.y || 0) + Number(bb.height || 0)),
+        worldFromLocal(o, Number(bb.x || 0), Number(bb.y || 0) + Number(bb.height || 0)),
+      ];
+      const xs = points.map((point) => Number(point.x || 0));
+      const ys = points.map((point) => Number(point.y || 0));
+      const minX = Math.min(...xs);
+      const minY = Math.min(...ys);
+      const maxX = Math.max(...xs);
+      const maxY = Math.max(...ys);
+      return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+    }
     return {
       x: o.tx + sx * bb.x,
       y: o.ty + sy * bb.y,
@@ -10050,7 +10258,64 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function worldFromLocal(o, lx, ly) {
     const sx = overlayScaleX(o);
     const sy = overlayScaleY(o);
+    const rotation = overlayRotationDegrees(o);
+    const bb = o?.bbox;
+    if (rotation && bb) {
+      const cx = Number(bb.x || 0) + Math.max(0.0001, Number(bb.width || 0)) / 2;
+      const cy = Number(bb.y || 0) + Math.max(0.0001, Number(bb.height || 0)) / 2;
+      const worldCx = Number(o?.tx || 0) + sx * cx;
+      const worldCy = Number(o?.ty || 0) + sy * cy;
+      const radians = rotation * Math.PI / 180;
+      const dx = (Number(lx || 0) - cx) * sx;
+      const dy = (Number(ly || 0) - cy) * sy;
+      return {
+        x: worldCx + dx * Math.cos(radians) - dy * Math.sin(radians),
+        y: worldCy + dx * Math.sin(radians) + dy * Math.cos(radians),
+      };
+    }
     return { x: o.tx + sx * lx, y: o.ty + sy * ly };
+  }
+
+  function overlayTranslationForLocalPoint(overlay, localPoint, worldPoint, scaleX, scaleY, bboxOverride = null) {
+    const bb = bboxOverride || overlay?.bbox;
+    const sx = Math.max(0.0001, Number(scaleX || 1));
+    const sy = Math.max(0.0001, Number(scaleY || 1));
+    const lx = Number(localPoint?.x || 0);
+    const ly = Number(localPoint?.y || 0);
+    const wx = Number(worldPoint?.x || 0);
+    const wy = Number(worldPoint?.y || 0);
+    const rotation = overlayRotationDegrees(overlay);
+    if (rotation && bb) {
+      const cx = Number(bb.x || 0) + Math.max(0.0001, Number(bb.width || 0)) / 2;
+      const cy = Number(bb.y || 0) + Math.max(0.0001, Number(bb.height || 0)) / 2;
+      const radians = rotation * Math.PI / 180;
+      const dx = (lx - cx) * sx;
+      const dy = (ly - cy) * sy;
+      const rotatedX = dx * Math.cos(radians) - dy * Math.sin(radians);
+      const rotatedY = dx * Math.sin(radians) + dy * Math.cos(radians);
+      return {
+        tx: wx - sx * cx - rotatedX,
+        ty: wy - sy * cy - rotatedY,
+      };
+    }
+    return { tx: wx - sx * lx, ty: wy - sy * ly };
+  }
+
+  function overlayPreviewTransformForPatch(id, tx, ty, scaleX, scaleY, bboxOverride = null) {
+    const overlay = (Array.isArray(overlaysRef.current) ? overlaysRef.current : [])
+      .find((item) => String(item?.id || "") === String(id || ""));
+    const sx = Math.max(0.0001, Number(scaleX || 1));
+    const sy = Math.max(0.0001, Number(scaleY || 1));
+    const bb = bboxOverride || overlay?.bbox;
+    const rotation = overlayRotationDegrees(overlay);
+    if (rotation && bb) {
+      const cx = Number(bb.x || 0) + Math.max(0.0001, Number(bb.width || 0)) / 2;
+      const cy = Number(bb.y || 0) + Math.max(0.0001, Number(bb.height || 0)) / 2;
+      const worldCx = Number(tx || 0) + sx * cx;
+      const worldCy = Number(ty || 0) + sy * cy;
+      return `translate(${worldCx} ${worldCy}) rotate(${rotation}) scale(${sx} ${sy}) translate(${-cx} ${-cy})`;
+    }
+    return `translate(${Number(tx || 0)} ${Number(ty || 0)}) scale(${sx} ${sy})`;
   }
 
   // ---------- Multi-drag ----------
@@ -10312,7 +10577,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const ty = Number(value?.ty || 0);
       const sx = Math.max(0.05, Number(value?.sx || 1));
       const sy = Math.max(0.05, Number(value?.sy || 1));
-      node.setAttribute("transform", `translate(${tx} ${ty}) scale(${sx} ${sy})`);
+      node.setAttribute("transform", overlayPreviewTransformForPatch(id, tx, ty, sx, sy, value?.bb));
     }
   });
 
@@ -10532,7 +10797,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       });
       const node = overlayRefs.current?.get(id);
       if (node && typeof node.setAttribute === "function") {
-        node.setAttribute("transform", `translate(${tx} ${ty}) scale(${sx} ${sy})`);
+        node.setAttribute("transform", overlayPreviewTransformForPatch(id, tx, ty, sx, sy, next?.bb));
       }
       applyOverlaySelectionPreviewUi(id, next);
       overlayResizePreviewMovedRef.current = true;
@@ -10564,7 +10829,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const ty = Number(overlay?.ty || 0);
         const sx = overlayScaleX(overlay);
         const sy = overlayScaleY(overlay);
-        node.setAttribute("transform", `translate(${tx} ${ty}) scale(${sx} ${sy})`);
+        node.setAttribute("transform", overlayPreviewTransformForPatch(id, tx, ty, sx, sy, overlay?.bbox));
         applyOverlaySelectionPreviewUi(id);
       }
     }
@@ -11010,6 +11275,106 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return readSvgRaw(getSvgEntry(fileKey), options);
   }
 
+  function buildOverlaySourcePayload(raw, fileKey) {
+    if (typeof raw !== "string") return null;
+    const parsed = stripOuterSvg(raw);
+    if (!parsed) return null;
+
+    const key = extractKeySize(raw);
+    const eType = extractSvgEType(raw, fileKey);
+    const sourceHadEType = hasExplicitSvgEType(raw);
+    const baseVb = parsed.vb;
+    let localVb = key ? { x: 0, y: 0, w: key.w, h: key.h } : baseVb;
+    if (!localVb || !Number.isFinite(localVb.w) || !Number.isFinite(localVb.h) || localVb.w <= 0 || localVb.h <= 0) {
+      localVb = { x: 0, y: 0, w: 100, h: 100 };
+    }
+
+    let inner = parsed.inner;
+    let sourceScaleX = 1;
+    let sourceScaleY = 1;
+    if (key && baseVb?.w > 0 && baseVb?.h > 0) {
+      const sx = key.w / baseVb.w;
+      const sy = key.h / baseVb.h;
+      sourceScaleX = sx;
+      sourceScaleY = sy;
+      inner = `
+      <g transform="translate(${-baseVb.x},${-baseVb.y}) scale(${sx},${sy})">
+        ${parsed.inner}
+      </g>
+    `;
+    }
+
+    return {
+      inner,
+      eType,
+      sourceHadEType,
+      bbox: { x: localVb.x, y: localVb.y, width: localVb.w, height: localVb.h },
+      sourceScaleX,
+      sourceScaleY,
+    };
+  }
+
+  function applyOverlaySourcePayload(overlay, payload) {
+    if (!overlay || !payload?.bbox) return overlay;
+
+    const previousBbox = overlay?.bbox || payload.bbox;
+    const previousWorld = previousBbox ? overlayWorldRect(overlay, previousBbox) : null;
+    const nextBbox = payload.bbox;
+    const nextScaleX = previousWorld
+      ? Math.max(0.05, Number(previousWorld.w || 0) / Math.max(1e-6, Number(nextBbox.width || 0)))
+      : overlayScaleX(overlay);
+    const nextScaleY = previousWorld
+      ? Math.max(0.05, Number(previousWorld.h || 0) / Math.max(1e-6, Number(nextBbox.height || 0)))
+      : overlayScaleY(overlay);
+    const nextTx = previousWorld
+      ? Number(previousWorld.x || 0) - nextScaleX * Number(nextBbox.x || 0)
+      : Number(overlay?.tx || 0);
+    const nextTy = previousWorld
+      ? Number(previousWorld.y || 0) - nextScaleY * Number(nextBbox.y || 0)
+      : Number(overlay?.ty || 0);
+    const nextEType = isOverlayETypeAutoManaged(overlay)
+      ? String(payload.eType || overlay?.eType || "").trim()
+      : String(overlay?.eType || payload.eType || "").trim();
+    const sourceHadEType = Boolean(payload.sourceHadEType ?? overlay?.sourceHadEType);
+    const defaultFill = sourceHadEType ? "" : DEFAULT_FILL;
+    const defaultStroke = sourceHadEType ? "" : DEFAULT_STROKE;
+
+    const nextOverlay = {
+      ...overlay,
+      inner: payload.inner,
+      bbox: nextBbox,
+      tx: nextTx,
+      ty: nextTy,
+      scale: nextScaleX,
+      scaleX: nextScaleX,
+      scaleY: nextScaleY,
+      fill: overlay?.fill || defaultFill,
+      stroke: overlay?.stroke || defaultStroke,
+      strokeMode: overlay?.strokeMode || "preserve",
+      eType: nextEType,
+      eTypeAuto: isOverlayETypeAutoManaged(overlay),
+      sourceHadEType,
+      popupParamsJson: overlay?.popupParamsJson || "{}",
+      sourceScaleX: payload.sourceScaleX,
+      sourceScaleY: payload.sourceScaleY,
+    };
+
+    const changed =
+      String(overlay?.inner || "") !== String(nextOverlay.inner || "") ||
+      Math.abs(Number(overlay?.tx || 0) - Number(nextOverlay.tx || 0)) > 0.001 ||
+      Math.abs(Number(overlay?.ty || 0) - Number(nextOverlay.ty || 0)) > 0.001 ||
+      Math.abs(overlayScaleX(overlay) - overlayScaleX(nextOverlay)) > 0.0001 ||
+      Math.abs(overlayScaleY(overlay) - overlayScaleY(nextOverlay)) > 0.0001 ||
+      String(overlay?.eType || "") !== String(nextOverlay.eType || "") ||
+      Boolean(overlay?.sourceHadEType) !== Boolean(nextOverlay.sourceHadEType) ||
+      String(overlay?.strokeMode || "") !== String(nextOverlay.strokeMode || "") ||
+      JSON.stringify(overlay?.bbox || null) !== JSON.stringify(nextOverlay.bbox || null) ||
+      Number(overlay?.sourceScaleX || 1) !== Number(nextOverlay.sourceScaleX || 1) ||
+      Number(overlay?.sourceScaleY || 1) !== Number(nextOverlay.sourceScaleY || 1);
+
+    return changed ? nextOverlay : overlay;
+  }
+
   useEffect(() => {
     if (isLiveMode) return undefined;
     let cancelled = false;
@@ -11174,6 +11539,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     const key = extractKeySize(raw);
     const eType = extractSvgEType(raw, fileKey);
+    const sourceHadEType = hasExplicitSvgEType(raw);
+    const defaultFill = sourceHadEType ? "" : DEFAULT_FILL;
+    const defaultStroke = sourceHadEType ? "" : DEFAULT_STROKE;
     const hasKey = !!(key && key.w > 0 && key.h > 0);
     const baseVb = parsed.vb;
     let localVb = key ? { x: 0, y: 0, w: key.w, h: key.h } : baseVb;
@@ -11213,11 +11581,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
       tx: clamped.tx,
       ty: clamped.ty,
       scale,
-      fill: DEFAULT_FILL,
-      stroke: DEFAULT_STROKE,
+      fill: defaultFill,
+      stroke: defaultStroke,
       tagPath: "",
       eType,
       eTypeAuto: true,
+      sourceHadEType,
       popupParamsJson: "{}",
       bbox,
       sourceScaleX,
@@ -11568,6 +11937,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!shapesCopy.length && !overlaysCopy.length) return;
 
     clipboardRef.current = { shapes: shapesCopy, overlays: overlaysCopy, pasteCount: 0 };
+  }
+
+  function cutSelection() {
+    const hasSelection =
+      (Array.isArray(selPolyRef.current) && selPolyRef.current.length > 0) ||
+      (Array.isArray(selOverRef.current) && selOverRef.current.length > 0) ||
+      selectedIds.length > 0 ||
+      selectedOverlayIds.length > 0;
+    if (!hasSelection) return;
+    copySelection();
+    deleteSelected();
   }
 
   function pasteClipboard() {
@@ -11960,6 +12340,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (tool !== "select") return;
     if (!isShapeIdSelectableByMode(id)) return;
     e.stopPropagation();
+    setShowHUD(false);
 
     if (editingId === id) {
       if (e.shiftKey) {
@@ -12169,6 +12550,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function onOverlayMouseDown(e, id) {
     if (tool !== "select") return;
     if (!areOverlaysSelectableByMode()) return;
+    setShowHUD(false);
     if (Number(e?.detail || 0) > 1) return; // let double-click open properties in Move mode
     const target = e.target;
     const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
@@ -12220,6 +12602,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function onOverlayDoubleClick(e, id) {
     if (!areOverlaysSelectableByMode()) return;
+    if (String(e?.type || "").toLowerCase() !== "dblclick" || Number(e?.button || 0) !== 0) return;
     e.stopPropagation();
     e.preventDefault();
     setSelectedOverlayIds([id]);
@@ -12280,12 +12663,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setOverlayResize({
       id,
       isWidget: !!o?.widget,
+      corner: String(corner || "").toUpperCase(),
       anchorLocal,
       anchorWorld,
+      startWorld,
+      startPointerWorld: p,
       startDist,
       origScaleX: overlayScaleX(o),
       origScaleY: overlayScaleY(o),
       baseBbox: bb,
+      startBounds: overlayWorldRect(o, bb),
     });
   }
 
@@ -12355,6 +12742,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     const key = extractKeySize(raw);
     const parsedEType = extractSvgEType(raw, fileKey);
+    const sourceHadEType = hasExplicitSvgEType(raw);
+    const defaultFill = sourceHadEType ? "" : DEFAULT_FILL;
+    const defaultStroke = sourceHadEType ? "" : DEFAULT_STROKE;
     const baseVb = parsed.vb; // {x,y,w,h}
 
     // ? If key exists, overlay local coords become 0..key.w / 0..key.h
@@ -12413,16 +12803,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
         tx: clamped.tx,
         ty: clamped.ty,
         scale,
-        fill: DEFAULT_FILL,
+        fill: defaultFill,
         tagPath: "",
         eType: String(overlayExtras?.eType || parsedEType || "").trim(),
         eTypeAuto: overlayExtras?.eType != null ? false : true,
+        sourceHadEType,
         popupParamsJson: "{}",
         bbox,
         sourceScaleX,
         sourceScaleY,
         ...overlayExtras,
-        stroke: DEFAULT_STROKE,
+        stroke: defaultStroke,
         strokeMode: "preserve",
       },
     ]);
@@ -12911,6 +13302,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     fill: DEFAULT_FILL,
     stroke: DEFAULT_STROKE,
     strokeWidth: "",
+    rotation: "0",
+    static: false,
+    flipX: false,
+    flipY: false,
     arrowStart: "none",
     arrowEnd: "none",
     lineStyle: "solid",   // ? NEW
@@ -12925,6 +13320,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     textAlign: "start",
     widgetKind: "",
     widgetTitle: "",
+    widgetTextColor: "",
     widgetLocation: "",
     widgetMin: "0",
     widgetMax: "100",
@@ -12984,6 +13380,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         fill: DEFAULT_FILL,
         stroke: DEFAULT_STROKE,
         strokeWidth: "",
+        rotation: "0",
+        static: false,
+        flipX: false,
+        flipY: false,
         arrowStart: "none",
         arrowEnd: "none",
         x: "",
@@ -12998,6 +13398,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         textAlign: "start",
         widgetKind: "",
         widgetTitle: "",
+        widgetTextColor: "",
         widgetLocation: "",
         widgetMin: "0",
         widgetMax: "100",
@@ -13088,6 +13489,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
           fill,
           stroke,
           strokeWidth,
+          rotation: String(Number.isFinite(Number(o.rotation ?? o.rotate ?? o.angle)) ? Number(o.rotation ?? o.rotate ?? o.angle) : 0),
+          static: isStaticSvgOverlay(o),
+          flipX: Boolean(o.flipX || o.flippedX || o.mirrorX),
+          flipY: Boolean(o.flipY || o.flippedY || o.mirrorY),
           arrowStart: "none",
           arrowEnd: "none",
           lineStyle: "solid",
@@ -13102,6 +13507,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           textAlign: "start",
           widgetKind: String(w.kind || ""),
           widgetTitle: String(w.title || ""),
+          widgetTextColor: String(w.textColor ?? w.fontColor ?? ""),
           widgetLocation: String(w.location || ""),
           widgetMin: String(Number.isFinite(Number(w.min)) ? Number(w.min) : 0),
           widgetMax: String(Number.isFinite(Number(w.max)) ? Number(w.max) : 100),
@@ -13162,6 +13568,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
           fill,
           stroke,
           strokeWidth: "",
+          static: false,
+          flipX: false,
+          flipY: false,
           arrowStart: "none",
           arrowEnd: "none",
           lineStyle: "solid",
@@ -13176,6 +13585,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           textAlign: String(t.anchor ?? "start"),
           widgetKind: "",
           widgetTitle: "",
+          widgetTextColor: "",
           widgetLocation: "",
           widgetMin: "0",
           widgetMax: "100",
@@ -13216,6 +13626,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
       }
     }
 
+    if (!isSingle && selectedIds.length === 0 && selectedOverlayIds.length > 0) {
+      const selectedOverlayGroup = selectedOverlayIds
+        .map((id) => svgOverlayById.get(String(id || "")))
+        .filter(Boolean)
+        .filter((overlay) => !overlay?.embeddedView && (overlay?.widget || !isStaticSvgOverlay(overlay)));
+      if (selectedOverlayGroup.length > 0) {
+        const groupTagPaths = selectedOverlayGroup.map((overlay) => String(overlay?.tagPath || "").trim());
+        const firstGroupTagPath = groupTagPaths[0] || "";
+        tagPath = groupTagPaths.every((value) => value === firstGroupTagPath) ? firstGroupTagPath : "";
+      }
+    }
 
     commitHudFields({
       id: idText,
@@ -13227,6 +13648,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
       fill,
       stroke,
       strokeWidth,
+      static: false,
+      flipX: false,
+      flipY: false,
       arrowStart,
       arrowEnd,
       lineStyle, // ? NEW
@@ -13241,6 +13665,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       textAlign: "start",
       widgetKind: "",
       widgetTitle: "",
+      widgetTextColor: "",
       widgetLocation: "",
       widgetMin: "0",
       widgetMax: "100",
@@ -13280,11 +13705,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   }, [
     selectedBBox,
+    selectedIds,
+    selectedOverlayIds,
     isSingle,
     singleKind,
     singleId,
     shapes,
     svgOverlays,
+    svgOverlayById,
     commitHudFields,
     dragAll,
     dragHandle,
@@ -13328,11 +13756,63 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
+  function applyOverlayGroupTagPath(nextRaw) {
+    if (isSingle || selectedIds.length > 0 || selectedOverlayIds.length === 0) return;
+    const selected = new Set(selectedOverlayIds.map((id) => String(id || "")).filter(Boolean));
+    if (!selected.size) return;
+    const v = String(nextRaw ?? "").trim();
+
+    setSvgOverlays((prev) =>
+      prev.map((o) => {
+        const id = String(o?.id || "");
+        if (!selected.has(id) || o?.embeddedView || (!o?.widget && isStaticSvgOverlay(o))) {
+          return o;
+        }
+        return { ...o, tagPath: v };
+      })
+    );
+    scheduleProjectAutoSave();
+  }
+
   function applySingleFaultSim(nextValue) {
     if (!isSingle || singleKind !== "SVG" || !singleId) return;
     const enabled = Boolean(nextValue);
     setSvgOverlays((prev) =>
       prev.map((o) => (o.id === singleId ? { ...o, faultSimulated: enabled } : o))
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleSvgFlip(axis, nextValue) {
+    if (!isSingle || singleKind !== "SVG" || !singleId) return;
+    const field = String(axis || "").trim().toLowerCase() === "y" ? "flipY" : "flipX";
+    const hasExplicitValue = typeof nextValue === "boolean";
+    setSvgOverlays((prev) =>
+      prev.map((o) =>
+        o.id === singleId
+          ? { ...o, [field]: hasExplicitValue ? nextValue : !Boolean(o?.[field]) }
+          : o
+      )
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleSvgRotation(nextValue) {
+    if (!isSingle || singleKind !== "SVG" || !singleId) return;
+    const raw = Number.parseFloat(nextValue);
+    if (!Number.isFinite(raw)) return;
+    const rotation = Number(raw.toFixed(3));
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.id === singleId ? { ...o, rotation } : o))
+    );
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleSvgStatic(nextValue) {
+    if (!isSingle || singleKind !== "SVG" || !singleId) return;
+    const enabled = Boolean(nextValue);
+    setSvgOverlays((prev) =>
+      prev.map((o) => (o.id === singleId ? { ...o, static: enabled } : o))
     );
     scheduleProjectAutoSave();
   }
@@ -13572,6 +14052,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!isSingle || singleKind !== "Widget" || !singleId) return;
     const source = next && typeof next === "object" ? next : {};
     const title = String(source.widgetTitle ?? "").trim();
+    const sourceHasTextColor = Object.prototype.hasOwnProperty.call(source, "widgetTextColor");
+    const textColor = String(source.widgetTextColor ?? "").trim();
     const location = String(source.widgetLocation ?? "").trim();
     const unit = String(source.widgetUnit ?? "").trim();
     const min = Number(source.widgetMin);
@@ -13681,6 +14163,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widget: {
             ...current,
             title,
+            textColor: sourceHasTextColor ? textColor : String(current.textColor ?? current.fontColor ?? ""),
             location,
             unit,
             min: Number.isFinite(min) ? min : Number(current.min ?? 0) || 0,
@@ -13749,25 +14232,115 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, lineStyle: v } : s)));
   };
 
+  const SVG_STROKE_TARGET_SELECTOR = "path,rect,circle,ellipse,polygon,polyline,line";
+
+  function isProtectedSvgStroke(value) {
+    const v = String(value || "").trim().toLowerCase();
+    return (
+      !v ||
+      v === "none" ||
+      v === "transparent" ||
+      v === "currentcolor" ||
+      v === "inherit" ||
+      v.startsWith("url(")
+    );
+  }
+
+  function readSvgStylePaint(el, name) {
+    const style = String(el?.getAttribute?.("style") || "");
+    if (!style) return "";
+    const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+    return String(match?.[1] || "").trim();
+  }
+
+  function readSvgPaint(el, name) {
+    const attrValue = String(el?.getAttribute?.(name) || "").trim();
+    if (attrValue) return attrValue;
+    return readSvgStylePaint(el, name);
+  }
+
+  function readInheritedSvgPaint(el, root, name) {
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const value = readSvgPaint(node, name);
+      if (value) return value;
+      if (node === root) break;
+      node = node.parentNode || null;
+    }
+    return "";
+  }
+
+  function setSvgPaint(el, name, value) {
+    if (!el) return;
+    el.setAttribute(name, value);
+    const style = String(el.getAttribute("style") || "");
+    if (!style || !new RegExp(`${name}\\s*:`, "i").test(style)) return;
+    el.setAttribute(
+      "style",
+      style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+    );
+  }
+
+  function serializeSvgInner(root) {
+    const serializer = new XMLSerializer();
+    return Array.from(root.childNodes)
+      .map((node) => serializer.serializeToString(node))
+      .join("");
+  }
+
   function updateSvgInnerStroke(inner, stroke) {
     if (!inner) return inner;
+    const strokeColor = String(stroke || "").trim();
+    if (!strokeColor) return inner;
+
+    try {
+      const doc = new DOMParser().parseFromString(
+        `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`,
+        "image/svg+xml"
+      );
+      if (!doc.querySelector("parsererror")) {
+        const root = doc.documentElement;
+        const strokeElements = Array.from(root.querySelectorAll(`${SVG_STROKE_TARGET_SELECTOR},g`));
+        const shapes = Array.from(root.querySelectorAll(SVG_STROKE_TARGET_SELECTOR));
+        let changed = false;
+
+        strokeElements.forEach((el) => {
+          const directStroke = readSvgPaint(el, "stroke");
+          if (!isProtectedSvgStroke(directStroke)) {
+            setSvgPaint(el, "stroke", strokeColor);
+            changed = true;
+          }
+        });
+
+        shapes.forEach((el) => {
+          const directStroke = readSvgPaint(el, "stroke");
+          if (directStroke) return;
+          const inheritedStroke = readInheritedSvgPaint(el.parentNode || el, root, "stroke");
+          if (!isProtectedSvgStroke(inheritedStroke)) {
+            setSvgPaint(el, "stroke", strokeColor);
+            changed = true;
+          }
+        });
+
+        if (!changed && shapes.length) {
+          setSvgPaint(shapes[0], "stroke", strokeColor);
+        }
+
+        return serializeSvgInner(root);
+      }
+    } catch {
+      // Use the legacy string fallback below.
+    }
 
     let next = inner;
-
-    // Replace attribute form: stroke="..."
-    next = next.replace(/stroke=['"][^'"]*['"]/gi, `stroke="${stroke}"`);
-
-    // Replace style form: style="...; stroke: ...; ..."
-    next = next.replace(/stroke:\s*[^;\"']+/gi, `stroke:${stroke}`);
-
-    // If no stroke attribute present, inject into first shape element.
+    next = next.replace(/stroke=['"][^'"]*['"]/gi, `stroke="${strokeColor}"`);
+    next = next.replace(/stroke:\s*[^;\"']+/gi, `stroke:${strokeColor}`);
     if (!/stroke=['"][^'"]*['"]/i.test(next)) {
       next = next.replace(
         /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*)>/i,
-        `<$1$2 stroke="${stroke}">`
+        `<$1$2 stroke="${strokeColor}">`
       );
     }
-
     return next;
   }
 
@@ -13819,10 +14392,42 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (!Number.isFinite(sw) || sw <= 0) return inner;
     const value = formatSvgAttributeNumber(sw);
 
-    let next = stripSvgVectorEffect(inner);
+    const stripped = stripSvgVectorEffect(inner);
+    try {
+      const doc = new DOMParser().parseFromString(
+        `<svg xmlns="http://www.w3.org/2000/svg">${String(stripped || "")}</svg>`,
+        "image/svg+xml"
+      );
+      if (!doc.querySelector("parsererror")) {
+        const root = doc.documentElement;
+        Array.from(root.querySelectorAll("*")).forEach((el) => {
+          if (readSvgPaint(el, "stroke-width")) {
+            setSvgPaint(el, "stroke-width", value);
+          }
+        });
+
+        Array.from(root.querySelectorAll(SVG_STROKE_TARGET_SELECTOR)).forEach((el) => {
+          const directStroke = readSvgPaint(el, "stroke");
+          if (directStroke && isProtectedSvgStroke(directStroke)) return;
+          if (!directStroke) {
+            const inheritedStroke = readInheritedSvgPaint(el.parentNode || el, root, "stroke");
+            if (!isProtectedSvgStroke(inheritedStroke)) {
+              setSvgPaint(el, "stroke", inheritedStroke);
+            }
+          }
+          setSvgPaint(el, "stroke-width", value);
+          el.setAttribute("vector-effect", "non-scaling-stroke");
+        });
+
+        return serializeSvgInner(root);
+      }
+    } catch {
+      // Use the legacy string fallback below.
+    }
+
+    let next = stripped;
     next = next.replace(/stroke-width\s*=\s*['"][^'"]*['"]/gi, `stroke-width="${value}"`);
     next = next.replace(/stroke-width\s*:\s*[^;\"']+/gi, `stroke-width:${value}`);
-
     next = next.replace(
       /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*?)(\/?)>/gi,
       (match, tag, attrs, selfClose) => {
@@ -13838,7 +14443,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
         return `<${tag}${nextAttrs}${selfClose}>`;
       }
     );
-
     return next;
   }
 
@@ -13898,6 +14502,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function applySingleFill(nextFill) {
     const c = String(nextFill || "").trim();
     if (!c) return;
+    let didUpdate = false;
 
     if (isSingle && singleKind === "SVG" && singleId) {
       setSvgOverlays((prev) =>
@@ -13905,15 +14510,23 @@ const CONTENT_FIT_HEADROOM = 0.94;
           o.id === singleId ? { ...o, fill: c, inner: updateSvgInnerFill(o.inner, c) } : o
         )
       );
+      didUpdate = true;
     } else if (isSingle && singleKind === "Text" && singleId) {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, fill: c } : s)));
+      didUpdate = true;
     } else if (isSingle && singleKind === "Polyline" && singleId) {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, fill: c } : s)));
+      didUpdate = true;
     } else if (!isSingle && Array.isArray(selectedIds) && selectedIds.length) {
       const sel = new Set(selectedIds.map((id) => String(id || "")));
       setShapes((prev) =>
         prev.map((s) => (sel.has(String(s?.id || "")) ? { ...s, fill: c } : s))
       );
+      didUpdate = true;
+    }
+
+    if (didUpdate) {
+      scheduleProjectAutoSave();
     }
   }
 
@@ -13983,6 +14596,66 @@ const CONTENT_FIT_HEADROOM = 0.94;
       selOverRef.current = orderedSelectedIds;
     }
     scheduleProjectAutoSave();
+  }
+
+  function moveSelectedOverlaysForward() {
+    const selIds = (selOverRef.current || selectedOverlayIds || []).map((id) => String(id || "")).filter(Boolean);
+    const sel = new Set(selIds);
+    if (!sel.size) return;
+    const baseList = Array.isArray(overlaysRef.current) && overlaysRef.current.length ? overlaysRef.current : svgOverlays;
+    const orderedSelectedIds = (Array.isArray(baseList) ? baseList : [])
+      .filter((o) => sel.has(String(o?.id || "")))
+      .map((o) => o.id);
+    let changed = false;
+    setSvgOverlays((prev) => {
+      const next = [...(Array.isArray(prev) ? prev : [])];
+      for (let i = next.length - 2; i >= 0; i -= 1) {
+        const currentSelected = sel.has(String(next[i]?.id || ""));
+        const nextSelected = sel.has(String(next[i + 1]?.id || ""));
+        if (currentSelected && !nextSelected) {
+          [next[i], next[i + 1]] = [next[i + 1], next[i]];
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      overlaysRef.current = next;
+      return next;
+    });
+    if (orderedSelectedIds.length) {
+      setSelectedOverlayIds(orderedSelectedIds);
+      selOverRef.current = orderedSelectedIds;
+    }
+    if (changed) scheduleProjectAutoSave();
+  }
+
+  function moveSelectedOverlaysBackward() {
+    const selIds = (selOverRef.current || selectedOverlayIds || []).map((id) => String(id || "")).filter(Boolean);
+    const sel = new Set(selIds);
+    if (!sel.size) return;
+    const baseList = Array.isArray(overlaysRef.current) && overlaysRef.current.length ? overlaysRef.current : svgOverlays;
+    const orderedSelectedIds = (Array.isArray(baseList) ? baseList : [])
+      .filter((o) => sel.has(String(o?.id || "")))
+      .map((o) => o.id);
+    let changed = false;
+    setSvgOverlays((prev) => {
+      const next = [...(Array.isArray(prev) ? prev : [])];
+      for (let i = 1; i < next.length; i += 1) {
+        const currentSelected = sel.has(String(next[i]?.id || ""));
+        const prevSelected = sel.has(String(next[i - 1]?.id || ""));
+        if (currentSelected && !prevSelected) {
+          [next[i - 1], next[i]] = [next[i], next[i - 1]];
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      overlaysRef.current = next;
+      return next;
+    });
+    if (orderedSelectedIds.length) {
+      setSelectedOverlayIds(orderedSelectedIds);
+      selOverRef.current = orderedSelectedIds;
+    }
+    if (changed) scheduleProjectAutoSave();
   }
 
   function applyBBoxFromHud(next, options = {}) {
@@ -14366,7 +15039,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function onLiveOverlayMouseDown(e, id) {
     if (PERF_HARD_REALTIME_MODE) return;
     const overlay = (svgOverlays || []).find((o) => String(o?.id || "") === String(id || ""));
-    if (overlay?.widget) return;
+    if (overlay?.widget || isStaticSvgOverlay(overlay)) return;
     const target = e.target;
     const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
     if (target && typeof target.closest === "function") {
@@ -15033,13 +15706,21 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (e.key === "PageUp") {
         e.preventDefault();
         e.stopPropagation();
-        bringSelectedOverlaysToFront();
+        if (e.shiftKey) {
+          bringSelectedOverlaysToFront();
+        } else {
+          moveSelectedOverlaysForward();
+        }
         return;
       }
       if (e.key === "PageDown") {
         e.preventDefault();
         e.stopPropagation();
-        sendSelectedOverlaysToBack();
+        if (e.shiftKey) {
+          sendSelectedOverlaysToBack();
+        } else {
+          moveSelectedOverlaysBackward();
+        }
       }
     };
 
@@ -15049,6 +15730,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     isLiveMode,
     selectedOverlayIds,
     bringSelectedOverlaysToFront,
+    moveSelectedOverlaysForward,
+    moveSelectedOverlaysBackward,
     sendSelectedOverlaysToBack,
   ]);
 
@@ -15227,8 +15910,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     setContextMenu({ x: e.clientX, y: e.clientY, mode: hit ? "element" : "empty" });
     setLastContextPoint(p);
-    if (!hit) setContextImportQuery("");
-    setContextSvgMenuOpen(false);
+    if (!hit) {
+      setContextImportQuery("");
+      setContextSvgMenuPos({
+        x: (Number(e.clientX) || 0) + 216,
+        y: Number(e.clientY) || 0,
+      });
+      setContextSvgMenuOpen(true);
+      window.requestAnimationFrame(() => svgMenuInputRef.current?.focus?.());
+    } else {
+      setContextSvgMenuOpen(false);
+    }
   }
 
 
@@ -15488,9 +16180,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
       p = smoothDragPointer(p, overlayResize?.kind === "group" ? "overlay-resize-group" : "overlay-resize");
       if (overlayResize?.kind === "group") {
         const anchorWorld = overlayResize.anchorWorld || { x: 0, y: 0 };
+        const startWorld = overlayResize.startWorld || null;
+        const startPointerWorld = overlayResize.startPointerWorld || null;
+        const resizePoint = startWorld && startPointerWorld
+          ? {
+              x: Number(startWorld.x || 0) + (Number(p.x || 0) - Number(startPointerWorld.x || 0)),
+              y: Number(startWorld.y || 0) + (Number(p.y || 0) - Number(startPointerWorld.y || 0)),
+            }
+          : p;
         const startDist = Math.max(1, Number(overlayResize.startDist || 1));
-        const d = Math.max(1, distance(p, anchorWorld));
-        const ratio = d / startDist;
+        const d = Math.max(1, distance(resizePoint, anchorWorld));
+        const ratio = Math.max(0.05, Math.min(100, d / startDist));
         const base = Array.isArray(overlayResize.overlays) ? overlayResize.overlays : [];
         const currentById = new Map(
           (Array.isArray(overlaysRef.current) ? overlaysRef.current : []).map((overlay) => [
@@ -15504,22 +16204,31 @@ const CONTENT_FIT_HEADROOM = 0.94;
           if (!idKey) return;
           const current = currentById.get(idKey) || null;
           const isConveyorScrew = isConveyorScrewOverlay(current || rec);
-          const sxBase = Math.max(0.05, Number(rec?.sx || 1) * ratio);
-          const syBase = Math.max(0.05, Number(rec?.sy || 1) * ratio);
-          const uniform = Math.max(0.05, Math.max(Number(rec?.sx || 1), Number(rec?.sy || 1)) * ratio);
+          const sxBase = Math.max(0.05, Math.min(100, Number(rec?.sx || 1) * ratio));
+          const syBase = Math.max(0.05, Math.min(100, Number(rec?.sy || 1) * ratio));
+          const uniform = Math.max(0.05, Math.min(100, Math.max(Number(rec?.sx || 1), Number(rec?.sy || 1)) * ratio));
           const sx = isConveyorScrew ? uniform : sxBase;
           const sy = isConveyorScrew ? uniform : syBase;
-          const txRaw = anchorWorld.x + (Number(rec?.tx || 0) - anchorWorld.x) * ratio;
-          const tyRaw = anchorWorld.y + (Number(rec?.ty || 0) - anchorWorld.y) * ratio;
           const bb = rec?.bb || current?.bbox || overlayLocalBBox(idKey);
           if (!bb) {
+            const txRaw = anchorWorld.x + (Number(rec?.tx || 0) - anchorWorld.x) * ratio;
+            const tyRaw = anchorWorld.y + (Number(rec?.ty || 0) - anchorWorld.y) * ratio;
             previewById.set(idKey, { tx: txRaw, ty: tyRaw, sx, sy });
             return;
           }
-          const clamped = clampOverlayTransformToCanvas(txRaw, tyRaw, sx, sy, bb);
+          const snapshotScaleX = Math.max(0.0001, Number(rec?.sx || 1));
+          const snapshotScaleY = Math.max(0.0001, Number(rec?.sy || 1));
+          const startTopLeft = {
+            x: Number(rec?.tx || 0) + snapshotScaleX * Number(bb.x || 0),
+            y: Number(rec?.ty || 0) + snapshotScaleY * Number(bb.y || 0),
+          };
+          const nextTopLeft = {
+            x: anchorWorld.x + (startTopLeft.x - anchorWorld.x) * ratio,
+            y: anchorWorld.y + (startTopLeft.y - anchorWorld.y) * ratio,
+          };
           previewById.set(idKey, {
-            tx: clamped.tx,
-            ty: clamped.ty,
+            tx: nextTopLeft.x - sx * Number(bb.x || 0),
+            ty: nextTopLeft.y - sy * Number(bb.y || 0),
             sx,
             sy,
             bb: {
@@ -15536,31 +16245,33 @@ const CONTENT_FIT_HEADROOM = 0.94;
       const {
         id,
         isWidget,
-        anchorLocal,
         anchorWorld,
-        startDist,
+        anchorLocal,
+        baseBbox,
         origScaleX,
         origScaleY,
-        baseBbox,
+        startDist,
+        startWorld,
+        startPointerWorld,
       } = overlayResize;
+      const resizePoint = startWorld && startPointerWorld
+        ? {
+            x: Number(startWorld.x || 0) + (Number(p.x || 0) - Number(startPointerWorld.x || 0)),
+            y: Number(startWorld.y || 0) + (Number(p.y || 0) - Number(startPointerWorld.y || 0)),
+          }
+        : p;
       const o = svgOverlays.find((x) => x.id === id);
       if (!o) return;
 
       if (isWidget) {
         const minW = 80;
         const minH = 60;
-        const leftRaw = Math.min(anchorWorld.x, p.x);
-        const rightRaw = Math.max(anchorWorld.x, p.x);
-        const topRaw = Math.min(anchorWorld.y, p.y);
-        const bottomRaw = Math.max(anchorWorld.y, p.y);
+        const leftRaw = Math.min(anchorWorld.x, resizePoint.x);
+        const rightRaw = Math.max(anchorWorld.x, resizePoint.x);
+        const topRaw = Math.min(anchorWorld.y, resizePoint.y);
+        const bottomRaw = Math.max(anchorWorld.y, resizePoint.y);
         const width = Math.max(minW, rightRaw - leftRaw);
         const height = Math.max(minH, bottomRaw - topRaw);
-        const clamped = clampOverlayTransformToCanvas(leftRaw, topRaw, 1, 1, {
-          x: 0,
-          y: 0,
-          width,
-          height,
-        });
         enqueueCanvasUpdate("overlays", () => setSvgOverlays((prev) => {
           const next = prev.map((x) =>
             x.id === id
@@ -15569,8 +16280,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
                   scale: 1,
                   scaleX: 1,
                   scaleY: 1,
-                  tx: clamped.tx,
-                  ty: clamped.ty,
+                  tx: leftRaw,
+                  ty: topRaw,
                   bbox: { x: 0, y: 0, width, height },
                 }
               : x
@@ -15581,23 +16292,26 @@ const CONTENT_FIT_HEADROOM = 0.94;
         return;
       }
 
-      const d = Math.max(1, distance(p, anchorWorld));
-      const ratio = d / startDist;
-      const isConveyorScrew = isConveyorScrewOverlay(o);
-      const uniformScale = Math.max(0.05, Math.max(origScaleX, origScaleY) * ratio);
-      const newScaleX = isConveyorScrew ? uniformScale : Math.max(0.05, origScaleX * ratio);
-      const newScaleY = isConveyorScrew ? uniformScale : Math.max(0.05, origScaleY * ratio);
-
-      const newTxRaw = anchorWorld.x - newScaleX * anchorLocal.x;
-      const newTyRaw = anchorWorld.y - newScaleY * anchorLocal.y;
       const bb = baseBbox || o?.bbox || overlayLocalBBox(id);
-      const clamped = bb
-        ? clampOverlayTransformToCanvas(newTxRaw, newTyRaw, newScaleX, newScaleY, bb)
-        : { tx: newTxRaw, ty: newTyRaw };
+      if (!bb) return;
+      const ratio = Math.max(
+        0.05,
+        Math.min(100, Math.max(0.0001, distance(resizePoint, anchorWorld)) / Math.max(1, Number(startDist || 1)))
+      );
+      const newScaleX = Math.max(0.05, Math.min(100, Math.max(0.0001, Number(origScaleX || 1)) * ratio));
+      const newScaleY = Math.max(0.05, Math.min(100, Math.max(0.0001, Number(origScaleY || 1)) * ratio));
+      const nextTranslation = overlayTranslationForLocalPoint(
+        o,
+        anchorLocal,
+        anchorWorld,
+        newScaleX,
+        newScaleY,
+        bb
+      );
 
       applyOverlayResizePreview(new Map([[String(id), {
-        tx: clamped.tx,
-        ty: clamped.ty,
+        tx: nextTranslation.tx,
+        ty: nextTranslation.ty,
         sx: newScaleX,
         sy: newScaleY,
         bb: bb
@@ -16038,9 +16752,25 @@ const CONTENT_FIT_HEADROOM = 0.94;
       { key: "BR", cx: x + w, cy: y + h },
       { key: "BL", cx: x, cy: y + h },
     ];
+    const minSide = Math.max(0, Math.min(Math.abs(w), Math.abs(h)));
+    const resizeHitRadius = minSide > 0
+      ? Math.max(3, Math.min(12, minSide * 0.18))
+      : 12;
 
     return (
       <g data-overlay-selection-ui={o.id}>
+        <rect
+          data-overlay-selection-move-hit={o.id}
+          x={x}
+          y={y}
+          width={Math.max(1, w)}
+          height={Math.max(1, h)}
+          fill="transparent"
+          pointerEvents="all"
+          style={{ cursor: "move" }}
+          onMouseDown={(e) => onOverlayMouseDown(e, o.id)}
+          onDoubleClick={(e) => onOverlayDoubleClick(e, o.id)}
+        />
         <rect
           data-overlay-selection-box={o.id}
           x={x}
@@ -16064,12 +16794,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
               fill="white"
               stroke="#2b6cff"
               strokeWidth={2}
+              pointerEvents="none"
             />
             <circle
               data-overlay-selection-hit={`${o.id}:${c.key}`}
               cx={c.cx}
               cy={c.cy}
-              r={16}
+              r={resizeHitRadius}
               fill="transparent"
               style={{ cursor: altDown ? "move" : "nwse-resize" }}
               onMouseDown={(e) => onOverlayHandleDown(e, o.id, c.key)}
@@ -16175,6 +16906,57 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
+  function alignSelectedOverlays(axis = "horizontal") {
+    if (selectedIds.length > 0) return;
+    const ids = (selOverRef.current || selectedOverlayIds || [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean);
+    if (ids.length < 2) return;
+
+    const selected = new Set(ids);
+    const items = (overlaysRef.current || svgOverlays || [])
+      .filter((o) => selected.has(String(o?.id || "")))
+      .map((o) => {
+        const bb = o?.bbox || overlayLocalBBox(o.id);
+        if (!bb) return null;
+        const wr = overlayWorldRect(o, bb);
+        return {
+          id: o.id,
+          centerX: Number(wr.x || 0) + Number(wr.w || 0) / 2,
+          centerY: Number(wr.y || 0) + Number(wr.h || 0) / 2,
+        };
+      })
+      .filter(Boolean);
+    if (items.length < 2) return;
+
+    const horizontal = String(axis || "").toLowerCase().startsWith("h");
+    const min = Math.min(...items.map((item) => horizontal ? item.centerY : item.centerX));
+    const max = Math.max(...items.map((item) => horizontal ? item.centerY : item.centerX));
+    const target = (min + max) / 2;
+    if (!Number.isFinite(target)) return;
+
+    const deltaById = new Map();
+    items.forEach((item) => {
+      deltaById.set(item.id, horizontal
+        ? { dx: 0, dy: target - item.centerY }
+        : { dx: target - item.centerX, dy: 0 });
+    });
+
+    pushHistory();
+    setSvgOverlays((prev) =>
+      prev.map((o) => {
+        const delta = deltaById.get(o.id);
+        if (!delta) return o;
+        return {
+          ...o,
+          tx: Number(o.tx || 0) + delta.dx,
+          ty: Number(o.ty || 0) + delta.dy,
+        };
+      })
+    );
+    scheduleProjectAutoSave();
+  }
+
   function onOverlayGroupHandleDown(e, corner) {
     if (tool !== "select") return;
     e.stopPropagation();
@@ -16192,6 +16974,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const startWorld = corners[corner];
     const anchorWorld = opposite[corner];
     if (!startWorld || !anchorWorld) return;
+    const startPointerWorld = svgPoint(e);
     const startDist = Math.max(1, distance(startWorld, anchorWorld));
     const overlays = (selectedOverlayIds || [])
       .map((id) => {
@@ -16221,6 +17004,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
     setOverlayResize({
       kind: "group",
       anchorWorld,
+      startWorld,
+      startPointerWorld,
       startDist,
       overlays,
     });
@@ -16505,33 +17290,45 @@ const CONTENT_FIT_HEADROOM = 0.94;
     Math.max(12, contextSvgMenuPos.y),
     Math.max(12, winH - subMenuSize.h - 12)
   );
-  const contextSingleSvg =
-    selectedOverlayIds.length === 1 && selectedIds.length === 0
-      ? svgOverlayById.get(String(selectedOverlayIds[0] || "")) || null
-      : null;
-  const contextSingleSupportsTagMenu = useMemo(() => {
-    const overlay = contextSingleSvg;
-    if (!overlay) return false;
-    const widgetKind = String(overlay?.widget?.kind || "").trim().toLowerCase();
-    const isLineWidget =
-      widgetKind === "linechart" ||
-      widgetKind === "line_chart" ||
-      widgetKind === "line-chart";
-    const isBarWidget =
-      widgetKind === "barchart" ||
-      widgetKind === "bar_chart" ||
-      widgetKind === "bar-chart";
-    if (isLineWidget || isBarWidget) return false;
+  const contextTagMenuOverlays = useMemo(() => {
+    if (contextMenu?.mode !== "element" || selectedIds.length !== 0 || selectedOverlayIds.length === 0) {
+      return [];
+    }
+    return selectedOverlayIds
+      .map((id) => svgOverlayById.get(String(id || "")) || null)
+      .filter(Boolean)
+      .filter((overlay) => !overlay?.embeddedView && (overlay?.widget || !isStaticSvgOverlay(overlay)));
+  }, [contextMenu?.mode, selectedIds.length, selectedOverlayIds, svgOverlayById]);
+  const contextTagMenuSupports = useMemo(() => {
+    if (!contextTagMenuOverlays.length) return false;
+    return contextTagMenuOverlays.some((overlay) => {
+      const widgetKind = String(overlay?.widget?.kind || "").trim().toLowerCase();
+      const isLineWidget =
+        widgetKind === "linechart" ||
+        widgetKind === "line_chart" ||
+        widgetKind === "line-chart";
+      const isBarWidget =
+        widgetKind === "barchart" ||
+        widgetKind === "bar_chart" ||
+        widgetKind === "bar-chart";
+      if (isLineWidget || isBarWidget) return false;
 
-    const source = String(
-      overlay?.sourceKey || overlay?.key || overlay?.name || overlay?.id || ""
-    )
-      .trim()
-      .toLowerCase();
-    const isBinSvg = !overlay?.widget && source.includes("bin");
-    if (isBinSvg) return false;
-    return true;
-  }, [contextSingleSvg]);
+      const source = String(
+        overlay?.sourceKey || overlay?.key || overlay?.name || overlay?.id || ""
+      )
+        .trim()
+        .toLowerCase();
+      const isBinSvg = !overlay?.widget && source.includes("bin");
+      return !isBinSvg;
+    });
+  }, [contextTagMenuOverlays]);
+  const contextTagMenuIsGroup = contextTagMenuOverlays.length > 1;
+  const contextTagMenuHasMixedTagPaths = useMemo(() => {
+    if (contextTagMenuOverlays.length < 2) return false;
+    const values = contextTagMenuOverlays.map((overlay) => normalizeTagValue(overlay?.tagPath || ""));
+    const first = values[0] || "";
+    return values.some((value) => value !== first);
+  }, [contextTagMenuOverlays]);
   const topMenuTextButtonStyle = {
     border: "1px solid var(--border)",
     background: "var(--bg-elev)",
@@ -17993,8 +18790,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
     : 320;
   const svgImportDockWidthPx = !isLiveMode && importOpen ? sideDockWidthPx : 0;
   const widgetDockWidthPx = !isLiveMode && widgetOpen ? sideDockWidthPx : 0;
+  const propertiesDockResizeMaxPx = Math.max(
+    PROPERTIES_DOCK_WIDTH_MIN,
+    Math.min(PROPERTIES_DOCK_WIDTH_MAX, Math.floor((winW || 1400) * 0.5))
+  );
+  const propertiesDockResizableWidthPx = clampPropertiesDockWidth(propertiesDockWidth, winW || 1400);
   const propertiesDockWidthPx = !isLiveMode && showHUD
-    ? (isMobileViewport ? Math.min(340, Math.max(250, Math.floor((winW || 0) * 0.88))) : 360)
+    ? (isMobileViewport
+        ? Math.min(340, Math.max(250, Math.floor((winW || 0) * 0.88)))
+        : propertiesDockResizableWidthPx)
     : 0;
   const leftToolPanelWidthPx = Math.max(svgImportDockWidthPx, widgetDockWidthPx);
   const leftToolDockOffsetPx = designDockWidthPx + propertiesDockWidthPx;
@@ -18467,6 +19271,30 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   return (
     <div
+      onMouseDownCapture={(e) => {
+        if (isLiveMode || !showHUD || Number(e?.button || 0) !== 0) return;
+        const target = e.target;
+        if (
+          target instanceof Element &&
+          (
+            ["input", "textarea", "select", "option", "button", "label"].includes(
+              String(target.tagName || "").toLowerCase()
+            ) ||
+            target.closest(
+              [
+                "[data-vizi-properties-panel='1']",
+                "[data-vizi-dropdown='1']",
+                "[data-vizi-dropdown-menu='1']",
+                "[data-vizi-quick-tag-picker='1']",
+                "[data-vizi-quick-svg-picker='1']",
+              ].join(", ")
+            )
+          )
+        ) {
+          return;
+        }
+        setShowHUD(false);
+      }}
       style={{
         position: "fixed",
         inset: 0,
@@ -18519,6 +19347,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         setHudFields={setHudFields}
         applySingleId={applySingleId}
         applySingleTagPath={applySingleTagPath}
+        applyOverlayGroupTagPath={applyOverlayGroupTagPath}
         applySingleBinBinding={applySingleBinBinding}
         applySingleEType={applySingleEType}
         applySinglePopupParamsJson={applySinglePopupParamsJson}
@@ -18526,6 +19355,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
         applySingleFill={applySingleFill}
         applySingleStroke={applySingleStroke}
         applySingleSvgStrokeWidth={applySingleSvgStrokeWidth}
+        applySingleSvgStatic={applySingleSvgStatic}
+        applySingleSvgFlip={applySingleSvgFlip}
+        applySingleSvgRotation={applySingleSvgRotation}
         applySingleFaultSim={applySingleFaultSim}
         applyOverlaySpacing={applyOverlaySpacing}
         bringSelectedOverlaysToFront={bringSelectedOverlaysToFront}
@@ -18556,7 +19388,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
         dockLeft={designDockWidthPx}
         dockTop={TOP_BAR_H}
         dockBottom={0}
-        dockWidth={360}
+        dockWidth={propertiesDockWidthPx || propertiesDockResizableWidthPx}
+        dockMinWidth={PROPERTIES_DOCK_WIDTH_MIN}
+        dockMaxWidth={propertiesDockResizeMaxPx}
+        resizableDocked={!isMobileViewport}
+        onDockWidthChange={(nextWidth) => {
+          setPropertiesDockWidth(clampPropertiesDockWidth(nextWidth, winW || 1400));
+        }}
       />
       ) : null}
 
@@ -19720,6 +20558,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
             </div>
           )}
 
+          {contextMenu.mode === "element" && (selectedIds.length > 0 || selectedOverlayIds.length > 0) && (
+            <div
+              style={contextMenuItemStyle()}
+              onClick={() => {
+                cutSelection();
+                setContextMenu(null);
+              }}
+            >
+              Cut
+            </div>
+          )}
+
           {contextMenu.mode === "element" &&
             (clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
             <div
@@ -19742,6 +20592,30 @@ const CONTENT_FIT_HEADROOM = 0.94;
               }}
             >
               Duplicate
+            </div>
+          )}
+
+          {contextMenu.mode === "element" && selectedIds.length === 0 && selectedOverlayIds.length > 1 && (
+            <div
+              style={contextMenuItemStyle()}
+              onClick={() => {
+                alignSelectedOverlays("horizontal");
+                setContextMenu(null);
+              }}
+            >
+              Align Horizontally
+            </div>
+          )}
+
+          {contextMenu.mode === "element" && selectedIds.length === 0 && selectedOverlayIds.length > 1 && (
+            <div
+              style={contextMenuItemStyle()}
+              onClick={() => {
+                alignSelectedOverlays("vertical");
+                setContextMenu(null);
+              }}
+            >
+              Align Vertically
             </div>
           )}
 
@@ -19943,9 +20817,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
               Hide Properties
             </div>
           )}
-          {contextMenu.mode === "element" && contextSingleSvg && contextSingleSupportsTagMenu && (
+          {contextMenu.mode === "element" && contextTagMenuSupports && (
             <div style={{ padding: "8px 12px", display: "grid", gap: 6 }}>
-              <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>Tag</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 700 }}>
+                {contextTagMenuIsGroup ? `Tag (${contextTagMenuOverlays.length} SVGs)` : "Tag"}
+              </div>
               <input
                 type="text"
                 value={contextSvgTagQuery}
@@ -19962,10 +20838,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 }}
               />
               <select
-                value={String(contextSingleSvg.tagPath || "")}
+                value={contextTagMenuHasMixedTagPaths ? "" : String(selectedOverlayTagGroupPath || "")}
                 onChange={(e) => {
                   const v = String(e.target.value || "").trim();
-                  applySingleTagPath(v);
+                  if (contextTagMenuIsGroup) {
+                    applyOverlayGroupTagPath(v);
+                  } else {
+                    applySingleTagPath(v);
+                  }
                   setContextMenu(null);
                 }}
                 style={{
@@ -20132,6 +21012,32 @@ const CONTENT_FIT_HEADROOM = 0.94;
               padding: "8px 10px 10px",
             }}
           >
+            {(clipboardRef.current.shapes.length > 0 || clipboardRef.current.overlays.length > 0) && (
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  pasteClipboard();
+                  setContextMenu(null);
+                  setContextSvgMenuOpen(false);
+                }}
+                style={{
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "8px 10px",
+                  marginBottom: 8,
+                  borderRadius: 10,
+                  border: "1px solid var(--selected-border)",
+                  background: "var(--selected-bg)",
+                  cursor: "pointer",
+                  color: "var(--selected-text)",
+                  fontSize: 12,
+                  fontWeight: 800,
+                }}
+              >
+                Paste
+              </button>
+            )}
             {contextGrouped.length === 0 ? (
               <div style={{ color: "var(--text-muted)", fontSize: 12 }}>No matches.</div>
             ) : (

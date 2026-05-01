@@ -37,6 +37,7 @@ final class SvgLibraryGatewayService {
     private static final String DEFAULT_SVG_GRADIENT_START = "#e7e9ec";
     private static final String DEFAULT_SVG_GRADIENT_END = "#b8bdc4";
     private static final double DEFAULT_SVG_WORLD_STROKE_WIDTH = 1.5d;
+    private static final int MAX_IMPORTED_SVG_CHARS = 2_000_000;
     private static final Pattern SVG_TAG_PATTERN = Pattern.compile("<svg\\b[^>]*>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     private static final Pattern STOP_TAG_PATTERN = Pattern.compile("<stop\\b[^>]*>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     private static final Pattern STYLE_ATTR_PATTERN = Pattern.compile("\\bstyle\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
@@ -45,6 +46,8 @@ final class SvgLibraryGatewayService {
     private static final Pattern FILL_ATTR_PATTERN = Pattern.compile("\\bfill\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     private static final Pattern STROKE_WIDTH_ATTR_PATTERN = Pattern.compile("\\bstroke-width\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
     private static final Pattern SHAPE_TAG_PATTERN = Pattern.compile("<(path|rect|circle|ellipse|polygon|polyline|line)\\b([^>]*?)(/?)>", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern PRIMARY_FILL_ID_PATTERN = Pattern.compile("^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|hopper|tank|silo|bin|chute|rect5|path4|vent|vent_open|vent_closed|body[-_].*|.*[-_]body)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern EXCLUDED_FILL_ID_PATTERN = Pattern.compile("(arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator)", Pattern.CASE_INSENSITIVE);
     private static final Pattern NUMBER_PATTERN = Pattern.compile("[-+]?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?");
     private static final String README_TEXT = String.join(
         System.lineSeparator(),
@@ -100,6 +103,57 @@ final class SvgLibraryGatewayService {
             return null;
         }
         return normalizeExternalSvgFile(resolvedPath, normalizeRelativePath(rawRelativePath));
+    }
+
+    SvgLibraryUploadResponse uploadExternalSvg(String rawFileName, String rawFolder, String rawContent) {
+        ensureExternalLibraryDirectory();
+
+        String fileName = sanitizeImportedFileName(rawFileName);
+        if (fileName.isBlank()) {
+            return SvgLibraryUploadResponse.error("Choose an .svg file to import.", externalLibraryDisplayPath);
+        }
+        if (!fileName.toLowerCase(Locale.ROOT).endsWith(".svg")) {
+            return SvgLibraryUploadResponse.error("Only .svg files can be imported.", externalLibraryDisplayPath);
+        }
+
+        String rawSvg = rawContent == null ? "" : rawContent;
+        if (rawSvg.isBlank() || !SVG_TAG_PATTERN.matcher(rawSvg).find()) {
+            return SvgLibraryUploadResponse.error("The selected file does not contain an <svg> root element.", externalLibraryDisplayPath);
+        }
+        if (rawSvg.length() > MAX_IMPORTED_SVG_CHARS) {
+            return SvgLibraryUploadResponse.error("The selected SVG is too large to import.", externalLibraryDisplayPath);
+        }
+
+        String folder = normalizeRelativePath(rawFolder);
+        String relativePath = normalizeRelativePath(folder.isBlank() ? fileName : folder + "/" + fileName);
+        if (relativePath.isBlank() || !isSvgPath(relativePath)) {
+            return SvgLibraryUploadResponse.error("The selected file name could not be used safely.", externalLibraryDisplayPath);
+        }
+
+        try {
+            Path root = externalLibraryDirectory.toAbsolutePath().normalize();
+            Path target = root.resolve(relativePath).normalize();
+            if (!target.startsWith(root)) {
+                return SvgLibraryUploadResponse.error("The selected file name could not be used safely.", externalLibraryDisplayPath);
+            }
+
+            String normalized = normalizeExternalSvgMarkup(rawSvg, relativePath);
+            Files.createDirectories(target.getParent());
+            Files.writeString(target, normalized, StandardCharsets.UTF_8);
+
+            SvgCatalogEntry entry = new SvgCatalogEntry(
+                "./assets/SVG_Files/External/" + relativePath,
+                fallbackNameFromKey(relativePath),
+                buildExternalUrlCandidates(relativePath),
+                "external"
+            );
+            return new SvgLibraryUploadResponse(true, relativePath, entry, externalLibraryDisplayPath, "");
+        } catch (IOException e) {
+            return SvgLibraryUploadResponse.error(
+                "Failed to import SVG: " + String.valueOf(e.getMessage()),
+                externalLibraryDisplayPath
+            );
+        }
     }
 
     private Path resolveExternalLibraryDirectory(GatewayContext gatewayContext) {
@@ -318,17 +372,25 @@ final class SvgLibraryGatewayService {
             return original;
         }
 
-        SvgDimensions dimensions = resolveSvgDimensions(svgMatcher.group());
+        String originalRootTag = svgMatcher.group();
+        boolean sourceHasEType = hasExplicitEType(original);
+        SvgDimensions dimensions = resolveSvgDimensions(originalRootTag);
         String localStrokeWidth = formatSvgNumber(
             DEFAULT_SVG_WORLD_STROKE_WIDTH / Math.max(0.0001d, dimensions.scale())
         );
 
         String normalized = removeVectorEffect(original);
-        normalized = replaceStrokeAttributes(normalized);
-        normalized = replaceDefaultFillAttributes(normalized);
+        if (!sourceHasEType) {
+            normalized = replaceStrokeAttributes(normalized);
+            normalized = replaceDefaultFillAttributes(normalized);
+        }
         normalized = replaceStrokeWidthAttributes(normalized, localStrokeWidth);
-        normalized = normalizeStyleAttributes(normalized, localStrokeWidth);
+        normalized = normalizeStyleAttributes(normalized, localStrokeWidth, !sourceHasEType);
+        if (!sourceHasEType) {
+            normalized = normalizeClosedStrokeOnlyShapeFills(normalized);
+        }
         normalized = ensureShapeStrokeWidths(normalized, localStrokeWidth);
+        normalized = markPrimaryFillTarget(normalized);
 
         Matcher refreshedSvgMatcher = SVG_TAG_PATTERN.matcher(normalized);
         if (refreshedSvgMatcher.find()) {
@@ -342,8 +404,10 @@ final class SvgLibraryGatewayService {
             updatedRootTag = upsertAttribute(updatedRootTag, "kewidth", formatSvgNumber(dimensions.keyWidth()));
             updatedRootTag = upsertAttribute(updatedRootTag, "keheight", formatSvgNumber(dimensions.keyHeight()));
             updatedRootTag = upsertAttribute(updatedRootTag, "eType", eType);
-            updatedRootTag = upsertAttribute(updatedRootTag, "fill", DEFAULT_SVG_FILL);
-            updatedRootTag = upsertAttribute(updatedRootTag, "stroke", DEFAULT_SVG_STROKE);
+            if (!sourceHasEType) {
+                updatedRootTag = upsertAttribute(updatedRootTag, "fill", DEFAULT_SVG_FILL);
+                updatedRootTag = upsertAttribute(updatedRootTag, "stroke", DEFAULT_SVG_STROKE);
+            }
             updatedRootTag = upsertAttribute(updatedRootTag, "stroke-width", localStrokeWidth);
             updatedRootTag = upsertAttribute(updatedRootTag, "stroke-linejoin", "round");
             updatedRootTag = upsertAttribute(updatedRootTag, "stroke-linecap", "round");
@@ -371,7 +435,7 @@ final class SvgLibraryGatewayService {
     private String replaceDefaultFillAttributes(String text) {
         return FILL_ATTR_PATTERN.matcher(text).replaceAll((match) -> {
             String value = trimToEmpty(match.group(2));
-            if (!shouldNormalizeFill(value)) {
+            if (!shouldNormalizeExternalFill(value)) {
                 return match.group();
             }
             String quote = match.group(1);
@@ -390,7 +454,7 @@ final class SvgLibraryGatewayService {
         });
     }
 
-    private String normalizeStyleAttributes(String text, String localStrokeWidth) {
+    private String normalizeStyleAttributes(String text, String localStrokeWidth, boolean normalizePaint) {
         return STYLE_ATTR_PATTERN.matcher(text).replaceAll((match) -> {
             String quote = match.group(1);
             String[] declarations = String.valueOf(match.group(2)).split(";");
@@ -402,18 +466,20 @@ final class SvgLibraryGatewayService {
                 }
                 int colonIndex = trimmed.indexOf(':');
                 if (colonIndex <= 0) {
-                    nextDeclarations.add(trimmed);
                     continue;
                 }
                 String property = trimToEmpty(trimmed.substring(0, colonIndex));
                 String value = trimToEmpty(trimmed.substring(colonIndex + 1));
+                if (property.isBlank() || value.isBlank()) {
+                    continue;
+                }
                 String propertyKey = property.toLowerCase(Locale.ROOT);
                 if ("vector-effect".equals(propertyKey)) {
                     continue;
                 }
-                if ("stroke".equals(propertyKey) && !shouldPreservePaint(value)) {
+                if (normalizePaint && "stroke".equals(propertyKey) && !shouldPreservePaint(value)) {
                     value = DEFAULT_SVG_STROKE;
-                } else if ("fill".equals(propertyKey) && shouldNormalizeFill(value)) {
+                } else if (normalizePaint && "fill".equals(propertyKey) && shouldNormalizeExternalFill(value)) {
                     value = DEFAULT_SVG_FILL;
                 } else if ("stroke-width".equals(propertyKey)) {
                     double width = firstNumber(value);
@@ -428,6 +494,180 @@ final class SvgLibraryGatewayService {
             }
             return "style=" + quote + String.join(";", nextDeclarations) + quote;
         });
+    }
+
+    private String normalizeClosedStrokeOnlyShapeFills(String text) {
+        return SHAPE_TAG_PATTERN.matcher(text).replaceAll((match) -> {
+            String tagName = trimToEmpty(match.group(1)).toLowerCase(Locale.ROOT);
+            String tag = match.group();
+            if (!isClosedStrokeOnlyFillCandidate(tagName, tag)) {
+                return tag;
+            }
+            return upsertTagFillPaint(tag, DEFAULT_SVG_FILL);
+        });
+    }
+
+    private boolean isClosedStrokeOnlyFillCandidate(String tagName, String tag) {
+        if (!("rect".equals(tagName) || "circle".equals(tagName) || "ellipse".equals(tagName) || "polygon".equals(tagName))) {
+            return false;
+        }
+        String id = trimToEmpty(readAttribute(tag, "id")).toLowerCase(Locale.ROOT);
+        if (!id.isBlank() && EXCLUDED_FILL_ID_PATTERN.matcher(id).find() && !PRIMARY_FILL_ID_PATTERN.matcher(id).matches()) {
+            return false;
+        }
+        String fill = readAttribute(tag, "fill");
+        String styleFill = readStyleProperty(tag, "fill");
+        return (fill.isBlank() && styleFill.isBlank()) ||
+            shouldPreservePaint(fill) ||
+            shouldPreservePaint(styleFill);
+    }
+
+    private String upsertTagFillPaint(String tag, String fillValue) {
+        String updated = upsertAttribute(tag, "fill", fillValue);
+        return STYLE_ATTR_PATTERN.matcher(updated).replaceAll((match) -> {
+            String quote = match.group(1);
+            List<String> declarations = new ArrayList<>();
+            boolean sawFill = false;
+            for (String declaration : String.valueOf(match.group(2)).split(";")) {
+                String trimmed = trimToEmpty(declaration);
+                if (trimmed.isBlank()) {
+                    continue;
+                }
+                int colonIndex = trimmed.indexOf(':');
+                if (colonIndex <= 0) {
+                    continue;
+                }
+                String property = trimToEmpty(trimmed.substring(0, colonIndex));
+                String value = trimToEmpty(trimmed.substring(colonIndex + 1));
+                if (property.isBlank() || value.isBlank()) {
+                    continue;
+                }
+                if ("fill".equalsIgnoreCase(property)) {
+                    declarations.add(property + ":" + fillValue);
+                    sawFill = true;
+                } else {
+                    declarations.add(property + ":" + value);
+                }
+            }
+            if (!sawFill) {
+                return match.group();
+            }
+            if (declarations.isEmpty()) {
+                return "";
+            }
+            return "style=" + quote + String.join(";", declarations) + quote;
+        });
+    }
+
+    private String markPrimaryFillTarget(String text) {
+        boolean[] markedAny = { false };
+        String marked = SHAPE_TAG_PATTERN.matcher(text).replaceAll((match) -> {
+            String tagName = trimToEmpty(match.group(1)).toLowerCase(Locale.ROOT);
+            String tag = match.group();
+            if (hasAttribute(tag, "data-vizi-fill-target")) {
+                markedAny[0] = true;
+                return tag;
+            }
+            if (shouldMarkFillTarget(tagName, tag)) {
+                markedAny[0] = true;
+                return upsertAttribute(tag, "data-vizi-fill-target", "true");
+            }
+            return tag;
+        });
+
+        if (markedAny[0]) {
+            return marked;
+        }
+
+        Matcher matcher = SHAPE_TAG_PATTERN.matcher(marked);
+        int bestStart = -1;
+        int bestEnd = -1;
+        int bestScore = Integer.MIN_VALUE;
+        String bestTag = "";
+
+        while (matcher.find()) {
+            String tagName = trimToEmpty(matcher.group(1)).toLowerCase(Locale.ROOT);
+            String tag = matcher.group();
+            if (!isFillableShape(tagName) || shapeFillIsDisabled(tag)) {
+                continue;
+            }
+
+            int score = scoreFillTarget(tag);
+            if (score > bestScore) {
+                bestStart = matcher.start();
+                bestEnd = matcher.end();
+                bestScore = score;
+                bestTag = tag;
+            }
+        }
+
+        if (bestStart < 0 || bestTag.isBlank()) {
+            return marked;
+        }
+
+        String updatedTag = upsertAttribute(bestTag, "data-vizi-fill-target", "true");
+        return marked.substring(0, bestStart) + updatedTag + marked.substring(bestEnd);
+    }
+
+    private boolean shouldMarkFillTarget(String tagName, String tag) {
+        if (!isFillableShape(tagName) || shapeFillIsDisabled(tag)) {
+            return false;
+        }
+
+        String id = trimToEmpty(readAttribute(tag, "id")).toLowerCase(Locale.ROOT);
+        if (!id.isBlank() && EXCLUDED_FILL_ID_PATTERN.matcher(id).find() && !PRIMARY_FILL_ID_PATTERN.matcher(id).matches()) {
+            return false;
+        }
+        if (!id.isBlank() && PRIMARY_FILL_ID_PATTERN.matcher(id).matches()) {
+            return true;
+        }
+
+        String fill = readAttribute(tag, "fill");
+        String styleFill = readStyleProperty(tag, "fill");
+        return shouldNormalizeExternalFill(fill) ||
+            shouldNormalizeExternalFill(styleFill) ||
+            DEFAULT_SVG_FILL.equalsIgnoreCase(trimToEmpty(fill)) ||
+            DEFAULT_SVG_FILL.equalsIgnoreCase(trimToEmpty(styleFill));
+    }
+
+    private boolean isFillableShape(String tagName) {
+        return "path".equals(tagName) ||
+            "rect".equals(tagName) ||
+            "circle".equals(tagName) ||
+            "ellipse".equals(tagName) ||
+            "polygon".equals(tagName);
+    }
+
+    private int scoreFillTarget(String tag) {
+        String id = trimToEmpty(readAttribute(tag, "id")).toLowerCase(Locale.ROOT);
+        int score = 0;
+        if (!id.isBlank() && PRIMARY_FILL_ID_PATTERN.matcher(id).matches()) {
+            score += 1000;
+        } else if (!id.isBlank() && EXCLUDED_FILL_ID_PATTERN.matcher(id).find()) {
+            score -= 500;
+        }
+
+        String fill = readAttribute(tag, "fill");
+        String styleFill = readStyleProperty(tag, "fill");
+        if (DEFAULT_SVG_FILL.equalsIgnoreCase(trimToEmpty(fill)) || DEFAULT_SVG_FILL.equalsIgnoreCase(trimToEmpty(styleFill))) {
+            score += 250;
+        }
+        if (fill.isBlank() && styleFill.isBlank()) {
+            score += 50;
+        }
+        if (tag.toLowerCase(Locale.ROOT).startsWith("<path")) {
+            score += 25;
+        }
+        return score;
+    }
+
+    private boolean shapeFillIsDisabled(String tag) {
+        String fill = readAttribute(tag, "fill");
+        if (shouldPreservePaint(fill)) {
+            return true;
+        }
+        String styleFill = readStyleProperty(tag, "fill");
+        return shouldPreservePaint(styleFill);
     }
 
     private String ensureShapeStrokeWidths(String text, String localStrokeWidth) {
@@ -545,6 +785,14 @@ final class SvgLibraryGatewayService {
         return false;
     }
 
+    private boolean shouldNormalizeExternalFill(String value) {
+        return isGradientPaint(value) || shouldNormalizeFill(value);
+    }
+
+    private boolean isGradientPaint(String value) {
+        return trimToEmpty(value).replaceAll("\\s+", "").toLowerCase(Locale.ROOT).startsWith("url(");
+    }
+
     private boolean isLightNeutral(int r, int g, int b) {
         int max = Math.max(r, Math.max(g, b));
         int min = Math.min(r, Math.min(g, b));
@@ -567,6 +815,12 @@ final class SvgLibraryGatewayService {
         Pattern pattern = Pattern.compile("\\b" + Pattern.quote(name) + "\\s*=\\s*([\"'])(.*?)\\1", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher matcher = pattern.matcher(text);
         return matcher.find() ? trimToEmpty(matcher.group(2)) : "";
+    }
+
+    private boolean hasExplicitEType(String svgTag) {
+        return !trimToEmpty(readAttribute(svgTag, "eType")).isBlank() ||
+            !trimToEmpty(readAttribute(svgTag, "etype")).isBlank() ||
+            !trimToEmpty(readAttribute(svgTag, "data-etype")).isBlank();
     }
 
     private boolean hasAttribute(String text, String name) {
@@ -594,6 +848,25 @@ final class SvgLibraryGatewayService {
             }
         }
         return false;
+    }
+
+    private String readStyleProperty(String text, String propertyName) {
+        Matcher matcher = STYLE_ATTR_PATTERN.matcher(String.valueOf(text));
+        if (!matcher.find()) {
+            return "";
+        }
+        String target = trimToEmpty(propertyName).toLowerCase(Locale.ROOT);
+        for (String declaration : String.valueOf(matcher.group(2)).split(";")) {
+            int colonIndex = declaration.indexOf(':');
+            if (colonIndex <= 0) {
+                continue;
+            }
+            String property = trimToEmpty(declaration.substring(0, colonIndex)).toLowerCase(Locale.ROOT);
+            if (target.equals(property)) {
+                return trimToEmpty(declaration.substring(colonIndex + 1));
+            }
+        }
+        return "";
     }
 
     private boolean shapeStrokeIsDisabled(String attrs) {
@@ -678,6 +951,16 @@ final class SvgLibraryGatewayService {
         return slashIndex >= 0 ? text.substring(slashIndex + 1) : text;
     }
 
+    private String sanitizeImportedFileName(String rawFileName) {
+        String name = fallbackNameFromKey(trimToEmpty(rawFileName));
+        name = name.replaceAll("[\\\\/:*?\"<>|]+", "_").trim();
+        name = name.replaceAll("\\s+", " ");
+        while (name.startsWith(".")) {
+            name = name.substring(1).trim();
+        }
+        return name;
+    }
+
     private String trimToEmpty(String value) {
         return value == null ? "" : value.trim();
     }
@@ -697,6 +980,22 @@ final class SvgLibraryGatewayService {
         int externalCount,
         String error
     ) {
+    }
+
+    record SvgLibraryUploadResponse(
+        boolean ok,
+        String relativePath,
+        SvgCatalogEntry entry,
+        String externalDirectory,
+        String error
+    ) {
+        static SvgLibraryUploadResponse error(String error, String externalDirectory) {
+            return new SvgLibraryUploadResponse(false, "", null, externalDirectory, trimStatic(error));
+        }
+
+        private static String trimStatic(String value) {
+            return value == null ? "" : value.trim();
+        }
     }
 
     private record SvgDimensions(

@@ -84,6 +84,7 @@ export function defaultWidgetSettings(widgetKey) {
     kind: kind || "lineChart",
     title: "",
     titleFontSize: "",
+    textColor: "",
     writeMode: DEFAULT_WIDGET_WRITE_MODE,
     opcServer: DEFAULT_WIDGET_OPC_SERVER,
     writeValue: 1,

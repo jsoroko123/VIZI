@@ -363,6 +363,7 @@ export default function PropertiesPanel({
   setHudFields,
   applySingleId,
   applySingleTagPath,
+  applyOverlayGroupTagPath,
   applySingleBinBinding,
   applySingleEType,
   applySinglePopupParamsJson,
@@ -370,6 +371,9 @@ export default function PropertiesPanel({
   applySingleFill,
   applySingleStroke,
   applySingleSvgStrokeWidth,
+  applySingleSvgStatic,
+  applySingleSvgFlip,
+  applySingleSvgRotation,
   applySingleFaultSim,
   applyOverlaySpacing,
   applyBBoxFromHud,
@@ -400,6 +404,10 @@ export default function PropertiesPanel({
   dockTop = 0,
   dockBottom = 0,
   dockWidth = 360,
+  dockMinWidth = 280,
+  dockMaxWidth = 640,
+  resizableDocked = true,
+  onDockWidthChange,
 }) {
   const [bboxDraft, setBboxDraft] = useState({ x: "", y: "", w: "", h: "" });
   const [bboxAspectLocked, setBboxAspectLocked] = useState(true);
@@ -410,8 +418,10 @@ export default function PropertiesPanel({
   const [spacingDraft, setSpacingDraft] = useState("20");
   const [templateNameDraft, setTemplateNameDraft] = useState(svgTemplateName || "");
   const dragRef = useRef({ dragging: false, ox: 0, oy: 0 });
+  const dockResizeRef = useRef({ resizing: false, startX: 0, startWidth: 0 });
   const panelRef = useRef(null);
   const skipAutoPosRef = useRef(false);
+  const onDockWidthChangeRef = useRef(onDockWidthChange);
   const isSvgHud = isSingle && singleKind === "SVG";
   const safeBounds = useMemo(() => {
     const left = Number.isFinite(bounds?.left) ? bounds.left : 8;
@@ -420,6 +430,21 @@ export default function PropertiesPanel({
     const bottom = Number.isFinite(bounds?.bottom) ? bounds.bottom : 8;
     return { left, top, right, bottom };
   }, [bounds]);
+  const resolvedDockMinWidth = Math.max(240, Number(dockMinWidth) || 280);
+  const resolvedDockMaxWidth = Math.max(
+    resolvedDockMinWidth,
+    Number(dockMaxWidth) || 640
+  );
+  const resolvedDockWidth = Math.min(
+    resolvedDockMaxWidth,
+    Math.max(resolvedDockMinWidth, Number(dockWidth) || 360)
+  );
+  const dockCanResize = docked && resizableDocked && typeof onDockWidthChange === "function";
+  const [dockResizing, setDockResizing] = useState(false);
+
+  useEffect(() => {
+    onDockWidthChangeRef.current = onDockWidthChange;
+  }, [onDockWidthChange]);
 
   const baseTagOptions = useMemo(() => {
     const options = [{ value: "", label: "Select tag" }];
@@ -504,6 +529,7 @@ export default function PropertiesPanel({
   latest.current = {
     applySingleId,
     applySingleTagPath,
+    applyOverlayGroupTagPath,
     applySingleBinBinding,
     applySingleEType,
     applySinglePopupParamsJson,
@@ -511,6 +537,8 @@ export default function PropertiesPanel({
     applySingleFill,
     applySingleStroke,
     applySingleSvgStrokeWidth,
+    applySingleSvgStatic,
+    applySingleSvgFlip,
     applySingleFaultSim,
     applySingleArrowStart,
     applySingleArrowEnd,
@@ -657,10 +685,47 @@ export default function PropertiesPanel({
     };
   }, [docked, safeBounds.bottom, safeBounds.left, safeBounds.right, safeBounds.top]);
 
+  useEffect(() => {
+    if (!docked) return undefined;
+    const clampWidth = (value) =>
+      Math.min(resolvedDockMaxWidth, Math.max(resolvedDockMinWidth, Number(value) || resolvedDockMinWidth));
+    function onMove(e) {
+      if (!dockResizeRef.current.resizing) return;
+      const nextWidth = clampWidth(
+        dockResizeRef.current.startWidth + (Number(e.clientX) - dockResizeRef.current.startX)
+      );
+      onDockWidthChangeRef.current?.(nextWidth);
+    }
+    function onUp() {
+      if (!dockResizeRef.current.resizing) return;
+      dockResizeRef.current.resizing = false;
+      setDockResizing(false);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [docked, resolvedDockMaxWidth, resolvedDockMinWidth]);
+
+  useEffect(() => {
+    if (!dockResizing || typeof document === "undefined") return undefined;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [dockResizing]);
+
   const isSvg = isSvgHud;
   const isWidget = isSingle && singleKind === "Widget";
   const isPoly = isSingle && singleKind === "Polyline";
   const isText = isSingle && singleKind === "Text";
+  const isStaticSvg = isSvg && Boolean(hudFields?.static || hudFields?.isStatic || hudFields?.staticSvg);
   const isBinSvg = isSvg && String(hudFields?.eType || "").trim().toLowerCase().startsWith("bin");
   const isDiverterSvg = isSvg && isDiverterTypeToken(hudFields?.eType);
   const isShapeGroup = !isSingle && (Array.isArray(selectedIds) ? selectedIds.length : 0) > 0;
@@ -706,6 +771,7 @@ export default function PropertiesPanel({
   const textFillVal = hudFields?.fill ?? "#808080"; // ✅ text uses fill
   const widgetKindVal = String(hudFields?.widgetKind || "");
   const widgetTitleVal = String(hudFields?.widgetTitle || "");
+  const widgetTextColorVal = String(hudFields?.widgetTextColor || "");
   const widgetLocationVal = String(hudFields?.widgetLocation || "");
   const widgetMinVal = String(hudFields?.widgetMin ?? "0");
   const widgetMaxVal = String(hudFields?.widgetMax ?? "100");
@@ -888,16 +954,21 @@ export default function PropertiesPanel({
         (String(next.widgetKind || "").trim() === "lineChart" ||
           (String(next.widgetKind || "").trim() === "barChart" &&
             String(next.widgetBarSourceMode || "table").trim().toLowerCase() === "tags"));
-      if (!isSeriesDrivenWidget) {
+      if (!isSeriesDrivenWidget && !(isSvg && Boolean(next.static))) {
         a.applySingleTagPath?.(next.tagPath);
       }
 
       if (isSvg) {
+        a.applySingleSvgStatic?.(Boolean(next.static));
+        a.applySingleFill?.(next.fill);
+        a.applySingleStroke?.(next.stroke);
         a.applySingleEType?.(next.eType);
         a.applySinglePopupParamsJson?.(next.popupParamsJson);
         a.applySingleDiverterMode?.(next.diverterMode);
         a.applySingleBinBinding?.(next.binBindingKey);
         a.applySingleSvgStrokeWidth?.(next.strokeWidth);
+        a.applySingleSvgFlip?.("x", Boolean(next.flipX));
+        a.applySingleSvgFlip?.("y", Boolean(next.flipY));
         a.applySingleFaultSim?.(Boolean(next.faultSimulated));
         const w = Number.parseFloat(next.w);
         const h = Number.parseFloat(next.h);
@@ -935,12 +1006,14 @@ export default function PropertiesPanel({
   return (
     <div
       ref={panelRef}
+      data-vizi-properties-panel="1"
       style={{
         position: "fixed",
         left: docked ? Math.max(0, Number(dockLeft) || 0) : panelPos.x,
         top: docked ? Math.max(0, Number(dockTop) || 0) : panelPos.y,
         bottom: docked ? Math.max(0, Number(dockBottom) || 0) : undefined,
-        width: docked ? Math.max(280, Number(dockWidth) || 360) : undefined,
+        width: docked ? resolvedDockWidth : undefined,
+        boxSizing: "border-box",
         display: "flex",
         flexDirection: "column",
         background: "color-mix(in srgb, var(--bg-elev) 92%, transparent)",
@@ -952,7 +1025,8 @@ export default function PropertiesPanel({
         boxShadow: docked ? "24px 0 40px rgba(0,0,0,0.22)" : "0 6px 18px rgba(0,0,0,0.10)",
         color: "var(--text)",
         zIndex: 35,
-        minWidth: 320,
+        minWidth: docked ? resolvedDockMinWidth : 320,
+        maxWidth: docked ? resolvedDockMaxWidth : undefined,
         minHeight: docked ? 0 : MIN_PANEL_HEIGHT,
         maxHeight: docked
           ? "100%"
@@ -961,6 +1035,37 @@ export default function PropertiesPanel({
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
+      {dockCanResize && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize properties panel"
+          title="Resize properties panel"
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            dockResizeRef.current = {
+              resizing: true,
+              startX: e.clientX,
+              startWidth: resolvedDockWidth,
+            };
+            setDockResizing(true);
+          }}
+          style={{
+            position: "absolute",
+            top: 0,
+            right: 0,
+            bottom: 0,
+            width: 10,
+            cursor: "col-resize",
+            zIndex: 2,
+            background: dockResizing
+              ? "color-mix(in srgb, var(--accent, #3b82f6) 55%, transparent)"
+              : "transparent",
+          }}
+        />
+      )}
       <div
         style={{
           display: "flex",
@@ -1080,7 +1185,34 @@ export default function PropertiesPanel({
                 placeholder="Element ID"
               />
 
-            {(!isSvg || !isBinSvg) && !widgetUsesSeriesTagBinding && (
+            {isSvg && (
+              <>
+                <div style={labelStyle}>Static</div>
+                <label
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    minHeight: 26,
+                    cursor: "pointer",
+                    color: "var(--text)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isStaticSvg}
+                    onChange={(e) => {
+                      const checked = Boolean(e.target.checked);
+                      setHudFields((p) => ({ ...p, static: checked }));
+                      applySingleSvgStatic?.(checked);
+                    }}
+                  />
+                  Static
+                </label>
+              </>
+            )}
+
+            {(!isSvg || (!isBinSvg && !isStaticSvg)) && !widgetUsesSeriesTagBinding && (
               <SelectRow
                 label="Tag Path"
                 value={hudFields.tagPath}
@@ -1100,7 +1232,7 @@ export default function PropertiesPanel({
                   ? "This widget uses Series Tags below for binding."
                   : "Use tag path for OPC binding or `db:table.column` for database binding."}
               </div>
-            ) : isSvg && !isBinSvg ? (
+            ) : isSvg && !isBinSvg && !isStaticSvg ? (
               <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
                 SVGs use tag-group bindings like `Topic.GroupName`.
               </div>
@@ -1125,13 +1257,15 @@ export default function PropertiesPanel({
                   searchable
                   searchPlaceholder="Search eType..."
                 />
-                <Row
-                  label="Popup Params"
-                  value={hudFields.popupParamsJson ?? "{}"}
-                  onChange={(v) => setHudFields((p) => ({ ...p, popupParamsJson: v }))}
-                  onBlur={() => applySinglePopupParamsJson?.(hudFields.popupParamsJson)}
-                  placeholder='{"area":"Mill"}'
-                />
+                {!isStaticSvg && (
+                  <Row
+                    label="Popup Params"
+                    value={hudFields.popupParamsJson ?? "{}"}
+                    onChange={(v) => setHudFields((p) => ({ ...p, popupParamsJson: v }))}
+                    onBlur={() => applySinglePopupParamsJson?.(hudFields.popupParamsJson)}
+                    placeholder='{"area":"Mill"}'
+                  />
+                )}
                 {isDiverterSvg && (
                   <>
                     <div style={labelStyle}>Mode</div>
@@ -1185,7 +1319,7 @@ export default function PropertiesPanel({
                   />
                 )}
                 <SelectRow
-                  label="UDT"
+                  label="SVG"
                   value={svgTemplateKey || svgTemplateOptions?.[0]?.value || ""}
                   onChange={(v) => {
                     if (!singleOverlayId) return;
@@ -1193,6 +1327,8 @@ export default function PropertiesPanel({
                   }}
                   onBlur={() => {}}
                   options={svgTemplateOptions}
+                  searchable
+                  searchPlaceholder="Search SVG library..."
                 />
                 {isGeneratedTemplate && (
                   <Row
@@ -1216,7 +1352,7 @@ export default function PropertiesPanel({
                   showHex
                   value={hudFields.fill}
                   onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
-                  onBlur={() => {}}
+                  onBlur={() => applySingleFill?.(hudFields.fill)}
                   placeholder="#ffffff"
                 />
               </>
@@ -1239,6 +1375,15 @@ export default function PropertiesPanel({
                   onChange={(v) => setHudFields((p) => ({ ...p, widgetTitle: v }))}
                   onBlur={() => applySingleWidgetSettings?.(hudFields)}
                   placeholder="Optional title"
+                />
+                <Row
+                  label="Text Color"
+                  type="color"
+                  showHex
+                  value={widgetTextColorVal || "#e2e8f0"}
+                  onChange={(v) => setHudFields((p) => ({ ...p, widgetTextColor: v }))}
+                  onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                  placeholder="#e2e8f0"
                 />
                 {widgetKindVal === "weather" && (
                   <Row
@@ -1779,6 +1924,54 @@ export default function PropertiesPanel({
             )}
 
             {isSvg && (
+              <Row
+                label="Rotation"
+                type="number"
+                value={hudFields.rotation}
+                onChange={(v) => setHudFields((p) => ({ ...p, rotation: v }))}
+                onBlur={() => applySingleSvgRotation?.(hudFields.rotation)}
+                placeholder="0"
+              />
+            )}
+
+            {isSvg && (
+              <>
+                <div style={labelStyle}>Flip</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {[
+                    ["x", "Flip H", "flipX"],
+                    ["y", "Flip V", "flipY"],
+                  ].map(([axis, label, field]) => {
+                    const active = Boolean(hudFields?.[field]);
+                    return (
+                      <button
+                        key={field}
+                        type="button"
+                        onClick={() => {
+                          const next = !active;
+                          setHudFields((p) => ({ ...p, [field]: next }));
+                          applySingleSvgFlip?.(axis, next);
+                        }}
+                        style={{
+                          ...btnStyle,
+                          minHeight: 26,
+                          padding: "3px 8px",
+                          boxShadow: "none",
+                          background: active ? "var(--selected-bg)" : "var(--bg-elev)",
+                          border: `1px solid ${active ? "var(--selected-border)" : "var(--border)"}`,
+                          color: active ? "var(--selected-text)" : "var(--text)",
+                          fontWeight: active ? 700 : 600,
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {isSvg && (
               <>
                 <div style={labelStyle}>Fault Sim</div>
                 <label
@@ -1893,6 +2086,21 @@ export default function PropertiesPanel({
 
           {isOverlayGroup && (
             <>
+              <SelectRow
+                label="Tag Path"
+                value={hudFields.tagPath}
+                onChange={(v) => {
+                  setHudFields((p) => ({ ...p, tagPath: v }));
+                  applyOverlayGroupTagPath?.(v);
+                }}
+                onBlur={() => {}}
+                options={svgBindingOptions}
+                searchable
+                searchPlaceholder="Search tag groups..."
+              />
+              <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
+                Applies to selected non-static SVG overlays.
+              </div>
               <Row
                 label="Spacing"
                 type="number"

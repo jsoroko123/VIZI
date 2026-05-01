@@ -75,6 +75,33 @@ const LIVE_MAINTENANCE_MODE_MEMBER_ALIASES = [
   "StsMaint",
   "MaintActive",
 ];
+const LIVE_FORCE_MODE_MEMBER_ALIASES = [
+  "Force",
+  "ForceTrue",
+  "i_Force",
+  "o_Force",
+  "i_ForceTrue",
+  "o_ForceTrue",
+  "ForceMode",
+  "i_ForceMode",
+  "o_ForceMode",
+  "StsForce",
+  "ForceActive",
+];
+const LIVE_DESCRIPTION_MEMBER_ALIASES = [
+  "Description",
+  "description",
+  "Desc",
+  "desc",
+  "EquipmentDescription",
+  "equipmentDescription",
+  "equipment_description",
+  "HMI_Description",
+  "HMIDescription",
+  "Tooltip",
+  "ToolTip",
+  "tooltip",
+];
 const BIN_LOCK_FILL_GROUP_IDS = ["Lock_Filling", "LockFill"];
 const BIN_LOCK_DISCHARGE_GROUP_IDS = ["Lock_Discharge", "LockDischarge"];
 
@@ -1182,16 +1209,19 @@ function CanvasSvg({
   const handleOverlayMouseDown = useCallback(
     (event, overlay) => {
       if (widgetInteractionEnabled && overlay?.widget) return;
+      if (isLiveMode && isStaticSvgOverlay(overlay)) return;
       overlayHandlerRefs.current.onOverlayMouseDown?.(event, overlay?.id);
     },
-    [widgetInteractionEnabled]
+    [isLiveMode, widgetInteractionEnabled]
   );
   const handleOverlayDoubleClick = useCallback(
     (event, overlay, options = {}) => {
+      if (String(event?.type || "").toLowerCase() !== "dblclick" || Number(event?.button || 0) !== 0) return;
       if (!options.force && widgetInteractionEnabled && overlay?.widget) return;
+      if (isLiveMode && isStaticSvgOverlay(overlay)) return;
       overlayHandlerRefs.current.onOverlayDoubleClick?.(event, overlay?.id);
     },
-    [widgetInteractionEnabled]
+    [isLiveMode, widgetInteractionEnabled]
   );
   const opcTagCount = Array.isArray(opcTags) ? opcTags.length : 0;
   const shapeCount = Array.isArray(shapes) ? shapes.length : 0;
@@ -1338,6 +1368,8 @@ function CanvasSvg({
           scale: Number(overlay?.scale) || 1,
           scaleX: Number.isFinite(Number(overlay?.scaleX)) ? Number(overlay.scaleX) : null,
           scaleY: Number.isFinite(Number(overlay?.scaleY)) ? Number(overlay.scaleY) : null,
+          flipX: Boolean(overlay?.flipX || overlay?.flippedX || overlay?.mirrorX),
+          flipY: Boolean(overlay?.flipY || overlay?.flippedY || overlay?.mirrorY),
           bbox: overlay?.bbox
             ? {
                 x: Number(overlay.bbox?.x) || 0,
@@ -2756,6 +2788,14 @@ function CanvasSvg({
     const decimals = Math.max(0, Math.min(6, Number(cfg?.decimals) || 0));
     const unit = String(cfg?.unit || "").trim();
     const title = String(cfg?.title || "").trim();
+    const normalizeWidgetTextColor = (value) => {
+      const text = String(value ?? "").trim();
+      if (!text || text.toLowerCase() === "auto" || text.toLowerCase() === "theme") return "";
+      return text;
+    };
+    const widgetTextColor = normalizeWidgetTextColor(
+      cfg?.textColor ?? cfg?.fontColor ?? cfg?.titleColor
+    );
     const minCfg = Number.isFinite(Number(cfg?.min)) ? Number(cfg.min) : 0;
     const maxCfg = Number.isFinite(Number(cfg?.max)) ? Number(cfg.max) : 100;
     const rowCount = Math.max(1, Math.min(20, Number(cfg?.rowCount) || 4));
@@ -2903,10 +2943,16 @@ function CanvasSvg({
     const cardTitle = title || "";
     const titleSize = resolveWidgetTitleFontSize(dense ? 8 : compact ? 9 : 10, 7, 40);
     const valueSize = scaledFont(dense ? 12 : compact ? 16 : 19, 9, 36);
-    const valueColor = "var(--text)";
+    const widgetRootStyle =
+      typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
+    const themedTextColor =
+      widgetRootStyle?.getPropertyValue("--text")?.trim() ||
+      (isDarkTheme ? "#e2e8f0" : "#111827");
+    const valueColor = widgetTextColor || "var(--text)";
     const accent = "#2b8cff";
-    const accentSoft = "#2b8cff33";
-    const subdued = "var(--text-muted)";
+    const subdued = widgetTextColor || "var(--text-muted)";
+    const widgetHtmlTextColor = widgetTextColor || themedTextColor;
+    const widgetButtonTextColor = widgetTextColor || "rgba(255,255,255,0.98)";
     const formatTime = (ts) => {
       const nTs = Number(ts);
       if (!Number.isFinite(nTs)) return "--:--:--";
@@ -3021,10 +3067,8 @@ function CanvasSvg({
             )
           : 1;
       const gaugeKey = `g-${overlay.id}-${kind}-${gaugeW}x${gaugeH}-z${viewScale.toFixed(3)}-s${overlayScale.toFixed(3)}-vp${viewportDprBoost.toFixed(3)}`;
-      const rootStyle =
-        typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
-      const borderColor = rootStyle?.getPropertyValue("--border")?.trim() || "#334155";
-      const textColor = rootStyle?.getPropertyValue("--text")?.trim() || "#e2e8f0";
+      const borderColor = widgetRootStyle?.getPropertyValue("--border")?.trim() || "#334155";
+      const textColor = widgetHtmlTextColor;
       const gaugeData = {
         datasets: [
           {
@@ -3170,9 +3214,9 @@ function CanvasSvg({
             {cardTitle}
           </text>
           <line x1={x + pad} y1={startY - 8} x2={x + w - pad} y2={startY - 8} stroke="var(--border)" />
-          <text x={x + pad} y={startY} fill="var(--text)" fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>Source</text>
-          <text x={x + Math.max(108, w * 0.43)} y={startY} fill="var(--text)" fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>Value</text>
-          <text x={x + w - pad} y={startY} fill="var(--text)" fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700} textAnchor="end">Time</text>
+          <text x={x + pad} y={startY} fill={valueColor} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>Source</text>
+          <text x={x + Math.max(108, w * 0.43)} y={startY} fill={valueColor} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>Value</text>
+          <text x={x + w - pad} y={startY} fill={valueColor} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700} textAnchor="end">Time</text>
           <text x={x + pad} y={startY + rowStep} fill={subdued} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui">{label}</text>
           <text x={x + Math.max(108, w * 0.43)} y={startY + rowStep} fill={valueColor} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>{showVal}</text>
           <text x={x + w - pad} y={startY + rowStep} fill={subdued} fontSize={scaledFont(dense ? 7 : 8, 6, 14)} fontFamily="system-ui" textAnchor="end">{latestTime}</text>
@@ -3268,7 +3312,7 @@ function CanvasSvg({
           <text
             x={barX + barW / 2}
             y={barY + barH / 2 + Math.max(2, Math.round(barH * 0.16))}
-            fill={theme === "dark" ? "#ffffff" : "#111827"}
+            fill={widgetTextColor || (theme === "dark" ? "#ffffff" : "#111827")}
             fontSize={valueFont}
             fontFamily="system-ui"
             fontWeight={800}
@@ -3382,7 +3426,7 @@ function CanvasSvg({
                     height: "100%",
                     border: "1px solid var(--border)",
                     background: "var(--bg-elev)",
-                    color: "var(--text)",
+                    color: widgetHtmlTextColor,
                     borderRadius: 7,
                     padding: "0 8px",
                     fontSize: dense ? 11 : 12,
@@ -3407,7 +3451,7 @@ function CanvasSvg({
                     height: "100%",
                     border: "1px solid #2b6cff",
                     background: "#2b6cff",
-                    color: "white",
+                    color: widgetButtonTextColor,
                     borderRadius: 7,
                     fontSize: dense ? 10 : 11,
                     fontWeight: 700,
@@ -3466,7 +3510,7 @@ function CanvasSvg({
             <text
               x={buttonX + buttonW / 2}
               y={titleY}
-              fill="rgba(248, 250, 252, 0.96)"
+              fill={widgetTextColor || "rgba(248, 250, 252, 0.96)"}
               fontSize={titleFont}
               fontFamily="system-ui"
               fontWeight={800}
@@ -3545,7 +3589,7 @@ function CanvasSvg({
                   background: visualPressed
                     ? "linear-gradient(180deg, #1d4ed8 0%, #1e40af 100%)"
                     : "linear-gradient(180deg, #4f8dff 0%, #2b6cff 100%)",
-                  color: "white",
+                  color: widgetButtonTextColor,
                   fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                   fontWeight: 800,
                   cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : (writeBusy ? "default" : "pointer"),
@@ -3569,7 +3613,7 @@ function CanvasSvg({
                     fontWeight: 900,
                     letterSpacing: "0.08em",
                     textTransform: "uppercase",
-                    color: "rgba(255,255,255,0.98)",
+                    color: widgetButtonTextColor,
                     whiteSpace: "nowrap",
                   }}
                 >
@@ -3655,7 +3699,7 @@ function CanvasSvg({
             <text
               x={buttonX + buttonW / 2}
               y={titleY}
-              fill="rgba(248, 250, 252, 0.96)"
+              fill={widgetTextColor || "rgba(248, 250, 252, 0.96)"}
               fontSize={titleFont}
               fontFamily="system-ui"
               fontWeight={800}
@@ -3706,7 +3750,7 @@ function CanvasSvg({
                   border: "none",
                   borderRadius: 0,
                   background: "transparent",
-                  color: "white",
+                  color: widgetButtonTextColor,
                   fontSize: Math.max(8, Math.min(16, Math.round(buttonH * 0.34))),
                   fontWeight: 800,
                   cursor: !widgetInteractionEnabled ? widgetSurfaceCursor : (writeBusy ? "default" : "pointer"),
@@ -3736,7 +3780,7 @@ function CanvasSvg({
                     boxShadow: isOn
                       ? "inset 0 1px 0 rgba(255,255,255,0.28), 0 6px 14px rgba(22,163,74,0.22)"
                       : "inset 0 1px 0 rgba(255,255,255,0.08)",
-                    color: "rgba(255,255,255,0.98)",
+                    color: widgetButtonTextColor,
                     fontSize: Math.max(9, Math.min(16, Math.round(buttonH * 0.28))),
                     fontWeight: 900,
                     letterSpacing: "0.06em",
@@ -3761,7 +3805,7 @@ function CanvasSvg({
                     boxShadow: !isOn
                       ? "inset 0 1px 0 rgba(255,255,255,0.18), 0 6px 14px rgba(51,65,85,0.22)"
                       : "inset 0 1px 0 rgba(255,255,255,0.08)",
-                    color: "rgba(255,255,255,0.98)",
+                    color: widgetButtonTextColor,
                     fontSize: Math.max(9, Math.min(16, Math.round(buttonH * 0.28))),
                     fontWeight: 900,
                     letterSpacing: "0.06em",
@@ -4073,16 +4117,16 @@ function CanvasSvg({
     const rootStyle =
       typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
     const isDark = String(theme || "").toLowerCase() === "dark";
-    const textColor = rootStyle?.getPropertyValue("--text-muted")?.trim() || (isDark ? "#b7c4d8" : "#5d6b82");
+    const textColor = widgetTextColor || rootStyle?.getPropertyValue("--text-muted")?.trim() || (isDark ? "#b7c4d8" : "#5d6b82");
     const chartPanelFill = isDark ? "#0b1220" : "#ffffff";
     const gridColor = isDark ? "rgba(148,163,184,0.24)" : "rgba(100,116,139,0.22)";
-    const axisColor = isDark ? "#d4deee" : "#334155";
+    const axisColor = widgetTextColor || (isDark ? "#d4deee" : "#334155");
     const accentLine = isDark ? "#22d3ee" : "#2563eb";
     const accentFillTop = isDark ? "rgba(34,211,238,0.42)" : "rgba(37,99,235,0.32)";
     const accentFillBottom = isDark ? "rgba(34,211,238,0.06)" : "rgba(37,99,235,0.05)";
     const barFill = isDark ? "rgba(45,212,191,0.9)" : "rgba(59,130,246,0.9)";
     const tooltipBg = isDark ? "rgba(8,14,24,0.96)" : "rgba(255,255,255,0.96)";
-    const tooltipText = isDark ? "#e6eefc" : "#1b2a41";
+    const tooltipText = widgetTextColor || (isDark ? "#e6eefc" : "#1b2a41");
     const tooltipBorder = isDark ? "rgba(118,149,195,0.32)" : "rgba(54,96,163,0.22)";
     const trimTick = (nVal, maxFractionDigits) => {
       const safeDigits = Math.max(0, Math.min(3, Number(maxFractionDigits) || 0));
@@ -4508,7 +4552,7 @@ function CanvasSvg({
                           borderRadius: 6,
                           border: "1px solid var(--border)",
                           background: "var(--bg-elev)",
-                          color: "var(--text)",
+                          color: widgetHtmlTextColor,
                           fontSize: 9,
                           padding: "0 4px",
                           boxSizing: "border-box",
@@ -4526,7 +4570,7 @@ function CanvasSvg({
                           borderRadius: 6,
                           border: "1px solid var(--border)",
                           background: "var(--bg-elev)",
-                          color: "var(--text)",
+                          color: widgetHtmlTextColor,
                           fontSize: 9,
                           padding: "0 4px",
                           boxSizing: "border-box",
@@ -4776,6 +4820,7 @@ function CanvasSvg({
       overlay,
       LIVE_MAINTENANCE_MODE_MEMBER_ALIASES
     );
+    const forceCandidates = buildOverlayMemberCandidates(overlay, LIVE_FORCE_MODE_MEMBER_ALIASES);
     const manualValue = parseLiveBool(
       manualCandidates
         .map((key) => getLiveValueForExactOrSuffixKey(key))
@@ -4791,6 +4836,11 @@ function CanvasSvg({
         .map((key) => getLiveValueForExactOrSuffixKey(key))
         .find((v) => v != null && String(v) !== "")
     );
+    const forceValue = parseLiveBool(
+      forceCandidates
+        .map((key) => getLiveValueForExactOrSuffixKey(key))
+        .find((v) => v != null && String(v) !== "")
+    );
     const parsedModeFromStatus = (() => {
       const raw = modeStatusCandidates
         .map((key) => getLiveValueForExactOrSuffixKey(key))
@@ -4800,6 +4850,7 @@ function CanvasSvg({
       const lower = text.toLowerCase();
       if (lower.includes("manual") || lower.includes("hand")) return "manual";
       if (lower.includes("auto")) return "auto";
+      if (lower.includes("force")) return "force";
       if (lower.includes("maint")) return "maintenance";
       const num = Number(text);
       if (Number.isFinite(num)) {
@@ -4811,11 +4862,42 @@ function CanvasSvg({
       }
       return "";
     })();
+    if (forceValue === true) return "force";
     if (maintenanceValue === true) return "maintenance";
     if (manualValue === true) return "manual";
     if (autoValue === true) return "auto";
     if (parsedModeFromStatus) return parsedModeFromStatus;
     return "";
+  };
+
+  const normalizeTooltipText = (value) => {
+    if (value == null) return "";
+    if (typeof value === "object") {
+      const nested =
+        value?.value ??
+        value?.text ??
+        value?.description ??
+        value?.label ??
+        "";
+      return normalizeTooltipText(nested);
+    }
+    return String(value || "").replace(/\s+/g, " ").trim();
+  };
+
+  const getOverlayDescriptionTooltip = (overlay) => {
+    if (!renderLiveVisuals || overlay?.widget || overlay?.embeddedView) return "";
+    const candidates = buildOverlayMemberCandidates(overlay, LIVE_DESCRIPTION_MEMBER_ALIASES);
+    const liveDescription = candidates
+      .map((key) => getLiveValueForExactOrSuffixKey(key))
+      .find((v) => v != null && String(v).trim() !== "");
+    const tooltip = normalizeTooltipText(liveDescription);
+    if (tooltip) return tooltip;
+    return normalizeTooltipText(
+      overlay?.description ??
+      overlay?.tooltip ??
+      overlay?.label ??
+      ""
+    );
   };
   const applyBinVisualStateToSvg = (innerSvg, options = {}) => {
     const source = String(innerSvg || "");
@@ -4956,20 +5038,16 @@ function CanvasSvg({
 
   const getDiverterBranchAtWorldPointByConnector = (overlay, pt, bb, threshold = 24) => {
     if (!overlay || !pt || !bb) return "";
-    const sx = overlayScaleX(overlay);
-    const sy = overlayScaleY(overlay);
     const bx = Number(bb?.x) || 0;
     const by = Number(bb?.y) || 0;
     const bw = Math.max(0.0001, Number(bb?.width) || 1);
     const bh = Math.max(0.0001, Number(bb?.height) || 1);
-    const tx = Number(overlay?.tx || 0);
-    const ty = Number(overlay?.ty || 0);
     const px = Number(pt?.x || 0);
     const py = Number(pt?.y || 0);
     const connectors = [
-      { branch: "entry", x: tx + sx * (bx + bw * 0.12), y: ty + sy * (by + bh * 0.25) },
-      { branch: "straight", x: tx + sx * (bx + bw * 0.92), y: ty + sy * (by + bh * 0.18) },
-      { branch: "divert", x: tx + sx * (bx + bw * 0.82), y: ty + sy * (by + bh * 0.78) },
+      { branch: "entry", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.12, by + bh * 0.25) },
+      { branch: "straight", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.92, by + bh * 0.18) },
+      { branch: "divert", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.82, by + bh * 0.78) },
     ];
     let best = "";
     let bestDist = Number.POSITIVE_INFINITY;
@@ -4985,14 +5063,13 @@ function CanvasSvg({
 
   const isDiverterEntryPoint = (overlay, pt, bb) => {
     if (!overlay || !pt || !bb) return false;
-    const sx = overlayScaleX(overlay);
-    const sy = overlayScaleY(overlay);
     const bx = Number(bb?.x) || 0;
     const by = Number(bb?.y) || 0;
     const bw = Math.max(0.0001, Number(bb?.width) || 1);
     const bh = Math.max(0.0001, Number(bb?.height) || 1);
-    const localX = (Number(pt.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
-    const localY = (Number(pt.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
+    const local = overlaySourceLocalPointFromWorld(overlay, bb, pt);
+    const localX = local.x;
+    const localY = local.y;
     const nx = (localX - bx) / bw;
     const ny = (localY - by) / bh;
     if (!Number.isFinite(nx) || !Number.isFinite(ny)) return false;
@@ -5004,19 +5081,15 @@ function CanvasSvg({
 
   const getDiverterOutputBranchAtWorldPoint = (overlay, pt, bb, threshold = 40) => {
     if (!overlay || !pt || !bb) return "";
-    const sx = overlayScaleX(overlay);
-    const sy = overlayScaleY(overlay);
     const bx = Number(bb?.x) || 0;
     const by = Number(bb?.y) || 0;
     const bw = Math.max(0.0001, Number(bb?.width) || 1);
     const bh = Math.max(0.0001, Number(bb?.height) || 1);
-    const tx = Number(overlay?.tx || 0);
-    const ty = Number(overlay?.ty || 0);
     const px = Number(pt?.x || 0);
     const py = Number(pt?.y || 0);
     const outputs = [
-      { branch: "straight", x: tx + sx * (bx + bw * 0.92), y: ty + sy * (by + bh * 0.18) },
-      { branch: "divert", x: tx + sx * (bx + bw * 0.82), y: ty + sy * (by + bh * 0.78) },
+      { branch: "straight", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.92, by + bh * 0.18) },
+      { branch: "divert", ...overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.82, by + bh * 0.78) },
     ];
     let best = "";
     let bestDist = Number.POSITIVE_INFINITY;
@@ -5172,7 +5245,10 @@ function CanvasSvg({
     return out;
   };
 
-  const applyOverlayPaintOverrides = (inner, { fillColor = "", strokeColor = "", strokeWidth } = {}) => {
+  const applyOverlayPaintOverrides = (
+    inner,
+    { fillColor = "", strokeColor = "", strokeWidth, allowStrokeOnlyFillTargets = false } = {}
+  ) => {
     if (!inner) return inner;
     const nextFill = String(fillColor || "").trim();
     const nextStroke = String(strokeColor || "").trim();
@@ -5212,14 +5288,39 @@ function CanvasSvg({
           fill === "rgb(204,204,204)" ||
           fill === "rgba(204,204,204,1)";
       };
-      const shouldRecolorPrimaryElement = (elementStart) => {
+      const isRecolorableFill = (value) => {
+        const fill = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+        return isDefaultRecolorFill(fill) || fill.startsWith("url(");
+      };
+      const PRIMARY_FILL_TARGET_ID_RE = /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|hopper|tank|silo|bin|chute|rect5|path4|vent|vent_open|vent_closed|body[-_].*|.*[-_]body)$/i;
+      const EXCLUDED_FILL_TARGET_ID_RE = /(arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator)/i;
+      const FILLABLE_TAG_RE = /^(path|rect|circle|ellipse|polygon)$/i;
+      const STROKE_ONLY_FILLABLE_TAG_RE = /^(rect|circle|ellipse|polygon)$/i;
+      const canUseStrokeOnlyFillTarget = (elementStart, tagName) => {
+        if (!allowStrokeOnlyFillTargets || !STROKE_ONLY_FILLABLE_TAG_RE.test(String(tagName || ""))) {
+          return false;
+        }
+        const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+        const elementId = String(idMatch?.[2] || "").trim();
+        return !(elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId));
+      };
+      const shouldRecolorPrimaryElement = (elementStart, tagName) => {
+        if (/\bdata-vizi-fill-target\s*=\s*(["'])true\1/i.test(String(elementStart || ""))) {
+          return true;
+        }
         const fillAttrMatch = String(elementStart || "").match(/\bfill\s*=\s*(["'])([^"']*)\1/i);
-        if (isDefaultRecolorFill(fillAttrMatch?.[2])) {
+        if (isRecolorableFill(fillAttrMatch?.[2])) {
+          return true;
+        }
+        if (isProtectedFill(fillAttrMatch?.[2]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
           return true;
         }
         const styleMatch = String(elementStart || "").match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
         const styleFillMatch = String(styleMatch?.[2] || "").match(/(?:^|;)\s*fill\s*:\s*([^;]+)/i);
-        if (isDefaultRecolorFill(styleFillMatch?.[1])) {
+        if (isRecolorableFill(styleFillMatch?.[1])) {
+          return true;
+        }
+        if (isProtectedFill(styleFillMatch?.[1]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
           return true;
         }
         const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
@@ -5227,31 +5328,62 @@ function CanvasSvg({
         if (!elementId) {
           return false;
         }
-        return /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|rect5|path4|vent|vent_open|vent_closed)$/i.test(elementId);
+        if (PRIMARY_FILL_TARGET_ID_RE.test(elementId)) {
+          return true;
+        }
+        return FILLABLE_TAG_RE.test(String(tagName || "")) && !EXCLUDED_FILL_TARGET_ID_RE.test(elementId);
       };
-      out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, _tag, end) => {
-        if (!shouldRecolorPrimaryElement(start)) {
+      let fillChanged = false;
+      out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, tag, end) => {
+        if (!shouldRecolorPrimaryElement(start, tag)) {
           return match;
         }
         let next = String(start || "");
+        let changedThisElement = false;
         if (/\bfill\s*=/.test(next)) {
           next = next.replace(/\bfill\s*=\s*(["'])([^"']*)\1/gi, (fillMatch, quote, fillValue) => (
-            isProtectedFill(fillValue) ? fillMatch : `fill=${quote}${nextFill}${quote}`
+            isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget(start, tag) ? fillMatch : (() => {
+              changedThisElement = true;
+              return `fill=${quote}${nextFill}${quote}`;
+            })()
           ));
         } else {
           next += ` fill="${nextFill}"`;
+          changedThisElement = true;
         }
         next = next.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (styleMatch, quote, styleBody) => {
           let cleaned = String(styleBody || "").replace(
             /fill\s*:\s*([^;]+)(;?)/gi,
             (fillStyleMatch, fillValue, suffix) => (
-              isProtectedFill(fillValue) ? fillStyleMatch : `fill:${nextFill}${suffix || ";"}`
+              isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget(start, tag) ? fillStyleMatch : (() => {
+                changedThisElement = true;
+                return `fill:${nextFill}${suffix || ";"}`;
+              })()
             )
           );
           return `style=${quote}${cleaned}${quote}`;
         });
+        fillChanged = fillChanged || changedThisElement;
         return `${next}${end}`;
       });
+      if (!fillChanged) {
+        let fallbackApplied = false;
+        out = out.replace(/(<(path|rect|circle|ellipse|polygon)\b[^>]*)(\/?>)/gi, (match, start, tag, end) => {
+          if (fallbackApplied) {
+            return match;
+          }
+          const idMatch = String(start || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+          const elementId = String(idMatch?.[2] || "").trim();
+          if (elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId)) {
+            return match;
+          }
+          if (/\bfill\s*=\s*(["'])(none|transparent)\1/i.test(String(start || ""))) {
+            return match;
+          }
+          fallbackApplied = true;
+          return `${start} fill="${nextFill}"${end}`;
+        });
+      }
     }
 
     if (nextStroke) {
@@ -5318,6 +5450,16 @@ function CanvasSvg({
       if (attrValue) return attrValue;
       return readStylePaint(el, name);
     };
+    const readInheritedPaint = (el, root, name) => {
+      let node = el;
+      while (node && node.nodeType === 1) {
+        const value = readPaint(node, name);
+        if (value) return value;
+        if (node === root) break;
+        node = node.parentNode || null;
+      }
+      return "";
+    };
     const setPaint = (el, name, value) => {
       if (!el) return;
       el.setAttribute(name, value);
@@ -5353,21 +5495,44 @@ function CanvasSvg({
       const shapes = Array.from(root.querySelectorAll(SHAPE_SELECTOR));
       if (!shapes.length) return inner;
 
+      const fillTargetElements = shapes.filter((el) => (
+        String(el.getAttribute("data-vizi-fill-target") || "").trim().toLowerCase() === "true" &&
+        !hasExcludedAncestor(el, root)
+      ));
+
       const primaryTargets = shapes.filter((el) => {
         const id = String(el.getAttribute("id") || "").trim();
         return id && PRIMARY_ELEMENT_ID_RE.test(id) && !hasExcludedAncestor(el, root);
       });
 
-      const targetElements = primaryTargets.length
+      const closedBodyTargets = shapes.filter((el) => {
+        if (hasExcludedAncestor(el, root)) return false;
+        const tagName = String(el.tagName || "").toLowerCase();
+        if (!["path", "rect", "circle", "ellipse", "polygon"].includes(tagName)) return false;
+        const id = String(el.getAttribute("id") || "").trim();
+        if (id && /arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator/i.test(id)) {
+          return PRIMARY_ELEMENT_ID_RE.test(id);
+        }
+        const strokeValue = readInheritedPaint(el, root, "stroke");
+        if (isProtectedStroke(strokeValue)) return false;
+        const fillValue = readInheritedPaint(el, root, "fill");
+        return !isProtectedFill(fillValue) || PRIMARY_ELEMENT_ID_RE.test(id);
+      });
+
+      const targetElements = fillTargetElements.length
+        ? fillTargetElements
+        : primaryTargets.length
         ? primaryTargets
+        : closedBodyTargets.length > 1
+        ? closedBodyTargets
         : (() => {
             let best = null;
             let bestScore = Number.NEGATIVE_INFINITY;
             shapes.forEach((el, index) => {
               if (hasExcludedAncestor(el, root)) return;
               const id = String(el.getAttribute("id") || "").trim();
-              const fillValue = readPaint(el, "fill");
-              const strokeValue = readPaint(el, "stroke");
+              const fillValue = readInheritedPaint(el, root, "fill");
+              const strokeValue = readInheritedPaint(el, root, "stroke");
               let score = 0;
               if (id && PRIMARY_ELEMENT_ID_RE.test(id)) score += 1000;
               if (!isProtectedFill(fillValue)) score += 80;
@@ -5396,6 +5561,7 @@ function CanvasSvg({
 
   const forceSvgStrokeColor = (inner, color) => {
     if (!inner || !color) return inner;
+    const SHAPE_SELECTOR = "path,rect,circle,ellipse,polygon,polyline,line";
     const isProtectedStroke = (value) => {
       const v = String(value || "").trim().toLowerCase();
       return (
@@ -5407,6 +5573,80 @@ function CanvasSvg({
         v.startsWith("url(")
       );
     };
+    const readStylePaint = (el, name) => {
+      const style = String(el?.getAttribute?.("style") || "");
+      if (!style) return "";
+      const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+      return String(match?.[1] || "").trim();
+    };
+    const readPaint = (el, name) => {
+      const attrValue = String(el?.getAttribute?.(name) || "").trim();
+      if (attrValue) return attrValue;
+      return readStylePaint(el, name);
+    };
+    const readInheritedPaint = (el, root, name) => {
+      let node = el;
+      while (node && node.nodeType === 1) {
+        const value = readPaint(node, name);
+        if (value) return value;
+        if (node === root) break;
+        node = node.parentNode || null;
+      }
+      return "";
+    };
+    const setPaint = (el, name, value) => {
+      if (!el) return;
+      el.setAttribute(name, value);
+      const style = String(el.getAttribute("style") || "");
+      if (!style) return;
+      if (new RegExp(`${name}\\s*:`, "i").test(style)) {
+        el.setAttribute(
+          "style",
+          style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+        );
+      }
+    };
+
+    try {
+      const wrapped = `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`;
+      const doc = new DOMParser().parseFromString(wrapped, "image/svg+xml");
+      if (!doc.querySelector("parsererror")) {
+        const root = doc.documentElement;
+        const strokeElements = Array.from(root.querySelectorAll(`${SHAPE_SELECTOR},g`));
+        const shapes = Array.from(root.querySelectorAll(SHAPE_SELECTOR));
+        let changed = false;
+
+        strokeElements.forEach((el) => {
+          const directStroke = readPaint(el, "stroke");
+          if (!isProtectedStroke(directStroke)) {
+            setPaint(el, "stroke", color);
+            changed = true;
+          }
+        });
+
+        shapes.forEach((el) => {
+          const directStroke = readPaint(el, "stroke");
+          if (directStroke) return;
+          const inheritedStroke = readInheritedPaint(el.parentNode || el, root, "stroke");
+          if (!isProtectedStroke(inheritedStroke)) {
+            setPaint(el, "stroke", color);
+            changed = true;
+          }
+        });
+
+        if (!changed && shapes.length) {
+          setPaint(shapes[0], "stroke", color);
+        }
+
+        const serializer = new XMLSerializer();
+        return Array.from(root.childNodes)
+          .map((node) => serializer.serializeToString(node))
+          .join("");
+      }
+    } catch {
+      // Fall through to the regex path below.
+    }
+
     const strokeAttrRe = /stroke\s*=\s*(["'])([^"']*)\1/gi;
     const styleAttrRe = /style\s*=\s*(["'])([^"']*)\1/gi;
 
@@ -5727,6 +5967,78 @@ function CanvasSvg({
     return Number.isFinite(s) && s > 0 ? s : 1;
   };
 
+  const isStaticSvgOverlay = (o) => Boolean(o?.static || o?.isStatic || o?.staticSvg);
+
+  const overlayFlipX = (o) => Boolean(o?.flipX || o?.flippedX || o?.mirrorX);
+  const overlayFlipY = (o) => Boolean(o?.flipY || o?.flippedY || o?.mirrorY);
+
+  const overlayRotationDegrees = (o) => {
+    const value = Number(o?.rotation ?? o?.rotate ?? o?.angle);
+    if (!Number.isFinite(value)) return 0;
+    const normalized = value % 360;
+    return Math.abs(normalized) < 0.0001 ? 0 : normalized;
+  };
+
+  const overlayMirrorTransform = (o, bb) => {
+    const flipX = overlayFlipX(o);
+    const flipY = overlayFlipY(o);
+    if (!flipX && !flipY) return "";
+    if (!bb) return "";
+    const x = Number(bb?.x) || 0;
+    const y = Number(bb?.y) || 0;
+    const w = Math.max(0.0001, Number(bb?.width) || 1);
+    const h = Math.max(0.0001, Number(bb?.height) || 1);
+    const tx = flipX ? 2 * x + w : 0;
+    const ty = flipY ? 2 * y + h : 0;
+    return `translate(${tx} ${ty}) scale(${flipX ? -1 : 1} ${flipY ? -1 : 1})`;
+  };
+
+  const overlayTransform = (o, bb) => {
+    const sx = overlayScaleX(o);
+    const sy = overlayScaleY(o);
+    const rotation = overlayRotationDegrees(o);
+    if (!rotation || !bb) {
+      return `translate(${Number(o?.tx || 0)} ${Number(o?.ty || 0)}) scale(${sx} ${sy})`;
+    }
+    const cx = Number(bb?.x || 0) + Math.max(0.0001, Number(bb?.width || 0)) / 2;
+    const cy = Number(bb?.y || 0) + Math.max(0.0001, Number(bb?.height || 0)) / 2;
+    const worldCx = Number(o?.tx || 0) + sx * cx;
+    const worldCy = Number(o?.ty || 0) + sy * cy;
+    return `translate(${worldCx} ${worldCy}) rotate(${rotation}) scale(${sx} ${sy}) translate(${-cx} ${-cy})`;
+  };
+
+  const mirrorOverlayLocalPoint = (o, bb, x, y) => {
+    if (!bb) {
+      return { x: Number(x || 0), y: Number(y || 0) };
+    }
+    const bx = Number(bb?.x) || 0;
+    const by = Number(bb?.y) || 0;
+    const bw = Math.max(0.0001, Number(bb?.width) || 1);
+    const bh = Math.max(0.0001, Number(bb?.height) || 1);
+    return {
+      x: overlayFlipX(o) ? 2 * bx + bw - Number(x || 0) : Number(x || 0),
+      y: overlayFlipY(o) ? 2 * by + bh - Number(y || 0) : Number(y || 0),
+    };
+  };
+
+  const overlaySourceLocalPointFromWorld = (o, bb, pt) => {
+    const sx = overlayScaleX(o);
+    const sy = overlayScaleY(o);
+    const localX = (Number(pt?.x) - Number(o?.tx || 0)) / Math.max(0.0001, sx);
+    const localY = (Number(pt?.y) - Number(o?.ty || 0)) / Math.max(0.0001, sy);
+    return mirrorOverlayLocalPoint(o, bb, localX, localY);
+  };
+
+  const overlayWorldPointFromSourceLocal = (o, bb, x, y) => {
+    const sx = overlayScaleX(o);
+    const sy = overlayScaleY(o);
+    const local = mirrorOverlayLocalPoint(o, bb, x, y);
+    return {
+      x: Number(o?.tx || 0) + sx * local.x,
+      y: Number(o?.ty || 0) + sy * local.y,
+    };
+  };
+
   const overlayWorldRect = (o, bb) => {
     const sx = overlayScaleX(o);
     const sy = overlayScaleY(o);
@@ -5746,16 +6058,11 @@ function CanvasSvg({
 
   const getDiverterEntryConnectorWorldPoint = (overlay, bb) => {
     if (!overlay || !bb) return null;
-    const sx = overlayScaleX(overlay);
-    const sy = overlayScaleY(overlay);
     const bx = Number(bb?.x) || 0;
     const by = Number(bb?.y) || 0;
     const bw = Math.max(0.0001, Number(bb?.width) || 1);
     const bh = Math.max(0.0001, Number(bb?.height) || 1);
-    return {
-      x: Number(overlay?.tx || 0) + sx * (bx + bw * 0.12),
-      y: Number(overlay?.ty || 0) + sy * (by + bh * 0.25),
-    };
+    return overlayWorldPointFromSourceLocal(overlay, bb, bx + bw * 0.12, by + bh * 0.25);
   };
 
   const getDirectEntryActiveColorForDiverter = (overlay, options = {}) => {
@@ -5801,10 +6108,9 @@ function CanvasSvg({
           const pt = endpoints[idx];
           const dist = distancePointToRect(pt, wr);
           if (dist > threshold || dist >= bestDistance) continue;
-          const sx = overlayScaleX(overlay);
-          const sy = overlayScaleY(overlay);
-          const localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
-          const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
+          const local = overlaySourceLocalPointFromWorld(overlay, bb, pt);
+          const localX = local.x;
+          const localY = local.y;
           const branch =
             getDiverterBranchAtWorldPointByConnector(overlay, pt, bb, 40) ||
             getDiverterBranchAtLocalPoint(localX, localY, bb);
@@ -5888,10 +6194,9 @@ function CanvasSvg({
       const h = wr.h;
       if (pt.x >= x && pt.x <= x + w && pt.y >= y && pt.y <= y + h) {
         if (isDiverterEType(overlayEType)) {
-          const sx = overlayScaleX(o);
-          const sy = overlayScaleY(o);
-          const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(0.0001, sx);
-          const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(0.0001, sy);
+          const local = overlaySourceLocalPointFromWorld(o, bb, pt);
+          const localX = local.x;
+          const localY = local.y;
           const branch = getDiverterBranchAtLocalPoint(localX, localY, bb);
           const activeBranch = getEffectiveDiverterState(o);
           if (branch === "entry") return color;
@@ -5935,10 +6240,9 @@ function CanvasSvg({
       if (isDiverterEType(overlayEType) && !incomingEntryColor) continue;
       if (!color) continue;
       if (isDiverterEType(overlayEType)) {
-        const sx = overlayScaleX(o);
-        const sy = overlayScaleY(o);
-        const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(0.0001, sx);
-        const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(0.0001, sy);
+        const local = overlaySourceLocalPointFromWorld(o, bb, pt);
+        const localX = local.x;
+        const localY = local.y;
         const branch = getDiverterBranchAtLocalPoint(localX, localY, bb);
         const activeBranch = getEffectiveDiverterState(o);
         if (!(branch === "entry" || (branch && activeBranch && branch === activeBranch))) continue;
@@ -5970,10 +6274,9 @@ function CanvasSvg({
       );
       if (!incomingEntryColor) continue;
 
-      const sx = overlayScaleX(o);
-      const sy = overlayScaleY(o);
-      const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(0.0001, sx);
-      const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(0.0001, sy);
+      const local = overlaySourceLocalPointFromWorld(o, bb, pt);
+      const localX = local.x;
+      const localY = local.y;
       const connectorOutputBranch = getDiverterOutputBranchAtWorldPoint(o, pt, bb, 30);
       const localBranch = getDiverterBranchAtLocalPoint(localX, localY, bb);
       const branch =
@@ -6004,10 +6307,9 @@ function CanvasSvg({
       const dist = distancePointToRect(pt, wr);
       if (dist > 42 || dist >= best.dist) continue;
 
-      const sx = overlayScaleX(o);
-      const sy = overlayScaleY(o);
-      const localX = (Number(pt.x) - Number(o.tx || 0)) / Math.max(0.0001, sx);
-      const localY = (Number(pt.y) - Number(o.ty || 0)) / Math.max(0.0001, sy);
+      const local = overlaySourceLocalPointFromWorld(o, bb, pt);
+      const localX = local.x;
+      const localY = local.y;
       const branch =
         getDiverterOutputBranchAtWorldPoint(o, pt, bb, 42) ||
         (["straight", "divert"].includes(getDiverterBranchAtLocalPoint(localX, localY, bb))
@@ -6305,10 +6607,9 @@ function CanvasSvg({
         const dist = distancePointToRect(pt, wr);
         if (dist > threshold) continue;
         if (normalizedBranchFilter) {
-          const sx = overlayScaleX(overlay);
-          const sy = overlayScaleY(overlay);
-          const localX = (Number(pt.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
-          const localY = (Number(pt.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
+          const local = overlaySourceLocalPointFromWorld(overlay, bb, pt);
+          const localX = local.x;
+          const localY = local.y;
           const branch = getDiverterBranchAtLocalPoint(localX, localY, bb);
           if (branch !== normalizedBranchFilter) continue;
         }
@@ -7294,30 +7595,35 @@ function CanvasSvg({
     return undefined;
   };
 
-  const renderTagBubble = ({ key, bubbleId, x, anchorY, lines, anchor = "middle" }) => {
+  const renderTagBubble = ({ key, bubbleId, x, anchorY, lines, anchor = "middle", highlight = false, title = "" }) => {
     if (!Array.isArray(lines) || lines.length === 0) return null;
-    const fontSize = 8 * inv;
-    const lineH = 9.5 * inv;
-    const padX = 4 * inv;
-    const padY = 3.5 * inv;
-    const radius = 7 * inv;
+    const fontSize = 9 * inv;
+    const lineH = 10.5 * inv;
+    const padX = 5 * inv;
+    const padY = 4 * inv;
+    const radius = 8 * inv;
     const maxChars = lines.reduce((m, line) => Math.max(m, String(line || "").length), 0);
-    const textW = Math.max(22 * inv, maxChars * 5.4 * inv);
+    const textW = Math.max(26 * inv, maxChars * 6.1 * inv);
     const w = textW + padX * 2;
     const h = lineH * lines.length + padY * 2;
     const top = anchorY - h - 8 * inv;
     const left = anchor === "start" ? x : x - w / 2;
     const textX = anchor === "start" ? x + padX : x;
     const textAnchor = anchor === "start" ? "start" : "middle";
+    const lineStroke = highlight ? "#d97706" : "#0f172a";
+    const bubbleFill = highlight ? "rgba(255,247,237,0.96)" : "rgba(255,255,255,0.92)";
+    const bubbleStroke = highlight ? "rgba(217,119,6,0.9)" : "rgba(15,23,42,0.35)";
+    const textFill = highlight ? "#7c2d12" : "#0f172a";
 
     return (
       <g key={key}>
+        {title ? <title>{title}</title> : null}
         <line
           x1={x}
           y1={top + h}
           x2={x}
           y2={anchorY}
-          stroke="#0f172a"
+          stroke={lineStroke}
           strokeWidth={1.2 * inv}
           strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
@@ -7329,8 +7635,8 @@ function CanvasSvg({
           height={h}
           rx={radius}
           ry={radius}
-          fill="rgba(255,255,255,0.92)"
-          stroke="rgba(15,23,42,0.35)"
+          fill={bubbleFill}
+          stroke={bubbleStroke}
           strokeWidth={1 * inv}
           vectorEffect="non-scaling-stroke"
           style={{ cursor: onHideTagBubble ? "pointer" : "default" }}
@@ -7347,7 +7653,7 @@ function CanvasSvg({
           x={textX}
           y={top + padY}
           fontSize={fontSize}
-          fill="#0f172a"
+          fill={textFill}
           textAnchor={textAnchor}
           dominantBaseline="hanging"
           pointerEvents="none"
@@ -7463,6 +7769,7 @@ function CanvasSvg({
       }
 
       const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
+      const isStaticOverlay = isStaticSvgOverlay(overlay);
       const isDiverterOverlay = isDiverterEType(overlayEType);
       const isBinOverlay = overlayEType === "bin" || overlayEType.startsWith("bin");
       const statePaintsStroke = isDocOrDicStatePaintEType(overlayEType);
@@ -7498,6 +7805,37 @@ function CanvasSvg({
         : "";
       const strokeModeRaw = String(overlay?.strokeMode || "").trim().toLowerCase();
       const preserveStrokeMode = !strokeModeRaw || strokeModeRaw === "preserve";
+      const allowStrokeOnlyFillTargets = /(?:^|[\\/])External(?:[\\/]|$)/i.test(String(overlay?.sourceKey || ""));
+      const sourceHadEType = overlay?.sourceHadEType === true;
+      const shouldTreatDefaultPaintAsCustom = overlay?.sourceHadEType === false;
+      const defaultFillColor = sourceHadEType ? "" : themeFillDefault;
+      const defaultStrokeColor = sourceHadEType ? "" : themeStrokeDefault;
+      if (isStaticOverlay) {
+        const staticFill = String(overlay?.fill || "").trim() || defaultFillColor;
+        const staticStroke = String(overlay?.stroke || "").trim() || defaultStrokeColor;
+        const staticStrokeWidth =
+          Number.isFinite(Number(overlay?.strokeWidth)) && Number(overlay.strokeWidth) > 0
+            ? Number(overlay.strokeWidth)
+            : undefined;
+        const inner = applyOverlayPaintOverrides(String(overlay?.inner || ""), {
+          fillColor: staticFill,
+          strokeColor: staticStroke,
+          strokeWidth: staticStrokeWidth,
+          allowStrokeOnlyFillTargets: true,
+        });
+        out.set(id, {
+          inner,
+          className: undefined,
+          style: {
+            fill: staticFill || undefined,
+            stroke: staticStroke || undefined,
+            strokeWidth: staticStrokeWidth,
+            pointerEvents: "visiblePainted",
+          },
+          isConveyorScrew: false,
+        });
+        return;
+      }
       if (!renderLiveVisuals) {
         const boundActiveFillPaint = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
         const boundFillPaint = String(getOverlayBoundFillColor(overlay) || "").trim();
@@ -7520,9 +7858,9 @@ function CanvasSvg({
             ? Number(overlay.strokeWidth)
             : undefined;
         const hasCustomOverlayFill =
-          Boolean(overlayFill) && (!preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
+          Boolean(overlayFill) && (sourceHadEType || shouldTreatDefaultPaintAsCustom || !preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
         const hasCustomOverlayStroke =
-          Boolean(overlayStroke) && (!preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
+          Boolean(overlayStroke) && (sourceHadEType || shouldTreatDefaultPaintAsCustom || !preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
         let inner = String(overlay?.inner || "");
         if (shouldReplaceBinText) {
           inner = replaceSvgTextPlaceholders(inner, {
@@ -7567,7 +7905,7 @@ function CanvasSvg({
         }
         out.set(id, {
           inner: (() => {
-            const defaultOverlayFill = hasCustomOverlayFill ? overlayFill : themeFillDefault;
+            const defaultOverlayFill = hasCustomOverlayFill ? overlayFill : defaultFillColor;
             const stateStyleClass = isBinOverlay
               ? ""
               : (overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass);
@@ -7579,6 +7917,7 @@ function CanvasSvg({
               fillColor: isBinOverlay || stateStyleClass ? "" : (overlayStateColor || defaultOverlayFill),
               strokeColor,
               strokeWidth: overlayStrokeWidth,
+              allowStrokeOnlyFillTargets,
             });
             if (stateStyleClass) {
               nextInner = applyIgnitionStyleClassToSvg(nextInner, stateStyleClass);
@@ -7600,7 +7939,7 @@ function CanvasSvg({
             fill: isBinOverlay
               ? undefined
               : (overlayStateStyleClass || boundActiveStyleClass || boundFillStyleClass)
-              ? (hasCustomOverlayFill ? overlayFill : themeFillDefault)
+              ? (hasCustomOverlayFill ? overlayFill : (defaultFillColor || undefined))
               : (overlayStateColor || (hasCustomOverlayFill ? overlayFill : undefined)),
             stroke: hasCustomOverlayStroke ? overlayStroke : undefined,
             strokeWidth: overlayStrokeWidth,
@@ -7654,9 +7993,9 @@ function CanvasSvg({
           ? Number(overlay.strokeWidth)
           : undefined;
       const hasCustomOverlayFill =
-        Boolean(overlayFill) && (!preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
+        Boolean(overlayFill) && (sourceHadEType || shouldTreatDefaultPaintAsCustom || !preserveStrokeMode || overlayFill.toLowerCase() !== themeFillDefault);
       const hasCustomOverlayStroke =
-        Boolean(overlayStroke) && (!preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
+        Boolean(overlayStroke) && (sourceHadEType || shouldTreatDefaultPaintAsCustom || !preserveStrokeMode || overlayStroke.toLowerCase() !== themeStrokeDefault.toLowerCase());
       const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
       const effectiveFillColor = isDiverterOverlay
         ? ""
@@ -7664,7 +8003,7 @@ function CanvasSvg({
         ? ""
         : activeFillStyleClass
         ? ""
-        : (tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : themeFillDefault));
+        : (tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : defaultFillColor));
       const effectiveStrokeColor = isDiverterOverlay
         ? ""
         : (routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : (useForcedStroke ? routeStroke : "")));
@@ -7717,6 +8056,7 @@ function CanvasSvg({
           fillColor: isFaultSimulated ? "" : effectiveFillColor,
           strokeColor: hasCustomOverlayStroke ? overlayStroke : (isFaultSimulated ? "" : stateStrokeColor),
           strokeWidth: overlayStrokeWidth,
+          allowStrokeOnlyFillTargets,
         });
       }
       if (!isDiverterOverlay && activeFillStyleClass && !isFaultSimulated) {
@@ -7741,7 +8081,7 @@ function CanvasSvg({
               pointerEvents: "visiblePainted",
             }
           : {
-              fill: activeFillStyleClass ? (hasCustomOverlayFill ? overlayFill : themeFillDefault) : undefined,
+              fill: activeFillStyleClass ? (hasCustomOverlayFill ? overlayFill : (defaultFillColor || undefined)) : undefined,
               pointerEvents: "visiblePainted",
             },
         isConveyorScrew,
@@ -7789,8 +8129,15 @@ function CanvasSvg({
     () =>
       staticOverlayRenderOverlays.map((o) => {
         const overlayVisual = overlayVisualById.get(String(o?.id || "").trim());
+        const overlayBounds = o?.bbox || overlayLocalBBox(o.id);
+        const mirrorTransform = overlayMirrorTransform(o, overlayBounds);
+        const staticInLive = isLiveMode && isStaticSvgOverlay(o);
+        const overlayTooltip = getOverlayDescriptionTooltip(o);
+        const overlayTooltipRect = overlayTooltip && overlayBounds
+          ? overlayWorldRect(o, overlayBounds)
+          : null;
         const overlayCursor = isLiveMode
-          ? "pointer"
+          ? (staticInLive ? "default" : "pointer")
           : (tool === "select" ? "move" : "crosshair");
         return (
           <g
@@ -7800,7 +8147,7 @@ function CanvasSvg({
           >
             <g
               ref={(node) => applyOverlayNodeRef(o.id, node)}
-              transform={`translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`}
+              transform={overlayTransform(o, overlayBounds)}
               onMouseDown={(e) => handleOverlayMouseDown(e, o)}
               onDoubleClick={(e) => handleOverlayDoubleClick(e, o)}
               onContextMenu={(e) => onOverlayContextMenu?.(e, o)}
@@ -7808,26 +8155,47 @@ function CanvasSvg({
               onMouseLeave={isLineMode ? () => setHoverOverlayId((prev) => (prev === o.id ? null : prev)) : undefined}
               style={{
                 cursor: overlayCursor,
-                pointerEvents: "visiblePainted",
+                pointerEvents: staticInLive && !overlayTooltip ? "none" : "visiblePainted",
               }}
             >
-              <g
-                className={overlayVisual?.className}
-                style={
-                  overlayVisual?.style || {
-                    fill: o.fill || "none",
-                    stroke: themeStrokeDefault,
-                    strokeWidth:
-                      Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0
-                        ? Number(o.strokeWidth)
-                        : undefined,
-                    pointerEvents: "visiblePainted",
+              {overlayTooltip ? <title>{overlayTooltip}</title> : null}
+              <g transform={mirrorTransform || undefined}>
+                <g
+                  className={overlayVisual?.className}
+                  style={
+                    overlayVisual?.style || {
+                      fill: o.fill || "none",
+                      stroke: themeStrokeDefault,
+                      strokeWidth:
+                        Number.isFinite(Number(o.strokeWidth)) && Number(o.strokeWidth) > 0
+                          ? Number(o.strokeWidth)
+                          : undefined,
+                      pointerEvents: "visiblePainted",
+                    }
                   }
-                }
-              >
-                <g dangerouslySetInnerHTML={{ __html: overlayVisual?.inner ?? String(o.inner || "") }} />
+                >
+                  <g dangerouslySetInnerHTML={{ __html: overlayVisual?.inner ?? String(o.inner || "") }} />
+                </g>
               </g>
             </g>
+
+            {renderLiveVisuals && overlayTooltipRect ? (
+              <rect
+                x={overlayTooltipRect.x}
+                y={overlayTooltipRect.y}
+                width={Math.max(0.0001, overlayTooltipRect.w)}
+                height={Math.max(0.0001, overlayTooltipRect.h)}
+                fill="transparent"
+                stroke="none"
+                pointerEvents="all"
+                style={{ cursor: overlayCursor }}
+                onMouseDown={staticInLive ? undefined : (e) => handleOverlayMouseDown(e, o)}
+                onDoubleClick={staticInLive ? undefined : (e) => handleOverlayDoubleClick(e, o)}
+                onContextMenu={staticInLive ? undefined : (e) => onOverlayContextMenu?.(e, o)}
+              >
+                <title>{overlayTooltip}</title>
+              </rect>
+            ) : null}
 
             {isLineMode && (() => {
               const bb = overlayLocalBBox(o.id);
@@ -7860,6 +8228,10 @@ function CanvasSvg({
       overlayVisualById,
       isLiveMode,
       liveClickable,
+      renderLiveVisuals,
+      liveRenderTick,
+      ignitionTagValuesByPath,
+      liveLookupKeyList,
       tool,
       isLineMode,
       themeStrokeDefault,
@@ -7889,7 +8261,7 @@ function CanvasSvg({
         >
           <g
             ref={(node) => applyOverlayNodeRef(o.id, node)}
-            transform={`translate(${o.tx} ${o.ty}) scale(${overlayScaleX(o)} ${overlayScaleY(o)})`}
+            transform={overlayTransform(o, widgetBounds)}
             onMouseDown={(e) => handleOverlayMouseDown(e, o)}
             onDoubleClick={(e) => handleOverlayDoubleClick(e, o)}
             onMouseEnter={isLineMode ? () => setHoverOverlayId(o.id) : undefined}
@@ -8107,6 +8479,20 @@ function CanvasSvg({
   const tagBubbleLayer = useMemo(() => {
     if (!showTagPaths || interactionActive) return null;
     const includeLiveOverlayLines = renderLiveVisuals;
+    const normalizeDuplicateTagPathKey = (raw) =>
+      String(raw || "")
+        .replace(/\r?\n/g, "")
+        .trim()
+        .replace(/[\\/]+/g, ".")
+        .replace(/\.+/g, ".")
+        .toLowerCase();
+    const duplicateOverlayTagPathCounts = new Map();
+    overlayRenderOverlays.forEach((overlay) => {
+      if (overlay?.widget || overlay?.embeddedView || isStaticSvgOverlay(overlay)) return;
+      const key = normalizeDuplicateTagPathKey(overlay?.tagPath);
+      if (!key) return;
+      duplicateOverlayTagPathCounts.set(key, (duplicateOverlayTagPathCounts.get(key) || 0) + 1);
+    });
     return (
       <g>
         {shapes.map((s) => {
@@ -8156,8 +8542,14 @@ function CanvasSvg({
         })}
         {overlayRenderOverlays.map((o) => {
           if (o?.embeddedView) return null;
+          if (isStaticSvgOverlay(o)) return null;
           if (hiddenBubbleSet.has(o.id)) return null;
           const text = getOverlayGroupLabel(o);
+          const duplicateTagPathKey = normalizeDuplicateTagPathKey(o?.tagPath);
+          const duplicateTagPathCount = duplicateTagPathKey
+            ? duplicateOverlayTagPathCounts.get(duplicateTagPathKey) || 0
+            : 0;
+          const duplicateTagPath = duplicateTagPathCount > 1;
           const lines = [];
           if (text) lines.push(text);
           if (includeLiveOverlayLines) {
@@ -8184,6 +8576,8 @@ function CanvasSvg({
             anchorY,
             lines,
             anchor: "middle",
+            highlight: duplicateTagPath,
+            title: duplicateTagPath ? `${duplicateTagPathCount} SVGs use this TagPath` : "",
           });
         })}
       </g>
@@ -8210,17 +8604,26 @@ function CanvasSvg({
       <g>
         {overlayRenderOverlays.map((o) => {
           if (o?.widget) return null;
+          if (isStaticSvgOverlay(o)) return null;
           const overlayModeState = getOverlayModeState(o);
-          if (overlayModeState !== "manual" && overlayModeState !== "maintenance") return null;
+          if (overlayModeState !== "manual" && overlayModeState !== "maintenance" && overlayModeState !== "force") return null;
           const bb = o?.bbox || overlayLocalBBox(o.id);
           if (!bb) return null;
           const wr = overlayWorldRect(o, bb);
           const isMaintenance = overlayModeState === "maintenance";
-          const bubbleR = 9 * inv;
-          const bubbleCx = wr.x + wr.w + 12 * inv;
-          const bubbleCy = wr.y + 10 * inv;
-          const anchorX = wr.x + wr.w;
-          const anchorY = wr.y + Math.max(6 * inv, Math.min(wr.h - 6 * inv, 10 * inv));
+          const isForce = overlayModeState === "force";
+          const modeStroke = isForce ? "#dc2626" : isMaintenance ? "#f59e0b" : "#a855f7";
+          const modeLineStroke = isForce ? "#b91c1c" : isMaintenance ? "#b45309" : "#7e22ce";
+          const modeFill = isForce
+            ? "rgba(254,242,242,0.98)"
+            : isMaintenance
+            ? "rgba(255,247,237,0.98)"
+            : "rgba(255,255,255,0.95)";
+          const bubbleR = 10.5 * inv;
+          const bubbleCx = wr.x + wr.w + 14 * inv;
+          const bubbleCy = wr.y + 12 * inv;
+          const anchorX = wr.x + wr.w / 2;
+          const anchorY = wr.y + wr.h / 2;
           const dx = bubbleCx - anchorX;
           const dy = bubbleCy - anchorY;
           const dist = Math.max(1e-6, Math.hypot(dx, dy));
@@ -8228,48 +8631,69 @@ function CanvasSvg({
           const uy = dy / dist;
           const lineEndX = bubbleCx - ux * bubbleR;
           const lineEndY = bubbleCy - uy * bubbleR;
+          const modeTitle = isForce ? "Force" : isMaintenance ? "Maintenance" : "Manual";
+          const modeTooltip = `${modeTitle}${o?.tagPath ? `: ${String(o.tagPath).trim()}` : ""}`;
           return (
-            <g key={`overlay-mode-badge-${o.id}`} pointerEvents="none" aria-hidden="true">
+            <g key={`overlay-mode-badge-${o.id}`} pointerEvents="none">
               <line
                 x1={anchorX}
                 y1={anchorY}
                 x2={lineEndX}
                 y2={lineEndY}
-                stroke={isMaintenance ? "#b45309" : "#7e22ce"}
-                strokeWidth={1.35 * inv}
+                stroke={modeLineStroke}
+                strokeWidth={1.45 * inv}
                 strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
               />
-              <circle
-                cx={bubbleCx}
-                cy={bubbleCy}
-                r={bubbleR}
-                fill={isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)"}
-                stroke={isMaintenance ? "#f59e0b" : "#a855f7"}
-                strokeWidth={1.25 * inv}
-                vectorEffect="non-scaling-stroke"
-              />
-              <g
-                transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.6 * inv}) translate(-12 -12)`}
-                fill="none"
-                stroke={isMaintenance ? "#b45309" : "#7e22ce"}
-                strokeWidth={1.9}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                {isMaintenance ? (
-                  <>
-                    <path d="M20 4.5 14.2 10.3" />
-                    <path d="M10.2 14.3 4.2 20.3 2.7 18.8l6-6" />
-                    <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
-                  </>
+              <g pointerEvents="auto" aria-label={modeTooltip}>
+                <title>{modeTooltip}</title>
+                <circle
+                  cx={bubbleCx}
+                  cy={bubbleCy}
+                  r={bubbleR}
+                  fill={modeFill}
+                  stroke={modeStroke}
+                  strokeWidth={1.35 * inv}
+                  vectorEffect="non-scaling-stroke"
+                />
+                {isForce ? (
+                  <text
+                    x={bubbleCx}
+                    y={bubbleCy + 0.5 * inv}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill={modeLineStroke}
+                    fontSize={12 * inv}
+                    fontWeight={900}
+                    pointerEvents="none"
+                  >
+                    F
+                  </text>
                 ) : (
-                  <>
-                    <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
-                    <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
-                    <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
-                    <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
-                  </>
+                  <g
+                    transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.68 * inv}) translate(-12 -12)`}
+                    fill="none"
+                    stroke={modeLineStroke}
+                    strokeWidth={1.9}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    pointerEvents="none"
+                  >
+                    {isMaintenance ? (
+                      <>
+                        <path d="M20 4.5 14.2 10.3" />
+                        <path d="M10.2 14.3 4.2 20.3 2.7 18.8l6-6" />
+                        <path d="M14.8 7.2a4.1 4.1 0 0 1-5.6 5.6l-2.6 2.6a1.8 1.8 0 0 0 2.5 2.5l2.6-2.6a4.1 4.1 0 0 1 5.6-5.6l3.2-3.2-2.5-2.5-3.2 3.2Z" />
+                      </>
+                    ) : (
+                      <>
+                        <path d="M7.5 12.8V6.6a1.2 1.2 0 0 1 2.4 0v4.5" />
+                        <path d="M9.9 11.7V5.8a1.2 1.2 0 0 1 2.4 0v5.3" />
+                        <path d="M12.3 11.4V6.5a1.2 1.2 0 0 1 2.4 0v5.1" />
+                        <path d="M14.7 12V8.2a1.2 1.2 0 0 1 2.4 0v6.1c0 3-2.2 5.1-5.2 5.1h-1.8c-3.2 0-5.6-2.3-5.6-5.4v-2.2a1.2 1.2 0 0 1 2.4 0v1" />
+                      </>
+                    )}
+                  </g>
                 )}
               </g>
             </g>
@@ -8296,6 +8720,7 @@ function CanvasSvg({
       <g>
         {overlayRenderOverlays.map((o) => {
           if (o?.embeddedView) return null;
+          if (isStaticSvgOverlay(o)) return null;
           const overlayId = String(o?.id || "").trim();
           const connectionIssue = renderLiveVisuals && overlayId
             ? overlayConnectionIssueByOverlayId?.[overlayId]
@@ -8353,11 +8778,11 @@ function CanvasSvg({
                 connectionError ? `Error: ${connectionError}` : "",
               ].filter(Boolean).join(" | ")
             : "";
-          const r = 8 * inv;
-          const cx = wr.x + wr.w + 12 * inv;
-          const cy = wr.y + Math.max(10 * inv, r + 1 * inv);
-          const anchorX = wr.x + wr.w;
-          const anchorY = wr.y + Math.max(r, Math.min(wr.h - r, 10 * inv));
+          const r = 10 * inv;
+          const cx = wr.x + wr.w + 14 * inv;
+          const cy = wr.y + Math.max(12 * inv, r + 1.5 * inv);
+          const anchorX = wr.x + wr.w / 2;
+          const anchorY = wr.y + wr.h / 2;
           const dx = cx - anchorX;
           const dy = cy - anchorY;
           const dist = Math.max(1e-6, Math.hypot(dx, dy));
@@ -8365,40 +8790,43 @@ function CanvasSvg({
           const uy = dy / dist;
           const lineEndX = cx - ux * r;
           const lineEndY = cy - uy * r;
+          const warningTooltip = `${overlayTagWarning}: ${titlePath}${titleDetail ? ` (${titleDetail})` : ""}`;
           return (
-            <g key={`overlay-warning-badge-${o.id}`} pointerEvents="none" aria-hidden="true">
+            <g key={`overlay-warning-badge-${o.id}`} pointerEvents="none">
               <line
                 x1={anchorX}
                 y1={anchorY}
                 x2={lineEndX}
                 y2={lineEndY}
                 stroke={badgeStroke}
-                strokeWidth={1.15 * inv}
+                strokeWidth={1.3 * inv}
                 strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
               />
-              <circle
-                cx={cx}
-                cy={cy}
-                r={r}
-                fill={badgeFill}
-                stroke={badgeStroke}
-                strokeWidth={1.2 * inv}
-                vectorEffect="non-scaling-stroke"
-              />
-              <text
-                x={cx}
-                y={cy + 0.5 * inv}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fill="#b91c1c"
-                fontSize={10 * inv}
-                fontWeight={900}
-                pointerEvents="none"
-              >
-                {badgeText}
-              </text>
-              <title>{`${overlayTagWarning}: ${titlePath}${titleDetail ? ` (${titleDetail})` : ""}`}</title>
+              <g pointerEvents="auto" aria-label={warningTooltip}>
+                <title>{warningTooltip}</title>
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={r}
+                  fill={badgeFill}
+                  stroke={badgeStroke}
+                  strokeWidth={1.35 * inv}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={cx}
+                  y={cy + 0.5 * inv}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fill="#b91c1c"
+                  fontSize={12 * inv}
+                  fontWeight={900}
+                  pointerEvents="none"
+                >
+                  {badgeText}
+                </text>
+              </g>
             </g>
           );
         })}

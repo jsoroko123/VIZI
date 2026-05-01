@@ -980,6 +980,11 @@
     "url": "/res/mesora-drawing/svg-library/Pellet%20Feed%20Mill/GyroSifter.svg"
   },
   {
+    "key": "./assets/SVG_Files/Pellet Feed Mill/IntakeHopper.svg",
+    "name": "IntakeHopper.svg",
+    "url": "/res/mesora-drawing/svg-library/Pellet%20Feed%20Mill/IntakeHopper.svg"
+  },
+  {
     "key": "./assets/SVG_Files/Pellet Feed Mill/Mixer.svg",
     "name": "Mixer.svg",
     "url": "/res/mesora-drawing/svg-library/Pellet%20Feed%20Mill/Mixer.svg"
@@ -1105,6 +1110,16 @@
     "url": "/res/mesora-drawing/svg-library/Switches/SwitchLightning.svg"
   },
   {
+    "key": "./assets/SVG_Files/Switches/SwitchSpeed_DIC.svg",
+    "name": "SwitchSpeed_DIC.svg",
+    "url": "/res/mesora-drawing/svg-library/Switches/SwitchSpeed_DIC.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Switches/SwitchTemperature_DIC.svg",
+    "name": "SwitchTemperature_DIC.svg",
+    "url": "/res/mesora-drawing/svg-library/Switches/SwitchTemperature_DIC.svg"
+  },
+  {
     "key": "./assets/SVG_Files/Switches/SwitchVibro.svg",
     "name": "SwitchVibro.svg",
     "url": "/res/mesora-drawing/svg-library/Switches/SwitchVibro.svg"
@@ -1113,6 +1128,11 @@
     "key": "./assets/SVG_Files/SwitchesLevel/SwitchLevel.svg",
     "name": "SwitchLevel.svg",
     "url": "/res/mesora-drawing/svg-library/SwitchesLevel/SwitchLevel.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Trucks/TruckScale.svg",
+    "name": "TruckScale.svg",
+    "url": "/res/mesora-drawing/svg-library/Trucks/TruckScale.svg"
   },
   {
     "key": "./assets/SVG_Files/Trucks/TruckSide.svg",

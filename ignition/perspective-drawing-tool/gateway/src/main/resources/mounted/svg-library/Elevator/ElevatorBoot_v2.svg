@@ -13,8 +13,8 @@
     <rect height="24.575689" id="body" width="22.677164" x="230.55119" y="428.96762" fill="#D7DADE" />
   </defs>
   <g id="layer1" transform="translate(-101.57587,-12.920408)">
-    <path d="m 126.92588,49.822529 v -15 l 4.99999,-4 v -3 h -30 v 3 l 5.00001,4 v 15 c 11,0 13.34208,0 20,0 z" id="BOutline" fill="#D7DADE" stroke-width="0.5588" style="opacity:0.99" />
-    <ellipse cx="116.9257" cy="16.904251" id="commodity" rx="3.4920707" ry="3.4260879" stroke-width="0.5588" stroke-dasharray="none" fill="#D7DADE" />
+    <path d="m 126.92588,49.822529 v -15 l 4.99999,-4 v -3 h -30 v 3 l 5.00001,4 v 15 c 11,0 13.34208,0 20,0 z" id="BOutline" fill="#D7DADE" stroke="#808080" stroke-width="0.5588" style="opacity:0.99" />
+    <ellipse cx="116.9257" cy="16.904251" id="commodity" rx="3.4920707" ry="3.4260879" stroke="#808080" stroke-width="0.5588" stroke-dasharray="none" fill="#D7DADE" />
     <text id="text1" transform="matrix(0.75964259,0,0,0.68060922,-66.823805,-259.65829)" x="7.020822" y="0" stroke="#808080" stroke-width="0.5588" stroke-dasharray="none" style="font-size:20px;opacity:0.99;shape-inside:url(#rect2);text-align:center;white-space:pre">
       <tspan id="tspan2" x="233" y="447.2134" />
     </text>

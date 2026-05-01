@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
@@ -36,26 +36,26 @@
      id="defs1"><linearGradient
        id="linearGradient12"
        inkscape:collect="always"><stop
-         style="stop-color:#e7e9ec;stop-opacity:1"
+         style="stop-color:#c3c3c3;stop-opacity:1"
          offset="0"
          id="stop12" /><stop
-         style="stop-color:#b8bdc4;stop-opacity:0"
+         style="stop-color:#c3c3c3;stop-opacity:0"
          offset="1"
          id="stop13" /></linearGradient><linearGradient
        id="linearGradient9"
        inkscape:collect="always"><stop
-         style="stop-color:#e7e9ec;stop-opacity:1"
+         style="stop-color:#cccccc;stop-opacity:1"
          offset="0"
          id="stop9" /><stop
-         style="stop-color:#b8bdc4;stop-opacity:1"
+         style="stop-color:#dedede;stop-opacity:1"
          offset="0.87891442"
          id="stop10" /></linearGradient><linearGradient
        id="linearGradient7"
        inkscape:collect="always"><stop
-         style="stop-color:#b8bdc4;stop-opacity:1"
+         style="stop-color:#cccccc;stop-opacity:1"
          offset="0.58663881"
          id="stop7" /><stop
-         style="stop-color:#b8bdc4;stop-opacity:1"
+         style="stop-color:#cccccc;stop-opacity:1"
          offset="1"
          id="stop8" /></linearGradient><linearGradient
        inkscape:collect="always"
@@ -96,38 +96,38 @@
        y="78.442528" /><path
        style="fill:#D7DADE;fill-opacity:1;fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
        d="M 95.183131,108.06506 64.76747,83.374697 62.978312,85.521685 93.036143,110.56988 Z"
-       id="path4" /></g><g
+       id="path4"  data-vizi-fill-target="true"/></g><g
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1"><g
        id="g13"><g
          id="g14"
          transform="translate(-67.272289,-79.60989)"><path
-           style="fill:url(#linearGradient13);fill-opacity:1;fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
+           style="fill:#D7DADE;fill-opacity:1;fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
            d="M 97.541119,110.69842 70.973499,80.967984 70.846986,86.408022 95.643433,112.97564 Z"
            id="path12"
-           sodipodi:nodetypes="ccccc" /><path
-           style="fill:url(#linearGradient14);fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
+           sodipodi:nodetypes="ccccc"  data-vizi-fill-target="true"/><path
+           style="fill:#D7DADE;fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
            d="m 91.246988,110.56988 -21.469882,21.11204 v 7.8723 l 3.936146,8.94578 20.396387,24.69035 17.175901,0.0895 20.75422,-68.79307 -34.709641,0.71566 z"
            id="path3"
-           sodipodi:nodetypes="ccccccccc" /><path
+           sodipodi:nodetypes="ccccccccc"  data-vizi-fill-target="true"/><path
            style="fill:#D7DADE;fill-opacity:1;fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
            d="m 68.345784,139.19639 9.214156,4e-5 -1.959082,51.04336 -5.459562,0.037 z"
            id="path1"
-           sodipodi:nodetypes="ccccc" /><path
-           style="fill:url(#linearGradient8);fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
+           sodipodi:nodetypes="ccccc"  data-vizi-fill-target="true"/><path
+           style="fill:#D7DADE;fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
            d="m 123.46255,107.62799 3.152,82.63784 5.21873,-0.009 0.53679,-82.62865 z"
            id="path2"
-           sodipodi:nodetypes="ccccc" /><ellipse
+           sodipodi:nodetypes="ccccc"  data-vizi-fill-target="true"/><ellipse
            style="fill:#D7DADE;fill-opacity:1;fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
            id="path11"
            cx="72.952858"
            cy="142.59578"
            rx="0.58147591"
-           ry="0.62620479" /><ellipse
+           ry="0.62620479"  data-vizi-fill-target="true"/><ellipse
            style="fill:#D7DADE;fill-opacity:1;fill-rule:evenodd;stroke:#808080;stroke-width:0.99;stroke-miterlimit:3.6"
            id="ellipse11"
            cx="127.87997"
            cy="111.19608"
            rx="0.58147591"
-           ry="0.62620479" /></g></g></g></svg>
+           ry="0.62620479"  data-vizi-fill-target="true"/></g></g></g></svg>

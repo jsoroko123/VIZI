@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 0.51032403 0.51032498" width="15" height="15" kewidth="100" keheight="100" eType="DIC" stroke="#808080" stroke-width="0.0077" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+  <path id="body" d="M0.02 0.02h0.470324v0.470325H0.02z" fill="#D7DADE" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none"/>
+  <g id="speed-symbol" fill="none" stroke="#808080" stroke-width="0.026" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M0.075162 0.335a0.180 0.180 0 0 1 0.360 0"/>
+    <path d="M0.116 0.335h0.038"/>
+    <path d="M0.356 0.335h0.038"/>
+    <path d="M0.255162 0.155v0.037"/>
+    <path d="M0.255162 0.335l0.090-0.099"/>
+  </g>
+  <circle id="speed-center" cx="0.255162" cy="0.335" r="0.023" fill="#808080" stroke="none"/>
+</svg>

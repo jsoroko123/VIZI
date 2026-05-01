@@ -17,6 +17,12 @@ const SVG_LIBRARY_CATALOG_ROUTE_CANDIDATES = [
     `/main/data/${MODULE_ID}/svg-library-catalog`,
     `${MODULE_RESOURCE_BASE}/svg-library/manifest.json`
 ];
+const SVG_LIBRARY_UPLOAD_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/svg-library-upload`,
+    `/main/data/${MODULE_URL_ALIAS}/svg-library-upload`,
+    `/data/${MODULE_ID}/svg-library-upload`,
+    `/main/data/${MODULE_ID}/svg-library-upload`
+];
 const SVG_RAW_CACHE_MAX = 80;
 const DEFAULT_FILL = "#D7DADE";
 const DEFAULT_STROKE = "#808080";
@@ -1422,6 +1428,7 @@ function ViziCanvasBridge(props) {
     const [svgLibraryExternalDirectory, setSvgLibraryExternalDirectory] = useState("");
     const [svgLibraryExternalCount, setSvgLibraryExternalCount] = useState(0);
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
+    const [svgLibraryUploading, setSvgLibraryUploading] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const svgCatalogRequestIdRef = useRef(0);
     const localZoomCacheKey = resolveCanvasZoomCacheKey(props);
@@ -1589,6 +1596,7 @@ function ViziCanvasBridge(props) {
             setSvgLibraryExternalDirectory("");
             setSvgLibraryExternalCount(0);
             setSvgLibraryRefreshing(false);
+            setSvgLibraryUploading(false);
             setImportOpen(false);
             return undefined;
         }
@@ -1817,9 +1825,81 @@ function ViziCanvasBridge(props) {
     const handleRefreshSvgLibrary = useCallback(() => {
         loadSvgCatalog();
     }, [loadSvgCatalog]);
+    const handleImportSvgLibraryFile = useCallback(async (file) => {
+        if (!file) {
+            return false;
+        }
+
+        const fileName = String(file.name || "").trim();
+        if (!/\.svg$/i.test(fileName)) {
+            setSvgLibraryError("Only .svg files can be imported.");
+            return false;
+        }
+
+        let content = "";
+        try {
+            content = await file.text();
+        } catch (error) {
+            setSvgLibraryError(String(error?.message || "Failed to read selected SVG file."));
+            return false;
+        }
+
+        if (!/<svg\b/i.test(content)) {
+            setSvgLibraryError("The selected file does not contain an SVG root element.");
+            return false;
+        }
+
+        setSvgLibraryUploading(true);
+        setSvgLibraryError("");
+        let lastError = "Failed to import SVG.";
+
+        try {
+            for (const routePath of SVG_LIBRARY_UPLOAD_ROUTE_CANDIDATES) {
+                try {
+                    const response = await fetch(routePath, {
+                        method: "POST",
+                        cache: "no-store",
+                        credentials: "same-origin",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            fileName,
+                            folder: "",
+                            content
+                        })
+                    });
+
+                    let payload = null;
+                    try {
+                        payload = await response.json();
+                    } catch (_error) {
+                        payload = null;
+                    }
+
+                    if (!response.ok || payload?.ok === false) {
+                        lastError = String(payload?.error || `Failed to import SVG (${response.status}).`);
+                        continue;
+                    }
+
+                    svgRawCacheRef.current.clear();
+                    await loadSvgCatalog();
+                    setSvgLibraryUploading(false);
+                    return true;
+                } catch (error) {
+                    lastError = String(error?.message || "Failed to import SVG.");
+                }
+            }
+        } finally {
+            setSvgLibraryUploading(false);
+        }
+
+        setSvgLibraryError(lastError);
+        return false;
+    }, [loadSvgCatalog]);
     const svgLibraryHelpText = svgLibraryExternalDirectory
-        ? `Drop .svg files into this folder and click Refresh:\n${svgLibraryExternalDirectory}`
-        : "External SVG folder path will appear here when the catalog loads.";
+        ? `Import an SVG here, or drop .svg files into this folder and click Refresh:\n${svgLibraryExternalDirectory}`
+        : "Import an SVG here; the external folder path will appear when the catalog loads.";
     const svgLibrarySummaryText = svgLibraryExternalCount > 0
         ? `${svgCatalogFiles.length} templates loaded, ${svgLibraryExternalCount} external`
         : `${svgCatalogFiles.length} templates loaded`;
@@ -1944,6 +2024,10 @@ function ViziCanvasBridge(props) {
 
     const libraryButtonLabel = svgLibraryError
         ? "SVG Library Unavailable"
+        : svgLibraryUploading
+        ? "Importing SVG..."
+        : svgLibraryRefreshing
+        ? "Refreshing SVG Library..."
         : svgCatalogFiles.length > 0
         ? `SVG Library (${svgCatalogFiles.length})`
         : "Loading SVG Library...";
@@ -2147,8 +2231,11 @@ function ViziCanvasBridge(props) {
                     onPickSvg={onPickSvg}
                     helpText={svgLibraryHelpText}
                     librarySummary={svgLibrarySummaryText}
+                    onImportFile={handleImportSvgLibraryFile}
+                    importDisabled={svgLibraryRefreshing}
+                    importing={svgLibraryUploading}
                     onRefresh={handleRefreshSvgLibrary}
-                    refreshDisabled={svgLibraryRefreshing}
+                    refreshDisabled={svgLibraryRefreshing || svgLibraryUploading}
                 />
             ) : null}
         </div>

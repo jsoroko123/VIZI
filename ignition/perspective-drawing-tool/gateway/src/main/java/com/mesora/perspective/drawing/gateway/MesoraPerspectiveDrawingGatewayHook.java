@@ -33,6 +33,8 @@ import com.inductiveautomation.ignition.common.tags.paths.BasicTagPath;
 import com.inductiveautomation.ignition.common.tags.paths.parser.TagPathParser;
 import com.inductiveautomation.ignition.common.util.LoggerEx;
 import com.inductiveautomation.ignition.gateway.dataroutes.AccessControlStrategy;
+import com.inductiveautomation.ignition.gateway.dataroutes.HttpMethod;
+import com.inductiveautomation.ignition.gateway.dataroutes.RequestContext;
 import com.inductiveautomation.ignition.gateway.dataroutes.RouteGroup;
 import com.inductiveautomation.ignition.gateway.model.AbstractGatewayModuleHook;
 import com.inductiveautomation.ignition.gateway.model.GatewayContext;
@@ -146,6 +148,15 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
             .nocache()
             .mount();
 
+        routes.newRoute("/svg-library-upload")
+            .method(HttpMethod.POST)
+            .handler((request, response) -> uploadExternalSvg(request, response))
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
         routes.newRoute("/hmi-state-style-maps")
             .handler((request, response) -> hmiStateStyleMaps())
             .renderer(gson::toJson)
@@ -196,6 +207,42 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
             );
         }
         return svgLibraryGatewayService.getCatalog();
+    }
+
+    private SvgLibraryGatewayService.SvgLibraryUploadResponse uploadExternalSvg(
+        RequestContext request,
+        HttpServletResponse response
+    ) {
+        if (svgLibraryGatewayService == null) {
+            response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+            return SvgLibraryGatewayService.SvgLibraryUploadResponse.error(
+                "SVG library service was unavailable.",
+                ""
+            );
+        }
+
+        try {
+            String body = request == null ? "" : request.readBody();
+            SvgLibraryUploadRequest uploadRequest = gson.fromJson(body, SvgLibraryUploadRequest.class);
+            SvgLibraryGatewayService.SvgLibraryUploadResponse uploadResponse =
+                svgLibraryGatewayService.uploadExternalSvg(
+                    uploadRequest == null ? null : uploadRequest.fileName(),
+                    uploadRequest == null ? null : uploadRequest.folder(),
+                    uploadRequest == null ? null : uploadRequest.content()
+                );
+
+            if (!uploadResponse.ok()) {
+                response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            }
+            return uploadResponse;
+        } catch (Exception e) {
+            logger.warnf("Failed to import external SVG: %s", String.valueOf(e.getMessage()));
+            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            return SvgLibraryGatewayService.SvgLibraryUploadResponse.error(
+                "Failed to import SVG: " + String.valueOf(e.getMessage()),
+                ""
+            );
+        }
     }
 
     private String readExternalSvg(String rawRelativePath, HttpServletResponse response) {
@@ -819,6 +866,13 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         Object value,
         String quality,
         String error
+    ) {
+    }
+
+    private record SvgLibraryUploadRequest(
+        String fileName,
+        String folder,
+        String content
     ) {
     }
 }

@@ -23,6 +23,9 @@ export default function ImportModal({
   loadSvgRaw,
   helpText = "",
   librarySummary = "",
+  onImportFile = null,
+  importDisabled = false,
+  importing = false,
   onRefresh = null,
   refreshDisabled = false,
   docked = false,
@@ -41,11 +44,13 @@ export default function ImportModal({
   const cacheRef = useRef(new Map()); // key -> { vb, inner } OR null (failed)
   const hoverTimerRef = useRef(null);
   const hoverTokenRef = useRef(0);
+  const uploadInputRef = useRef(null);
 
   const [hoverKey, setHoverKey] = useState(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
   const [preview, setPreview] = useState(null); // {vb, inner}
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [importError, setImportError] = useState("");
 
   useEffect(() => {
     if (!importOpen) {
@@ -53,6 +58,7 @@ export default function ImportModal({
       setPreview(null);
       setPreviewLoading(false);
       setQuery("");
+      setImportError("");
     }
   }, [importOpen]);
 
@@ -97,6 +103,27 @@ export default function ImportModal({
     fontSize: 12,
     fontWeight: 700,
   };
+  const canImportFile = typeof onImportFile === "function";
+
+  async function handleImportFileChange(event) {
+    const file = event?.target?.files?.[0] || null;
+    if (event?.target) {
+      event.target.value = "";
+    }
+    if (!file || !canImportFile) {
+      return;
+    }
+
+    setImportError("");
+    try {
+      const imported = await onImportFile(file);
+      if (imported) {
+        setQuery(String(file.name || "").replace(/\.svg$/i, ""));
+      }
+    } catch (error) {
+      setImportError(String(error?.message || "Failed to import SVG."));
+    }
+  }
 
   const grouped = useMemo(() => {
     const q = String(query || "").trim().toLowerCase();
@@ -297,6 +324,32 @@ export default function ImportModal({
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: textColor, letterSpacing: "0.01em" }}>Import SVG</div>
             <div style={{ display: "flex", gap: 8 }}>
+              {canImportFile ? (
+                <>
+                  <input
+                    ref={uploadInputRef}
+                    type="file"
+                    accept=".svg,image/svg+xml"
+                    onChange={handleImportFileChange}
+                    style={{ display: "none" }}
+                  />
+                  <button
+                    type="button"
+                    title="Import SVG file"
+                    onPointerDown={stopInteractiveEvent}
+                    onMouseDown={stopInteractiveEvent}
+                    onClick={() => uploadInputRef.current?.click?.()}
+                    disabled={importDisabled || importing}
+                    style={{
+                      ...secondaryBtnStyle,
+                      opacity: (importDisabled || importing) ? 0.72 : 1,
+                      cursor: (importDisabled || importing) ? "default" : "pointer",
+                    }}
+                  >
+                    {importing ? "Importing" : "Import"}
+                  </button>
+                </>
+              ) : null}
               {typeof onRefresh === "function" ? (
                 <button
                   type="button"
@@ -351,6 +404,19 @@ export default function ImportModal({
               }}
             >
               {helpText}
+            </div>
+          ) : null}
+          {importError ? (
+            <div
+              style={{
+                marginTop: 8,
+                color: "#fecaca",
+                fontSize: 11,
+                lineHeight: 1.35,
+                fontWeight: 700,
+              }}
+            >
+              {importError}
             </div>
           ) : null}
 

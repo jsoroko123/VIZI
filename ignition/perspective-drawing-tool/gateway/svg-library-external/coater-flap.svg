@@ -1,0 +1,32 @@
+<!-- Click the flap to see it swing -->
+<svg width="260" height="260" viewBox="0 0 260 260" role="img" aria-labelledby="title desc" kewidth="100" keheight="100" eType="coater_flap" fill="#D7DADE" stroke="#808080" stroke-width="3.9" stroke-linejoin="round" stroke-linecap="round">
+  <title id="title">Dog-door style swinging flap</title>
+  <desc id="desc">A vertical rectangle that rotates around its top edge when clicked.</desc>
+
+  <!-- Frame (just for context) -->
+  <rect x="30" y="30" width="200" height="200" rx="8" ry="8"
+        fill="#D7DADE" stroke="#808080" stroke-width="3.9" data-vizi-fill-target="true"/>
+
+  <!-- Hinge line at the top of the flap -->
+  <line x1="80" y1="60" x2="180" y2="60" stroke="#808080" stroke-width="3.9" stroke-linecap="round"/>
+
+  <!-- The swinging flap -->
+  <!-- Positioned so its top edge sits on y=60, with center at x=130 -->
+  <rect id="flap" x="80" y="60" width="100" height="140" rx="6" ry="6"
+        fill="#D7DADE" stroke="#808080" stroke-width="3.9" cursor="pointer" data-vizi-fill-target="true">
+    <!-- Rotate around the top edge center (cx=130, cy=60).
+         Opens to 75 degrees and returns to 0 on each click. -->
+    <animateTransform
+      attributeName="transform"
+      type="rotate"
+      values="0 130 60; 75 130 60; 0 130 60"
+      keyTimes="0; 0.5; 1"
+      dur="0.9s"
+      begin="flap.click"
+      calcMode="spline"
+      keySplines=".25 .1 .25 1; .25 .1 .25 1" />
+  </rect>
+
+  <!-- Optional subtle shadow behind the flap for depth -->
+  <ellipse cx="130" cy="205" rx="45" ry="10" fill="rgba(0,0,0,0.12)" stroke-width="3.9"/>
+</svg>

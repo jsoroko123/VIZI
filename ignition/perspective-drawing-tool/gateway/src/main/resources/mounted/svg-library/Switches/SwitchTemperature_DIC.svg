@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 0.51032403 0.51032498" width="15" height="15" kewidth="100" keheight="100" eType="DIC" stroke="#808080" stroke-width="0.0077" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <defs id="defs1">
+    <linearGradient id="swatch1">
+      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+  <path id="body" d="M0.02 0.02h0.470324v0.470325H0.02z" fill="#D7DADE" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none"/>
+  <g id="temperature-symbol" fill="none" stroke="#808080" stroke-width="0.026" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="0.229162" y="0.091" width="0.052" height="0.237" rx="0.026"/>
+    <circle cx="0.255162" cy="0.361" r="0.056"/>
+    <path d="M0.255162 0.152v0.210"/>
+  </g>
+  <circle id="temperature-bulb" cx="0.255162" cy="0.361" r="0.034" fill="#808080" stroke="none"/>
+</svg>
