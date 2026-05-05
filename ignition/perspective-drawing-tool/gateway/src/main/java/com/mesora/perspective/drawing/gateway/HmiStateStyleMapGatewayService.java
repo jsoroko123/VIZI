@@ -143,6 +143,8 @@ final class HmiStateStyleMapGatewayService {
                 Files.writeString(styleMapFile, loadDefaultJson(), StandardCharsets.UTF_8);
             } else if (isLegacyBundledDefault(styleMapFile)) {
                 Files.writeString(styleMapFile, loadDefaultJson(), StandardCharsets.UTF_8);
+            } else if (migrateBuiltInStateMapDefaults(styleMapFile)) {
+                logger.infof("Updated built-in HMI state style defaults in '%s'.", styleMapFile);
             }
 
             Path readmePath = configDirectory.resolve(README_FILE_NAME);
@@ -180,6 +182,131 @@ final class HmiStateStyleMapGatewayService {
         } catch (IOException _ignored) {
             return false;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean migrateBuiltInStateMapDefaults(Path file) {
+        try {
+            String raw = Files.readString(file, StandardCharsets.UTF_8);
+            if (raw == null || raw.isBlank()) {
+                return false;
+            }
+
+            Object existingParsed = gson.fromJson(raw, Object.class);
+            Object bundledParsed = gson.fromJson(loadDefaultJson(), Object.class);
+            if (!(existingParsed instanceof Map<?, ?> existingRoot)
+                || !(bundledParsed instanceof Map<?, ?> bundledRoot)) {
+                return false;
+            }
+
+            Object existingMapsObject = extractMaps(existingParsed);
+            Object bundledMapsObject = extractMaps(bundledParsed);
+            if (!(existingMapsObject instanceof Map<?, ?> existingMaps)
+                || !(bundledMapsObject instanceof Map<?, ?> bundledMaps)) {
+                return false;
+            }
+
+            boolean changed = false;
+            Map<String, Object> typedExistingMaps = (Map<String, Object>) existingMaps;
+            Map<String, Object> typedBundledMaps = (Map<String, Object>) bundledMaps;
+            for (String mapName : new String[] {
+                "Motor",
+                "AIN",
+                "DIC",
+                "DIC_Generic",
+                "Distributor",
+                "DOC",
+                "Gate",
+                "LevelSwitch_Discrete",
+                "ScaleAdaptor",
+                "TwoWay",
+                "Diverter"
+            }) {
+                changed |= replaceLegacyBuiltInMap(typedExistingMaps, typedBundledMaps, mapName);
+            }
+            changed |= addMissingBundledStyleDefinitions((Map<String, Object>) existingRoot, bundledParsed);
+
+            if (changed) {
+                Files.writeString(file, gson.toJson(existingParsed), StandardCharsets.UTF_8);
+            }
+            return changed;
+        } catch (Exception _ignored) {
+            return false;
+        }
+    }
+
+    private boolean replaceLegacyBuiltInMap(
+        Map<String, Object> existingMaps,
+        Map<String, Object> bundledMaps,
+        String mapName
+    ) {
+        Object bundled = bundledMaps.get(mapName);
+        if (!(bundled instanceof Map<?, ?>)) {
+            return false;
+        }
+        Object current = existingMaps.get(mapName);
+        if (!isLegacyBuiltInMap(current, bundled)) {
+            return false;
+        }
+        existingMaps.put(mapName, bundled);
+        return true;
+    }
+
+    private boolean isLegacyBuiltInMap(Object mapObject, Object bundledMapObject) {
+        if (!(mapObject instanceof Map<?, ?> map)) {
+            return true;
+        }
+        if (!(bundledMapObject instanceof Map<?, ?> bundledMap)) {
+            return false;
+        }
+        if (bundledMap.containsKey("Fallback") && !map.containsKey("Fallback")) {
+            return true;
+        }
+        for (Object key : map.keySet()) {
+            if (!bundledMap.containsKey(key)) {
+                return true;
+            }
+        }
+        for (Map.Entry<?, ?> entry : bundledMap.entrySet()) {
+            Object current = map.get(entry.getKey());
+            if (current != null && !String.valueOf(current).equals(String.valueOf(entry.getValue()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean addMissingBundledStyleDefinitions(Map<String, Object> root, Object bundledParsed) {
+        Object bundledStylesObject = extractNamedObject(bundledParsed, "styles", "classes", "styleClasses", "styleDefinitions");
+        if (!(bundledStylesObject instanceof Map<?, ?> bundledStyles)) {
+            return false;
+        }
+
+        boolean changed = false;
+        Map<String, Object> existingStyles = getOrCreateStyleDefinitions(root);
+        for (Map.Entry<?, ?> entry : bundledStyles.entrySet()) {
+            String styleKey = trimToEmpty(String.valueOf(entry.getKey()));
+            if (!styleKey.isBlank() && !existingStyles.containsKey(styleKey)) {
+                existingStyles.put(styleKey, entry.getValue());
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    private Map<String, Object> getOrCreateStyleDefinitions(Map<String, Object> root) {
+        for (String key : new String[] {"classes", "styles", "styleClasses", "styleDefinitions"}) {
+            Object value = root.get(key);
+            if (value instanceof Map<?, ?> map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> typed = (Map<String, Object>) map;
+                return typed;
+            }
+        }
+
+        Map<String, Object> styles = new LinkedHashMap<>();
+        root.put("classes", styles);
+        return styles;
     }
 
     private String normalizeJsonText(String value) {

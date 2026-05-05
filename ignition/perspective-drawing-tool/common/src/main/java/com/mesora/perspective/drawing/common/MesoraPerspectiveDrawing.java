@@ -9,7 +9,7 @@ public final class MesoraPerspectiveDrawing {
     public static final String MODULE_ID = "com.mesora.perspective.drawing";
     public static final String URL_ALIAS = "mesora-drawing";
     public static final String COMPONENT_CATEGORY = "Vizi";
-    public static final String RESOURCE_VERSION = "0.1.254";
+    public static final String RESOURCE_VERSION = "0.1.297";
     public static final String RESOURCE_FILE_NAME = String.format("drawingtool-%s.js", RESOURCE_VERSION);
 
     public static final Set<BrowserResource> BROWSER_RESOURCES =

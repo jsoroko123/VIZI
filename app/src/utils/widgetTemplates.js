@@ -8,6 +8,9 @@ export function resolveWidgetWriteMode(widget, tagPath = "") {
     ?? widget?.tagSource
     ?? ""
   ).trim().toLowerCase();
+  if (explicit === "view" || explicit === "popup" || explicit === "openview" || explicit === "open-view") {
+    return "view";
+  }
   if (explicit === "opc" || explicit === "ignition") {
     return explicit;
   }
@@ -66,6 +69,10 @@ export function widgetTemplate(widgetKey) {
       name: "Widget-PushButton.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 150"><rect x="1" y="1" width="258" height="148" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Push Button</text><rect x="34" y="52" width="192" height="70" rx="12" fill="#1e293b" stroke="#334155"/><rect x="40" y="58" width="180" height="58" rx="10" fill="#2563eb"/><text x="130" y="94" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">PRESS</text></svg>`,
     },
+    openViewButton: {
+      name: "Widget-OpenViewButton.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 150"><rect x="1" y="1" width="258" height="148" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Open View</text><rect x="34" y="52" width="192" height="70" rx="12" fill="#1e293b" stroke="#334155"/><rect x="40" y="58" width="180" height="58" rx="10" fill="#2563eb"/><path d="M111 78h34m0 0-13-13m13 13-13 13" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><text x="130" y="108" text-anchor="middle" fill="#ffffff" font-size="13" font-family="system-ui" font-weight="800">VIEW</text></svg>`,
+    },
     onOffButton: {
       name: "Widget-OnOffButton.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 160"><rect x="1" y="1" width="278" height="158" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">On/Off Button</text><rect x="34" y="52" width="212" height="74" rx="14" fill="#111827" stroke="#334155"/><rect x="40" y="58" width="98" height="62" rx="10" fill="#16a34a"/><rect x="142" y="58" width="98" height="62" rx="10" fill="#334155"/><text x="89" y="96" text-anchor="middle" fill="#ffffff" font-size="16" font-family="system-ui" font-weight="800">ON</text><text x="191" y="96" text-anchor="middle" fill="#cbd5e1" font-size="16" font-family="system-ui" font-weight="800">OFF</text></svg>`,
@@ -85,8 +92,11 @@ export function defaultWidgetSettings(widgetKey) {
     title: "",
     titleFontSize: "",
     textColor: "",
+    buttonTextColor: "",
     writeMode: DEFAULT_WIDGET_WRITE_MODE,
     opcServer: DEFAULT_WIDGET_OPC_SERVER,
+    viewPath: "",
+    viewParamsJson: "{}",
     writeValue: 1,
     releaseValue: 0,
     onValue: 1,
@@ -126,6 +136,16 @@ export function defaultWidgetSettings(widgetKey) {
   if (kind === "displayBox") return { ...base, historyPoints: 10 };
   if (kind === "weather") return { ...base, historyPoints: 10, decimals: 1, unit: "F" };
   if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
+  if (kind === "openViewButton") {
+    return {
+      ...base,
+      kind: "pushButton",
+      title: "Open View",
+      writeMode: "view",
+      historyPoints: 10,
+      decimals: 0,
+    };
+  }
   if (kind === "pushButton") return { ...base, historyPoints: 10, decimals: 0 };
   if (kind === "onOffButton") return { ...base, historyPoints: 10, decimals: 0 };
   if (kind === "gauge") return { ...base, min: 0, max: 100, historyPoints: 16 };

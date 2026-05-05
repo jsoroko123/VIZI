@@ -6,7 +6,7 @@
     </linearGradient>
   </defs>
   <path id="body" d="M0.02 0.02h0.470324v0.470325H0.02z" fill="#D7DADE" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none"/>
-  <g id="speed-symbol" fill="none" stroke="#808080" stroke-width="0.026" stroke-linejoin="round" stroke-linecap="round">
+  <g id="speed-symbol" data-vizi-stroke-detail="true" fill="none" stroke="#808080" stroke-width="0.026" stroke-linejoin="round" stroke-linecap="round">
     <path d="M0.075162 0.335a0.180 0.180 0 0 1 0.360 0"/>
     <path d="M0.116 0.335h0.038"/>
     <path d="M0.356 0.335h0.038"/>

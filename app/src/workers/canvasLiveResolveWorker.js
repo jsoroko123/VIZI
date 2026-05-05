@@ -436,6 +436,11 @@ function normalizeScene(sceneRaw) {
         scale: Number.isFinite(Number(overlay?.scale)) ? Number(overlay.scale) : 1,
         scaleX: Number.isFinite(Number(overlay?.scaleX)) ? Number(overlay.scaleX) : null,
         scaleY: Number.isFinite(Number(overlay?.scaleY)) ? Number(overlay.scaleY) : null,
+        rotation: Number.isFinite(Number(overlay?.rotation ?? overlay?.rotate ?? overlay?.angle))
+          ? Number(overlay?.rotation ?? overlay?.rotate ?? overlay?.angle)
+          : 0,
+        flipX: Boolean(overlay?.flipX || overlay?.flippedX || overlay?.mirrorX),
+        flipY: Boolean(overlay?.flipY || overlay?.flippedY || overlay?.mirrorY),
         bbox,
       };
     }).filter(Boolean),
@@ -639,6 +644,13 @@ function resolveLiveVisualState(index, scene) {
   const overlayFlipX = (overlay) => Boolean(overlay?.flipX || overlay?.flippedX || overlay?.mirrorX);
   const overlayFlipY = (overlay) => Boolean(overlay?.flipY || overlay?.flippedY || overlay?.mirrorY);
 
+  const overlayRotationDegrees = (overlay) => {
+    const value = Number(overlay?.rotation ?? overlay?.rotate ?? overlay?.angle);
+    if (!Number.isFinite(value)) return 0;
+    const normalized = value % 360;
+    return Math.abs(normalized) < 0.0001 ? 0 : normalized;
+  };
+
   const mirrorOverlayLocalPoint = (overlay, bbox, x, y) => {
     if (!bbox) return { x: Number(x || 0), y: Number(y || 0) };
     const bx = Number(bbox?.x) || 0;
@@ -653,22 +665,82 @@ function resolveLiveVisualState(index, scene) {
 
   const overlaySourceLocalPointFromWorld = (overlay, pt) => {
     const bbox = overlay?.bbox;
-    const localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, overlayScaleX(overlay));
-    const localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, overlayScaleY(overlay));
+    const sx = overlayScaleX(overlay);
+    const sy = overlayScaleY(overlay);
+    const rotation = overlayRotationDegrees(overlay);
+    let localX;
+    let localY;
+    if (rotation && bbox) {
+      const cx = Number(bbox?.x || 0) + Math.max(0.0001, Number(bbox?.width || 0)) / 2;
+      const cy = Number(bbox?.y || 0) + Math.max(0.0001, Number(bbox?.height || 0)) / 2;
+      const worldCx = Number(overlay?.tx || 0) + sx * cx;
+      const worldCy = Number(overlay?.ty || 0) + sy * cy;
+      const radians = rotation * Math.PI / 180;
+      const dx = Number(pt?.x || 0) - worldCx;
+      const dy = Number(pt?.y || 0) - worldCy;
+      const unrotatedX = dx * Math.cos(radians) + dy * Math.sin(radians);
+      const unrotatedY = -dx * Math.sin(radians) + dy * Math.cos(radians);
+      localX = cx + unrotatedX / Math.max(0.0001, sx);
+      localY = cy + unrotatedY / Math.max(0.0001, sy);
+    } else {
+      localX = (Number(pt?.x) - Number(overlay?.tx || 0)) / Math.max(0.0001, sx);
+      localY = (Number(pt?.y) - Number(overlay?.ty || 0)) / Math.max(0.0001, sy);
+    }
     return mirrorOverlayLocalPoint(overlay, bbox, localX, localY);
   };
 
   const overlayWorldPointFromSourceLocal = (overlay, x, y) => {
-    const local = mirrorOverlayLocalPoint(overlay, overlay?.bbox, x, y);
+    const bbox = overlay?.bbox;
+    const sx = overlayScaleX(overlay);
+    const sy = overlayScaleY(overlay);
+    const local = mirrorOverlayLocalPoint(overlay, bbox, x, y);
+    const rotation = overlayRotationDegrees(overlay);
+    if (rotation && bbox) {
+      const cx = Number(bbox?.x || 0) + Math.max(0.0001, Number(bbox?.width || 0)) / 2;
+      const cy = Number(bbox?.y || 0) + Math.max(0.0001, Number(bbox?.height || 0)) / 2;
+      const worldCx = Number(overlay?.tx || 0) + sx * cx;
+      const worldCy = Number(overlay?.ty || 0) + sy * cy;
+      const radians = rotation * Math.PI / 180;
+      const dx = (Number(local.x || 0) - cx) * sx;
+      const dy = (Number(local.y || 0) - cy) * sy;
+      return {
+        x: worldCx + dx * Math.cos(radians) - dy * Math.sin(radians),
+        y: worldCy + dx * Math.sin(radians) + dy * Math.cos(radians),
+      };
+    }
     return {
-      x: Number(overlay?.tx || 0) + overlayScaleX(overlay) * local.x,
-      y: Number(overlay?.ty || 0) + overlayScaleY(overlay) * local.y,
+      x: Number(overlay?.tx || 0) + sx * local.x,
+      y: Number(overlay?.ty || 0) + sy * local.y,
     };
   };
 
   const overlayWorldRect = (overlay) => {
     const bbox = overlay?.bbox;
     if (!bbox) return null;
+    if (overlayRotationDegrees(overlay)) {
+      const x = Number(bbox.x || 0);
+      const y = Number(bbox.y || 0);
+      const width = Math.max(0.0001, Number(bbox.width || 1));
+      const height = Math.max(0.0001, Number(bbox.height || 1));
+      const corners = [
+        overlayWorldPointFromSourceLocal(overlay, x, y),
+        overlayWorldPointFromSourceLocal(overlay, x + width, y),
+        overlayWorldPointFromSourceLocal(overlay, x + width, y + height),
+        overlayWorldPointFromSourceLocal(overlay, x, y + height),
+      ];
+      const xs = corners.map((point) => Number(point?.x) || 0);
+      const ys = corners.map((point) => Number(point?.y) || 0);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      return {
+        x: minX,
+        y: minY,
+        w: Math.max(0.0001, maxX - minX),
+        h: Math.max(0.0001, maxY - minY),
+      };
+    }
     const sx = overlayScaleX(overlay);
     const sy = overlayScaleY(overlay);
     return {
@@ -704,8 +776,11 @@ function resolveLiveVisualState(index, scene) {
     const text = String(raw).trim();
     if (!text) return "";
     const lower = text.toLowerCase();
+    const compact = lower.replace(/[^a-z0-9]+/g, "");
     if (lower.includes("fault")) return "";
-    if (lower.includes("no position")) return "";
+    if (lower.includes("no position") || compact.includes("noposition")) return "";
+    if (compact.includes("position1") || compact.includes("pos1")) return "straight";
+    if (compact.includes("position2") || compact.includes("pos2")) return "divert";
     if (lower.includes("moving straight")) return "straight";
     if (lower.includes("moving divert")) return "divert";
     if (lower.includes("straight")) return "straight";
@@ -959,7 +1034,7 @@ function resolveLiveVisualState(index, scene) {
       const activeBranch = overlayStateFor(overlay);
       const active = !!incomingEntryColor && !!activeBranch && branch === activeBranch;
       const color = overlayFlowColorFor(overlay, incomingEntryColor);
-      best = { matched: true, active, color: color || incomingEntryColor || "#22c55e", dist };
+      best = { matched: true, active, color: color || incomingEntryColor || "", dist };
     }
     return { matched: best.matched, active: best.active, color: best.color };
   };
@@ -998,7 +1073,7 @@ function resolveLiveVisualState(index, scene) {
   connectedSourceColorAtPoint = (pt, options = {}) => {
     if (!pt) return undefined;
     const diverterMatch = diverterOutputMatchAtPoint(pt, options);
-    if (diverterMatch.matched) return diverterMatch.active ? normalizeActiveColor(diverterMatch.color) || "#22c55e" : null;
+    if (diverterMatch.matched) return diverterMatch.active ? normalizeActiveColor(diverterMatch.color) : null;
     return normalizeActiveColor(overlayColorNearPoint(pt, 28, options));
   };
 
@@ -1407,7 +1482,7 @@ function resolveLiveVisualState(index, scene) {
     const activeOutputMatch = endpointOutputMatches.find((match) => match?.matched && match?.active);
     if (activeOutputMatch) {
       prepassPolylineColorById[shapeId] =
-        normalizeActiveColor(activeOutputMatch.color) || "#22c55e";
+        normalizeActiveColor(activeOutputMatch.color);
       return;
     }
     if (endpointOutputMatches.some((match) => match?.matched)) {

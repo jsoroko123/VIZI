@@ -10,6 +10,7 @@ const WIDGETS = [
   { key: "displayBox", name: "Display Box", group: "Indicators", desc: "Live tag read/write with units." },
   { key: "countdownBar", name: "Countdown Bar", group: "Indicators", desc: "PLC timer PRE/ACC countdown progress." },
   { key: "pushButton", name: "Push Button", group: "Controls", desc: "Momentary PLC write while pressed." },
+  { key: "openViewButton", name: "Open View Button", group: "Controls", desc: "Button that opens a Perspective view path." },
   { key: "onOffButton", name: "On/Off Button", group: "Controls", desc: "Toggle PLC write 1/0 from tag state." },
   { key: "statusTable", name: "Status Table", group: "Tables", desc: "Compact status rows." },
 ];

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 0.51032403 0.51032498" width="15" height="15" kewidth="100" keheight="100" eType="AIN" stroke="#808080" stroke-width="0.0077" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+  <path id="body" data-vizi-fill-target="true" d="M0.02 0.02h0.470324v0.470325H0.02z" fill="#D7DADE" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none"/>
+  <g id="ain-wave-symbol" data-vizi-stroke-detail="true" fill="none" stroke="#808080" stroke-width="0.021" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M0.091 0.360h0.328"/>
+    <path d="M0.104 0.306c0.030-0.070 0.060-0.070 0.090 0s0.060 0.070 0.090 0s0.060-0.070 0.090 0"/>
+    <path d="M0.139 0.210v0.176"/>
+    <path d="M0.255 0.156v0.230"/>
+    <path d="M0.371 0.238v0.148"/>
+  </g>
+</svg>

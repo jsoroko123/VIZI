@@ -200,6 +200,272 @@ function readObjectPathValue(source, path) {
         }, source);
 }
 
+function normalizePerspectiveThemeName(value) {
+    if (value == null) {
+        return "";
+    }
+    if (isPlainObject(value)) {
+        return normalizePerspectiveThemeName(
+            value.name
+            ?? value.value
+            ?? value.theme
+            ?? value.themeName
+            ?? value.props?.theme
+        );
+    }
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+        return "";
+    }
+    if (raw.includes("dark")) {
+        return "dark";
+    }
+    if (raw.includes("light")) {
+        return "light";
+    }
+    return "";
+}
+
+function getElementThemeCandidates(element) {
+    if (!element) {
+        return [];
+    }
+    return [
+        element.getAttribute?.("data-theme"),
+        element.getAttribute?.("theme"),
+        element.getAttribute?.("data-theme-name"),
+        element.getAttribute?.("class"),
+        element.className
+    ];
+}
+
+function detectDomThemeName() {
+    if (typeof document === "undefined") {
+        return "";
+    }
+    const themeSelectors = [
+        "[data-theme*='terra-dark']",
+        "[data-theme*='terra-light']",
+        "[data-theme*='dark']",
+        "[data-theme*='light']",
+        "[theme*='terra-dark']",
+        "[theme*='terra-light']",
+        "[theme*='dark']",
+        "[theme*='light']",
+        "[class*='terra-dark']",
+        "[class*='terra-light']",
+        "[class*='theme--dark']",
+        "[class*='theme--light']",
+        "[class*='theme-dark']",
+        "[class*='theme-light']",
+        "[class*='ia_theme--dark']",
+        "[class*='ia_theme--light']",
+        "[class*='ia_theme--terra-dark']",
+        "[class*='ia_theme--terra-light']"
+    ];
+    const candidates = [
+        ...getElementThemeCandidates(document.documentElement),
+        ...getElementThemeCandidates(document.body)
+    ];
+    for (const selector of themeSelectors) {
+        try {
+            const element = document.querySelector?.(selector);
+            if (element) {
+                candidates.push(...getElementThemeCandidates(element), selector);
+            }
+        } catch (_error) {
+        }
+    }
+    return candidates.map(normalizePerspectiveThemeName).find(Boolean) || "";
+}
+
+function findThemeInObject(value, depth = 4, seen = new Set()) {
+    const direct = normalizePerspectiveThemeName(value);
+    if (direct || depth <= 0 || !value || typeof value !== "object" || seen.has(value)) {
+        return direct;
+    }
+    seen.add(value);
+    const priorityKeys = ["theme", "themeName", "selectedTheme", "currentTheme", "session", "props", "page", "view", "project"];
+    for (const key of priorityKeys) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) {
+            continue;
+        }
+        const theme = findThemeInObject(value[key], depth - 1, seen);
+        if (theme) {
+            return theme;
+        }
+    }
+    let entries = [];
+    try {
+        entries = Object.entries(value).slice(0, 80);
+    } catch (_error) {
+        entries = [];
+    }
+    for (const [key, entryValue] of entries) {
+        if (/theme/i.test(key)) {
+            const theme = findThemeInObject(entryValue, depth - 1, seen);
+            if (theme) {
+                return theme;
+            }
+        }
+    }
+    return "";
+}
+
+function getPerspectiveSessionThemeName(componentProps) {
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const sources = [
+        componentProps,
+        nestedProps,
+        componentProps?.store,
+        nestedProps?.store,
+        componentProps?.store?.view,
+        nestedProps?.store?.view,
+        componentProps?.store?.view?.page,
+        nestedProps?.store?.view?.page,
+        globalClient,
+        globalClient?.session,
+        globalClient?.store,
+        globalClient?.store?.session,
+        globalClient?.store?.page,
+        globalClient?.store?.page?.session,
+        globalClient?.store?.view,
+        globalClient?.store?.view?.session,
+        globalClient?.store?.view?.page,
+        globalClient?.store?.view?.page?.session,
+        globalDesigner,
+        globalDesigner?.session,
+        globalDesigner?.store,
+        globalDesigner?.store?.session,
+        globalDesigner?.store?.view,
+        globalDesigner?.store?.view?.session,
+        globalDesigner?.store?.view?.page
+    ].filter(Boolean);
+    const paths = [
+        "session.props.theme",
+        "session.props.theme.name",
+        "session.props.theme.value",
+        "session.theme",
+        "session.theme.name",
+        "session.theme.value",
+        "props.session.props.theme",
+        "props.session.props.theme.name",
+        "props.session.theme",
+        "page.session.props.theme",
+        "page.session.props.theme.name",
+        "page.props.session.props.theme",
+        "view.session.props.theme",
+        "view.session.props.theme.name",
+        "view.props.session.props.theme",
+        "project.props.theme",
+        "project.theme"
+    ];
+    for (const source of sources) {
+        for (const path of paths) {
+            const theme = normalizePerspectiveThemeName(readObjectPathValue(source, path));
+            if (theme) {
+                return theme;
+            }
+        }
+    }
+    const domTheme = detectDomThemeName();
+    if (domTheme) {
+        return domTheme;
+    }
+    const sessionRoots = [
+        componentProps?.session,
+        nestedProps?.session,
+        componentProps?.props?.session,
+        nestedProps?.props?.session,
+        componentProps?.store?.session,
+        nestedProps?.store?.session,
+        globalClient?.session,
+        globalClient?.store?.session,
+        globalClient?.store?.page?.session,
+        globalClient?.store?.view?.session,
+        globalClient?.store?.view?.page?.session,
+        globalDesigner?.session,
+        globalDesigner?.store?.session,
+        globalDesigner?.store?.view?.session
+    ].filter(Boolean);
+    for (const source of sessionRoots) {
+        const theme = findThemeInObject(source);
+        if (theme) {
+            return theme;
+        }
+    }
+    return "";
+}
+
+function getPerspectiveThemeName(componentProps) {
+    return getPerspectiveSessionThemeName(componentProps)
+        || normalizePerspectiveThemeName(getModelValue(componentProps, "theme", ""))
+        || "light";
+}
+
+function isLegacyCanvasBackgroundDefault(value) {
+    const normalized = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+    return normalized === "#0f172a"
+        || normalized === "rgb(15,23,42)"
+        || normalized === "rgba(15,23,42,1)"
+        || normalized === "#0f141c"
+        || normalized === "rgb(15,20,28)"
+        || normalized === "rgba(15,20,28,1)"
+        || normalized === "#f8fafc"
+        || normalized === "rgb(248,250,252)"
+        || normalized === "rgba(248,250,252,1)"
+        || normalized === "#ffffff"
+        || normalized === "#fff"
+        || normalized === "rgb(255,255,255)"
+        || normalized === "rgba(255,255,255,1)"
+        || normalized === "var(--canvas-bg)";
+}
+
+function getThemeCanvasBackground(theme) {
+    return normalizePerspectiveThemeName(theme) === "dark"
+        ? "var(--vizi-canvas-bg-dark, #0f141c)"
+        : "var(--vizi-canvas-bg-light, #ffffff)";
+}
+
+function useDomThemeVersion() {
+    const [version, setVersion] = useState(0);
+
+    useEffect(() => {
+        if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
+            return undefined;
+        }
+        const bump = () => setVersion((previous) => (previous + 1) % 100000);
+        const observer = new MutationObserver(bump);
+        const options = {
+            attributes: true,
+            attributeFilter: ["class", "data-theme", "theme", "data-theme-name"]
+        };
+        if (document.documentElement) {
+            observer.observe(document.documentElement, options);
+        }
+        if (document.body) {
+            observer.observe(document.body, options);
+        }
+        return () => observer.disconnect();
+    }, []);
+
+    return version;
+}
+
+function getPerspectiveCanvasBackground(componentProps, theme) {
+    const explicitCanvasBackground = String(getModelValue(componentProps, "canvasBackgroundColor", "") || "").trim();
+    if (explicitCanvasBackground) {
+        return explicitCanvasBackground;
+    }
+    const backgroundColor = String(getModelValue(componentProps, "backgroundColor", "") || "").trim();
+    if (backgroundColor && !isLegacyCanvasBackgroundDefault(backgroundColor)) {
+        return backgroundColor;
+    }
+    return getThemeCanvasBackground(theme);
+}
+
 function normalizeCacheKeyPart(value) {
     return String(value ?? "")
         .trim()
@@ -434,6 +700,11 @@ function isDiverterTypeToken(value) {
     return token.includes("diverter") || token.includes("twoway");
 }
 
+function usesTwoWayUdtTypeToken(value) {
+    const token = normalizeTagTypeMatchToken(value);
+    return isDiverterTypeToken(token) || token === "gate";
+}
+
 function tagMatchesTypeFilter(entry, typeFilter) {
     const filterToken = normalizeTagTypeMatchToken(typeFilter);
     if (!filterToken) {
@@ -455,9 +726,9 @@ function tagMatchesTypeFilter(entry, typeFilter) {
     if (typeTokens.has(filterToken)) {
         return true;
     }
-    if (isDiverterTypeToken(filterToken)) {
+    if (usesTwoWayUdtTypeToken(filterToken)) {
         for (const token of typeTokens) {
-            if (isDiverterTypeToken(token)) {
+            if (usesTwoWayUdtTypeToken(token)) {
                 return true;
             }
         }
@@ -700,6 +971,47 @@ function normalizeHmiStateStyleMapRows(value) {
     }
 
     return rows;
+}
+
+function getHmiStateStyleMappingValue(mapping) {
+    return String(
+        mapping?.value
+        ?? mapping?.state
+        ?? mapping?.field
+        ?? mapping?.input
+        ?? mapping?.key
+        ?? ""
+    ).trim();
+}
+
+function getHmiStateStyleMappingPaint(mapping) {
+    return String(
+        mapping?.color
+        ?? mapping?.class
+        ?? mapping?.styleClass
+        ?? mapping?.className
+        ?? mapping?.style
+        ?? mapping?.cssClass
+        ?? ""
+    ).trim();
+}
+
+function isHmiStateFallbackMapping(mapping) {
+    const value = getHmiStateStyleMappingValue(mapping).toLowerCase();
+    return value === "fallback" || value === "default" || value === "else" || value === "otherwise";
+}
+
+function getHmiStateStyleFallbackPaint(mappings) {
+    for (const mapping of coerceArray(mappings)) {
+        if (!isHmiStateFallbackMapping(mapping)) {
+            continue;
+        }
+        const paint = getHmiStateStyleMappingPaint(mapping);
+        if (paint) {
+            return paint;
+        }
+    }
+    return "";
 }
 
 function looksLikeHmiStateStyleTable(value) {
@@ -1016,6 +1328,18 @@ function getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex) {
         return [];
     }
 
+    const overlayTypeTokens = Array.from(collectTagTypeMatchTokens(
+        overlay?.eType,
+        overlay?.name,
+        overlay?.sourceKey
+    )).filter(Boolean);
+    for (const token of overlayTypeTokens) {
+        const exact = entries.find((entry) => entry.token && entry.token === token);
+        if (exact) {
+            return exact.rows;
+        }
+    }
+
     const tokenList = Array.from(collectTagTypeMatchTokens(
         overlay?.udtName,
         overlay?.udtType,
@@ -1075,11 +1399,13 @@ function getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex) {
         return null;
     }
 
+    const mappedFallbackColor = getHmiStateStyleFallbackPaint(mappings);
     const fallbackColor = String(
-        currentBinding?.transform?.fallbackColor
-        ?? currentBinding?.fallbackColor
-        ?? overlay?.fill
-        ?? DEFAULT_FILL
+        mappedFallbackColor
+        || currentBinding?.transform?.fallbackColor
+        || currentBinding?.fallbackColor
+        || overlay?.fill
+        || DEFAULT_FILL
     ).trim() || DEFAULT_FILL;
 
     return {
@@ -1177,6 +1503,44 @@ function readInheritedSvgPaint(el, root, name) {
     return "";
 }
 
+const SVG_STROKE_DETAIL_ID_RE = /(?:symbol|glyph|icon|needle|bulb|speed-center|temperature|label|legend)/i;
+
+function isSvgStrokeDetailMarkerElement(el) {
+    const marker = String(
+        el?.getAttribute?.("data-vizi-stroke-detail") ||
+        el?.getAttribute?.("data-vizi-detail") ||
+        ""
+    ).trim().toLowerCase();
+    if (marker === "true" || marker === "1") {
+        return true;
+    }
+
+    const tokenText = [
+        el?.getAttribute?.("id"),
+        el?.getAttribute?.("class"),
+        el?.getAttribute?.("data-name")
+    ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .join(" ");
+    return SVG_STROKE_DETAIL_ID_RE.test(tokenText);
+}
+
+function getSvgStrokeDetailRoot(el, root) {
+    let node = el;
+    while (node && node.nodeType === 1 && node !== root) {
+        if (isSvgStrokeDetailMarkerElement(node)) {
+            return node;
+        }
+        node = node.parentNode || null;
+    }
+    return null;
+}
+
+function isSvgStrokeDetailElement(el, root) {
+    return Boolean(getSvgStrokeDetailRoot(el, root));
+}
+
 function setSvgPaint(el, name, value) {
     if (!el) return;
     el.setAttribute(name, value);
@@ -1186,6 +1550,50 @@ function setSvgPaint(el, name, value) {
         "style",
         style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
     );
+}
+
+function removeSvgPaint(el, name) {
+    if (!el) return;
+    el.removeAttribute(name);
+    const style = String(el.getAttribute("style") || "");
+    if (!style || !new RegExp(`${name}\\s*:`, "i").test(style)) return;
+    const cleaned = style
+        .replace(new RegExp(`${name}\\s*:\\s*([^;]+);?`, "gi"), "")
+        .split(";")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join(";");
+    if (cleaned) {
+        el.setAttribute("style", cleaned);
+    } else {
+        el.removeAttribute("style");
+    }
+}
+
+function getKnownSvgStrokeDetailWidth(el) {
+    const tokenText = [
+        el?.getAttribute?.("id"),
+        el?.getAttribute?.("class"),
+        el?.getAttribute?.("data-name")
+    ].join(" ");
+    return /(?:temperature|speed)-symbol/i.test(tokenText) ? "0.026" : "";
+}
+
+function normalizeSvgStrokeDetails(root) {
+    Array.from(root?.querySelectorAll?.("*") || []).forEach((el) => {
+        const detailRoot = getSvgStrokeDetailRoot(el, root);
+        if (!detailRoot) return;
+        if (el === detailRoot) {
+            const knownWidth = getKnownSvgStrokeDetailWidth(el);
+            if (knownWidth) {
+                setSvgPaint(el, "stroke-width", knownWidth);
+            }
+            el.removeAttribute("vector-effect");
+            return;
+        }
+        removeSvgPaint(el, "stroke-width");
+        el.removeAttribute("vector-effect");
+    });
 }
 
 function serializeSvgInner(root) {
@@ -1224,13 +1632,16 @@ function updateSvgInnerStrokeWidth(inner, strokeWidth) {
         );
         if (!doc.querySelector("parsererror")) {
             const root = doc.documentElement;
+            normalizeSvgStrokeDetails(root);
             Array.from(root.querySelectorAll("*")).forEach((el) => {
+                if (isSvgStrokeDetailElement(el, root)) return;
                 if (readSvgPaint(el, "stroke-width")) {
                     setSvgPaint(el, "stroke-width", value);
                 }
             });
 
             Array.from(root.querySelectorAll(SVG_STROKE_TARGET_SELECTOR)).forEach((el) => {
+                if (isSvgStrokeDetailElement(el, root)) return;
                 const directStroke = readSvgPaint(el, "stroke");
                 if (directStroke && isProtectedSvgStroke(directStroke)) return;
                 if (!directStroke) {
@@ -1301,6 +1712,10 @@ function getOverlayFillBindingTagPath(overlay) {
 
 function isDiverterOverlay(overlay) {
     return isDiverterTypeToken(overlay?.eType);
+}
+
+function usesTwoWayUdtOverlay(overlay) {
+    return usesTwoWayUdtTypeToken(overlay?.eType);
 }
 
 function createIgnitionFillBinding(tagPath, fallbackColor, existingBinding = null) {
@@ -1879,7 +2294,7 @@ function getOverlayConnectionCheckPaths(overlay) {
         pushMembers(BIN_UDT_MEMBERS);
     } else if (isMotorOverlay(overlay)) {
         pushMembers(MOTOR_UDT_CONNECTION_MEMBERS);
-    } else if (isDiverterOverlay(overlay)) {
+    } else if (usesTwoWayUdtOverlay(overlay)) {
         pushMembers(DIVERTER_UDT_CONNECTION_MEMBERS);
     } else if (isDocOrDicOverlay(overlay)) {
         pushMembers(DOC_DIC_UDT_CONNECTION_MEMBERS);
@@ -1986,6 +2401,10 @@ function getOverlayHmiStateColor(overlay, rawState, stateStyleMapIndex = null) {
         const mappedPaint = resolveIgnitionStateMappingColor(hmiStateStyleMappings, rawState);
         if (mappedPaint) {
             return mappedPaint;
+        }
+        const fallbackPaint = getHmiStateStyleFallbackPaint(hmiStateStyleMappings);
+        if (fallbackPaint) {
+            return fallbackPaint;
         }
     }
 
@@ -2776,12 +3195,26 @@ function normalizeOverlayPopupViewName(value) {
         .replace(/^\/+|\/+$/g, "");
 }
 
-function resolveOverlayPopupViewPath(overlay) {
+function resolveOverlayPopupViewName(overlay) {
     const popupViewName = normalizeOverlayPopupViewName(
         overlay?.eType
         || overlay?.name
         || overlay?.sourceKey
     );
+    if (!popupViewName) {
+        return "";
+    }
+
+    const eTypeToken = String(overlay?.eType || "").trim();
+    const popupLeaf = popupViewName.split(/[\\/]/).pop() || popupViewName;
+    if (usesTwoWayUdtTypeToken(eTypeToken) || usesTwoWayUdtTypeToken(popupLeaf)) {
+        return "TwoWay_DiscreteV2";
+    }
+    return popupViewName;
+}
+
+function resolveOverlayPopupViewPath(overlay) {
+    const popupViewName = resolveOverlayPopupViewName(overlay);
     if (!popupViewName) {
         return "";
     }
@@ -4902,6 +5335,7 @@ function distance(left, right) {
 }
 
 export default function PerspectiveViziCanvasBridge(props) {
+    useDomThemeVersion();
     const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(new Map());
@@ -4981,6 +5415,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [showRulers, setShowRulersState] = useState(externalShowRulers);
     const [showTagPaths, setShowTagPathsState] = useState(externalShowTagPaths);
     const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
+    const hiddenTagBubbleTimersRef = useRef(new Map());
     const [selectionMode, setSelectionModeState] = useState(externalSelectionMode);
     const [strokeNormalizeWidthDraft, setStrokeNormalizeWidthDraft] = useState(formatPanelNumber(externalStrokeNormalizeWidth));
     const [drawing, setDrawing] = useState(null);
@@ -5200,19 +5635,35 @@ export default function PerspectiveViziCanvasBridge(props) {
             );
             setPropertyPanelWidth(nextWidth);
         }
-        function onUp() {
+        function endResize() {
             if (!propertyPanelResizeRef.current.resizing) {
                 return;
             }
             propertyPanelResizeRef.current.resizing = false;
             setPropertyPanelResizing(false);
         }
+        function onKeyDown(event) {
+            if (event.key === "Escape") {
+                endResize();
+            }
+        }
 
         window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
+        window.addEventListener("mouseup", endResize);
+        window.addEventListener("pointerup", endResize);
+        window.addEventListener("pointercancel", endResize);
+        window.addEventListener("blur", endResize);
+        window.addEventListener("keydown", onKeyDown);
+        document.addEventListener("mouseleave", endResize);
         return () => {
             window.removeEventListener("mousemove", onMove);
-            window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("mouseup", endResize);
+            window.removeEventListener("pointerup", endResize);
+            window.removeEventListener("pointercancel", endResize);
+            window.removeEventListener("blur", endResize);
+            window.removeEventListener("keydown", onKeyDown);
+            document.removeEventListener("mouseleave", endResize);
+            endResize();
         };
     }, [browserViewportWidth, rootSize]);
 
@@ -5234,7 +5685,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         document.body.style.cursor = "col-resize";
         document.body.style.userSelect = "none";
         return () => {
-            document.body.style.cursor = previousCursor;
+            document.body.style.cursor = previousCursor === "col-resize" ? "" : previousCursor;
             document.body.style.userSelect = previousUserSelect;
         };
     }, [propertyPanelResizing]);
@@ -5277,9 +5728,36 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     useEffect(() => {
         if (!showTagPaths && hiddenTagBubbleIds.length) {
-            setHiddenTagBubbleIds([]);
+            setHiddenTagBubbleIds((previous) => {
+                const next = previous.filter((entry) => {
+                    const value = String(entry || "").trim();
+                    return value && value.includes(":") && !value.startsWith("tag:");
+                });
+                if (next.length === previous.length) {
+                    return previous;
+                }
+                const keep = new Set(next);
+                previous.forEach((entry) => {
+                    if (keep.has(entry)) {
+                        return;
+                    }
+                    const timerId = hiddenTagBubbleTimersRef.current.get(entry);
+                    if (timerId) {
+                        window.clearTimeout(timerId);
+                    }
+                    hiddenTagBubbleTimersRef.current.delete(entry);
+                });
+                return next;
+            });
         }
     }, [hiddenTagBubbleIds.length, showTagPaths]);
+
+    useEffect(() => () => {
+        hiddenTagBubbleTimersRef.current.forEach((timerId) => {
+            window.clearTimeout(timerId);
+        });
+        hiddenTagBubbleTimersRef.current.clear();
+    }, []);
 
     useEffect(() => {
         setToolbarCollapsedState(externalToolbarCollapsed);
@@ -5340,7 +5818,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             if (basePath && isMotorOverlay(overlay)) {
                 MOTOR_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
             }
-            if (basePath && isDiverterOverlay(overlay)) {
+            if (basePath && usesTwoWayUdtOverlay(overlay)) {
                 DIVERTER_UDT_MEMBERS.forEach((member) => addPath(`${basePath}/${member}`));
             }
             if (basePath && isDocOrDicOverlay(overlay)) {
@@ -5592,9 +6070,18 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (!bubbleId) {
             return;
         }
+        const existingTimer = hiddenTagBubbleTimersRef.current.get(bubbleId);
+        if (existingTimer) {
+            window.clearTimeout(existingTimer);
+        }
         setHiddenTagBubbleIds((previous) => (
             previous.includes(bubbleId) ? previous : [...previous, bubbleId]
         ));
+        const timerId = window.setTimeout(() => {
+            hiddenTagBubbleTimersRef.current.delete(bubbleId);
+            setHiddenTagBubbleIds((previous) => previous.filter((entry) => entry !== bubbleId));
+        }, 30000);
+        hiddenTagBubbleTimersRef.current.set(bubbleId, timerId);
     }, []);
 
     const setSelectionMode = useCallback((nextMode) => {
@@ -6357,7 +6844,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             const id = String(overlay?.id || "").trim();
             const name = String(overlay?.name || "").trim();
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
-            if (!basePath || !isDiverterOverlay(overlay)) return;
+            if (!basePath || !usesTwoWayUdtOverlay(overlay)) return;
             const color = String(
                 getIgnitionTagValueForMembersDeep(
                     ignitionTagValuesByPath,
@@ -6452,14 +6939,8 @@ export default function PerspectiveViziCanvasBridge(props) {
         return out;
     }, [svgOverlays, ignitionTagMetaByPath]);
 
-    const theme = String(getModelValue(props, "theme", "light") || "light");
-    const canvasBackgroundColor = String(
-        getModelValue(
-            props,
-            "canvasBackgroundColor",
-            getModelValue(props, "backgroundColor", "#0f172a")
-        ) || "#0f172a"
-    );
+    const theme = getPerspectiveThemeName(props);
+    const canvasBackgroundColor = getPerspectiveCanvasBackground(props, theme);
 
     const pointFromEvent = useCallback((event) => {
         const svg = svgRef.current;
@@ -6866,6 +7347,14 @@ export default function PerspectiveViziCanvasBridge(props) {
         setPropertiesSelectionKey("");
     }, []);
 
+    const retargetPropertiesPanelIfOpen = useCallback((key) => {
+        const nextKey = String(key || "").trim();
+        if (!propertiesVisible || !nextKey) {
+            return;
+        }
+        setPropertiesSelectionKey(nextKey);
+    }, [propertiesVisible]);
+
     const closeQuickTagPicker = useCallback(() => {
         setQuickTagPickerState({
             overlayId: "",
@@ -6977,6 +7466,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 strokeWidth: 3,
                 fill: "none",
                 lineStyle: "solid",
+                arrowStart: "none",
+                arrowEnd: "none",
                 tagPath: ""
             }
         ], { persist: false });
@@ -7045,6 +7536,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 strokeWidth: 3,
                 fill: "none",
                 lineStyle: "solid",
+                arrowStart: "none",
+                arrowEnd: "none",
                 tagPath: String(overlay?.tagPath || "").trim()
             };
         }).filter(Boolean);
@@ -7085,6 +7578,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 strokeWidth: 3,
                 fill: "none",
                 lineStyle: "solid",
+                arrowStart: "none",
+                arrowEnd: "none",
                 tagPath: "",
             }
         ], { persist: false });
@@ -7903,7 +8398,6 @@ export default function PerspectiveViziCanvasBridge(props) {
             startOrAppendPolylineAt(pointFromEvent(event), event);
             return;
         }
-        closePropertiesPanel();
         const shapeId = String(id || "");
         const shape = shapesRef.current.find((item) => String(item?.id || "") === shapeId);
 
@@ -7916,6 +8410,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         if (event?.shiftKey) {
+            closePropertiesPanel();
             setSelectedIds((previous) => toggleIn(previous, shapeId));
             setSelectedSegment(null);
             if (editingId === shapeId) {
@@ -7927,6 +8422,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (editingId === shapeId) {
             setSelectedIds([shapeId]);
             setSelectedOverlayIds([]);
+            retargetPropertiesPanelIfOpen(`shape:${shapeId}`);
             return;
         }
 
@@ -7937,13 +8433,14 @@ export default function PerspectiveViziCanvasBridge(props) {
         setSelectedIds(dragShapeIds);
         setSelectedOverlayIds(dragOverlayIds);
         setSelectedSegment(null);
+        retargetPropertiesPanelIfOpen(`shape:${shapeId}`);
         if (!alreadySelected) {
             setEditingId(null);
             return;
         }
 
         beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
-    }, [beginSelectionDrag, closePropertiesPanel, editingId, isShapeSelectableByMode, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
+    }, [beginSelectionDrag, closePropertiesPanel, editingId, isShapeSelectableByMode, pointFromEvent, retargetPropertiesPanelIfOpen, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
 
     const handleOverlayMouseDown = useCallback((event, id) => {
         event?.preventDefault?.();
@@ -7952,7 +8449,6 @@ export default function PerspectiveViziCanvasBridge(props) {
             startOrAppendPolylineAt(pointFromEvent(event), event);
             return;
         }
-        closePropertiesPanel();
         if (!overlaysSelectable) {
             return;
         }
@@ -7967,6 +8463,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         if (event?.shiftKey) {
+            closePropertiesPanel();
             setSelectedOverlayIds((previous) => toggleIn(previous, overlayId));
             setSelectedSegment(null);
             setEditingId(null);
@@ -7981,12 +8478,13 @@ export default function PerspectiveViziCanvasBridge(props) {
         setSelectedIds(dragShapeIds);
         setSelectedSegment(null);
         setEditingId(null);
+        retargetPropertiesPanelIfOpen(`overlay:${overlayId}`);
         if (!alreadySelected) {
             return;
         }
 
         beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
-    }, [beginSelectionDrag, closePropertiesPanel, overlaysSelectable, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
+    }, [beginSelectionDrag, closePropertiesPanel, overlaysSelectable, pointFromEvent, retargetPropertiesPanelIfOpen, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
 
     const handleShapeDoubleClick = useCallback((event, id) => {
         if (String(event?.type || "").toLowerCase() !== "dblclick" || Number(event?.button || 0) !== 0) {
@@ -8100,11 +8598,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         const overlayId = String(overlay?.id || "").trim();
-        const popupViewName = normalizeOverlayPopupViewName(
-            overlay?.eType
-            || overlay?.name
-            || overlay?.sourceKey
-        );
+        const popupViewName = resolveOverlayPopupViewName(overlay);
         const popupTitle = String(overlay?.name || popupViewName || "Popup")
             .trim()
             .replace(/\.svg$/i, "");
@@ -8803,6 +9297,38 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
     }, [dragHandle, dragSegment, dragState, drawing, isShapeSelectableByMode, marquee, overlayResize, overlaysSelectable, persistShapes, persistSvgOverlays, shapeResize]);
 
+    const useWindowPointerTracking =
+        editorVisible && (
+            Boolean(dragState) ||
+            Boolean(dragSegment) ||
+            Boolean(dragHandle) ||
+            Boolean(shapeResize) ||
+            Boolean(overlayResize) ||
+            Boolean(marquee) ||
+            String(drawing?.kind || "") === "rect" ||
+            String(drawing?.kind || "") === "circle"
+        );
+
+    useEffect(() => {
+        if (!useWindowPointerTracking || typeof window === "undefined") {
+            return undefined;
+        }
+        const handleMove = (event) => handleMouseMove(event);
+        const handleRelease = () => handleMouseUp();
+        window.addEventListener("mousemove", handleMove);
+        window.addEventListener("mouseup", handleRelease);
+        window.addEventListener("pointerup", handleRelease);
+        window.addEventListener("pointercancel", handleRelease);
+        window.addEventListener("blur", handleRelease);
+        return () => {
+            window.removeEventListener("mousemove", handleMove);
+            window.removeEventListener("mouseup", handleRelease);
+            window.removeEventListener("pointerup", handleRelease);
+            window.removeEventListener("pointercancel", handleRelease);
+            window.removeEventListener("blur", handleRelease);
+        };
+    }, [handleMouseMove, handleMouseUp, useWindowPointerTracking]);
+
     const handleSvgDoubleClick = useCallback((event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
@@ -8990,6 +9516,14 @@ export default function PerspectiveViziCanvasBridge(props) {
         () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
         [selectedOverlayWidgetKind]
     );
+    const selectedOverlayWidgetSupportsView = useMemo(
+        () => ["pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+        [selectedOverlayWidgetKind]
+    );
+    const selectedOverlayWidgetSupportsButtonTextColor = useMemo(
+        () => ["displaybox", "pushbutton", "onoffbutton"].includes(selectedOverlayWidgetKind),
+        [selectedOverlayWidgetKind]
+    );
     const selectedOverlayWidgetWriteMode = useMemo(
         () => resolveWidgetWriteMode(selectedOverlay?.widget, selectedOverlay?.tagPath),
         [selectedOverlay]
@@ -9164,28 +9698,148 @@ export default function PerspectiveViziCanvasBridge(props) {
             Number(propertyTargetBounds.x || 0) + Number(propertyTargetBounds.width || 0),
             Number(propertyTargetBounds.y || 0)
         );
+        const bottomLeft = worldToPanelPoint(
+            Number(propertyTargetBounds.x || 0),
+            Number(propertyTargetBounds.y || 0) + Number(propertyTargetBounds.height || 0)
+        );
+        const bottomRight = worldToPanelPoint(
+            Number(propertyTargetBounds.x || 0) + Number(propertyTargetBounds.width || 0),
+            Number(propertyTargetBounds.y || 0) + Number(propertyTargetBounds.height || 0)
+        );
 
         const rootWidth = Number(rootSize?.width || DEFAULT_CANVAS_WIDTH);
         const rootHeight = Number(rootSize?.height || DEFAULT_CANVAS_HEIGHT);
         const rulerInset = showRulers ? CANVAS_RULER_SIZE : 0;
         const panelWidth = clampPropertyPanelWidth(propertyPanelWidth, rootWidth);
 
-        const fallbackLeft = rootWidth - panelWidth - 16;
-        const fallbackTop = 16 + rulerInset;
-        const anchorLeft = Number(topLeft?.x || fallbackLeft);
-        const anchorRight = Number(topRight?.x || (anchorLeft + 120));
-        const anchorTop = Number(topLeft?.y || fallbackTop);
-
-        const preferredLeft = anchorRight + 12;
-        const maxLeft = Math.max(16, rootWidth - panelWidth - 16);
-        const left = preferredLeft <= maxLeft
-            ? preferredLeft
-            : clamp(anchorLeft - panelWidth - 12, 16, maxLeft);
         const minTop = 16 + rulerInset;
         const maxUsableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - minTop - 16);
         const panelHeight = Math.min(PROPERTY_PANEL_HEIGHT, maxUsableHeight);
+        const minLeft = 16;
+        const maxLeft = Math.max(minLeft, rootWidth - panelWidth - 16);
         const maxTop = Math.max(minTop, rootHeight - panelHeight - 16);
-        const top = clamp(anchorTop, minTop, maxTop);
+        const renderedAnchorRect = (() => {
+            const root = rootRef.current;
+            const rootRect = root?.getBoundingClientRect?.();
+            if (!root || !rootRect) {
+                return null;
+            }
+            const overlayIdSet = new Set(coerceArray(selectedOverlayIds).map((id) => String(id || "")).filter(Boolean));
+            const shapeIdSet = new Set(coerceArray(selectedIds).map((id) => String(id || "")).filter(Boolean));
+            if (!overlayIdSet.size && !shapeIdSet.size) {
+                return null;
+            }
+            const rects = [];
+            root.querySelectorAll?.("[data-overlay-id], [data-shape-id]")?.forEach((node) => {
+                const overlayId = node.getAttribute?.("data-overlay-id");
+                const shapeId = node.getAttribute?.("data-shape-id");
+                if (
+                    (overlayId && overlayIdSet.has(String(overlayId))) ||
+                    (shapeId && shapeIdSet.has(String(shapeId)))
+                ) {
+                    const rect = node.getBoundingClientRect?.();
+                    if (
+                        rect &&
+                        Number.isFinite(Number(rect.left)) &&
+                        Number.isFinite(Number(rect.right)) &&
+                        Number.isFinite(Number(rect.top)) &&
+                        Number.isFinite(Number(rect.bottom)) &&
+                        Number(rect.width) > 0 &&
+                        Number(rect.height) > 0
+                    ) {
+                        rects.push(rect);
+                    }
+                }
+            });
+            if (!rects.length) {
+                return null;
+            }
+            return {
+                left: Math.min(...rects.map((rect) => Number(rect.left || 0))) - Number(rootRect.left || 0),
+                right: Math.max(...rects.map((rect) => Number(rect.right || 0))) - Number(rootRect.left || 0),
+                top: Math.min(...rects.map((rect) => Number(rect.top || 0))) - Number(rootRect.top || 0),
+                bottom: Math.max(...rects.map((rect) => Number(rect.bottom || 0))) - Number(rootRect.top || 0)
+            };
+        })();
+        const anchorXs = [topLeft, topRight, bottomLeft, bottomRight]
+            .map((point) => Number(point?.x))
+            .filter(Number.isFinite);
+        const anchorYs = [topLeft, topRight, bottomLeft, bottomRight]
+            .map((point) => Number(point?.y))
+            .filter(Number.isFinite);
+        const fallbackLeft = rootWidth - panelWidth - 16;
+        const fallbackTop = minTop;
+        const anchorRect = renderedAnchorRect || (anchorXs.length && anchorYs.length
+            ? {
+                left: Math.min(...anchorXs),
+                right: Math.max(...anchorXs),
+                top: Math.min(...anchorYs),
+                bottom: Math.max(...anchorYs)
+            }
+            : {
+                left: fallbackLeft,
+                right: fallbackLeft + 120,
+                top: fallbackTop,
+                bottom: fallbackTop + 80
+            });
+        const anchorCenterX = (anchorRect.left + anchorRect.right) / 2;
+        const anchorCenterY = (anchorRect.top + anchorRect.bottom) / 2;
+        const gap = 4;
+        const candidates = [
+            { side: "right", x: anchorRect.right + gap, y: anchorCenterY - panelHeight / 2, order: 0 },
+            { side: "left", x: anchorRect.left - panelWidth - gap, y: anchorCenterY - panelHeight / 2, order: 1 },
+            { side: "below", x: anchorCenterX - panelWidth / 2, y: anchorRect.bottom + gap, order: 2 },
+            { side: "above", x: anchorCenterX - panelWidth / 2, y: anchorRect.top - panelHeight - gap, order: 3 }
+        ];
+        const rectDistance = (a, b) => {
+            const dx = Math.max(a.left - b.right, b.left - a.right, 0);
+            const dy = Math.max(a.top - b.bottom, b.top - a.bottom, 0);
+            return Math.hypot(dx, dy);
+        };
+        const edgeGap = (side, panelRect) => {
+            if (side === "right") {
+                return Math.abs(panelRect.left - anchorRect.right);
+            }
+            if (side === "left") {
+                return Math.abs(anchorRect.left - panelRect.right);
+            }
+            if (side === "below") {
+                return Math.abs(panelRect.top - anchorRect.bottom);
+            }
+            return Math.abs(anchorRect.top - panelRect.bottom);
+        };
+        const scoredCandidates = candidates.map((candidate) => {
+            const left = clamp(candidate.x, minLeft, maxLeft);
+            const top = clamp(candidate.y, minTop, maxTop);
+            const panelRect = {
+                left,
+                right: left + panelWidth,
+                top,
+                bottom: top + panelHeight
+            };
+            const overlaps = !(
+                panelRect.right <= anchorRect.left ||
+                panelRect.left >= anchorRect.right ||
+                panelRect.bottom <= anchorRect.top ||
+                panelRect.top >= anchorRect.bottom
+            );
+            const clampDistance = Math.hypot(left - candidate.x, top - candidate.y);
+            const sidePreference = candidate.side === "right" || candidate.side === "left" ? 0 : 80;
+            return {
+                left,
+                top,
+                score:
+                    edgeGap(candidate.side, panelRect) * 24 +
+                    sidePreference +
+                    rectDistance(anchorRect, panelRect) * 0.15 +
+                    (overlaps ? 10000 : 0) +
+                    clampDistance * 0.4 +
+                    candidate.order * 0.01
+            };
+        }).sort((left, right) => left.score - right.score);
+        const best = scoredCandidates[0] || { left: fallbackLeft, top: fallbackTop };
+        const left = best.left;
+        const top = best.top;
 
         return {
             position: "absolute",
@@ -9206,7 +9860,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
             boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
         };
-    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers, propertyPanelWidth]);
+    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers, propertyPanelWidth, selectedIds, selectedOverlayIds]);
 
     const fixedPropertyPanelStyle = useMemo(() => {
         if (!floatingPropertyPanelStyle) {
@@ -10123,7 +10777,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 : "No HMI state style maps loaded";
 
     const svgDrawerLayout = useMemo(() => {
-        const maxPanelWidth = Math.max(0, Number(rootSize?.width || DEFAULT_CANVAS_WIDTH) - (TOOLBAR_INSET * 2));
+        const viewportWidth = Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH);
+        const maxPanelWidth = Math.max(0, viewportWidth - (TOOLBAR_INSET * 2));
         const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
         const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
         const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
@@ -10143,10 +10798,11 @@ export default function PerspectiveViziCanvasBridge(props) {
             bottom: TOOLBAR_INSET,
             width: Math.max(260, Math.min(SVG_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
         };
-    }, [rootSize, toolbarCollapsed]);
+    }, [browserViewportWidth, rootSize, toolbarCollapsed]);
     const widgetDrawerLayout = svgDrawerLayout;
     const helpDrawerLayout = useMemo(() => {
-        const maxPanelWidth = Math.max(0, Number(rootSize?.width || DEFAULT_CANVAS_WIDTH) - (TOOLBAR_INSET * 2));
+        const viewportWidth = Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH);
+        const maxPanelWidth = Math.max(0, viewportWidth - (TOOLBAR_INSET * 2));
         const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
         const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
         const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
@@ -10166,7 +10822,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             bottom: TOOLBAR_INSET,
             width: Math.max(280, Math.min(HELP_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
         };
-    }, [rootSize, toolbarCollapsed]);
+    }, [browserViewportWidth, rootSize, toolbarCollapsed]);
     useEffect(() => {
         const onKeyDown = (event) => {
             if (!editorVisible) {
@@ -10388,6 +11044,24 @@ export default function PerspectiveViziCanvasBridge(props) {
                 if (isInteractiveEditorTarget(event?.target)) {
                     return;
                 }
+                const target = event?.target;
+                if (
+                    target instanceof Element
+                    && target.closest(
+                        [
+                            "[data-overlay-id]",
+                            "[data-shape-id]",
+                            "[data-overlay-selection-ui]",
+                            "[data-overlay-selection-move-hit]",
+                            "[data-overlay-selection-hit]",
+                            "[data-shape-selection-ui]",
+                            "[data-shape-selection-hit]",
+                            "[data-mixed-selection-ui]"
+                        ].join(", ")
+                    )
+                ) {
+                    return;
+                }
                 closePropertiesPanel();
             }}
             style={{
@@ -10406,9 +11080,8 @@ export default function PerspectiveViziCanvasBridge(props) {
             }}
         >
             <div style={browserRuntimeMode ? {
-                width: viewBox.width,
-                height: viewBox.height,
-                zoom: runtimeCanvasZoom,
+                width: Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom,
+                height: Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom,
                 flexShrink: 0,
                 position: "relative",
                 transformOrigin: "top left"
@@ -10434,7 +11107,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 showTagPaths={editorVisible && showTagPaths}
                 showGrid={editorVisible && showGrid}
                 showRulers={editorVisible && showRulers}
-                useWindowPointerTracking={false}
+                useWindowPointerTracking={useWindowPointerTracking}
                 onSvgMouseDown={editorVisible ? handleSvgMouseDown : NOOP}
                 onMouseMove={editorVisible ? handleMouseMove : NOOP}
                 onMouseUp={editorVisible ? handleMouseUp : NOOP}
@@ -10517,12 +11190,12 @@ export default function PerspectiveViziCanvasBridge(props) {
                 toolbarCollapsed ? (
                     <div
                         style={{
-                            position: "absolute",
+                            position: "fixed",
                             top: TOOLBAR_INSET,
                             left: TOOLBAR_INSET,
-                            zIndex: 60,
+                            zIndex: 120,
                             width: COLLAPSED_TOOLBAR_WIDTH,
-                            maxWidth: `min(${COLLAPSED_TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
+                            maxWidth: `min(${COLLAPSED_TOOLBAR_WIDTH}px, calc(100vw - ${TOOLBAR_INSET * 2}px))`,
                             display: "grid",
                             gap: 8,
                             padding: 10,
@@ -10554,12 +11227,12 @@ export default function PerspectiveViziCanvasBridge(props) {
                 ) : (
                     <div
                         style={{
-                            position: "absolute",
+                            position: "fixed",
                             top: TOOLBAR_INSET,
                             left: TOOLBAR_INSET,
-                            zIndex: 60,
+                            zIndex: 120,
                             width: TOOLBAR_WIDTH,
-                            maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100% - ${TOOLBAR_INSET * 2}px))`,
+                            maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100vw - ${TOOLBAR_INSET * 2}px))`,
                             overflowY: "visible",
                             display: "grid",
                             gap: 10,
@@ -11309,7 +11982,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                                             {
                                                 items: [
                                                     { value: "ignition", label: "Ignition Tag" },
-                                                    { value: "opc", label: "Direct OPC" }
+                                                    { value: "opc", label: "Direct OPC" },
+                                                    ...(selectedOverlayWidgetSupportsView
+                                                        ? [{ value: "view", label: "Open View" }]
+                                                        : [])
                                                 ]
                                             }
                                         ]}
@@ -11317,6 +11993,27 @@ export default function PerspectiveViziCanvasBridge(props) {
                                             commitSelectedOverlayWidgetField("writeMode", nextValue);
                                         }}
                                     />
+                                ) : null}
+                                {!selectedOverlayIsEmbeddedView && selectedOverlay.widget && selectedOverlayWidgetSupportsView && selectedOverlayWidgetWriteMode === "view" ? (
+                                    <>
+                                        <PropertyField
+                                            label="View Path"
+                                            value={selectedOverlay.widget?.viewPath || ""}
+                                            placeholder="Views/MyPopup"
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayWidgetField("viewPath", String(value ?? "").trim());
+                                            }}
+                                        />
+                                        <PropertyTextArea
+                                            label="View Params JSON"
+                                            value={selectedOverlay.widget?.viewParamsJson || "{}"}
+                                            placeholder='{"tagPath":"[default]MyTag"}'
+                                            rows={4}
+                                            onCommit={(value) => {
+                                                commitSelectedOverlayWidgetField("viewParamsJson", String(value ?? "").trim() || "{}");
+                                            }}
+                                        />
+                                    </>
                                 ) : null}
                                 {!selectedOverlayIsEmbeddedView && selectedOverlay.widget && selectedOverlayWidgetSupportsWrite && selectedOverlayWidgetWriteMode === "opc" ? (
                                     <>
@@ -11336,7 +12033,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                                             }}
                                         />
                                     </>
-                                ) : !selectedOverlayIsEmbeddedView && !(selectedOverlayIsStatic && !selectedOverlay.widget) ? (
+                                ) : !selectedOverlayIsEmbeddedView && selectedOverlayWidgetWriteMode !== "view" && !(selectedOverlayIsStatic && !selectedOverlay.widget) ? (
                                     <PropertyTagPathField
                                         label="Tag Path"
                                         value={selectedOverlay.tagPath || ""}
@@ -11424,6 +12121,16 @@ export default function PerspectiveViziCanvasBridge(props) {
                                                 commitSelectedOverlayWidgetField("textColor", String(value ?? "").trim());
                                             }}
                                         />
+                                        {selectedOverlayWidgetSupportsButtonTextColor ? (
+                                            <PropertyColorField
+                                                label="Button Text"
+                                                value={selectedOverlay.widget?.buttonTextColor || ""}
+                                                placeholder="#ffffff"
+                                                onCommit={(value) => {
+                                                    commitSelectedOverlayWidgetField("buttonTextColor", String(value ?? "").trim());
+                                                }}
+                                            />
+                                        ) : null}
                                         {String(selectedOverlay.widget?.kind || "").trim().toLowerCase() === "pushbutton" ? (
                                             <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
                                                 <PropertyField
@@ -11757,6 +12464,69 @@ export default function PerspectiveViziCanvasBridge(props) {
                                                 }}
                                             />
                                         </div>
+                                        <EditorDropdownField
+                                            label="Line Style"
+                                            value={selectedShape.lineStyle || "solid"}
+                                            sections={[
+                                                {
+                                                    label: "Style",
+                                                    items: [
+                                                        { value: "solid", label: "Solid" },
+                                                        { value: "dashed", label: "Dashed" },
+                                                        { value: "dotted", label: "Dotted" },
+                                                        { value: "wavy", label: "Wavy" }
+                                                    ]
+                                                }
+                                            ]}
+                                            onChange={(value) => {
+                                                const next = ["solid", "dashed", "dotted", "wavy"].includes(String(value || ""))
+                                                    ? value
+                                                    : "solid";
+                                                commitSelectedShapeText("lineStyle", next);
+                                            }}
+                                        />
+                                        <div style={{ display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }}>
+                                            <EditorDropdownField
+                                                label="Start Arrow"
+                                                value={selectedShape.arrowStart || "none"}
+                                                sections={[
+                                                    {
+                                                        label: "Direction",
+                                                        items: [
+                                                            { value: "none", label: "None" },
+                                                            { value: "in", label: "Inward" },
+                                                            { value: "out", label: "Outward" }
+                                                        ]
+                                                    }
+                                                ]}
+                                                onChange={(value) => {
+                                                    const next = ["none", "in", "out"].includes(String(value || ""))
+                                                        ? value
+                                                        : "none";
+                                                    commitSelectedShapeText("arrowStart", next);
+                                                }}
+                                            />
+                                            <EditorDropdownField
+                                                label="End Arrow"
+                                                value={selectedShape.arrowEnd || "none"}
+                                                sections={[
+                                                    {
+                                                        label: "Direction",
+                                                        items: [
+                                                            { value: "none", label: "None" },
+                                                            { value: "in", label: "Inward" },
+                                                            { value: "out", label: "Outward" }
+                                                        ]
+                                                    }
+                                                ]}
+                                                onChange={(value) => {
+                                                    const next = ["none", "in", "out"].includes(String(value || ""))
+                                                        ? value
+                                                        : "none";
+                                                    commitSelectedShapeText("arrowEnd", next);
+                                                }}
+                                            />
+                                        </div>
                                         <PropertyReadout
                                             label="Points"
                                             value={String(coerceArray(selectedShape.points).length)}
@@ -11964,7 +12734,6 @@ export default function PerspectiveViziCanvasBridge(props) {
                         onRefresh={handleRefreshSvgLibrary}
                         refreshDisabled={svgLibraryRefreshing || svgLibraryUploading}
                         docked
-                        absoluteDocked
                         appearance="ignition-drawer"
                         attached
                         dockLeft={svgDrawerLayout.left}
@@ -11990,7 +12759,6 @@ export default function PerspectiveViziCanvasBridge(props) {
                         onClose={() => setWidgetOpen(false)}
                         onPickWidget={onPickWidget}
                         docked
-                        absoluteDocked
                         appearance="ignition-drawer"
                         attached
                         dockLeft={widgetDrawerLayout.left}
@@ -12004,12 +12772,12 @@ export default function PerspectiveViziCanvasBridge(props) {
             {editorVisible && helpOpen ? (
                 <div
                     style={{
-                        position: "absolute",
+                        position: "fixed",
                         left: helpDrawerLayout.left,
                         top: helpDrawerLayout.top,
                         bottom: helpDrawerLayout.bottom,
                         width: helpDrawerLayout.width,
-                        zIndex: 58,
+                        zIndex: 118,
                         display: "grid",
                         gridTemplateRows: "auto 1fr",
                         borderRadius: 22,

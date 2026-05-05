@@ -312,6 +312,11 @@ function isDiverterTypeToken(value) {
   return token.includes("diverter") || token.includes("twoway");
 }
 
+function usesTwoWayUdtTypeToken(value) {
+  const token = normalizeTypeMatchToken(value);
+  return isDiverterTypeToken(token) || token === "gate";
+}
+
 function tagMatchesEType(tag, eType) {
   const filterToken = normalizeTypeMatchToken(eType);
   if (!filterToken) return true;
@@ -326,9 +331,9 @@ function tagMatchesEType(tag, eType) {
   );
   if (!typeTokens.size) return false;
   if (typeTokens.has(filterToken)) return true;
-  if (isDiverterTypeToken(filterToken)) {
+  if (usesTwoWayUdtTypeToken(filterToken)) {
     for (const token of typeTokens) {
-      if (isDiverterTypeToken(token)) return true;
+      if (usesTwoWayUdtTypeToken(token)) return true;
     }
   }
   for (const token of typeTokens) {
@@ -630,7 +635,7 @@ export default function PropertiesPanel({
     const maxX = Math.max(minX, window.innerWidth - panelW - safeBounds.right);
     const maxY = Math.max(minY, window.innerHeight - panelH - safeBounds.bottom);
 
-    if (panelCursor) {
+    if (panelCursor && !(isSvgHud && panelAnchor)) {
       setPanelPos({
         x: Math.min(Math.max(minX, panelCursor.x), maxX),
         y: Math.min(Math.max(minY, panelCursor.y), maxY),
@@ -647,15 +652,66 @@ export default function PropertiesPanel({
       h: Math.max(panelAnchor.h ?? 0, 40),
     };
 
-    const gap = 16;
-    let x = sel.x + sel.w + gap;
-    let y = sel.y;
+    const gap = isSvgHud ? 4 : 12;
+    const anchorRect = {
+      left: sel.x,
+      right: sel.x + sel.w,
+      top: sel.y,
+      bottom: sel.y + sel.h,
+    };
+    const anchorCenterX = (anchorRect.left + anchorRect.right) / 2;
+    const anchorCenterY = (anchorRect.top + anchorRect.bottom) / 2;
+    const candidates = [
+      { side: "right", x: anchorRect.right + gap, y: anchorCenterY - panelH / 2, order: 0 },
+      { side: "left", x: anchorRect.left - panelW - gap, y: anchorCenterY - panelH / 2, order: 1 },
+      { side: "below", x: anchorCenterX - panelW / 2, y: anchorRect.bottom + gap, order: 2 },
+      { side: "above", x: anchorCenterX - panelW / 2, y: anchorRect.top - panelH - gap, order: 3 },
+    ];
+    const rectDistance = (a, b) => {
+      const dx = Math.max(a.left - b.right, b.left - a.right, 0);
+      const dy = Math.max(a.top - b.bottom, b.top - a.bottom, 0);
+      return Math.hypot(dx, dy);
+    };
+    const edgeGap = (side, panelRect) => {
+      if (side === "right") return Math.abs(panelRect.left - anchorRect.right);
+      if (side === "left") return Math.abs(anchorRect.left - panelRect.right);
+      if (side === "below") return Math.abs(panelRect.top - anchorRect.bottom);
+      return Math.abs(anchorRect.top - panelRect.bottom);
+    };
+    const best = candidates
+      .map((candidate) => {
+        const x = Math.min(Math.max(minX, candidate.x), maxX);
+        const y = Math.min(Math.max(minY, candidate.y), maxY);
+        const panelRect = {
+          left: x,
+          right: x + panelW,
+          top: y,
+          bottom: y + panelH,
+        };
+        const overlaps = !(
+          panelRect.right <= anchorRect.left ||
+          panelRect.left >= anchorRect.right ||
+          panelRect.bottom <= anchorRect.top ||
+          panelRect.top >= anchorRect.bottom
+        );
+        const clampDistance = Math.hypot(x - candidate.x, y - candidate.y);
+        const sidePreference = candidate.side === "right" || candidate.side === "left" ? 0 : 80;
+        return {
+          x,
+          y,
+          score:
+            edgeGap(candidate.side, panelRect) * 24 +
+            sidePreference +
+            rectDistance(anchorRect, panelRect) * 0.15 +
+            (overlaps ? 10000 : 0) +
+            clampDistance * 0.4 +
+            candidate.order * 0.01,
+        };
+      })
+      .sort((left, right) => left.score - right.score)[0];
 
-    x = Math.min(Math.max(minX, x), maxX);
-    y = Math.min(Math.max(minY, y), maxY);
-
-    setPanelPos({ x, y });
-  }, [panelAnchorKey, panelAnchor, panelCursor, showHUD, freezePanel, docked]);
+    setPanelPos({ x: best?.x ?? minX, y: best?.y ?? minY });
+  }, [panelAnchorKey, panelAnchor, panelCursor, showHUD, freezePanel, docked, isSvgHud]);
 
   useEffect(() => {
     if (docked) return;
@@ -689,6 +745,11 @@ export default function PropertiesPanel({
     if (!docked) return undefined;
     const clampWidth = (value) =>
       Math.min(resolvedDockMaxWidth, Math.max(resolvedDockMinWidth, Number(value) || resolvedDockMinWidth));
+    const endResize = () => {
+      if (!dockResizeRef.current.resizing) return;
+      dockResizeRef.current.resizing = false;
+      setDockResizing(false);
+    };
     function onMove(e) {
       if (!dockResizeRef.current.resizing) return;
       const nextWidth = clampWidth(
@@ -696,16 +757,25 @@ export default function PropertiesPanel({
       );
       onDockWidthChangeRef.current?.(nextWidth);
     }
-    function onUp() {
-      if (!dockResizeRef.current.resizing) return;
-      dockResizeRef.current.resizing = false;
-      setDockResizing(false);
+    function onKeyDown(e) {
+      if (e.key === "Escape") endResize();
     }
     window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("mouseup", endResize);
+    window.addEventListener("pointerup", endResize);
+    window.addEventListener("pointercancel", endResize);
+    window.addEventListener("blur", endResize);
+    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("mouseleave", endResize);
     return () => {
       window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("mouseup", endResize);
+      window.removeEventListener("pointerup", endResize);
+      window.removeEventListener("pointercancel", endResize);
+      window.removeEventListener("blur", endResize);
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("mouseleave", endResize);
+      endResize();
     };
   }, [docked, resolvedDockMaxWidth, resolvedDockMinWidth]);
 
@@ -716,7 +786,7 @@ export default function PropertiesPanel({
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     return () => {
-      document.body.style.cursor = previousCursor;
+      document.body.style.cursor = previousCursor === "col-resize" ? "" : previousCursor;
       document.body.style.userSelect = previousUserSelect;
     };
   }, [dockResizing]);
@@ -772,6 +842,14 @@ export default function PropertiesPanel({
   const widgetKindVal = String(hudFields?.widgetKind || "");
   const widgetTitleVal = String(hudFields?.widgetTitle || "");
   const widgetTextColorVal = String(hudFields?.widgetTextColor || "");
+  const widgetButtonTextColorVal = String(hudFields?.widgetButtonTextColor || "");
+  const widgetWriteModeVal = String(hudFields?.widgetWriteMode || "ignition").trim().toLowerCase() === "view"
+    ? "view"
+    : String(hudFields?.widgetWriteMode || "ignition").trim().toLowerCase() === "opc"
+    ? "opc"
+    : "ignition";
+  const widgetViewPathVal = String(hudFields?.widgetViewPath || "");
+  const widgetViewParamsJsonVal = String(hudFields?.widgetViewParamsJson || "{}");
   const widgetLocationVal = String(hudFields?.widgetLocation || "");
   const widgetMinVal = String(hudFields?.widgetMin ?? "0");
   const widgetMaxVal = String(hudFields?.widgetMax ?? "100");
@@ -864,6 +942,12 @@ export default function PropertiesPanel({
   );
   const isTrendChartKind =
     widgetKindVal === "lineChart" || widgetKindVal === "areaChart" || widgetKindVal === "barChart";
+  const widgetSupportsWriteTarget =
+    widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton";
+  const widgetSupportsOpenView =
+    widgetKindVal === "pushButton" || widgetKindVal === "onOffButton";
+  const widgetSupportsButtonTextColor =
+    widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton";
   const widgetUsesSeriesTagBinding =
     isWidget &&
     (widgetKindVal === "lineChart" ||
@@ -1034,6 +1118,20 @@ export default function PropertiesPanel({
         overflow: "hidden",
       }}
       onMouseDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        if (dockResizeRef.current.resizing) {
+          dockResizeRef.current.resizing = false;
+          setDockResizing(false);
+        }
+      }}
+      onWheelCapture={(e) => {
+        e.stopPropagation();
+        if (dockResizeRef.current.resizing) {
+          dockResizeRef.current.resizing = false;
+          setDockResizing(false);
+        }
+      }}
     >
       {dockCanResize && (
         <div
@@ -1051,6 +1149,12 @@ export default function PropertiesPanel({
               startWidth: resolvedDockWidth,
             };
             setDockResizing(true);
+          }}
+          onDoubleClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dockResizeRef.current.resizing = false;
+            setDockResizing(false);
           }}
           style={{
             position: "absolute",
@@ -1385,6 +1489,67 @@ export default function PropertiesPanel({
                   onBlur={() => applySingleWidgetSettings?.(hudFields)}
                   placeholder="#e2e8f0"
                 />
+                {widgetSupportsButtonTextColor ? (
+                  <Row
+                    label="Button Text"
+                    type="color"
+                    showHex
+                    value={widgetButtonTextColorVal || "#ffffff"}
+                    onChange={(v) => setHudFields((p) => ({ ...p, widgetButtonTextColor: v }))}
+                    onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                    placeholder="#ffffff"
+                  />
+                ) : null}
+                {widgetSupportsWriteTarget ? (
+                  <SelectRow
+                    label="Action"
+                    value={widgetWriteModeVal}
+                    onChange={(v) => {
+                      const nextMode = String(v || "").trim().toLowerCase() === "view"
+                        ? "view"
+                        : String(v || "").trim().toLowerCase() === "opc"
+                        ? "opc"
+                        : "ignition";
+                      const next = { ...hudFields, widgetWriteMode: nextMode };
+                      setHudFields(next);
+                      applySingleWidgetSettings?.(next);
+                    }}
+                    onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                    options={[
+                      { value: "ignition", label: "Ignition Tag" },
+                      { value: "opc", label: "Direct OPC" },
+                      ...(widgetSupportsOpenView ? [{ value: "view", label: "Open View" }] : []),
+                    ]}
+                  />
+                ) : null}
+                {widgetSupportsOpenView && widgetWriteModeVal === "view" ? (
+                  <>
+                    <Row
+                      label="View Path"
+                      value={widgetViewPathVal}
+                      onChange={(v) => setHudFields((p) => ({ ...p, widgetViewPath: v }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder="Views/MyPopup"
+                    />
+                    <div style={labelStyle}>View Params</div>
+                    <textarea
+                      value={widgetViewParamsJsonVal}
+                      onChange={(e) => setHudFields((p) => ({ ...p, widgetViewParamsJson: e.target.value }))}
+                      onBlur={() => applySingleWidgetSettings?.(hudFields)}
+                      placeholder='{"tagPath":"[default]MyTag"}'
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "6px 8px",
+                        fontSize: 12,
+                        minHeight: 72,
+                        resize: "vertical",
+                        background: "var(--bg-elev)",
+                        color: "var(--text)",
+                      }}
+                    />
+                  </>
+                ) : null}
                 {widgetKindVal === "weather" && (
                   <Row
                     label="Location"
@@ -1499,7 +1664,9 @@ export default function PropertiesPanel({
                 )}
                 {(widgetKindVal === "displayBox" || widgetKindVal === "pushButton" || widgetKindVal === "onOffButton") ? (
                   <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
-                    Bind an OPC tag in Tag Path. This widget reads live value and supports PLC writes.
+                    {widgetWriteModeVal === "view"
+                      ? "Clicking this widget opens the Perspective view path above."
+                      : "Bind an Ignition tag or OPC item path. This widget reads live value and supports writes."}
                   </div>
                 ) : null}
                 {widgetKindVal === "countdownBar" ? (

@@ -28,6 +28,10 @@
       "class": "Terra/EquipmentStyles/Motor/Faulted",
       "text": "Faulted"
     },
+    "MotorNoState": {
+      "class": "Terra/EquipmentStyles/Motor/NoState",
+      "text": "NoState"
+    },
     "AINCtoHigh": {
       "class": "Terra/EquipmentStyles/AIN/AIN/CtoHigh",
       "text": "CtoHigh"
@@ -649,26 +653,21 @@
       "4": "MotorRunningFwd",
       "5": "MotorRunningRev",
       "6": "MotorStopping",
-      "16": "MotorFaulted"
+      "16": "MotorFaulted",
+      "Fallback": "MotorNoState"
     },
     "AIN": {
-      "1": "AINCtoHigh",
-      "2": "AINCtoLow",
-      "3": "AINCtoNormal",
-      "4": "AINFaultHigh",
-      "5": "AINFaultHighHigh",
-      "6": "AINFaultLow",
-      "7": "AINFaultLowLow",
-      "8": "AINHigh",
-      "9": "AINHighHigh",
-      "10": "AINLow",
-      "11": "AINLowLow",
-      "12": "AINNormal",
-      "13": "AINNoState",
-      "14": "AINWarningHigh",
-      "15": "AINWarningHighHigh",
-      "16": "AINWarningLow",
-      "17": "AINWarningLowLow"
+      "1": "PressureRangePressureLow",
+      "2": "PressureRangePressureCtoNormal",
+      "3": "PressureRangePressureNormal",
+      "4": "PressureRangePressureCtoLow",
+      "5": "PressureRangePressureCtoHigh",
+      "6": "PressureRangePressureHigh",
+      "7": "PressureRangePressureWarningLow",
+      "8": "PressureRangePressureWarningHigh",
+      "16": "PressureRangePressureFaultLow",
+      "32": "PressureRangePressureFaultHigh",
+      "Fallback": "PressureRangePressureNoState"
     },
     "AutoManButton": {
       "1": "AutoManButtonAuto",
@@ -686,15 +685,25 @@
       "8": "BatchScaleStopped",
       "9": "BatchScaleStopping"
     },
-    "DIC_Generic": {
-      "1": "DICGenericCtoFalse",
+    "DIC": {
+      "1": "DICGenericFalse",
       "2": "DICGenericCtoTrue",
-      "3": "DICGenericFalse",
-      "4": "DICGenericFaulted",
-      "5": "DICGenericNoState",
-      "6": "DICGenericTrue",
-      "7": "DICGenericWarningFalse",
-      "8": "DICGenericWarningTrue"
+      "3": "DICLightningTrue",
+      "4": "DICGenericCtoFalse",
+      "5": "DICGenericWarningFalse",
+      "6": "DICGenericWarningTrue",
+      "16": "DICLevelSwitchFaulted",
+      "Fallback": "DICLevelSwitchNoState"
+    },
+    "DIC_Generic": {
+      "1": "DICGenericFalse",
+      "2": "DICGenericCtoTrue",
+      "3": "DICLightningTrue",
+      "4": "DICGenericCtoFalse",
+      "5": "DICGenericWarningFalse",
+      "6": "DICGenericWarningTrue",
+      "16": "DICLevelSwitchFaulted",
+      "Fallback": "DICLevelSwitchNoState"
     },
     "DIC_Generic_ReverseState": {
       "1": "DICGenericReverseStateCtoFalse",
@@ -737,18 +746,21 @@
       "8": "DICSpeedSwitchWarningTrue"
     },
     "Distributor": {
-      "1": "DistributorFault",
-      "2": "DistributorInMotion",
-      "3": "DistributorInPosition",
-      "4": "DistributorNoPosition"
+      "0": "MotorStopped",
+      "2": "MotorRunningFwd",
+      "6": "GateInTransition",
+      "8": "MotorFaulted",
+      "Fallback": "MotorNoState"
     },
     "DOC": {
-      "1": "DOCFaulted",
-      "2": "DOCNoState",
-      "3": "DOCRunning",
-      "4": "DOCStarting",
-      "5": "DOCStopped",
-      "6": "DOCStopping"
+      "1": "MotorStopped",
+      "2": "MotorStartingFwd",
+      "3": "MotorStartingRev",
+      "4": "MotorRunningFwd",
+      "5": "MotorRunningRev",
+      "6": "MotorStopping",
+      "16": "MotorFaulted",
+      "Fallback": "MotorNoState"
     },
     "DOC_Valve": {
       "1": "DOCValveFaulted",
@@ -759,13 +771,13 @@
       "6": "DOCValveStopping"
     },
     "Gate": {
-      "1": "GateFaulted",
-      "2": "GateInMotiontoPos1",
-      "3": "GateInMotiontoPos2",
-      "4": "GateInTransition",
-      "5": "GateNoPosition",
-      "6": "GatePosition1",
-      "7": "GatePosition2"
+      "1": "GatePosition1",
+      "2": "GatePosition2",
+      "4": "GateNoPosition",
+      "8": "GateInMotiontoPos1",
+      "16": "GateInMotiontoPos2",
+      "32": "GateFaulted",
+      "Fallback": "GateNoPosition"
     },
     "GateAnalog": {
       "1": "GateAnalogFaulted",
@@ -777,14 +789,14 @@
       "7": "GateAnalogPosition2"
     },
     "LevelSwitch_Discrete": {
-      "1": "LevelSwitchDiscreteCovered",
+      "1": "LevelSwitchDiscreteUncovered",
       "2": "LevelSwitchDiscreteCtoCovered",
-      "3": "LevelSwitchDiscreteCtoUnCovered",
-      "4": "LevelSwitchDiscreteFaulted",
-      "5": "LevelSwitchDiscreteNoState",
-      "6": "LevelSwitchDiscreteUncovered",
-      "7": "LevelSwitchDiscreteWarningCovered",
-      "8": "LevelSwitchDiscreteWarningUncovered"
+      "3": "LevelSwitchDiscreteCovered",
+      "4": "LevelSwitchDiscreteCtoUnCovered",
+      "5": "LevelSwitchDiscreteWarningUncovered",
+      "6": "LevelSwitchDiscreteWarningCovered",
+      "16": "LevelSwitchDiscreteFaulted",
+      "Fallback": "LevelSwitchDiscreteNoState"
     },
     "MoistureAdaptor": {
       "1": "MoistureAdaptorDosing",
@@ -825,31 +837,33 @@
       "5": "RouteStopped"
     },
     "ScaleAdaptor": {
-      "1": "ScaleAdaptorDosing",
-      "2": "ScaleAdaptorEmptied",
-      "3": "ScaleAdaptorEmptying",
-      "4": "ScaleAdaptorFaulted",
-      "5": "ScaleAdaptorMeasuring",
-      "6": "ScaleAdaptorNoState",
-      "7": "ScaleAdaptorStarting",
-      "8": "ScaleAdaptorStopped",
-      "9": "ScaleAdaptorStopping"
+      "1": "ScaleAdaptorStopped",
+      "2": "ScaleAdaptorStarting",
+      "3": "ScaleAdaptorDosing",
+      "4": "ScaleAdaptorStopping",
+      "5": "ScaleAdaptorEmptying",
+      "6": "ScaleAdaptorEmptied",
+      "7": "ScaleAdaptorMeasuring",
+      "16": "ScaleAdaptorFaulted",
+      "Fallback": "ScaleAdaptorNoState"
     },
     "TwoWay": {
-      "1": "TwoWayFaulted",
-      "2": "TwoWayInMotiontoPos1",
-      "3": "TwoWayInMotiontoPos2",
+      "1": "TwoWayPosition1",
+      "2": "TwoWayPosition2",
       "4": "TwoWayNoPosition",
-      "5": "TwoWayPosition1",
-      "6": "TwoWayPosition2"
+      "8": "TwoWayInMotiontoPos1",
+      "16": "TwoWayInMotiontoPos2",
+      "32": "TwoWayFaulted",
+      "Fallback": "TwoWayNoPosition"
     },
     "Diverter": {
-      "1": "TwoWayFaulted",
-      "2": "TwoWayInMotiontoPos1",
-      "3": "TwoWayInMotiontoPos2",
+      "1": "TwoWayPosition1",
+      "2": "TwoWayPosition2",
       "4": "TwoWayNoPosition",
-      "5": "TwoWayPosition1",
-      "6": "TwoWayPosition2"
+      "8": "TwoWayInMotiontoPos1",
+      "16": "TwoWayInMotiontoPos2",
+      "32": "TwoWayFaulted",
+      "Fallback": "TwoWayNoPosition"
     }
   }
 }

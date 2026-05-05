@@ -5,6 +5,11 @@
     "url": "/res/mesora-drawing/svg-library/AIN/AIN_Display.svg"
   },
   {
+    "key": "./assets/SVG_Files/AIN/AIN_Wave.svg",
+    "name": "AIN_Wave.svg",
+    "url": "/res/mesora-drawing/svg-library/AIN/AIN_Wave.svg"
+  },
+  {
     "key": "./assets/SVG_Files/AIN/AIN.svg",
     "name": "AIN.svg",
     "url": "/res/mesora-drawing/svg-library/AIN/AIN.svg"

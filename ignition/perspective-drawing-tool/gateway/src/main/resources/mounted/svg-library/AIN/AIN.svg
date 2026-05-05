@@ -1,11 +1,16 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 0.51032403 0.51032498" preserveAspectRatio="xMinYMin" kewidth="100" keheight="100" eType="AIN" stroke="#808080" stroke-width="0.0077" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 0.51032403 0.51032498" preserveAspectRatio="none" kewidth="100" keheight="100" eType="AIN" stroke="#808080" stroke-width="0.0077" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
   <defs id="defs1">
     <linearGradient id="swatch1">
       <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
     </linearGradient>
   </defs>
   <g id="layer1" transform="translate(-16.119254,-14.719355)">
-    <path d="m 16.139254,14.739355 v 0.470325 h 0.470324 v -0.470325 z" id="body" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none" fill="#D7DADE" />
+    <path d="m 16.139254,14.739355 v 0.470325 h 0.470324 v -0.470325 z" id="body" data-vizi-fill-target="true" stroke="#808080" stroke-width="0.0077" stroke-dasharray="none" fill="#D7DADE" />
   </g>
+  <g id="ain-temperature-symbol" data-vizi-stroke-detail="true" fill="none" stroke="#808080" stroke-width="0.022" stroke-linejoin="round" stroke-linecap="round">
+    <path id="ain-temperature-outline" data-vizi-stroke-detail="true" d="M0.255162 0.096 C0.233 0.096 0.216 0.114 0.216 0.136 L0.216 0.307 C0.188 0.322 0.171 0.351 0.171 0.384 C0.171 0.431 0.209 0.469 0.255162 0.469 C0.301 0.469 0.339 0.431 0.339 0.384 C0.339 0.351 0.322 0.322 0.294 0.307 L0.294 0.136 C0.294 0.114 0.277 0.096 0.255162 0.096 Z"/>
+    <path id="ain-temperature-column" data-vizi-stroke-detail="true" d="M0.255162 0.155 L0.255162 0.378"/>
+  </g>
+  <path id="ain-temperature-bulb" data-vizi-stroke-detail="true" d="M0.255162 0.331 C0.234 0.331 0.217 0.348 0.217 0.369 C0.217 0.390 0.234 0.407 0.255162 0.407 C0.276 0.407 0.293 0.390 0.293 0.369 C0.293 0.348 0.276 0.331 0.255162 0.331 Z" fill="#808080" stroke="none"/>
 </svg>

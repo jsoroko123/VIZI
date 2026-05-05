@@ -98,6 +98,272 @@ function readObjectPathValue(source, path) {
         }, source);
 }
 
+function normalizePerspectiveThemeName(value) {
+    if (value == null) {
+        return "";
+    }
+    if (isPlainObject(value)) {
+        return normalizePerspectiveThemeName(
+            value.name
+            ?? value.value
+            ?? value.theme
+            ?? value.themeName
+            ?? value.props?.theme
+        );
+    }
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+        return "";
+    }
+    if (raw.includes("dark")) {
+        return "dark";
+    }
+    if (raw.includes("light")) {
+        return "light";
+    }
+    return "";
+}
+
+function getElementThemeCandidates(element) {
+    if (!element) {
+        return [];
+    }
+    return [
+        element.getAttribute?.("data-theme"),
+        element.getAttribute?.("theme"),
+        element.getAttribute?.("data-theme-name"),
+        element.getAttribute?.("class"),
+        element.className
+    ];
+}
+
+function detectDomThemeName() {
+    if (typeof document === "undefined") {
+        return "";
+    }
+    const themeSelectors = [
+        "[data-theme*='terra-dark']",
+        "[data-theme*='terra-light']",
+        "[data-theme*='dark']",
+        "[data-theme*='light']",
+        "[theme*='terra-dark']",
+        "[theme*='terra-light']",
+        "[theme*='dark']",
+        "[theme*='light']",
+        "[class*='terra-dark']",
+        "[class*='terra-light']",
+        "[class*='theme--dark']",
+        "[class*='theme--light']",
+        "[class*='theme-dark']",
+        "[class*='theme-light']",
+        "[class*='ia_theme--dark']",
+        "[class*='ia_theme--light']",
+        "[class*='ia_theme--terra-dark']",
+        "[class*='ia_theme--terra-light']"
+    ];
+    const candidates = [
+        ...getElementThemeCandidates(document.documentElement),
+        ...getElementThemeCandidates(document.body)
+    ];
+    for (const selector of themeSelectors) {
+        try {
+            const element = document.querySelector?.(selector);
+            if (element) {
+                candidates.push(...getElementThemeCandidates(element), selector);
+            }
+        } catch (_error) {
+        }
+    }
+    return candidates.map(normalizePerspectiveThemeName).find(Boolean) || "";
+}
+
+function findThemeInObject(value, depth = 4, seen = new Set()) {
+    const direct = normalizePerspectiveThemeName(value);
+    if (direct || depth <= 0 || !value || typeof value !== "object" || seen.has(value)) {
+        return direct;
+    }
+    seen.add(value);
+    const priorityKeys = ["theme", "themeName", "selectedTheme", "currentTheme", "session", "props", "page", "view", "project"];
+    for (const key of priorityKeys) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) {
+            continue;
+        }
+        const theme = findThemeInObject(value[key], depth - 1, seen);
+        if (theme) {
+            return theme;
+        }
+    }
+    let entries = [];
+    try {
+        entries = Object.entries(value).slice(0, 80);
+    } catch (_error) {
+        entries = [];
+    }
+    for (const [key, entryValue] of entries) {
+        if (/theme/i.test(key)) {
+            const theme = findThemeInObject(entryValue, depth - 1, seen);
+            if (theme) {
+                return theme;
+            }
+        }
+    }
+    return "";
+}
+
+function getPerspectiveSessionThemeName(componentProps) {
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    const sources = [
+        componentProps,
+        nestedProps,
+        componentProps?.store,
+        nestedProps?.store,
+        componentProps?.store?.view,
+        nestedProps?.store?.view,
+        componentProps?.store?.view?.page,
+        nestedProps?.store?.view?.page,
+        globalClient,
+        globalClient?.session,
+        globalClient?.store,
+        globalClient?.store?.session,
+        globalClient?.store?.page,
+        globalClient?.store?.page?.session,
+        globalClient?.store?.view,
+        globalClient?.store?.view?.session,
+        globalClient?.store?.view?.page,
+        globalClient?.store?.view?.page?.session,
+        globalDesigner,
+        globalDesigner?.session,
+        globalDesigner?.store,
+        globalDesigner?.store?.session,
+        globalDesigner?.store?.view,
+        globalDesigner?.store?.view?.session,
+        globalDesigner?.store?.view?.page
+    ].filter(Boolean);
+    const paths = [
+        "session.props.theme",
+        "session.props.theme.name",
+        "session.props.theme.value",
+        "session.theme",
+        "session.theme.name",
+        "session.theme.value",
+        "props.session.props.theme",
+        "props.session.props.theme.name",
+        "props.session.theme",
+        "page.session.props.theme",
+        "page.session.props.theme.name",
+        "page.props.session.props.theme",
+        "view.session.props.theme",
+        "view.session.props.theme.name",
+        "view.props.session.props.theme",
+        "project.props.theme",
+        "project.theme"
+    ];
+    for (const source of sources) {
+        for (const path of paths) {
+            const theme = normalizePerspectiveThemeName(readObjectPathValue(source, path));
+            if (theme) {
+                return theme;
+            }
+        }
+    }
+    const domTheme = detectDomThemeName();
+    if (domTheme) {
+        return domTheme;
+    }
+    const sessionRoots = [
+        componentProps?.session,
+        nestedProps?.session,
+        componentProps?.props?.session,
+        nestedProps?.props?.session,
+        componentProps?.store?.session,
+        nestedProps?.store?.session,
+        globalClient?.session,
+        globalClient?.store?.session,
+        globalClient?.store?.page?.session,
+        globalClient?.store?.view?.session,
+        globalClient?.store?.view?.page?.session,
+        globalDesigner?.session,
+        globalDesigner?.store?.session,
+        globalDesigner?.store?.view?.session
+    ].filter(Boolean);
+    for (const source of sessionRoots) {
+        const theme = findThemeInObject(source);
+        if (theme) {
+            return theme;
+        }
+    }
+    return "";
+}
+
+function getPerspectiveThemeName(componentProps) {
+    return getPerspectiveSessionThemeName(componentProps)
+        || normalizePerspectiveThemeName(getModelValue(componentProps, "theme", ""))
+        || "light";
+}
+
+function isLegacyCanvasBackgroundDefault(value) {
+    const normalized = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+    return normalized === "#0f172a"
+        || normalized === "rgb(15,23,42)"
+        || normalized === "rgba(15,23,42,1)"
+        || normalized === "#0f141c"
+        || normalized === "rgb(15,20,28)"
+        || normalized === "rgba(15,20,28,1)"
+        || normalized === "#f8fafc"
+        || normalized === "rgb(248,250,252)"
+        || normalized === "rgba(248,250,252,1)"
+        || normalized === "#ffffff"
+        || normalized === "#fff"
+        || normalized === "rgb(255,255,255)"
+        || normalized === "rgba(255,255,255,1)"
+        || normalized === "var(--canvas-bg)";
+}
+
+function getThemeCanvasBackground(theme) {
+    return normalizePerspectiveThemeName(theme) === "dark"
+        ? "var(--vizi-canvas-bg-dark, #0f141c)"
+        : "var(--vizi-canvas-bg-light, #ffffff)";
+}
+
+function useDomThemeVersion() {
+    const [version, setVersion] = useState(0);
+
+    useEffect(() => {
+        if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
+            return undefined;
+        }
+        const bump = () => setVersion((previous) => (previous + 1) % 100000);
+        const observer = new MutationObserver(bump);
+        const options = {
+            attributes: true,
+            attributeFilter: ["class", "data-theme", "theme", "data-theme-name"]
+        };
+        if (document.documentElement) {
+            observer.observe(document.documentElement, options);
+        }
+        if (document.body) {
+            observer.observe(document.body, options);
+        }
+        return () => observer.disconnect();
+    }, []);
+
+    return version;
+}
+
+function getPerspectiveCanvasBackground(componentProps, theme) {
+    const explicitCanvasBackground = String(getModelValue(componentProps, "canvasBackgroundColor", "") || "").trim();
+    if (explicitCanvasBackground) {
+        return explicitCanvasBackground;
+    }
+    const backgroundColor = String(getModelValue(componentProps, "backgroundColor", "") || "").trim();
+    if (backgroundColor && !isLegacyCanvasBackgroundDefault(backgroundColor)) {
+        return backgroundColor;
+    }
+    return getThemeCanvasBackground(theme);
+}
+
 function normalizeCacheKeyPart(value) {
     return String(value ?? "")
         .trim()
@@ -1391,6 +1657,7 @@ function writeComponentProp(props, path, value) {
 }
 
 function ViziCanvasBridge(props) {
+    useDomThemeVersion();
     const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(new Map());
@@ -1809,14 +2076,8 @@ function ViziCanvasBridge(props) {
     const tool = String(getModelValue(props, "tool", "select") || "select");
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
-    const theme = String(getModelValue(props, "theme", "light") || "light");
-    const canvasBackgroundColor = String(
-        getModelValue(
-            props,
-            "canvasBackgroundColor",
-            getModelValue(props, "backgroundColor", "#0f172a")
-        ) || "#0f172a"
-    );
+    const theme = getPerspectiveThemeName(props);
+    const canvasBackgroundColor = getPerspectiveCanvasBackground(props, theme);
 
     const svgFiles = useMemo(
         () => svgCatalogFiles.map((entry) => ({ key: entry.key, name: entry.name })).sort((left, right) => left.name.localeCompare(right.name)),
@@ -2159,9 +2420,8 @@ function ViziCanvasBridge(props) {
             {browserRuntimeMode ? (
                 <div
                     style={{
-                        width: viewBox.width,
-                        height: viewBox.height,
-                        zoom: runtimeCanvasZoom,
+                        width: Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom,
+                        height: Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom,
                         flexShrink: 0,
                         position: "relative",
                         transformOrigin: "top left"
@@ -2254,6 +2514,7 @@ function hasViziCanvasModel(props) {
 }
 
 function MesoraDrawingTool(props) {
+    useDomThemeVersion();
     const rootProps = getRootContainerProps(props);
     const viewProps = getComponentPropSource(props);
     const rootRef = useRef(null);
@@ -2261,7 +2522,8 @@ function MesoraDrawingTool(props) {
     const designerActive = detectPerspectiveDesignerMode(props);
     const rootRuntimeComponent = !designerActive && detectPerspectiveRootComponent(props);
     const useDesignerPortal = designerActive && !previewActive && hasViziCanvasModel(props);
-    const rootBackgroundColor = String(viewProps.backgroundColor || "#0f172a");
+    const rootTheme = getPerspectiveThemeName(props);
+    const rootBackgroundColor = getPerspectiveCanvasBackground(props, rootTheme);
     const defaultViewSize = resolveCanvasDefaultSize(props);
     const rootRuntimeHeight = toPositiveNumber(defaultViewSize?.height)
         ? `${defaultViewSize.height}px`
@@ -2328,7 +2590,7 @@ function MesoraDrawingTool(props) {
             <LegacyDocumentRenderer
                 document={viewProps.document}
                 data={viewProps.data}
-                backgroundColor={viewProps.backgroundColor}
+                backgroundColor={rootBackgroundColor}
                 showGrid={viewProps.showGrid}
                 gridSize={viewProps.gridSize}
                 preserveAspectRatio={viewProps.preserveAspectRatio}
@@ -2365,7 +2627,7 @@ class DrawingToolMeta {
             tool: readTreeValue(tree, "tool", "select"),
             forceViziCanvas: readTreeValue(tree, "forceViziCanvas", false),
             svgLibraryEnabled: readTreeValue(tree, "svgLibraryEnabled", true),
-            backgroundColor: readTreeValue(tree, "backgroundColor", "#0f172a"),
+            backgroundColor: readTreeValue(tree, "backgroundColor", ""),
             showGrid: readTreeValue(tree, "showGrid", false),
             gridSize: readTreeValue(tree, "gridSize", 20),
             preserveAspectRatio: readTreeValue(tree, "preserveAspectRatio", "xMinYMin slice"),
@@ -2375,7 +2637,7 @@ class DrawingToolMeta {
             selectionMode: readTreeValue(tree, "selectionMode", "all"),
             liveUpdatesEnabled: readTreeValue(tree, "liveUpdatesEnabled", true),
             liveClickable: readTreeValue(tree, "liveClickable", false),
-            theme: readTreeValue(tree, "theme", "light"),
+            theme: readTreeValue(tree, "theme", ""),
             liveTagKeys: readTreeValue(tree, "liveTagKeys", []),
             opcTags: readTreeValue(tree, "opcTags", [])
         };

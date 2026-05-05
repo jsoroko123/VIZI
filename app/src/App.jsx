@@ -88,6 +88,7 @@ import {
   readStoredDrawerFullscreen,
   resolveOverlayEType,
   toDatetimeLocalInput,
+  usesTwoWayUdtEType,
   writeFirstInnerSvgText,
 } from "./utils/appUiHelpers";
 import { defaultWidgetSettings, widgetTemplate } from "./utils/widgetTemplates";
@@ -807,6 +808,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     }
   });
   const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
+  const hiddenTagBubbleTimersRef = useRef(new Map());
   const [liveEquipmentOverlayIds, setLiveEquipmentOverlayIds] = useState([]);
   const [liveEquipmentOpcTick, setLiveEquipmentOpcTick] = useState(0);
   const liveEquipmentActiveRef = useRef(false);
@@ -1854,6 +1856,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
       });
     async function loadConfig() {
+      if (!opcUiEnabled && isInteractingRef.current) return;
       if (Date.now() < configNextAttemptAt) return;
       const retryDelaysMs = [0, 300, 900];
       for (let i = 0; i < retryDelaysMs.length; i += 1) {
@@ -1918,12 +1921,13 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
         } catch {
           if (i === retryDelaysMs.length - 1) {
             // back off failed config calls so proxy logs are not spammed during restarts
-            configNextAttemptAt = Date.now() + 15000;
+            configNextAttemptAt = Date.now() + (opcUiEnabled ? 15000 : 60000);
           }
         }
       }
     }
     async function loadTemplates() {
+      if (!opcUiEnabled && isInteractingRef.current) return;
       try {
         const data = await getOpcTemplates();
         if (!alive) return;
@@ -1938,6 +1942,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       }
     }
     async function loadTagMappings() {
+      if (!opcUiEnabled && isInteractingRef.current) return;
       try {
         const data = await getOpcTagMappings();
         if (!alive) return;
@@ -1952,6 +1957,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       }
     }
     async function loadMappingSets() {
+      if (!opcUiEnabled && isInteractingRef.current) return;
       try {
         const data = await getOpcMappingSets();
         if (!alive) return;
@@ -4033,7 +4039,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const overlayId = String(overlay?.id || "").trim();
     if (!overlayId) return null;
     const eType = String(resolveOverlayEType(overlay) || "").trim().toLowerCase();
-    if (!isDiverterEType(eType)) return null;
+    if (!usesTwoWayUdtEType(eType)) return null;
     const writeStateKeyFor = (action) =>
       `${overlayId}::${normalizeRouteTagKey(String(action || "command"))}`;
     const isActionBusy = (action) => liveEquipmentWriteBusyByOverlay?.[writeStateKeyFor(action)] === true;
@@ -4291,7 +4297,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const withDisabledStyle = (isDisabled) => (isDisabled ? { ...buttonStyle, ...disabledButtonStyle } : buttonStyle);
     return (
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6, display: "grid", gap: 5 }}>
-        <div style={{ fontSize: compact ? 10 : 11, fontWeight: 700, color: "var(--text)" }}>Diverter Controls</div>
+        <div style={{ fontSize: compact ? 10 : 11, fontWeight: 700, color: "var(--text)" }}>TwoWay Controls</div>
         <div style={{ fontSize: compact ? 9 : 10, color: "var(--text-muted)" }}>
           UDT: TwoWay_DiscreteV2
         </div>
@@ -4428,7 +4434,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     };
     if (eType) {
       const rawEType = String(eType || "").trim().toLowerCase();
-      rows.push({ key: "UDT", value: isDiverterEType(rawEType) ? "TwoWay_DiscreteV2" : eType });
+      rows.push({ key: "UDT", value: usesTwoWayUdtEType(rawEType) ? "TwoWay_DiscreteV2" : eType });
     }
     const popupTagValueEnabled = (() => {
       if (!path) return true;
@@ -8147,9 +8153,29 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
   }, [showHUD]);
   useEffect(() => {
     if (!showTagPaths && hiddenTagBubbleIds.length) {
-      setHiddenTagBubbleIds([]);
+      setHiddenTagBubbleIds((prev) => {
+        const next = prev.filter((entry) => {
+          const value = String(entry || "").trim();
+          return value && value.includes(":") && !value.startsWith("tag:");
+        });
+        if (next.length === prev.length) return prev;
+        const keep = new Set(next);
+        prev.forEach((entry) => {
+          if (keep.has(entry)) return;
+          const timerId = hiddenTagBubbleTimersRef.current.get(entry);
+          if (timerId) window.clearTimeout(timerId);
+          hiddenTagBubbleTimersRef.current.delete(entry);
+        });
+        return next;
+      });
     }
   }, [showTagPaths, hiddenTagBubbleIds.length]);
+  useEffect(() => () => {
+    hiddenTagBubbleTimersRef.current.forEach((timerId) => {
+      window.clearTimeout(timerId);
+    });
+    hiddenTagBubbleTimersRef.current.clear();
+  }, []);
   const svgPropertiesStickyOpen = false;
   useEffect(() => {
     if (importOpen && !svgPropertiesStickyOpen) setShowHUD(false);
@@ -8830,16 +8856,40 @@ const CONTENT_FIT_HEADROOM = 0.94;
     );
     return clampZoom(nextPct / 100);
   };
-  const clampPanToViewport = (nextPanRaw, zoomValue = zoomRef.current) => {
+  const getCanvasViewportMetrics = () => {
     const el = svgRef.current;
+    const rect = el?.getBoundingClientRect?.();
+    const rectW = Math.max(1e-9, Number(rect?.width) || 0);
+    const rectH = Math.max(1e-9, Number(rect?.height) || 0);
+    const worldW = Math.max(1, Number(vbWRef.current || vbW) || 1);
+    const worldH = Math.max(1, Number(vbHRef.current || vbH) || 1);
+    const scale = Math.max(1e-9, Math.min(rectW / worldW, rectH / worldH) || 1);
+    return {
+      rect,
+      worldW,
+      worldH,
+      scaleX: scale,
+      scaleY: scale,
+      visibleW: worldW,
+      visibleH: worldH,
+    };
+  };
+  const screenDeltaToCanvasPanDelta = (dx, dy) => {
+    const metrics = getCanvasViewportMetrics();
+    return {
+      x: (Number(dx) || 0) / Math.max(1e-9, Number(metrics.scaleX) || 1),
+      y: (Number(dy) || 0) / Math.max(1e-9, Number(metrics.scaleY) || 1),
+    };
+  };
+  const clampPanToViewport = (nextPanRaw, zoomValue = zoomRef.current) => {
     const z = Math.max(0.0001, Number(zoomValue) || 1);
-    const worldW = Math.max(1, Number(vbW) || 1);
-    const worldH = Math.max(1, Number(vbH) || 1);
+    const metrics = getCanvasViewportMetrics();
+    const worldW = Math.max(1, Number(metrics.worldW) || 1);
+    const worldH = Math.max(1, Number(metrics.worldH) || 1);
     const scaledW = worldW * z;
     const scaledH = worldH * z;
-    const rect = el?.getBoundingClientRect?.();
-    const viewW = Math.max(1, Number(rect?.width) || 1);
-    const viewH = Math.max(1, Number(rect?.height) || 1);
+    const viewW = Math.max(1, Number(metrics.visibleW) || worldW);
+    const viewH = Math.max(1, Number(metrics.visibleH) || worldH);
 
     const nextPan = {
       x: Number(nextPanRaw?.x) || 0,
@@ -8938,11 +8988,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function fitViewToCanvas(worldWOverride = null, worldHOverride = null, mode = "contain", options = {}) {
     const preservePan = options?.preservePan === true;
-    const el = svgRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const viewW = Math.max(1, Number(rect.width) || 0);
-    const viewH = Math.max(1, Number(rect.height) || 0);
     const worldW = Math.max(
       1,
       Number.isFinite(Number(worldWOverride)) ? Number(worldWOverride) : Number(vbW) || 0
@@ -8951,6 +8996,8 @@ const CONTENT_FIT_HEADROOM = 0.94;
       1,
       Number.isFinite(Number(worldHOverride)) ? Number(worldHOverride) : Number(vbH) || 0
     );
+    const viewW = worldW;
+    const viewH = worldH;
     const fitMode = String(mode || "contain").toLowerCase();
     let nextZoom = clampZoom(Math.min(viewW / worldW, viewH / worldH));
     let nextPan = preservePan
@@ -9647,10 +9694,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
       dx = e.deltaX * factor; // trackpad horizontal still works
     }
 
+    const panDelta = screenDeltaToCanvasPanDelta(dx * PAN_SPEED, dy * PAN_SPEED);
     setPan((p) =>
       clampPanToViewport({
-        x: p.x - dx * PAN_SPEED,
-        y: p.y - dy * PAN_SPEED,
+        x: p.x - panDelta.x,
+        y: p.y - panDelta.y,
       })
     );
   };
@@ -9964,15 +10012,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
         : (typeof svg.getBoundingClientRect === "function" ? svg.getBoundingClientRect() : null);
     let x = 0;
     let y = 0;
+    const metrics = getCanvasViewportMetrics();
     const rectW = Number(rect?.width) || 0;
     const rectH = Number(rect?.height) || 0;
     if (rect && rectW > 0 && rectH > 0) {
       const relX = (Number(evt?.clientX) || 0) - Number(rect.left || 0);
       const relY = (Number(evt?.clientY) || 0) - Number(rect.top || 0);
-      const sx = Math.max(0, Math.min(1, relX / rectW));
-      const sy = Math.max(0, Math.min(1, relY / rectH));
-      const svgX = sx * (Number(vbW) || 0);
-      const svgY = sy * (Number(vbH) || 0);
+      const svgX = relX / Math.max(1e-9, Number(metrics.scaleX) || 1);
+      const svgY = relY / Math.max(1e-9, Number(metrics.scaleY) || 1);
       x = (svgX - (pan?.x || 0)) / (zoom || 1);
       y = (svgY - (pan?.y || 0)) / (zoom || 1);
     } else {
@@ -12340,10 +12387,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (tool !== "select") return;
     if (!isShapeIdSelectableByMode(id)) return;
     e.stopPropagation();
-    setShowHUD(false);
 
     if (editingId === id) {
       if (e.shiftKey) {
+        setShowHUD(false);
         setSelectedIds((prev) => toggleIn(prev, id));
         return;
       }
@@ -12353,6 +12400,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     }
 
     if (e.shiftKey) {
+      setShowHUD(false);
       setSelectedIds((prev) => toggleIn(prev, id));
       pendingDragAllRef.current = null;
       return;
@@ -12550,7 +12598,6 @@ const CONTENT_FIT_HEADROOM = 0.94;
   function onOverlayMouseDown(e, id) {
     if (tool !== "select") return;
     if (!areOverlaysSelectableByMode()) return;
-    setShowHUD(false);
     if (Number(e?.detail || 0) > 1) return; // let double-click open properties in Move mode
     const target = e.target;
     const interactiveSelector = "[data-widget-control='true'],button,input,select,textarea,label,option";
@@ -12573,6 +12620,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const p = svgPoint(e);
 
     if (e.shiftKey) {
+      setShowHUD(false);
       setSelectedOverlayIds((prev) => toggleIn(prev, id));
       exitEditMode();
       setDrawing(null);
@@ -13321,6 +13369,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
     widgetKind: "",
     widgetTitle: "",
     widgetTextColor: "",
+    widgetButtonTextColor: "",
+    widgetWriteMode: "ignition",
+    widgetViewPath: "",
+    widgetViewParamsJson: "{}",
     widgetLocation: "",
     widgetMin: "0",
     widgetMax: "100",
@@ -13399,6 +13451,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
         widgetKind: "",
         widgetTitle: "",
         widgetTextColor: "",
+        widgetButtonTextColor: "",
+        widgetWriteMode: "ignition",
+        widgetViewPath: "",
+        widgetViewParamsJson: "{}",
         widgetLocation: "",
         widgetMin: "0",
         widgetMax: "100",
@@ -13508,6 +13564,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetKind: String(w.kind || ""),
           widgetTitle: String(w.title || ""),
           widgetTextColor: String(w.textColor ?? w.fontColor ?? ""),
+          widgetButtonTextColor: String(w.buttonTextColor ?? w.buttonFontColor ?? w.buttonLabelColor ?? ""),
+          widgetWriteMode: String(w.writeMode || w.writeTarget || "ignition"),
+          widgetViewPath: String(w.viewPath || w.popupViewPath || w.openViewPath || ""),
+          widgetViewParamsJson: String(w.viewParamsJson || w.paramsJson || w.popupParamsJson || "{}"),
           widgetLocation: String(w.location || ""),
           widgetMin: String(Number.isFinite(Number(w.min)) ? Number(w.min) : 0),
           widgetMax: String(Number.isFinite(Number(w.max)) ? Number(w.max) : 100),
@@ -13586,6 +13646,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
           widgetKind: "",
           widgetTitle: "",
           widgetTextColor: "",
+          widgetButtonTextColor: "",
+          widgetWriteMode: "ignition",
+          widgetViewPath: "",
+          widgetViewParamsJson: "{}",
           widgetLocation: "",
           widgetMin: "0",
           widgetMax: "100",
@@ -13666,6 +13730,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       widgetKind: "",
       widgetTitle: "",
       widgetTextColor: "",
+      widgetButtonTextColor: "",
+      widgetWriteMode: "ignition",
+      widgetViewPath: "",
+      widgetViewParamsJson: "{}",
       widgetLocation: "",
       widgetMin: "0",
       widgetMax: "100",
@@ -14054,6 +14122,16 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const title = String(source.widgetTitle ?? "").trim();
     const sourceHasTextColor = Object.prototype.hasOwnProperty.call(source, "widgetTextColor");
     const textColor = String(source.widgetTextColor ?? "").trim();
+    const sourceHasButtonTextColor = Object.prototype.hasOwnProperty.call(source, "widgetButtonTextColor");
+    const buttonTextColor = String(source.widgetButtonTextColor ?? "").trim();
+    const writeModeRaw = String(source.widgetWriteMode || "").trim().toLowerCase();
+    const writeMode = writeModeRaw === "view"
+      ? "view"
+      : writeModeRaw === "opc"
+      ? "opc"
+      : "ignition";
+    const viewPath = String(source.widgetViewPath || "").trim();
+    const viewParamsJson = String(source.widgetViewParamsJson || "{}").trim() || "{}";
     const location = String(source.widgetLocation ?? "").trim();
     const unit = String(source.widgetUnit ?? "").trim();
     const min = Number(source.widgetMin);
@@ -14164,6 +14242,12 @@ const CONTENT_FIT_HEADROOM = 0.94;
             ...current,
             title,
             textColor: sourceHasTextColor ? textColor : String(current.textColor ?? current.fontColor ?? ""),
+            buttonTextColor: sourceHasButtonTextColor
+              ? buttonTextColor
+              : String(current.buttonTextColor ?? current.buttonFontColor ?? current.buttonLabelColor ?? ""),
+            writeMode,
+            viewPath,
+            viewParamsJson,
             location,
             unit,
             min: Number.isFinite(min) ? min : Number(current.min ?? 0) || 0,
@@ -14259,15 +14343,106 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return readSvgStylePaint(el, name);
   }
 
-  function readInheritedSvgPaint(el, root, name) {
+  function readInheritedSvgPaint(el, root, name, options = {}) {
+    const includeRoot = options?.includeRoot !== false;
     let node = el;
     while (node && node.nodeType === 1) {
       const value = readSvgPaint(node, name);
+      if (node === root && !includeRoot) return "";
       if (value) return value;
       if (node === root) break;
       node = node.parentNode || null;
     }
     return "";
+  }
+
+  const SVG_STROKE_DETAIL_ID_RE = /(?:symbol|glyph|icon|needle|bulb|speed-center|temperature|label|legend)/i;
+
+  function isSvgStrokeDetailMarkerElement(el) {
+    const marker = String(
+      el?.getAttribute?.("data-vizi-stroke-detail") ||
+      el?.getAttribute?.("data-vizi-detail") ||
+      ""
+    ).trim().toLowerCase();
+    if (marker === "true" || marker === "1") return true;
+
+    const tokenText = [
+      el?.getAttribute?.("id"),
+      el?.getAttribute?.("class"),
+      el?.getAttribute?.("data-name"),
+    ]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    return SVG_STROKE_DETAIL_ID_RE.test(tokenText);
+  }
+
+  function getSvgStrokeDetailRoot(el, root) {
+    let node = el;
+    while (node && node.nodeType === 1 && node !== root) {
+      if (isSvgStrokeDetailMarkerElement(node)) return node;
+      node = node.parentNode || null;
+    }
+    return null;
+  }
+
+  function isSvgStrokeDetailElement(el, root) {
+    return Boolean(getSvgStrokeDetailRoot(el, root));
+  }
+
+  function svgStartTagHasStrokeDetail(tagText) {
+    const source = String(tagText || "");
+    if (/\bdata-vizi-(?:stroke-)?detail\s*=\s*(["'])(?:true|1)\1/i.test(source)) {
+      return true;
+    }
+    const tokenText = [
+      source.match(/\bid\s*=\s*(["'])([^"']+)\1/i)?.[2],
+      source.match(/\bclass\s*=\s*(["'])([^"']+)\1/i)?.[2],
+      source.match(/\bdata-name\s*=\s*(["'])([^"']+)\1/i)?.[2],
+    ]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    return SVG_STROKE_DETAIL_ID_RE.test(tokenText);
+  }
+
+  function removeSvgPaint(el, name) {
+    if (!el) return;
+    el.removeAttribute(name);
+    const style = String(el.getAttribute("style") || "");
+    if (!style || !new RegExp(`${name}\\s*:`, "i").test(style)) return;
+    const cleaned = style
+      .replace(new RegExp(`${name}\\s*:\\s*([^;]+);?`, "gi"), "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(";");
+    if (cleaned) el.setAttribute("style", cleaned);
+    else el.removeAttribute("style");
+  }
+
+  function getKnownSvgStrokeDetailWidth(el) {
+    const tokenText = [
+      el?.getAttribute?.("id"),
+      el?.getAttribute?.("class"),
+      el?.getAttribute?.("data-name"),
+    ].join(" ");
+    return /(?:temperature|speed)-symbol/i.test(tokenText) ? "0.026" : "";
+  }
+
+  function normalizeSvgStrokeDetails(root) {
+    Array.from(root?.querySelectorAll?.("*") || []).forEach((el) => {
+      const detailRoot = getSvgStrokeDetailRoot(el, root);
+      if (!detailRoot) return;
+      if (el === detailRoot) {
+        const knownWidth = getKnownSvgStrokeDetailWidth(el);
+        if (knownWidth) setSvgPaint(el, "stroke-width", knownWidth);
+        el.removeAttribute("vector-effect");
+        return;
+      }
+      removeSvgPaint(el, "stroke-width");
+      el.removeAttribute("vector-effect");
+    });
   }
 
   function setSvgPaint(el, name, value) {
@@ -14300,11 +14475,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
       );
       if (!doc.querySelector("parsererror")) {
         const root = doc.documentElement;
+        normalizeSvgStrokeDetails(root);
         const strokeElements = Array.from(root.querySelectorAll(`${SVG_STROKE_TARGET_SELECTOR},g`));
         const shapes = Array.from(root.querySelectorAll(SVG_STROKE_TARGET_SELECTOR));
         let changed = false;
 
         strokeElements.forEach((el) => {
+          if (isSvgStrokeDetailElement(el, root)) return;
           const directStroke = readSvgPaint(el, "stroke");
           if (!isProtectedSvgStroke(directStroke)) {
             setSvgPaint(el, "stroke", strokeColor);
@@ -14313,17 +14490,19 @@ const CONTENT_FIT_HEADROOM = 0.94;
         });
 
         shapes.forEach((el) => {
+          if (isSvgStrokeDetailElement(el, root)) return;
           const directStroke = readSvgPaint(el, "stroke");
           if (directStroke) return;
-          const inheritedStroke = readInheritedSvgPaint(el.parentNode || el, root, "stroke");
+          const inheritedStroke = readInheritedSvgPaint(el.parentNode || el, root, "stroke", { includeRoot: false });
           if (!isProtectedSvgStroke(inheritedStroke)) {
             setSvgPaint(el, "stroke", strokeColor);
             changed = true;
           }
         });
 
-        if (!changed && shapes.length) {
-          setSvgPaint(shapes[0], "stroke", strokeColor);
+        const fallbackShape = shapes.find((el) => !isSvgStrokeDetailElement(el, root));
+        if (!changed && fallbackShape) {
+          setSvgPaint(fallbackShape, "stroke", strokeColor);
         }
 
         return serializeSvgInner(root);
@@ -14332,13 +14511,19 @@ const CONTENT_FIT_HEADROOM = 0.94;
       // Use the legacy string fallback below.
     }
 
-    let next = inner;
-    next = next.replace(/stroke=['"][^'"]*['"]/gi, `stroke="${strokeColor}"`);
-    next = next.replace(/stroke:\s*[^;\"']+/gi, `stroke:${strokeColor}`);
+    let next = String(inner || "");
+    next = next.replace(/<([A-Za-z][\w:.-]*)([^<>]*?)(\/?)>/g, (match) => {
+      if (svgStartTagHasStrokeDetail(match)) return match;
+      return String(match)
+        .replace(/stroke=['"][^'"]*['"]/gi, `stroke="${strokeColor}"`)
+        .replace(/stroke:\s*[^;\"']+/gi, `stroke:${strokeColor}`);
+    });
     if (!/stroke=['"][^'"]*['"]/i.test(next)) {
       next = next.replace(
-        /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*)>/i,
-        `<$1$2 stroke="${strokeColor}">`
+        /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*?)(\/?)>/i,
+        (match, tag, attrs, selfClose) => (
+          svgStartTagHasStrokeDetail(match) ? match : `<${tag}${attrs} stroke="${strokeColor}"${selfClose}>`
+        )
       );
     }
     return next;
@@ -14346,22 +14531,56 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   function updateSvgInnerFill(inner, fill) {
     if (!inner) return inner;
+    const fillColor = String(fill || "").trim();
+    if (!fillColor) return inner;
 
-    let next = inner;
-
-    // Replace attribute form: fill="..."
-    next = next.replace(/fill=['"][^'"]*['"]/gi, `fill="${fill}"`);
-
-    // Replace style form: style="...; fill: ...; ..."
-    next = next.replace(/fill:\s*[^;\"']+/gi, `fill:${fill}`);
-
-    // If no fill attribute present, inject into first shape element.
-    if (!/fill=['"][^'"]*['"]/i.test(next)) {
-      next = next.replace(
-        /<(polyline|polygon|path|rect|circle|ellipse|line)\b([^>]*)>/i,
-        `<$1$2 fill="${fill}">`
+    try {
+      const doc = new DOMParser().parseFromString(
+        `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`,
+        "image/svg+xml"
       );
+      if (!doc.querySelector("parsererror")) {
+        const root = doc.documentElement;
+        normalizeSvgStrokeDetails(root);
+        const fillable = Array.from(root.querySelectorAll("path,rect,circle,ellipse,polygon"));
+        const isPrimaryFillId = (el) => {
+          const id = String(el?.getAttribute?.("id") || "").trim();
+          return /^(body|bodyouter|bodyinner|shell|housing|vessel|casing|main|machine|hopper|tank|silo|bin|chute|rect5|path4|body[-_].*|.*[-_]body)$/i.test(id);
+        };
+        const isProtectedFill = (value) => {
+          const v = String(value || "").trim().toLowerCase();
+          return !v || v === "none" || v === "transparent";
+        };
+        const fillTargets = fillable.filter((el) => (
+          !isSvgStrokeDetailElement(el, root) &&
+          String(el.getAttribute("data-vizi-fill-target") || "").trim().toLowerCase() === "true"
+        ));
+        const primaryTargets = fillable.filter((el) => !isSvgStrokeDetailElement(el, root) && isPrimaryFillId(el));
+        const recolorableTargets = fillable.filter((el) => (
+          !isSvgStrokeDetailElement(el, root) &&
+          !isProtectedFill(readSvgPaint(el, "fill"))
+        ));
+        const targets = fillTargets.length
+          ? fillTargets
+          : primaryTargets.length
+            ? primaryTargets
+            : recolorableTargets.slice(0, 1);
+        targets.forEach((el) => setSvgPaint(el, "fill", fillColor));
+        return serializeSvgInner(root);
+      }
+    } catch {
+      // Use the string fallback below.
     }
+
+    let next = String(inner || "");
+    let changed = false;
+    next = next.replace(/<(path|rect|circle|ellipse|polygon)\b([^>]*?)(\/?)>/gi, (match, tag, attrs, selfClose) => {
+      if (changed || svgStartTagHasStrokeDetail(match)) return match;
+      changed = true;
+      const nextTag = String(match).replace(/fill=['"][^'"]*['"]/gi, `fill="${fillColor}"`);
+      if (nextTag !== match) return nextTag;
+      return `<${tag}${attrs} fill="${fillColor}"${selfClose}>`;
+    });
 
     return next;
   }
@@ -14400,20 +14619,22 @@ const CONTENT_FIT_HEADROOM = 0.94;
       );
       if (!doc.querySelector("parsererror")) {
         const root = doc.documentElement;
+        normalizeSvgStrokeDetails(root);
         Array.from(root.querySelectorAll("*")).forEach((el) => {
+          if (isSvgStrokeDetailElement(el, root)) return;
           if (readSvgPaint(el, "stroke-width")) {
             setSvgPaint(el, "stroke-width", value);
           }
         });
 
         Array.from(root.querySelectorAll(SVG_STROKE_TARGET_SELECTOR)).forEach((el) => {
+          if (isSvgStrokeDetailElement(el, root)) return;
           const directStroke = readSvgPaint(el, "stroke");
           if (directStroke && isProtectedSvgStroke(directStroke)) return;
           if (!directStroke) {
-            const inheritedStroke = readInheritedSvgPaint(el.parentNode || el, root, "stroke");
-            if (!isProtectedSvgStroke(inheritedStroke)) {
-              setSvgPaint(el, "stroke", inheritedStroke);
-            }
+            const inheritedStroke = readInheritedSvgPaint(el.parentNode || el, root, "stroke", { includeRoot: false });
+            if (isProtectedSvgStroke(inheritedStroke)) return;
+            setSvgPaint(el, "stroke", inheritedStroke);
           }
           setSvgPaint(el, "stroke-width", value);
           el.setAttribute("vector-effect", "non-scaling-stroke");
@@ -14433,6 +14654,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
       (match, tag, attrs, selfClose) => {
         const strokeIsNone = /stroke\s*=\s*['"]\s*none\s*['"]|stroke\s*:\s*none/i.test(attrs);
         if (strokeIsNone) return match;
+        const hasStroke = /(?:^|\s)stroke\s*=|(?:^|[;\s])stroke\s*:/i.test(attrs);
+        const hasStrokeWidth = /stroke-width\s*=|stroke-width\s*:/i.test(attrs);
+        if (!hasStroke && !hasStrokeWidth) return match;
         let nextAttrs = String(attrs || "");
         if (!/stroke-width\s*=|stroke-width\s*:/i.test(nextAttrs)) {
           nextAttrs += ` stroke-width="${value}"`;
@@ -16059,10 +16283,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
         }
       }
 
+      const panStep = screenDeltaToCanvasPanDelta(stepX, stepY);
       const basePan = panRef.current || { x: 0, y: 0 };
       const nextPan = clampPanToViewport({
-        x: Number(basePan?.x || 0) + stepX,
-        y: Number(basePan?.y || 0) + stepY,
+        x: Number(basePan?.x || 0) + panStep.x,
+        y: Number(basePan?.y || 0) + panStep.y,
       });
       panRef.current = nextPan;
       enqueueCanvasUpdate("pan", () => setPan(nextPan));
@@ -16103,13 +16328,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
     if (canvasPanDrag) {
       const dx = (Number(e.clientX) || 0) - Number(canvasPanDrag.startClient?.x || 0);
       const dy = (Number(e.clientY) || 0) - Number(canvasPanDrag.startClient?.y || 0);
+      const panDelta = screenDeltaToCanvasPanDelta(dx, dy);
       const moved = Math.abs(dx) > 1 || Math.abs(dy) > 1;
       if (moved && !canvasPanDrag.moved) {
         setCanvasPanDrag((prev) => (prev ? { ...prev, moved: true } : prev));
       }
       const nextPan = clampPanToViewport({
-        x: Number(canvasPanDrag.startPan?.x || 0) + dx,
-        y: Number(canvasPanDrag.startPan?.y || 0) + dy,
+        x: Number(canvasPanDrag.startPan?.x || 0) + panDelta.x,
+        y: Number(canvasPanDrag.startPan?.y || 0) + panDelta.y,
       });
       const prevPan = panRef.current || { x: 0, y: 0 };
       if (
@@ -16680,10 +16906,14 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const handleUp = () => onMouseUp();
     window.addEventListener("mousemove", handleMove);
     window.addEventListener("mouseup", handleUp);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleUp);
     window.addEventListener("blur", handleUp);
     return () => {
       window.removeEventListener("mousemove", handleMove);
       window.removeEventListener("mouseup", handleUp);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleUp);
       window.removeEventListener("blur", handleUp);
     };
   }, [dragAll, dragHandle, overlayResize, shapeResize, marquee, canvasPanDrag, drawing, onMouseMove, onMouseUp]);
@@ -19227,7 +19457,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
     onWidgetDurationPresetChange(...args)
   );
   const onCanvasHideTagBubble = useStableEvent((id) => {
-    setHiddenTagBubbleIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    const bubbleId = String(id || "").trim();
+    if (!bubbleId) return;
+    const existingTimer = hiddenTagBubbleTimersRef.current.get(bubbleId);
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+    }
+    setHiddenTagBubbleIds((prev) => (prev.includes(bubbleId) ? prev : [...prev, bubbleId]));
+    const timerId = window.setTimeout(() => {
+      hiddenTagBubbleTimersRef.current.delete(bubbleId);
+      setHiddenTagBubbleIds((prev) => prev.filter((entry) => entry !== bubbleId));
+    }, 30000);
+    hiddenTagBubbleTimersRef.current.set(bubbleId, timerId);
   });
 
   // Stable render-prop wrappers — always call the latest version but never change reference.
@@ -19287,6 +19528,15 @@ const CONTENT_FIT_HEADROOM = 0.94;
                 "[data-vizi-dropdown-menu='1']",
                 "[data-vizi-quick-tag-picker='1']",
                 "[data-vizi-quick-svg-picker='1']",
+                "[data-vizi-canvas-root='1']",
+                "[data-overlay-id]",
+                "[data-shape-id]",
+                "[data-overlay-selection-ui]",
+                "[data-overlay-selection-move-hit]",
+                "[data-overlay-selection-hit]",
+                "[data-shape-selection-ui]",
+                "[data-shape-selection-hit]",
+                "[data-mixed-selection-ui]",
               ].join(", ")
             )
           )
