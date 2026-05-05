@@ -24297,6 +24297,7 @@ var MesoraDrawingToolBundle = (() => {
     `/data/${MODULE_ID}/hmi-state-style-maps`,
     `/main/data/${MODULE_ID}/hmi-state-style-maps`
   ];
+  var IGNITION_TAG_VALUE_POLL_MS = 250;
   var SVG_RAW_CACHE_MAX = 80;
   var DEFAULT_FILL = "#D7DADE";
   var DEFAULT_STROKE = "#808080";
@@ -24323,6 +24324,7 @@ var MesoraDrawingToolBundle = (() => {
   var PROPERTY_PANEL_WIDTH_STORAGE_KEY = "mesora-drawing:property-panel-width:v1";
   var PROPERTY_PANEL_HEIGHT = 520;
   var PROPERTY_PANEL_MIN_HEIGHT = 240;
+  var PROPERTY_PANEL_HEIGHT_STORAGE_KEY = "mesora-drawing:property-panel-height:v1";
   var QUICK_TAG_PANEL_WIDTH = 360;
   var QUICK_TAG_PANEL_HEIGHT = 124;
   var QUICK_SVG_PANEL_WIDTH = 300;
@@ -24331,6 +24333,7 @@ var MesoraDrawingToolBundle = (() => {
   var COLLAPSED_TOOLBAR_WIDTH = 116;
   var TOOLBAR_INSET = 16;
   var TOOLBAR_DRAWER_GAP = -6;
+  var TOOLBAR_DEFAULT_POSITION = Object.freeze({ x: TOOLBAR_INSET, y: TOOLBAR_INSET });
   var SVG_DRAWER_MIN_WIDTH = 300;
   var SVG_DRAWER_PREFERRED_WIDTH = 348;
   var HELP_DRAWER_MIN_WIDTH = 320;
@@ -25809,6 +25812,52 @@ var MesoraDrawingToolBundle = (() => {
       meta.set(path.toLowerCase(), record);
     });
     return { values, meta };
+  }
+  function areIgnitionTagValuesEqual(left, right) {
+    if (Object.is(left, right)) {
+      return true;
+    }
+    if (left == null || right == null) {
+      return false;
+    }
+    if (typeof left !== "object" || typeof right !== "object") {
+      return false;
+    }
+    try {
+      return JSON.stringify(left) === JSON.stringify(right);
+    } catch (_error) {
+      return String(left) === String(right);
+    }
+  }
+  function areIgnitionTagMetaRecordsEqual(left, right) {
+    var _a, _b, _c, _d, _e, _f;
+    if (left === right) {
+      return true;
+    }
+    if (!left || !right) {
+      return false;
+    }
+    return String((_a = left.path) != null ? _a : "") === String((_b = right.path) != null ? _b : "") && String((_c = left.quality) != null ? _c : "") === String((_d = right.quality) != null ? _d : "") && String((_e = left.error) != null ? _e : "") === String((_f = right.error) != null ? _f : "") && areIgnitionTagValuesEqual(left.value, right.value);
+  }
+  function areMapsEqualByValue(leftMap, rightMap, valueEquals = Object.is) {
+    if (leftMap === rightMap) {
+      return true;
+    }
+    if (!(leftMap instanceof Map) || !(rightMap instanceof Map)) {
+      return false;
+    }
+    if (leftMap.size !== rightMap.size) {
+      return false;
+    }
+    for (const [key, rightValue] of rightMap.entries()) {
+      if (!leftMap.has(key)) {
+        return false;
+      }
+      if (!valueEquals(leftMap.get(key), rightValue)) {
+        return false;
+      }
+    }
+    return true;
   }
   function chunkIgnitionTagValuePaths(paths, maxEncodedChars = 6e3) {
     const source = coerceArray(paths).map((path) => String(path || "").trim()).filter(Boolean);
@@ -28654,6 +28703,30 @@ var MesoraDrawingToolBundle = (() => {
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
+  function normalizeToolbarPosition(value) {
+    if (!isPlainObject(value)) {
+      return null;
+    }
+    const x = Number(value.x);
+    const y = Number(value.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+    return { x, y };
+  }
+  function clampToolbarPosition(position, panelWidth, panelHeight, viewportWidth, viewportHeight) {
+    const normalized = normalizeToolbarPosition(position) || TOOLBAR_DEFAULT_POSITION;
+    const width = toPositiveNumber(panelWidth) || TOOLBAR_WIDTH;
+    const height = toPositiveNumber(panelHeight) || 160;
+    const viewWidth = toPositiveNumber(viewportWidth) || DEFAULT_CANVAS_WIDTH;
+    const viewHeight = toPositiveNumber(viewportHeight) || DEFAULT_CANVAS_HEIGHT;
+    const maxX = Math.max(TOOLBAR_INSET, viewWidth - width - TOOLBAR_INSET);
+    const maxY = Math.max(TOOLBAR_INSET, viewHeight - height - TOOLBAR_INSET);
+    return {
+      x: Math.round(clamp(normalized.x, TOOLBAR_INSET, maxX)),
+      y: Math.round(clamp(normalized.y, TOOLBAR_INSET, maxY))
+    };
+  }
   function clampPropertyPanelWidth(value, viewportWidth = 0) {
     const width = Number(value);
     const vpW = Number(viewportWidth) || DEFAULT_CANVAS_WIDTH;
@@ -28667,6 +28740,18 @@ var MesoraDrawingToolBundle = (() => {
       maxWidth
     );
   }
+  function clampPropertyPanelHeight(value, maxHeight = PROPERTY_PANEL_HEIGHT) {
+    const height = Number(value);
+    const maxPanelHeight = Math.max(
+      PROPERTY_PANEL_MIN_HEIGHT,
+      Number.isFinite(Number(maxHeight)) ? Number(maxHeight) : PROPERTY_PANEL_HEIGHT
+    );
+    return clamp(
+      Number.isFinite(height) ? height : PROPERTY_PANEL_HEIGHT,
+      PROPERTY_PANEL_MIN_HEIGHT,
+      maxPanelHeight
+    );
+  }
   function readStoredPropertyPanelWidth() {
     if (typeof window === "undefined" || !window.localStorage) {
       return PROPERTY_PANEL_WIDTH;
@@ -28678,6 +28763,19 @@ var MesoraDrawingToolBundle = (() => {
       );
     } catch (_error) {
       return PROPERTY_PANEL_WIDTH;
+    }
+  }
+  function readStoredPropertyPanelHeight() {
+    if (typeof window === "undefined" || !window.localStorage) {
+      return PROPERTY_PANEL_HEIGHT;
+    }
+    try {
+      return clampPropertyPanelHeight(
+        window.localStorage.getItem(PROPERTY_PANEL_HEIGHT_STORAGE_KEY),
+        (toPositiveNumber(window.innerHeight) || DEFAULT_CANVAS_HEIGHT) - 32
+      );
+    } catch (_error) {
+      return PROPERTY_PANEL_HEIGHT;
     }
   }
   function toggleIn(list, id) {
@@ -28845,6 +28943,7 @@ var MesoraDrawingToolBundle = (() => {
     const externalGridSizeRaw = Number(getModelValue(props, "gridSize", 20));
     const externalGridSize = Number.isFinite(externalGridSizeRaw) && externalGridSizeRaw > 0 ? externalGridSizeRaw : 20;
     const externalToolbarCollapsed = Boolean(getModelValue(props, "toolbarCollapsed", false));
+    const externalToolbarPosition = normalizeToolbarPosition(getModelValue(props, "toolbarPosition", TOOLBAR_DEFAULT_POSITION));
     const externalShowRulers = Boolean(getModelValue(props, "showRulers", false));
     const externalShowTagPaths = Boolean(getModelValue(props, "showTagPaths", false));
     const externalSelectionMode = String(getModelValue(props, "selectionMode", "all") || "all");
@@ -28876,6 +28975,7 @@ var MesoraDrawingToolBundle = (() => {
     const externalOverlaysKey = JSON.stringify(coerceArray(externalOverlays));
     const externalSelectedIdsKey = JSON.stringify(coerceArray(externalSelectedIds));
     const externalSelectedOverlayIdsKey = JSON.stringify(coerceArray(externalSelectedOverlayIds));
+    const externalToolbarPositionKey = JSON.stringify(externalToolbarPosition || TOOLBAR_DEFAULT_POSITION);
     const [shapes, setShapesState] = useState(coerceArray(externalShapes));
     const [svgOverlays, setSvgOverlaysState] = useState(coerceArray(externalOverlays));
     const [selectedIds, setSelectedIds] = useState(coerceArray(externalSelectedIds));
@@ -28883,6 +28983,13 @@ var MesoraDrawingToolBundle = (() => {
     const [tool, setToolState] = useState(externalTool);
     const [showGrid, setShowGridState] = useState(externalShowGrid);
     const [toolbarCollapsed, setToolbarCollapsedState] = useState(externalToolbarCollapsed);
+    const [toolbarPosition, setToolbarPositionState] = useState(() => clampToolbarPosition(
+      externalToolbarPosition || TOOLBAR_DEFAULT_POSITION,
+      externalToolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH,
+      160,
+      readBrowserViewportWidth(),
+      readBrowserViewportHeight()
+    ));
     const [showRulers, setShowRulersState] = useState(externalShowRulers);
     const [showTagPaths, setShowTagPathsState] = useState(externalShowTagPaths);
     const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
@@ -28927,15 +29034,28 @@ var MesoraDrawingToolBundle = (() => {
     const [importOpen, setImportOpen] = useState(false);
     const [widgetOpen, setWidgetOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
+    const [importAnchor, setImportAnchor] = useState(null);
     const [propertiesSelectionKey, setPropertiesSelectionKey] = useState("");
     const [propertyPanelWidth, setPropertyPanelWidth] = useState(readStoredPropertyPanelWidth);
+    const [propertyPanelHeight, setPropertyPanelHeight] = useState(readStoredPropertyPanelHeight);
     const [propertyPanelResizing, setPropertyPanelResizing] = useState(false);
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
-    const propertyPanelResizeRef = useRef({ resizing: false, startX: 0, startWidth: PROPERTY_PANEL_WIDTH });
+    const propertyPanelResizeRef = useRef({
+      resizing: false,
+      mode: "",
+      startX: 0,
+      startY: 0,
+      startWidth: PROPERTY_PANEL_WIDTH,
+      startHeight: PROPERTY_PANEL_HEIGHT,
+      panelTop: 0
+    });
+    const toolbarPanelRef = useRef(null);
+    const toolbarPositionRef = useRef(toolbarPosition);
+    const toolbarDragRef = useRef({ dragging: false, offsetX: 0, offsetY: 0, panelWidth: TOOLBAR_WIDTH, panelHeight: 160 });
     const svgCatalogRequestIdRef = useRef(0);
     const hmiStateStyleMapRequestIdRef = useRef(0);
     const quickSvgPickerInputRef = useRef(null);
@@ -29017,6 +29137,9 @@ var MesoraDrawingToolBundle = (() => {
       overlaysRef.current = svgOverlays;
     }, [svgOverlays]);
     useEffect(() => {
+      toolbarPositionRef.current = toolbarPosition;
+    }, [toolbarPosition]);
+    useEffect(() => {
       const node = rootRef.current;
       if (!node || typeof node.getBoundingClientRect !== "function") {
         return void 0;
@@ -29071,18 +29194,42 @@ var MesoraDrawingToolBundle = (() => {
       }
     }, [propertyPanelWidth]);
     useEffect(() => {
+      if (typeof window === "undefined" || !window.localStorage) {
+        return;
+      }
+      try {
+        window.localStorage.setItem(PROPERTY_PANEL_HEIGHT_STORAGE_KEY, String(Math.round(propertyPanelHeight)));
+      } catch (_error) {
+      }
+    }, [propertyPanelHeight]);
+    useEffect(() => {
       if (typeof window === "undefined") {
         return void 0;
       }
-      const clampToRoot = (value) => clampPropertyPanelWidth(
+      const clampWidthToRoot = (value) => clampPropertyPanelWidth(
         value,
         Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+      );
+      const clampHeightToRoot = (value, panelTop = 0) => clampPropertyPanelHeight(
+        value,
+        Math.max(
+          PROPERTY_PANEL_MIN_HEIGHT,
+          Number((rootSize == null ? void 0 : rootSize.height) || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) - Number(panelTop || 0) - 16
+        )
       );
       function onMove(event) {
         if (!propertyPanelResizeRef.current.resizing) {
           return;
         }
-        const nextWidth = clampToRoot(
+        if (propertyPanelResizeRef.current.mode === "height") {
+          const nextHeight = clampHeightToRoot(
+            propertyPanelResizeRef.current.startHeight + (Number(event.clientY) - propertyPanelResizeRef.current.startY),
+            propertyPanelResizeRef.current.panelTop
+          );
+          setPropertyPanelHeight(nextHeight);
+          return;
+        }
+        const nextWidth = clampWidthToRoot(
           propertyPanelResizeRef.current.startWidth + (Number(event.clientX) - propertyPanelResizeRef.current.startX)
         );
         setPropertyPanelWidth(nextWidth);
@@ -29092,6 +29239,7 @@ var MesoraDrawingToolBundle = (() => {
           return;
         }
         propertyPanelResizeRef.current.resizing = false;
+        propertyPanelResizeRef.current.mode = "";
         setPropertyPanelResizing(false);
       }
       function onKeyDown(event) {
@@ -29116,7 +29264,7 @@ var MesoraDrawingToolBundle = (() => {
         document.removeEventListener("mouseleave", endResize);
         endResize();
       };
-    }, [browserViewportWidth, rootSize]);
+    }, [browserViewportHeight, browserViewportWidth, rootSize]);
     useEffect(() => {
       setPropertyPanelWidth(
         (previous) => clampPropertyPanelWidth(
@@ -29124,17 +29272,27 @@ var MesoraDrawingToolBundle = (() => {
           Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
         )
       );
-    }, [browserViewportWidth, rootSize]);
+      setPropertyPanelHeight(
+        (previous) => clampPropertyPanelHeight(
+          previous,
+          Math.max(
+            PROPERTY_PANEL_MIN_HEIGHT,
+            Number((rootSize == null ? void 0 : rootSize.height) || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) - 32
+          )
+        )
+      );
+    }, [browserViewportHeight, browserViewportWidth, rootSize]);
     useEffect(() => {
       if (!propertyPanelResizing || typeof document === "undefined") {
         return void 0;
       }
       const previousCursor = document.body.style.cursor;
       const previousUserSelect = document.body.style.userSelect;
-      document.body.style.cursor = "col-resize";
+      const resizeCursor = propertyPanelResizeRef.current.mode === "height" ? "row-resize" : "col-resize";
+      document.body.style.cursor = resizeCursor;
       document.body.style.userSelect = "none";
       return () => {
-        document.body.style.cursor = previousCursor === "col-resize" ? "" : previousCursor;
+        document.body.style.cursor = previousCursor === "col-resize" || previousCursor === "row-resize" ? "" : previousCursor;
         document.body.style.userSelect = previousUserSelect;
       };
     }, [propertyPanelResizing]);
@@ -29200,6 +29358,20 @@ var MesoraDrawingToolBundle = (() => {
     useEffect(() => {
       setToolbarCollapsedState(externalToolbarCollapsed);
     }, [externalToolbarCollapsed]);
+    useEffect(() => {
+      var _a2, _b2;
+      const panelWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+      const panelHeight = ((_b2 = (_a2 = toolbarPanelRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2).height) || 160;
+      const nextPosition = clampToolbarPosition(
+        externalToolbarPosition || TOOLBAR_DEFAULT_POSITION,
+        panelWidth,
+        panelHeight,
+        browserViewportWidth,
+        browserViewportHeight
+      );
+      toolbarPositionRef.current = nextPosition;
+      setToolbarPositionState(nextPosition);
+    }, [browserViewportHeight, browserViewportWidth, externalToolbarPositionKey, toolbarCollapsed]);
     useEffect(() => {
       setStrokeNormalizeWidthDraft(formatPanelNumber(externalStrokeNormalizeWidth));
     }, [externalStrokeNormalizeWidth]);
@@ -29314,31 +29486,29 @@ var MesoraDrawingToolBundle = (() => {
       }
       let cancelled = false;
       let timerId = 0;
+      let inFlight = false;
       const loadIgnitionTagValues = async () => {
         const mergedValues = /* @__PURE__ */ new Map();
         const mergedMeta = /* @__PURE__ */ new Map();
-        let anyChunkLoaded = false;
         for (const routePath of MODULE_TAG_VALUE_ROUTE_CANDIDATES) {
           mergedValues.clear();
           mergedMeta.clear();
-          anyChunkLoaded = false;
           try {
-            for (const pathChunk of overlayFillBindingPathChunks) {
+            const payloads = await Promise.all(overlayFillBindingPathChunks.map(async (pathChunk) => {
               const queryValue = encodeURIComponent(JSON.stringify(pathChunk));
               const response = await fetch(`${routePath}?paths=${queryValue}`, {
                 cache: "no-store",
                 credentials: "same-origin"
               });
               if (!response.ok) {
-                anyChunkLoaded = false;
-                mergedValues.clear();
-                mergedMeta.clear();
-                break;
+                throw new Error(`Failed to load tag values (${response.status}).`);
               }
-              const payload = await response.json();
-              if (cancelled) {
-                return;
-              }
+              return response.json();
+            }));
+            if (cancelled) {
+              return false;
+            }
+            payloads.forEach((payload) => {
               const normalized = normalizeIgnitionTagValuePayload(payload);
               normalized.values.forEach((value, key) => {
                 mergedValues.set(key, value);
@@ -29346,29 +29516,45 @@ var MesoraDrawingToolBundle = (() => {
               normalized.meta.forEach((value, key) => {
                 mergedMeta.set(key, value);
               });
-              anyChunkLoaded = true;
+            });
+            if (cancelled) {
+              return false;
             }
-            if (anyChunkLoaded) {
-              setIgnitionTagValuesByPath(new Map(mergedValues));
-              setIgnitionTagMetaByPath(new Map(mergedMeta));
-              return;
-            }
+            setIgnitionTagValuesByPath((previous) => areMapsEqualByValue(previous, mergedValues, areIgnitionTagValuesEqual) ? previous : new Map(mergedValues));
+            setIgnitionTagMetaByPath((previous) => areMapsEqualByValue(previous, mergedMeta, areIgnitionTagMetaRecordsEqual) ? previous : new Map(mergedMeta));
+            return true;
           } catch (_error) {
           }
         }
-        if (!cancelled) {
-          setIgnitionTagValuesByPath(/* @__PURE__ */ new Map());
-          setIgnitionTagMetaByPath(/* @__PURE__ */ new Map());
+        return false;
+      };
+      const scheduleNext = (delay = IGNITION_TAG_VALUE_POLL_MS) => {
+        if (cancelled || typeof window === "undefined" || typeof window.setTimeout !== "function") {
+          return;
+        }
+        timerId = window.setTimeout(runPoll, Math.max(50, Number(delay) || IGNITION_TAG_VALUE_POLL_MS));
+      };
+      const runPoll = async () => {
+        if (cancelled || inFlight) {
+          return;
+        }
+        inFlight = true;
+        const startedAt = Date.now();
+        try {
+          await loadIgnitionTagValues();
+        } finally {
+          inFlight = false;
+          if (!cancelled) {
+            const elapsed = Date.now() - startedAt;
+            scheduleNext(Math.max(50, IGNITION_TAG_VALUE_POLL_MS - elapsed));
+          }
         }
       };
-      loadIgnitionTagValues();
-      if (typeof window !== "undefined" && typeof window.setInterval === "function") {
-        timerId = window.setInterval(loadIgnitionTagValues, 1e3);
-      }
+      runPoll();
       return () => {
         cancelled = true;
-        if (timerId && typeof window !== "undefined" && typeof window.clearInterval === "function") {
-          window.clearInterval(timerId);
+        if (timerId && typeof window !== "undefined" && typeof window.clearTimeout === "function") {
+          window.clearTimeout(timerId);
         }
       };
     }, [overlayFillBindingPathChunksKey]);
@@ -29450,6 +29636,118 @@ var MesoraDrawingToolBundle = (() => {
         setHelpOpen(false);
       }
     }, [persistValue]);
+    const persistToolbarPosition = useCallback((position) => {
+      var _a2, _b2;
+      const panelWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+      const panelHeight = ((_b2 = (_a2 = toolbarPanelRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2).height) || 160;
+      const nextPosition = clampToolbarPosition(
+        position,
+        panelWidth,
+        panelHeight,
+        browserViewportWidth,
+        browserViewportHeight
+      );
+      toolbarPositionRef.current = nextPosition;
+      setToolbarPositionState(nextPosition);
+      persistValue("toolbarPosition", nextPosition);
+      return nextPosition;
+    }, [browserViewportHeight, browserViewportWidth, persistValue, toolbarCollapsed]);
+    const redockToolbar = useCallback((event) => {
+      stopInteractivePropagation(event);
+      persistToolbarPosition(TOOLBAR_DEFAULT_POSITION);
+    }, [persistToolbarPosition]);
+    const startToolbarDrag = useCallback((event) => {
+      var _a2, _b2;
+      if (!event || Number(event.button || 0) !== 0) {
+        return;
+      }
+      const target = event.target;
+      if (target instanceof Element && target.closest("button,input,select,textarea,a,[data-no-toolbar-drag='true']")) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = (_b2 = (_a2 = toolbarPanelRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2);
+      const startPosition = clampToolbarPosition(
+        toolbarPositionRef.current || toolbarPosition,
+        (rect == null ? void 0 : rect.width) || (toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH),
+        (rect == null ? void 0 : rect.height) || 160,
+        browserViewportWidth,
+        browserViewportHeight
+      );
+      toolbarDragRef.current = {
+        dragging: true,
+        offsetX: Number(event.clientX) - startPosition.x,
+        offsetY: Number(event.clientY) - startPosition.y,
+        panelWidth: (rect == null ? void 0 : rect.width) || (toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH),
+        panelHeight: (rect == null ? void 0 : rect.height) || 160
+      };
+      toolbarPositionRef.current = startPosition;
+      setToolbarPositionState(startPosition);
+    }, [browserViewportHeight, browserViewportWidth, toolbarCollapsed, toolbarPosition]);
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return void 0;
+      }
+      const onPointerMove = (event) => {
+        const drag = toolbarDragRef.current;
+        if (!(drag == null ? void 0 : drag.dragging)) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const nextPosition = clampToolbarPosition(
+          {
+            x: Number(event.clientX) - Number(drag.offsetX || 0),
+            y: Number(event.clientY) - Number(drag.offsetY || 0)
+          },
+          drag.panelWidth,
+          drag.panelHeight,
+          browserViewportWidth,
+          browserViewportHeight
+        );
+        toolbarPositionRef.current = nextPosition;
+        setToolbarPositionState((previous) => previous.x === nextPosition.x && previous.y === nextPosition.y ? previous : nextPosition);
+      };
+      const endToolbarDrag = (event) => {
+        var _a2, _b2;
+        const drag = toolbarDragRef.current;
+        if (!(drag == null ? void 0 : drag.dragging)) {
+          return;
+        }
+        (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+        (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
+        toolbarDragRef.current = { ...drag, dragging: false };
+        persistToolbarPosition(toolbarPositionRef.current || TOOLBAR_DEFAULT_POSITION);
+      };
+      window.addEventListener("pointermove", onPointerMove, true);
+      window.addEventListener("pointerup", endToolbarDrag, true);
+      window.addEventListener("pointercancel", endToolbarDrag, true);
+      window.addEventListener("blur", endToolbarDrag);
+      return () => {
+        window.removeEventListener("pointermove", onPointerMove, true);
+        window.removeEventListener("pointerup", endToolbarDrag, true);
+        window.removeEventListener("pointercancel", endToolbarDrag, true);
+        window.removeEventListener("blur", endToolbarDrag);
+      };
+    }, [browserViewportHeight, browserViewportWidth, persistToolbarPosition]);
+    useEffect(() => {
+      var _a2, _b2, _c2, _d2;
+      const panelWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+      const panelHeight = ((_b2 = (_a2 = toolbarPanelRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2).height) || 160;
+      const nextPosition = clampToolbarPosition(
+        toolbarPositionRef.current || toolbarPosition,
+        panelWidth,
+        panelHeight,
+        browserViewportWidth,
+        browserViewportHeight
+      );
+      if (nextPosition.x === ((_c2 = toolbarPositionRef.current) == null ? void 0 : _c2.x) && nextPosition.y === ((_d2 = toolbarPositionRef.current) == null ? void 0 : _d2.y)) {
+        return;
+      }
+      toolbarPositionRef.current = nextPosition;
+      setToolbarPositionState(nextPosition);
+    }, [browserViewportHeight, browserViewportWidth, toolbarCollapsed, toolbarPosition]);
     const setShowRulers = useCallback((nextValue) => {
       const value = Boolean(nextValue);
       setShowRulersState(value);
@@ -31292,7 +31590,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       if (!nextOverlay) {
         return;
       }
-      if (anchorPoint && Number.isFinite(Number(anchorPoint.x)) && Number.isFinite(Number(anchorPoint.y)) && (nextOverlay == null ? void 0 : nextOverlay.bbox)) {
+      const targetAnchor = anchorPoint && Number.isFinite(Number(anchorPoint.x)) && Number.isFinite(Number(anchorPoint.y)) ? { x: Number(anchorPoint.x), y: Number(anchorPoint.y) } : importAnchor && Number.isFinite(Number(importAnchor.x)) && Number.isFinite(Number(importAnchor.y)) ? { x: Number(importAnchor.x), y: Number(importAnchor.y) } : null;
+      if (targetAnchor && (nextOverlay == null ? void 0 : nextOverlay.bbox)) {
         const scaleX = overlayScaleX(nextOverlay);
         const scaleY = overlayScaleY(nextOverlay);
         const bbox = nextOverlay.bbox;
@@ -31300,8 +31599,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         const centerY = Number(bbox.y || 0) + Number(bbox.height || 0) / 2;
         nextOverlay = {
           ...nextOverlay,
-          tx: Number(anchorPoint.x) - scaleX * centerX,
-          ty: Number(anchorPoint.y) - scaleY * centerY
+          tx: targetAnchor.x - scaleX * centerX,
+          ty: targetAnchor.y - scaleY * centerY
         };
       }
       updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
@@ -31309,7 +31608,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       setSelectedIds([]);
       setImportOpen(false);
       setWidgetOpen(false);
-    }, [createOverlayFromRawMarkup, readSvgRawByKey, updateSvgOverlays]);
+      setImportAnchor(null);
+    }, [createOverlayFromRawMarkup, importAnchor, readSvgRawByKey, updateSvgOverlays]);
     const swapSelectedOverlaySvgTemplate = useCallback(async (fileKey) => {
       const targetKey = String(fileKey || "").trim();
       if (!targetKey || !selectedOverlay || (selectedOverlay == null ? void 0 : selectedOverlay.widget) || (selectedOverlay == null ? void 0 : selectedOverlay.embeddedView)) {
@@ -31385,9 +31685,9 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       setWidgetOpen(false);
       setHelpOpen((current) => !current);
     }, []);
-    const onPickWidget = useCallback((widgetKey) => {
+    const onPickWidget = useCallback((widgetKey, anchorPoint = null) => {
       const template = widgetTemplate(widgetKey);
-      const nextOverlay = createOverlayFromRawMarkup(template == null ? void 0 : template.raw, {
+      let nextOverlay = createOverlayFromRawMarkup(template == null ? void 0 : template.raw, {
         fileKey: (template == null ? void 0 : template.name) || String(widgetKey || ""),
         name: (template == null ? void 0 : template.name) || String(widgetKey || "Widget"),
         extraOverlay: {
@@ -31400,12 +31700,67 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       if (!nextOverlay) {
         return;
       }
+      const targetAnchor = anchorPoint && Number.isFinite(Number(anchorPoint.x)) && Number.isFinite(Number(anchorPoint.y)) ? { x: Number(anchorPoint.x), y: Number(anchorPoint.y) } : importAnchor && Number.isFinite(Number(importAnchor.x)) && Number.isFinite(Number(importAnchor.y)) ? { x: Number(importAnchor.x), y: Number(importAnchor.y) } : null;
+      if (targetAnchor && (nextOverlay == null ? void 0 : nextOverlay.bbox)) {
+        const scaleX = overlayScaleX(nextOverlay);
+        const scaleY = overlayScaleY(nextOverlay);
+        const bbox = nextOverlay.bbox;
+        const centerX = Number(bbox.x || 0) + Number(bbox.width || 0) / 2;
+        const centerY = Number(bbox.y || 0) + Number(bbox.height || 0) / 2;
+        nextOverlay = {
+          ...nextOverlay,
+          tx: targetAnchor.x - scaleX * centerX,
+          ty: targetAnchor.y - scaleY * centerY
+        };
+      }
       updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
       setSelectedOverlayIds([nextOverlay.id]);
       setSelectedIds([]);
       setImportOpen(false);
       setWidgetOpen(false);
-    }, [createOverlayFromRawMarkup, updateSvgOverlays]);
+      setImportAnchor(null);
+    }, [createOverlayFromRawMarkup, importAnchor, updateSvgOverlays]);
+    const handleCanvasDoubleClick = useCallback((event) => {
+      var _a2, _b2;
+      if (!editorVisible || (event == null ? void 0 : event.defaultPrevented)) {
+        return;
+      }
+      if (tool === "polyline" || (drawing == null ? void 0 : drawing.kind) === "polyline") {
+        return;
+      }
+      if (isInteractiveEditorTarget(event == null ? void 0 : event.target)) {
+        return;
+      }
+      const target = event == null ? void 0 : event.target;
+      if (target instanceof Element && target.closest(
+        [
+          "[data-overlay-id]",
+          "[data-shape-id]",
+          "[data-overlay-selection-ui]",
+          "[data-overlay-selection-move-hit]",
+          "[data-overlay-selection-hit]",
+          "[data-shape-selection-ui]",
+          "[data-shape-selection-hit]",
+          "[data-mixed-selection-ui]",
+          "[data-vizi-properties-panel]",
+          "[data-vizi-import-drawer]",
+          "[data-vizi-widget-drawer]",
+          "[data-vizi-dropdown]",
+          "[data-vizi-dropdown-menu]",
+          "[data-vizi-quick-svg-picker]",
+          "[data-vizi-quick-tag-picker]"
+        ].join(", ")
+      )) {
+        return;
+      }
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
+      setImportAnchor(pointFromEvent(event));
+      clearSelection();
+      setEditingId(null);
+      setSelectedSegment(null);
+      setPropertiesSelectionKey("");
+    }, [clearSelection, drawing, editorVisible, pointFromEvent, tool]);
     const handleSvgMouseDown = useCallback((event) => {
       if ((event == null ? void 0 : event.button) && event.button !== 0) {
         return;
@@ -32681,7 +33036,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       const panelWidth = clampPropertyPanelWidth(propertyPanelWidth, rootWidth);
       const minTop = 16 + rulerInset;
       const maxUsableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - minTop - 16);
-      const panelHeight = Math.min(PROPERTY_PANEL_HEIGHT, maxUsableHeight);
+      const panelHeight = clampPropertyPanelHeight(propertyPanelHeight, maxUsableHeight);
       const minLeft = 16;
       const maxLeft = Math.max(minLeft, rootWidth - panelWidth - 16);
       const maxTop = Math.max(minTop, rootHeight - panelHeight - 16);
@@ -32800,7 +33155,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
         boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
       };
-    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers, propertyPanelWidth, selectedIds, selectedOverlayIds]);
+    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers, propertyPanelWidth, propertyPanelHeight, selectedIds, selectedOverlayIds]);
     const fixedPropertyPanelStyle = useMemo(() => {
       var _a2, _b2;
       if (!floatingPropertyPanelStyle) {
@@ -33636,18 +33991,44 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const widgetLibraryStatusText = "Mesora widgets ready";
     const hmiStateStyleMapCount = Array.isArray(hmiStateStyleMapIndex == null ? void 0 : hmiStateStyleMapIndex.entries) ? hmiStateStyleMapIndex.entries.length : 0;
     const hmiStateStyleMapStatusText = hmiStateStyleMapError ? hmiStateStyleMapError : hmiStateStyleMapRefreshing ? "Loading HMI state styles..." : hmiStateStyleMapCount > 0 ? `${hmiStateStyleMapCount} HMI state style maps loaded` : "No HMI state style maps loaded";
+    const toolbarPanelLayout = useMemo(() => {
+      var _a2, _b2;
+      const width = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+      const panelHeight = ((_b2 = (_a2 = toolbarPanelRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2).height) || 160;
+      return clampToolbarPosition(
+        toolbarPosition,
+        width,
+        panelHeight,
+        browserViewportWidth,
+        browserViewportHeight
+      );
+    }, [browserViewportHeight, browserViewportWidth, toolbarCollapsed, toolbarPosition]);
     const svgDrawerLayout = useMemo(() => {
       const viewportWidth = Number(browserViewportWidth || (rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH);
+      const viewportHeight = Number(browserViewportHeight || (rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT);
       const maxPanelWidth = Math.max(0, viewportWidth - TOOLBAR_INSET * 2);
       const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
-      const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
-      const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
-      if (availableBesideToolbar >= SVG_DRAWER_MIN_WIDTH) {
+      const toolbarLeft = Number(toolbarPanelLayout == null ? void 0 : toolbarPanelLayout.x) || TOOLBAR_INSET;
+      const toolbarTop = Number(toolbarPanelLayout == null ? void 0 : toolbarPanelLayout.y) || TOOLBAR_INSET;
+      const panelTop = clamp(toolbarTop, TOOLBAR_INSET, Math.max(TOOLBAR_INSET, viewportHeight - 280));
+      const preferredLeft = toolbarLeft + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
+      const availableRight = Math.max(0, viewportWidth - preferredLeft - TOOLBAR_INSET);
+      const availableLeft = Math.max(0, toolbarLeft - TOOLBAR_DRAWER_GAP - TOOLBAR_INSET);
+      if (availableRight >= SVG_DRAWER_MIN_WIDTH) {
         return {
           left: preferredLeft,
-          top: TOOLBAR_INSET,
+          top: panelTop,
           bottom: TOOLBAR_INSET,
-          width: Math.min(SVG_DRAWER_PREFERRED_WIDTH, availableBesideToolbar)
+          width: Math.min(SVG_DRAWER_PREFERRED_WIDTH, availableRight)
+        };
+      }
+      if (availableLeft >= SVG_DRAWER_MIN_WIDTH) {
+        const width = Math.min(SVG_DRAWER_PREFERRED_WIDTH, availableLeft);
+        return {
+          left: Math.max(TOOLBAR_INSET, toolbarLeft - width - TOOLBAR_DRAWER_GAP),
+          top: panelTop,
+          bottom: TOOLBAR_INSET,
+          width
         };
       }
       return {
@@ -33656,20 +34037,34 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         bottom: TOOLBAR_INSET,
         width: Math.max(260, Math.min(SVG_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
       };
-    }, [browserViewportWidth, rootSize, toolbarCollapsed]);
+    }, [browserViewportHeight, browserViewportWidth, rootSize, toolbarCollapsed, toolbarPanelLayout]);
     const widgetDrawerLayout = svgDrawerLayout;
     const helpDrawerLayout = useMemo(() => {
       const viewportWidth = Number(browserViewportWidth || (rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH);
+      const viewportHeight = Number(browserViewportHeight || (rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT);
       const maxPanelWidth = Math.max(0, viewportWidth - TOOLBAR_INSET * 2);
       const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
-      const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
-      const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
-      if (availableBesideToolbar >= HELP_DRAWER_MIN_WIDTH) {
+      const toolbarLeft = Number(toolbarPanelLayout == null ? void 0 : toolbarPanelLayout.x) || TOOLBAR_INSET;
+      const toolbarTop = Number(toolbarPanelLayout == null ? void 0 : toolbarPanelLayout.y) || TOOLBAR_INSET;
+      const panelTop = clamp(toolbarTop, TOOLBAR_INSET, Math.max(TOOLBAR_INSET, viewportHeight - 280));
+      const preferredLeft = toolbarLeft + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
+      const availableRight = Math.max(0, viewportWidth - preferredLeft - TOOLBAR_INSET);
+      const availableLeft = Math.max(0, toolbarLeft - TOOLBAR_DRAWER_GAP - TOOLBAR_INSET);
+      if (availableRight >= HELP_DRAWER_MIN_WIDTH) {
         return {
           left: preferredLeft,
-          top: TOOLBAR_INSET,
+          top: panelTop,
           bottom: TOOLBAR_INSET,
-          width: Math.min(HELP_DRAWER_PREFERRED_WIDTH, availableBesideToolbar)
+          width: Math.min(HELP_DRAWER_PREFERRED_WIDTH, availableRight)
+        };
+      }
+      if (availableLeft >= HELP_DRAWER_MIN_WIDTH) {
+        const width = Math.min(HELP_DRAWER_PREFERRED_WIDTH, availableLeft);
+        return {
+          left: Math.max(TOOLBAR_INSET, toolbarLeft - width - TOOLBAR_DRAWER_GAP),
+          top: panelTop,
+          bottom: TOOLBAR_INSET,
+          width
         };
       }
       return {
@@ -33678,7 +34073,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         bottom: TOOLBAR_INSET,
         width: Math.max(280, Math.min(HELP_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
       };
-    }, [browserViewportWidth, rootSize, toolbarCollapsed]);
+    }, [browserViewportHeight, browserViewportWidth, rootSize, toolbarCollapsed, toolbarPanelLayout]);
     useEffect(() => {
       const onKeyDown = (event) => {
         if (!editorVisible) {
@@ -33807,6 +34202,10 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
             cancelPolyline();
             return;
           }
+          if (importAnchor) {
+            setImportAnchor(null);
+            return;
+          }
           setEditingId(null);
           setSelectedSegment(null);
           return;
@@ -33818,7 +34217,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       };
       window.addEventListener("keydown", onKeyDown, true);
       return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [activateTool, cancelPolyline, copySelection, cutSelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, reorderSelectedOverlays, selectedOverlayIds, undo]);
+    }, [activateTool, cancelPolyline, copySelection, cutSelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, importAnchor, pasteClipboard, redo, reorderSelectedOverlays, selectedOverlayIds, undo]);
     useEffect(() => {
       const onKeyUp = (event) => {
         var _a2;
@@ -33855,6 +34254,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       setEditingId(null);
       setDrawing(null);
       setHelpOpen(false);
+      setImportAnchor(null);
       clearSelection();
     }, [clearSelection, closeQuickSvgPicker, editorVisible]);
     return /* @__PURE__ */ jsxs(
@@ -33957,8 +34357,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
               shapeSelectionUI: editorVisible ? shapeSelectionUI : null,
               mixedSelectionUI: editorVisible ? mixedSelectionUI : null,
               overlayLocalBBox,
-              importAnchor: null,
-              onCanvasDoubleClick: NOOP,
+              importAnchor: editorVisible ? importAnchor : null,
+              onCanvasDoubleClick: editorVisible ? handleCanvasDoubleClick : NOOP,
               tagStateColorsByPath: overlayTagStateColorsByPath,
               routeColorsBySvgKey: overlayRouteColorsBySvgKey,
               routeStrokeColorByGroupPath: EMPTY_MAP,
@@ -34000,13 +34400,14 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
               onViewportScroll: NOOP
             }
           ) }),
-          editorVisible ? toolbarCollapsed ? /* @__PURE__ */ jsx(
+          editorVisible ? toolbarCollapsed ? /* @__PURE__ */ jsxs(
             "div",
             {
+              ref: toolbarPanelRef,
               style: {
                 position: "fixed",
-                top: TOOLBAR_INSET,
-                left: TOOLBAR_INSET,
+                top: toolbarPanelLayout.y,
+                left: toolbarPanelLayout.x,
                 zIndex: 120,
                 width: COLLAPSED_TOOLBAR_WIDTH,
                 maxWidth: `min(${COLLAPSED_TOOLBAR_WIDTH}px, calc(100vw - ${TOOLBAR_INSET * 2}px))`,
@@ -34016,36 +34417,97 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                 borderRadius: 18,
                 border: "1px solid rgba(51, 65, 85, 0.95)",
                 background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
-                boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+                boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)",
+                userSelect: "none"
               },
-              children: /* @__PURE__ */ jsx(
-                "button",
-                {
-                  type: "button",
-                  onClick: () => setToolbarCollapsed(false),
-                  style: {
-                    width: "100%",
-                    minHeight: 38,
-                    borderRadius: 12,
-                    border: "1px solid rgba(71, 85, 105, 0.9)",
-                    background: "rgba(15, 23, 42, 0.9)",
-                    color: "#f8fafc",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    fontWeight: 800,
-                    letterSpacing: "0.04em"
-                  },
-                  children: "Show Tools"
-                }
-              )
+              children: [
+                /* @__PURE__ */ jsxs(
+                  "div",
+                  {
+                    onPointerDown: startToolbarDrag,
+                    title: "Drag toolbar",
+                    style: {
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 6,
+                      cursor: "move",
+                      touchAction: "none"
+                    },
+                    children: [
+                      /* @__PURE__ */ jsx(
+                        "span",
+                        {
+                          style: {
+                            minWidth: 0,
+                            fontSize: 10,
+                            fontWeight: 800,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "rgba(226, 232, 240, 0.72)",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap"
+                          },
+                          children: "Tools"
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        "button",
+                        {
+                          type: "button",
+                          title: "Dock toolbar",
+                          onPointerDown: stopInteractivePropagation,
+                          onMouseDown: stopInteractivePropagation,
+                          onClick: redockToolbar,
+                          style: {
+                            border: "1px solid rgba(71, 85, 105, 0.9)",
+                            background: "rgba(15, 23, 42, 0.88)",
+                            color: "#f8fafc",
+                            minWidth: 42,
+                            height: 24,
+                            padding: "0 8px",
+                            borderRadius: 999,
+                            fontSize: 10,
+                            fontWeight: 800,
+                            cursor: "pointer"
+                          },
+                          children: "Dock"
+                        }
+                      )
+                    ]
+                  }
+                ),
+                /* @__PURE__ */ jsx(
+                  "button",
+                  {
+                    type: "button",
+                    onClick: () => setToolbarCollapsed(false),
+                    style: {
+                      width: "100%",
+                      minHeight: 38,
+                      borderRadius: 12,
+                      border: "1px solid rgba(71, 85, 105, 0.9)",
+                      background: "rgba(15, 23, 42, 0.9)",
+                      color: "#f8fafc",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: 800,
+                      letterSpacing: "0.04em"
+                    },
+                    children: "Show Tools"
+                  }
+                )
+              ]
             }
           ) : /* @__PURE__ */ jsxs(
             "div",
             {
+              ref: toolbarPanelRef,
               style: {
                 position: "fixed",
-                top: TOOLBAR_INSET,
-                left: TOOLBAR_INSET,
+                top: toolbarPanelLayout.y,
+                left: toolbarPanelLayout.x,
                 zIndex: 120,
                 width: TOOLBAR_WIDTH,
                 maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100vw - ${TOOLBAR_INSET * 2}px))`,
@@ -34056,17 +34518,22 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                 borderRadius: 18,
                 border: "1px solid rgba(51, 65, 85, 0.95)",
                 background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
-                boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+                boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)",
+                userSelect: "none"
               },
               children: [
                 /* @__PURE__ */ jsxs(
                   "div",
                   {
+                    onPointerDown: startToolbarDrag,
+                    title: "Drag toolbar",
                     style: {
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      gap: 12
+                      gap: 12,
+                      cursor: "move",
+                      touchAction: "none"
                     },
                     children: [
                       /* @__PURE__ */ jsx(
@@ -34082,24 +34549,62 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           children: "Tools"
                         }
                       ),
-                      /* @__PURE__ */ jsx(
-                        "button",
+                      /* @__PURE__ */ jsxs(
+                        "div",
                         {
-                          type: "button",
-                          onClick: () => setToolbarCollapsed(true),
                           style: {
-                            border: "1px solid rgba(71, 85, 105, 0.9)",
-                            background: "rgba(15, 23, 42, 0.88)",
-                            color: "#f8fafc",
-                            minWidth: 28,
-                            height: 28,
-                            padding: "0 8px",
-                            borderRadius: 999,
-                            fontSize: 14,
-                            fontWeight: 700,
-                            cursor: "pointer"
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6
                           },
-                          children: "_"
+                          children: [
+                            /* @__PURE__ */ jsx(
+                              "button",
+                              {
+                                type: "button",
+                                title: "Dock toolbar",
+                                onPointerDown: stopInteractivePropagation,
+                                onMouseDown: stopInteractivePropagation,
+                                onClick: redockToolbar,
+                                style: {
+                                  border: "1px solid rgba(71, 85, 105, 0.9)",
+                                  background: "rgba(15, 23, 42, 0.88)",
+                                  color: "#f8fafc",
+                                  minWidth: 48,
+                                  height: 28,
+                                  padding: "0 8px",
+                                  borderRadius: 999,
+                                  fontSize: 11,
+                                  fontWeight: 800,
+                                  cursor: "pointer"
+                                },
+                                children: "Dock"
+                              }
+                            ),
+                            /* @__PURE__ */ jsx(
+                              "button",
+                              {
+                                type: "button",
+                                title: "Hide tools",
+                                onPointerDown: stopInteractivePropagation,
+                                onMouseDown: stopInteractivePropagation,
+                                onClick: () => setToolbarCollapsed(true),
+                                style: {
+                                  border: "1px solid rgba(71, 85, 105, 0.9)",
+                                  background: "rgba(15, 23, 42, 0.88)",
+                                  color: "#f8fafc",
+                                  minWidth: 28,
+                                  height: 28,
+                                  padding: "0 8px",
+                                  borderRadius: 999,
+                                  fontSize: 14,
+                                  fontWeight: 700,
+                                  cursor: "pointer"
+                                },
+                                children: "_"
+                              }
+                            )
+                          ]
                         }
                       )
                     ]
@@ -34676,11 +35181,15 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                       event.stopPropagation();
                       propertyPanelResizeRef.current = {
                         resizing: true,
+                        mode: "width",
                         startX: event.clientX,
+                        startY: event.clientY,
                         startWidth: clampPropertyPanelWidth(
                           propertyPanelWidth,
                           Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
-                        )
+                        ),
+                        startHeight: propertyPanelHeight,
+                        panelTop: Number((floatingPropertyPanelStyle == null ? void 0 : floatingPropertyPanelStyle.top) || 0)
                       };
                       setPropertyPanelResizing(true);
                     },
@@ -34692,7 +35201,49 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                       width: 10,
                       cursor: "col-resize",
                       zIndex: 1,
-                      background: propertyPanelResizing ? "rgba(56, 189, 248, 0.28)" : "transparent"
+                      background: propertyPanelResizing && propertyPanelResizeRef.current.mode === "width" ? "rgba(56, 189, 248, 0.28)" : "transparent"
+                    }
+                  }
+                ),
+                /* @__PURE__ */ jsx(
+                  "div",
+                  {
+                    role: "separator",
+                    "aria-orientation": "horizontal",
+                    "aria-label": "Resize properties panel height",
+                    title: "Resize properties panel height",
+                    onMouseDown: (event) => {
+                      if (event.button !== 0) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.stopPropagation();
+                      propertyPanelResizeRef.current = {
+                        resizing: true,
+                        mode: "height",
+                        startX: event.clientX,
+                        startY: event.clientY,
+                        startWidth: propertyPanelWidth,
+                        startHeight: clampPropertyPanelHeight(
+                          propertyPanelHeight,
+                          Math.max(
+                            PROPERTY_PANEL_MIN_HEIGHT,
+                            Number((rootSize == null ? void 0 : rootSize.height) || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) - Number((floatingPropertyPanelStyle == null ? void 0 : floatingPropertyPanelStyle.top) || 0) - 16
+                          )
+                        ),
+                        panelTop: Number((floatingPropertyPanelStyle == null ? void 0 : floatingPropertyPanelStyle.top) || 0)
+                      };
+                      setPropertyPanelResizing(true);
+                    },
+                    style: {
+                      position: "absolute",
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      height: 10,
+                      cursor: "row-resize",
+                      zIndex: 2,
+                      background: propertyPanelResizing && propertyPanelResizeRef.current.mode === "height" ? "rgba(56, 189, 248, 0.28)" : "transparent"
                     }
                   }
                 ),

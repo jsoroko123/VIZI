@@ -167,6 +167,14 @@
       "type": "boolean",
       "default": false
     },
+    "toolbarPosition": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {
+        "x": 16,
+        "y": 16
+      }
+    },
     "preserveAspectRatio": {
       "type": "string",
       "default": "xMinYMin slice"

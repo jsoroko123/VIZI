@@ -58,6 +58,7 @@ const HMI_STATE_STYLE_MAP_ROUTE_CANDIDATES = [
     `/data/${MODULE_ID}/hmi-state-style-maps`,
     `/main/data/${MODULE_ID}/hmi-state-style-maps`
 ];
+const IGNITION_TAG_VALUE_POLL_MS = 250;
 const SVG_RAW_CACHE_MAX = 80;
 const DEFAULT_FILL = "#D7DADE";
 const DEFAULT_STROKE = "#808080";
@@ -84,6 +85,7 @@ const PROPERTY_PANEL_MAX_WIDTH = 560;
 const PROPERTY_PANEL_WIDTH_STORAGE_KEY = "mesora-drawing:property-panel-width:v1";
 const PROPERTY_PANEL_HEIGHT = 520;
 const PROPERTY_PANEL_MIN_HEIGHT = 240;
+const PROPERTY_PANEL_HEIGHT_STORAGE_KEY = "mesora-drawing:property-panel-height:v1";
 const QUICK_TAG_PANEL_WIDTH = 360;
 const QUICK_TAG_PANEL_HEIGHT = 124;
 const QUICK_SVG_PANEL_WIDTH = 300;
@@ -92,6 +94,7 @@ const TOOLBAR_WIDTH = 300;
 const COLLAPSED_TOOLBAR_WIDTH = 116;
 const TOOLBAR_INSET = 16;
 const TOOLBAR_DRAWER_GAP = -6;
+const TOOLBAR_DEFAULT_POSITION = Object.freeze({ x: TOOLBAR_INSET, y: TOOLBAR_INSET });
 const SVG_DRAWER_MIN_WIDTH = 300;
 const SVG_DRAWER_PREFERRED_WIDTH = 348;
 const HELP_DRAWER_MIN_WIDTH = 320;
@@ -1900,6 +1903,59 @@ function normalizeIgnitionTagValuePayload(payload) {
     });
 
     return { values, meta };
+}
+
+function areIgnitionTagValuesEqual(left, right) {
+    if (Object.is(left, right)) {
+        return true;
+    }
+    if (left == null || right == null) {
+        return false;
+    }
+    if (typeof left !== "object" || typeof right !== "object") {
+        return false;
+    }
+    try {
+        return JSON.stringify(left) === JSON.stringify(right);
+    } catch (_error) {
+        return String(left) === String(right);
+    }
+}
+
+function areIgnitionTagMetaRecordsEqual(left, right) {
+    if (left === right) {
+        return true;
+    }
+    if (!left || !right) {
+        return false;
+    }
+    return (
+        String(left.path ?? "") === String(right.path ?? "") &&
+        String(left.quality ?? "") === String(right.quality ?? "") &&
+        String(left.error ?? "") === String(right.error ?? "") &&
+        areIgnitionTagValuesEqual(left.value, right.value)
+    );
+}
+
+function areMapsEqualByValue(leftMap, rightMap, valueEquals = Object.is) {
+    if (leftMap === rightMap) {
+        return true;
+    }
+    if (!(leftMap instanceof Map) || !(rightMap instanceof Map)) {
+        return false;
+    }
+    if (leftMap.size !== rightMap.size) {
+        return false;
+    }
+    for (const [key, rightValue] of rightMap.entries()) {
+        if (!leftMap.has(key)) {
+            return false;
+        }
+        if (!valueEquals(leftMap.get(key), rightValue)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 function normalizeIgnitionTagValues(payload) {
@@ -5112,6 +5168,32 @@ function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
+function normalizeToolbarPosition(value) {
+    if (!isPlainObject(value)) {
+        return null;
+    }
+    const x = Number(value.x);
+    const y = Number(value.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+    }
+    return { x, y };
+}
+
+function clampToolbarPosition(position, panelWidth, panelHeight, viewportWidth, viewportHeight) {
+    const normalized = normalizeToolbarPosition(position) || TOOLBAR_DEFAULT_POSITION;
+    const width = toPositiveNumber(panelWidth) || TOOLBAR_WIDTH;
+    const height = toPositiveNumber(panelHeight) || 160;
+    const viewWidth = toPositiveNumber(viewportWidth) || DEFAULT_CANVAS_WIDTH;
+    const viewHeight = toPositiveNumber(viewportHeight) || DEFAULT_CANVAS_HEIGHT;
+    const maxX = Math.max(TOOLBAR_INSET, viewWidth - width - TOOLBAR_INSET);
+    const maxY = Math.max(TOOLBAR_INSET, viewHeight - height - TOOLBAR_INSET);
+    return {
+        x: Math.round(clamp(normalized.x, TOOLBAR_INSET, maxX)),
+        y: Math.round(clamp(normalized.y, TOOLBAR_INSET, maxY))
+    };
+}
+
 function clampPropertyPanelWidth(value, viewportWidth = 0) {
     const width = Number(value);
     const vpW = Number(viewportWidth) || DEFAULT_CANVAS_WIDTH;
@@ -5126,6 +5208,19 @@ function clampPropertyPanelWidth(value, viewportWidth = 0) {
     );
 }
 
+function clampPropertyPanelHeight(value, maxHeight = PROPERTY_PANEL_HEIGHT) {
+    const height = Number(value);
+    const maxPanelHeight = Math.max(
+        PROPERTY_PANEL_MIN_HEIGHT,
+        Number.isFinite(Number(maxHeight)) ? Number(maxHeight) : PROPERTY_PANEL_HEIGHT
+    );
+    return clamp(
+        Number.isFinite(height) ? height : PROPERTY_PANEL_HEIGHT,
+        PROPERTY_PANEL_MIN_HEIGHT,
+        maxPanelHeight
+    );
+}
+
 function readStoredPropertyPanelWidth() {
     if (typeof window === "undefined" || !window.localStorage) {
         return PROPERTY_PANEL_WIDTH;
@@ -5137,6 +5232,20 @@ function readStoredPropertyPanelWidth() {
         );
     } catch (_error) {
         return PROPERTY_PANEL_WIDTH;
+    }
+}
+
+function readStoredPropertyPanelHeight() {
+    if (typeof window === "undefined" || !window.localStorage) {
+        return PROPERTY_PANEL_HEIGHT;
+    }
+    try {
+        return clampPropertyPanelHeight(
+            window.localStorage.getItem(PROPERTY_PANEL_HEIGHT_STORAGE_KEY),
+            (toPositiveNumber(window.innerHeight) || DEFAULT_CANVAS_HEIGHT) - 32
+        );
+    } catch (_error) {
+        return PROPERTY_PANEL_HEIGHT;
     }
 }
 
@@ -5372,6 +5481,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         ? externalGridSizeRaw
         : 20;
     const externalToolbarCollapsed = Boolean(getModelValue(props, "toolbarCollapsed", false));
+    const externalToolbarPosition = normalizeToolbarPosition(getModelValue(props, "toolbarPosition", TOOLBAR_DEFAULT_POSITION));
     const externalShowRulers = Boolean(getModelValue(props, "showRulers", false));
     const externalShowTagPaths = Boolean(getModelValue(props, "showTagPaths", false));
     const externalSelectionMode = String(getModelValue(props, "selectionMode", "all") || "all");
@@ -5405,6 +5515,7 @@ export default function PerspectiveViziCanvasBridge(props) {
     const externalOverlaysKey = JSON.stringify(coerceArray(externalOverlays));
     const externalSelectedIdsKey = JSON.stringify(coerceArray(externalSelectedIds));
     const externalSelectedOverlayIdsKey = JSON.stringify(coerceArray(externalSelectedOverlayIds));
+    const externalToolbarPositionKey = JSON.stringify(externalToolbarPosition || TOOLBAR_DEFAULT_POSITION);
     const [shapes, setShapesState] = useState(coerceArray(externalShapes));
     const [svgOverlays, setSvgOverlaysState] = useState(coerceArray(externalOverlays));
     const [selectedIds, setSelectedIds] = useState(coerceArray(externalSelectedIds));
@@ -5412,6 +5523,13 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [tool, setToolState] = useState(externalTool);
     const [showGrid, setShowGridState] = useState(externalShowGrid);
     const [toolbarCollapsed, setToolbarCollapsedState] = useState(externalToolbarCollapsed);
+    const [toolbarPosition, setToolbarPositionState] = useState(() => clampToolbarPosition(
+        externalToolbarPosition || TOOLBAR_DEFAULT_POSITION,
+        externalToolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH,
+        160,
+        readBrowserViewportWidth(),
+        readBrowserViewportHeight()
+    ));
     const [showRulers, setShowRulersState] = useState(externalShowRulers);
     const [showTagPaths, setShowTagPathsState] = useState(externalShowTagPaths);
     const [hiddenTagBubbleIds, setHiddenTagBubbleIds] = useState([]);
@@ -5456,15 +5574,28 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [importOpen, setImportOpen] = useState(false);
     const [widgetOpen, setWidgetOpen] = useState(false);
     const [helpOpen, setHelpOpen] = useState(false);
+    const [importAnchor, setImportAnchor] = useState(null);
     const [propertiesSelectionKey, setPropertiesSelectionKey] = useState("");
     const [propertyPanelWidth, setPropertyPanelWidth] = useState(readStoredPropertyPanelWidth);
+    const [propertyPanelHeight, setPropertyPanelHeight] = useState(readStoredPropertyPanelHeight);
     const [propertyPanelResizing, setPropertyPanelResizing] = useState(false);
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
-    const propertyPanelResizeRef = useRef({ resizing: false, startX: 0, startWidth: PROPERTY_PANEL_WIDTH });
+    const propertyPanelResizeRef = useRef({
+        resizing: false,
+        mode: "",
+        startX: 0,
+        startY: 0,
+        startWidth: PROPERTY_PANEL_WIDTH,
+        startHeight: PROPERTY_PANEL_HEIGHT,
+        panelTop: 0
+    });
+    const toolbarPanelRef = useRef(null);
+    const toolbarPositionRef = useRef(toolbarPosition);
+    const toolbarDragRef = useRef({ dragging: false, offsetX: 0, offsetY: 0, panelWidth: TOOLBAR_WIDTH, panelHeight: 160 });
     const svgCatalogRequestIdRef = useRef(0);
     const hmiStateStyleMapRequestIdRef = useRef(0);
     const quickSvgPickerInputRef = useRef(null);
@@ -5551,6 +5682,10 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [svgOverlays]);
 
     useEffect(() => {
+        toolbarPositionRef.current = toolbarPosition;
+    }, [toolbarPosition]);
+
+    useEffect(() => {
         const node = rootRef.current;
         if (!node || typeof node.getBoundingClientRect !== "function") {
             return undefined;
@@ -5617,19 +5752,48 @@ export default function PerspectiveViziCanvasBridge(props) {
     }, [propertyPanelWidth]);
 
     useEffect(() => {
+        if (typeof window === "undefined" || !window.localStorage) {
+            return;
+        }
+        try {
+            window.localStorage.setItem(PROPERTY_PANEL_HEIGHT_STORAGE_KEY, String(Math.round(propertyPanelHeight)));
+        } catch (_error) {
+        }
+    }, [propertyPanelHeight]);
+
+    useEffect(() => {
         if (typeof window === "undefined") {
             return undefined;
         }
-        const clampToRoot = (value) =>
+        const clampWidthToRoot = (value) =>
             clampPropertyPanelWidth(
                 value,
                 Number(rootSize?.width || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+            );
+        const clampHeightToRoot = (value, panelTop = 0) =>
+            clampPropertyPanelHeight(
+                value,
+                Math.max(
+                    PROPERTY_PANEL_MIN_HEIGHT,
+                    Number(rootSize?.height || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) -
+                        Number(panelTop || 0) -
+                        16
+                )
             );
         function onMove(event) {
             if (!propertyPanelResizeRef.current.resizing) {
                 return;
             }
-            const nextWidth = clampToRoot(
+            if (propertyPanelResizeRef.current.mode === "height") {
+                const nextHeight = clampHeightToRoot(
+                    propertyPanelResizeRef.current.startHeight +
+                        (Number(event.clientY) - propertyPanelResizeRef.current.startY),
+                    propertyPanelResizeRef.current.panelTop
+                );
+                setPropertyPanelHeight(nextHeight);
+                return;
+            }
+            const nextWidth = clampWidthToRoot(
                 propertyPanelResizeRef.current.startWidth +
                     (Number(event.clientX) - propertyPanelResizeRef.current.startX)
             );
@@ -5640,6 +5804,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 return;
             }
             propertyPanelResizeRef.current.resizing = false;
+            propertyPanelResizeRef.current.mode = "";
             setPropertyPanelResizing(false);
         }
         function onKeyDown(event) {
@@ -5665,7 +5830,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             document.removeEventListener("mouseleave", endResize);
             endResize();
         };
-    }, [browserViewportWidth, rootSize]);
+    }, [browserViewportHeight, browserViewportWidth, rootSize]);
 
     useEffect(() => {
         setPropertyPanelWidth((previous) =>
@@ -5674,7 +5839,16 @@ export default function PerspectiveViziCanvasBridge(props) {
                 Number(rootSize?.width || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
             )
         );
-    }, [browserViewportWidth, rootSize]);
+        setPropertyPanelHeight((previous) =>
+            clampPropertyPanelHeight(
+                previous,
+                Math.max(
+                    PROPERTY_PANEL_MIN_HEIGHT,
+                    Number(rootSize?.height || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) - 32
+                )
+            )
+        );
+    }, [browserViewportHeight, browserViewportWidth, rootSize]);
 
     useEffect(() => {
         if (!propertyPanelResizing || typeof document === "undefined") {
@@ -5682,10 +5856,14 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
         const previousCursor = document.body.style.cursor;
         const previousUserSelect = document.body.style.userSelect;
-        document.body.style.cursor = "col-resize";
+        const resizeCursor = propertyPanelResizeRef.current.mode === "height" ? "row-resize" : "col-resize";
+        document.body.style.cursor = resizeCursor;
         document.body.style.userSelect = "none";
         return () => {
-            document.body.style.cursor = previousCursor === "col-resize" ? "" : previousCursor;
+            document.body.style.cursor =
+                previousCursor === "col-resize" || previousCursor === "row-resize"
+                    ? ""
+                    : previousCursor;
             document.body.style.userSelect = previousUserSelect;
         };
     }, [propertyPanelResizing]);
@@ -5762,6 +5940,20 @@ export default function PerspectiveViziCanvasBridge(props) {
     useEffect(() => {
         setToolbarCollapsedState(externalToolbarCollapsed);
     }, [externalToolbarCollapsed]);
+
+    useEffect(() => {
+        const panelWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+        const panelHeight = toolbarPanelRef.current?.getBoundingClientRect?.().height || 160;
+        const nextPosition = clampToolbarPosition(
+            externalToolbarPosition || TOOLBAR_DEFAULT_POSITION,
+            panelWidth,
+            panelHeight,
+            browserViewportWidth,
+            browserViewportHeight
+        );
+        toolbarPositionRef.current = nextPosition;
+        setToolbarPositionState(nextPosition);
+    }, [browserViewportHeight, browserViewportWidth, externalToolbarPositionKey, toolbarCollapsed]);
 
     useEffect(() => {
         setStrokeNormalizeWidthDraft(formatPanelNumber(externalStrokeNormalizeWidth));
@@ -5890,36 +6082,34 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         let cancelled = false;
         let timerId = 0;
+        let inFlight = false;
 
         const loadIgnitionTagValues = async () => {
             const mergedValues = new Map();
             const mergedMeta = new Map();
-            let anyChunkLoaded = false;
 
             for (const routePath of MODULE_TAG_VALUE_ROUTE_CANDIDATES) {
                 mergedValues.clear();
                 mergedMeta.clear();
-                anyChunkLoaded = false;
 
                 try {
-                    for (const pathChunk of overlayFillBindingPathChunks) {
+                    const payloads = await Promise.all(overlayFillBindingPathChunks.map(async (pathChunk) => {
                         const queryValue = encodeURIComponent(JSON.stringify(pathChunk));
                         const response = await fetch(`${routePath}?paths=${queryValue}`, {
                             cache: "no-store",
                             credentials: "same-origin"
                         });
                         if (!response.ok) {
-                            anyChunkLoaded = false;
-                            mergedValues.clear();
-                            mergedMeta.clear();
-                            break;
+                            throw new Error(`Failed to load tag values (${response.status}).`);
                         }
+                        return response.json();
+                    }));
 
-                        const payload = await response.json();
-                        if (cancelled) {
-                            return;
-                        }
+                    if (cancelled) {
+                        return false;
+                    }
 
+                    payloads.forEach((payload) => {
                         const normalized = normalizeIgnitionTagValuePayload(payload);
                         normalized.values.forEach((value, key) => {
                             mergedValues.set(key, value);
@@ -5927,34 +6117,60 @@ export default function PerspectiveViziCanvasBridge(props) {
                         normalized.meta.forEach((value, key) => {
                             mergedMeta.set(key, value);
                         });
-                        anyChunkLoaded = true;
+                    });
+
+                    if (cancelled) {
+                        return false;
                     }
 
-                    if (anyChunkLoaded) {
-                        setIgnitionTagValuesByPath(new Map(mergedValues));
-                        setIgnitionTagMetaByPath(new Map(mergedMeta));
-                        return;
-                    }
+                    setIgnitionTagValuesByPath((previous) => (
+                        areMapsEqualByValue(previous, mergedValues, areIgnitionTagValuesEqual)
+                            ? previous
+                            : new Map(mergedValues)
+                    ));
+                    setIgnitionTagMetaByPath((previous) => (
+                        areMapsEqualByValue(previous, mergedMeta, areIgnitionTagMetaRecordsEqual)
+                            ? previous
+                            : new Map(mergedMeta)
+                    ));
+                    return true;
                 } catch (_error) {
                 }
             }
 
-            if (!cancelled) {
-                setIgnitionTagValuesByPath(new Map());
-                setIgnitionTagMetaByPath(new Map());
+            return false;
+        };
+
+        const scheduleNext = (delay = IGNITION_TAG_VALUE_POLL_MS) => {
+            if (cancelled || typeof window === "undefined" || typeof window.setTimeout !== "function") {
+                return;
+            }
+            timerId = window.setTimeout(runPoll, Math.max(50, Number(delay) || IGNITION_TAG_VALUE_POLL_MS));
+        };
+
+        const runPoll = async () => {
+            if (cancelled || inFlight) {
+                return;
+            }
+            inFlight = true;
+            const startedAt = Date.now();
+            try {
+                await loadIgnitionTagValues();
+            } finally {
+                inFlight = false;
+                if (!cancelled) {
+                    const elapsed = Date.now() - startedAt;
+                    scheduleNext(Math.max(50, IGNITION_TAG_VALUE_POLL_MS - elapsed));
+                }
             }
         };
 
-        loadIgnitionTagValues();
-
-        if (typeof window !== "undefined" && typeof window.setInterval === "function") {
-            timerId = window.setInterval(loadIgnitionTagValues, 1000);
-        }
+        runPoll();
 
         return () => {
             cancelled = true;
-            if (timerId && typeof window !== "undefined" && typeof window.clearInterval === "function") {
-                window.clearInterval(timerId);
+            if (timerId && typeof window !== "undefined" && typeof window.clearTimeout === "function") {
+                window.clearTimeout(timerId);
             }
         };
     }, [overlayFillBindingPathChunksKey]);
@@ -6052,6 +6268,130 @@ export default function PerspectiveViziCanvasBridge(props) {
             setHelpOpen(false);
         }
     }, [persistValue]);
+
+    const persistToolbarPosition = useCallback((position) => {
+        const panelWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+        const panelHeight = toolbarPanelRef.current?.getBoundingClientRect?.().height || 160;
+        const nextPosition = clampToolbarPosition(
+            position,
+            panelWidth,
+            panelHeight,
+            browserViewportWidth,
+            browserViewportHeight
+        );
+        toolbarPositionRef.current = nextPosition;
+        setToolbarPositionState(nextPosition);
+        persistValue("toolbarPosition", nextPosition);
+        return nextPosition;
+    }, [browserViewportHeight, browserViewportWidth, persistValue, toolbarCollapsed]);
+
+    const redockToolbar = useCallback((event) => {
+        stopInteractivePropagation(event);
+        persistToolbarPosition(TOOLBAR_DEFAULT_POSITION);
+    }, [persistToolbarPosition]);
+
+    const startToolbarDrag = useCallback((event) => {
+        if (!event || Number(event.button || 0) !== 0) {
+            return;
+        }
+        const target = event.target;
+        if (
+            target instanceof Element
+            && target.closest("button,input,select,textarea,a,[data-no-toolbar-drag='true']")
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = toolbarPanelRef.current?.getBoundingClientRect?.();
+        const startPosition = clampToolbarPosition(
+            toolbarPositionRef.current || toolbarPosition,
+            rect?.width || (toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH),
+            rect?.height || 160,
+            browserViewportWidth,
+            browserViewportHeight
+        );
+        toolbarDragRef.current = {
+            dragging: true,
+            offsetX: Number(event.clientX) - startPosition.x,
+            offsetY: Number(event.clientY) - startPosition.y,
+            panelWidth: rect?.width || (toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH),
+            panelHeight: rect?.height || 160
+        };
+        toolbarPositionRef.current = startPosition;
+        setToolbarPositionState(startPosition);
+    }, [browserViewportHeight, browserViewportWidth, toolbarCollapsed, toolbarPosition]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return undefined;
+        }
+
+        const onPointerMove = (event) => {
+            const drag = toolbarDragRef.current;
+            if (!drag?.dragging) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            const nextPosition = clampToolbarPosition(
+                {
+                    x: Number(event.clientX) - Number(drag.offsetX || 0),
+                    y: Number(event.clientY) - Number(drag.offsetY || 0)
+                },
+                drag.panelWidth,
+                drag.panelHeight,
+                browserViewportWidth,
+                browserViewportHeight
+            );
+            toolbarPositionRef.current = nextPosition;
+            setToolbarPositionState((previous) => (
+                previous.x === nextPosition.x && previous.y === nextPosition.y
+                    ? previous
+                    : nextPosition
+            ));
+        };
+
+        const endToolbarDrag = (event) => {
+            const drag = toolbarDragRef.current;
+            if (!drag?.dragging) {
+                return;
+            }
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            toolbarDragRef.current = { ...drag, dragging: false };
+            persistToolbarPosition(toolbarPositionRef.current || TOOLBAR_DEFAULT_POSITION);
+        };
+
+        window.addEventListener("pointermove", onPointerMove, true);
+        window.addEventListener("pointerup", endToolbarDrag, true);
+        window.addEventListener("pointercancel", endToolbarDrag, true);
+        window.addEventListener("blur", endToolbarDrag);
+        return () => {
+            window.removeEventListener("pointermove", onPointerMove, true);
+            window.removeEventListener("pointerup", endToolbarDrag, true);
+            window.removeEventListener("pointercancel", endToolbarDrag, true);
+            window.removeEventListener("blur", endToolbarDrag);
+        };
+    }, [browserViewportHeight, browserViewportWidth, persistToolbarPosition]);
+
+    useEffect(() => {
+        const panelWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+        const panelHeight = toolbarPanelRef.current?.getBoundingClientRect?.().height || 160;
+        const nextPosition = clampToolbarPosition(
+            toolbarPositionRef.current || toolbarPosition,
+            panelWidth,
+            panelHeight,
+            browserViewportWidth,
+            browserViewportHeight
+        );
+        if (nextPosition.x === toolbarPositionRef.current?.x && nextPosition.y === toolbarPositionRef.current?.y) {
+            return;
+        }
+        toolbarPositionRef.current = nextPosition;
+        setToolbarPositionState(nextPosition);
+    }, [browserViewportHeight, browserViewportWidth, toolbarCollapsed, toolbarPosition]);
 
     const setShowRulers = useCallback((nextValue) => {
         const value = Boolean(nextValue);
@@ -8171,10 +8511,18 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (!nextOverlay) {
             return;
         }
-        if (
+        const targetAnchor =
             anchorPoint &&
             Number.isFinite(Number(anchorPoint.x)) &&
-            Number.isFinite(Number(anchorPoint.y)) &&
+            Number.isFinite(Number(anchorPoint.y))
+                ? { x: Number(anchorPoint.x), y: Number(anchorPoint.y) }
+                : importAnchor &&
+                    Number.isFinite(Number(importAnchor.x)) &&
+                    Number.isFinite(Number(importAnchor.y))
+                    ? { x: Number(importAnchor.x), y: Number(importAnchor.y) }
+                    : null;
+        if (
+            targetAnchor &&
             nextOverlay?.bbox
         ) {
             const scaleX = overlayScaleX(nextOverlay);
@@ -8184,8 +8532,8 @@ export default function PerspectiveViziCanvasBridge(props) {
             const centerY = Number(bbox.y || 0) + Number(bbox.height || 0) / 2;
             nextOverlay = {
                 ...nextOverlay,
-                tx: Number(anchorPoint.x) - scaleX * centerX,
-                ty: Number(anchorPoint.y) - scaleY * centerY
+                tx: targetAnchor.x - scaleX * centerX,
+                ty: targetAnchor.y - scaleY * centerY
             };
         }
 
@@ -8194,7 +8542,8 @@ export default function PerspectiveViziCanvasBridge(props) {
         setSelectedIds([]);
         setImportOpen(false);
         setWidgetOpen(false);
-    }, [createOverlayFromRawMarkup, readSvgRawByKey, updateSvgOverlays]);
+        setImportAnchor(null);
+    }, [createOverlayFromRawMarkup, importAnchor, readSvgRawByKey, updateSvgOverlays]);
 
     const swapSelectedOverlaySvgTemplate = useCallback(async (fileKey) => {
         const targetKey = String(fileKey || "").trim();
@@ -8279,9 +8628,9 @@ export default function PerspectiveViziCanvasBridge(props) {
         setHelpOpen((current) => !current);
     }, []);
 
-    const onPickWidget = useCallback((widgetKey) => {
+    const onPickWidget = useCallback((widgetKey, anchorPoint = null) => {
         const template = widgetTemplate(widgetKey);
-        const nextOverlay = createOverlayFromRawMarkup(template?.raw, {
+        let nextOverlay = createOverlayFromRawMarkup(template?.raw, {
             fileKey: template?.name || String(widgetKey || ""),
             name: template?.name || String(widgetKey || "Widget"),
             extraOverlay: {
@@ -8294,13 +8643,80 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (!nextOverlay) {
             return;
         }
+        const targetAnchor =
+            anchorPoint &&
+            Number.isFinite(Number(anchorPoint.x)) &&
+            Number.isFinite(Number(anchorPoint.y))
+                ? { x: Number(anchorPoint.x), y: Number(anchorPoint.y) }
+                : importAnchor &&
+                    Number.isFinite(Number(importAnchor.x)) &&
+                    Number.isFinite(Number(importAnchor.y))
+                    ? { x: Number(importAnchor.x), y: Number(importAnchor.y) }
+                    : null;
+        if (targetAnchor && nextOverlay?.bbox) {
+            const scaleX = overlayScaleX(nextOverlay);
+            const scaleY = overlayScaleY(nextOverlay);
+            const bbox = nextOverlay.bbox;
+            const centerX = Number(bbox.x || 0) + Number(bbox.width || 0) / 2;
+            const centerY = Number(bbox.y || 0) + Number(bbox.height || 0) / 2;
+            nextOverlay = {
+                ...nextOverlay,
+                tx: targetAnchor.x - scaleX * centerX,
+                ty: targetAnchor.y - scaleY * centerY
+            };
+        }
 
         updateSvgOverlays((previous) => [...previous, nextOverlay], { persist: true });
         setSelectedOverlayIds([nextOverlay.id]);
         setSelectedIds([]);
         setImportOpen(false);
         setWidgetOpen(false);
-    }, [createOverlayFromRawMarkup, updateSvgOverlays]);
+        setImportAnchor(null);
+    }, [createOverlayFromRawMarkup, importAnchor, updateSvgOverlays]);
+
+    const handleCanvasDoubleClick = useCallback((event) => {
+        if (!editorVisible || event?.defaultPrevented) {
+            return;
+        }
+        if (tool === "polyline" || drawing?.kind === "polyline") {
+            return;
+        }
+        if (isInteractiveEditorTarget(event?.target)) {
+            return;
+        }
+        const target = event?.target;
+        if (
+            target instanceof Element
+            && target.closest(
+                [
+                    "[data-overlay-id]",
+                    "[data-shape-id]",
+                    "[data-overlay-selection-ui]",
+                    "[data-overlay-selection-move-hit]",
+                    "[data-overlay-selection-hit]",
+                    "[data-shape-selection-ui]",
+                    "[data-shape-selection-hit]",
+                    "[data-mixed-selection-ui]",
+                    "[data-vizi-properties-panel]",
+                    "[data-vizi-import-drawer]",
+                    "[data-vizi-widget-drawer]",
+                    "[data-vizi-dropdown]",
+                    "[data-vizi-dropdown-menu]",
+                    "[data-vizi-quick-svg-picker]",
+                    "[data-vizi-quick-tag-picker]"
+                ].join(", ")
+            )
+        ) {
+            return;
+        }
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        setImportAnchor(pointFromEvent(event));
+        clearSelection();
+        setEditingId(null);
+        setSelectedSegment(null);
+        setPropertiesSelectionKey("");
+    }, [clearSelection, drawing, editorVisible, pointFromEvent, tool]);
 
     const handleSvgMouseDown = useCallback((event) => {
         if (event?.button && event.button !== 0) {
@@ -9714,7 +10130,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         const minTop = 16 + rulerInset;
         const maxUsableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - minTop - 16);
-        const panelHeight = Math.min(PROPERTY_PANEL_HEIGHT, maxUsableHeight);
+        const panelHeight = clampPropertyPanelHeight(propertyPanelHeight, maxUsableHeight);
         const minLeft = 16;
         const maxLeft = Math.max(minLeft, rootWidth - panelWidth - 16);
         const maxTop = Math.max(minTop, rootHeight - panelHeight - 16);
@@ -9860,7 +10276,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
             boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
         };
-    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers, propertyPanelWidth, selectedIds, selectedOverlayIds]);
+    }, [propertiesVisible, propertyTargetBounds, worldToPanelPoint, rootSize, showRulers, propertyPanelWidth, propertyPanelHeight, selectedIds, selectedOverlayIds]);
 
     const fixedPropertyPanelStyle = useMemo(() => {
         if (!floatingPropertyPanelStyle) {
@@ -10776,19 +11192,46 @@ export default function PerspectiveViziCanvasBridge(props) {
                 ? `${hmiStateStyleMapCount} HMI state style maps loaded`
                 : "No HMI state style maps loaded";
 
+    const toolbarPanelLayout = useMemo(() => {
+        const width = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
+        const panelHeight = toolbarPanelRef.current?.getBoundingClientRect?.().height || 160;
+        return clampToolbarPosition(
+            toolbarPosition,
+            width,
+            panelHeight,
+            browserViewportWidth,
+            browserViewportHeight
+        );
+    }, [browserViewportHeight, browserViewportWidth, toolbarCollapsed, toolbarPosition]);
+
     const svgDrawerLayout = useMemo(() => {
         const viewportWidth = Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH);
+        const viewportHeight = Number(browserViewportHeight || rootSize?.height || DEFAULT_CANVAS_HEIGHT);
         const maxPanelWidth = Math.max(0, viewportWidth - (TOOLBAR_INSET * 2));
         const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
-        const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
-        const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
+        const toolbarLeft = Number(toolbarPanelLayout?.x) || TOOLBAR_INSET;
+        const toolbarTop = Number(toolbarPanelLayout?.y) || TOOLBAR_INSET;
+        const panelTop = clamp(toolbarTop, TOOLBAR_INSET, Math.max(TOOLBAR_INSET, viewportHeight - 280));
+        const preferredLeft = toolbarLeft + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
+        const availableRight = Math.max(0, viewportWidth - preferredLeft - TOOLBAR_INSET);
+        const availableLeft = Math.max(0, toolbarLeft - TOOLBAR_DRAWER_GAP - TOOLBAR_INSET);
 
-        if (availableBesideToolbar >= SVG_DRAWER_MIN_WIDTH) {
+        if (availableRight >= SVG_DRAWER_MIN_WIDTH) {
             return {
                 left: preferredLeft,
-                top: TOOLBAR_INSET,
+                top: panelTop,
                 bottom: TOOLBAR_INSET,
-                width: Math.min(SVG_DRAWER_PREFERRED_WIDTH, availableBesideToolbar)
+                width: Math.min(SVG_DRAWER_PREFERRED_WIDTH, availableRight)
+            };
+        }
+
+        if (availableLeft >= SVG_DRAWER_MIN_WIDTH) {
+            const width = Math.min(SVG_DRAWER_PREFERRED_WIDTH, availableLeft);
+            return {
+                left: Math.max(TOOLBAR_INSET, toolbarLeft - width - TOOLBAR_DRAWER_GAP),
+                top: panelTop,
+                bottom: TOOLBAR_INSET,
+                width
             };
         }
 
@@ -10798,21 +11241,36 @@ export default function PerspectiveViziCanvasBridge(props) {
             bottom: TOOLBAR_INSET,
             width: Math.max(260, Math.min(SVG_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
         };
-    }, [browserViewportWidth, rootSize, toolbarCollapsed]);
+    }, [browserViewportHeight, browserViewportWidth, rootSize, toolbarCollapsed, toolbarPanelLayout]);
     const widgetDrawerLayout = svgDrawerLayout;
     const helpDrawerLayout = useMemo(() => {
         const viewportWidth = Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH);
+        const viewportHeight = Number(browserViewportHeight || rootSize?.height || DEFAULT_CANVAS_HEIGHT);
         const maxPanelWidth = Math.max(0, viewportWidth - (TOOLBAR_INSET * 2));
         const activeToolbarWidth = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
-        const preferredLeft = TOOLBAR_INSET + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
-        const availableBesideToolbar = Math.max(0, maxPanelWidth - activeToolbarWidth - TOOLBAR_DRAWER_GAP);
+        const toolbarLeft = Number(toolbarPanelLayout?.x) || TOOLBAR_INSET;
+        const toolbarTop = Number(toolbarPanelLayout?.y) || TOOLBAR_INSET;
+        const panelTop = clamp(toolbarTop, TOOLBAR_INSET, Math.max(TOOLBAR_INSET, viewportHeight - 280));
+        const preferredLeft = toolbarLeft + activeToolbarWidth + TOOLBAR_DRAWER_GAP;
+        const availableRight = Math.max(0, viewportWidth - preferredLeft - TOOLBAR_INSET);
+        const availableLeft = Math.max(0, toolbarLeft - TOOLBAR_DRAWER_GAP - TOOLBAR_INSET);
 
-        if (availableBesideToolbar >= HELP_DRAWER_MIN_WIDTH) {
+        if (availableRight >= HELP_DRAWER_MIN_WIDTH) {
             return {
                 left: preferredLeft,
-                top: TOOLBAR_INSET,
+                top: panelTop,
                 bottom: TOOLBAR_INSET,
-                width: Math.min(HELP_DRAWER_PREFERRED_WIDTH, availableBesideToolbar)
+                width: Math.min(HELP_DRAWER_PREFERRED_WIDTH, availableRight)
+            };
+        }
+
+        if (availableLeft >= HELP_DRAWER_MIN_WIDTH) {
+            const width = Math.min(HELP_DRAWER_PREFERRED_WIDTH, availableLeft);
+            return {
+                left: Math.max(TOOLBAR_INSET, toolbarLeft - width - TOOLBAR_DRAWER_GAP),
+                top: panelTop,
+                bottom: TOOLBAR_INSET,
+                width
             };
         }
 
@@ -10822,7 +11280,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             bottom: TOOLBAR_INSET,
             width: Math.max(280, Math.min(HELP_DRAWER_PREFERRED_WIDTH, maxPanelWidth))
         };
-    }, [browserViewportWidth, rootSize, toolbarCollapsed]);
+    }, [browserViewportHeight, browserViewportWidth, rootSize, toolbarCollapsed, toolbarPanelLayout]);
     useEffect(() => {
         const onKeyDown = (event) => {
             if (!editorVisible) {
@@ -10967,6 +11425,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                     cancelPolyline();
                     return;
                 }
+                if (importAnchor) {
+                    setImportAnchor(null);
+                    return;
+                }
                 setEditingId(null);
                 setSelectedSegment(null);
                 return;
@@ -10980,7 +11442,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         window.addEventListener("keydown", onKeyDown, true);
         return () => window.removeEventListener("keydown", onKeyDown, true);
-    }, [activateTool, cancelPolyline, copySelection, cutSelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, pasteClipboard, redo, reorderSelectedOverlays, selectedOverlayIds, undo]);
+    }, [activateTool, cancelPolyline, copySelection, cutSelection, deleteSelected, drawing, duplicateSelected, editorVisible, finishPolyline, importAnchor, pasteClipboard, redo, reorderSelectedOverlays, selectedOverlayIds, undo]);
 
     useEffect(() => {
         const onKeyUp = (event) => {
@@ -11030,6 +11492,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         setEditingId(null);
         setDrawing(null);
         setHelpOpen(false);
+        setImportAnchor(null);
         clearSelection();
     }, [clearSelection, closeQuickSvgPicker, editorVisible]);
 
@@ -11134,8 +11597,8 @@ export default function PerspectiveViziCanvasBridge(props) {
                 shapeSelectionUI={editorVisible ? shapeSelectionUI : null}
                 mixedSelectionUI={editorVisible ? mixedSelectionUI : null}
                 overlayLocalBBox={overlayLocalBBox}
-                importAnchor={null}
-                onCanvasDoubleClick={NOOP}
+                importAnchor={editorVisible ? importAnchor : null}
+                onCanvasDoubleClick={editorVisible ? handleCanvasDoubleClick : NOOP}
                 tagStateColorsByPath={overlayTagStateColorsByPath}
                 routeColorsBySvgKey={overlayRouteColorsBySvgKey}
                 routeStrokeColorByGroupPath={EMPTY_MAP}
@@ -11189,10 +11652,11 @@ export default function PerspectiveViziCanvasBridge(props) {
             {editorVisible ? (
                 toolbarCollapsed ? (
                     <div
+                        ref={toolbarPanelRef}
                         style={{
                             position: "fixed",
-                            top: TOOLBAR_INSET,
-                            left: TOOLBAR_INSET,
+                            top: toolbarPanelLayout.y,
+                            left: toolbarPanelLayout.x,
                             zIndex: 120,
                             width: COLLAPSED_TOOLBAR_WIDTH,
                             maxWidth: `min(${COLLAPSED_TOOLBAR_WIDTH}px, calc(100vw - ${TOOLBAR_INSET * 2}px))`,
@@ -11202,9 +11666,59 @@ export default function PerspectiveViziCanvasBridge(props) {
                             borderRadius: 18,
                             border: "1px solid rgba(51, 65, 85, 0.95)",
                             background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
-                            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+                            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)",
+                            userSelect: "none"
                         }}
                     >
+                        <div
+                            onPointerDown={startToolbarDrag}
+                            title="Drag toolbar"
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 6,
+                                cursor: "move",
+                                touchAction: "none"
+                            }}
+                        >
+                            <span
+                                style={{
+                                    minWidth: 0,
+                                    fontSize: 10,
+                                    fontWeight: 800,
+                                    letterSpacing: "0.08em",
+                                    textTransform: "uppercase",
+                                    color: "rgba(226, 232, 240, 0.72)",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap"
+                                }}
+                            >
+                                Tools
+                            </span>
+                            <button
+                                type="button"
+                                title="Dock toolbar"
+                                onPointerDown={stopInteractivePropagation}
+                                onMouseDown={stopInteractivePropagation}
+                                onClick={redockToolbar}
+                                style={{
+                                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                                    background: "rgba(15, 23, 42, 0.88)",
+                                    color: "#f8fafc",
+                                    minWidth: 42,
+                                    height: 24,
+                                    padding: "0 8px",
+                                    borderRadius: 999,
+                                    fontSize: 10,
+                                    fontWeight: 800,
+                                    cursor: "pointer"
+                                }}
+                            >
+                                Dock
+                            </button>
+                        </div>
                         <button
                             type="button"
                             onClick={() => setToolbarCollapsed(false)}
@@ -11226,10 +11740,11 @@ export default function PerspectiveViziCanvasBridge(props) {
                     </div>
                 ) : (
                     <div
+                        ref={toolbarPanelRef}
                         style={{
                             position: "fixed",
-                            top: TOOLBAR_INSET,
-                            left: TOOLBAR_INSET,
+                            top: toolbarPanelLayout.y,
+                            left: toolbarPanelLayout.x,
                             zIndex: 120,
                             width: TOOLBAR_WIDTH,
                             maxWidth: `min(${TOOLBAR_WIDTH}px, calc(100vw - ${TOOLBAR_INSET * 2}px))`,
@@ -11240,15 +11755,20 @@ export default function PerspectiveViziCanvasBridge(props) {
                             borderRadius: 18,
                             border: "1px solid rgba(51, 65, 85, 0.95)",
                             background: "linear-gradient(180deg, rgba(2, 6, 23, 0.95) 0%, rgba(15, 23, 42, 0.92) 100%)",
-                            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)"
+                            boxShadow: "0 24px 60px rgba(2, 6, 23, 0.34)",
+                            userSelect: "none"
                         }}
                     >
                         <div
+                            onPointerDown={startToolbarDrag}
+                            title="Drag toolbar"
                             style={{
                                 display: "flex",
                                 alignItems: "center",
                                 justifyContent: "space-between",
-                                gap: 12
+                                gap: 12,
+                                cursor: "move",
+                                touchAction: "none"
                             }}
                         >
                             <div
@@ -11262,24 +11782,56 @@ export default function PerspectiveViziCanvasBridge(props) {
                             >
                                 Tools
                             </div>
-                            <button
-                                type="button"
-                                onClick={() => setToolbarCollapsed(true)}
+                            <div
                                 style={{
-                                    border: "1px solid rgba(71, 85, 105, 0.9)",
-                                    background: "rgba(15, 23, 42, 0.88)",
-                                    color: "#f8fafc",
-                                    minWidth: 28,
-                                    height: 28,
-                                    padding: "0 8px",
-                                    borderRadius: 999,
-                                    fontSize: 14,
-                                    fontWeight: 700,
-                                    cursor: "pointer"
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 6
                                 }}
                             >
-                                _
-                            </button>
+                                <button
+                                    type="button"
+                                    title="Dock toolbar"
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onClick={redockToolbar}
+                                    style={{
+                                        border: "1px solid rgba(71, 85, 105, 0.9)",
+                                        background: "rgba(15, 23, 42, 0.88)",
+                                        color: "#f8fafc",
+                                        minWidth: 48,
+                                        height: 28,
+                                        padding: "0 8px",
+                                        borderRadius: 999,
+                                        fontSize: 11,
+                                        fontWeight: 800,
+                                        cursor: "pointer"
+                                    }}
+                                >
+                                    Dock
+                                </button>
+                                <button
+                                    type="button"
+                                    title="Hide tools"
+                                    onPointerDown={stopInteractivePropagation}
+                                    onMouseDown={stopInteractivePropagation}
+                                    onClick={() => setToolbarCollapsed(true)}
+                                    style={{
+                                        border: "1px solid rgba(71, 85, 105, 0.9)",
+                                        background: "rgba(15, 23, 42, 0.88)",
+                                        color: "#f8fafc",
+                                        minWidth: 28,
+                                        height: 28,
+                                        padding: "0 8px",
+                                        borderRadius: 999,
+                                        fontSize: 14,
+                                        fontWeight: 700,
+                                        cursor: "pointer"
+                                    }}
+                                >
+                                    _
+                                </button>
+                            </div>
                         </div>
 
                         <DockSection title="Zoom">
@@ -11811,11 +12363,15 @@ export default function PerspectiveViziCanvasBridge(props) {
                             event.stopPropagation();
                             propertyPanelResizeRef.current = {
                                 resizing: true,
+                                mode: "width",
                                 startX: event.clientX,
+                                startY: event.clientY,
                                 startWidth: clampPropertyPanelWidth(
                                     propertyPanelWidth,
                                     Number(rootSize?.width || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
-                                )
+                                ),
+                                startHeight: propertyPanelHeight,
+                                panelTop: Number(floatingPropertyPanelStyle?.top || 0)
                             };
                             setPropertyPanelResizing(true);
                         }}
@@ -11827,7 +12383,50 @@ export default function PerspectiveViziCanvasBridge(props) {
                             width: 10,
                             cursor: "col-resize",
                             zIndex: 1,
-                            background: propertyPanelResizing
+                            background: propertyPanelResizing && propertyPanelResizeRef.current.mode === "width"
+                                ? "rgba(56, 189, 248, 0.28)"
+                                : "transparent"
+                        }}
+                    />
+                    <div
+                        role="separator"
+                        aria-orientation="horizontal"
+                        aria-label="Resize properties panel height"
+                        title="Resize properties panel height"
+                        onMouseDown={(event) => {
+                            if (event.button !== 0) {
+                                return;
+                            }
+                            event.preventDefault();
+                            event.stopPropagation();
+                            propertyPanelResizeRef.current = {
+                                resizing: true,
+                                mode: "height",
+                                startX: event.clientX,
+                                startY: event.clientY,
+                                startWidth: propertyPanelWidth,
+                                startHeight: clampPropertyPanelHeight(
+                                    propertyPanelHeight,
+                                    Math.max(
+                                        PROPERTY_PANEL_MIN_HEIGHT,
+                                        Number(rootSize?.height || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) -
+                                            Number(floatingPropertyPanelStyle?.top || 0) -
+                                            16
+                                    )
+                                ),
+                                panelTop: Number(floatingPropertyPanelStyle?.top || 0)
+                            };
+                            setPropertyPanelResizing(true);
+                        }}
+                        style={{
+                            position: "absolute",
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            height: 10,
+                            cursor: "row-resize",
+                            zIndex: 2,
+                            background: propertyPanelResizing && propertyPanelResizeRef.current.mode === "height"
                                 ? "rgba(56, 189, 248, 0.28)"
                                 : "transparent"
                         }}
