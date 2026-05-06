@@ -669,6 +669,24 @@ function CanvasSvg({
     }
     return "";
   };
+  const isDefaultIgnitionFillMappingSet = (mappings) => {
+    const rows = Array.isArray(mappings) ? mappings : [];
+    if (rows.length !== 7) return false;
+    const defaults = new Map([
+      ["1", "#ef4444"],
+      ["2", "#f59e0b"],
+      ["3", "#22c55e"],
+      ["4", "#f59e0b"],
+      ["5", "#ef4444"],
+      ["6", "#f97316"],
+      ["16", "#7f1d1d"],
+    ]);
+    return rows.every((mapping) => {
+      const value = String(mapping?.state ?? mapping?.field ?? mapping?.value ?? mapping?.input ?? mapping?.key ?? "").trim();
+      const color = getStateMappingPaint(mapping).toLowerCase();
+      return defaults.get(value)?.toLowerCase() === color;
+    });
+  };
   const stateMappingsByPath = useMemo(() => {
     const map = new Map();
     const inferGroupName = (tag) => {
@@ -891,11 +909,14 @@ function CanvasSvg({
     const binding = getOverlayFillBinding(overlay);
     if (!binding) return "";
     const rawValue = readOverlayFillBindingValue(overlay);
-    const fallbackColor = getOverlayFillBindingFallbackColor(overlay);
+    const bindingMappings = getOverlayFillBindingMappings(overlay);
     if (rawValue == null || String(rawValue).trim() === "") {
-      return fallbackColor;
+      return themeFillDefault;
     }
-    return matchStateMappingColor(getOverlayFillBindingMappings(overlay), rawValue) || fallbackColor;
+    if (isDefaultIgnitionFillMappingSet(bindingMappings)) {
+      return themeFillDefault;
+    }
+    return matchStateMappingColor(bindingMappings, rawValue) || themeFillDefault;
   };
   const getOverlayBoundActiveFillColor = (overlay) => {
     if (isDiverterEType(overlay?.eType)) return "";
@@ -1965,6 +1986,61 @@ function CanvasSvg({
       throw new Error("View params must be a JSON object.");
     }
     return parsed;
+  };
+  const getWidgetOpenViewPopupPosition = (overlay, params = {}) => {
+    const readExplicitDimension = (keys) => {
+      for (const source of [overlay?.widget, params]) {
+        if (!source || typeof source !== "object") continue;
+        for (const key of keys) {
+          const value = Number(source[key]);
+          if (Number.isFinite(value) && value > 0) return value;
+        }
+      }
+      return null;
+    };
+    const requestedWidth = readExplicitDimension(["popupWidth", "viewPopupWidth", "openViewWidth"]);
+    const requestedHeight = readExplicitDimension(["popupHeight", "viewPopupHeight", "openViewHeight"]);
+    if (!requestedWidth && !requestedHeight) {
+      return null;
+    }
+
+    const viewportSource = typeof globalThis !== "undefined" ? globalThis : {};
+    const docElement = viewportSource.document?.documentElement;
+    const docBody = viewportSource.document?.body;
+    const viewportWidth = Math.max(
+      1,
+      Math.ceil(
+        Number(viewportSource.innerWidth)
+        || Number(docElement?.clientWidth)
+        || Number(docBody?.clientWidth)
+        || 1280
+      )
+    );
+    const viewportHeight = Math.max(
+      1,
+      Math.ceil(
+        Number(viewportSource.innerHeight)
+        || Number(docElement?.clientHeight)
+        || Number(docBody?.clientHeight)
+        || 720
+      )
+    );
+    const maxWidth = Math.max(280, viewportWidth - 48);
+    const maxHeight = Math.max(220, viewportHeight - 48);
+    const width = Math.min(
+      maxWidth,
+      Math.max(320, requestedWidth || 640)
+    );
+    const height = Math.min(
+      maxHeight,
+      Math.max(240, requestedHeight || 480)
+    );
+    return {
+      left: Math.max(12, Math.round((viewportWidth - width) / 2)),
+      top: Math.max(12, Math.round((viewportHeight - height) / 2)),
+      width: Math.round(width),
+      height: Math.round(height)
+    };
   };
   const getMissingWidgetWriteTargetMessage = (overlay) => {
     const writeMode = resolveWidgetWriteMode(overlay?.widget, overlay?.tagPath);
@@ -4857,23 +4933,29 @@ function CanvasSvg({
 
     const popupId = `widget-view-${overlayId}`;
     const title = String(overlay?.widget?.title || overlay?.name || viewPath.split(/[\\/]/).pop() || "View").trim();
+    const position = getWidgetOpenViewPopupPosition(overlay, params);
     const popupConfig = {
       id: popupId,
       viewPath,
+      viewParams: params,
       params,
       title,
       modal: false,
+      overlayDismiss: false,
       draggable: true,
       resizable: true,
+      viewportBound: true,
       showCloseIcon: true
     };
+    if (position) {
+      popupConfig.position = position;
+    }
     try {
       if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => popup?.id === popupId)) {
-        mounts.focusPopup?.(popupId);
-      } else {
-        mounts.activatePopup(popupConfig);
-        mounts.focusPopup?.(popupId);
+        mounts.closePopup?.(popupId);
       }
+      mounts.activatePopup(popupConfig);
+      mounts.focusPopup?.(popupId);
       setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
       return true;
     } catch (err) {
@@ -8851,6 +8933,7 @@ function CanvasSvg({
       const faultColor = "#ff3b30";
       const overlayFill = String(overlay?.fill || "").trim();
       const overlayStroke = String(overlay?.stroke || "").trim();
+      const hasFillBinding = Boolean(getOverlayFillBinding(overlay));
       const overlayStrokeWidth =
         Number.isFinite(Number(overlay?.strokeWidth)) && Number(overlay.strokeWidth) > 0
           ? Number(overlay.strokeWidth)
@@ -8860,13 +8943,16 @@ function CanvasSvg({
       const hasCustomOverlayStroke =
         Boolean(overlayStroke) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke));
       const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
+      const neutralStateFallbackFill = hasFillBinding
+        ? themeFillDefault
+        : (hasCustomOverlayFill ? overlayFill : defaultFillColor);
       const effectiveFillColor = isDiverterOverlay
         ? ""
         : isBinOverlay
         ? ""
         : activeFillStyleClass
         ? ""
-        : (tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : defaultFillColor));
+        : (tagFill || overlayStateColor || neutralStateFallbackFill);
       const effectiveStrokeColor = isDiverterOverlay
         ? ""
         : (routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : (useForcedStroke ? routeStroke : "")));

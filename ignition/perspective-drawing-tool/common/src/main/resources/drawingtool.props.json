@@ -155,6 +155,11 @@
       "format": "color",
       "default": "#0f172a"
     },
+    "canvasBackgroundColor": {
+      "type": "string",
+      "description": "Optional manual canvas background override. Use theme, auto, or blank to follow session.props.theme.",
+      "default": "theme"
+    },
     "showGrid": {
       "type": "boolean",
       "default": false
@@ -207,9 +212,19 @@
       "type": "boolean",
       "default": false
     },
+    "sessionTheme": {
+      "type": "string",
+      "description": "Optional binding target for session.props.theme. Accepts terra-dark or terra-light.",
+      "default": ""
+    },
+    "perspectiveTheme": {
+      "type": "string",
+      "description": "Optional Perspective theme override. Accepts terra-dark or terra-light.",
+      "default": ""
+    },
     "theme": {
       "type": "string",
-      "default": "light"
+      "default": ""
     },
     "liveTagKeys": {
       "type": "array",

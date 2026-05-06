@@ -167,9 +167,65 @@ function getComponentPropSource(componentProps) {
     return isPlainObject(componentProps) ? componentProps : {};
 }
 
+function readObjectSegmentValue(source, segment) {
+    if (source == null || !segment) {
+        return undefined;
+    }
+
+    try {
+        if (Object.prototype.hasOwnProperty.call(Object(source), segment)) {
+            return source[segment];
+        }
+    } catch (_error) {
+    }
+
+    try {
+        if (typeof source.get === "function") {
+            const value = source.get(segment);
+            if (value !== undefined) {
+                return value;
+            }
+        }
+    } catch (_error) {
+    }
+
+    try {
+        if (typeof source.readString === "function") {
+            const value = source.readString(segment, "");
+            if (value) {
+                return value;
+            }
+        }
+    } catch (_error) {
+    }
+
+    try {
+        if (typeof source.read === "function") {
+            const value = source.read(segment, undefined);
+            if (value !== undefined) {
+                return value;
+            }
+        }
+    } catch (_error) {
+    }
+
+    return undefined;
+}
+
 function readObjectPathValue(source, path) {
     if (!source || !path) {
         return undefined;
+    }
+    const segments = String(path).split(".").filter(Boolean);
+
+    try {
+        if (typeof source.getIn === "function") {
+            const value = source.getIn(segments);
+            if (value !== undefined && value !== null) {
+                return value;
+            }
+        }
+    } catch (_error) {
     }
 
     try {
@@ -192,14 +248,22 @@ function readObjectPathValue(source, path) {
     } catch (_error) {
     }
 
-    return String(path)
-        .split(".")
-        .filter(Boolean)
+    try {
+        if (typeof source.get === "function") {
+            const value = source.get(path);
+            if (value !== undefined && value !== null) {
+                return value;
+            }
+        }
+    } catch (_error) {
+    }
+
+    return segments
         .reduce((acc, segment) => {
             if (acc == null) {
                 return undefined;
             }
-            return acc[segment];
+            return readObjectSegmentValue(acc, segment);
         }, source);
 }
 
@@ -242,9 +306,51 @@ function getElementThemeCandidates(element) {
     ];
 }
 
-function detectDomThemeName() {
+function getPerspectiveSessionPropTrees(componentProps) {
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    return [
+        componentProps?.store?.view?.page?.sessionProps,
+        nestedProps?.store?.view?.page?.sessionProps,
+        componentProps?.store?.page?.sessionProps,
+        nestedProps?.store?.page?.sessionProps,
+        componentProps?.store?.view?.page?.parent?.page?.sessionProps,
+        nestedProps?.store?.view?.page?.parent?.page?.sessionProps,
+        componentProps?.store?.page?.parent?.page?.sessionProps,
+        nestedProps?.store?.page?.parent?.page?.sessionProps,
+        globalClient?.page?.sessionProps,
+        globalClient?.page?.parent?.page?.sessionProps,
+        globalClient?.store?.page?.sessionProps,
+        globalClient?.store?.view?.page?.sessionProps,
+        globalDesigner?.page?.sessionProps,
+        globalDesigner?.store?.page?.sessionProps,
+        globalDesigner?.store?.view?.page?.sessionProps
+    ].filter(Boolean);
+}
+
+function detectDomThemeName(anchorElement = null) {
     if (typeof document === "undefined") {
         return "";
+    }
+    const readElementTheme = (element) => {
+        const theme = getElementThemeCandidates(element).map(normalizePerspectiveThemeName).find(Boolean);
+        return theme || "";
+    };
+    let current = anchorElement?.nodeType === 1 ? anchorElement : null;
+    while (current) {
+        const theme = readElementTheme(current);
+        if (theme) {
+            return theme;
+        }
+        current = current.parentElement || null;
+    }
+    const documentTheme = [
+        document.documentElement,
+        document.body
+    ].map(readElementTheme).find(Boolean);
+    if (documentTheme) {
+        return documentTheme;
     }
     const themeSelectors = [
         "[data-theme*='terra-dark']",
@@ -266,16 +372,13 @@ function detectDomThemeName() {
         "[class*='ia_theme--terra-dark']",
         "[class*='ia_theme--terra-light']"
     ];
-    const candidates = [
-        ...getElementThemeCandidates(document.documentElement),
-        ...getElementThemeCandidates(document.body)
-    ];
+    const candidates = [];
     for (const selector of themeSelectors) {
         try {
-            const element = document.querySelector?.(selector);
-            if (element) {
+            const elements = Array.from(document.querySelectorAll?.(selector) || []).slice(0, 20);
+            elements.forEach((element) => {
                 candidates.push(...getElementThemeCandidates(element), selector);
-            }
+            });
         } catch (_error) {
         }
     }
@@ -283,26 +386,54 @@ function detectDomThemeName() {
 }
 
 function findThemeInObject(value, depth = 4, seen = new Set()) {
-    const direct = normalizePerspectiveThemeName(value);
-    if (direct || depth <= 0 || !value || typeof value !== "object" || seen.has(value)) {
-        return direct;
+    if (!value || depth <= 0) {
+        return normalizePerspectiveThemeName(value);
+    }
+    if (typeof value !== "object") {
+        return normalizePerspectiveThemeName(value);
+    }
+    if (seen.has(value)) {
+        return "";
     }
     seen.add(value);
-    const priorityKeys = ["theme", "themeName", "selectedTheme", "currentTheme", "session", "props", "page", "view", "project"];
+    const priorityKeys = ["session", "props", "page", "view", "project", "selectedTheme", "currentTheme", "themeName", "theme"];
     for (const key of priorityKeys) {
-        if (!Object.prototype.hasOwnProperty.call(value, key)) {
+        const nextValue = readObjectSegmentValue(value, key);
+        if (nextValue === undefined || nextValue === null) {
             continue;
         }
-        const theme = findThemeInObject(value[key], depth - 1, seen);
+        const theme = findThemeInObject(nextValue, depth - 1, seen);
         if (theme) {
             return theme;
         }
+    }
+    const direct = normalizePerspectiveThemeName(value);
+    if (direct) {
+        return direct;
     }
     let entries = [];
     try {
         entries = Object.entries(value).slice(0, 80);
     } catch (_error) {
         entries = [];
+    }
+    if (!entries.length) {
+        try {
+            if (typeof value.keys === "function" && typeof value.get === "function") {
+                entries = Array.from(value.keys()).slice(0, 80).map((key) => [key, value.get(key)]);
+            }
+        } catch (_error) {
+            entries = [];
+        }
+    }
+    if (!entries.length) {
+        try {
+            if (typeof value.toJS === "function") {
+                entries = Object.entries(value.toJS()).slice(0, 80);
+            }
+        } catch (_error) {
+            entries = [];
+        }
     }
     for (const [key, entryValue] of entries) {
         if (/theme/i.test(key)) {
@@ -315,38 +446,73 @@ function findThemeInObject(value, depth = 4, seen = new Set()) {
     return "";
 }
 
-function getPerspectiveSessionThemeName(componentProps) {
+function getPerspectiveSessionThemeName(componentProps, themeElement = null) {
     const nestedProps = getComponentPropSource(componentProps);
     const globalClient = typeof window !== "undefined" ? window.__client : null;
     const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
     const sources = [
+        ...getPerspectiveSessionPropTrees(componentProps),
         componentProps,
         nestedProps,
         componentProps?.store,
         nestedProps?.store,
+        componentProps?.store?.props,
+        nestedProps?.store?.props,
+        componentProps?.store?.page,
+        nestedProps?.store?.page,
+        componentProps?.store?.page?.props,
+        nestedProps?.store?.page?.props,
         componentProps?.store?.view,
         nestedProps?.store?.view,
         componentProps?.store?.view?.page,
         nestedProps?.store?.view?.page,
+        componentProps?.store?.view?.page?.props,
+        nestedProps?.store?.view?.page?.props,
+        componentProps?.store?.view?.page?.sessionProps,
+        nestedProps?.store?.view?.page?.sessionProps,
+        componentProps?.store?.view?.page?.parent?.page,
+        nestedProps?.store?.view?.page?.parent?.page,
+        componentProps?.store?.view?.page?.parent?.page?.sessionProps,
+        nestedProps?.store?.view?.page?.parent?.page?.sessionProps,
         globalClient,
         globalClient?.session,
+        globalClient?.page,
+        globalClient?.page?.sessionProps,
         globalClient?.store,
+        globalClient?.store?.getState?.(),
+        globalClient?.store?.props,
         globalClient?.store?.session,
         globalClient?.store?.page,
+        globalClient?.store?.page?.props,
         globalClient?.store?.page?.session,
         globalClient?.store?.view,
+        globalClient?.store?.view?.props,
         globalClient?.store?.view?.session,
         globalClient?.store?.view?.page,
+        globalClient?.store?.view?.page?.props,
         globalClient?.store?.view?.page?.session,
+        globalClient?.store?.view?.page?.sessionProps,
         globalDesigner,
         globalDesigner?.session,
+        globalDesigner?.page,
+        globalDesigner?.page?.sessionProps,
         globalDesigner?.store,
+        globalDesigner?.store?.getState?.(),
+        globalDesigner?.store?.props,
         globalDesigner?.store?.session,
+        globalDesigner?.store?.page,
+        globalDesigner?.store?.page?.props,
         globalDesigner?.store?.view,
+        globalDesigner?.store?.view?.props,
         globalDesigner?.store?.view?.session,
-        globalDesigner?.store?.view?.page
+        globalDesigner?.store?.view?.page,
+        globalDesigner?.store?.view?.page?.props,
+        globalDesigner?.store?.view?.page?.sessionProps
     ].filter(Boolean);
     const paths = [
+        "theme",
+        "props.theme",
+        "sessionProps.theme",
         "session.props.theme",
         "session.props.theme.name",
         "session.props.theme.value",
@@ -361,9 +527,7 @@ function getPerspectiveSessionThemeName(componentProps) {
         "page.props.session.props.theme",
         "view.session.props.theme",
         "view.session.props.theme.name",
-        "view.props.session.props.theme",
-        "project.props.theme",
-        "project.theme"
+        "view.props.session.props.theme"
     ];
     for (const source of sources) {
         for (const path of paths) {
@@ -373,10 +537,6 @@ function getPerspectiveSessionThemeName(componentProps) {
             }
         }
     }
-    const domTheme = detectDomThemeName();
-    if (domTheme) {
-        return domTheme;
-    }
     const sessionRoots = [
         componentProps?.session,
         nestedProps?.session,
@@ -384,14 +544,20 @@ function getPerspectiveSessionThemeName(componentProps) {
         nestedProps?.props?.session,
         componentProps?.store?.session,
         nestedProps?.store?.session,
+        ...getPerspectiveSessionPropTrees(componentProps),
         globalClient?.session,
+        globalClient?.page?.sessionProps,
         globalClient?.store?.session,
         globalClient?.store?.page?.session,
+        globalClient?.store?.page?.sessionProps,
         globalClient?.store?.view?.session,
         globalClient?.store?.view?.page?.session,
+        globalClient?.store?.view?.page?.sessionProps,
         globalDesigner?.session,
+        globalDesigner?.page?.sessionProps,
         globalDesigner?.store?.session,
-        globalDesigner?.store?.view?.session
+        globalDesigner?.store?.view?.session,
+        globalDesigner?.store?.view?.page?.sessionProps
     ].filter(Boolean);
     for (const source of sessionRoots) {
         const theme = findThemeInObject(source);
@@ -399,11 +565,17 @@ function getPerspectiveSessionThemeName(componentProps) {
             return theme;
         }
     }
+    const domTheme = detectDomThemeName(themeElement);
+    if (domTheme) {
+        return domTheme;
+    }
     return "";
 }
 
-function getPerspectiveThemeName(componentProps) {
-    return getPerspectiveSessionThemeName(componentProps)
+function getPerspectiveThemeName(componentProps, themeElement = null) {
+    return normalizePerspectiveThemeName(getModelValue(componentProps, "sessionTheme", ""))
+        || normalizePerspectiveThemeName(getModelValue(componentProps, "perspectiveTheme", ""))
+        || getPerspectiveSessionThemeName(componentProps, themeElement)
         || normalizePerspectiveThemeName(getModelValue(componentProps, "theme", ""))
         || "light";
 }
@@ -419,6 +591,9 @@ function isLegacyCanvasBackgroundDefault(value) {
         || normalized === "#f8fafc"
         || normalized === "rgb(248,250,252)"
         || normalized === "rgba(248,250,252,1)"
+        || normalized === "#d5d5d5"
+        || normalized === "rgb(213,213,213)"
+        || normalized === "rgba(213,213,213,1)"
         || normalized === "#ffffff"
         || normalized === "#fff"
         || normalized === "rgb(255,255,255)"
@@ -428,8 +603,18 @@ function isLegacyCanvasBackgroundDefault(value) {
 
 function getThemeCanvasBackground(theme) {
     return normalizePerspectiveThemeName(theme) === "dark"
-        ? "var(--vizi-canvas-bg-dark, #0f141c)"
-        : "var(--vizi-canvas-bg-light, #ffffff)";
+        ? "#0f172a"
+        : "#D5D5D5";
+}
+
+function isThemeDrivenCanvasBackgroundRequest(value) {
+    const normalized = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+    return !normalized
+        || normalized === "auto"
+        || normalized === "theme"
+        || normalized === "session"
+        || normalized === "inherit"
+        || isLegacyCanvasBackgroundDefault(normalized);
 }
 
 function useDomThemeVersion() {
@@ -457,14 +642,66 @@ function useDomThemeVersion() {
     return version;
 }
 
+function usePerspectiveThemeVersion(componentProps) {
+    const domVersion = useDomThemeVersion();
+    const [sessionVersion, setSessionVersion] = useState(0);
+    const propsRef = useRef(componentProps);
+    const lastThemeRef = useRef("");
+
+    useEffect(() => {
+        propsRef.current = componentProps;
+    }, [componentProps]);
+
+    useEffect(() => {
+        const trees = Array.from(new Set(getPerspectiveSessionPropTrees(componentProps)));
+        const disposers = [];
+        trees.forEach((tree) => {
+            try {
+                if (typeof tree?.subscribe === "function") {
+                    const dispose = tree.subscribe(() => {
+                        setSessionVersion((previous) => (previous + 1) % 100000);
+                    });
+                    if (typeof dispose === "function") {
+                        disposers.push(dispose);
+                    }
+                }
+            } catch (_error) {
+            }
+        });
+        return () => {
+            disposers.forEach((dispose) => {
+                try {
+                    dispose();
+                } catch (_error) {
+                }
+            });
+        };
+    }, [componentProps]);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return undefined;
+        }
+        const readTheme = () => getPerspectiveThemeName(propsRef.current);
+        lastThemeRef.current = readTheme();
+        const interval = window.setInterval(() => {
+            const nextTheme = readTheme();
+            if (nextTheme === lastThemeRef.current) {
+                return;
+            }
+            lastThemeRef.current = nextTheme;
+            setSessionVersion((previous) => (previous + 1) % 100000);
+        }, 1000);
+        return () => window.clearInterval(interval);
+    }, []);
+
+    return domVersion + sessionVersion;
+}
+
 function getPerspectiveCanvasBackground(componentProps, theme) {
     const explicitCanvasBackground = String(getModelValue(componentProps, "canvasBackgroundColor", "") || "").trim();
-    if (explicitCanvasBackground) {
+    if (!isThemeDrivenCanvasBackgroundRequest(explicitCanvasBackground)) {
         return explicitCanvasBackground;
-    }
-    const backgroundColor = String(getModelValue(componentProps, "backgroundColor", "") || "").trim();
-    if (backgroundColor && !isLegacyCanvasBackgroundDefault(backgroundColor)) {
-        return backgroundColor;
     }
     return getThemeCanvasBackground(theme);
 }
@@ -842,6 +1079,17 @@ function normalizeIgnitionFillBindingMappings(value) {
         .filter(Boolean);
 
     return normalized.length ? normalized : cloneDefaultIgnitionFillMappings();
+}
+
+function isDefaultIgnitionFillMappingSet(value) {
+    const mappings = coerceArray(value);
+    if (mappings.length !== DEFAULT_IGNITION_FILL_MAP.length) {
+        return false;
+    }
+    return DEFAULT_IGNITION_FILL_MAP.every((defaultEntry) => mappings.some((entry) => (
+        String(entry?.value ?? entry?.state ?? entry?.field ?? entry?.input ?? entry?.key ?? "").trim() === String(defaultEntry.value)
+        && String(entry?.color ?? entry?.class ?? entry?.styleClass ?? entry?.className ?? entry?.style ?? entry?.cssClass ?? "").trim().toLowerCase() === String(defaultEntry.color).toLowerCase()
+    )));
 }
 
 function readStateStyleMapSource(value) {
@@ -1402,14 +1650,7 @@ function getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex) {
         return null;
     }
 
-    const mappedFallbackColor = getHmiStateStyleFallbackPaint(mappings);
-    const fallbackColor = String(
-        mappedFallbackColor
-        || currentBinding?.transform?.fallbackColor
-        || currentBinding?.fallbackColor
-        || overlay?.fill
-        || DEFAULT_FILL
-    ).trim() || DEFAULT_FILL;
+    const fallbackColor = DEFAULT_FILL;
 
     return {
         ...(isPlainObject(currentBinding) ? currentBinding : {}),
@@ -1784,11 +2025,7 @@ function applyOverlayIgnitionFillBinding(overlay, rawTagPath) {
     }
 
     const existingBinding = getOverlayFillBinding(overlay);
-    const fallbackColor = String(
-        existingBinding?.transform?.fallbackColor
-        ?? overlay?.fill
-        ?? DEFAULT_FILL
-    ).trim() || DEFAULT_FILL;
+    const fallbackColor = DEFAULT_FILL;
 
     return {
         ...overlay,
@@ -2452,16 +2689,18 @@ function resolveIgnitionStateMappingColor(mappings, rawValue) {
 }
 
 function getOverlayHmiStateColor(overlay, rawState, stateStyleMapIndex = null) {
+    const stateText = String(rawState ?? "").trim();
+    if (!stateText) {
+        return DEFAULT_FILL;
+    }
+
     const hmiStateStyleMappings = getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex);
     if (hmiStateStyleMappings.length) {
-        const mappedPaint = resolveIgnitionStateMappingColor(hmiStateStyleMappings, rawState);
+        const mappedPaint = resolveIgnitionStateMappingColor(hmiStateStyleMappings, stateText);
         if (mappedPaint) {
             return mappedPaint;
         }
-        const fallbackPaint = getHmiStateStyleFallbackPaint(hmiStateStyleMappings);
-        if (fallbackPaint) {
-            return fallbackPaint;
-        }
+        return DEFAULT_FILL;
     }
 
     const binding = getOverlayFillBinding(overlay);
@@ -2469,7 +2708,10 @@ function getOverlayHmiStateColor(overlay, rawState, stateStyleMapIndex = null) {
         binding?.transform?.mappings
         ?? binding?.mappings
     );
-    return resolveIgnitionStateMappingColor(mappings, rawState);
+    if (isDefaultIgnitionFillMappingSet(mappings)) {
+        return DEFAULT_FILL;
+    }
+    return resolveIgnitionStateMappingColor(mappings, stateText) || DEFAULT_FILL;
 }
 
 function toPositiveNumber(value) {
@@ -3202,7 +3444,7 @@ function writeComponentProp(props, path, value) {
         return nextValue;
     };
 
-    const candidatePaths = path.startsWith("model.") ? [path] : [path, `model.${path}`];
+    const candidatePaths = path.startsWith("model.") ? [path] : [`model.${path}`, path];
     const writers = [];
     const sanitizedValue = sanitizePerspectiveValue(value);
 
@@ -3407,6 +3649,33 @@ function buildOverlayDragSnapshot(overlay) {
         tx: Number(overlay.tx || 0),
         ty: Number(overlay.ty || 0)
     };
+}
+
+function didShapeMoveFromSnapshot(shape, snapshot) {
+    if (!shape || !snapshot) {
+        return false;
+    }
+    if (snapshot.kind === "text") {
+        return Math.abs(Number(shape.x || 0) - Number(snapshot.x || 0)) >= 0.001
+            || Math.abs(Number(shape.y || 0) - Number(snapshot.y || 0)) >= 0.001;
+    }
+    if (snapshot.kind === "polyline") {
+        const points = Array.isArray(shape.points) ? shape.points : EMPTY_ARRAY;
+        if (points.length !== snapshot.points.length) {
+            return true;
+        }
+        return points.some((point, index) => !pointsEqual(point, snapshot.points[index]));
+    }
+    return Math.abs(Number(shape.x || 0) - Number(snapshot.x || 0)) >= 0.001
+        || Math.abs(Number(shape.y || 0) - Number(snapshot.y || 0)) >= 0.001;
+}
+
+function didOverlayMoveFromSnapshot(overlay, snapshot) {
+    if (!overlay || !snapshot) {
+        return false;
+    }
+    return Math.abs(Number(overlay.tx || 0) - Number(snapshot.tx || 0)) >= 0.001
+        || Math.abs(Number(overlay.ty || 0) - Number(snapshot.ty || 0)) >= 0.001;
 }
 
 function buildShapeResizeSnapshot(shape) {
@@ -5444,7 +5713,7 @@ function distance(left, right) {
 }
 
 export default function PerspectiveViziCanvasBridge(props) {
-    useDomThemeVersion();
+    usePerspectiveThemeVersion(props);
     const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(new Map());
@@ -5581,6 +5850,8 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [propertyPanelResizing, setPropertyPanelResizing] = useState(false);
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
+    const localShapesWriteRef = useRef({ key: externalShapesKey, until: 0 });
+    const localOverlaysWriteRef = useRef({ key: externalOverlaysKey, until: 0 });
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
@@ -5765,17 +6036,20 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (typeof window === "undefined") {
             return undefined;
         }
-        const clampWidthToRoot = (value) =>
+        const clampWidthToViewport = (value) =>
             clampPropertyPanelWidth(
                 value,
-                Number(rootSize?.width || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+                Math.max(
+                    PROPERTY_PANEL_MIN_WIDTH,
+                    Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH) - 32
+                )
             );
-        const clampHeightToRoot = (value, panelTop = 0) =>
+        const clampHeightToViewport = (value, panelTop = 0) =>
             clampPropertyPanelHeight(
                 value,
                 Math.max(
                     PROPERTY_PANEL_MIN_HEIGHT,
-                    Number(rootSize?.height || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) -
+                    Number(browserViewportHeight || rootSize?.height || DEFAULT_CANVAS_HEIGHT) -
                         Number(panelTop || 0) -
                         16
                 )
@@ -5785,7 +6059,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 return;
             }
             if (propertyPanelResizeRef.current.mode === "height") {
-                const nextHeight = clampHeightToRoot(
+                const nextHeight = clampHeightToViewport(
                     propertyPanelResizeRef.current.startHeight +
                         (Number(event.clientY) - propertyPanelResizeRef.current.startY),
                     propertyPanelResizeRef.current.panelTop
@@ -5793,7 +6067,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 setPropertyPanelHeight(nextHeight);
                 return;
             }
-            const nextWidth = clampWidthToRoot(
+            const nextWidth = clampWidthToViewport(
                 propertyPanelResizeRef.current.startWidth +
                     (Number(event.clientX) - propertyPanelResizeRef.current.startX)
             );
@@ -5836,7 +6110,10 @@ export default function PerspectiveViziCanvasBridge(props) {
         setPropertyPanelWidth((previous) =>
             clampPropertyPanelWidth(
                 previous,
-                Number(rootSize?.width || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+                Math.max(
+                    PROPERTY_PANEL_MIN_WIDTH,
+                    Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH) - 32
+                )
             )
         );
         setPropertyPanelHeight((previous) =>
@@ -5844,7 +6121,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 previous,
                 Math.max(
                     PROPERTY_PANEL_MIN_HEIGHT,
-                    Number(rootSize?.height || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) - 32
+                    Number(browserViewportHeight || rootSize?.height || DEFAULT_CANVAS_HEIGHT) - 32
                 )
             )
         );
@@ -5870,14 +6147,36 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     useEffect(() => {
         const next = coerceArray(externalShapes);
+        const nextKey = JSON.stringify(next);
+        const localKey = JSON.stringify(shapesRef.current);
+        const pendingLocalWrite = localShapesWriteRef.current;
+        if (nextKey === localKey) {
+            localShapesWriteRef.current = { key: nextKey, until: 0 };
+            return;
+        }
+        if (Date.now() < Number(pendingLocalWrite?.until || 0) && pendingLocalWrite?.key === localKey) {
+            return;
+        }
         shapesRef.current = next;
         setShapesState(next);
+        localShapesWriteRef.current = { key: nextKey, until: 0 };
     }, [externalShapesKey]);
 
     useEffect(() => {
         const next = coerceArray(externalOverlays);
+        const nextKey = JSON.stringify(next);
+        const localKey = JSON.stringify(overlaysRef.current);
+        const pendingLocalWrite = localOverlaysWriteRef.current;
+        if (nextKey === localKey) {
+            localOverlaysWriteRef.current = { key: nextKey, until: 0 };
+            return;
+        }
+        if (Date.now() < Number(pendingLocalWrite?.until || 0) && pendingLocalWrite?.key === localKey) {
+            return;
+        }
         overlaysRef.current = next;
         setSvgOverlaysState(next);
+        localOverlaysWriteRef.current = { key: nextKey, until: 0 };
     }, [externalOverlaysKey]);
 
     useEffect(() => {
@@ -6222,6 +6521,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 typeof updater === "function" ? updater(shapesRef.current) : updater
             );
             shapesRef.current = nextShapes;
+            localShapesWriteRef.current = { key: JSON.stringify(nextShapes), until: Date.now() + 2000 };
             setShapesState(nextShapes);
             if (options.persist) {
                 persistShapes(nextShapes);
@@ -6237,6 +6537,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 typeof updater === "function" ? updater(overlaysRef.current) : updater
             );
             overlaysRef.current = nextOverlays;
+            localOverlaysWriteRef.current = { key: JSON.stringify(nextOverlays), until: Date.now() + 2000 };
             setSvgOverlaysState(nextOverlays);
             if (options.persist) {
                 persistSvgOverlays(nextOverlays);
@@ -7279,7 +7580,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         return out;
     }, [svgOverlays, ignitionTagMetaByPath]);
 
-    const theme = getPerspectiveThemeName(props);
+    const theme = getPerspectiveThemeName(props, rootRef.current);
     const canvasBackgroundColor = getPerspectiveCanvasBackground(props, theme);
 
     const pointFromEvent = useCallback((event) => {
@@ -8852,7 +9153,6 @@ export default function PerspectiveViziCanvasBridge(props) {
         retargetPropertiesPanelIfOpen(`shape:${shapeId}`);
         if (!alreadySelected) {
             setEditingId(null);
-            return;
         }
 
         beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
@@ -8895,9 +9195,6 @@ export default function PerspectiveViziCanvasBridge(props) {
         setSelectedSegment(null);
         setEditingId(null);
         retargetPropertiesPanelIfOpen(`overlay:${overlayId}`);
-        if (!alreadySelected) {
-            return;
-        }
 
         beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
     }, [beginSelectionDrag, closePropertiesPanel, overlaysSelectable, pointFromEvent, retargetPropertiesPanelIfOpen, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
@@ -9670,10 +9967,20 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         if (dragState?.start) {
-            if (Object.keys(dragState.shapeSnapshotsById || {}).length) {
+            const shapeSnapshots = Object.values(dragState.shapeSnapshotsById || {});
+            const overlaySnapshots = Object.values(dragState.overlaySnapshotsById || {});
+            const shapesMoved = shapeSnapshots.some((snapshot) => {
+                const shape = shapesRef.current.find((item) => String(item?.id || "") === String(snapshot?.id || ""));
+                return didShapeMoveFromSnapshot(shape, snapshot);
+            });
+            const overlaysMoved = overlaySnapshots.some((snapshot) => {
+                const overlay = overlaysRef.current.find((item) => String(item?.id || "") === String(snapshot?.id || ""));
+                return didOverlayMoveFromSnapshot(overlay, snapshot);
+            });
+            if (shapesMoved) {
                 persistShapes(shapesRef.current);
             }
-            if (Object.keys(dragState.overlaySnapshotsById || {}).length) {
+            if (overlaysMoved) {
                 persistSvgOverlays(overlaysRef.current);
             }
             setDragState(null);
@@ -10125,15 +10432,40 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         const rootWidth = Number(rootSize?.width || DEFAULT_CANVAS_WIDTH);
         const rootHeight = Number(rootSize?.height || DEFAULT_CANVAS_HEIGHT);
+        const rootRectForViewport = rootRef.current?.getBoundingClientRect?.();
+        const viewportWidth = typeof window !== "undefined" ? Number(window.innerWidth || 0) : 0;
+        const viewportHeight = typeof window !== "undefined" ? Number(window.innerHeight || 0) : 0;
         const rulerInset = showRulers ? CANVAS_RULER_SIZE : 0;
-        const panelWidth = clampPropertyPanelWidth(propertyPanelWidth, rootWidth);
+        const viewportRelativeWidth = rootRectForViewport && viewportWidth > 0
+            ? Math.max(PROPERTY_PANEL_MIN_WIDTH, viewportWidth - 32)
+            : rootWidth;
+        const panelWidth = clampPropertyPanelWidth(propertyPanelWidth, viewportRelativeWidth);
 
-        const minTop = 16 + rulerInset;
-        const maxUsableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - minTop - 16);
+        const minTop = rootRectForViewport && viewportHeight > 0
+            ? Math.min(16 + rulerInset, 16 - Number(rootRectForViewport.top || 0) + rulerInset)
+            : 16 + rulerInset;
+        const maxUsableHeight = Math.max(
+            PROPERTY_PANEL_MIN_HEIGHT,
+            rootRectForViewport && viewportHeight > 0
+                ? viewportHeight - Number(rootRectForViewport.top || 0) - minTop - 16
+                : rootHeight - minTop - 16
+        );
         const panelHeight = clampPropertyPanelHeight(propertyPanelHeight, maxUsableHeight);
-        const minLeft = 16;
-        const maxLeft = Math.max(minLeft, rootWidth - panelWidth - 16);
-        const maxTop = Math.max(minTop, rootHeight - panelHeight - 16);
+        const minLeft = rootRectForViewport && viewportWidth > 0
+            ? Math.min(16, 16 - Number(rootRectForViewport.left || 0))
+            : 16;
+        const maxLeft = Math.max(
+            minLeft,
+            rootRectForViewport && viewportWidth > 0
+                ? viewportWidth - Number(rootRectForViewport.left || 0) - panelWidth - 16
+                : rootWidth - panelWidth - 16
+        );
+        const maxTop = Math.max(
+            minTop,
+            rootRectForViewport && viewportHeight > 0
+                ? viewportHeight - Number(rootRectForViewport.top || 0) - panelHeight - 16
+                : rootHeight - panelHeight - 16
+        );
         const renderedAnchorRect = (() => {
             const root = rootRef.current;
             const rootRect = root?.getBoundingClientRect?.();
@@ -10301,11 +10633,14 @@ export default function PerspectiveViziCanvasBridge(props) {
             position: "fixed",
             left,
             top,
+            zIndex: 130,
             maxWidth: Math.max(180, viewportWidth - left - 16),
             height: panelHeight,
             maxHeight: panelHeight
         };
     }, [floatingPropertyPanelStyle, rootSize, showRulers]);
+
+    const propertyPanelStyle = fixedPropertyPanelStyle || floatingPropertyPanelStyle;
 
     const quickSvgPickerStyle = useMemo(() => {
         if (!editorVisible || !quickSvgPickerState?.open) {
@@ -11500,6 +11835,8 @@ export default function PerspectiveViziCanvasBridge(props) {
         <div
             ref={rootRef}
             data-vizi-canvas-root="1"
+            data-vizi-theme={theme}
+            data-vizi-canvas-background={canvasBackgroundColor}
             onMouseDownCapture={(event) => {
                 if (!editorVisible || !propertiesSelectionKey || Number(event?.button || 0) !== 0) {
                     return;
@@ -11533,6 +11870,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 height: "100%",
                 minWidth: 0,
                 minHeight: 0,
+                background: canvasBackgroundColor,
                 ...(browserRuntimeMode ? {
                     display: "flex",
                     alignItems: "flex-start",
@@ -11547,10 +11885,12 @@ export default function PerspectiveViziCanvasBridge(props) {
                 height: Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom,
                 flexShrink: 0,
                 position: "relative",
-                transformOrigin: "top left"
+                transformOrigin: "top left",
+                background: canvasBackgroundColor
             } : {
                 position: "absolute",
-                inset: 0
+                inset: 0,
+                background: canvasBackgroundColor
             }}>
             <CanvasSvg
                 svgRef={svgRef}
@@ -12330,10 +12670,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                 </div>
             ) : null}
 
-            {editorVisible && propertiesVisible && floatingPropertyPanelStyle ? (
+            {editorVisible && propertiesVisible && propertyPanelStyle ? (
                 <div
                     data-vizi-properties-panel="1"
-                    style={floatingPropertyPanelStyle}
+                    style={propertyPanelStyle}
                     onPointerDown={stopInteractivePropagation}
                     onMouseDown={stopInteractivePropagation}
                     onMouseUp={stopInteractivePropagation}
@@ -12368,10 +12708,13 @@ export default function PerspectiveViziCanvasBridge(props) {
                                 startY: event.clientY,
                                 startWidth: clampPropertyPanelWidth(
                                     propertyPanelWidth,
-                                    Number(rootSize?.width || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+                                    Math.max(
+                                        PROPERTY_PANEL_MIN_WIDTH,
+                                        Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH) - 32
+                                    )
                                 ),
                                 startHeight: propertyPanelHeight,
-                                panelTop: Number(floatingPropertyPanelStyle?.top || 0)
+                                panelTop: Number(propertyPanelStyle?.top || 0)
                             };
                             setPropertyPanelResizing(true);
                         }}
@@ -12409,12 +12752,12 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     propertyPanelHeight,
                                     Math.max(
                                         PROPERTY_PANEL_MIN_HEIGHT,
-                                        Number(rootSize?.height || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) -
-                                            Number(floatingPropertyPanelStyle?.top || 0) -
+                                        Number(browserViewportHeight || rootSize?.height || DEFAULT_CANVAS_HEIGHT) -
+                                            Number(propertyPanelStyle?.top || 0) -
                                             16
                                     )
                                 ),
-                                panelTop: Number(floatingPropertyPanelStyle?.top || 0)
+                                panelTop: Number(propertyPanelStyle?.top || 0)
                             };
                             setPropertyPanelResizing(true);
                         }}

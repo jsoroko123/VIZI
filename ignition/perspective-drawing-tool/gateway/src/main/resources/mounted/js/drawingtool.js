@@ -14089,6 +14089,25 @@ var MesoraDrawingToolBundle = (() => {
       }
       return "";
     };
+    const isDefaultIgnitionFillMappingSet2 = (mappings) => {
+      const rows = Array.isArray(mappings) ? mappings : [];
+      if (rows.length !== 7) return false;
+      const defaults2 = /* @__PURE__ */ new Map([
+        ["1", "#ef4444"],
+        ["2", "#f59e0b"],
+        ["3", "#22c55e"],
+        ["4", "#f59e0b"],
+        ["5", "#ef4444"],
+        ["6", "#f97316"],
+        ["16", "#7f1d1d"]
+      ]);
+      return rows.every((mapping) => {
+        var _a2, _b, _c, _d, _e, _f;
+        const value = String((_e = (_d = (_c = (_b = (_a2 = mapping == null ? void 0 : mapping.state) != null ? _a2 : mapping == null ? void 0 : mapping.field) != null ? _b : mapping == null ? void 0 : mapping.value) != null ? _c : mapping == null ? void 0 : mapping.input) != null ? _d : mapping == null ? void 0 : mapping.key) != null ? _e : "").trim();
+        const color2 = getStateMappingPaint(mapping).toLowerCase();
+        return ((_f = defaults2.get(value)) == null ? void 0 : _f.toLowerCase()) === color2;
+      });
+    };
     const stateMappingsByPath = useMemo(() => {
       const map2 = /* @__PURE__ */ new Map();
       const inferGroupName = (tag) => {
@@ -14287,11 +14306,14 @@ var MesoraDrawingToolBundle = (() => {
       const binding = getOverlayFillBinding2(overlay);
       if (!binding) return "";
       const rawValue = readOverlayFillBindingValue(overlay);
-      const fallbackColor = getOverlayFillBindingFallbackColor(overlay);
+      const bindingMappings = getOverlayFillBindingMappings(overlay);
       if (rawValue == null || String(rawValue).trim() === "") {
-        return fallbackColor;
+        return themeFillDefault;
       }
-      return matchStateMappingColor(getOverlayFillBindingMappings(overlay), rawValue) || fallbackColor;
+      if (isDefaultIgnitionFillMappingSet2(bindingMappings)) {
+        return themeFillDefault;
+      }
+      return matchStateMappingColor(bindingMappings, rawValue) || themeFillDefault;
     };
     const getOverlayBoundActiveFillColor = (overlay) => {
       if (isDiverterEType(overlay == null ? void 0 : overlay.eType)) return "";
@@ -15213,6 +15235,55 @@ var MesoraDrawingToolBundle = (() => {
         throw new Error("View params must be a JSON object.");
       }
       return parsed;
+    };
+    const getWidgetOpenViewPopupPosition = (overlay, params = {}) => {
+      var _a2, _b;
+      const readExplicitDimension = (keys) => {
+        for (const source of [overlay == null ? void 0 : overlay.widget, params]) {
+          if (!source || typeof source !== "object") continue;
+          for (const key of keys) {
+            const value = Number(source[key]);
+            if (Number.isFinite(value) && value > 0) return value;
+          }
+        }
+        return null;
+      };
+      const requestedWidth = readExplicitDimension(["popupWidth", "viewPopupWidth", "openViewWidth"]);
+      const requestedHeight = readExplicitDimension(["popupHeight", "viewPopupHeight", "openViewHeight"]);
+      if (!requestedWidth && !requestedHeight) {
+        return null;
+      }
+      const viewportSource = typeof globalThis !== "undefined" ? globalThis : {};
+      const docElement = (_a2 = viewportSource.document) == null ? void 0 : _a2.documentElement;
+      const docBody = (_b = viewportSource.document) == null ? void 0 : _b.body;
+      const viewportWidth = Math.max(
+        1,
+        Math.ceil(
+          Number(viewportSource.innerWidth) || Number(docElement == null ? void 0 : docElement.clientWidth) || Number(docBody == null ? void 0 : docBody.clientWidth) || 1280
+        )
+      );
+      const viewportHeight = Math.max(
+        1,
+        Math.ceil(
+          Number(viewportSource.innerHeight) || Number(docElement == null ? void 0 : docElement.clientHeight) || Number(docBody == null ? void 0 : docBody.clientHeight) || 720
+        )
+      );
+      const maxWidth = Math.max(280, viewportWidth - 48);
+      const maxHeight = Math.max(220, viewportHeight - 48);
+      const width = Math.min(
+        maxWidth,
+        Math.max(320, requestedWidth || 640)
+      );
+      const height = Math.min(
+        maxHeight,
+        Math.max(240, requestedHeight || 480)
+      );
+      return {
+        left: Math.max(12, Math.round((viewportWidth - width) / 2)),
+        top: Math.max(12, Math.round((viewportHeight - height) / 2)),
+        width: Math.round(width),
+        height: Math.round(height)
+      };
     };
     const getMissingWidgetWriteTargetMessage = (overlay) => {
       const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, overlay == null ? void 0 : overlay.tagPath);
@@ -17818,23 +17889,29 @@ var MesoraDrawingToolBundle = (() => {
       }
       const popupId = `widget-view-${overlayId}`;
       const title = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.title) || (overlay == null ? void 0 : overlay.name) || viewPath.split(/[\\/]/).pop() || "View").trim();
+      const position = getWidgetOpenViewPopupPosition(overlay, params);
       const popupConfig = {
         id: popupId,
         viewPath,
+        viewParams: params,
         params,
         title,
         modal: false,
+        overlayDismiss: false,
         draggable: true,
         resizable: true,
+        viewportBound: true,
         showCloseIcon: true
       };
+      if (position) {
+        popupConfig.position = position;
+      }
       try {
         if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => (popup == null ? void 0 : popup.id) === popupId)) {
-          (_b = mounts.focusPopup) == null ? void 0 : _b.call(mounts, popupId);
-        } else {
-          mounts.activatePopup(popupConfig);
-          (_c = mounts.focusPopup) == null ? void 0 : _c.call(mounts, popupId);
+          (_b = mounts.closePopup) == null ? void 0 : _b.call(mounts, popupId);
         }
+        mounts.activatePopup(popupConfig);
+        (_c = mounts.focusPopup) == null ? void 0 : _c.call(mounts, popupId);
         setWidgetWriteErrorByOverlay((prev) => ({ ...prev, [overlayId]: "" }));
         return true;
       } catch (err) {
@@ -21271,11 +21348,13 @@ var MesoraDrawingToolBundle = (() => {
         const faultColor = "#ff3b30";
         const overlayFill = String((overlay == null ? void 0 : overlay.fill) || "").trim();
         const overlayStroke = String((overlay == null ? void 0 : overlay.stroke) || "").trim();
+        const hasFillBinding = Boolean(getOverlayFillBinding2(overlay));
         const overlayStrokeWidth = Number.isFinite(Number(overlay == null ? void 0 : overlay.strokeWidth)) && Number(overlay.strokeWidth) > 0 ? Number(overlay.strokeWidth) : void 0;
         const hasCustomOverlayFill = Boolean(overlayFill) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultFillPaint(overlayFill));
         const hasCustomOverlayStroke = Boolean(overlayStroke) && (shouldUseStoredOverlayPaint || !preserveStrokeMode || !isThemeDefaultStrokePaint(overlayStroke));
         const useForcedStroke = String(overlay.strokeMode || "").trim().toLowerCase() === "force";
-        const effectiveFillColor = isDiverterOverlay2 ? "" : isBinOverlay2 ? "" : activeFillStyleClass ? "" : tagFill || overlayStateColor || (hasCustomOverlayFill ? overlayFill : defaultFillColor);
+        const neutralStateFallbackFill = hasFillBinding ? themeFillDefault : hasCustomOverlayFill ? overlayFill : defaultFillColor;
+        const effectiveFillColor = isDiverterOverlay2 ? "" : isBinOverlay2 ? "" : activeFillStyleClass ? "" : tagFill || overlayStateColor || neutralStateFallbackFill;
         const effectiveStrokeColor = isDiverterOverlay2 ? "" : routeOutlineStroke || (hasCustomOverlayStroke ? overlayStroke : useForcedStroke ? routeStroke : "");
         const stateStrokeColor = statePaintsStroke && !activeFillStyleClass ? tagFill || overlayStateColor || "" : "";
         if (tagFill) {
@@ -24404,9 +24483,58 @@ var MesoraDrawingToolBundle = (() => {
     }
     return isPlainObject(componentProps) ? componentProps : {};
   }
+  function readObjectSegmentValue(source, segment) {
+    if (source == null || !segment) {
+      return void 0;
+    }
+    try {
+      if (Object.prototype.hasOwnProperty.call(Object(source), segment)) {
+        return source[segment];
+      }
+    } catch (_error) {
+    }
+    try {
+      if (typeof source.get === "function") {
+        const value = source.get(segment);
+        if (value !== void 0) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    try {
+      if (typeof source.readString === "function") {
+        const value = source.readString(segment, "");
+        if (value) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    try {
+      if (typeof source.read === "function") {
+        const value = source.read(segment, void 0);
+        if (value !== void 0) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    return void 0;
+  }
   function readObjectPathValue(source, path) {
     if (!source || !path) {
       return void 0;
+    }
+    const segments = String(path).split(".").filter(Boolean);
+    try {
+      if (typeof source.getIn === "function") {
+        const value = source.getIn(segments);
+        if (value !== void 0 && value !== null) {
+          return value;
+        }
+      }
+    } catch (_error) {
     }
     try {
       if (typeof source.readString === "function") {
@@ -24426,11 +24554,20 @@ var MesoraDrawingToolBundle = (() => {
       }
     } catch (_error) {
     }
-    return String(path).split(".").filter(Boolean).reduce((acc, segment) => {
+    try {
+      if (typeof source.get === "function") {
+        const value = source.get(path);
+        if (value !== void 0 && value !== null) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    return segments.reduce((acc, segment) => {
       if (acc == null) {
         return void 0;
       }
-      return acc[segment];
+      return readObjectSegmentValue(acc, segment);
     }, source);
   }
   function normalizePerspectiveThemeName(value) {
@@ -24468,10 +24605,52 @@ var MesoraDrawingToolBundle = (() => {
       element.className
     ];
   }
-  function detectDomThemeName() {
+  function getPerspectiveSessionPropTrees(componentProps) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q;
+    const nestedProps = getComponentPropSource(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    return [
+      (_c = (_b = (_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.view) == null ? void 0 : _b.page) == null ? void 0 : _c.sessionProps,
+      (_f = (_e = (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.view) == null ? void 0 : _e.page) == null ? void 0 : _f.sessionProps,
+      (_h = (_g = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _g.page) == null ? void 0 : _h.sessionProps,
+      (_j = (_i = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _i.page) == null ? void 0 : _j.sessionProps,
+      (_o = (_n = (_m = (_l = (_k = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _k.view) == null ? void 0 : _l.page) == null ? void 0 : _m.parent) == null ? void 0 : _n.page) == null ? void 0 : _o.sessionProps,
+      (_t = (_s = (_r = (_q = (_p = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _p.view) == null ? void 0 : _q.page) == null ? void 0 : _r.parent) == null ? void 0 : _s.page) == null ? void 0 : _t.sessionProps,
+      (_x = (_w = (_v = (_u = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _u.page) == null ? void 0 : _v.parent) == null ? void 0 : _w.page) == null ? void 0 : _x.sessionProps,
+      (_B = (_A = (_z = (_y = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _y.page) == null ? void 0 : _z.parent) == null ? void 0 : _A.page) == null ? void 0 : _B.sessionProps,
+      (_C = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _C.sessionProps,
+      (_F = (_E = (_D = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _D.parent) == null ? void 0 : _E.page) == null ? void 0 : _F.sessionProps,
+      (_H = (_G = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _G.page) == null ? void 0 : _H.sessionProps,
+      (_K = (_J = (_I = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _I.view) == null ? void 0 : _J.page) == null ? void 0 : _K.sessionProps,
+      (_L = globalDesigner == null ? void 0 : globalDesigner.page) == null ? void 0 : _L.sessionProps,
+      (_N = (_M = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _M.page) == null ? void 0 : _N.sessionProps,
+      (_Q = (_P = (_O = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _O.view) == null ? void 0 : _P.page) == null ? void 0 : _Q.sessionProps
+    ].filter(Boolean);
+  }
+  function detectDomThemeName(anchorElement = null) {
     var _a;
     if (typeof document === "undefined") {
       return "";
+    }
+    const readElementTheme = (element) => {
+      const theme = getElementThemeCandidates(element).map(normalizePerspectiveThemeName).find(Boolean);
+      return theme || "";
+    };
+    let current = (anchorElement == null ? void 0 : anchorElement.nodeType) === 1 ? anchorElement : null;
+    while (current) {
+      const theme = readElementTheme(current);
+      if (theme) {
+        return theme;
+      }
+      current = current.parentElement || null;
+    }
+    const documentTheme = [
+      document.documentElement,
+      document.body
+    ].map(readElementTheme).find(Boolean);
+    if (documentTheme) {
+      return documentTheme;
     }
     const themeSelectors = [
       "[data-theme*='terra-dark']",
@@ -24493,42 +24672,67 @@ var MesoraDrawingToolBundle = (() => {
       "[class*='ia_theme--terra-dark']",
       "[class*='ia_theme--terra-light']"
     ];
-    const candidates = [
-      ...getElementThemeCandidates(document.documentElement),
-      ...getElementThemeCandidates(document.body)
-    ];
+    const candidates = [];
     for (const selector of themeSelectors) {
       try {
-        const element = (_a = document.querySelector) == null ? void 0 : _a.call(document, selector);
-        if (element) {
+        const elements = Array.from(((_a = document.querySelectorAll) == null ? void 0 : _a.call(document, selector)) || []).slice(0, 20);
+        elements.forEach((element) => {
           candidates.push(...getElementThemeCandidates(element), selector);
-        }
+        });
       } catch (_error) {
       }
     }
     return candidates.map(normalizePerspectiveThemeName).find(Boolean) || "";
   }
   function findThemeInObject(value, depth = 4, seen = /* @__PURE__ */ new Set()) {
-    const direct = normalizePerspectiveThemeName(value);
-    if (direct || depth <= 0 || !value || typeof value !== "object" || seen.has(value)) {
-      return direct;
+    if (!value || depth <= 0) {
+      return normalizePerspectiveThemeName(value);
+    }
+    if (typeof value !== "object") {
+      return normalizePerspectiveThemeName(value);
+    }
+    if (seen.has(value)) {
+      return "";
     }
     seen.add(value);
-    const priorityKeys = ["theme", "themeName", "selectedTheme", "currentTheme", "session", "props", "page", "view", "project"];
+    const priorityKeys = ["session", "props", "page", "view", "project", "selectedTheme", "currentTheme", "themeName", "theme"];
     for (const key of priorityKeys) {
-      if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      const nextValue = readObjectSegmentValue(value, key);
+      if (nextValue === void 0 || nextValue === null) {
         continue;
       }
-      const theme = findThemeInObject(value[key], depth - 1, seen);
+      const theme = findThemeInObject(nextValue, depth - 1, seen);
       if (theme) {
         return theme;
       }
+    }
+    const direct = normalizePerspectiveThemeName(value);
+    if (direct) {
+      return direct;
     }
     let entries = [];
     try {
       entries = Object.entries(value).slice(0, 80);
     } catch (_error) {
       entries = [];
+    }
+    if (!entries.length) {
+      try {
+        if (typeof value.keys === "function" && typeof value.get === "function") {
+          entries = Array.from(value.keys()).slice(0, 80).map((key) => [key, value.get(key)]);
+        }
+      } catch (_error) {
+        entries = [];
+      }
+    }
+    if (!entries.length) {
+      try {
+        if (typeof value.toJS === "function") {
+          entries = Object.entries(value.toJS()).slice(0, 80);
+        }
+      } catch (_error) {
+        entries = [];
+      }
     }
     for (const [key, entryValue] of entries) {
       if (/theme/i.test(key)) {
@@ -24540,39 +24744,74 @@ var MesoraDrawingToolBundle = (() => {
     }
     return "";
   }
-  function getPerspectiveSessionThemeName(componentProps) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M;
+  function getPerspectiveSessionThemeName(componentProps, themeElement = null) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$, _aa, _ba, _ca, _da, _ea, _fa, _ga, _ha, _ia, _ja, _ka, _la, _ma, _na, _oa, _pa, _qa, _ra, _sa, _ta, _ua, _va, _wa, _xa, _ya, _za, _Aa, _Ba, _Ca, _Da, _Ea, _Fa, _Ga, _Ha, _Ia, _Ja, _Ka, _La, _Ma, _Na, _Oa, _Pa, _Qa, _Ra, _Sa, _Ta, _Ua, _Va, _Wa, _Xa, _Ya, _Za, __a, _$a, _ab, _bb, _cb, _db, _eb, _fb, _gb, _hb;
     const nestedProps = getComponentPropSource(componentProps);
     const globalClient = typeof window !== "undefined" ? window.__client : null;
     const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
     const sources = [
+      ...getPerspectiveSessionPropTrees(componentProps),
       componentProps,
       nestedProps,
       componentProps == null ? void 0 : componentProps.store,
       nestedProps == null ? void 0 : nestedProps.store,
-      (_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.view,
-      (_b = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _b.view,
-      (_d = (_c = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _c.view) == null ? void 0 : _d.page,
-      (_f = (_e = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _e.view) == null ? void 0 : _f.page,
+      (_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.props,
+      (_b = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _b.props,
+      (_c = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _c.page,
+      (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.page,
+      (_f = (_e = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _e.page) == null ? void 0 : _f.props,
+      (_h = (_g = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _g.page) == null ? void 0 : _h.props,
+      (_i = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _i.view,
+      (_j = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _j.view,
+      (_l = (_k = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _k.view) == null ? void 0 : _l.page,
+      (_n = (_m = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _m.view) == null ? void 0 : _n.page,
+      (_q = (_p = (_o = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _o.view) == null ? void 0 : _p.page) == null ? void 0 : _q.props,
+      (_t = (_s = (_r = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _r.view) == null ? void 0 : _s.page) == null ? void 0 : _t.props,
+      (_w = (_v = (_u = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _u.view) == null ? void 0 : _v.page) == null ? void 0 : _w.sessionProps,
+      (_z = (_y = (_x = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _x.view) == null ? void 0 : _y.page) == null ? void 0 : _z.sessionProps,
+      (_D = (_C = (_B = (_A = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _A.view) == null ? void 0 : _B.page) == null ? void 0 : _C.parent) == null ? void 0 : _D.page,
+      (_H = (_G = (_F = (_E = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _E.view) == null ? void 0 : _F.page) == null ? void 0 : _G.parent) == null ? void 0 : _H.page,
+      (_M = (_L = (_K = (_J = (_I = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _I.view) == null ? void 0 : _J.page) == null ? void 0 : _K.parent) == null ? void 0 : _L.page) == null ? void 0 : _M.sessionProps,
+      (_R = (_Q = (_P = (_O = (_N = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _N.view) == null ? void 0 : _O.page) == null ? void 0 : _P.parent) == null ? void 0 : _Q.page) == null ? void 0 : _R.sessionProps,
       globalClient,
       globalClient == null ? void 0 : globalClient.session,
+      globalClient == null ? void 0 : globalClient.page,
+      (_S = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _S.sessionProps,
       globalClient == null ? void 0 : globalClient.store,
-      (_g = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _g.session,
-      (_h = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _h.page,
-      (_j = (_i = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _i.page) == null ? void 0 : _j.session,
-      (_k = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _k.view,
-      (_m = (_l = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _l.view) == null ? void 0 : _m.session,
-      (_o = (_n = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _n.view) == null ? void 0 : _o.page,
-      (_r = (_q = (_p = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _p.view) == null ? void 0 : _q.page) == null ? void 0 : _r.session,
+      (_U = (_T = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _T.getState) == null ? void 0 : _U.call(_T),
+      (_V = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _V.props,
+      (_W = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _W.session,
+      (_X = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _X.page,
+      (_Z = (_Y = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Y.page) == null ? void 0 : _Z.props,
+      (_$ = (__ = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : __.page) == null ? void 0 : _$.session,
+      (_aa = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _aa.view,
+      (_ca = (_ba = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _ba.view) == null ? void 0 : _ca.props,
+      (_ea = (_da = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _da.view) == null ? void 0 : _ea.session,
+      (_ga = (_fa = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _fa.view) == null ? void 0 : _ga.page,
+      (_ja = (_ia = (_ha = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _ha.view) == null ? void 0 : _ia.page) == null ? void 0 : _ja.props,
+      (_ma = (_la = (_ka = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _ka.view) == null ? void 0 : _la.page) == null ? void 0 : _ma.session,
+      (_pa = (_oa = (_na = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _na.view) == null ? void 0 : _oa.page) == null ? void 0 : _pa.sessionProps,
       globalDesigner,
       globalDesigner == null ? void 0 : globalDesigner.session,
+      globalDesigner == null ? void 0 : globalDesigner.page,
+      (_qa = globalDesigner == null ? void 0 : globalDesigner.page) == null ? void 0 : _qa.sessionProps,
       globalDesigner == null ? void 0 : globalDesigner.store,
-      (_s = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _s.session,
-      (_t = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _t.view,
-      (_v = (_u = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _u.view) == null ? void 0 : _v.session,
-      (_x = (_w = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _w.view) == null ? void 0 : _x.page
+      (_sa = (_ra = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _ra.getState) == null ? void 0 : _sa.call(_ra),
+      (_ta = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _ta.props,
+      (_ua = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _ua.session,
+      (_va = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _va.page,
+      (_xa = (_wa = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _wa.page) == null ? void 0 : _xa.props,
+      (_ya = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _ya.view,
+      (_Aa = (_za = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _za.view) == null ? void 0 : _Aa.props,
+      (_Ca = (_Ba = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _Ba.view) == null ? void 0 : _Ca.session,
+      (_Ea = (_Da = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _Da.view) == null ? void 0 : _Ea.page,
+      (_Ha = (_Ga = (_Fa = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _Fa.view) == null ? void 0 : _Ga.page) == null ? void 0 : _Ha.props,
+      (_Ka = (_Ja = (_Ia = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _Ia.view) == null ? void 0 : _Ja.page) == null ? void 0 : _Ka.sessionProps
     ].filter(Boolean);
     const paths = [
+      "theme",
+      "props.theme",
+      "sessionProps.theme",
       "session.props.theme",
       "session.props.theme.name",
       "session.props.theme.value",
@@ -24587,9 +24826,7 @@ var MesoraDrawingToolBundle = (() => {
       "page.props.session.props.theme",
       "view.session.props.theme",
       "view.session.props.theme.name",
-      "view.props.session.props.theme",
-      "project.props.theme",
-      "project.theme"
+      "view.props.session.props.theme"
     ];
     for (const source of sources) {
       for (const path of paths) {
@@ -24599,25 +24836,27 @@ var MesoraDrawingToolBundle = (() => {
         }
       }
     }
-    const domTheme = detectDomThemeName();
-    if (domTheme) {
-      return domTheme;
-    }
     const sessionRoots = [
       componentProps == null ? void 0 : componentProps.session,
       nestedProps == null ? void 0 : nestedProps.session,
-      (_y = componentProps == null ? void 0 : componentProps.props) == null ? void 0 : _y.session,
-      (_z = nestedProps == null ? void 0 : nestedProps.props) == null ? void 0 : _z.session,
-      (_A = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _A.session,
-      (_B = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _B.session,
+      (_La = componentProps == null ? void 0 : componentProps.props) == null ? void 0 : _La.session,
+      (_Ma = nestedProps == null ? void 0 : nestedProps.props) == null ? void 0 : _Ma.session,
+      (_Na = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _Na.session,
+      (_Oa = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _Oa.session,
+      ...getPerspectiveSessionPropTrees(componentProps),
       globalClient == null ? void 0 : globalClient.session,
-      (_C = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _C.session,
-      (_E = (_D = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _D.page) == null ? void 0 : _E.session,
-      (_G = (_F = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _F.view) == null ? void 0 : _G.session,
-      (_J = (_I = (_H = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _H.view) == null ? void 0 : _I.page) == null ? void 0 : _J.session,
+      (_Pa = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _Pa.sessionProps,
+      (_Qa = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Qa.session,
+      (_Sa = (_Ra = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Ra.page) == null ? void 0 : _Sa.session,
+      (_Ua = (_Ta = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Ta.page) == null ? void 0 : _Ua.sessionProps,
+      (_Wa = (_Va = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Va.view) == null ? void 0 : _Wa.session,
+      (_Za = (_Ya = (_Xa = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Xa.view) == null ? void 0 : _Ya.page) == null ? void 0 : _Za.session,
+      (_ab = (_$a = (__a = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : __a.view) == null ? void 0 : _$a.page) == null ? void 0 : _ab.sessionProps,
       globalDesigner == null ? void 0 : globalDesigner.session,
-      (_K = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _K.session,
-      (_M = (_L = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _L.view) == null ? void 0 : _M.session
+      (_bb = globalDesigner == null ? void 0 : globalDesigner.page) == null ? void 0 : _bb.sessionProps,
+      (_cb = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _cb.session,
+      (_eb = (_db = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _db.view) == null ? void 0 : _eb.session,
+      (_hb = (_gb = (_fb = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _fb.view) == null ? void 0 : _gb.page) == null ? void 0 : _hb.sessionProps
     ].filter(Boolean);
     for (const source of sessionRoots) {
       const theme = findThemeInObject(source);
@@ -24625,17 +24864,25 @@ var MesoraDrawingToolBundle = (() => {
         return theme;
       }
     }
+    const domTheme = detectDomThemeName(themeElement);
+    if (domTheme) {
+      return domTheme;
+    }
     return "";
   }
-  function getPerspectiveThemeName(componentProps) {
-    return getPerspectiveSessionThemeName(componentProps) || normalizePerspectiveThemeName(getModelValue(componentProps, "theme", "")) || "light";
+  function getPerspectiveThemeName(componentProps, themeElement = null) {
+    return normalizePerspectiveThemeName(getModelValue(componentProps, "sessionTheme", "")) || normalizePerspectiveThemeName(getModelValue(componentProps, "perspectiveTheme", "")) || getPerspectiveSessionThemeName(componentProps, themeElement) || normalizePerspectiveThemeName(getModelValue(componentProps, "theme", "")) || "light";
   }
   function isLegacyCanvasBackgroundDefault(value) {
     const normalized = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
-    return normalized === "#0f172a" || normalized === "rgb(15,23,42)" || normalized === "rgba(15,23,42,1)" || normalized === "#0f141c" || normalized === "rgb(15,20,28)" || normalized === "rgba(15,20,28,1)" || normalized === "#f8fafc" || normalized === "rgb(248,250,252)" || normalized === "rgba(248,250,252,1)" || normalized === "#ffffff" || normalized === "#fff" || normalized === "rgb(255,255,255)" || normalized === "rgba(255,255,255,1)" || normalized === "var(--canvas-bg)";
+    return normalized === "#0f172a" || normalized === "rgb(15,23,42)" || normalized === "rgba(15,23,42,1)" || normalized === "#0f141c" || normalized === "rgb(15,20,28)" || normalized === "rgba(15,20,28,1)" || normalized === "#f8fafc" || normalized === "rgb(248,250,252)" || normalized === "rgba(248,250,252,1)" || normalized === "#d5d5d5" || normalized === "rgb(213,213,213)" || normalized === "rgba(213,213,213,1)" || normalized === "#ffffff" || normalized === "#fff" || normalized === "rgb(255,255,255)" || normalized === "rgba(255,255,255,1)" || normalized === "var(--canvas-bg)";
   }
   function getThemeCanvasBackground(theme) {
-    return normalizePerspectiveThemeName(theme) === "dark" ? "var(--vizi-canvas-bg-dark, #0f141c)" : "var(--vizi-canvas-bg-light, #ffffff)";
+    return normalizePerspectiveThemeName(theme) === "dark" ? "#0f172a" : "#D5D5D5";
+  }
+  function isThemeDrivenCanvasBackgroundRequest(value) {
+    const normalized = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+    return !normalized || normalized === "auto" || normalized === "theme" || normalized === "session" || normalized === "inherit" || isLegacyCanvasBackgroundDefault(normalized);
   }
   function useDomThemeVersion() {
     const [version2, setVersion] = useState(0);
@@ -24659,14 +24906,61 @@ var MesoraDrawingToolBundle = (() => {
     }, []);
     return version2;
   }
+  function usePerspectiveThemeVersion(componentProps) {
+    const domVersion = useDomThemeVersion();
+    const [sessionVersion, setSessionVersion] = useState(0);
+    const propsRef = useRef(componentProps);
+    const lastThemeRef = useRef("");
+    useEffect(() => {
+      propsRef.current = componentProps;
+    }, [componentProps]);
+    useEffect(() => {
+      const trees = Array.from(new Set(getPerspectiveSessionPropTrees(componentProps)));
+      const disposers = [];
+      trees.forEach((tree) => {
+        try {
+          if (typeof (tree == null ? void 0 : tree.subscribe) === "function") {
+            const dispose = tree.subscribe(() => {
+              setSessionVersion((previous) => (previous + 1) % 1e5);
+            });
+            if (typeof dispose === "function") {
+              disposers.push(dispose);
+            }
+          }
+        } catch (_error) {
+        }
+      });
+      return () => {
+        disposers.forEach((dispose) => {
+          try {
+            dispose();
+          } catch (_error) {
+          }
+        });
+      };
+    }, [componentProps]);
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return void 0;
+      }
+      const readTheme = () => getPerspectiveThemeName(propsRef.current);
+      lastThemeRef.current = readTheme();
+      const interval = window.setInterval(() => {
+        const nextTheme = readTheme();
+        if (nextTheme === lastThemeRef.current) {
+          return;
+        }
+        lastThemeRef.current = nextTheme;
+        setSessionVersion((previous) => (previous + 1) % 1e5);
+      }, 1e3);
+      return () => window.clearInterval(interval);
+    }, []);
+    return domVersion + sessionVersion;
+  }
   function getPerspectiveCanvasBackground(componentProps, theme) {
     const explicitCanvasBackground = String(getModelValue(componentProps, "canvasBackgroundColor", "") || "").trim();
-    if (explicitCanvasBackground) {
+    if (!isThemeDrivenCanvasBackgroundRequest(explicitCanvasBackground)) {
       return explicitCanvasBackground;
-    }
-    const backgroundColor = String(getModelValue(componentProps, "backgroundColor", "") || "").trim();
-    if (backgroundColor && !isLegacyCanvasBackgroundDefault(backgroundColor)) {
-      return backgroundColor;
     }
     return getThemeCanvasBackground(theme);
   }
@@ -24972,6 +25266,16 @@ var MesoraDrawingToolBundle = (() => {
     }).filter(Boolean);
     return normalized.length ? normalized : cloneDefaultIgnitionFillMappings();
   }
+  function isDefaultIgnitionFillMappingSet(value) {
+    const mappings = coerceArray(value);
+    if (mappings.length !== DEFAULT_IGNITION_FILL_MAP.length) {
+      return false;
+    }
+    return DEFAULT_IGNITION_FILL_MAP.every((defaultEntry) => mappings.some((entry) => {
+      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+      return String((_e = (_d = (_c = (_b = (_a = entry == null ? void 0 : entry.value) != null ? _a : entry == null ? void 0 : entry.state) != null ? _b : entry == null ? void 0 : entry.field) != null ? _c : entry == null ? void 0 : entry.input) != null ? _d : entry == null ? void 0 : entry.key) != null ? _e : "").trim() === String(defaultEntry.value) && String((_k = (_j = (_i = (_h = (_g = (_f = entry == null ? void 0 : entry.color) != null ? _f : entry == null ? void 0 : entry.class) != null ? _g : entry == null ? void 0 : entry.styleClass) != null ? _h : entry == null ? void 0 : entry.className) != null ? _i : entry == null ? void 0 : entry.style) != null ? _j : entry == null ? void 0 : entry.cssClass) != null ? _k : "").trim().toLowerCase() === String(defaultEntry.color).toLowerCase();
+    }));
+  }
   function readStateStyleMapSource(value) {
     if (typeof value === "string") {
       const raw = value.trim();
@@ -25062,34 +25366,6 @@ var MesoraDrawingToolBundle = (() => {
       Object.entries(source).forEach(([stateKey, entry]) => pushRow(stateKey, entry));
     }
     return rows;
-  }
-  function getHmiStateStyleMappingValue(mapping) {
-    var _a, _b, _c, _d, _e;
-    return String(
-      (_e = (_d = (_c = (_b = (_a = mapping == null ? void 0 : mapping.value) != null ? _a : mapping == null ? void 0 : mapping.state) != null ? _b : mapping == null ? void 0 : mapping.field) != null ? _c : mapping == null ? void 0 : mapping.input) != null ? _d : mapping == null ? void 0 : mapping.key) != null ? _e : ""
-    ).trim();
-  }
-  function getHmiStateStyleMappingPaint(mapping) {
-    var _a, _b, _c, _d, _e, _f;
-    return String(
-      (_f = (_e = (_d = (_c = (_b = (_a = mapping == null ? void 0 : mapping.color) != null ? _a : mapping == null ? void 0 : mapping.class) != null ? _b : mapping == null ? void 0 : mapping.styleClass) != null ? _c : mapping == null ? void 0 : mapping.className) != null ? _d : mapping == null ? void 0 : mapping.style) != null ? _e : mapping == null ? void 0 : mapping.cssClass) != null ? _f : ""
-    ).trim();
-  }
-  function isHmiStateFallbackMapping(mapping) {
-    const value = getHmiStateStyleMappingValue(mapping).toLowerCase();
-    return value === "fallback" || value === "default" || value === "else" || value === "otherwise";
-  }
-  function getHmiStateStyleFallbackPaint(mappings) {
-    for (const mapping of coerceArray(mappings)) {
-      if (!isHmiStateFallbackMapping(mapping)) {
-        continue;
-      }
-      const paint = getHmiStateStyleMappingPaint(mapping);
-      if (paint) {
-        return paint;
-      }
-    }
-    return "";
   }
   function looksLikeHmiStateStyleTable(value) {
     const source = readStateStyleMapSource(value);
@@ -25388,7 +25664,7 @@ var MesoraDrawingToolBundle = (() => {
     return Array.isArray(stateStyleMapIndex == null ? void 0 : stateStyleMapIndex.defaultRows) ? stateStyleMapIndex.defaultRows : [];
   }
   function getOverlayHmiStateStyleBinding(overlay, stateStyleMapIndex) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d;
     const mappings = getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex);
     if (!mappings.length) {
       return null;
@@ -25400,10 +25676,7 @@ var MesoraDrawingToolBundle = (() => {
     if (!tagPath) {
       return null;
     }
-    const mappedFallbackColor = getHmiStateStyleFallbackPaint(mappings);
-    const fallbackColor = String(
-      mappedFallbackColor || ((_e = currentBinding == null ? void 0 : currentBinding.transform) == null ? void 0 : _e.fallbackColor) || (currentBinding == null ? void 0 : currentBinding.fallbackColor) || (overlay == null ? void 0 : overlay.fill) || DEFAULT_FILL
-    ).trim() || DEFAULT_FILL;
+    const fallbackColor = DEFAULT_FILL;
     return {
       ...isPlainObject(currentBinding) ? currentBinding : {},
       type: "tag",
@@ -25681,7 +25954,6 @@ var MesoraDrawingToolBundle = (() => {
     return overlayWithoutBindings;
   }
   function applyOverlayIgnitionFillBinding(overlay, rawTagPath) {
-    var _a, _b, _c;
     const nextTagPath = String(rawTagPath != null ? rawTagPath : "").trim();
     const currentBindings = isPlainObject(overlay == null ? void 0 : overlay.bindings) ? overlay.bindings : {};
     const isDiverter = isDiverterOverlay(overlay);
@@ -25707,9 +25979,7 @@ var MesoraDrawingToolBundle = (() => {
       );
     }
     const existingBinding = getOverlayFillBinding(overlay);
-    const fallbackColor = String(
-      (_c = (_b = (_a = existingBinding == null ? void 0 : existingBinding.transform) == null ? void 0 : _a.fallbackColor) != null ? _b : overlay == null ? void 0 : overlay.fill) != null ? _c : DEFAULT_FILL
-    ).trim() || DEFAULT_FILL;
+    const fallbackColor = DEFAULT_FILL;
     return {
       ...overlay,
       tagPath: nextTagPath,
@@ -26268,22 +26538,26 @@ var MesoraDrawingToolBundle = (() => {
   }
   function getOverlayHmiStateColor(overlay, rawState, stateStyleMapIndex = null) {
     var _a, _b;
+    const stateText = String(rawState != null ? rawState : "").trim();
+    if (!stateText) {
+      return DEFAULT_FILL;
+    }
     const hmiStateStyleMappings = getHmiStateStyleMappingsForOverlay(overlay, stateStyleMapIndex);
     if (hmiStateStyleMappings.length) {
-      const mappedPaint = resolveIgnitionStateMappingColor(hmiStateStyleMappings, rawState);
+      const mappedPaint = resolveIgnitionStateMappingColor(hmiStateStyleMappings, stateText);
       if (mappedPaint) {
         return mappedPaint;
       }
-      const fallbackPaint = getHmiStateStyleFallbackPaint(hmiStateStyleMappings);
-      if (fallbackPaint) {
-        return fallbackPaint;
-      }
+      return DEFAULT_FILL;
     }
     const binding = getOverlayFillBinding(overlay);
     const mappings = normalizeIgnitionFillBindingMappings(
       (_b = (_a = binding == null ? void 0 : binding.transform) == null ? void 0 : _a.mappings) != null ? _b : binding == null ? void 0 : binding.mappings
     );
-    return resolveIgnitionStateMappingColor(mappings, rawState);
+    if (isDefaultIgnitionFillMappingSet(mappings)) {
+      return DEFAULT_FILL;
+    }
+    return resolveIgnitionStateMappingColor(mappings, stateText) || DEFAULT_FILL;
   }
   function toPositiveNumber(value) {
     const next = Number(value);
@@ -26845,7 +27119,7 @@ var MesoraDrawingToolBundle = (() => {
       }
       return nextValue;
     };
-    const candidatePaths = path.startsWith("model.") ? [path] : [path, `model.${path}`];
+    const candidatePaths = path.startsWith("model.") ? [path] : [`model.${path}`, path];
     const writers = [];
     const sanitizedValue = sanitizePerspectiveValue(value);
     if (sanitizedValue === void 0) {
@@ -27015,6 +27289,28 @@ var MesoraDrawingToolBundle = (() => {
       tx: Number(overlay.tx || 0),
       ty: Number(overlay.ty || 0)
     };
+  }
+  function didShapeMoveFromSnapshot(shape, snapshot2) {
+    if (!shape || !snapshot2) {
+      return false;
+    }
+    if (snapshot2.kind === "text") {
+      return Math.abs(Number(shape.x || 0) - Number(snapshot2.x || 0)) >= 1e-3 || Math.abs(Number(shape.y || 0) - Number(snapshot2.y || 0)) >= 1e-3;
+    }
+    if (snapshot2.kind === "polyline") {
+      const points = Array.isArray(shape.points) ? shape.points : EMPTY_ARRAY;
+      if (points.length !== snapshot2.points.length) {
+        return true;
+      }
+      return points.some((point, index2) => !pointsEqual(point, snapshot2.points[index2]));
+    }
+    return Math.abs(Number(shape.x || 0) - Number(snapshot2.x || 0)) >= 1e-3 || Math.abs(Number(shape.y || 0) - Number(snapshot2.y || 0)) >= 1e-3;
+  }
+  function didOverlayMoveFromSnapshot(overlay, snapshot2) {
+    if (!overlay || !snapshot2) {
+      return false;
+    }
+    return Math.abs(Number(overlay.tx || 0) - Number(snapshot2.tx || 0)) >= 1e-3 || Math.abs(Number(overlay.ty || 0) - Number(snapshot2.ty || 0)) >= 1e-3;
   }
   function buildShapeResizeSnapshot(shape) {
     if (!shape || typeof shape !== "object") {
@@ -28912,7 +29208,7 @@ var MesoraDrawingToolBundle = (() => {
   }
   function PerspectiveViziCanvasBridge(props) {
     var _a, _b, _c, _d, _e, _f, _g, _h;
-    useDomThemeVersion();
+    usePerspectiveThemeVersion(props);
     const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(/* @__PURE__ */ new Map());
@@ -29041,6 +29337,8 @@ var MesoraDrawingToolBundle = (() => {
     const [propertyPanelResizing, setPropertyPanelResizing] = useState(false);
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
+    const localShapesWriteRef = useRef({ key: externalShapesKey, until: 0 });
+    const localOverlaysWriteRef = useRef({ key: externalOverlaysKey, until: 0 });
     const clipboardRef = useRef({ shapes: [], overlays: [], pasteCount: 0 });
     const historyRef = useRef({ past: [], future: [], current: null });
     const historyRestoreRef = useRef(false);
@@ -29206,15 +29504,18 @@ var MesoraDrawingToolBundle = (() => {
       if (typeof window === "undefined") {
         return void 0;
       }
-      const clampWidthToRoot = (value) => clampPropertyPanelWidth(
+      const clampWidthToViewport = (value) => clampPropertyPanelWidth(
         value,
-        Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+        Math.max(
+          PROPERTY_PANEL_MIN_WIDTH,
+          Number(browserViewportWidth || (rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH) - 32
+        )
       );
-      const clampHeightToRoot = (value, panelTop = 0) => clampPropertyPanelHeight(
+      const clampHeightToViewport = (value, panelTop = 0) => clampPropertyPanelHeight(
         value,
         Math.max(
           PROPERTY_PANEL_MIN_HEIGHT,
-          Number((rootSize == null ? void 0 : rootSize.height) || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) - Number(panelTop || 0) - 16
+          Number(browserViewportHeight || (rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT) - Number(panelTop || 0) - 16
         )
       );
       function onMove(event) {
@@ -29222,14 +29523,14 @@ var MesoraDrawingToolBundle = (() => {
           return;
         }
         if (propertyPanelResizeRef.current.mode === "height") {
-          const nextHeight = clampHeightToRoot(
+          const nextHeight = clampHeightToViewport(
             propertyPanelResizeRef.current.startHeight + (Number(event.clientY) - propertyPanelResizeRef.current.startY),
             propertyPanelResizeRef.current.panelTop
           );
           setPropertyPanelHeight(nextHeight);
           return;
         }
-        const nextWidth = clampWidthToRoot(
+        const nextWidth = clampWidthToViewport(
           propertyPanelResizeRef.current.startWidth + (Number(event.clientX) - propertyPanelResizeRef.current.startX)
         );
         setPropertyPanelWidth(nextWidth);
@@ -29269,7 +29570,10 @@ var MesoraDrawingToolBundle = (() => {
       setPropertyPanelWidth(
         (previous) => clampPropertyPanelWidth(
           previous,
-          Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+          Math.max(
+            PROPERTY_PANEL_MIN_WIDTH,
+            Number(browserViewportWidth || (rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH) - 32
+          )
         )
       );
       setPropertyPanelHeight(
@@ -29277,7 +29581,7 @@ var MesoraDrawingToolBundle = (() => {
           previous,
           Math.max(
             PROPERTY_PANEL_MIN_HEIGHT,
-            Number((rootSize == null ? void 0 : rootSize.height) || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) - 32
+            Number(browserViewportHeight || (rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT) - 32
           )
         )
       );
@@ -29298,13 +29602,35 @@ var MesoraDrawingToolBundle = (() => {
     }, [propertyPanelResizing]);
     useEffect(() => {
       const next = coerceArray(externalShapes);
+      const nextKey = JSON.stringify(next);
+      const localKey = JSON.stringify(shapesRef.current);
+      const pendingLocalWrite = localShapesWriteRef.current;
+      if (nextKey === localKey) {
+        localShapesWriteRef.current = { key: nextKey, until: 0 };
+        return;
+      }
+      if (Date.now() < Number((pendingLocalWrite == null ? void 0 : pendingLocalWrite.until) || 0) && (pendingLocalWrite == null ? void 0 : pendingLocalWrite.key) === localKey) {
+        return;
+      }
       shapesRef.current = next;
       setShapesState(next);
+      localShapesWriteRef.current = { key: nextKey, until: 0 };
     }, [externalShapesKey]);
     useEffect(() => {
       const next = coerceArray(externalOverlays);
+      const nextKey = JSON.stringify(next);
+      const localKey = JSON.stringify(overlaysRef.current);
+      const pendingLocalWrite = localOverlaysWriteRef.current;
+      if (nextKey === localKey) {
+        localOverlaysWriteRef.current = { key: nextKey, until: 0 };
+        return;
+      }
+      if (Date.now() < Number((pendingLocalWrite == null ? void 0 : pendingLocalWrite.until) || 0) && (pendingLocalWrite == null ? void 0 : pendingLocalWrite.key) === localKey) {
+        return;
+      }
       overlaysRef.current = next;
       setSvgOverlaysState(next);
+      localOverlaysWriteRef.current = { key: nextKey, until: 0 };
     }, [externalOverlaysKey]);
     useEffect(() => {
       setSelectedIds(coerceArray(externalSelectedIds));
@@ -29594,6 +29920,7 @@ var MesoraDrawingToolBundle = (() => {
           typeof updater === "function" ? updater(shapesRef.current) : updater
         );
         shapesRef.current = nextShapes;
+        localShapesWriteRef.current = { key: JSON.stringify(nextShapes), until: Date.now() + 2e3 };
         setShapesState(nextShapes);
         if (options.persist) {
           persistShapes(nextShapes);
@@ -29608,6 +29935,7 @@ var MesoraDrawingToolBundle = (() => {
           typeof updater === "function" ? updater(overlaysRef.current) : updater
         );
         overlaysRef.current = nextOverlays;
+        localOverlaysWriteRef.current = { key: JSON.stringify(nextOverlays), until: Date.now() + 2e3 };
         setSvgOverlaysState(nextOverlays);
         if (options.persist) {
           persistSvgOverlays(nextOverlays);
@@ -30532,7 +30860,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       });
       return out;
     }, [svgOverlays, ignitionTagMetaByPath]);
-    const theme = getPerspectiveThemeName(props);
+    const theme = getPerspectiveThemeName(props, rootRef.current);
     const canvasBackgroundColor = getPerspectiveCanvasBackground(props, theme);
     const pointFromEvent = useCallback((event) => {
       var _a2, _b2;
@@ -31884,7 +32212,6 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       retargetPropertiesPanelIfOpen(`shape:${shapeId}`);
       if (!alreadySelected) {
         setEditingId(null);
-        return;
       }
       beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
     }, [beginSelectionDrag, closePropertiesPanel, editingId, isShapeSelectableByMode, pointFromEvent, retargetPropertiesPanelIfOpen, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
@@ -31922,9 +32249,6 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       setSelectedSegment(null);
       setEditingId(null);
       retargetPropertiesPanelIfOpen(`overlay:${overlayId}`);
-      if (!alreadySelected) {
-        return;
-      }
       beginSelectionDrag(pointFromEvent(event), dragShapeIds, dragOverlayIds);
     }, [beginSelectionDrag, closePropertiesPanel, overlaysSelectable, pointFromEvent, retargetPropertiesPanelIfOpen, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool]);
     const handleShapeDoubleClick = useCallback((event, id) => {
@@ -32631,10 +32955,20 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         return;
       }
       if (dragState == null ? void 0 : dragState.start) {
-        if (Object.keys(dragState.shapeSnapshotsById || {}).length) {
+        const shapeSnapshots = Object.values(dragState.shapeSnapshotsById || {});
+        const overlaySnapshots = Object.values(dragState.overlaySnapshotsById || {});
+        const shapesMoved = shapeSnapshots.some((snapshot2) => {
+          const shape = shapesRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === String((snapshot2 == null ? void 0 : snapshot2.id) || ""));
+          return didShapeMoveFromSnapshot(shape, snapshot2);
+        });
+        const overlaysMoved = overlaySnapshots.some((snapshot2) => {
+          const overlay = overlaysRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === String((snapshot2 == null ? void 0 : snapshot2.id) || ""));
+          return didOverlayMoveFromSnapshot(overlay, snapshot2);
+        });
+        if (shapesMoved) {
           persistShapes(shapesRef.current);
         }
-        if (Object.keys(dragState.overlaySnapshotsById || {}).length) {
+        if (overlaysMoved) {
           persistSvgOverlays(overlaysRef.current);
         }
         setDragState(null);
@@ -33011,6 +33345,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     );
     const propertyTargetBounds = selectedOverlayBounds || selectedShapeBounds || selectedBBox;
     const floatingPropertyPanelStyle = useMemo(() => {
+      var _a2, _b2;
       if (!propertiesVisible || !propertyTargetBounds) {
         return null;
       }
@@ -33032,18 +33367,31 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       );
       const rootWidth = Number((rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH);
       const rootHeight = Number((rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT);
+      const rootRectForViewport = (_b2 = (_a2 = rootRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2);
+      const viewportWidth = typeof window !== "undefined" ? Number(window.innerWidth || 0) : 0;
+      const viewportHeight = typeof window !== "undefined" ? Number(window.innerHeight || 0) : 0;
       const rulerInset = showRulers ? CANVAS_RULER_SIZE : 0;
-      const panelWidth = clampPropertyPanelWidth(propertyPanelWidth, rootWidth);
-      const minTop = 16 + rulerInset;
-      const maxUsableHeight = Math.max(PROPERTY_PANEL_MIN_HEIGHT, rootHeight - minTop - 16);
+      const viewportRelativeWidth = rootRectForViewport && viewportWidth > 0 ? Math.max(PROPERTY_PANEL_MIN_WIDTH, viewportWidth - 32) : rootWidth;
+      const panelWidth = clampPropertyPanelWidth(propertyPanelWidth, viewportRelativeWidth);
+      const minTop = rootRectForViewport && viewportHeight > 0 ? Math.min(16 + rulerInset, 16 - Number(rootRectForViewport.top || 0) + rulerInset) : 16 + rulerInset;
+      const maxUsableHeight = Math.max(
+        PROPERTY_PANEL_MIN_HEIGHT,
+        rootRectForViewport && viewportHeight > 0 ? viewportHeight - Number(rootRectForViewport.top || 0) - minTop - 16 : rootHeight - minTop - 16
+      );
       const panelHeight = clampPropertyPanelHeight(propertyPanelHeight, maxUsableHeight);
-      const minLeft = 16;
-      const maxLeft = Math.max(minLeft, rootWidth - panelWidth - 16);
-      const maxTop = Math.max(minTop, rootHeight - panelHeight - 16);
+      const minLeft = rootRectForViewport && viewportWidth > 0 ? Math.min(16, 16 - Number(rootRectForViewport.left || 0)) : 16;
+      const maxLeft = Math.max(
+        minLeft,
+        rootRectForViewport && viewportWidth > 0 ? viewportWidth - Number(rootRectForViewport.left || 0) - panelWidth - 16 : rootWidth - panelWidth - 16
+      );
+      const maxTop = Math.max(
+        minTop,
+        rootRectForViewport && viewportHeight > 0 ? viewportHeight - Number(rootRectForViewport.top || 0) - panelHeight - 16 : rootHeight - panelHeight - 16
+      );
       const renderedAnchorRect = (() => {
-        var _a2, _b2, _c2;
+        var _a3, _b3, _c2;
         const root = rootRef.current;
-        const rootRect = (_a2 = root == null ? void 0 : root.getBoundingClientRect) == null ? void 0 : _a2.call(root);
+        const rootRect = (_a3 = root == null ? void 0 : root.getBoundingClientRect) == null ? void 0 : _a3.call(root);
         if (!root || !rootRect) {
           return null;
         }
@@ -33053,10 +33401,10 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           return null;
         }
         const rects = [];
-        (_c2 = (_b2 = root.querySelectorAll) == null ? void 0 : _b2.call(root, "[data-overlay-id], [data-shape-id]")) == null ? void 0 : _c2.forEach((node) => {
-          var _a3, _b3, _c3;
-          const overlayId = (_a3 = node.getAttribute) == null ? void 0 : _a3.call(node, "data-overlay-id");
-          const shapeId = (_b3 = node.getAttribute) == null ? void 0 : _b3.call(node, "data-shape-id");
+        (_c2 = (_b3 = root.querySelectorAll) == null ? void 0 : _b3.call(root, "[data-overlay-id], [data-shape-id]")) == null ? void 0 : _c2.forEach((node) => {
+          var _a4, _b4, _c3;
+          const overlayId = (_a4 = node.getAttribute) == null ? void 0 : _a4.call(node, "data-overlay-id");
+          const shapeId = (_b4 = node.getAttribute) == null ? void 0 : _b4.call(node, "data-shape-id");
           if (overlayId && overlayIdSet.has(String(overlayId)) || shapeId && shapeIdSet.has(String(shapeId))) {
             const rect = (_c3 = node.getBoundingClientRect) == null ? void 0 : _c3.call(node);
             if (rect && Number.isFinite(Number(rect.left)) && Number.isFinite(Number(rect.right)) && Number.isFinite(Number(rect.top)) && Number.isFinite(Number(rect.bottom)) && Number(rect.width) > 0 && Number(rect.height) > 0) {
@@ -33180,11 +33528,13 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         position: "fixed",
         left,
         top,
+        zIndex: 130,
         maxWidth: Math.max(180, viewportWidth - left - 16),
         height: panelHeight,
         maxHeight: panelHeight
       };
     }, [floatingPropertyPanelStyle, rootSize, showRulers]);
+    const propertyPanelStyle = fixedPropertyPanelStyle || floatingPropertyPanelStyle;
     const quickSvgPickerStyle = useMemo(() => {
       var _a2, _b2;
       if (!editorVisible || !(quickSvgPickerState == null ? void 0 : quickSvgPickerState.open)) {
@@ -34262,6 +34612,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       {
         ref: rootRef,
         "data-vizi-canvas-root": "1",
+        "data-vizi-theme": theme,
+        "data-vizi-canvas-background": canvasBackgroundColor,
         onMouseDownCapture: (event) => {
           if (!editorVisible || !propertiesSelectionKey || Number((event == null ? void 0 : event.button) || 0) !== 0) {
             return;
@@ -34292,6 +34644,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           height: "100%",
           minWidth: 0,
           minHeight: 0,
+          background: canvasBackgroundColor,
           ...browserRuntimeMode ? {
             display: "flex",
             alignItems: "flex-start",
@@ -34306,10 +34659,12 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
             height: Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom,
             flexShrink: 0,
             position: "relative",
-            transformOrigin: "top left"
+            transformOrigin: "top left",
+            background: canvasBackgroundColor
           } : {
             position: "absolute",
-            inset: 0
+            inset: 0,
+            background: canvasBackgroundColor
           }, children: /* @__PURE__ */ jsx(
             CanvasSvg_default,
             {
@@ -35145,11 +35500,11 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
               ]
             }
           ) : null,
-          editorVisible && propertiesVisible && floatingPropertyPanelStyle ? /* @__PURE__ */ jsxs(
+          editorVisible && propertiesVisible && propertyPanelStyle ? /* @__PURE__ */ jsxs(
             "div",
             {
               "data-vizi-properties-panel": "1",
-              style: floatingPropertyPanelStyle,
+              style: propertyPanelStyle,
               onPointerDown: stopInteractivePropagation,
               onMouseDown: stopInteractivePropagation,
               onMouseUp: stopInteractivePropagation,
@@ -35186,10 +35541,13 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                         startY: event.clientY,
                         startWidth: clampPropertyPanelWidth(
                           propertyPanelWidth,
-                          Number((rootSize == null ? void 0 : rootSize.width) || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+                          Math.max(
+                            PROPERTY_PANEL_MIN_WIDTH,
+                            Number(browserViewportWidth || (rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH) - 32
+                          )
                         ),
                         startHeight: propertyPanelHeight,
-                        panelTop: Number((floatingPropertyPanelStyle == null ? void 0 : floatingPropertyPanelStyle.top) || 0)
+                        panelTop: Number((propertyPanelStyle == null ? void 0 : propertyPanelStyle.top) || 0)
                       };
                       setPropertyPanelResizing(true);
                     },
@@ -35228,10 +35586,10 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           propertyPanelHeight,
                           Math.max(
                             PROPERTY_PANEL_MIN_HEIGHT,
-                            Number((rootSize == null ? void 0 : rootSize.height) || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) - Number((floatingPropertyPanelStyle == null ? void 0 : floatingPropertyPanelStyle.top) || 0) - 16
+                            Number(browserViewportHeight || (rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT) - Number((propertyPanelStyle == null ? void 0 : propertyPanelStyle.top) || 0) - 16
                           )
                         ),
-                        panelTop: Number((floatingPropertyPanelStyle == null ? void 0 : floatingPropertyPanelStyle.top) || 0)
+                        panelTop: Number((propertyPanelStyle == null ? void 0 : propertyPanelStyle.top) || 0)
                       };
                       setPropertyPanelResizing(true);
                     },
@@ -36537,9 +36895,58 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
   function isPlainObject2(value) {
     return value != null && typeof value === "object" && !Array.isArray(value);
   }
+  function readObjectSegmentValue2(source, segment) {
+    if (source == null || !segment) {
+      return void 0;
+    }
+    try {
+      if (Object.prototype.hasOwnProperty.call(Object(source), segment)) {
+        return source[segment];
+      }
+    } catch (_error) {
+    }
+    try {
+      if (typeof source.get === "function") {
+        const value = source.get(segment);
+        if (value !== void 0) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    try {
+      if (typeof source.readString === "function") {
+        const value = source.readString(segment, "");
+        if (value) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    try {
+      if (typeof source.read === "function") {
+        const value = source.read(segment, void 0);
+        if (value !== void 0) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    return void 0;
+  }
   function readObjectPathValue2(source, path) {
     if (!source || !path) {
       return void 0;
+    }
+    const segments = String(path).split(".").filter(Boolean);
+    try {
+      if (typeof source.getIn === "function") {
+        const value = source.getIn(segments);
+        if (value !== void 0 && value !== null) {
+          return value;
+        }
+      }
+    } catch (_error) {
     }
     try {
       if (typeof source.readString === "function") {
@@ -36559,11 +36966,20 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       }
     } catch (_error) {
     }
-    return String(path).split(".").filter(Boolean).reduce((acc, segment) => {
+    try {
+      if (typeof source.get === "function") {
+        const value = source.get(path);
+        if (value !== void 0 && value !== null) {
+          return value;
+        }
+      }
+    } catch (_error) {
+    }
+    return segments.reduce((acc, segment) => {
       if (acc == null) {
         return void 0;
       }
-      return acc[segment];
+      return readObjectSegmentValue2(acc, segment);
     }, source);
   }
   function normalizePerspectiveThemeName2(value) {
@@ -36601,10 +37017,52 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       element.className
     ];
   }
-  function detectDomThemeName2() {
+  function getPerspectiveSessionPropTrees2(componentProps) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q;
+    const nestedProps = getComponentPropSource2(componentProps);
+    const globalClient = typeof window !== "undefined" ? window.__client : null;
+    const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
+    return [
+      (_c = (_b = (_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.view) == null ? void 0 : _b.page) == null ? void 0 : _c.sessionProps,
+      (_f = (_e = (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.view) == null ? void 0 : _e.page) == null ? void 0 : _f.sessionProps,
+      (_h = (_g = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _g.page) == null ? void 0 : _h.sessionProps,
+      (_j = (_i = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _i.page) == null ? void 0 : _j.sessionProps,
+      (_o = (_n = (_m = (_l = (_k = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _k.view) == null ? void 0 : _l.page) == null ? void 0 : _m.parent) == null ? void 0 : _n.page) == null ? void 0 : _o.sessionProps,
+      (_t = (_s = (_r = (_q = (_p = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _p.view) == null ? void 0 : _q.page) == null ? void 0 : _r.parent) == null ? void 0 : _s.page) == null ? void 0 : _t.sessionProps,
+      (_x = (_w = (_v = (_u = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _u.page) == null ? void 0 : _v.parent) == null ? void 0 : _w.page) == null ? void 0 : _x.sessionProps,
+      (_B = (_A = (_z = (_y = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _y.page) == null ? void 0 : _z.parent) == null ? void 0 : _A.page) == null ? void 0 : _B.sessionProps,
+      (_C = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _C.sessionProps,
+      (_F = (_E = (_D = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _D.parent) == null ? void 0 : _E.page) == null ? void 0 : _F.sessionProps,
+      (_H = (_G = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _G.page) == null ? void 0 : _H.sessionProps,
+      (_K = (_J = (_I = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _I.view) == null ? void 0 : _J.page) == null ? void 0 : _K.sessionProps,
+      (_L = globalDesigner == null ? void 0 : globalDesigner.page) == null ? void 0 : _L.sessionProps,
+      (_N = (_M = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _M.page) == null ? void 0 : _N.sessionProps,
+      (_Q = (_P = (_O = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _O.view) == null ? void 0 : _P.page) == null ? void 0 : _Q.sessionProps
+    ].filter(Boolean);
+  }
+  function detectDomThemeName2(anchorElement = null) {
     var _a;
     if (typeof document === "undefined") {
       return "";
+    }
+    const readElementTheme = (element) => {
+      const theme = getElementThemeCandidates2(element).map(normalizePerspectiveThemeName2).find(Boolean);
+      return theme || "";
+    };
+    let current = (anchorElement == null ? void 0 : anchorElement.nodeType) === 1 ? anchorElement : null;
+    while (current) {
+      const theme = readElementTheme(current);
+      if (theme) {
+        return theme;
+      }
+      current = current.parentElement || null;
+    }
+    const documentTheme = [
+      document.documentElement,
+      document.body
+    ].map(readElementTheme).find(Boolean);
+    if (documentTheme) {
+      return documentTheme;
     }
     const themeSelectors = [
       "[data-theme*='terra-dark']",
@@ -36626,42 +37084,67 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       "[class*='ia_theme--terra-dark']",
       "[class*='ia_theme--terra-light']"
     ];
-    const candidates = [
-      ...getElementThemeCandidates2(document.documentElement),
-      ...getElementThemeCandidates2(document.body)
-    ];
+    const candidates = [];
     for (const selector of themeSelectors) {
       try {
-        const element = (_a = document.querySelector) == null ? void 0 : _a.call(document, selector);
-        if (element) {
+        const elements = Array.from(((_a = document.querySelectorAll) == null ? void 0 : _a.call(document, selector)) || []).slice(0, 20);
+        elements.forEach((element) => {
           candidates.push(...getElementThemeCandidates2(element), selector);
-        }
+        });
       } catch (_error) {
       }
     }
     return candidates.map(normalizePerspectiveThemeName2).find(Boolean) || "";
   }
   function findThemeInObject2(value, depth = 4, seen = /* @__PURE__ */ new Set()) {
-    const direct = normalizePerspectiveThemeName2(value);
-    if (direct || depth <= 0 || !value || typeof value !== "object" || seen.has(value)) {
-      return direct;
+    if (!value || depth <= 0) {
+      return normalizePerspectiveThemeName2(value);
+    }
+    if (typeof value !== "object") {
+      return normalizePerspectiveThemeName2(value);
+    }
+    if (seen.has(value)) {
+      return "";
     }
     seen.add(value);
-    const priorityKeys = ["theme", "themeName", "selectedTheme", "currentTheme", "session", "props", "page", "view", "project"];
+    const priorityKeys = ["session", "props", "page", "view", "project", "selectedTheme", "currentTheme", "themeName", "theme"];
     for (const key of priorityKeys) {
-      if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      const nextValue = readObjectSegmentValue2(value, key);
+      if (nextValue === void 0 || nextValue === null) {
         continue;
       }
-      const theme = findThemeInObject2(value[key], depth - 1, seen);
+      const theme = findThemeInObject2(nextValue, depth - 1, seen);
       if (theme) {
         return theme;
       }
+    }
+    const direct = normalizePerspectiveThemeName2(value);
+    if (direct) {
+      return direct;
     }
     let entries = [];
     try {
       entries = Object.entries(value).slice(0, 80);
     } catch (_error) {
       entries = [];
+    }
+    if (!entries.length) {
+      try {
+        if (typeof value.keys === "function" && typeof value.get === "function") {
+          entries = Array.from(value.keys()).slice(0, 80).map((key) => [key, value.get(key)]);
+        }
+      } catch (_error) {
+        entries = [];
+      }
+    }
+    if (!entries.length) {
+      try {
+        if (typeof value.toJS === "function") {
+          entries = Object.entries(value.toJS()).slice(0, 80);
+        }
+      } catch (_error) {
+        entries = [];
+      }
     }
     for (const [key, entryValue] of entries) {
       if (/theme/i.test(key)) {
@@ -36673,39 +37156,74 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     }
     return "";
   }
-  function getPerspectiveSessionThemeName2(componentProps) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M;
+  function getPerspectiveSessionThemeName2(componentProps, themeElement = null) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$, _aa, _ba, _ca, _da, _ea, _fa, _ga, _ha, _ia, _ja, _ka, _la, _ma, _na, _oa, _pa, _qa, _ra, _sa, _ta, _ua, _va, _wa, _xa, _ya, _za, _Aa, _Ba, _Ca, _Da, _Ea, _Fa, _Ga, _Ha, _Ia, _Ja, _Ka, _La, _Ma, _Na, _Oa, _Pa, _Qa, _Ra, _Sa, _Ta, _Ua, _Va, _Wa, _Xa, _Ya, _Za, __a, _$a, _ab, _bb, _cb, _db, _eb, _fb, _gb, _hb;
     const nestedProps = getComponentPropSource2(componentProps);
     const globalClient = typeof window !== "undefined" ? window.__client : null;
     const globalDesigner = typeof window !== "undefined" ? window._perspective_designer : null;
     const sources = [
+      ...getPerspectiveSessionPropTrees2(componentProps),
       componentProps,
       nestedProps,
       componentProps == null ? void 0 : componentProps.store,
       nestedProps == null ? void 0 : nestedProps.store,
-      (_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.view,
-      (_b = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _b.view,
-      (_d = (_c = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _c.view) == null ? void 0 : _d.page,
-      (_f = (_e = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _e.view) == null ? void 0 : _f.page,
+      (_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.props,
+      (_b = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _b.props,
+      (_c = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _c.page,
+      (_d = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _d.page,
+      (_f = (_e = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _e.page) == null ? void 0 : _f.props,
+      (_h = (_g = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _g.page) == null ? void 0 : _h.props,
+      (_i = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _i.view,
+      (_j = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _j.view,
+      (_l = (_k = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _k.view) == null ? void 0 : _l.page,
+      (_n = (_m = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _m.view) == null ? void 0 : _n.page,
+      (_q = (_p = (_o = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _o.view) == null ? void 0 : _p.page) == null ? void 0 : _q.props,
+      (_t = (_s = (_r = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _r.view) == null ? void 0 : _s.page) == null ? void 0 : _t.props,
+      (_w = (_v = (_u = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _u.view) == null ? void 0 : _v.page) == null ? void 0 : _w.sessionProps,
+      (_z = (_y = (_x = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _x.view) == null ? void 0 : _y.page) == null ? void 0 : _z.sessionProps,
+      (_D = (_C = (_B = (_A = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _A.view) == null ? void 0 : _B.page) == null ? void 0 : _C.parent) == null ? void 0 : _D.page,
+      (_H = (_G = (_F = (_E = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _E.view) == null ? void 0 : _F.page) == null ? void 0 : _G.parent) == null ? void 0 : _H.page,
+      (_M = (_L = (_K = (_J = (_I = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _I.view) == null ? void 0 : _J.page) == null ? void 0 : _K.parent) == null ? void 0 : _L.page) == null ? void 0 : _M.sessionProps,
+      (_R = (_Q = (_P = (_O = (_N = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _N.view) == null ? void 0 : _O.page) == null ? void 0 : _P.parent) == null ? void 0 : _Q.page) == null ? void 0 : _R.sessionProps,
       globalClient,
       globalClient == null ? void 0 : globalClient.session,
+      globalClient == null ? void 0 : globalClient.page,
+      (_S = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _S.sessionProps,
       globalClient == null ? void 0 : globalClient.store,
-      (_g = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _g.session,
-      (_h = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _h.page,
-      (_j = (_i = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _i.page) == null ? void 0 : _j.session,
-      (_k = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _k.view,
-      (_m = (_l = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _l.view) == null ? void 0 : _m.session,
-      (_o = (_n = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _n.view) == null ? void 0 : _o.page,
-      (_r = (_q = (_p = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _p.view) == null ? void 0 : _q.page) == null ? void 0 : _r.session,
+      (_U = (_T = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _T.getState) == null ? void 0 : _U.call(_T),
+      (_V = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _V.props,
+      (_W = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _W.session,
+      (_X = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _X.page,
+      (_Z = (_Y = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Y.page) == null ? void 0 : _Z.props,
+      (_$ = (__ = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : __.page) == null ? void 0 : _$.session,
+      (_aa = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _aa.view,
+      (_ca = (_ba = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _ba.view) == null ? void 0 : _ca.props,
+      (_ea = (_da = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _da.view) == null ? void 0 : _ea.session,
+      (_ga = (_fa = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _fa.view) == null ? void 0 : _ga.page,
+      (_ja = (_ia = (_ha = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _ha.view) == null ? void 0 : _ia.page) == null ? void 0 : _ja.props,
+      (_ma = (_la = (_ka = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _ka.view) == null ? void 0 : _la.page) == null ? void 0 : _ma.session,
+      (_pa = (_oa = (_na = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _na.view) == null ? void 0 : _oa.page) == null ? void 0 : _pa.sessionProps,
       globalDesigner,
       globalDesigner == null ? void 0 : globalDesigner.session,
+      globalDesigner == null ? void 0 : globalDesigner.page,
+      (_qa = globalDesigner == null ? void 0 : globalDesigner.page) == null ? void 0 : _qa.sessionProps,
       globalDesigner == null ? void 0 : globalDesigner.store,
-      (_s = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _s.session,
-      (_t = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _t.view,
-      (_v = (_u = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _u.view) == null ? void 0 : _v.session,
-      (_x = (_w = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _w.view) == null ? void 0 : _x.page
+      (_sa = (_ra = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _ra.getState) == null ? void 0 : _sa.call(_ra),
+      (_ta = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _ta.props,
+      (_ua = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _ua.session,
+      (_va = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _va.page,
+      (_xa = (_wa = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _wa.page) == null ? void 0 : _xa.props,
+      (_ya = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _ya.view,
+      (_Aa = (_za = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _za.view) == null ? void 0 : _Aa.props,
+      (_Ca = (_Ba = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _Ba.view) == null ? void 0 : _Ca.session,
+      (_Ea = (_Da = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _Da.view) == null ? void 0 : _Ea.page,
+      (_Ha = (_Ga = (_Fa = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _Fa.view) == null ? void 0 : _Ga.page) == null ? void 0 : _Ha.props,
+      (_Ka = (_Ja = (_Ia = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _Ia.view) == null ? void 0 : _Ja.page) == null ? void 0 : _Ka.sessionProps
     ].filter(Boolean);
     const paths = [
+      "theme",
+      "props.theme",
+      "sessionProps.theme",
       "session.props.theme",
       "session.props.theme.name",
       "session.props.theme.value",
@@ -36720,9 +37238,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       "page.props.session.props.theme",
       "view.session.props.theme",
       "view.session.props.theme.name",
-      "view.props.session.props.theme",
-      "project.props.theme",
-      "project.theme"
+      "view.props.session.props.theme"
     ];
     for (const source of sources) {
       for (const path of paths) {
@@ -36732,25 +37248,27 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         }
       }
     }
-    const domTheme = detectDomThemeName2();
-    if (domTheme) {
-      return domTheme;
-    }
     const sessionRoots = [
       componentProps == null ? void 0 : componentProps.session,
       nestedProps == null ? void 0 : nestedProps.session,
-      (_y = componentProps == null ? void 0 : componentProps.props) == null ? void 0 : _y.session,
-      (_z = nestedProps == null ? void 0 : nestedProps.props) == null ? void 0 : _z.session,
-      (_A = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _A.session,
-      (_B = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _B.session,
+      (_La = componentProps == null ? void 0 : componentProps.props) == null ? void 0 : _La.session,
+      (_Ma = nestedProps == null ? void 0 : nestedProps.props) == null ? void 0 : _Ma.session,
+      (_Na = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _Na.session,
+      (_Oa = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _Oa.session,
+      ...getPerspectiveSessionPropTrees2(componentProps),
       globalClient == null ? void 0 : globalClient.session,
-      (_C = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _C.session,
-      (_E = (_D = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _D.page) == null ? void 0 : _E.session,
-      (_G = (_F = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _F.view) == null ? void 0 : _G.session,
-      (_J = (_I = (_H = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _H.view) == null ? void 0 : _I.page) == null ? void 0 : _J.session,
+      (_Pa = globalClient == null ? void 0 : globalClient.page) == null ? void 0 : _Pa.sessionProps,
+      (_Qa = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Qa.session,
+      (_Sa = (_Ra = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Ra.page) == null ? void 0 : _Sa.session,
+      (_Ua = (_Ta = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Ta.page) == null ? void 0 : _Ua.sessionProps,
+      (_Wa = (_Va = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Va.view) == null ? void 0 : _Wa.session,
+      (_Za = (_Ya = (_Xa = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : _Xa.view) == null ? void 0 : _Ya.page) == null ? void 0 : _Za.session,
+      (_ab = (_$a = (__a = globalClient == null ? void 0 : globalClient.store) == null ? void 0 : __a.view) == null ? void 0 : _$a.page) == null ? void 0 : _ab.sessionProps,
       globalDesigner == null ? void 0 : globalDesigner.session,
-      (_K = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _K.session,
-      (_M = (_L = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _L.view) == null ? void 0 : _M.session
+      (_bb = globalDesigner == null ? void 0 : globalDesigner.page) == null ? void 0 : _bb.sessionProps,
+      (_cb = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _cb.session,
+      (_eb = (_db = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _db.view) == null ? void 0 : _eb.session,
+      (_hb = (_gb = (_fb = globalDesigner == null ? void 0 : globalDesigner.store) == null ? void 0 : _fb.view) == null ? void 0 : _gb.page) == null ? void 0 : _hb.sessionProps
     ].filter(Boolean);
     for (const source of sessionRoots) {
       const theme = findThemeInObject2(source);
@@ -36758,17 +37276,25 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         return theme;
       }
     }
+    const domTheme = detectDomThemeName2(themeElement);
+    if (domTheme) {
+      return domTheme;
+    }
     return "";
   }
-  function getPerspectiveThemeName2(componentProps) {
-    return getPerspectiveSessionThemeName2(componentProps) || normalizePerspectiveThemeName2(getModelValue2(componentProps, "theme", "")) || "light";
+  function getPerspectiveThemeName2(componentProps, themeElement = null) {
+    return normalizePerspectiveThemeName2(getModelValue2(componentProps, "sessionTheme", "")) || normalizePerspectiveThemeName2(getModelValue2(componentProps, "perspectiveTheme", "")) || getPerspectiveSessionThemeName2(componentProps, themeElement) || normalizePerspectiveThemeName2(getModelValue2(componentProps, "theme", "")) || "light";
   }
   function isLegacyCanvasBackgroundDefault2(value) {
     const normalized = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
-    return normalized === "#0f172a" || normalized === "rgb(15,23,42)" || normalized === "rgba(15,23,42,1)" || normalized === "#0f141c" || normalized === "rgb(15,20,28)" || normalized === "rgba(15,20,28,1)" || normalized === "#f8fafc" || normalized === "rgb(248,250,252)" || normalized === "rgba(248,250,252,1)" || normalized === "#ffffff" || normalized === "#fff" || normalized === "rgb(255,255,255)" || normalized === "rgba(255,255,255,1)" || normalized === "var(--canvas-bg)";
+    return normalized === "#0f172a" || normalized === "rgb(15,23,42)" || normalized === "rgba(15,23,42,1)" || normalized === "#0f141c" || normalized === "rgb(15,20,28)" || normalized === "rgba(15,20,28,1)" || normalized === "#f8fafc" || normalized === "rgb(248,250,252)" || normalized === "rgba(248,250,252,1)" || normalized === "#d5d5d5" || normalized === "rgb(213,213,213)" || normalized === "rgba(213,213,213,1)" || normalized === "#ffffff" || normalized === "#fff" || normalized === "rgb(255,255,255)" || normalized === "rgba(255,255,255,1)" || normalized === "var(--canvas-bg)";
   }
   function getThemeCanvasBackground2(theme) {
-    return normalizePerspectiveThemeName2(theme) === "dark" ? "var(--vizi-canvas-bg-dark, #0f141c)" : "var(--vizi-canvas-bg-light, #ffffff)";
+    return normalizePerspectiveThemeName2(theme) === "dark" ? "#0f172a" : "#D5D5D5";
+  }
+  function isThemeDrivenCanvasBackgroundRequest2(value) {
+    const normalized = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+    return !normalized || normalized === "auto" || normalized === "theme" || normalized === "session" || normalized === "inherit" || isLegacyCanvasBackgroundDefault2(normalized);
   }
   function useDomThemeVersion2() {
     const [version2, setVersion] = useState(0);
@@ -36792,14 +37318,61 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     }, []);
     return version2;
   }
+  function usePerspectiveThemeVersion2(componentProps) {
+    const domVersion = useDomThemeVersion2();
+    const [sessionVersion, setSessionVersion] = useState(0);
+    const propsRef = useRef(componentProps);
+    const lastThemeRef = useRef("");
+    useEffect(() => {
+      propsRef.current = componentProps;
+    }, [componentProps]);
+    useEffect(() => {
+      const trees = Array.from(new Set(getPerspectiveSessionPropTrees2(componentProps)));
+      const disposers = [];
+      trees.forEach((tree) => {
+        try {
+          if (typeof (tree == null ? void 0 : tree.subscribe) === "function") {
+            const dispose = tree.subscribe(() => {
+              setSessionVersion((previous) => (previous + 1) % 1e5);
+            });
+            if (typeof dispose === "function") {
+              disposers.push(dispose);
+            }
+          }
+        } catch (_error) {
+        }
+      });
+      return () => {
+        disposers.forEach((dispose) => {
+          try {
+            dispose();
+          } catch (_error) {
+          }
+        });
+      };
+    }, [componentProps]);
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return void 0;
+      }
+      const readTheme = () => getPerspectiveThemeName2(propsRef.current);
+      lastThemeRef.current = readTheme();
+      const interval = window.setInterval(() => {
+        const nextTheme = readTheme();
+        if (nextTheme === lastThemeRef.current) {
+          return;
+        }
+        lastThemeRef.current = nextTheme;
+        setSessionVersion((previous) => (previous + 1) % 1e5);
+      }, 1e3);
+      return () => window.clearInterval(interval);
+    }, []);
+    return domVersion + sessionVersion;
+  }
   function getPerspectiveCanvasBackground2(componentProps, theme) {
     const explicitCanvasBackground = String(getModelValue2(componentProps, "canvasBackgroundColor", "") || "").trim();
-    if (explicitCanvasBackground) {
+    if (!isThemeDrivenCanvasBackgroundRequest2(explicitCanvasBackground)) {
       return explicitCanvasBackground;
-    }
-    const backgroundColor = String(getModelValue2(componentProps, "backgroundColor", "") || "").trim();
-    if (backgroundColor && !isLegacyCanvasBackgroundDefault2(backgroundColor)) {
-      return backgroundColor;
     }
     return getThemeCanvasBackground2(theme);
   }
@@ -37829,7 +38402,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       }
       return nextValue;
     };
-    const candidatePaths = path.startsWith("model.") ? [path] : [path, `model.${path}`];
+    const candidatePaths = path.startsWith("model.") ? [path] : [`model.${path}`, path];
     const writers = [];
     const sanitizedValue = sanitizePerspectiveValue(value);
     if (sanitizedValue === void 0) {
@@ -37854,7 +38427,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     return wrote;
   }
   function ViziCanvasBridge(props) {
-    useDomThemeVersion2();
+    usePerspectiveThemeVersion2(props);
     const rootRef = useRef(null);
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(/* @__PURE__ */ new Map());
@@ -38209,7 +38782,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const tool = String(getModelValue2(props, "tool", "select") || "select");
     const liveUpdatesEnabled = Boolean(getModelValue2(props, "liveUpdatesEnabled", true));
     const liveClickable = Boolean(getModelValue2(props, "liveClickable", false));
-    const theme = getPerspectiveThemeName2(props);
+    const theme = getPerspectiveThemeName2(props, rootRef.current);
     const canvasBackgroundColor = getPerspectiveCanvasBackground2(props, theme);
     const svgFiles = useMemo(
       () => svgCatalogFiles.map((entry) => ({ key: entry.key, name: entry.name })).sort((left, right) => left.name.localeCompare(right.name)),
@@ -38492,6 +39065,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       "div",
       {
         ref: rootRef,
+        "data-vizi-theme": theme,
+        "data-vizi-canvas-background": canvasBackgroundColor,
         style: {
           position: "relative",
           display: "flex",
@@ -38606,7 +39181,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
   }
   function MesoraDrawingTool(props) {
     var _a, _b;
-    useDomThemeVersion2();
+    usePerspectiveThemeVersion2(props);
     const rootProps = getRootContainerProps(props);
     const viewProps = getComponentPropSource2(props);
     const rootRef = useRef(null);
@@ -38614,7 +39189,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const designerActive = detectPerspectiveDesignerMode2(props);
     const rootRuntimeComponent = !designerActive && detectPerspectiveRootComponent(props);
     const useDesignerPortal = designerActive && !previewActive && hasViziCanvasModel(props);
-    const rootTheme = getPerspectiveThemeName2(props);
+    const rootTheme = getPerspectiveThemeName2(props, rootRef.current);
     const rootBackgroundColor = getPerspectiveCanvasBackground2(props, rootTheme);
     const defaultViewSize = resolveCanvasDefaultSize2(props);
     const rootRuntimeHeight = toPositiveNumber2(defaultViewSize == null ? void 0 : defaultViewSize.height) ? `${defaultViewSize.height}px` : "100dvh";
@@ -38629,6 +39204,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         {
           ...rootProps,
           ref: rootRef,
+          "data-vizi-theme": rootTheme,
+          "data-vizi-canvas-background": rootBackgroundColor,
           style: {
             ...isPlainObject2(rootProps.style) ? rootProps.style : {},
             position: fillViewport ? "fixed" : "relative",
@@ -38708,6 +39285,9 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         forceViziCanvas: readTreeValue(tree, "forceViziCanvas", false),
         svgLibraryEnabled: readTreeValue(tree, "svgLibraryEnabled", true),
         backgroundColor: readTreeValue(tree, "backgroundColor", ""),
+        canvasBackgroundColor: readTreeValue(tree, "canvasBackgroundColor", "theme"),
+        sessionTheme: readTreeValue(tree, "sessionTheme", ""),
+        perspectiveTheme: readTreeValue(tree, "perspectiveTheme", ""),
         showGrid: readTreeValue(tree, "showGrid", false),
         gridSize: readTreeValue(tree, "gridSize", 20),
         preserveAspectRatio: readTreeValue(tree, "preserveAspectRatio", "xMinYMin slice"),
