@@ -6,7 +6,8 @@
     </linearGradient>
   </defs>
   <g id="layer1" transform="translate(-16.045675,-14.722407)">
-    <path d="m 16.065675,14.742406 v 0.980302 l 0.956531,-0.489893 z m 1.914612,0 -0.956531,0.490409 0.956531,0.489893 z" id="body" stroke-width="0.0293" stroke-linejoin="round" fill="#D7DADE" />
-    <path d="m 17.024427,15.613309 v -0.866097 h 0.37207 -0.725598" id="handle" fill="transparent" stroke-width="0.0293" stroke-linecap="square" stroke-linejoin="miter" />
+    <path d="m 16.065675,14.742406 v 0.980302 l 0.956531,-0.489893 z" id="leftTriangle" stroke-width="0.0293" stroke-linejoin="round" fill="#D7DADE" data-vizi-fill-target="true" />
+    <path d="m 17.980287,14.742406 -0.956531,0.490409 0.956531,0.489893 z" id="rightTriangle" stroke-width="0.0293" stroke-linejoin="round" fill="#D7DADE" data-vizi-fill-target="true" />
+    <path d="m 17.024427,15.613309 v -0.866097 h 0.37207 -0.725598" id="handle" fill="none" stroke="#808080" stroke-width="0.0293" stroke-linecap="square" stroke-linejoin="miter" />
   </g>
 </svg>

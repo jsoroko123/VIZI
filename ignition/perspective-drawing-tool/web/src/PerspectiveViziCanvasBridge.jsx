@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import CanvasSvg from "../../../../app/src/components/CanvasSvg.jsx";
 import ImportModal from "../../../../app/src/components/ImportModal.jsx";
@@ -58,6 +58,18 @@ const HMI_STATE_STYLE_MAP_ROUTE_CANDIDATES = [
     `/data/${MODULE_ID}/hmi-state-style-maps`,
     `/main/data/${MODULE_ID}/hmi-state-style-maps`
 ];
+const DRAWING_DOCUMENT_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/drawing-document`,
+    `/main/data/${MODULE_URL_ALIAS}/drawing-document`,
+    `/data/${MODULE_ID}/drawing-document`,
+    `/main/data/${MODULE_ID}/drawing-document`
+];
+const DRAWING_DOCUMENT_SAVE_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/drawing-document-save`,
+    `/main/data/${MODULE_URL_ALIAS}/drawing-document-save`,
+    `/data/${MODULE_ID}/drawing-document-save`,
+    `/main/data/${MODULE_ID}/drawing-document-save`
+];
 const IGNITION_TAG_VALUE_POLL_MS = 250;
 const SVG_RAW_CACHE_MAX = 80;
 const DEFAULT_FILL = "#D7DADE";
@@ -77,6 +89,8 @@ const DEFAULT_CANVAS_HEIGHT = 1401;
 const LOCAL_CANVAS_ZOOM_MIN = 0.1;
 const LOCAL_CANVAS_ZOOM_MAX = 4;
 const LOCAL_CANVAS_ZOOM_STEP = 0.1;
+const RUNTIME_SCROLL_TOLERANCE_PX = 3;
+const RUNTIME_HEIGHT_FIT_RESERVE_PX = 18;
 const LOCAL_CANVAS_ZOOM_CACHE_PREFIX = "mesora-drawing:canvas-zoom:v1:";
 const CANVAS_RULER_SIZE = 24;
 const PROPERTY_PANEL_WIDTH = 300;
@@ -86,6 +100,7 @@ const PROPERTY_PANEL_WIDTH_STORAGE_KEY = "mesora-drawing:property-panel-width:v1
 const PROPERTY_PANEL_HEIGHT = 520;
 const PROPERTY_PANEL_MIN_HEIGHT = 240;
 const PROPERTY_PANEL_HEIGHT_STORAGE_KEY = "mesora-drawing:property-panel-height:v1";
+const PROPERTY_PANEL_INSET = 12;
 const QUICK_TAG_PANEL_WIDTH = 360;
 const QUICK_TAG_PANEL_HEIGHT = 124;
 const QUICK_SVG_PANEL_WIDTH = 300;
@@ -106,9 +121,10 @@ const IGNITION_TOOL_HELP_SECTIONS = Object.freeze([
     Object.freeze({
         title: "Getting Started",
         items: Object.freeze([
-            "Use Move to select, drag, resize, and open properties for items on the canvas.",
-            "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click, Enter, or Shift plus right click finishes the line.",
-            "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path."
+            "Use Move to select, drag, resize, rotate, flip, and edit items on the canvas.",
+            "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click or Enter finishes the line.",
+            "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path.",
+            "The toolbar stays visible while scrolling. Drag it to a better spot, or use Dock to return it to the default position."
         ])
     }),
     Object.freeze({
@@ -116,32 +132,76 @@ const IGNITION_TOOL_HELP_SECTIONS = Object.freeze([
         items: Object.freeze([
             "Single click selects one item. Shift plus click adds or removes items from the current selection.",
             "Drag on empty space to marquee select multiple items.",
-            "Double click an SVG, widget, or text item to open its properties panel.",
-            "Shift plus Delete removes the current selection."
+            "Double click an SVG, widget, line, or text item to open its properties panel.",
+            "If the properties panel is already open, selecting another item updates the contents without moving the panel.",
+            "The properties panel can be dragged and resized.",
+            "Page Up moves selected SVGs forward in Z order. Page Down moves them backward.",
+            "Right click selected items for copy, cut, duplicate, delete, align, and tag path actions."
         ])
     }),
     Object.freeze({
         title: "SVGs And Lines",
         items: Object.freeze([
             "SVG Library opens the Mesora equipment drawer so you can place process equipment on the canvas.",
-            "Tag Path on an SVG binds the equipment to an Ignition tag. EType controls diverters and popup routing.",
-            "Polylines light from the SVG or line connected to their start point, just like the Mesora tool."
+            "Right click empty canvas space to open the compact SVG quick list. Type in the search box to filter symbols.",
+            "Import SVG copies an external SVG into the gateway external SVG library and refreshes the list.",
+            "Tag Path binds an SVG to an Ignition tag or UDT instance. EType is a dropdown populated from Ignition UDTs when available.",
+            "Static makes an SVG non-clickable, removes the missing-tag bubble, and returns it to default static colors.",
+            "Polylines support solid, dashed, dotted, and wavy styles plus start and end arrows.",
+            "Line crossings add a small gap only when one polyline crosses another polyline.",
+            "Polylines light from the SVG or line connected to their start point."
         ])
     }),
     Object.freeze({
         title: "Widgets",
         items: Object.freeze([
             "Widgets opens the Mesora widget drawer. Place a widget, then double click it to edit its properties.",
+            "Widget text follows the current Perspective theme, including terra-dark and terra-light.",
+            "Widget font color and button text color can still be set manually in properties.",
             "Widgets can write to either Ignition tags or direct OPC, depending on the Write Target setting.",
-            "Push Button and On Off Button support titles, title font size, press value, and release value."
+            "Push Button and On Off Button support titles, title font size, press value, release value, and button text color.",
+            "Open View buttons open a Perspective view popup. The view fills the popup content area, not the whole screen."
         ])
     }),
     Object.freeze({
         title: "Bindings",
         items: Object.freeze([
             "Use the Tag Path picker to browse and search Ignition tags without expanding a huge inline list.",
+            "The tag picker scrolls to the selected tag when opened. Right click a tag to copy just the tag path.",
+            "UDT rows can be expanded to select child tags directly. Document tags are hidden from the picker.",
             "Text items support Scale, Decimals, and Units so live values can be formatted on the canvas.",
+            "Hovering an SVG in preview or live mode shows the tag Description tooltip when available.",
             "Diverters should use their state tag path so the active straight or divert path can render correctly."
+        ])
+    }),
+    Object.freeze({
+        title: "HMI State And UDTs",
+        items: Object.freeze([
+            "HMI state style mapping is read from hmi-state-style-maps.json and can be overridden with props.hmiStateStyleMaps.",
+            "Common mappings include Motor, DOC, DIC, AIN, ScaleAdaptor, Distributor, LevelSwitch_Discrete, TwoWay, Diverter, and Gate.",
+            "Diverter SVGs use TwoWay popup routing and state logic.",
+            "Gate SVGs can use gate visual styles while still opening the TwoWay UDT popup when that is how the Ignition UDT is modeled.",
+            "TwoWay and Diverter internals use the mapped HMI state style for the active straight or divert path."
+        ])
+    }),
+    Object.freeze({
+        title: "Gateway File Storage",
+        items: Object.freeze([
+            "Gateway file storage lets authorized users edit and save graphics from the browser without opening Designer.",
+            "Preferred properties are props.gatewayStorage.enabled, key, autoLoad, and browserEditEnabled.",
+            "Legacy aliases are still supported: drawingStorageEnabled, drawingStorageKey, gatewayStorageKey, drawingStorageAutoLoad, and browserEditEnabled.",
+            "Use a relative storage key such as AirMakeup/bin-fans.",
+            "Bind browserEditEnabled to an authorized user, role, or security level before enabling runtime editing."
+        ])
+    }),
+    Object.freeze({
+        title: "Theme And Runtime",
+        items: Object.freeze([
+            "Bind props.sessionTheme, props.perspectiveTheme, or props.theme to session.props.theme when needed.",
+            "terra-dark uses the dark canvas background. terra-light uses the light canvas background.",
+            "Leave canvasBackgroundColor blank, theme, auto, or session to follow the Perspective session theme.",
+            "Set canvasBackgroundColor to a real color only when a screen needs a manual override.",
+            "In live mode, clicking a status bubble hides that bubble for 30 seconds."
         ])
     }),
     Object.freeze({
@@ -150,7 +210,19 @@ const IGNITION_TOOL_HELP_SECTIONS = Object.freeze([
             "Shift plus M switches to Move.",
             "Shift plus P switches to Polyline.",
             "Shift plus T switches to Text.",
-            "Shift plus C, V, D, Z, and Y map to copy, paste, duplicate, undo, and redo."
+            "Shift plus C, V, D, Z, and Y map to copy, paste, duplicate, undo, and redo.",
+            "Page Up and Page Down move selected SVGs forward or backward in Z order.",
+            "Esc closes the active popup, cancels draw/edit state, or clears a temporary anchor."
+        ])
+    }),
+    Object.freeze({
+        title: "Troubleshooting",
+        items: Object.freeze([
+            "If new component properties do not show in Designer, install the newest module, restart or reopen Designer, and verify the loaded module version.",
+            "If theme does not change the canvas, confirm session.props.theme is terra-dark or terra-light and canvasBackgroundColor is theme, auto, blank, or session.",
+            "If a line does not light, confirm the line start point is connected to the lit SVG or lit source line.",
+            "If browser saves do not persist, confirm gateway file storage is enabled, the key is set, and the runtime user is authorized to edit.",
+            "If help or toolbar content does not update after a rebuild, fully close and reopen Designer."
         ])
     })
 ]);
@@ -2978,8 +3050,9 @@ function resolveBrowserHeightCanvasZoom(
         : null;
     const rootLeft = Math.max(0, Number(rect?.left || 0));
     const rootTop = Math.max(0, Number(rect?.top || 0));
-    const hostWidth = toPositiveNumber(fallbackWidth) || toPositiveNumber(rect?.width) || 0;
-    const hostHeight = toPositiveNumber(fallbackHeight) || toPositiveNumber(rect?.height) || 0;
+    const hostWidth = toPositiveNumber(rect?.width) || toPositiveNumber(fallbackWidth) || 0;
+    const measuredHostHeight = toPositiveNumber(rect?.height) || 0;
+    const fallbackHostHeight = toPositiveNumber(fallbackHeight) || 0;
     const viewportWidth = toPositiveNumber(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
     const availableBrowserWidth = viewportWidth > 0
@@ -2989,14 +3062,72 @@ function resolveBrowserHeightCanvasZoom(
         ? Math.max(1, viewportHeight - rootTop)
         : 0;
     const targetWidth = toPositiveNumber(hostWidth || availableBrowserWidth) || targetViewWidth;
-    const targetHeight = toPositiveNumber(hostHeight || availableBrowserHeight) || targetViewHeight;
+    const heightCandidates = [measuredHostHeight, availableBrowserHeight]
+        .filter((value) => toPositiveNumber(value) > 0);
+    const targetHeightBase = heightCandidates.length
+        ? Math.min(...heightCandidates)
+        : fallbackHostHeight || targetViewHeight;
+    const targetHeight = Math.max(1, targetHeightBase - RUNTIME_HEIGHT_FIT_RESERVE_PX);
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
     return Math.max(0.05, Math.min(8, scaleByHeight));
 }
 
+const GATEWAY_STORAGE_PROP_ALIASES = Object.freeze({
+    drawingStorageEnabled: "enabled",
+    drawingStorageKey: "key",
+    gatewayStorageKey: "key",
+    drawingStorageAutoLoad: "autoLoad",
+    browserEditEnabled: "browserEditEnabled"
+});
+
+function hasOwnValue(source, key) {
+    return isPlainObject(source) && Object.prototype.hasOwnProperty.call(source, key);
+}
+
+function collectGatewayStorageAliasValues(source, key) {
+    const storageKey = GATEWAY_STORAGE_PROP_ALIASES[key];
+    if (!storageKey) {
+        return [];
+    }
+    const values = [];
+    if (hasOwnValue(source, key)) {
+        values.push(source[key]);
+    }
+    if (hasOwnValue(source?.model, key)) {
+        values.push(source.model[key]);
+    }
+    if (hasOwnValue(source?.gatewayStorage, storageKey)) {
+        values.push(source.gatewayStorage[storageKey]);
+    }
+    if (hasOwnValue(source?.model?.gatewayStorage, storageKey)) {
+        values.push(source.model.gatewayStorage[storageKey]);
+    }
+    return values.filter((value) => value !== undefined);
+}
+
 function getModelValue(props, key, fallback) {
     const source = getComponentPropSource(props);
+    const gatewayStorageValues = collectGatewayStorageAliasValues(source, key);
+    if (key === "drawingStorageEnabled" || key === "browserEditEnabled") {
+        return gatewayStorageValues.some(Boolean) || fallback;
+    }
+    if (key === "drawingStorageKey" || key === "gatewayStorageKey") {
+        const firstNonEmpty = gatewayStorageValues
+            .map((value) => String(value || "").trim())
+            .find(Boolean);
+        if (firstNonEmpty) {
+            return firstNonEmpty;
+        }
+    }
+    if (key === "drawingStorageAutoLoad" && gatewayStorageValues.length > 0) {
+        if (gatewayStorageValues.some((value) => value === false)) {
+            return false;
+        }
+        if (gatewayStorageValues.some((value) => value === true)) {
+            return true;
+        }
+    }
     const direct = source[key];
     if (direct !== undefined) {
         return direct;
@@ -3419,6 +3550,83 @@ function normalizeSvgCatalogPayload(value) {
     };
 }
 
+function normalizeDrawingStorageKey(value) {
+    return String(value ?? "")
+        .replace(/\\/g, "/")
+        .replace(/^\/*/, "")
+        .trim();
+}
+
+function deriveComponentStorageKey(componentProps) {
+    const source = getComponentPropSource(componentProps);
+    const candidates = [
+        componentProps?.store?.path,
+        source?.store?.path,
+        componentProps?.componentPath,
+        source?.componentPath,
+        componentProps?.path,
+        source?.path,
+        componentProps?.meta?.name,
+        source?.meta?.name
+    ];
+
+    for (const raw of candidates) {
+        const value = String(raw || "").trim();
+        if (value) {
+            return normalizeDrawingStorageKey(value.replace(/[\\:*?"<>|]+/g, "_"));
+        }
+    }
+    return "";
+}
+
+function resolveDrawingStorageKey(componentProps) {
+    const explicit = normalizeDrawingStorageKey(
+        getModelValue(
+            componentProps,
+            "drawingStorageKey",
+            getModelValue(componentProps, "gatewayStorageKey", "")
+        )
+    );
+    return explicit || deriveComponentStorageKey(componentProps);
+}
+
+function normalizeDrawingDocumentPayload(value) {
+    if (!isPlainObject(value)) {
+        return null;
+    }
+    const document = isPlainObject(value.document) ? value.document : value;
+    return {
+        version: Number(document.version || 1) || 1,
+        savedAt: String(document.savedAt || "").trim(),
+        shapes: coerceArray(document.shapes).map((shape) => cloneDeepValue(shape)),
+        svgOverlays: coerceArray(document.svgOverlays).map((overlay) => cloneDeepValue(overlay)),
+        tool: String(document.tool || "select"),
+        zoom: Number(document.zoom || 1) || 1,
+        pan: isPlainObject(document.pan) ? cloneDeepValue(document.pan) : { x: 0, y: 0 },
+        showGrid: Boolean(document.showGrid),
+        showRulers: Boolean(document.showRulers),
+        showTagPaths: Boolean(document.showTagPaths),
+        toolbarCollapsed: Boolean(document.toolbarCollapsed),
+        toolbarPosition: normalizeToolbarPosition(document.toolbarPosition),
+        selectionMode: String(document.selectionMode || "all"),
+        strokeNormalizeWidth: Number(document.strokeNormalizeWidth || NORMALIZED_SVG_STROKE_WIDTH) || NORMALIZED_SVG_STROKE_WIDTH
+    };
+}
+
+function normalizeDrawingDocumentResponse(value) {
+    const payload = isPlainObject(value) ? value : {};
+    return {
+        ok: payload.ok !== false,
+        exists: Boolean(payload.exists),
+        key: String(payload.key || "").trim(),
+        document: normalizeDrawingDocumentPayload(payload.document),
+        filePath: String(payload.filePath || "").trim(),
+        lastModified: Math.max(0, Number(payload.lastModified) || 0),
+        size: Math.max(0, Number(payload.size) || 0),
+        error: String(payload.error || "").trim()
+    };
+}
+
 function writeComponentProp(props, path, value) {
     const sanitizePerspectiveValue = (nextValue) => {
         if (nextValue === undefined || nextValue === null) {
@@ -3797,12 +4005,13 @@ function DockSection({ children, title }) {
     );
 }
 
-function DockButton({ active = false, children, disabled = false, onClick }) {
+function DockButton({ active = false, children, disabled = false, onClick, title = "" }) {
     return (
         <button
             type="button"
             disabled={disabled}
             onClick={onClick}
+            title={title}
             style={{
                 width: "100%",
                 border: active ? "1px solid rgba(96, 165, 250, 0.8)" : "1px solid rgba(71, 85, 105, 0.9)",
@@ -5419,17 +5628,21 @@ function expandViewBoundsToFitContent(baseViewBounds, shapes, overlays, padding 
         maxY = Math.max(maxY, y + height);
     });
 
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+        return fallback;
+    }
+
     const extraPadding = Math.max(0, Number(padding || 0));
     const nextX = Math.min(fallback.x, minX - extraPadding);
-    const nextY = Math.min(fallback.y, minY - extraPadding);
+    const nextY = minY - extraPadding;
     const nextRight = Math.max(fallback.x + fallback.width, maxX + extraPadding);
-    const nextBottom = Math.max(fallback.y + fallback.height, maxY + extraPadding);
+    const nextBottom = maxY + extraPadding;
 
     return {
         x: nextX,
         y: nextY,
-        width: Math.max(1, nextRight - nextX),
-        height: Math.max(1, nextBottom - nextY)
+        width: Math.max(100, nextRight - nextX),
+        height: Math.max(100, nextBottom - nextY)
     };
 }
 
@@ -5488,6 +5701,20 @@ function clampPropertyPanelHeight(value, maxHeight = PROPERTY_PANEL_HEIGHT) {
         PROPERTY_PANEL_MIN_HEIGHT,
         maxPanelHeight
     );
+}
+
+function clampPropertyPanelPosition(position, panelWidth, panelHeight, viewportWidth, viewportHeight) {
+    const normalized = normalizeToolbarPosition(position) || { x: PROPERTY_PANEL_INSET, y: PROPERTY_PANEL_INSET };
+    const width = toPositiveNumber(panelWidth) || PROPERTY_PANEL_WIDTH;
+    const height = toPositiveNumber(panelHeight) || PROPERTY_PANEL_HEIGHT;
+    const viewWidth = toPositiveNumber(viewportWidth) || DEFAULT_CANVAS_WIDTH;
+    const viewHeight = toPositiveNumber(viewportHeight) || DEFAULT_CANVAS_HEIGHT;
+    const maxX = Math.max(PROPERTY_PANEL_INSET, viewWidth - width - PROPERTY_PANEL_INSET);
+    const maxY = Math.max(PROPERTY_PANEL_INSET, viewHeight - height - PROPERTY_PANEL_INSET);
+    return {
+        x: Math.round(clamp(normalized.x, PROPERTY_PANEL_INSET, maxX)),
+        y: Math.round(clamp(normalized.y, PROPERTY_PANEL_INSET, maxY))
+    };
 }
 
 function readStoredPropertyPanelWidth() {
@@ -5715,6 +5942,20 @@ function distance(left, right) {
 export default function PerspectiveViziCanvasBridge(props) {
     usePerspectiveThemeVersion(props);
     const rootRef = useRef(null);
+    const runtimeScrollSnapshotRef = useRef({
+        scrollLeft: 0,
+        scrollTop: 0,
+        clientWidth: 0,
+        clientHeight: 0,
+        contentWidth: 0,
+        contentHeight: 0,
+        zoom: 1
+    });
+    const runtimeCanvasMetricsRef = useRef({
+        contentWidth: 0,
+        contentHeight: 0,
+        zoom: 1
+    });
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(new Map());
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
@@ -5723,9 +5964,10 @@ export default function PerspectiveViziCanvasBridge(props) {
     const defaultHostSize = resolveCanvasDefaultSize(props);
     const previewActive = detectPerspectivePreviewMode(props);
     const designerActive = detectPerspectiveDesignerMode(props);
-    const editorVisible = designerActive && !previewActive;
     const isLiveMode = !designerActive || previewActive;
     const browserRuntimeMode = isLiveMode && !designerActive;
+    const browserEditEnabled = Boolean(getModelValue(props, "browserEditEnabled", false));
+    const editorVisible = (designerActive && !previewActive) || (browserRuntimeMode && browserEditEnabled);
     const [rootSize, setRootSize] = useState({
         width: DEFAULT_CANVAS_WIDTH,
         height: DEFAULT_CANVAS_HEIGHT
@@ -5780,6 +6022,9 @@ export default function PerspectiveViziCanvasBridge(props) {
         [effectiveHmiStateStyleMaps]
     );
     const svgLibraryEnabled = Boolean(getModelValue(props, "svgLibraryEnabled", true));
+    const drawingStorageEnabled = Boolean(getModelValue(props, "drawingStorageEnabled", false));
+    const drawingStorageAutoLoad = Boolean(getModelValue(props, "drawingStorageAutoLoad", true));
+    const drawingStorageKey = resolveDrawingStorageKey(props);
     const externalShapesKey = JSON.stringify(coerceArray(externalShapes));
     const externalOverlaysKey = JSON.stringify(coerceArray(externalOverlays));
     const externalSelectedIdsKey = JSON.stringify(coerceArray(externalSelectedIds));
@@ -5820,6 +6065,10 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [svgLibraryExternalCount, setSvgLibraryExternalCount] = useState(0);
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [svgLibraryUploading, setSvgLibraryUploading] = useState(false);
+    const [drawingStorageLoading, setDrawingStorageLoading] = useState(false);
+    const [drawingStorageSaving, setDrawingStorageSaving] = useState(false);
+    const [drawingStorageStatus, setDrawingStorageStatus] = useState("");
+    const [drawingStorageFilePath, setDrawingStorageFilePath] = useState("");
     const [ignitionTagOptions, setIgnitionTagOptions] = useState(EMPTY_ARRAY);
     const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => new Map());
     const [ignitionTagMetaByPath, setIgnitionTagMetaByPath] = useState(() => new Map());
@@ -5848,6 +6097,8 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [propertyPanelWidth, setPropertyPanelWidth] = useState(readStoredPropertyPanelWidth);
     const [propertyPanelHeight, setPropertyPanelHeight] = useState(readStoredPropertyPanelHeight);
     const [propertyPanelResizing, setPropertyPanelResizing] = useState(false);
+    const [propertyPanelPosition, setPropertyPanelPosition] = useState(null);
+    const [propertyPanelDragging, setPropertyPanelDragging] = useState(false);
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const localShapesWriteRef = useRef({ key: externalShapesKey, until: 0 });
@@ -5864,11 +6115,21 @@ export default function PerspectiveViziCanvasBridge(props) {
         startHeight: PROPERTY_PANEL_HEIGHT,
         panelTop: 0
     });
+    const propertyPanelRef = useRef(null);
+    const propertyPanelDragRef = useRef({
+        dragging: false,
+        offsetX: 0,
+        offsetY: 0,
+        panelWidth: PROPERTY_PANEL_WIDTH,
+        panelHeight: PROPERTY_PANEL_HEIGHT
+    });
     const toolbarPanelRef = useRef(null);
     const toolbarPositionRef = useRef(toolbarPosition);
     const toolbarDragRef = useRef({ dragging: false, offsetX: 0, offsetY: 0, panelWidth: TOOLBAR_WIDTH, panelHeight: 160 });
     const svgCatalogRequestIdRef = useRef(0);
     const hmiStateStyleMapRequestIdRef = useRef(0);
+    const drawingStorageRequestIdRef = useRef(0);
+    const drawingStorageLoadedKeyRef = useRef("");
     const quickSvgPickerInputRef = useRef(null);
     const runtimeDocumentViewBounds = useMemo(
         () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
@@ -6144,6 +6405,72 @@ export default function PerspectiveViziCanvasBridge(props) {
             document.body.style.userSelect = previousUserSelect;
         };
     }, [propertyPanelResizing]);
+
+    useEffect(() => {
+        if (!propertyPanelDragging || typeof window === "undefined" || typeof document === "undefined") {
+            return undefined;
+        }
+        const previousCursor = document.body.style.cursor;
+        const previousUserSelect = document.body.style.userSelect;
+        document.body.style.cursor = "move";
+        document.body.style.userSelect = "none";
+
+        const endDrag = () => {
+            if (!propertyPanelDragRef.current.dragging) {
+                return;
+            }
+            propertyPanelDragRef.current.dragging = false;
+            setPropertyPanelDragging(false);
+        };
+
+        const onMove = (event) => {
+            if (!propertyPanelDragRef.current.dragging) {
+                return;
+            }
+            event.preventDefault();
+            const panelWidth = Number(propertyPanelDragRef.current.panelWidth || propertyPanelRef.current?.offsetWidth || propertyPanelWidth);
+            const panelHeight = Number(propertyPanelDragRef.current.panelHeight || propertyPanelRef.current?.offsetHeight || propertyPanelHeight);
+            const next = clampPropertyPanelPosition(
+                {
+                    x: Number(event.clientX || 0) - Number(propertyPanelDragRef.current.offsetX || 0),
+                    y: Number(event.clientY || 0) - Number(propertyPanelDragRef.current.offsetY || 0)
+                },
+                panelWidth,
+                panelHeight,
+                window.innerWidth,
+                window.innerHeight
+            );
+            setPropertyPanelPosition((previous) => (
+                previous && previous.x === next.x && previous.y === next.y ? previous : next
+            ));
+        };
+
+        const onKeyDown = (event) => {
+            if (event.key === "Escape") {
+                endDrag();
+            }
+        };
+
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", endDrag);
+        window.addEventListener("pointerup", endDrag);
+        window.addEventListener("pointercancel", endDrag);
+        window.addEventListener("blur", endDrag);
+        window.addEventListener("keydown", onKeyDown);
+        document.addEventListener("mouseleave", endDrag);
+        return () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", endDrag);
+            window.removeEventListener("pointerup", endDrag);
+            window.removeEventListener("pointercancel", endDrag);
+            window.removeEventListener("blur", endDrag);
+            window.removeEventListener("keydown", onKeyDown);
+            document.removeEventListener("mouseleave", endDrag);
+            document.body.style.cursor = previousCursor === "move" ? "" : previousCursor;
+            document.body.style.userSelect = previousUserSelect;
+            propertyPanelDragRef.current.dragging = false;
+        };
+    }, [propertyPanelDragging, propertyPanelHeight, propertyPanelWidth]);
 
     useEffect(() => {
         const next = coerceArray(externalShapes);
@@ -7205,22 +7532,77 @@ export default function PerspectiveViziCanvasBridge(props) {
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
 
     const localZoomCacheKey = resolveCanvasZoomCacheKey(props);
-    const [localZoom, setLocalZoom] = useState(() => readCachedCanvasZoom(resolveCanvasZoomCacheKey(props)));
+    const [localZoom, setLocalZoom] = useState(null);
     const effectiveZoom = localZoom !== null ? localZoom : zoom;
     const effectiveZoomRef = useRef(effectiveZoom);
     effectiveZoomRef.current = effectiveZoom;
-    const stepCanvasZoom = useCallback((direction) => {
+    const captureRuntimeScrollSnapshot = useCallback((node = rootRef.current, viewportAnchor = null) => {
+        if (!browserRuntimeMode || !node) {
+            return;
+        }
+        const clientWidth = Number(node.clientWidth || 0);
+        const clientHeight = Number(node.clientHeight || 0);
+        let anchorX = clientWidth / 2;
+        let anchorY = clientHeight / 2;
+        if (viewportAnchor && typeof node.getBoundingClientRect === "function") {
+            const rect = node.getBoundingClientRect();
+            const clientX = Number(viewportAnchor.clientX ?? viewportAnchor.x);
+            const clientY = Number(viewportAnchor.clientY ?? viewportAnchor.y);
+            if (Number.isFinite(clientX)) {
+                anchorX = Math.max(0, Math.min(clientWidth, clientX - Number(rect.left || 0)));
+            }
+            if (Number.isFinite(clientY)) {
+                anchorY = Math.max(0, Math.min(clientHeight, clientY - Number(rect.top || 0)));
+            }
+        }
+        const metrics = runtimeCanvasMetricsRef.current || {};
+        const scrollLeft = Number(node.scrollLeft || 0);
+        const scrollTop = Number(node.scrollTop || 0);
+        const canvasWidth = Math.max(1, Number(metrics.canvasWidth || metrics.contentWidth || 0) || 1);
+        const canvasHeight = Math.max(1, Number(metrics.canvasHeight || metrics.contentHeight || 0) || 1);
+        const offsetX = Math.max(0, Number(metrics.offsetX || 0) || 0);
+        const offsetY = Math.max(0, Number(metrics.offsetY || 0) || 0);
+        runtimeScrollSnapshotRef.current = {
+            scrollLeft,
+            scrollTop,
+            clientWidth,
+            clientHeight,
+            anchorX,
+            anchorY,
+            canvasWidth,
+            canvasHeight,
+            offsetX,
+            offsetY,
+            anchorCanvasX: Math.max(0, Math.min(canvasWidth, scrollLeft + anchorX - offsetX)),
+            anchorCanvasY: Math.max(0, Math.min(canvasHeight, scrollTop + anchorY - offsetY)),
+            contentWidth: Math.max(
+                1,
+                Number(metrics.contentWidth || 0) ||
+                    Number(node.scrollWidth || 0) ||
+                    Number(node.clientWidth || 0) ||
+                    1
+            ),
+            contentHeight: Math.max(
+                1,
+                Number(metrics.contentHeight || 0) ||
+                    Number(node.scrollHeight || 0) ||
+                    Number(node.clientHeight || 0) ||
+                    1
+            ),
+            zoom: Math.max(0.0001, Number(metrics.zoom || 0) || 1)
+        };
+    }, [browserRuntimeMode]);
+    const stepCanvasZoom = useCallback((direction, viewportAnchor = null) => {
         const amount = Number(direction);
         if (!Number.isFinite(amount) || amount === 0) return;
         const base = normalizeLocalCanvasZoom(effectiveZoomRef.current);
+        captureRuntimeScrollSnapshot(rootRef.current, viewportAnchor);
         setLocalZoom(normalizeLocalCanvasZoom(base + (amount * LOCAL_CANVAS_ZOOM_STEP)));
-    }, []);
+    }, [captureRuntimeScrollSnapshot]);
     useEffect(() => {
-        setLocalZoom(readCachedCanvasZoom(localZoomCacheKey));
+        setLocalZoom(null);
+        writeCachedCanvasZoom(localZoomCacheKey, null);
     }, [localZoomCacheKey]);
-    useEffect(() => {
-        writeCachedCanvasZoom(localZoomCacheKey, localZoom);
-    }, [localZoomCacheKey, localZoom]);
     const liveCanvasZoom = browserRuntimeMode
         ? resolveBrowserHeightCanvasZoom(
             rootRef.current,
@@ -7241,6 +7623,121 @@ export default function PerspectiveViziCanvasBridge(props) {
             )
         )
         : 1;
+    const runtimeCanvasWidth = Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom;
+    const runtimeCanvasHeight = Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom;
+    const runtimeRootClientWidth = browserRuntimeMode
+        ? Math.max(0, Number(rootRef.current?.clientWidth || 0) || 0)
+        : 0;
+    const runtimeRootClientHeight = browserRuntimeMode
+        ? Math.max(0, Number(rootRef.current?.clientHeight || 0) || 0)
+        : 0;
+    const runtimeViewportWidth = browserRuntimeMode
+        ? Math.max(
+            1,
+            runtimeRootClientWidth ||
+                Number(rootSize?.width || 0) ||
+                Number(browserViewportWidth || 0) ||
+                Number(defaultHostSize?.width || 0) ||
+                Number(hostSize?.width || 0) ||
+                runtimeCanvasWidth
+        )
+        : runtimeCanvasWidth;
+    const runtimeViewportHeight = browserRuntimeMode
+        ? Math.max(
+            1,
+            runtimeRootClientHeight ||
+                Number(rootSize?.height || 0) ||
+                Number(browserViewportHeight || 0) ||
+                Number(defaultHostSize?.height || 0) ||
+                Number(hostSize?.height || 0) ||
+                runtimeCanvasHeight
+        )
+        : runtimeCanvasHeight;
+    const runtimeHorizontalScrollNeeded = browserRuntimeMode && runtimeCanvasWidth > runtimeViewportWidth + RUNTIME_SCROLL_TOLERANCE_PX;
+    const runtimeVerticalScrollNeeded = browserRuntimeMode && runtimeCanvasHeight > runtimeViewportHeight + RUNTIME_SCROLL_TOLERANCE_PX;
+    const runtimeScrollContentWidth = runtimeHorizontalScrollNeeded ? runtimeCanvasWidth : runtimeViewportWidth;
+    const runtimeScrollContentHeight = runtimeVerticalScrollNeeded ? runtimeCanvasHeight : runtimeViewportHeight;
+    const runtimeCanvasOffsetX = browserRuntimeMode ? Math.max(0, (runtimeScrollContentWidth - runtimeCanvasWidth) / 2) : 0;
+    const runtimeCanvasOffsetY = browserRuntimeMode ? Math.max(0, (runtimeScrollContentHeight - runtimeCanvasHeight) / 2) : 0;
+    runtimeCanvasMetricsRef.current = {
+        contentWidth: runtimeScrollContentWidth,
+        contentHeight: runtimeScrollContentHeight,
+        canvasWidth: runtimeCanvasWidth,
+        canvasHeight: runtimeCanvasHeight,
+        offsetX: runtimeCanvasOffsetX,
+        offsetY: runtimeCanvasOffsetY,
+        zoom: runtimeCanvasZoom
+    };
+    const rememberRuntimeScrollSnapshot = useCallback((node = rootRef.current) => {
+        captureRuntimeScrollSnapshot(node);
+    }, [captureRuntimeScrollSnapshot]);
+    useLayoutEffect(() => {
+        if (!browserRuntimeMode) {
+            return;
+        }
+        const node = rootRef.current;
+        if (!node) {
+            return;
+        }
+        const previous = runtimeScrollSnapshotRef.current || {};
+        const previousWidth = Math.max(1, Number(previous.contentWidth) || runtimeScrollContentWidth);
+        const previousHeight = Math.max(1, Number(previous.contentHeight) || runtimeScrollContentHeight);
+        const previousCanvasWidth = Math.max(1, Number(previous.canvasWidth) || previousWidth);
+        const previousCanvasHeight = Math.max(1, Number(previous.canvasHeight) || previousHeight);
+        const previousClientWidth = Math.max(1, Number(previous.clientWidth) || Number(node.clientWidth) || 1);
+        const previousClientHeight = Math.max(1, Number(previous.clientHeight) || Number(node.clientHeight) || 1);
+        const previousAnchorX = Math.max(0, Math.min(previousClientWidth, Number(previous.anchorX ?? (previousClientWidth / 2))));
+        const previousAnchorY = Math.max(0, Math.min(previousClientHeight, Number(previous.anchorY ?? (previousClientHeight / 2))));
+        const currentAnchorX = Math.max(0, Math.min(Number(node.clientWidth || previousClientWidth), previousAnchorX));
+        const currentAnchorY = Math.max(0, Math.min(Number(node.clientHeight || previousClientHeight), previousAnchorY));
+        const oldAnchorCanvasX = Math.max(0, Math.min(
+            previousCanvasWidth,
+            Number.isFinite(Number(previous.anchorCanvasX))
+                ? Number(previous.anchorCanvasX)
+                : Math.max(0, Number(previous.scrollLeft || 0)) + previousAnchorX - Math.max(0, Number(previous.offsetX || 0))
+        ));
+        const oldAnchorCanvasY = Math.max(0, Math.min(
+            previousCanvasHeight,
+            Number.isFinite(Number(previous.anchorCanvasY))
+                ? Number(previous.anchorCanvasY)
+                : Math.max(0, Number(previous.scrollTop || 0)) + previousAnchorY - Math.max(0, Number(previous.offsetY || 0))
+        ));
+        const widthChanged =
+            Math.abs(previousWidth - runtimeScrollContentWidth) > 0.5 ||
+            Math.abs(previousCanvasWidth - runtimeCanvasWidth) > 0.5 ||
+            Math.abs(Number(previous.zoom || 1) - runtimeCanvasZoom) > 0.0001;
+        const heightChanged =
+            Math.abs(previousHeight - runtimeScrollContentHeight) > 0.5 ||
+            Math.abs(previousCanvasHeight - runtimeCanvasHeight) > 0.5;
+        const maxLeft = Math.max(0, Number(node.scrollWidth || runtimeScrollContentWidth) - Number(node.clientWidth || 0));
+        const maxTop = Math.max(0, Number(node.scrollHeight || runtimeScrollContentHeight) - Number(node.clientHeight || 0));
+
+        let nextLeft = Number(node.scrollLeft || 0);
+        let nextTop = Number(node.scrollTop || 0);
+
+        if (widthChanged) {
+            nextLeft = runtimeCanvasOffsetX + (oldAnchorCanvasX / previousCanvasWidth) * runtimeCanvasWidth - currentAnchorX;
+        } else if (Math.abs(nextLeft - Number(previous.scrollLeft || 0)) > 1 && Number(previous.scrollLeft || 0) > 0) {
+            nextLeft = Number(previous.scrollLeft || 0);
+        }
+
+        if (heightChanged) {
+            nextTop = runtimeCanvasOffsetY + (oldAnchorCanvasY / previousCanvasHeight) * runtimeCanvasHeight - currentAnchorY;
+        } else if (Math.abs(nextTop - Number(previous.scrollTop || 0)) > 1 && Number(previous.scrollTop || 0) > 0) {
+            nextTop = Number(previous.scrollTop || 0);
+        }
+
+        nextLeft = Math.max(0, Math.min(maxLeft, nextLeft));
+        nextTop = Math.max(0, Math.min(maxTop, nextTop));
+
+        if (Math.abs(Number(node.scrollLeft || 0) - nextLeft) > 0.5) {
+            node.scrollLeft = nextLeft;
+        }
+        if (Math.abs(Number(node.scrollTop || 0) - nextTop) > 0.5) {
+            node.scrollTop = nextTop;
+        }
+        rememberRuntimeScrollSnapshot(node);
+    });
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
     const editorZoom = isLiveMode ? 1 : Math.max(1e-9, Number(effectiveZoom) || 1);
@@ -7986,6 +8483,9 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const closePropertiesPanel = useCallback(() => {
         setPropertiesSelectionKey("");
+        setPropertyPanelPosition(null);
+        setPropertyPanelDragging(false);
+        propertyPanelDragRef.current.dragging = false;
     }, []);
 
     const retargetPropertiesPanelIfOpen = useCallback((key) => {
@@ -8015,6 +8515,257 @@ export default function PerspectiveViziCanvasBridge(props) {
         });
         setQuickSvgPickerQuery("");
     }, []);
+
+    const buildGatewayDrawingDocument = useCallback(() => ({
+        version: 1,
+        savedAt: new Date().toISOString(),
+        shapes: cloneDeepValue(shapesRef.current),
+        svgOverlays: cloneDeepValue(overlaysRef.current),
+        tool: String(tool || "select"),
+        zoom: Number(getModelValue(props, "zoom", 1)) || 1,
+        pan: cloneDeepValue(getModelValue(props, "pan", { x: 0, y: 0 })),
+        showGrid: Boolean(showGrid),
+        showRulers: Boolean(showRulers),
+        showTagPaths: Boolean(showTagPaths),
+        toolbarCollapsed: Boolean(toolbarCollapsed),
+        toolbarPosition: cloneDeepValue(toolbarPositionRef.current || toolbarPosition || TOOLBAR_DEFAULT_POSITION),
+        selectionMode: String(selectionMode || "all"),
+        strokeNormalizeWidth: resolvedStrokeNormalizeWidth
+    }), [
+        props,
+        resolvedStrokeNormalizeWidth,
+        selectionMode,
+        showGrid,
+        showRulers,
+        showTagPaths,
+        toolbarCollapsed,
+        toolbarPosition,
+        tool
+    ]);
+
+    const applyGatewayDrawingDocument = useCallback((document, options = {}) => {
+        const normalized = normalizeDrawingDocumentPayload(document);
+        if (!normalized) {
+            return false;
+        }
+
+        const shouldPersistProps = options?.persistProps !== false;
+        const nextShapes = coerceArray(normalized.shapes).map((shape) => cloneDeepValue(shape));
+        const nextOverlays = coerceArray(normalized.svgOverlays).map((overlay) => cloneDeepValue(overlay));
+        shapesRef.current = nextShapes;
+        overlaysRef.current = nextOverlays;
+        localShapesWriteRef.current = { key: JSON.stringify(nextShapes), until: Date.now() + 2000 };
+        localOverlaysWriteRef.current = { key: JSON.stringify(nextOverlays), until: Date.now() + 2000 };
+        setShapesState(nextShapes);
+        setSvgOverlaysState(nextOverlays);
+        if (shouldPersistProps) {
+            persistShapes(nextShapes);
+            persistSvgOverlays(nextOverlays);
+        }
+
+        const nextTool = String(normalized.tool || "select");
+        setToolState(nextTool);
+        if (shouldPersistProps) persistValue("tool", nextTool);
+
+        setShowGridState(Boolean(normalized.showGrid));
+        if (shouldPersistProps) persistValue("showGrid", Boolean(normalized.showGrid));
+
+        setShowRulersState(Boolean(normalized.showRulers));
+        if (shouldPersistProps) persistValue("showRulers", Boolean(normalized.showRulers));
+
+        setShowTagPathsState(Boolean(normalized.showTagPaths));
+        if (shouldPersistProps) persistValue("showTagPaths", Boolean(normalized.showTagPaths));
+
+        setToolbarCollapsedState(Boolean(normalized.toolbarCollapsed));
+        if (shouldPersistProps) persistValue("toolbarCollapsed", Boolean(normalized.toolbarCollapsed));
+
+        const nextToolbarPosition = clampToolbarPosition(
+            normalized.toolbarPosition || TOOLBAR_DEFAULT_POSITION,
+            Boolean(normalized.toolbarCollapsed) ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH,
+            toolbarPanelRef.current?.getBoundingClientRect?.().height || 160,
+            browserViewportWidth,
+            browserViewportHeight
+        );
+        toolbarPositionRef.current = nextToolbarPosition;
+        setToolbarPositionState(nextToolbarPosition);
+        if (shouldPersistProps) persistValue("toolbarPosition", nextToolbarPosition);
+
+        const nextSelectionMode = String(normalized.selectionMode || "all");
+        setSelectionModeState(nextSelectionMode);
+        if (shouldPersistProps) persistValue("selectionMode", nextSelectionMode);
+
+        const nextStrokeWidth = Number(normalized.strokeNormalizeWidth || NORMALIZED_SVG_STROKE_WIDTH);
+        if (Number.isFinite(nextStrokeWidth) && nextStrokeWidth > 0) {
+            setStrokeNormalizeWidthDraft(formatPanelNumber(nextStrokeWidth));
+            if (shouldPersistProps) persistValue("strokeNormalizeWidth", nextStrokeWidth);
+        }
+
+        setSelectedIds([]);
+        setSelectedOverlayIds([]);
+        setSelectedSegment(null);
+        setEditingId(null);
+        setDrawing(null);
+        setDragState(null);
+        setDragHandle(null);
+        setDragSegment(null);
+        setShapeResize(null);
+        setOverlayResize(null);
+        setMarquee(null);
+        closeQuickSvgPicker();
+        closeQuickTagPicker();
+        closePropertiesPanel();
+        historyRef.current = { past: [], future: [], current: null };
+        return true;
+    }, [
+        browserViewportHeight,
+        browserViewportWidth,
+        closePropertiesPanel,
+        closeQuickSvgPicker,
+        closeQuickTagPicker,
+        persistShapes,
+        persistSvgOverlays,
+        persistValue
+    ]);
+
+    const loadDrawingFromGateway = useCallback(async (options = {}) => {
+        if (!drawingStorageEnabled || !drawingStorageKey) {
+            setDrawingStorageStatus(drawingStorageEnabled ? "Set drawingStorageKey to use gateway storage." : "");
+            return false;
+        }
+
+        const requestId = drawingStorageRequestIdRef.current + 1;
+        drawingStorageRequestIdRef.current = requestId;
+        setDrawingStorageLoading(true);
+        setDrawingStorageStatus("Loading gateway drawing...");
+        let lastError = "Failed to load gateway drawing.";
+
+        try {
+            for (const routePath of DRAWING_DOCUMENT_ROUTE_CANDIDATES) {
+                try {
+                    const requestUrl = `${routePath}?key=${encodeURIComponent(drawingStorageKey)}&t=${Date.now()}`;
+                    const response = await fetch(requestUrl, {
+                        cache: "no-store",
+                        credentials: "same-origin"
+                    });
+                    let payload = null;
+                    try {
+                        payload = normalizeDrawingDocumentResponse(await response.json());
+                    } catch (_error) {
+                        payload = null;
+                    }
+
+                    if (!response.ok || payload?.ok === false) {
+                        lastError = String(payload?.error || `Failed to load gateway drawing (${response.status}).`);
+                        continue;
+                    }
+                    if (drawingStorageRequestIdRef.current !== requestId) {
+                        return false;
+                    }
+
+                    setDrawingStorageFilePath(payload.filePath || "");
+                    if (!payload.exists) {
+                        setDrawingStorageStatus("No saved gateway drawing yet.");
+                        drawingStorageLoadedKeyRef.current = drawingStorageKey;
+                        return false;
+                    }
+
+                    const applied = applyGatewayDrawingDocument(payload.document, {
+                        persistProps: options?.persistProps !== false
+                    });
+                    drawingStorageLoadedKeyRef.current = drawingStorageKey;
+                    setDrawingStorageStatus(applied ? "Gateway drawing loaded." : "Gateway drawing was empty.");
+                    return applied;
+                } catch (error) {
+                    lastError = String(error?.message || "Failed to load gateway drawing.");
+                }
+            }
+
+            if (drawingStorageRequestIdRef.current === requestId) {
+                setDrawingStorageStatus(lastError);
+            }
+            return false;
+        } finally {
+            if (drawingStorageRequestIdRef.current === requestId) {
+                setDrawingStorageLoading(false);
+            }
+        }
+    }, [applyGatewayDrawingDocument, drawingStorageEnabled, drawingStorageKey]);
+
+    const saveDrawingToGateway = useCallback(async () => {
+        if (!drawingStorageEnabled || !drawingStorageKey) {
+            setDrawingStorageStatus(drawingStorageEnabled ? "Set drawingStorageKey before saving." : "");
+            return false;
+        }
+
+        const document = buildGatewayDrawingDocument();
+        setDrawingStorageSaving(true);
+        setDrawingStorageStatus("Saving gateway drawing...");
+        let lastError = "Failed to save gateway drawing.";
+
+        try {
+            for (const routePath of DRAWING_DOCUMENT_SAVE_ROUTE_CANDIDATES) {
+                try {
+                    const response = await fetch(routePath, {
+                        method: "POST",
+                        cache: "no-store",
+                        credentials: "same-origin",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            key: drawingStorageKey,
+                            document
+                        })
+                    });
+                    let payload = null;
+                    try {
+                        payload = normalizeDrawingDocumentResponse(await response.json());
+                    } catch (_error) {
+                        payload = null;
+                    }
+
+                    if (!response.ok || payload?.ok === false) {
+                        lastError = String(payload?.error || `Failed to save gateway drawing (${response.status}).`);
+                        continue;
+                    }
+                    setDrawingStorageFilePath(payload.filePath || "");
+                    setDrawingStorageStatus("Gateway drawing saved.");
+                    drawingStorageLoadedKeyRef.current = drawingStorageKey;
+                    return true;
+                } catch (error) {
+                    lastError = String(error?.message || "Failed to save gateway drawing.");
+                }
+            }
+
+            setDrawingStorageStatus(lastError);
+            return false;
+        } finally {
+            setDrawingStorageSaving(false);
+        }
+    }, [buildGatewayDrawingDocument, drawingStorageEnabled, drawingStorageKey]);
+
+    useEffect(() => {
+        if (!drawingStorageEnabled) {
+            setDrawingStorageStatus("");
+            setDrawingStorageFilePath("");
+            drawingStorageLoadedKeyRef.current = "";
+            return;
+        }
+        if (!drawingStorageKey) {
+            setDrawingStorageStatus("Set drawingStorageKey to use gateway storage.");
+            setDrawingStorageFilePath("");
+            drawingStorageLoadedKeyRef.current = "";
+            return;
+        }
+        if (!drawingStorageAutoLoad) {
+            setDrawingStorageStatus("");
+            return;
+        }
+        if (drawingStorageLoadedKeyRef.current === drawingStorageKey) {
+            return;
+        }
+        loadDrawingFromGateway({ persistProps: true });
+    }, [drawingStorageAutoLoad, drawingStorageEnabled, drawingStorageKey, loadDrawingFromGateway]);
 
     const appendPolylinePoint = useCallback((id, point) => {
         const shapeId = String(id || "");
@@ -10640,7 +11391,152 @@ export default function PerspectiveViziCanvasBridge(props) {
         };
     }, [floatingPropertyPanelStyle, rootSize, showRulers]);
 
-    const propertyPanelStyle = fixedPropertyPanelStyle || floatingPropertyPanelStyle;
+    const propertyPanelAnchorStyle = fixedPropertyPanelStyle || floatingPropertyPanelStyle;
+
+    const propertyPanelStyle = useMemo(() => {
+        if (!propertyPanelAnchorStyle) {
+            return null;
+        }
+        if (!propertyPanelPosition) {
+            return propertyPanelAnchorStyle;
+        }
+
+        const viewportWidth = typeof window !== "undefined"
+            ? Number(window.innerWidth || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+            : Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH);
+        const viewportHeight = typeof window !== "undefined"
+            ? Number(window.innerHeight || browserViewportHeight || DEFAULT_CANVAS_HEIGHT)
+            : Number(browserViewportHeight || rootSize?.height || DEFAULT_CANVAS_HEIGHT);
+        const panelWidth = clampPropertyPanelWidth(
+            Number(propertyPanelAnchorStyle.width || propertyPanelWidth),
+            Math.max(PROPERTY_PANEL_MIN_WIDTH, viewportWidth - PROPERTY_PANEL_INSET * 2)
+        );
+        const baseHeight = Number(propertyPanelAnchorStyle.height || propertyPanelHeight);
+        const rawPosition = clampPropertyPanelPosition(
+            propertyPanelPosition,
+            panelWidth,
+            baseHeight,
+            viewportWidth,
+            viewportHeight
+        );
+        const panelHeight = clampPropertyPanelHeight(
+            baseHeight,
+            Math.max(PROPERTY_PANEL_MIN_HEIGHT, viewportHeight - rawPosition.y - PROPERTY_PANEL_INSET)
+        );
+        const position = clampPropertyPanelPosition(
+            rawPosition,
+            panelWidth,
+            panelHeight,
+            viewportWidth,
+            viewportHeight
+        );
+
+        return {
+            ...propertyPanelAnchorStyle,
+            position: "fixed",
+            left: position.x,
+            top: position.y,
+            zIndex: 130,
+            width: panelWidth,
+            maxWidth: Math.max(180, viewportWidth - position.x - PROPERTY_PANEL_INSET),
+            height: panelHeight,
+            maxHeight: panelHeight
+        };
+    }, [
+        browserViewportHeight,
+        browserViewportWidth,
+        propertyPanelAnchorStyle,
+        propertyPanelHeight,
+        propertyPanelPosition,
+        propertyPanelWidth,
+        rootSize
+    ]);
+
+    useEffect(() => {
+        if (!propertiesVisible || !propertyPanelAnchorStyle) {
+            if (!propertiesVisible) {
+                setPropertyPanelPosition(null);
+            }
+            return;
+        }
+
+        const viewportWidth = typeof window !== "undefined"
+            ? Number(window.innerWidth || browserViewportWidth || DEFAULT_CANVAS_WIDTH)
+            : Number(browserViewportWidth || rootSize?.width || DEFAULT_CANVAS_WIDTH);
+        const viewportHeight = typeof window !== "undefined"
+            ? Number(window.innerHeight || browserViewportHeight || DEFAULT_CANVAS_HEIGHT)
+            : Number(browserViewportHeight || rootSize?.height || DEFAULT_CANVAS_HEIGHT);
+        const panelWidth = Number(propertyPanelAnchorStyle.width || propertyPanelWidth);
+        const panelHeight = Number(propertyPanelAnchorStyle.height || propertyPanelHeight);
+
+        setPropertyPanelPosition((previous) => {
+            const source = previous || {
+                x: Number(propertyPanelAnchorStyle.left || PROPERTY_PANEL_INSET),
+                y: Number(propertyPanelAnchorStyle.top || PROPERTY_PANEL_INSET)
+            };
+            const next = clampPropertyPanelPosition(
+                source,
+                panelWidth,
+                panelHeight,
+                viewportWidth,
+                viewportHeight
+            );
+            return previous && previous.x === next.x && previous.y === next.y ? previous : next;
+        });
+    }, [
+        browserViewportHeight,
+        browserViewportWidth,
+        propertiesVisible,
+        propertyPanelAnchorStyle,
+        propertyPanelHeight,
+        propertyPanelWidth,
+        rootSize
+    ]);
+
+    const beginPropertyPanelDrag = useCallback((event) => {
+        if (event.button !== 0 || propertyPanelResizing) {
+            return;
+        }
+        const target = event.target;
+        if (
+            target?.closest?.(
+                "button,input,select,textarea,a,[role='separator'],[data-no-property-panel-drag='true']"
+            )
+        ) {
+            return;
+        }
+        const panel = propertyPanelRef.current;
+        const rect = panel?.getBoundingClientRect?.();
+        if (!rect) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        propertyPanelDragRef.current = {
+            dragging: true,
+            offsetX: Number(event.clientX || 0) - Number(rect.left || 0),
+            offsetY: Number(event.clientY || 0) - Number(rect.top || 0),
+            panelWidth: Number(rect.width || propertyPanelWidth || PROPERTY_PANEL_WIDTH),
+            panelHeight: Number(rect.height || propertyPanelHeight || PROPERTY_PANEL_HEIGHT)
+        };
+        const next = clampPropertyPanelPosition(
+            { x: Number(rect.left || 0), y: Number(rect.top || 0) },
+            Number(rect.width || propertyPanelWidth || PROPERTY_PANEL_WIDTH),
+            Number(rect.height || propertyPanelHeight || PROPERTY_PANEL_HEIGHT),
+            typeof window !== "undefined" ? window.innerWidth : browserViewportWidth,
+            typeof window !== "undefined" ? window.innerHeight : browserViewportHeight
+        );
+        setPropertyPanelPosition((previous) => (
+            previous && previous.x === next.x && previous.y === next.y ? previous : next
+        ));
+        setPropertyPanelDragging(true);
+    }, [
+        browserViewportHeight,
+        browserViewportWidth,
+        propertyPanelHeight,
+        propertyPanelResizing,
+        propertyPanelWidth
+    ]);
 
     const quickSvgPickerStyle = useMemo(() => {
         if (!editorVisible || !quickSvgPickerState?.open) {
@@ -11526,6 +12422,13 @@ export default function PerspectiveViziCanvasBridge(props) {
             : hmiStateStyleMapCount > 0
                 ? `${hmiStateStyleMapCount} HMI state style maps loaded`
                 : "No HMI state style maps loaded";
+    const drawingStorageStatusText = !drawingStorageEnabled
+        ? ""
+        : drawingStorageStatus
+            ? drawingStorageStatus
+            : drawingStorageKey
+                ? `Gateway key: ${drawingStorageKey}`
+                : "Set drawingStorageKey to use gateway storage.";
 
     const toolbarPanelLayout = useMemo(() => {
         const width = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
@@ -11664,7 +12567,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             if (!event.altKey) return;
             event.preventDefault();
             event.stopPropagation();
-            stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
+            stepCanvasZoom(event.deltaY < 0 ? 0.5 : -0.5, event);
         };
         window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
         return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
@@ -11837,6 +12740,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             data-vizi-canvas-root="1"
             data-vizi-theme={theme}
             data-vizi-canvas-background={canvasBackgroundColor}
+            onScroll={browserRuntimeMode ? (event) => rememberRuntimeScrollSnapshot(event.currentTarget) : undefined}
             onMouseDownCapture={(event) => {
                 if (!editorVisible || !propertiesSelectionKey || Number(event?.button || 0) !== 0) {
                     return;
@@ -11872,19 +12776,30 @@ export default function PerspectiveViziCanvasBridge(props) {
                 minHeight: 0,
                 background: canvasBackgroundColor,
                 ...(browserRuntimeMode ? {
-                    display: "flex",
-                    alignItems: "flex-start",
-                    justifyContent: "flex-start",
-                    overflowX: "auto",
-                    overflowY: "hidden"
+                    display: "block",
+                    overflowX: runtimeHorizontalScrollNeeded ? "auto" : "hidden",
+                    overflowY: runtimeVerticalScrollNeeded ? "auto" : "hidden",
+                    scrollbarGutter: runtimeVerticalScrollNeeded ? "stable" : "auto"
                 } : {})
             }}
         >
             <div style={browserRuntimeMode ? {
-                width: Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom,
-                height: Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom,
+                width: runtimeScrollContentWidth,
+                height: runtimeScrollContentHeight,
                 flexShrink: 0,
                 position: "relative",
+                background: canvasBackgroundColor
+            } : {
+                position: "absolute",
+                inset: 0,
+                background: canvasBackgroundColor
+            }}>
+            <div style={browserRuntimeMode ? {
+                position: "absolute",
+                left: runtimeCanvasOffsetX,
+                top: runtimeCanvasOffsetY,
+                width: runtimeCanvasWidth,
+                height: runtimeCanvasHeight,
                 transformOrigin: "top left",
                 background: canvasBackgroundColor
             } : {
@@ -11986,7 +12901,9 @@ export default function PerspectiveViziCanvasBridge(props) {
                 viewportLeftOffset={0}
                 viewportScrollTarget={null}
                 onViewportScroll={NOOP}
+                internalScrollEnabled={!browserRuntimeMode}
             />
+            </div>
             </div>
 
             {editorVisible ? (
@@ -12191,7 +13108,10 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     value={Math.round(effectiveZoom * 100)}
                                     onPointerDown={stopInteractivePropagation}
                                     onMouseDown={stopInteractivePropagation}
-                                    onChange={(e) => setLocalZoom(normalizeLocalCanvasZoom(Number(e.target.value) / 100))}
+                                    onChange={(e) => {
+                                        captureRuntimeScrollSnapshot();
+                                        setLocalZoom(normalizeLocalCanvasZoom(Number(e.target.value) / 100));
+                                    }}
                                     style={{ flex: 1, accentColor: "#22c55e", cursor: "pointer" }}
                                 />
                                 <button
@@ -12210,11 +13130,53 @@ export default function PerspectiveViziCanvasBridge(props) {
                                     type="button"
                                     onPointerDown={stopInteractivePropagation}
                                     onMouseDown={stopInteractivePropagation}
-                                    onClick={(e) => { stopInteractivePropagation(e); setLocalZoom(null); }}
+                                    onClick={(e) => {
+                                        stopInteractivePropagation(e);
+                                        captureRuntimeScrollSnapshot();
+                                        setLocalZoom(null);
+                                    }}
                                     style={{ fontSize: 10, padding: "2px 8px", borderRadius: 6, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "rgba(226,232,240,0.72)", cursor: "pointer", fontWeight: 700 }}
                                 >Reset</button>
                             </div>
                         </DockSection>
+
+                        {drawingStorageEnabled ? (
+                            <>
+                                <div style={{ height: 1, background: "rgba(71, 85, 105, 0.7)" }} />
+                                <DockSection title="Storage">
+                                    <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
+                                        <DockButton
+                                            disabled={!drawingStorageKey || drawingStorageSaving}
+                                            onClick={saveDrawingToGateway}
+                                            title={drawingStorageFilePath || drawingStorageKey}
+                                        >
+                                            <span>{drawingStorageSaving ? "Saving" : "Save"}</span>
+                                        </DockButton>
+                                        <DockButton
+                                            disabled={!drawingStorageKey || drawingStorageLoading}
+                                            onClick={() => loadDrawingFromGateway({ persistProps: true })}
+                                            title={drawingStorageFilePath || drawingStorageKey}
+                                        >
+                                            <span>{drawingStorageLoading ? "Loading" : "Reload"}</span>
+                                        </DockButton>
+                                    </div>
+                                    <div
+                                        title={drawingStorageFilePath || drawingStorageKey}
+                                        style={{
+                                            marginTop: 4,
+                                            fontSize: 11,
+                                            lineHeight: 1.35,
+                                            color: drawingStorageStatus && !/^Gateway drawing (?:loaded|saved)\.?$/i.test(drawingStorageStatus)
+                                                ? "#fde68a"
+                                                : "rgba(226, 232, 240, 0.72)",
+                                            overflowWrap: "anywhere"
+                                        }}
+                                    >
+                                        {drawingStorageStatusText}
+                                    </div>
+                                </DockSection>
+                            </>
+                        ) : null}
 
                         <div style={{ height: 1, background: "rgba(71, 85, 105, 0.7)" }} />
 
@@ -12672,6 +13634,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
             {editorVisible && propertiesVisible && propertyPanelStyle ? (
                 <div
+                    ref={propertyPanelRef}
                     data-vizi-properties-panel="1"
                     style={propertyPanelStyle}
                     onPointerDown={stopInteractivePropagation}
@@ -12775,11 +13738,14 @@ export default function PerspectiveViziCanvasBridge(props) {
                         }}
                     />
                     <div
+                        onMouseDown={beginPropertyPanelDrag}
                         style={{
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "space-between",
-                            gap: 12
+                            gap: 12,
+                            cursor: propertyPanelDragging ? "grabbing" : "grab",
+                            userSelect: "none"
                         }}
                     >
                         <div
@@ -13615,6 +14581,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                         </button>
                         <button
                             type="button"
+                            data-no-property-panel-drag="true"
                             onClick={closePropertiesPanel}
                             style={{
                                 background: "rgba(30, 58, 138, 0.72)",

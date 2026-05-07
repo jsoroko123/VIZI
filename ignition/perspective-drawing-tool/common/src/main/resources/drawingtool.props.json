@@ -1,103 +1,135 @@
 {
   "type": "object",
   "additionalProperties": false,
+  "default": {
+    "document": {},
+    "data": {},
+    "model": {
+      "tool": "select",
+      "zoom": 1,
+      "pan": {
+        "x": 0,
+        "y": 0
+      },
+      "shapes": [],
+      "svgOverlays": [],
+      "drawingStorageEnabled": false,
+      "drawingStorageKey": "",
+      "drawingStorageAutoLoad": true,
+      "browserEditEnabled": false,
+      "gatewayStorage": {
+        "enabled": false,
+        "key": "",
+        "autoLoad": true,
+        "browserEditEnabled": false
+      },
+      "hmiStateStyleMaps": {}
+    },
+    "shapes": [],
+    "svgOverlays": [],
+    "zoom": 1,
+    "pan": {
+      "x": 0,
+      "y": 0
+    },
+    "tool": "select",
+    "forceViziCanvas": false,
+    "svgLibraryEnabled": true,
+    "drawingStorageEnabled": false,
+    "drawingStorageKey": "",
+    "gatewayStorageKey": "",
+    "drawingStorageAutoLoad": true,
+    "browserEditEnabled": false,
+    "gatewayStorage": {
+      "enabled": false,
+      "key": "",
+      "autoLoad": true,
+      "browserEditEnabled": false
+    },
+    "canvasBackgroundColor": "theme",
+    "showGrid": false,
+    "showRulers": false,
+    "showTagPaths": false,
+    "selectionMode": "all",
+    "strokeNormalizeWidth": 1.5,
+    "liveUpdatesEnabled": true,
+    "liveClickable": false
+  },
   "properties": {
     "document": {
       "type": "object",
       "additionalProperties": true,
-      "default": {
-        "viewBox": "0 0 1668 1401",
-        "elements": [
-          {
-            "id": "background",
-            "type": "rect",
-            "x": 0,
-            "y": 0,
-            "width": 1668,
-            "height": 1401,
-            "fill": "#0f172a"
-          },
-          {
-            "id": "title",
-            "type": "text",
-            "x": 48,
-            "y": 72,
-            "text": "Vizi Drawing Tool",
-            "fontSize": 40,
-            "fontWeight": 700,
-            "fill": "#f8fafc"
-          },
-          {
-            "id": "tank-shell",
-            "type": "rect",
-            "x": 84,
-            "y": 160,
-            "width": 240,
-            "height": 360,
-            "rx": 24,
-            "ry": 24,
-            "fill": "#1f2937",
-            "stroke": "#475569",
-            "strokeWidth": 4
-          },
-          {
-            "id": "tank-fill",
-            "type": "rect",
-            "x": 104,
-            "y": 260,
-            "width": 200,
-            "height": 180,
-            "fill": "#22c55e",
-            "bindings": {
-              "fill": "tank.fillColor"
-            }
-          },
-          {
-            "id": "tank-label",
-            "type": "text",
-            "x": 204,
-            "y": 236,
-            "text": "Tank 1",
-            "textAnchor": "middle",
-            "fontSize": 24,
-            "fontWeight": 600,
-            "fill": "#e2e8f0",
-            "bindings": {
-              "text": "tank.label"
-            }
-          },
-          {
-            "id": "tank-value",
-            "type": "text",
-            "x": 204,
-            "y": 600,
-            "text": "0%",
-            "textAnchor": "middle",
-            "fontSize": 34,
-            "fontWeight": 700,
-            "fill": "#38bdf8",
-            "bindings": {
-              "text": "tank.percent"
-            }
-          }
-        ]
-      }
+      "default": {}
     },
     "data": {
       "type": "object",
       "additionalProperties": true,
-      "default": {
-        "tank": {
-          "fillColor": "#22c55e",
-          "label": "Tank 1",
-          "percent": "73%"
-        }
-      }
+      "default": {}
     },
     "model": {
       "type": "object",
       "additionalProperties": true,
       "properties": {
+        "drawingStorageEnabled": {
+          "type": "boolean",
+          "title": "Gateway Storage Enabled",
+          "description": "Save/load drawing JSON through the gateway filesystem.",
+          "default": false
+        },
+        "drawingStorageKey": {
+          "type": "string",
+          "title": "Gateway Storage Key",
+          "description": "Relative JSON key/path below the gateway drawing storage folder.",
+          "default": ""
+        },
+        "drawingStorageAutoLoad": {
+          "type": "boolean",
+          "title": "Gateway Storage Auto Load",
+          "description": "Automatically load drawingStorageKey from gateway storage when the component starts.",
+          "default": true
+        },
+        "browserEditEnabled": {
+          "type": "boolean",
+          "title": "Browser Edit Enabled",
+          "description": "Show edit tools in browser/runtime mode. Bind this to an authorized user or role.",
+          "default": false
+        },
+        "gatewayStorage": {
+          "type": "object",
+          "title": "Gateway File Storage",
+          "description": "Gateway file-backed drawing storage settings.",
+          "additionalProperties": false,
+          "default": {
+            "enabled": false,
+            "key": "",
+            "autoLoad": true,
+            "browserEditEnabled": false
+          },
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "title": "Enabled",
+              "default": false
+            },
+            "key": {
+              "type": "string",
+              "title": "File Key",
+              "description": "Relative JSON key/path below the gateway drawing storage folder.",
+              "default": ""
+            },
+            "autoLoad": {
+              "type": "boolean",
+              "title": "Auto Load",
+              "default": true
+            },
+            "browserEditEnabled": {
+              "type": "boolean",
+              "title": "Browser Edit Enabled",
+              "description": "Show edit tools in browser/runtime mode. Bind this to an authorized user or role.",
+              "default": false
+            }
+          }
+        },
         "hmiStateStyleMaps": {
           "type": "object",
           "title": "HMI State Style Maps",
@@ -115,6 +147,16 @@
         },
         "shapes": [],
         "svgOverlays": [],
+        "drawingStorageEnabled": false,
+        "drawingStorageKey": "",
+        "drawingStorageAutoLoad": true,
+        "browserEditEnabled": false,
+        "gatewayStorage": {
+          "enabled": false,
+          "key": "",
+          "autoLoad": true,
+          "browserEditEnabled": false
+        },
         "hmiStateStyleMaps": {}
       }
     },
@@ -149,6 +191,72 @@
     "svgLibraryEnabled": {
       "type": "boolean",
       "default": true
+    },
+    "drawingStorageEnabled": {
+      "type": "boolean",
+      "title": "Gateway File Storage Enabled",
+      "description": "Save/load drawing JSON through the gateway filesystem.",
+      "default": false
+    },
+    "drawingStorageKey": {
+      "type": "string",
+      "title": "Gateway File Storage Key",
+      "description": "Relative JSON key/path below the gateway drawing storage folder.",
+      "default": ""
+    },
+    "gatewayStorageKey": {
+      "type": "string",
+      "title": "Gateway File Storage Key Alias",
+      "description": "Optional legacy alias for drawingStorageKey.",
+      "default": ""
+    },
+    "drawingStorageAutoLoad": {
+      "type": "boolean",
+      "title": "Gateway File Storage Auto Load",
+      "description": "Automatically load drawingStorageKey from gateway storage when the component starts.",
+      "default": true
+    },
+    "browserEditEnabled": {
+      "type": "boolean",
+      "title": "Browser Edit Enabled",
+      "description": "Show edit tools in browser/runtime mode. Bind this to an authorized user or role.",
+      "default": false
+    },
+    "gatewayStorage": {
+      "type": "object",
+      "title": "Gateway File Storage",
+      "description": "Gateway file-backed drawing storage settings.",
+      "additionalProperties": false,
+      "default": {
+        "enabled": false,
+        "key": "",
+        "autoLoad": true,
+        "browserEditEnabled": false
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Enabled",
+          "default": false
+        },
+        "key": {
+          "type": "string",
+          "title": "File Key",
+          "description": "Relative JSON key/path below the gateway drawing storage folder.",
+          "default": ""
+        },
+        "autoLoad": {
+          "type": "boolean",
+          "title": "Auto Load",
+          "default": true
+        },
+        "browserEditEnabled": {
+          "type": "boolean",
+          "title": "Browser Edit Enabled",
+          "description": "Show edit tools in browser/runtime mode. Bind this to an authorized user or role.",
+          "default": false
+        }
+      }
     },
     "backgroundColor": {
       "type": "string",

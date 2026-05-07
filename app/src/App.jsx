@@ -8915,6 +8915,61 @@ const CONTENT_FIT_HEADROOM = 0.94;
     return nextPan;
   };
 
+  const resolveZoomAnchor = (options = {}) => {
+    const metrics = getCanvasViewportMetrics();
+    const viewW = Math.max(1, Number(metrics.visibleW) || Number(metrics.worldW) || 1);
+    const viewH = Math.max(1, Number(metrics.visibleH) || Number(metrics.worldH) || 1);
+    const rect = metrics.rect;
+    const clientX = Number(options?.clientX);
+    const clientY = Number(options?.clientY);
+    const screenX =
+      Number.isFinite(clientX) && rect && Number(rect.width) > 0
+        ? ((clientX - Number(rect.left || 0)) / Number(rect.width || 1)) * viewW
+        : viewW / 2;
+    const screenY =
+      Number.isFinite(clientY) && rect && Number(rect.height) > 0
+        ? ((clientY - Number(rect.top || 0)) / Number(rect.height || 1)) * viewH
+        : viewH / 2;
+    return {
+      x: Math.max(0, Math.min(viewW, screenX)),
+      y: Math.max(0, Math.min(viewH, screenY)),
+    };
+  };
+
+  const setZoomPreservingViewport = (nextZoomInput, options = {}) => {
+    setZoom((currentZoomRaw) => {
+      const previousZoom = Math.max(0.0001, Number(currentZoomRaw) || Number(zoomRef.current) || 1);
+      const nextZoom = clampZoom(
+        typeof nextZoomInput === "function" ? nextZoomInput(previousZoom) : Number(nextZoomInput)
+      );
+      if (!Number.isFinite(nextZoom) || nextZoom <= 0) return previousZoom;
+
+      const currentPan =
+        panRef.current && Number.isFinite(panRef.current.x) && Number.isFinite(panRef.current.y)
+          ? { x: panRef.current.x, y: panRef.current.y }
+          : { x: 0, y: 0 };
+      const anchor = resolveZoomAnchor(options);
+      const worldAnchor = {
+        x: (anchor.x - currentPan.x) / previousZoom,
+        y: (anchor.y - currentPan.y) / previousZoom,
+      };
+      const nextPan = clampPanToViewport(
+        {
+          x: anchor.x - worldAnchor.x * nextZoom,
+          y: anchor.y - worldAnchor.y * nextZoom,
+        },
+        nextZoom
+      );
+      panRef.current = nextPan;
+      zoomRef.current = nextZoom;
+      setPan(nextPan);
+      if (options?.remember !== false) {
+        rememberedButtonZoomRef.current = nextZoom;
+      }
+      return nextZoom;
+    });
+  };
+
   function getCanvasContentBounds() {
     let minX = Infinity;
     let minY = Infinity;
@@ -9083,20 +9138,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
   }, [autoFitCanvasOnResize]);
 
   function zoomIn() {
-    setZoom((z) => {
-      const next = nudgeZoomPercent(z, ZOOM_STEP_PERCENT);
-      rememberedButtonZoomRef.current = next;
-      setPan((p) => clampPanToViewport(p, next));
-      return next;
-    });
+    setZoomPreservingViewport((z) => nudgeZoomPercent(z, ZOOM_STEP_PERCENT));
   }
   function zoomOut() {
-    setZoom((z) => {
-      const next = nudgeZoomPercent(z, -ZOOM_STEP_PERCENT);
-      rememberedButtonZoomRef.current = next;
-      setPan((p) => clampPanToViewport(p, next));
-      return next;
-    });
+    setZoomPreservingViewport((z) => nudgeZoomPercent(z, -ZOOM_STEP_PERCENT));
   }
   function resetZoomToSavedButtonLevel(forceActual100 = false) {
     const remembered = Number(rememberedButtonZoomRef.current);
@@ -9713,11 +9758,10 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (!isCanvasTarget(e.target)) return;
       e.preventDefault();
       const direction = e.deltaY < 0 ? 1 : -1;
-      setZoom((z) => {
-        const next = nudgeZoomPercent(z, direction > 0 ? ZOOM_STEP_PERCENT : -ZOOM_STEP_PERCENT);
-        setPan((p) => clampPanToViewport(p, next));
-        return next;
-      });
+      setZoomPreservingViewport(
+        (z) => nudgeZoomPercent(z, direction > 0 ? ZOOM_STEP_PERCENT : -ZOOM_STEP_PERCENT),
+        { clientX: e.clientX, clientY: e.clientY }
+      );
     };
 
     const onKeyDownBlockPageZoom = (e) => {

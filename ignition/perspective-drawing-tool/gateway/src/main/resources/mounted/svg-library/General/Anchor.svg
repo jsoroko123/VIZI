@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 32" width="40" height="32" kewidth="100" keheight="80" eType="Anchor" fill="#D7DADE" stroke="#808080" stroke-width="2" stroke-linejoin="miter" stroke-linecap="round">
+  <rect id="anchorBox" x="7" y="7" width="28" height="22" fill="#D7DADE" stroke="#808080" stroke-width="2" data-vizi-fill-target="true"/>
+  <line id="anchorDiagonal" x1="7" y1="7" x2="35" y2="29" fill="none" stroke="#808080" stroke-width="2"/>
+  <circle id="anchorPoint" cx="7" cy="7" r="5" fill="#D7DADE" stroke="#808080" stroke-width="1" data-vizi-fill-target="true"/>
+</svg>

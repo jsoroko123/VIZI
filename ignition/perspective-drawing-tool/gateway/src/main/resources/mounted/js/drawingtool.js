@@ -13784,7 +13784,8 @@ var MesoraDrawingToolBundle = (() => {
     viewportLeftOffset = 0,
     viewportScrollTarget = null,
     onViewportScroll = null,
-    absoluteViewportLayout = true
+    absoluteViewportLayout = true,
+    internalScrollEnabled = true
   }) {
     var _a;
     const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
@@ -13871,7 +13872,8 @@ var MesoraDrawingToolBundle = (() => {
     const isCrosshair = isLineMode || marquee;
     const themeStrokeDefault = "#808080";
     const themeFillDefault = "#D7DADE";
-    const isDarkTheme = String(theme || "").toLowerCase() === "dark";
+    const themeMode = String(theme || "").trim().toLowerCase().includes("dark") ? "dark" : String(theme || "").trim().toLowerCase().includes("light") ? "light" : "light";
+    const isDarkTheme = themeMode === "dark";
     const normalizePaintForDefaultCompare = (value) => String(value || "").replace(/\s+/g, "").trim().toLowerCase();
     const isThemeDefaultFillPaint = (value) => {
       const paint = normalizePaintForDefaultCompare(value);
@@ -15250,9 +15252,6 @@ var MesoraDrawingToolBundle = (() => {
       };
       const requestedWidth = readExplicitDimension(["popupWidth", "viewPopupWidth", "openViewWidth"]);
       const requestedHeight = readExplicitDimension(["popupHeight", "viewPopupHeight", "openViewHeight"]);
-      if (!requestedWidth && !requestedHeight) {
-        return null;
-      }
       const viewportSource = typeof globalThis !== "undefined" ? globalThis : {};
       const docElement = (_a2 = viewportSource.document) == null ? void 0 : _a2.documentElement;
       const docBody = (_b = viewportSource.document) == null ? void 0 : _b.body;
@@ -15270,13 +15269,15 @@ var MesoraDrawingToolBundle = (() => {
       );
       const maxWidth = Math.max(280, viewportWidth - 48);
       const maxHeight = Math.max(220, viewportHeight - 48);
+      const defaultWidth = Math.min(920, Math.max(520, Math.round(viewportWidth * 0.62)));
+      const defaultHeight = Math.min(620, Math.max(360, Math.round(viewportHeight * 0.7)));
       const width = Math.min(
         maxWidth,
-        Math.max(320, requestedWidth || 640)
+        Math.max(320, requestedWidth || defaultWidth)
       );
       const height = Math.min(
         maxHeight,
-        Math.max(240, requestedHeight || 480)
+        Math.max(240, requestedHeight || defaultHeight)
       );
       return {
         left: Math.max(12, Math.round((viewportWidth - width) / 2)),
@@ -16235,13 +16236,24 @@ var MesoraDrawingToolBundle = (() => {
       const titleSize = resolveWidgetTitleFontSize(dense ? 8 : compact ? 9 : 10, 7, 40);
       const valueSize = scaledFont(dense ? 12 : compact ? 16 : 19, 9, 36);
       const widgetRootStyle = typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
-      const themedTextColor = ((_e = widgetRootStyle == null ? void 0 : widgetRootStyle.getPropertyValue("--text")) == null ? void 0 : _e.trim()) || (isDarkTheme ? "#e2e8f0" : "#111827");
-      const valueColor = widgetTextColor || "var(--text)";
+      const readThemeVar = (name, fallback) => {
+        var _a3;
+        const value = (_a3 = widgetRootStyle == null ? void 0 : widgetRootStyle.getPropertyValue(name)) == null ? void 0 : _a3.trim();
+        return value && !value.toLowerCase().startsWith("var(") ? value : fallback;
+      };
+      const widgetPrimaryText = readThemeVar("--text", isDarkTheme ? "#f8fafc" : "#111827");
+      const widgetMutedText = readThemeVar("--text-muted", isDarkTheme ? "#a7b4c7" : "#475569");
+      const widgetElevatedFill = readThemeVar("--bg-elev", isDarkTheme ? "#141b25" : "#ffffff");
+      const widgetBorderColor = readThemeVar(
+        "--border",
+        isDarkTheme ? "rgba(148, 163, 184, 0.35)" : "rgba(15, 23, 42, 0.15)"
+      );
+      const valueColor = widgetTextColor || widgetPrimaryText;
       const accent = "#2b8cff";
-      const subdued = widgetTextColor || "var(--text-muted)";
-      const widgetHtmlTextColor = widgetTextColor || themedTextColor;
+      const subdued = widgetTextColor || widgetMutedText;
+      const widgetHtmlTextColor = widgetTextColor || widgetPrimaryText;
       const widgetButtonTextColor = normalizeWidgetTextColor(
-        (_g = (_f = cfg == null ? void 0 : cfg.buttonTextColor) != null ? _f : cfg == null ? void 0 : cfg.buttonFontColor) != null ? _g : cfg == null ? void 0 : cfg.buttonLabelColor
+        (_f = (_e = cfg == null ? void 0 : cfg.buttonTextColor) != null ? _e : cfg == null ? void 0 : cfg.buttonFontColor) != null ? _f : cfg == null ? void 0 : cfg.buttonLabelColor
       ) || widgetTextColor || "rgba(255,255,255,0.98)";
       const formatTime = (ts) => {
         const nTs = Number(ts);
@@ -16313,11 +16325,11 @@ var MesoraDrawingToolBundle = (() => {
       if (kind === "kpi") {
         const display = displayN != null ? formatNum(displayN) : rawVal !== "" ? String(rawVal) : "--";
         return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
-          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: "var(--bg-elev)" }),
+          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: widgetElevatedFill }),
           /* @__PURE__ */ jsx("text", { x: x + pad, y: y + headH - 7, fill: subdued, fontSize: titleSize, fontFamily: "system-ui", fontWeight: 700, children: cardTitle }),
           /* @__PURE__ */ jsx("text", { x: x + pad, y: y + Math.max(headH + 26, h * 0.62), fill: valueColor, fontSize: valueSize, fontFamily: "system-ui", fontWeight: 800, children: display }),
           !dense ? /* @__PURE__ */ jsx("text", { x: x + pad, y: y + h - 10, fill: subdued, fontSize: scaledFont(10, 8, 18), fontFamily: "system-ui", fontWeight: 600, children: `Updated ${latestTime}` }) : null,
-          /* @__PURE__ */ jsx("line", { x1: x + pad, y1: y + headH + 4, x2: x + w - pad, y2: y + headH + 4, stroke: "var(--border)" })
+          /* @__PURE__ */ jsx("line", { x1: x + pad, y1: y + headH + 4, x2: x + w - pad, y2: y + headH + 4, stroke: widgetBorderColor })
         ] });
       }
       if (kind === "gauge") {
@@ -16335,7 +16347,7 @@ var MesoraDrawingToolBundle = (() => {
           Math.min(8, (window.devicePixelRatio || 1) * viewScale2 * overlayScale3 * viewportDprBoost2)
         ) : 1;
         const gaugeKey = `g-${overlay.id}-${kind}-${gaugeW}x${gaugeH}-z${viewScale2.toFixed(3)}-s${overlayScale3.toFixed(3)}-vp${viewportDprBoost2.toFixed(3)}`;
-        const borderColor = ((_h = widgetRootStyle == null ? void 0 : widgetRootStyle.getPropertyValue("--border")) == null ? void 0 : _h.trim()) || "#334155";
+        const borderColor = ((_g = widgetRootStyle == null ? void 0 : widgetRootStyle.getPropertyValue("--border")) == null ? void 0 : _g.trim()) || "#334155";
         const textColor2 = widgetHtmlTextColor;
         const gaugeData = {
           datasets: [
@@ -16358,7 +16370,7 @@ var MesoraDrawingToolBundle = (() => {
           plugins: { legend: { display: false }, tooltip: { enabled: false } }
         };
         return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
-          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: "var(--bg-elev)" }),
+          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: widgetElevatedFill }),
           /* @__PURE__ */ jsx("text", { x: x + pad, y: y + headH - 7, fill: subdued, fontSize: titleSize, fontFamily: "system-ui", fontWeight: 700, children: cardTitle }),
           /* @__PURE__ */ jsx("foreignObject", { x: gaugeX, y: gaugeTop, width: gaugeW, height: gaugeH, children: /* @__PURE__ */ jsxs("div", { xmlns: "http://www.w3.org/1999/xhtml", style: { width: "100%", height: "100%", pointerEvents: "none", position: "relative" }, children: [
             /* @__PURE__ */ jsx(Doughnut, { data: gaugeData, options: gaugeOptions }, gaugeKey),
@@ -16401,7 +16413,7 @@ var MesoraDrawingToolBundle = (() => {
         const cloudColor = isDarkTheme ? "#cbd5e1" : "#94a3b8";
         const sunColor = "#fbbf24";
         return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
-          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: h - 2, rx: 12, fill: isDarkTheme ? "#0f172a" : "#f8fafc", stroke: "var(--border)" }),
+          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: h - 2, rx: 12, fill: isDarkTheme ? "#0f172a" : "#f8fafc", stroke: widgetBorderColor }),
           /* @__PURE__ */ jsx("text", { x: x + pad, y: y + headH - 7, fill: subdued, fontSize: titleSize, fontFamily: "system-ui", fontWeight: 700, children: locationText }),
           /* @__PURE__ */ jsx("circle", { cx: x + pad + 40, cy: y + headH + 42, r: 20, fill: sunColor }),
           /* @__PURE__ */ jsx(
@@ -16431,9 +16443,9 @@ var MesoraDrawingToolBundle = (() => {
         const startY = y + headH + 14;
         const rowStep = dense ? 11 : 13;
         return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
-          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: "var(--bg-elev)" }),
+          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: widgetElevatedFill }),
           /* @__PURE__ */ jsx("text", { x: x + pad, y: y + headH - 7, fill: subdued, fontSize: titleSize, fontFamily: "system-ui", fontWeight: 700, children: cardTitle }),
-          /* @__PURE__ */ jsx("line", { x1: x + pad, y1: startY - 8, x2: x + w - pad, y2: startY - 8, stroke: "var(--border)" }),
+          /* @__PURE__ */ jsx("line", { x1: x + pad, y1: startY - 8, x2: x + w - pad, y2: startY - 8, stroke: widgetBorderColor }),
           /* @__PURE__ */ jsx("text", { x: x + pad, y: startY, fill: valueColor, fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, children: "Source" }),
           /* @__PURE__ */ jsx("text", { x: x + Math.max(108, w * 0.43), y: startY, fill: valueColor, fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, children: "Value" }),
           /* @__PURE__ */ jsx("text", { x: x + w - pad, y: startY, fill: valueColor, fontSize: scaledFont(dense ? 8 : 9, 7, 16), fontFamily: "system-ui", fontWeight: 700, textAnchor: "end", children: "Time" }),
@@ -16523,14 +16535,14 @@ var MesoraDrawingToolBundle = (() => {
               children: labelText
             }
           ) : null,
-          /* @__PURE__ */ jsx("rect", { x: barX, y: barY, width: barW, height: barH, rx: barR, fill: "transparent", stroke: "var(--border)" }),
+          /* @__PURE__ */ jsx("rect", { x: barX, y: barY, width: barW, height: barH, rx: barR, fill: "transparent", stroke: widgetBorderColor }),
           /* @__PURE__ */ jsx("rect", { x: barX, y: barY, width: fillW, height: barH, rx: barR, fill: remainingMs === 0 ? "#16a34a" : accent }),
           /* @__PURE__ */ jsx(
             "text",
             {
               x: barX + barW / 2,
               y: barY + barH / 2 + Math.max(2, Math.round(barH * 0.16)),
-              fill: widgetTextColor || (theme === "dark" ? "#ffffff" : "#111827"),
+              fill: widgetTextColor || widgetPrimaryText,
               fontSize: valueFont,
               fontFamily: "system-ui",
               fontWeight: 800,
@@ -16545,7 +16557,7 @@ var MesoraDrawingToolBundle = (() => {
         const tagPath = getWritableWidgetTagPath(overlay);
         const canWrite = Boolean(tagPath);
         const initialDraft = displayN != null ? String(Number(displayN)) : rawVal !== "" ? String(rawVal) : "";
-        const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId) ? String((_i = widgetWriteDraftByOverlay[overlayId]) != null ? _i : "") : initialDraft;
+        const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId) ? String((_h = widgetWriteDraftByOverlay[overlayId]) != null ? _h : "") : initialDraft;
         const writeBusy = (widgetWriteBusyByOverlay == null ? void 0 : widgetWriteBusyByOverlay[overlayId]) === true;
         const writeError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
         const inputH = dense ? 22 : 26;
@@ -16554,7 +16566,7 @@ var MesoraDrawingToolBundle = (() => {
         const btnW = Math.max(52, Math.min(88, Math.round(controlsW * 0.26)));
         const showControls = h >= (dense ? 96 : 108);
         return /* @__PURE__ */ jsxs("g", { children: [
-          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: "var(--bg-elev)" }),
+          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: widgetElevatedFill }),
           /* @__PURE__ */ jsx(
             "text",
             {
@@ -16623,8 +16635,8 @@ var MesoraDrawingToolBundle = (() => {
                         style: {
                           width: "100%",
                           height: "100%",
-                          border: "1px solid var(--border)",
-                          background: "var(--bg-elev)",
+                          border: `1px solid ${widgetBorderColor}`,
+                          background: widgetElevatedFill,
                           color: widgetHtmlTextColor,
                           borderRadius: 7,
                           padding: "0 8px",
@@ -16669,7 +16681,7 @@ var MesoraDrawingToolBundle = (() => {
             }
           ) : null,
           writeError ? /* @__PURE__ */ jsx("text", { x: x + pad, y: showControls ? controlsY - 4 : y + h - 8, fill: "#f04438", fontSize: 9, fontFamily: "system-ui", fontWeight: 700, children: writeError }) : null,
-          /* @__PURE__ */ jsx("line", { x1: x + pad, y1: y + headH + 4, x2: x + w - pad, y2: y + headH + 4, stroke: "var(--border)" })
+          /* @__PURE__ */ jsx("line", { x1: x + pad, y1: y + headH + 4, x2: x + w - pad, y2: y + headH + 4, stroke: widgetBorderColor })
         ] });
       }
       if (kind === "pushButton") {
@@ -16706,7 +16718,7 @@ var MesoraDrawingToolBundle = (() => {
             {
               x: buttonX + buttonW / 2,
               y: titleY,
-              fill: widgetTextColor || "rgba(248, 250, 252, 0.96)",
+              fill: widgetTextColor || widgetPrimaryText,
               fontSize: titleFont,
               fontFamily: "system-ui",
               fontWeight: 800,
@@ -16905,7 +16917,7 @@ var MesoraDrawingToolBundle = (() => {
             {
               x: buttonX + buttonW / 2,
               y: titleY,
-              fill: widgetTextColor || "rgba(248, 250, 252, 0.96)",
+              fill: widgetTextColor || widgetPrimaryText,
               fontSize: titleFont,
               fontFamily: "system-ui",
               fontWeight: 800,
@@ -17282,17 +17294,19 @@ var MesoraDrawingToolBundle = (() => {
       ) : 1;
       const chartKey = `c-${overlay.id}-${kind}-${chartW}x${chartH}-z${viewScale.toFixed(3)}-s${overlayScale2.toFixed(3)}-vp${viewportDprBoost.toFixed(3)}`;
       const rootStyle = typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
-      const isDark = String(theme || "").toLowerCase() === "dark";
-      const textColor = widgetTextColor || ((_j = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text-muted")) == null ? void 0 : _j.trim()) || (isDark ? "#b7c4d8" : "#5d6b82");
+      const isDark = isDarkTheme;
+      const chartPrimaryText = widgetTextColor || ((_i = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text")) == null ? void 0 : _i.trim()) || (isDark ? "#f8fafc" : "#111827");
+      const chartMutedText = widgetTextColor || ((_j = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text-muted")) == null ? void 0 : _j.trim()) || (isDark ? "#b7c4d8" : "#5d6b82");
+      const textColor = chartMutedText;
       const chartPanelFill = isDark ? "#0b1220" : "#ffffff";
       const gridColor = isDark ? "rgba(148,163,184,0.24)" : "rgba(100,116,139,0.22)";
-      const axisColor = widgetTextColor || (isDark ? "#d4deee" : "#334155");
+      const axisColor = chartPrimaryText;
       const accentLine = isDark ? "#22d3ee" : "#2563eb";
       const accentFillTop = isDark ? "rgba(34,211,238,0.42)" : "rgba(37,99,235,0.32)";
       const accentFillBottom = isDark ? "rgba(34,211,238,0.06)" : "rgba(37,99,235,0.05)";
       const barFill = isDark ? "rgba(45,212,191,0.9)" : "rgba(59,130,246,0.9)";
       const tooltipBg = isDark ? "rgba(8,14,24,0.96)" : "rgba(255,255,255,0.96)";
-      const tooltipText = widgetTextColor || (isDark ? "#e6eefc" : "#1b2a41");
+      const tooltipText = chartPrimaryText;
       const tooltipBorder = isDark ? "rgba(118,149,195,0.32)" : "rgba(54,96,163,0.22)";
       const trimTick = (nVal, maxFractionDigits) => {
         const safeDigits = Math.max(0, Math.min(3, Number(maxFractionDigits) || 0));
@@ -17619,7 +17633,7 @@ var MesoraDrawingToolBundle = (() => {
         });
       }
       return /* @__PURE__ */ jsxs("g", { children: [
-        /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: "var(--bg-elev)" }),
+        /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: headH, rx: 10, fill: widgetElevatedFill }),
         /* @__PURE__ */ jsx("text", { x: x + pad, y: y + headH - 7, fill: subdued, fontSize: titleSize, fontFamily: "system-ui", fontWeight: 700, children: cardTitle }),
         !dense && !(kind === "lineChart" || kind === "areaChart" || kind === "barChart") ? /* @__PURE__ */ jsx(
           "text",
@@ -17687,8 +17701,8 @@ var MesoraDrawingToolBundle = (() => {
                         width: "100%",
                         height: "100%",
                         borderRadius: 6,
-                        border: "1px solid var(--border)",
-                        background: "var(--bg-elev)",
+                        border: `1px solid ${widgetBorderColor}`,
+                        background: widgetElevatedFill,
                         color: widgetHtmlTextColor,
                         fontSize: 9,
                         padding: "0 4px",
@@ -17708,8 +17722,8 @@ var MesoraDrawingToolBundle = (() => {
                         width: "100%",
                         height: "100%",
                         borderRadius: 6,
-                        border: "1px solid var(--border)",
-                        background: "var(--bg-elev)",
+                        border: `1px solid ${widgetBorderColor}`,
+                        background: widgetElevatedFill,
                         color: widgetHtmlTextColor,
                         fontSize: 9,
                         padding: "0 4px",
@@ -17747,8 +17761,8 @@ var MesoraDrawingToolBundle = (() => {
                         width: cw,
                         height: chipH,
                         rx: 6,
-                        fill: "var(--bg-elev)",
-                        stroke: "var(--border)"
+                        fill: widgetElevatedFill,
+                        stroke: widgetBorderColor
                       }
                     ),
                     /* @__PURE__ */ jsx(
@@ -18070,8 +18084,55 @@ var MesoraDrawingToolBundle = (() => {
           "image/svg+xml"
         );
         if (doc.querySelector("parsererror")) return source;
+        const setStylePaint = (node, name, value) => {
+          if (!node) return;
+          node.setAttribute(name, value);
+          const style = String(node.getAttribute("style") || "");
+          if (!style) return;
+          if (new RegExp(`${name}\\s*:`, "i").test(style)) {
+            node.setAttribute(
+              "style",
+              style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+            );
+          }
+        };
+        const ensureBinLevelGradient = () => {
+          const ns = "http://www.w3.org/2000/svg";
+          let gradient = doc.getElementById("binLevelFill");
+          if (!gradient) {
+            let defs = doc.querySelector("defs");
+            if (!defs) {
+              defs = doc.createElementNS(ns, "defs");
+              doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+            }
+            gradient = doc.createElementNS(ns, "linearGradient");
+            gradient.setAttribute("id", "binLevelFill");
+            defs.appendChild(gradient);
+          }
+          gradient.setAttribute("x1", "0");
+          gradient.setAttribute("y1", "0");
+          gradient.setAttribute("x2", "0");
+          gradient.setAttribute("y2", "1");
+          while (gradient.firstChild) {
+            gradient.removeChild(gradient.firstChild);
+          }
+          [
+            ["0%", "#b6cff2"],
+            ["100%", "#4f77a5"]
+          ].forEach(([offset, color2]) => {
+            const stop = doc.createElementNS(ns, "stop");
+            stop.setAttribute("offset", offset);
+            stop.setAttribute("stop-color", color2);
+            gradient.appendChild(stop);
+          });
+          return "binLevelFill";
+        };
         const bar = doc.getElementById("BarGraph");
         if (bar) {
+          const levelGradientId = ensureBinLevelGradient();
+          setStylePaint(bar, "fill", `url(#${levelGradientId})`);
+          setStylePaint(bar, "stroke", "#3f3f3f");
+          setStylePaint(bar, "stroke-width", "0");
           const rawY = Number(bar.getAttribute("y"));
           const rawHeight = Number(bar.getAttribute("height"));
           if (Number.isFinite(rawY) && Number.isFinite(rawHeight) && rawHeight > 0) {
@@ -20374,7 +20435,7 @@ var MesoraDrawingToolBundle = (() => {
       return [{ color: chainColor, points }];
     };
     const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
-    const rightEdgeReserve = showRulers ? SCROLLBAR_RESERVE : 0;
+    const rightEdgeReserve = showRulers && internalScrollEnabled ? SCROLLBAR_RESERVE : 0;
     const bottomEdgeReserve = 0;
     const viewportW = Math.max(1, Number(size.w || 0));
     const viewportH = Math.max(1, Number(size.h || 0));
@@ -20803,16 +20864,16 @@ var MesoraDrawingToolBundle = (() => {
     };
     const renderTagBubble = ({ key, bubbleId, x, anchorY, lines, anchor = "middle", highlight = false, title = "" }) => {
       if (!Array.isArray(lines) || lines.length === 0) return null;
-      const fontSize = 9 * inv;
-      const lineH = 10.5 * inv;
-      const padX = 5 * inv;
-      const padY = 4 * inv;
-      const radius = 8 * inv;
+      const fontSize = 11 * inv;
+      const lineH = 13.2 * inv;
+      const padX = 7 * inv;
+      const padY = 5.25 * inv;
+      const radius = 10.5 * inv;
       const maxChars = lines.reduce((m, line) => Math.max(m, String(line || "").length), 0);
-      const textW = Math.max(26 * inv, maxChars * 6.1 * inv);
+      const textW = Math.max(34 * inv, maxChars * 7.3 * inv);
       const w = textW + padX * 2;
       const h = lineH * lines.length + padY * 2;
-      const top = anchorY - h - 8 * inv;
+      const top = anchorY - h - 10 * inv;
       const left = anchor === "start" ? x : x - w / 2;
       const textX = anchor === "start" ? x + padX : x;
       const textAnchor = anchor === "start" ? "start" : "middle";
@@ -20830,7 +20891,7 @@ var MesoraDrawingToolBundle = (() => {
             x2: x,
             y2: anchorY,
             stroke: lineStroke,
-            strokeWidth: 1.2 * inv,
+            strokeWidth: 1.35 * inv,
             strokeLinecap: "round",
             vectorEffect: "non-scaling-stroke"
           }
@@ -20846,7 +20907,7 @@ var MesoraDrawingToolBundle = (() => {
             ry: radius,
             fill: bubbleFill,
             stroke: bubbleStroke,
-            strokeWidth: 1 * inv,
+            strokeWidth: 1.15 * inv,
             vectorEffect: "non-scaling-stroke",
             style: { cursor: onHideTagBubble ? "pointer" : "default" },
             onClick: onHideTagBubble ? (e) => {
@@ -22050,9 +22111,9 @@ var MesoraDrawingToolBundle = (() => {
         const modeStroke = isForce ? "#dc2626" : isMaintenance ? "#f59e0b" : "#a855f7";
         const modeLineStroke = isForce ? "#b91c1c" : isMaintenance ? "#b45309" : "#7e22ce";
         const modeFill = isForce ? "rgba(254,242,242,0.98)" : isMaintenance ? "rgba(255,247,237,0.98)" : "rgba(255,255,255,0.95)";
-        const bubbleR = 10.5 * inv;
-        const bubbleCx = wr.x + wr.w + 14 * inv;
-        const bubbleCy = wr.y + 12 * inv;
+        const bubbleR = 13.5 * inv;
+        const bubbleCx = wr.x + wr.w + 17.5 * inv;
+        const bubbleCy = wr.y + 15 * inv;
         const anchorX = wr.x + wr.w / 2;
         const anchorY = wr.y + wr.h / 2;
         const dx = bubbleCx - anchorX;
@@ -22074,7 +22135,7 @@ var MesoraDrawingToolBundle = (() => {
               x2: lineEndX,
               y2: lineEndY,
               stroke: modeLineStroke,
-              strokeWidth: 1.45 * inv,
+              strokeWidth: 1.6 * inv,
               strokeLinecap: "round",
               vectorEffect: "non-scaling-stroke"
             }
@@ -22099,7 +22160,7 @@ var MesoraDrawingToolBundle = (() => {
                     r: bubbleR,
                     fill: modeFill,
                     stroke: modeStroke,
-                    strokeWidth: 1.35 * inv,
+                    strokeWidth: 1.5 * inv,
                     vectorEffect: "non-scaling-stroke"
                   }
                 ),
@@ -22111,7 +22172,7 @@ var MesoraDrawingToolBundle = (() => {
                     textAnchor: "middle",
                     dominantBaseline: "middle",
                     fill: modeLineStroke,
-                    fontSize: 12 * inv,
+                    fontSize: 15 * inv,
                     fontWeight: 900,
                     pointerEvents: "none",
                     children: "F"
@@ -22119,7 +22180,7 @@ var MesoraDrawingToolBundle = (() => {
                 ) : /* @__PURE__ */ jsx(
                   "g",
                   {
-                    transform: `translate(${bubbleCx} ${bubbleCy}) scale(${0.68 * inv}) translate(-12 -12)`,
+                    transform: `translate(${bubbleCx} ${bubbleCy}) scale(${0.86 * inv}) translate(-12 -12)`,
                     fill: "none",
                     stroke: modeLineStroke,
                     strokeWidth: 1.9,
@@ -22195,9 +22256,9 @@ var MesoraDrawingToolBundle = (() => {
           connectionQuality ? `Quality: ${connectionQuality}` : "",
           connectionError ? `Error: ${connectionError}` : ""
         ].filter(Boolean).join(" | ") : "";
-        const r = 10 * inv;
-        const cx = wr.x + wr.w + 14 * inv;
-        const cy = wr.y + Math.max(12 * inv, r + 1.5 * inv);
+        const r = 13 * inv;
+        const cx = wr.x + wr.w + 17.5 * inv;
+        const cy = wr.y + Math.max(15.5 * inv, r + 1.5 * inv);
         const anchorX = wr.x + wr.w / 2;
         const anchorY = wr.y + wr.h / 2;
         const dx = cx - anchorX;
@@ -22218,7 +22279,7 @@ var MesoraDrawingToolBundle = (() => {
               x2: lineEndX,
               y2: lineEndY,
               stroke: badgeStroke,
-              strokeWidth: 1.3 * inv,
+              strokeWidth: 1.45 * inv,
               strokeLinecap: "round",
               vectorEffect: "non-scaling-stroke"
             }
@@ -22243,7 +22304,7 @@ var MesoraDrawingToolBundle = (() => {
                     r,
                     fill: badgeFill,
                     stroke: badgeStroke,
-                    strokeWidth: 1.35 * inv,
+                    strokeWidth: 1.5 * inv,
                     vectorEffect: "non-scaling-stroke"
                   }
                 ),
@@ -22255,7 +22316,7 @@ var MesoraDrawingToolBundle = (() => {
                     textAnchor: "middle",
                     dominantBaseline: "middle",
                     fill: "#b91c1c",
-                    fontSize: 12 * inv,
+                    fontSize: 15 * inv,
                     fontWeight: 900,
                     pointerEvents: "none",
                     children: badgeText
@@ -22338,7 +22399,7 @@ var MesoraDrawingToolBundle = (() => {
               {
                 x: s.x,
                 y: s.y,
-                fill: dynamicColor || (theme === "dark" && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase())) ? "#ffffff" : s.fill || "#D7DADE"),
+                fill: dynamicColor || (isDarkTheme && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase())) ? "#ffffff" : s.fill || "#D7DADE"),
                 fontSize: s.fontSize || 24,
                 fontFamily: s.fontFamily || "system-ui",
                 fontWeight: s.fontWeight || "400",
@@ -22955,11 +23016,11 @@ var MesoraDrawingToolBundle = (() => {
               style: {
                 position: "absolute",
                 inset: 0,
-                overflowX: "auto",
-                overflowY: "hidden",
-                scrollbarGutter: "stable",
-                paddingRight: rightEdgeReserve,
-                paddingBottom: bottomEdgeReserve,
+                overflowX: internalScrollEnabled ? "auto" : "hidden",
+                overflowY: internalScrollEnabled ? "auto" : "hidden",
+                scrollbarGutter: internalScrollEnabled ? "stable" : "auto",
+                paddingRight: internalScrollEnabled ? rightEdgeReserve : 0,
+                paddingBottom: internalScrollEnabled ? bottomEdgeReserve : 0,
                 boxSizing: "border-box"
               },
               children: /* @__PURE__ */ jsx(
@@ -23150,7 +23211,7 @@ var MesoraDrawingToolBundle = (() => {
                                                   {
                                                     x: s.x,
                                                     y: s.y,
-                                                    fill: dynamicColor || (theme === "dark" && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase())) ? "#ffffff" : s.fill || "#D7DADE"),
+                                                    fill: dynamicColor || (isDarkTheme && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase())) ? "#ffffff" : s.fill || "#D7DADE"),
                                                     fontSize: s.fontSize || 24,
                                                     fontFamily: s.fontFamily || "system-ui",
                                                     fontWeight: s.fontWeight || "400",
@@ -24376,6 +24437,18 @@ var MesoraDrawingToolBundle = (() => {
     `/data/${MODULE_ID}/hmi-state-style-maps`,
     `/main/data/${MODULE_ID}/hmi-state-style-maps`
   ];
+  var DRAWING_DOCUMENT_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/drawing-document`,
+    `/main/data/${MODULE_URL_ALIAS}/drawing-document`,
+    `/data/${MODULE_ID}/drawing-document`,
+    `/main/data/${MODULE_ID}/drawing-document`
+  ];
+  var DRAWING_DOCUMENT_SAVE_ROUTE_CANDIDATES = [
+    `/data/${MODULE_URL_ALIAS}/drawing-document-save`,
+    `/main/data/${MODULE_URL_ALIAS}/drawing-document-save`,
+    `/data/${MODULE_ID}/drawing-document-save`,
+    `/main/data/${MODULE_ID}/drawing-document-save`
+  ];
   var IGNITION_TAG_VALUE_POLL_MS = 250;
   var SVG_RAW_CACHE_MAX = 80;
   var DEFAULT_FILL = "#D7DADE";
@@ -24395,6 +24468,8 @@ var MesoraDrawingToolBundle = (() => {
   var LOCAL_CANVAS_ZOOM_MIN = 0.1;
   var LOCAL_CANVAS_ZOOM_MAX = 4;
   var LOCAL_CANVAS_ZOOM_STEP = 0.1;
+  var RUNTIME_SCROLL_TOLERANCE_PX = 3;
+  var RUNTIME_HEIGHT_FIT_RESERVE_PX = 18;
   var LOCAL_CANVAS_ZOOM_CACHE_PREFIX = "mesora-drawing:canvas-zoom:v1:";
   var CANVAS_RULER_SIZE = 24;
   var PROPERTY_PANEL_WIDTH = 300;
@@ -24404,6 +24479,7 @@ var MesoraDrawingToolBundle = (() => {
   var PROPERTY_PANEL_HEIGHT = 520;
   var PROPERTY_PANEL_MIN_HEIGHT = 240;
   var PROPERTY_PANEL_HEIGHT_STORAGE_KEY = "mesora-drawing:property-panel-height:v1";
+  var PROPERTY_PANEL_INSET = 12;
   var QUICK_TAG_PANEL_WIDTH = 360;
   var QUICK_TAG_PANEL_HEIGHT = 124;
   var QUICK_SVG_PANEL_WIDTH = 300;
@@ -24425,9 +24501,10 @@ var MesoraDrawingToolBundle = (() => {
     Object.freeze({
       title: "Getting Started",
       items: Object.freeze([
-        "Use Move to select, drag, resize, and open properties for items on the canvas.",
-        "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click, Enter, or Shift plus right click finishes the line.",
-        "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path."
+        "Use Move to select, drag, resize, rotate, flip, and edit items on the canvas.",
+        "Use Polyline to draw process flow. Left click adds segments, right click removes the current segment, and double click or Enter finishes the line.",
+        "Use Text to place a label or a live tag readout. Text can bind directly to an Ignition tag path.",
+        "The toolbar stays visible while scrolling. Drag it to a better spot, or use Dock to return it to the default position."
       ])
     }),
     Object.freeze({
@@ -24435,32 +24512,76 @@ var MesoraDrawingToolBundle = (() => {
       items: Object.freeze([
         "Single click selects one item. Shift plus click adds or removes items from the current selection.",
         "Drag on empty space to marquee select multiple items.",
-        "Double click an SVG, widget, or text item to open its properties panel.",
-        "Shift plus Delete removes the current selection."
+        "Double click an SVG, widget, line, or text item to open its properties panel.",
+        "If the properties panel is already open, selecting another item updates the contents without moving the panel.",
+        "The properties panel can be dragged and resized.",
+        "Page Up moves selected SVGs forward in Z order. Page Down moves them backward.",
+        "Right click selected items for copy, cut, duplicate, delete, align, and tag path actions."
       ])
     }),
     Object.freeze({
       title: "SVGs And Lines",
       items: Object.freeze([
         "SVG Library opens the Mesora equipment drawer so you can place process equipment on the canvas.",
-        "Tag Path on an SVG binds the equipment to an Ignition tag. EType controls diverters and popup routing.",
-        "Polylines light from the SVG or line connected to their start point, just like the Mesora tool."
+        "Right click empty canvas space to open the compact SVG quick list. Type in the search box to filter symbols.",
+        "Import SVG copies an external SVG into the gateway external SVG library and refreshes the list.",
+        "Tag Path binds an SVG to an Ignition tag or UDT instance. EType is a dropdown populated from Ignition UDTs when available.",
+        "Static makes an SVG non-clickable, removes the missing-tag bubble, and returns it to default static colors.",
+        "Polylines support solid, dashed, dotted, and wavy styles plus start and end arrows.",
+        "Line crossings add a small gap only when one polyline crosses another polyline.",
+        "Polylines light from the SVG or line connected to their start point."
       ])
     }),
     Object.freeze({
       title: "Widgets",
       items: Object.freeze([
         "Widgets opens the Mesora widget drawer. Place a widget, then double click it to edit its properties.",
+        "Widget text follows the current Perspective theme, including terra-dark and terra-light.",
+        "Widget font color and button text color can still be set manually in properties.",
         "Widgets can write to either Ignition tags or direct OPC, depending on the Write Target setting.",
-        "Push Button and On Off Button support titles, title font size, press value, and release value."
+        "Push Button and On Off Button support titles, title font size, press value, release value, and button text color.",
+        "Open View buttons open a Perspective view popup. The view fills the popup content area, not the whole screen."
       ])
     }),
     Object.freeze({
       title: "Bindings",
       items: Object.freeze([
         "Use the Tag Path picker to browse and search Ignition tags without expanding a huge inline list.",
+        "The tag picker scrolls to the selected tag when opened. Right click a tag to copy just the tag path.",
+        "UDT rows can be expanded to select child tags directly. Document tags are hidden from the picker.",
         "Text items support Scale, Decimals, and Units so live values can be formatted on the canvas.",
+        "Hovering an SVG in preview or live mode shows the tag Description tooltip when available.",
         "Diverters should use their state tag path so the active straight or divert path can render correctly."
+      ])
+    }),
+    Object.freeze({
+      title: "HMI State And UDTs",
+      items: Object.freeze([
+        "HMI state style mapping is read from hmi-state-style-maps.json and can be overridden with props.hmiStateStyleMaps.",
+        "Common mappings include Motor, DOC, DIC, AIN, ScaleAdaptor, Distributor, LevelSwitch_Discrete, TwoWay, Diverter, and Gate.",
+        "Diverter SVGs use TwoWay popup routing and state logic.",
+        "Gate SVGs can use gate visual styles while still opening the TwoWay UDT popup when that is how the Ignition UDT is modeled.",
+        "TwoWay and Diverter internals use the mapped HMI state style for the active straight or divert path."
+      ])
+    }),
+    Object.freeze({
+      title: "Gateway File Storage",
+      items: Object.freeze([
+        "Gateway file storage lets authorized users edit and save graphics from the browser without opening Designer.",
+        "Preferred properties are props.gatewayStorage.enabled, key, autoLoad, and browserEditEnabled.",
+        "Legacy aliases are still supported: drawingStorageEnabled, drawingStorageKey, gatewayStorageKey, drawingStorageAutoLoad, and browserEditEnabled.",
+        "Use a relative storage key such as AirMakeup/bin-fans.",
+        "Bind browserEditEnabled to an authorized user, role, or security level before enabling runtime editing."
+      ])
+    }),
+    Object.freeze({
+      title: "Theme And Runtime",
+      items: Object.freeze([
+        "Bind props.sessionTheme, props.perspectiveTheme, or props.theme to session.props.theme when needed.",
+        "terra-dark uses the dark canvas background. terra-light uses the light canvas background.",
+        "Leave canvasBackgroundColor blank, theme, auto, or session to follow the Perspective session theme.",
+        "Set canvasBackgroundColor to a real color only when a screen needs a manual override.",
+        "In live mode, clicking a status bubble hides that bubble for 30 seconds."
       ])
     }),
     Object.freeze({
@@ -24469,7 +24590,19 @@ var MesoraDrawingToolBundle = (() => {
         "Shift plus M switches to Move.",
         "Shift plus P switches to Polyline.",
         "Shift plus T switches to Text.",
-        "Shift plus C, V, D, Z, and Y map to copy, paste, duplicate, undo, and redo."
+        "Shift plus C, V, D, Z, and Y map to copy, paste, duplicate, undo, and redo.",
+        "Page Up and Page Down move selected SVGs forward or backward in Z order.",
+        "Esc closes the active popup, cancels draw/edit state, or clears a temporary anchor."
+      ])
+    }),
+    Object.freeze({
+      title: "Troubleshooting",
+      items: Object.freeze([
+        "If new component properties do not show in Designer, install the newest module, restart or reopen Designer, and verify the loaded module version.",
+        "If theme does not change the canvas, confirm session.props.theme is terra-dark or terra-light and canvasBackgroundColor is theme, auto, blank, or session.",
+        "If a line does not light, confirm the line start point is connected to the lit SVG or lit source line.",
+        "If browser saves do not persist, confirm gateway file storage is enabled, the key is set, and the runtime user is authorized to edit.",
+        "If help or toolbar content does not update after a rebuild, fully close and reopen Designer."
       ])
     })
   ]);
@@ -25009,20 +25142,6 @@ var MesoraDrawingToolBundle = (() => {
     candidates.push((_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.path, (_b = nestedProps == null ? void 0 : nestedProps.store) == null ? void 0 : _b.path);
     const identity = candidates.map(normalizeCacheKeyPart).find(Boolean) || "default";
     return `${LOCAL_CANVAS_ZOOM_CACHE_PREFIX}${encodeURIComponent(identity)}`;
-  }
-  function readCachedCanvasZoom(cacheKey) {
-    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
-      return null;
-    }
-    try {
-      const raw = window.localStorage.getItem(cacheKey);
-      if (raw == null || raw === "") {
-        return null;
-      }
-      return normalizeLocalCanvasZoom(Number(raw));
-    } catch (_error) {
-      return null;
-    }
   }
   function writeCachedCanvasZoom(cacheKey, zoomValue) {
     if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
@@ -26769,20 +26888,72 @@ var MesoraDrawingToolBundle = (() => {
     const rect = rootNode && typeof rootNode.getBoundingClientRect === "function" ? rootNode.getBoundingClientRect() : null;
     const rootLeft = Math.max(0, Number((rect == null ? void 0 : rect.left) || 0));
     const rootTop = Math.max(0, Number((rect == null ? void 0 : rect.top) || 0));
-    const hostWidth = toPositiveNumber(fallbackWidth) || toPositiveNumber(rect == null ? void 0 : rect.width) || 0;
-    const hostHeight = toPositiveNumber(fallbackHeight) || toPositiveNumber(rect == null ? void 0 : rect.height) || 0;
+    const hostWidth = toPositiveNumber(rect == null ? void 0 : rect.width) || toPositiveNumber(fallbackWidth) || 0;
+    const measuredHostHeight = toPositiveNumber(rect == null ? void 0 : rect.height) || 0;
+    const fallbackHostHeight = toPositiveNumber(fallbackHeight) || 0;
     const viewportWidth = toPositiveNumber(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
     const availableBrowserWidth = viewportWidth > 0 ? Math.max(1, viewportWidth - rootLeft) : 0;
     const availableBrowserHeight = viewportHeight > 0 ? Math.max(1, viewportHeight - rootTop) : 0;
     const targetWidth = toPositiveNumber(hostWidth || availableBrowserWidth) || targetViewWidth;
-    const targetHeight = toPositiveNumber(hostHeight || availableBrowserHeight) || targetViewHeight;
+    const heightCandidates = [measuredHostHeight, availableBrowserHeight].filter((value) => toPositiveNumber(value) > 0);
+    const targetHeightBase = heightCandidates.length ? Math.min(...heightCandidates) : fallbackHostHeight || targetViewHeight;
+    const targetHeight = Math.max(1, targetHeightBase - RUNTIME_HEIGHT_FIT_RESERVE_PX);
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
     return Math.max(0.05, Math.min(8, scaleByHeight));
   }
+  var GATEWAY_STORAGE_PROP_ALIASES = Object.freeze({
+    drawingStorageEnabled: "enabled",
+    drawingStorageKey: "key",
+    gatewayStorageKey: "key",
+    drawingStorageAutoLoad: "autoLoad",
+    browserEditEnabled: "browserEditEnabled"
+  });
+  function hasOwnValue(source, key) {
+    return isPlainObject(source) && Object.prototype.hasOwnProperty.call(source, key);
+  }
+  function collectGatewayStorageAliasValues(source, key) {
+    var _a;
+    const storageKey = GATEWAY_STORAGE_PROP_ALIASES[key];
+    if (!storageKey) {
+      return [];
+    }
+    const values = [];
+    if (hasOwnValue(source, key)) {
+      values.push(source[key]);
+    }
+    if (hasOwnValue(source == null ? void 0 : source.model, key)) {
+      values.push(source.model[key]);
+    }
+    if (hasOwnValue(source == null ? void 0 : source.gatewayStorage, storageKey)) {
+      values.push(source.gatewayStorage[storageKey]);
+    }
+    if (hasOwnValue((_a = source == null ? void 0 : source.model) == null ? void 0 : _a.gatewayStorage, storageKey)) {
+      values.push(source.model.gatewayStorage[storageKey]);
+    }
+    return values.filter((value) => value !== void 0);
+  }
   function getModelValue(props, key, fallback) {
     const source = getComponentPropSource(props);
+    const gatewayStorageValues = collectGatewayStorageAliasValues(source, key);
+    if (key === "drawingStorageEnabled" || key === "browserEditEnabled") {
+      return gatewayStorageValues.some(Boolean) || fallback;
+    }
+    if (key === "drawingStorageKey" || key === "gatewayStorageKey") {
+      const firstNonEmpty = gatewayStorageValues.map((value) => String(value || "").trim()).find(Boolean);
+      if (firstNonEmpty) {
+        return firstNonEmpty;
+      }
+    }
+    if (key === "drawingStorageAutoLoad" && gatewayStorageValues.length > 0) {
+      if (gatewayStorageValues.some((value) => value === false)) {
+        return false;
+      }
+      if (gatewayStorageValues.some((value) => value === true)) {
+        return true;
+      }
+    }
     const direct = source[key];
     if (direct !== void 0) {
       return direct;
@@ -27097,6 +27268,75 @@ var MesoraDrawingToolBundle = (() => {
       externalCount: Math.max(0, Number(payload == null ? void 0 : payload.externalCount) || 0),
       builtInCount: Math.max(0, Number(payload == null ? void 0 : payload.builtInCount) || 0),
       error: String((payload == null ? void 0 : payload.error) || "").trim()
+    };
+  }
+  function normalizeDrawingStorageKey(value) {
+    return String(value != null ? value : "").replace(/\\/g, "/").replace(/^\/*/, "").trim();
+  }
+  function deriveComponentStorageKey(componentProps) {
+    var _a, _b, _c, _d;
+    const source = getComponentPropSource(componentProps);
+    const candidates = [
+      (_a = componentProps == null ? void 0 : componentProps.store) == null ? void 0 : _a.path,
+      (_b = source == null ? void 0 : source.store) == null ? void 0 : _b.path,
+      componentProps == null ? void 0 : componentProps.componentPath,
+      source == null ? void 0 : source.componentPath,
+      componentProps == null ? void 0 : componentProps.path,
+      source == null ? void 0 : source.path,
+      (_c = componentProps == null ? void 0 : componentProps.meta) == null ? void 0 : _c.name,
+      (_d = source == null ? void 0 : source.meta) == null ? void 0 : _d.name
+    ];
+    for (const raw of candidates) {
+      const value = String(raw || "").trim();
+      if (value) {
+        return normalizeDrawingStorageKey(value.replace(/[\\:*?"<>|]+/g, "_"));
+      }
+    }
+    return "";
+  }
+  function resolveDrawingStorageKey(componentProps) {
+    const explicit = normalizeDrawingStorageKey(
+      getModelValue(
+        componentProps,
+        "drawingStorageKey",
+        getModelValue(componentProps, "gatewayStorageKey", "")
+      )
+    );
+    return explicit || deriveComponentStorageKey(componentProps);
+  }
+  function normalizeDrawingDocumentPayload(value) {
+    if (!isPlainObject(value)) {
+      return null;
+    }
+    const document2 = isPlainObject(value.document) ? value.document : value;
+    return {
+      version: Number(document2.version || 1) || 1,
+      savedAt: String(document2.savedAt || "").trim(),
+      shapes: coerceArray(document2.shapes).map((shape) => cloneDeepValue(shape)),
+      svgOverlays: coerceArray(document2.svgOverlays).map((overlay) => cloneDeepValue(overlay)),
+      tool: String(document2.tool || "select"),
+      zoom: Number(document2.zoom || 1) || 1,
+      pan: isPlainObject(document2.pan) ? cloneDeepValue(document2.pan) : { x: 0, y: 0 },
+      showGrid: Boolean(document2.showGrid),
+      showRulers: Boolean(document2.showRulers),
+      showTagPaths: Boolean(document2.showTagPaths),
+      toolbarCollapsed: Boolean(document2.toolbarCollapsed),
+      toolbarPosition: normalizeToolbarPosition(document2.toolbarPosition),
+      selectionMode: String(document2.selectionMode || "all"),
+      strokeNormalizeWidth: Number(document2.strokeNormalizeWidth || NORMALIZED_SVG_STROKE_WIDTH) || NORMALIZED_SVG_STROKE_WIDTH
+    };
+  }
+  function normalizeDrawingDocumentResponse(value) {
+    const payload = isPlainObject(value) ? value : {};
+    return {
+      ok: payload.ok !== false,
+      exists: Boolean(payload.exists),
+      key: String(payload.key || "").trim(),
+      document: normalizeDrawingDocumentPayload(payload.document),
+      filePath: String(payload.filePath || "").trim(),
+      lastModified: Math.max(0, Number(payload.lastModified) || 0),
+      size: Math.max(0, Number(payload.size) || 0),
+      error: String(payload.error || "").trim()
     };
   }
   function writeComponentProp(props, path, value) {
@@ -27416,13 +27656,14 @@ var MesoraDrawingToolBundle = (() => {
       /* @__PURE__ */ jsx("div", { style: { display: "grid", gap: 6 }, children })
     ] });
   }
-  function DockButton({ active = false, children, disabled = false, onClick }) {
+  function DockButton({ active = false, children, disabled = false, onClick, title = "" }) {
     return /* @__PURE__ */ jsx(
       "button",
       {
         type: "button",
         disabled,
         onClick,
+        title,
         style: {
           width: "100%",
           border: active ? "1px solid rgba(96, 165, 250, 0.8)" : "1px solid rgba(71, 85, 105, 0.9)",
@@ -28984,16 +29225,19 @@ var MesoraDrawingToolBundle = (() => {
       maxX = Math.max(maxX, x + width);
       maxY = Math.max(maxY, y + height);
     });
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return fallback;
+    }
     const extraPadding = Math.max(0, Number(padding || 0));
     const nextX = Math.min(fallback.x, minX - extraPadding);
-    const nextY = Math.min(fallback.y, minY - extraPadding);
+    const nextY = minY - extraPadding;
     const nextRight = Math.max(fallback.x + fallback.width, maxX + extraPadding);
-    const nextBottom = Math.max(fallback.y + fallback.height, maxY + extraPadding);
+    const nextBottom = maxY + extraPadding;
     return {
       x: nextX,
       y: nextY,
-      width: Math.max(1, nextRight - nextX),
-      height: Math.max(1, nextBottom - nextY)
+      width: Math.max(100, nextRight - nextX),
+      height: Math.max(100, nextBottom - nextY)
     };
   }
   function clamp(value, min, max) {
@@ -29047,6 +29291,19 @@ var MesoraDrawingToolBundle = (() => {
       PROPERTY_PANEL_MIN_HEIGHT,
       maxPanelHeight
     );
+  }
+  function clampPropertyPanelPosition(position, panelWidth, panelHeight, viewportWidth, viewportHeight) {
+    const normalized = normalizeToolbarPosition(position) || { x: PROPERTY_PANEL_INSET, y: PROPERTY_PANEL_INSET };
+    const width = toPositiveNumber(panelWidth) || PROPERTY_PANEL_WIDTH;
+    const height = toPositiveNumber(panelHeight) || PROPERTY_PANEL_HEIGHT;
+    const viewWidth = toPositiveNumber(viewportWidth) || DEFAULT_CANVAS_WIDTH;
+    const viewHeight = toPositiveNumber(viewportHeight) || DEFAULT_CANVAS_HEIGHT;
+    const maxX = Math.max(PROPERTY_PANEL_INSET, viewWidth - width - PROPERTY_PANEL_INSET);
+    const maxY = Math.max(PROPERTY_PANEL_INSET, viewHeight - height - PROPERTY_PANEL_INSET);
+    return {
+      x: Math.round(clamp(normalized.x, PROPERTY_PANEL_INSET, maxX)),
+      y: Math.round(clamp(normalized.y, PROPERTY_PANEL_INSET, maxY))
+    };
   }
   function readStoredPropertyPanelWidth() {
     if (typeof window === "undefined" || !window.localStorage) {
@@ -29207,9 +29464,23 @@ var MesoraDrawingToolBundle = (() => {
     return Math.hypot(dx, dy);
   }
   function PerspectiveViziCanvasBridge(props) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
     usePerspectiveThemeVersion(props);
     const rootRef = useRef(null);
+    const runtimeScrollSnapshotRef = useRef({
+      scrollLeft: 0,
+      scrollTop: 0,
+      clientWidth: 0,
+      clientHeight: 0,
+      contentWidth: 0,
+      contentHeight: 0,
+      zoom: 1
+    });
+    const runtimeCanvasMetricsRef = useRef({
+      contentWidth: 0,
+      contentHeight: 0,
+      zoom: 1
+    });
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(/* @__PURE__ */ new Map());
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
@@ -29218,9 +29489,10 @@ var MesoraDrawingToolBundle = (() => {
     const defaultHostSize = resolveCanvasDefaultSize(props);
     const previewActive = detectPerspectivePreviewMode(props);
     const designerActive = detectPerspectiveDesignerMode(props);
-    const editorVisible = designerActive && !previewActive;
     const isLiveMode = !designerActive || previewActive;
     const browserRuntimeMode = isLiveMode && !designerActive;
+    const browserEditEnabled = Boolean(getModelValue(props, "browserEditEnabled", false));
+    const editorVisible = designerActive && !previewActive || browserRuntimeMode && browserEditEnabled;
     const [rootSize, setRootSize] = useState({
       width: DEFAULT_CANVAS_WIDTH,
       height: DEFAULT_CANVAS_HEIGHT
@@ -29267,6 +29539,9 @@ var MesoraDrawingToolBundle = (() => {
       [effectiveHmiStateStyleMaps]
     );
     const svgLibraryEnabled = Boolean(getModelValue(props, "svgLibraryEnabled", true));
+    const drawingStorageEnabled = Boolean(getModelValue(props, "drawingStorageEnabled", false));
+    const drawingStorageAutoLoad = Boolean(getModelValue(props, "drawingStorageAutoLoad", true));
+    const drawingStorageKey = resolveDrawingStorageKey(props);
     const externalShapesKey = JSON.stringify(coerceArray(externalShapes));
     const externalOverlaysKey = JSON.stringify(coerceArray(externalOverlays));
     const externalSelectedIdsKey = JSON.stringify(coerceArray(externalSelectedIds));
@@ -29307,6 +29582,10 @@ var MesoraDrawingToolBundle = (() => {
     const [svgLibraryExternalCount, setSvgLibraryExternalCount] = useState(0);
     const [svgLibraryRefreshing, setSvgLibraryRefreshing] = useState(false);
     const [svgLibraryUploading, setSvgLibraryUploading] = useState(false);
+    const [drawingStorageLoading, setDrawingStorageLoading] = useState(false);
+    const [drawingStorageSaving, setDrawingStorageSaving] = useState(false);
+    const [drawingStorageStatus, setDrawingStorageStatus] = useState("");
+    const [drawingStorageFilePath, setDrawingStorageFilePath] = useState("");
     const [ignitionTagOptions, setIgnitionTagOptions] = useState(EMPTY_ARRAY);
     const [ignitionTagValuesByPath, setIgnitionTagValuesByPath] = useState(() => /* @__PURE__ */ new Map());
     const [ignitionTagMetaByPath, setIgnitionTagMetaByPath] = useState(() => /* @__PURE__ */ new Map());
@@ -29335,6 +29614,8 @@ var MesoraDrawingToolBundle = (() => {
     const [propertyPanelWidth, setPropertyPanelWidth] = useState(readStoredPropertyPanelWidth);
     const [propertyPanelHeight, setPropertyPanelHeight] = useState(readStoredPropertyPanelHeight);
     const [propertyPanelResizing, setPropertyPanelResizing] = useState(false);
+    const [propertyPanelPosition, setPropertyPanelPosition] = useState(null);
+    const [propertyPanelDragging, setPropertyPanelDragging] = useState(false);
     const shapesRef = useRef(coerceArray(externalShapes));
     const overlaysRef = useRef(coerceArray(externalOverlays));
     const localShapesWriteRef = useRef({ key: externalShapesKey, until: 0 });
@@ -29351,11 +29632,21 @@ var MesoraDrawingToolBundle = (() => {
       startHeight: PROPERTY_PANEL_HEIGHT,
       panelTop: 0
     });
+    const propertyPanelRef = useRef(null);
+    const propertyPanelDragRef = useRef({
+      dragging: false,
+      offsetX: 0,
+      offsetY: 0,
+      panelWidth: PROPERTY_PANEL_WIDTH,
+      panelHeight: PROPERTY_PANEL_HEIGHT
+    });
     const toolbarPanelRef = useRef(null);
     const toolbarPositionRef = useRef(toolbarPosition);
     const toolbarDragRef = useRef({ dragging: false, offsetX: 0, offsetY: 0, panelWidth: TOOLBAR_WIDTH, panelHeight: 160 });
     const svgCatalogRequestIdRef = useRef(0);
     const hmiStateStyleMapRequestIdRef = useRef(0);
+    const drawingStorageRequestIdRef = useRef(0);
+    const drawingStorageLoadedKeyRef = useRef("");
     const quickSvgPickerInputRef = useRef(null);
     const runtimeDocumentViewBounds = useMemo(
       () => expandViewBoundsToFitContent(documentViewBounds, shapes, svgOverlays),
@@ -29600,6 +29891,66 @@ var MesoraDrawingToolBundle = (() => {
         document.body.style.userSelect = previousUserSelect;
       };
     }, [propertyPanelResizing]);
+    useEffect(() => {
+      if (!propertyPanelDragging || typeof window === "undefined" || typeof document === "undefined") {
+        return void 0;
+      }
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      document.body.style.cursor = "move";
+      document.body.style.userSelect = "none";
+      const endDrag = () => {
+        if (!propertyPanelDragRef.current.dragging) {
+          return;
+        }
+        propertyPanelDragRef.current.dragging = false;
+        setPropertyPanelDragging(false);
+      };
+      const onMove = (event) => {
+        var _a2, _b2;
+        if (!propertyPanelDragRef.current.dragging) {
+          return;
+        }
+        event.preventDefault();
+        const panelWidth = Number(propertyPanelDragRef.current.panelWidth || ((_a2 = propertyPanelRef.current) == null ? void 0 : _a2.offsetWidth) || propertyPanelWidth);
+        const panelHeight = Number(propertyPanelDragRef.current.panelHeight || ((_b2 = propertyPanelRef.current) == null ? void 0 : _b2.offsetHeight) || propertyPanelHeight);
+        const next = clampPropertyPanelPosition(
+          {
+            x: Number(event.clientX || 0) - Number(propertyPanelDragRef.current.offsetX || 0),
+            y: Number(event.clientY || 0) - Number(propertyPanelDragRef.current.offsetY || 0)
+          },
+          panelWidth,
+          panelHeight,
+          window.innerWidth,
+          window.innerHeight
+        );
+        setPropertyPanelPosition((previous) => previous && previous.x === next.x && previous.y === next.y ? previous : next);
+      };
+      const onKeyDown = (event) => {
+        if (event.key === "Escape") {
+          endDrag();
+        }
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", endDrag);
+      window.addEventListener("pointerup", endDrag);
+      window.addEventListener("pointercancel", endDrag);
+      window.addEventListener("blur", endDrag);
+      window.addEventListener("keydown", onKeyDown);
+      document.addEventListener("mouseleave", endDrag);
+      return () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", endDrag);
+        window.removeEventListener("pointerup", endDrag);
+        window.removeEventListener("pointercancel", endDrag);
+        window.removeEventListener("blur", endDrag);
+        window.removeEventListener("keydown", onKeyDown);
+        document.removeEventListener("mouseleave", endDrag);
+        document.body.style.cursor = previousCursor === "move" ? "" : previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        propertyPanelDragRef.current.dragging = false;
+      };
+    }, [propertyPanelDragging, propertyPanelHeight, propertyPanelWidth]);
     useEffect(() => {
       const next = coerceArray(externalShapes);
       const nextKey = JSON.stringify(next);
@@ -30520,22 +30871,72 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const zoom = Number(getModelValue(props, "zoom", 1)) || 1;
     const pan = getModelValue(props, "pan", { x: 0, y: 0 });
     const localZoomCacheKey = resolveCanvasZoomCacheKey(props);
-    const [localZoom, setLocalZoom] = useState(() => readCachedCanvasZoom(resolveCanvasZoomCacheKey(props)));
+    const [localZoom, setLocalZoom] = useState(null);
     const effectiveZoom = localZoom !== null ? localZoom : zoom;
     const effectiveZoomRef = useRef(effectiveZoom);
     effectiveZoomRef.current = effectiveZoom;
-    const stepCanvasZoom = useCallback((direction) => {
+    const captureRuntimeScrollSnapshot = useCallback((node = rootRef.current, viewportAnchor = null) => {
+      var _a2, _b2;
+      if (!browserRuntimeMode || !node) {
+        return;
+      }
+      const clientWidth = Number(node.clientWidth || 0);
+      const clientHeight = Number(node.clientHeight || 0);
+      let anchorX = clientWidth / 2;
+      let anchorY = clientHeight / 2;
+      if (viewportAnchor && typeof node.getBoundingClientRect === "function") {
+        const rect = node.getBoundingClientRect();
+        const clientX = Number((_a2 = viewportAnchor.clientX) != null ? _a2 : viewportAnchor.x);
+        const clientY = Number((_b2 = viewportAnchor.clientY) != null ? _b2 : viewportAnchor.y);
+        if (Number.isFinite(clientX)) {
+          anchorX = Math.max(0, Math.min(clientWidth, clientX - Number(rect.left || 0)));
+        }
+        if (Number.isFinite(clientY)) {
+          anchorY = Math.max(0, Math.min(clientHeight, clientY - Number(rect.top || 0)));
+        }
+      }
+      const metrics = runtimeCanvasMetricsRef.current || {};
+      const scrollLeft = Number(node.scrollLeft || 0);
+      const scrollTop = Number(node.scrollTop || 0);
+      const canvasWidth = Math.max(1, Number(metrics.canvasWidth || metrics.contentWidth || 0) || 1);
+      const canvasHeight = Math.max(1, Number(metrics.canvasHeight || metrics.contentHeight || 0) || 1);
+      const offsetX = Math.max(0, Number(metrics.offsetX || 0) || 0);
+      const offsetY = Math.max(0, Number(metrics.offsetY || 0) || 0);
+      runtimeScrollSnapshotRef.current = {
+        scrollLeft,
+        scrollTop,
+        clientWidth,
+        clientHeight,
+        anchorX,
+        anchorY,
+        canvasWidth,
+        canvasHeight,
+        offsetX,
+        offsetY,
+        anchorCanvasX: Math.max(0, Math.min(canvasWidth, scrollLeft + anchorX - offsetX)),
+        anchorCanvasY: Math.max(0, Math.min(canvasHeight, scrollTop + anchorY - offsetY)),
+        contentWidth: Math.max(
+          1,
+          Number(metrics.contentWidth || 0) || Number(node.scrollWidth || 0) || Number(node.clientWidth || 0) || 1
+        ),
+        contentHeight: Math.max(
+          1,
+          Number(metrics.contentHeight || 0) || Number(node.scrollHeight || 0) || Number(node.clientHeight || 0) || 1
+        ),
+        zoom: Math.max(1e-4, Number(metrics.zoom || 0) || 1)
+      };
+    }, [browserRuntimeMode]);
+    const stepCanvasZoom = useCallback((direction, viewportAnchor = null) => {
       const amount = Number(direction);
       if (!Number.isFinite(amount) || amount === 0) return;
       const base = normalizeLocalCanvasZoom(effectiveZoomRef.current);
+      captureRuntimeScrollSnapshot(rootRef.current, viewportAnchor);
       setLocalZoom(normalizeLocalCanvasZoom(base + amount * LOCAL_CANVAS_ZOOM_STEP));
-    }, []);
+    }, [captureRuntimeScrollSnapshot]);
     useEffect(() => {
-      setLocalZoom(readCachedCanvasZoom(localZoomCacheKey));
+      setLocalZoom(null);
+      writeCachedCanvasZoom(localZoomCacheKey, null);
     }, [localZoomCacheKey]);
-    useEffect(() => {
-      writeCachedCanvasZoom(localZoomCacheKey, localZoom);
-    }, [localZoomCacheKey, localZoom]);
     const liveCanvasZoom = browserRuntimeMode ? resolveBrowserHeightCanvasZoom(
       rootRef.current,
       viewBox.width,
@@ -30552,6 +30953,90 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         liveCanvasZoom * (localZoom !== null ? normalizeLocalCanvasZoom(localZoom) : 1)
       )
     ) : 1;
+    const runtimeCanvasWidth = Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom;
+    const runtimeCanvasHeight = Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom;
+    const runtimeRootClientWidth = browserRuntimeMode ? Math.max(0, Number(((_a = rootRef.current) == null ? void 0 : _a.clientWidth) || 0) || 0) : 0;
+    const runtimeRootClientHeight = browserRuntimeMode ? Math.max(0, Number(((_b = rootRef.current) == null ? void 0 : _b.clientHeight) || 0) || 0) : 0;
+    const runtimeViewportWidth = browserRuntimeMode ? Math.max(
+      1,
+      runtimeRootClientWidth || Number((rootSize == null ? void 0 : rootSize.width) || 0) || Number(browserViewportWidth || 0) || Number((defaultHostSize == null ? void 0 : defaultHostSize.width) || 0) || Number((hostSize == null ? void 0 : hostSize.width) || 0) || runtimeCanvasWidth
+    ) : runtimeCanvasWidth;
+    const runtimeViewportHeight = browserRuntimeMode ? Math.max(
+      1,
+      runtimeRootClientHeight || Number((rootSize == null ? void 0 : rootSize.height) || 0) || Number(browserViewportHeight || 0) || Number((defaultHostSize == null ? void 0 : defaultHostSize.height) || 0) || Number((hostSize == null ? void 0 : hostSize.height) || 0) || runtimeCanvasHeight
+    ) : runtimeCanvasHeight;
+    const runtimeHorizontalScrollNeeded = browserRuntimeMode && runtimeCanvasWidth > runtimeViewportWidth + RUNTIME_SCROLL_TOLERANCE_PX;
+    const runtimeVerticalScrollNeeded = browserRuntimeMode && runtimeCanvasHeight > runtimeViewportHeight + RUNTIME_SCROLL_TOLERANCE_PX;
+    const runtimeScrollContentWidth = runtimeHorizontalScrollNeeded ? runtimeCanvasWidth : runtimeViewportWidth;
+    const runtimeScrollContentHeight = runtimeVerticalScrollNeeded ? runtimeCanvasHeight : runtimeViewportHeight;
+    const runtimeCanvasOffsetX = browserRuntimeMode ? Math.max(0, (runtimeScrollContentWidth - runtimeCanvasWidth) / 2) : 0;
+    const runtimeCanvasOffsetY = browserRuntimeMode ? Math.max(0, (runtimeScrollContentHeight - runtimeCanvasHeight) / 2) : 0;
+    runtimeCanvasMetricsRef.current = {
+      contentWidth: runtimeScrollContentWidth,
+      contentHeight: runtimeScrollContentHeight,
+      canvasWidth: runtimeCanvasWidth,
+      canvasHeight: runtimeCanvasHeight,
+      offsetX: runtimeCanvasOffsetX,
+      offsetY: runtimeCanvasOffsetY,
+      zoom: runtimeCanvasZoom
+    };
+    const rememberRuntimeScrollSnapshot = useCallback((node = rootRef.current) => {
+      captureRuntimeScrollSnapshot(node);
+    }, [captureRuntimeScrollSnapshot]);
+    useLayoutEffect(() => {
+      var _a2, _b2;
+      if (!browserRuntimeMode) {
+        return;
+      }
+      const node = rootRef.current;
+      if (!node) {
+        return;
+      }
+      const previous = runtimeScrollSnapshotRef.current || {};
+      const previousWidth = Math.max(1, Number(previous.contentWidth) || runtimeScrollContentWidth);
+      const previousHeight = Math.max(1, Number(previous.contentHeight) || runtimeScrollContentHeight);
+      const previousCanvasWidth = Math.max(1, Number(previous.canvasWidth) || previousWidth);
+      const previousCanvasHeight = Math.max(1, Number(previous.canvasHeight) || previousHeight);
+      const previousClientWidth = Math.max(1, Number(previous.clientWidth) || Number(node.clientWidth) || 1);
+      const previousClientHeight = Math.max(1, Number(previous.clientHeight) || Number(node.clientHeight) || 1);
+      const previousAnchorX = Math.max(0, Math.min(previousClientWidth, Number((_a2 = previous.anchorX) != null ? _a2 : previousClientWidth / 2)));
+      const previousAnchorY = Math.max(0, Math.min(previousClientHeight, Number((_b2 = previous.anchorY) != null ? _b2 : previousClientHeight / 2)));
+      const currentAnchorX = Math.max(0, Math.min(Number(node.clientWidth || previousClientWidth), previousAnchorX));
+      const currentAnchorY = Math.max(0, Math.min(Number(node.clientHeight || previousClientHeight), previousAnchorY));
+      const oldAnchorCanvasX = Math.max(0, Math.min(
+        previousCanvasWidth,
+        Number.isFinite(Number(previous.anchorCanvasX)) ? Number(previous.anchorCanvasX) : Math.max(0, Number(previous.scrollLeft || 0)) + previousAnchorX - Math.max(0, Number(previous.offsetX || 0))
+      ));
+      const oldAnchorCanvasY = Math.max(0, Math.min(
+        previousCanvasHeight,
+        Number.isFinite(Number(previous.anchorCanvasY)) ? Number(previous.anchorCanvasY) : Math.max(0, Number(previous.scrollTop || 0)) + previousAnchorY - Math.max(0, Number(previous.offsetY || 0))
+      ));
+      const widthChanged = Math.abs(previousWidth - runtimeScrollContentWidth) > 0.5 || Math.abs(previousCanvasWidth - runtimeCanvasWidth) > 0.5 || Math.abs(Number(previous.zoom || 1) - runtimeCanvasZoom) > 1e-4;
+      const heightChanged = Math.abs(previousHeight - runtimeScrollContentHeight) > 0.5 || Math.abs(previousCanvasHeight - runtimeCanvasHeight) > 0.5;
+      const maxLeft = Math.max(0, Number(node.scrollWidth || runtimeScrollContentWidth) - Number(node.clientWidth || 0));
+      const maxTop = Math.max(0, Number(node.scrollHeight || runtimeScrollContentHeight) - Number(node.clientHeight || 0));
+      let nextLeft = Number(node.scrollLeft || 0);
+      let nextTop = Number(node.scrollTop || 0);
+      if (widthChanged) {
+        nextLeft = runtimeCanvasOffsetX + oldAnchorCanvasX / previousCanvasWidth * runtimeCanvasWidth - currentAnchorX;
+      } else if (Math.abs(nextLeft - Number(previous.scrollLeft || 0)) > 1 && Number(previous.scrollLeft || 0) > 0) {
+        nextLeft = Number(previous.scrollLeft || 0);
+      }
+      if (heightChanged) {
+        nextTop = runtimeCanvasOffsetY + oldAnchorCanvasY / previousCanvasHeight * runtimeCanvasHeight - currentAnchorY;
+      } else if (Math.abs(nextTop - Number(previous.scrollTop || 0)) > 1 && Number(previous.scrollTop || 0) > 0) {
+        nextTop = Number(previous.scrollTop || 0);
+      }
+      nextLeft = Math.max(0, Math.min(maxLeft, nextLeft));
+      nextTop = Math.max(0, Math.min(maxTop, nextTop));
+      if (Math.abs(Number(node.scrollLeft || 0) - nextLeft) > 0.5) {
+        node.scrollLeft = nextLeft;
+      }
+      if (Math.abs(Number(node.scrollTop || 0) - nextTop) > 0.5) {
+        node.scrollTop = nextTop;
+      }
+      rememberRuntimeScrollSnapshot(node);
+    });
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
     const editorZoom = isLiveMode ? 1 : Math.max(1e-9, Number(effectiveZoom) || 1);
@@ -31215,6 +31700,9 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     }, []);
     const closePropertiesPanel = useCallback(() => {
       setPropertiesSelectionKey("");
+      setPropertyPanelPosition(null);
+      setPropertyPanelDragging(false);
+      propertyPanelDragRef.current.dragging = false;
     }, []);
     const retargetPropertiesPanelIfOpen = useCallback((key) => {
       const nextKey = String(key || "").trim();
@@ -31241,6 +31729,233 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       });
       setQuickSvgPickerQuery("");
     }, []);
+    const buildGatewayDrawingDocument = useCallback(() => ({
+      version: 1,
+      savedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      shapes: cloneDeepValue(shapesRef.current),
+      svgOverlays: cloneDeepValue(overlaysRef.current),
+      tool: String(tool || "select"),
+      zoom: Number(getModelValue(props, "zoom", 1)) || 1,
+      pan: cloneDeepValue(getModelValue(props, "pan", { x: 0, y: 0 })),
+      showGrid: Boolean(showGrid),
+      showRulers: Boolean(showRulers),
+      showTagPaths: Boolean(showTagPaths),
+      toolbarCollapsed: Boolean(toolbarCollapsed),
+      toolbarPosition: cloneDeepValue(toolbarPositionRef.current || toolbarPosition || TOOLBAR_DEFAULT_POSITION),
+      selectionMode: String(selectionMode || "all"),
+      strokeNormalizeWidth: resolvedStrokeNormalizeWidth
+    }), [
+      props,
+      resolvedStrokeNormalizeWidth,
+      selectionMode,
+      showGrid,
+      showRulers,
+      showTagPaths,
+      toolbarCollapsed,
+      toolbarPosition,
+      tool
+    ]);
+    const applyGatewayDrawingDocument = useCallback((document2, options = {}) => {
+      var _a2, _b2;
+      const normalized = normalizeDrawingDocumentPayload(document2);
+      if (!normalized) {
+        return false;
+      }
+      const shouldPersistProps = (options == null ? void 0 : options.persistProps) !== false;
+      const nextShapes = coerceArray(normalized.shapes).map((shape) => cloneDeepValue(shape));
+      const nextOverlays = coerceArray(normalized.svgOverlays).map((overlay) => cloneDeepValue(overlay));
+      shapesRef.current = nextShapes;
+      overlaysRef.current = nextOverlays;
+      localShapesWriteRef.current = { key: JSON.stringify(nextShapes), until: Date.now() + 2e3 };
+      localOverlaysWriteRef.current = { key: JSON.stringify(nextOverlays), until: Date.now() + 2e3 };
+      setShapesState(nextShapes);
+      setSvgOverlaysState(nextOverlays);
+      if (shouldPersistProps) {
+        persistShapes(nextShapes);
+        persistSvgOverlays(nextOverlays);
+      }
+      const nextTool = String(normalized.tool || "select");
+      setToolState(nextTool);
+      if (shouldPersistProps) persistValue("tool", nextTool);
+      setShowGridState(Boolean(normalized.showGrid));
+      if (shouldPersistProps) persistValue("showGrid", Boolean(normalized.showGrid));
+      setShowRulersState(Boolean(normalized.showRulers));
+      if (shouldPersistProps) persistValue("showRulers", Boolean(normalized.showRulers));
+      setShowTagPathsState(Boolean(normalized.showTagPaths));
+      if (shouldPersistProps) persistValue("showTagPaths", Boolean(normalized.showTagPaths));
+      setToolbarCollapsedState(Boolean(normalized.toolbarCollapsed));
+      if (shouldPersistProps) persistValue("toolbarCollapsed", Boolean(normalized.toolbarCollapsed));
+      const nextToolbarPosition = clampToolbarPosition(
+        normalized.toolbarPosition || TOOLBAR_DEFAULT_POSITION,
+        Boolean(normalized.toolbarCollapsed) ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH,
+        ((_b2 = (_a2 = toolbarPanelRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2).height) || 160,
+        browserViewportWidth,
+        browserViewportHeight
+      );
+      toolbarPositionRef.current = nextToolbarPosition;
+      setToolbarPositionState(nextToolbarPosition);
+      if (shouldPersistProps) persistValue("toolbarPosition", nextToolbarPosition);
+      const nextSelectionMode = String(normalized.selectionMode || "all");
+      setSelectionModeState(nextSelectionMode);
+      if (shouldPersistProps) persistValue("selectionMode", nextSelectionMode);
+      const nextStrokeWidth = Number(normalized.strokeNormalizeWidth || NORMALIZED_SVG_STROKE_WIDTH);
+      if (Number.isFinite(nextStrokeWidth) && nextStrokeWidth > 0) {
+        setStrokeNormalizeWidthDraft(formatPanelNumber(nextStrokeWidth));
+        if (shouldPersistProps) persistValue("strokeNormalizeWidth", nextStrokeWidth);
+      }
+      setSelectedIds([]);
+      setSelectedOverlayIds([]);
+      setSelectedSegment(null);
+      setEditingId(null);
+      setDrawing(null);
+      setDragState(null);
+      setDragHandle(null);
+      setDragSegment(null);
+      setShapeResize(null);
+      setOverlayResize(null);
+      setMarquee(null);
+      closeQuickSvgPicker();
+      closeQuickTagPicker();
+      closePropertiesPanel();
+      historyRef.current = { past: [], future: [], current: null };
+      return true;
+    }, [
+      browserViewportHeight,
+      browserViewportWidth,
+      closePropertiesPanel,
+      closeQuickSvgPicker,
+      closeQuickTagPicker,
+      persistShapes,
+      persistSvgOverlays,
+      persistValue
+    ]);
+    const loadDrawingFromGateway = useCallback(async (options = {}) => {
+      if (!drawingStorageEnabled || !drawingStorageKey) {
+        setDrawingStorageStatus(drawingStorageEnabled ? "Set drawingStorageKey to use gateway storage." : "");
+        return false;
+      }
+      const requestId = drawingStorageRequestIdRef.current + 1;
+      drawingStorageRequestIdRef.current = requestId;
+      setDrawingStorageLoading(true);
+      setDrawingStorageStatus("Loading gateway drawing...");
+      let lastError = "Failed to load gateway drawing.";
+      try {
+        for (const routePath of DRAWING_DOCUMENT_ROUTE_CANDIDATES) {
+          try {
+            const requestUrl = `${routePath}?key=${encodeURIComponent(drawingStorageKey)}&t=${Date.now()}`;
+            const response = await fetch(requestUrl, {
+              cache: "no-store",
+              credentials: "same-origin"
+            });
+            let payload = null;
+            try {
+              payload = normalizeDrawingDocumentResponse(await response.json());
+            } catch (_error) {
+              payload = null;
+            }
+            if (!response.ok || (payload == null ? void 0 : payload.ok) === false) {
+              lastError = String((payload == null ? void 0 : payload.error) || `Failed to load gateway drawing (${response.status}).`);
+              continue;
+            }
+            if (drawingStorageRequestIdRef.current !== requestId) {
+              return false;
+            }
+            setDrawingStorageFilePath(payload.filePath || "");
+            if (!payload.exists) {
+              setDrawingStorageStatus("No saved gateway drawing yet.");
+              drawingStorageLoadedKeyRef.current = drawingStorageKey;
+              return false;
+            }
+            const applied = applyGatewayDrawingDocument(payload.document, {
+              persistProps: (options == null ? void 0 : options.persistProps) !== false
+            });
+            drawingStorageLoadedKeyRef.current = drawingStorageKey;
+            setDrawingStorageStatus(applied ? "Gateway drawing loaded." : "Gateway drawing was empty.");
+            return applied;
+          } catch (error) {
+            lastError = String((error == null ? void 0 : error.message) || "Failed to load gateway drawing.");
+          }
+        }
+        if (drawingStorageRequestIdRef.current === requestId) {
+          setDrawingStorageStatus(lastError);
+        }
+        return false;
+      } finally {
+        if (drawingStorageRequestIdRef.current === requestId) {
+          setDrawingStorageLoading(false);
+        }
+      }
+    }, [applyGatewayDrawingDocument, drawingStorageEnabled, drawingStorageKey]);
+    const saveDrawingToGateway = useCallback(async () => {
+      if (!drawingStorageEnabled || !drawingStorageKey) {
+        setDrawingStorageStatus(drawingStorageEnabled ? "Set drawingStorageKey before saving." : "");
+        return false;
+      }
+      const document2 = buildGatewayDrawingDocument();
+      setDrawingStorageSaving(true);
+      setDrawingStorageStatus("Saving gateway drawing...");
+      let lastError = "Failed to save gateway drawing.";
+      try {
+        for (const routePath of DRAWING_DOCUMENT_SAVE_ROUTE_CANDIDATES) {
+          try {
+            const response = await fetch(routePath, {
+              method: "POST",
+              cache: "no-store",
+              credentials: "same-origin",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                key: drawingStorageKey,
+                document: document2
+              })
+            });
+            let payload = null;
+            try {
+              payload = normalizeDrawingDocumentResponse(await response.json());
+            } catch (_error) {
+              payload = null;
+            }
+            if (!response.ok || (payload == null ? void 0 : payload.ok) === false) {
+              lastError = String((payload == null ? void 0 : payload.error) || `Failed to save gateway drawing (${response.status}).`);
+              continue;
+            }
+            setDrawingStorageFilePath(payload.filePath || "");
+            setDrawingStorageStatus("Gateway drawing saved.");
+            drawingStorageLoadedKeyRef.current = drawingStorageKey;
+            return true;
+          } catch (error) {
+            lastError = String((error == null ? void 0 : error.message) || "Failed to save gateway drawing.");
+          }
+        }
+        setDrawingStorageStatus(lastError);
+        return false;
+      } finally {
+        setDrawingStorageSaving(false);
+      }
+    }, [buildGatewayDrawingDocument, drawingStorageEnabled, drawingStorageKey]);
+    useEffect(() => {
+      if (!drawingStorageEnabled) {
+        setDrawingStorageStatus("");
+        setDrawingStorageFilePath("");
+        drawingStorageLoadedKeyRef.current = "";
+        return;
+      }
+      if (!drawingStorageKey) {
+        setDrawingStorageStatus("Set drawingStorageKey to use gateway storage.");
+        setDrawingStorageFilePath("");
+        drawingStorageLoadedKeyRef.current = "";
+        return;
+      }
+      if (!drawingStorageAutoLoad) {
+        setDrawingStorageStatus("");
+        return;
+      }
+      if (drawingStorageLoadedKeyRef.current === drawingStorageKey) {
+        return;
+      }
+      loadDrawingFromGateway({ persistProps: true });
+    }, [drawingStorageAutoLoad, drawingStorageEnabled, drawingStorageKey, loadDrawingFromGateway]);
     const appendPolylinePoint = useCallback((id, point) => {
       const shapeId = String(id || "");
       if (!shapeId) {
@@ -33534,7 +34249,135 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         maxHeight: panelHeight
       };
     }, [floatingPropertyPanelStyle, rootSize, showRulers]);
-    const propertyPanelStyle = fixedPropertyPanelStyle || floatingPropertyPanelStyle;
+    const propertyPanelAnchorStyle = fixedPropertyPanelStyle || floatingPropertyPanelStyle;
+    const propertyPanelStyle = useMemo(() => {
+      if (!propertyPanelAnchorStyle) {
+        return null;
+      }
+      if (!propertyPanelPosition) {
+        return propertyPanelAnchorStyle;
+      }
+      const viewportWidth = typeof window !== "undefined" ? Number(window.innerWidth || browserViewportWidth || DEFAULT_CANVAS_WIDTH) : Number(browserViewportWidth || (rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH);
+      const viewportHeight = typeof window !== "undefined" ? Number(window.innerHeight || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) : Number(browserViewportHeight || (rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT);
+      const panelWidth = clampPropertyPanelWidth(
+        Number(propertyPanelAnchorStyle.width || propertyPanelWidth),
+        Math.max(PROPERTY_PANEL_MIN_WIDTH, viewportWidth - PROPERTY_PANEL_INSET * 2)
+      );
+      const baseHeight = Number(propertyPanelAnchorStyle.height || propertyPanelHeight);
+      const rawPosition = clampPropertyPanelPosition(
+        propertyPanelPosition,
+        panelWidth,
+        baseHeight,
+        viewportWidth,
+        viewportHeight
+      );
+      const panelHeight = clampPropertyPanelHeight(
+        baseHeight,
+        Math.max(PROPERTY_PANEL_MIN_HEIGHT, viewportHeight - rawPosition.y - PROPERTY_PANEL_INSET)
+      );
+      const position = clampPropertyPanelPosition(
+        rawPosition,
+        panelWidth,
+        panelHeight,
+        viewportWidth,
+        viewportHeight
+      );
+      return {
+        ...propertyPanelAnchorStyle,
+        position: "fixed",
+        left: position.x,
+        top: position.y,
+        zIndex: 130,
+        width: panelWidth,
+        maxWidth: Math.max(180, viewportWidth - position.x - PROPERTY_PANEL_INSET),
+        height: panelHeight,
+        maxHeight: panelHeight
+      };
+    }, [
+      browserViewportHeight,
+      browserViewportWidth,
+      propertyPanelAnchorStyle,
+      propertyPanelHeight,
+      propertyPanelPosition,
+      propertyPanelWidth,
+      rootSize
+    ]);
+    useEffect(() => {
+      if (!propertiesVisible || !propertyPanelAnchorStyle) {
+        if (!propertiesVisible) {
+          setPropertyPanelPosition(null);
+        }
+        return;
+      }
+      const viewportWidth = typeof window !== "undefined" ? Number(window.innerWidth || browserViewportWidth || DEFAULT_CANVAS_WIDTH) : Number(browserViewportWidth || (rootSize == null ? void 0 : rootSize.width) || DEFAULT_CANVAS_WIDTH);
+      const viewportHeight = typeof window !== "undefined" ? Number(window.innerHeight || browserViewportHeight || DEFAULT_CANVAS_HEIGHT) : Number(browserViewportHeight || (rootSize == null ? void 0 : rootSize.height) || DEFAULT_CANVAS_HEIGHT);
+      const panelWidth = Number(propertyPanelAnchorStyle.width || propertyPanelWidth);
+      const panelHeight = Number(propertyPanelAnchorStyle.height || propertyPanelHeight);
+      setPropertyPanelPosition((previous) => {
+        const source = previous || {
+          x: Number(propertyPanelAnchorStyle.left || PROPERTY_PANEL_INSET),
+          y: Number(propertyPanelAnchorStyle.top || PROPERTY_PANEL_INSET)
+        };
+        const next = clampPropertyPanelPosition(
+          source,
+          panelWidth,
+          panelHeight,
+          viewportWidth,
+          viewportHeight
+        );
+        return previous && previous.x === next.x && previous.y === next.y ? previous : next;
+      });
+    }, [
+      browserViewportHeight,
+      browserViewportWidth,
+      propertiesVisible,
+      propertyPanelAnchorStyle,
+      propertyPanelHeight,
+      propertyPanelWidth,
+      rootSize
+    ]);
+    const beginPropertyPanelDrag = useCallback((event) => {
+      var _a2, _b2;
+      if (event.button !== 0 || propertyPanelResizing) {
+        return;
+      }
+      const target = event.target;
+      if ((_a2 = target == null ? void 0 : target.closest) == null ? void 0 : _a2.call(
+        target,
+        "button,input,select,textarea,a,[role='separator'],[data-no-property-panel-drag='true']"
+      )) {
+        return;
+      }
+      const panel = propertyPanelRef.current;
+      const rect = (_b2 = panel == null ? void 0 : panel.getBoundingClientRect) == null ? void 0 : _b2.call(panel);
+      if (!rect) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      propertyPanelDragRef.current = {
+        dragging: true,
+        offsetX: Number(event.clientX || 0) - Number(rect.left || 0),
+        offsetY: Number(event.clientY || 0) - Number(rect.top || 0),
+        panelWidth: Number(rect.width || propertyPanelWidth || PROPERTY_PANEL_WIDTH),
+        panelHeight: Number(rect.height || propertyPanelHeight || PROPERTY_PANEL_HEIGHT)
+      };
+      const next = clampPropertyPanelPosition(
+        { x: Number(rect.left || 0), y: Number(rect.top || 0) },
+        Number(rect.width || propertyPanelWidth || PROPERTY_PANEL_WIDTH),
+        Number(rect.height || propertyPanelHeight || PROPERTY_PANEL_HEIGHT),
+        typeof window !== "undefined" ? window.innerWidth : browserViewportWidth,
+        typeof window !== "undefined" ? window.innerHeight : browserViewportHeight
+      );
+      setPropertyPanelPosition((previous) => previous && previous.x === next.x && previous.y === next.y ? previous : next);
+      setPropertyPanelDragging(true);
+    }, [
+      browserViewportHeight,
+      browserViewportWidth,
+      propertyPanelHeight,
+      propertyPanelResizing,
+      propertyPanelWidth
+    ]);
     const quickSvgPickerStyle = useMemo(() => {
       var _a2, _b2;
       if (!editorVisible || !(quickSvgPickerState == null ? void 0 : quickSvgPickerState.open)) {
@@ -34341,6 +35184,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const widgetLibraryStatusText = "Mesora widgets ready";
     const hmiStateStyleMapCount = Array.isArray(hmiStateStyleMapIndex == null ? void 0 : hmiStateStyleMapIndex.entries) ? hmiStateStyleMapIndex.entries.length : 0;
     const hmiStateStyleMapStatusText = hmiStateStyleMapError ? hmiStateStyleMapError : hmiStateStyleMapRefreshing ? "Loading HMI state styles..." : hmiStateStyleMapCount > 0 ? `${hmiStateStyleMapCount} HMI state style maps loaded` : "No HMI state style maps loaded";
+    const drawingStorageStatusText = !drawingStorageEnabled ? "" : drawingStorageStatus ? drawingStorageStatus : drawingStorageKey ? `Gateway key: ${drawingStorageKey}` : "Set drawingStorageKey to use gateway storage.";
     const toolbarPanelLayout = useMemo(() => {
       var _a2, _b2;
       const width = toolbarCollapsed ? COLLAPSED_TOOLBAR_WIDTH : TOOLBAR_WIDTH;
@@ -34461,7 +35305,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         if (!event.altKey) return;
         event.preventDefault();
         event.stopPropagation();
-        stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
+        stepCanvasZoom(event.deltaY < 0 ? 0.5 : -0.5, event);
       };
       window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
       return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
@@ -34614,6 +35458,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         "data-vizi-canvas-root": "1",
         "data-vizi-theme": theme,
         "data-vizi-canvas-background": canvasBackgroundColor,
+        onScroll: browserRuntimeMode ? (event) => rememberRuntimeScrollSnapshot(event.currentTarget) : void 0,
         onMouseDownCapture: (event) => {
           if (!editorVisible || !propertiesSelectionKey || Number((event == null ? void 0 : event.button) || 0) !== 0) {
             return;
@@ -34646,19 +35491,29 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           minHeight: 0,
           background: canvasBackgroundColor,
           ...browserRuntimeMode ? {
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "flex-start",
-            overflowX: "auto",
-            overflowY: "hidden"
+            display: "block",
+            overflowX: runtimeHorizontalScrollNeeded ? "auto" : "hidden",
+            overflowY: runtimeVerticalScrollNeeded ? "auto" : "hidden",
+            scrollbarGutter: runtimeVerticalScrollNeeded ? "stable" : "auto"
           } : {}
         },
         children: [
           /* @__PURE__ */ jsx("div", { style: browserRuntimeMode ? {
-            width: Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom,
-            height: Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom,
+            width: runtimeScrollContentWidth,
+            height: runtimeScrollContentHeight,
             flexShrink: 0,
             position: "relative",
+            background: canvasBackgroundColor
+          } : {
+            position: "absolute",
+            inset: 0,
+            background: canvasBackgroundColor
+          }, children: /* @__PURE__ */ jsx("div", { style: browserRuntimeMode ? {
+            position: "absolute",
+            left: runtimeCanvasOffsetX,
+            top: runtimeCanvasOffsetY,
+            width: runtimeCanvasWidth,
+            height: runtimeCanvasHeight,
             transformOrigin: "top left",
             background: canvasBackgroundColor
           } : {
@@ -34752,9 +35607,10 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
               viewportTopOffset: 0,
               viewportLeftOffset: 0,
               viewportScrollTarget: null,
-              onViewportScroll: NOOP
+              onViewportScroll: NOOP,
+              internalScrollEnabled: !browserRuntimeMode
             }
-          ) }),
+          ) }) }),
           editorVisible ? toolbarCollapsed ? /* @__PURE__ */ jsxs(
             "div",
             {
@@ -34991,7 +35847,10 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                         value: Math.round(effectiveZoom * 100),
                         onPointerDown: stopInteractivePropagation,
                         onMouseDown: stopInteractivePropagation,
-                        onChange: (e) => setLocalZoom(normalizeLocalCanvasZoom(Number(e.target.value) / 100)),
+                        onChange: (e) => {
+                          captureRuntimeScrollSnapshot();
+                          setLocalZoom(normalizeLocalCanvasZoom(Number(e.target.value) / 100));
+                        },
                         style: { flex: 1, accentColor: "#22c55e", cursor: "pointer" }
                       }
                     ),
@@ -35023,6 +35882,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                         onMouseDown: stopInteractivePropagation,
                         onClick: (e) => {
                           stopInteractivePropagation(e);
+                          captureRuntimeScrollSnapshot();
                           setLocalZoom(null);
                         },
                         style: { fontSize: 10, padding: "2px 8px", borderRadius: 6, border: "1px solid rgba(71,85,105,0.9)", background: "rgba(15,23,42,0.9)", color: "rgba(226,232,240,0.72)", cursor: "pointer", fontWeight: 700 },
@@ -35031,6 +35891,45 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                     )
                   ] })
                 ] }),
+                drawingStorageEnabled ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                  /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
+                  /* @__PURE__ */ jsxs(DockSection, { title: "Storage", children: [
+                    /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }, children: [
+                      /* @__PURE__ */ jsx(
+                        DockButton,
+                        {
+                          disabled: !drawingStorageKey || drawingStorageSaving,
+                          onClick: saveDrawingToGateway,
+                          title: drawingStorageFilePath || drawingStorageKey,
+                          children: /* @__PURE__ */ jsx("span", { children: drawingStorageSaving ? "Saving" : "Save" })
+                        }
+                      ),
+                      /* @__PURE__ */ jsx(
+                        DockButton,
+                        {
+                          disabled: !drawingStorageKey || drawingStorageLoading,
+                          onClick: () => loadDrawingFromGateway({ persistProps: true }),
+                          title: drawingStorageFilePath || drawingStorageKey,
+                          children: /* @__PURE__ */ jsx("span", { children: drawingStorageLoading ? "Loading" : "Reload" })
+                        }
+                      )
+                    ] }),
+                    /* @__PURE__ */ jsx(
+                      "div",
+                      {
+                        title: drawingStorageFilePath || drawingStorageKey,
+                        style: {
+                          marginTop: 4,
+                          fontSize: 11,
+                          lineHeight: 1.35,
+                          color: drawingStorageStatus && !/^Gateway drawing (?:loaded|saved)\.?$/i.test(drawingStorageStatus) ? "#fde68a" : "rgba(226, 232, 240, 0.72)",
+                          overflowWrap: "anywhere"
+                        },
+                        children: drawingStorageStatusText
+                      }
+                    )
+                  ] })
+                ] }) : null,
                 /* @__PURE__ */ jsx("div", { style: { height: 1, background: "rgba(71, 85, 105, 0.7)" } }),
                 /* @__PURE__ */ jsxs(DockSection, { children: [
                   /* @__PURE__ */ jsx(DockButton, { active: tool === "select", onClick: () => activateTool("select"), children: /* @__PURE__ */ jsx("span", { children: "Move" }) }),
@@ -35503,6 +36402,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           editorVisible && propertiesVisible && propertyPanelStyle ? /* @__PURE__ */ jsxs(
             "div",
             {
+              ref: propertyPanelRef,
               "data-vizi-properties-panel": "1",
               style: propertyPanelStyle,
               onPointerDown: stopInteractivePropagation,
@@ -35608,11 +36508,14 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                 /* @__PURE__ */ jsxs(
                   "div",
                   {
+                    onMouseDown: beginPropertyPanelDrag,
                     style: {
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      gap: 12
+                      gap: 12,
+                      cursor: propertyPanelDragging ? "grabbing" : "grab",
+                      userSelect: "none"
                     },
                     children: [
                       /* @__PURE__ */ jsx(
@@ -35672,7 +36575,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                         PropertyReadout,
                         {
                           label: "Widget Kind",
-                          value: String(((_a = selectedOverlay.widget) == null ? void 0 : _a.kind) || "").trim() || "Widget"
+                          value: String(((_c = selectedOverlay.widget) == null ? void 0 : _c.kind) || "").trim() || "Widget"
                         }
                       ) : null,
                       /* @__PURE__ */ jsx(
@@ -35785,7 +36688,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyField,
                           {
                             label: "View Path",
-                            value: ((_b = selectedOverlay.widget) == null ? void 0 : _b.viewPath) || "",
+                            value: ((_d = selectedOverlay.widget) == null ? void 0 : _d.viewPath) || "",
                             placeholder: "Views/MyPopup",
                             onCommit: (value) => {
                               commitSelectedOverlayWidgetField("viewPath", String(value != null ? value : "").trim());
@@ -35796,7 +36699,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyTextArea,
                           {
                             label: "View Params JSON",
-                            value: ((_c = selectedOverlay.widget) == null ? void 0 : _c.viewParamsJson) || "{}",
+                            value: ((_e = selectedOverlay.widget) == null ? void 0 : _e.viewParamsJson) || "{}",
                             placeholder: '{"tagPath":"[default]MyTag"}',
                             rows: 4,
                             onCommit: (value) => {
@@ -35890,7 +36793,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyField,
                           {
                             label: "Title",
-                            value: ((_d = selectedOverlay.widget) == null ? void 0 : _d.title) || "",
+                            value: ((_f = selectedOverlay.widget) == null ? void 0 : _f.title) || "",
                             onCommit: (value) => {
                               commitSelectedOverlayWidgetField("title", String(value != null ? value : ""));
                             }
@@ -35900,7 +36803,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyField,
                           {
                             label: "Title Font Size",
-                            value: formatPanelNumber((_e = selectedOverlay.widget) == null ? void 0 : _e.titleFontSize),
+                            value: formatPanelNumber((_g = selectedOverlay.widget) == null ? void 0 : _g.titleFontSize),
                             placeholder: "Auto",
                             onCommit: (value) => {
                               const trimmed = String(value != null ? value : "").trim();
@@ -35920,7 +36823,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyColorField,
                           {
                             label: "Text Color",
-                            value: ((_f = selectedOverlay.widget) == null ? void 0 : _f.textColor) || "",
+                            value: ((_h = selectedOverlay.widget) == null ? void 0 : _h.textColor) || "",
                             placeholder: "#e2e8f0",
                             onCommit: (value) => {
                               commitSelectedOverlayWidgetField("textColor", String(value != null ? value : "").trim());
@@ -35931,14 +36834,14 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           PropertyColorField,
                           {
                             label: "Button Text",
-                            value: ((_g = selectedOverlay.widget) == null ? void 0 : _g.buttonTextColor) || "",
+                            value: ((_i = selectedOverlay.widget) == null ? void 0 : _i.buttonTextColor) || "",
                             placeholder: "#ffffff",
                             onCommit: (value) => {
                               commitSelectedOverlayWidgetField("buttonTextColor", String(value != null ? value : "").trim());
                             }
                           }
                         ) : null,
-                        String(((_h = selectedOverlay.widget) == null ? void 0 : _h.kind) || "").trim().toLowerCase() === "pushbutton" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
+                        String(((_j = selectedOverlay.widget) == null ? void 0 : _j.kind) || "").trim().toLowerCase() === "pushbutton" ? /* @__PURE__ */ jsxs("div", { style: { display: "grid", gap: 10, gridTemplateColumns: "1fr 1fr" }, children: [
                           /* @__PURE__ */ jsx(
                             PropertyField,
                             {
@@ -36599,6 +37502,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                         "button",
                         {
                           type: "button",
+                          "data-no-property-panel-drag": "true",
                           onClick: closePropertiesPanel,
                           style: {
                             background: "rgba(30, 58, 138, 0.72)",
@@ -36867,6 +37771,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
   var LOCAL_CANVAS_ZOOM_MIN2 = 0.1;
   var LOCAL_CANVAS_ZOOM_MAX2 = 4;
   var LOCAL_CANVAS_ZOOM_STEP2 = 0.1;
+  var RUNTIME_SCROLL_TOLERANCE_PX2 = 3;
+  var RUNTIME_HEIGHT_FIT_RESERVE_PX2 = 18;
   var LOCAL_CANVAS_ZOOM_CACHE_PREFIX2 = "mesora-drawing:canvas-zoom:v1:";
   function readTreeValue(tree, path, fallback) {
     try {
@@ -37422,20 +38328,6 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const identity = candidates.map(normalizeCacheKeyPart2).find(Boolean) || "default";
     return `${LOCAL_CANVAS_ZOOM_CACHE_PREFIX2}${encodeURIComponent(identity)}`;
   }
-  function readCachedCanvasZoom2(cacheKey) {
-    if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
-      return null;
-    }
-    try {
-      const raw = window.localStorage.getItem(cacheKey);
-      if (raw == null || raw === "") {
-        return null;
-      }
-      return normalizeLocalCanvasZoom2(Number(raw));
-    } catch (_error) {
-      return null;
-    }
-  }
   function writeCachedCanvasZoom2(cacheKey, zoomValue) {
     if (!cacheKey || typeof window === "undefined" || !window.localStorage) {
       return;
@@ -37714,14 +38606,17 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const rect = rootNode && typeof rootNode.getBoundingClientRect === "function" ? rootNode.getBoundingClientRect() : null;
     const rootLeft = Math.max(0, Number((rect == null ? void 0 : rect.left) || 0));
     const rootTop = Math.max(0, Number((rect == null ? void 0 : rect.top) || 0));
-    const hostWidth = toPositiveNumber2(fallbackWidth) || toPositiveNumber2(rect == null ? void 0 : rect.width) || 0;
-    const hostHeight = toPositiveNumber2(fallbackHeight) || toPositiveNumber2(rect == null ? void 0 : rect.height) || 0;
+    const hostWidth = toPositiveNumber2(rect == null ? void 0 : rect.width) || toPositiveNumber2(fallbackWidth) || 0;
+    const measuredHostHeight = toPositiveNumber2(rect == null ? void 0 : rect.height) || 0;
+    const fallbackHostHeight = toPositiveNumber2(fallbackHeight) || 0;
     const viewportWidth = toPositiveNumber2(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber2(browserViewportHeight) || 0;
     const availableBrowserWidth = viewportWidth > 0 ? Math.max(1, viewportWidth - rootLeft) : 0;
     const availableBrowserHeight = viewportHeight > 0 ? Math.max(1, viewportHeight - rootTop) : 0;
     const targetWidth = toPositiveNumber2(hostWidth || availableBrowserWidth) || targetViewWidth;
-    const targetHeight = toPositiveNumber2(hostHeight || availableBrowserHeight) || targetViewHeight;
+    const heightCandidates = [measuredHostHeight, availableBrowserHeight].filter((value) => toPositiveNumber2(value) > 0);
+    const targetHeightBase = heightCandidates.length ? Math.min(...heightCandidates) : fallbackHostHeight || targetViewHeight;
+    const targetHeight = Math.max(1, targetHeightBase - RUNTIME_HEIGHT_FIT_RESERVE_PX2);
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
     return Math.max(0.05, Math.min(8, scaleByHeight));
@@ -37878,16 +38773,19 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       maxX = Math.max(maxX, x + width);
       maxY = Math.max(maxY, y + height);
     });
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return fallback;
+    }
     const extraPadding = Math.max(0, Number(padding || 0));
     const nextX = Math.min(fallback.x, minX - extraPadding);
-    const nextY = Math.min(fallback.y, minY - extraPadding);
+    const nextY = minY - extraPadding;
     const nextRight = Math.max(fallback.x + fallback.width, maxX + extraPadding);
-    const nextBottom = Math.max(fallback.y + fallback.height, maxY + extraPadding);
+    const nextBottom = maxY + extraPadding;
     return {
       x: nextX,
       y: nextY,
-      width: Math.max(1, nextRight - nextX),
-      height: Math.max(1, nextBottom - nextY)
+      width: Math.max(100, nextRight - nextX),
+      height: Math.max(100, nextBottom - nextY)
     };
   }
   function buildElementProps(element) {
@@ -38012,8 +38910,57 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       }
     );
   }
+  var GATEWAY_STORAGE_PROP_ALIASES2 = Object.freeze({
+    drawingStorageEnabled: "enabled",
+    drawingStorageKey: "key",
+    gatewayStorageKey: "key",
+    drawingStorageAutoLoad: "autoLoad",
+    browserEditEnabled: "browserEditEnabled"
+  });
+  function hasOwnValue2(source, key) {
+    return isPlainObject2(source) && Object.prototype.hasOwnProperty.call(source, key);
+  }
+  function collectGatewayStorageAliasValues2(source, key) {
+    var _a;
+    const storageKey = GATEWAY_STORAGE_PROP_ALIASES2[key];
+    if (!storageKey) {
+      return [];
+    }
+    const values = [];
+    if (hasOwnValue2(source, key)) {
+      values.push(source[key]);
+    }
+    if (hasOwnValue2(source == null ? void 0 : source.model, key)) {
+      values.push(source.model[key]);
+    }
+    if (hasOwnValue2(source == null ? void 0 : source.gatewayStorage, storageKey)) {
+      values.push(source.gatewayStorage[storageKey]);
+    }
+    if (hasOwnValue2((_a = source == null ? void 0 : source.model) == null ? void 0 : _a.gatewayStorage, storageKey)) {
+      values.push(source.model.gatewayStorage[storageKey]);
+    }
+    return values.filter((value) => value !== void 0);
+  }
   function getModelValue2(props, key, fallback) {
     const source = getComponentPropSource2(props);
+    const gatewayStorageValues = collectGatewayStorageAliasValues2(source, key);
+    if (key === "drawingStorageEnabled" || key === "browserEditEnabled") {
+      return gatewayStorageValues.some(Boolean) || fallback;
+    }
+    if (key === "drawingStorageKey" || key === "gatewayStorageKey") {
+      const firstNonEmpty = gatewayStorageValues.map((value) => String(value || "").trim()).find(Boolean);
+      if (firstNonEmpty) {
+        return firstNonEmpty;
+      }
+    }
+    if (key === "drawingStorageAutoLoad" && gatewayStorageValues.length > 0) {
+      if (gatewayStorageValues.some((value) => value === false)) {
+        return false;
+      }
+      if (gatewayStorageValues.some((value) => value === true)) {
+        return true;
+      }
+    }
     const direct = source[key];
     if (direct !== void 0) {
       return direct;
@@ -38427,8 +39374,23 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     return wrote;
   }
   function ViziCanvasBridge(props) {
+    var _a, _b;
     usePerspectiveThemeVersion2(props);
     const rootRef = useRef(null);
+    const runtimeScrollSnapshotRef = useRef({
+      scrollLeft: 0,
+      scrollTop: 0,
+      clientWidth: 0,
+      clientHeight: 0,
+      contentWidth: 0,
+      contentHeight: 0,
+      zoom: 1
+    });
+    const runtimeCanvasMetricsRef = useRef({
+      contentWidth: 0,
+      contentHeight: 0,
+      zoom: 1
+    });
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(/* @__PURE__ */ new Map());
     const sourceDocument = isPlainObject2(props.document) ? props.document : {};
@@ -38465,7 +39427,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const [importOpen, setImportOpen] = useState(false);
     const svgCatalogRequestIdRef = useRef(0);
     const localZoomCacheKey = resolveCanvasZoomCacheKey2(props);
-    const [localZoom, setLocalZoom] = useState(() => readCachedCanvasZoom2(resolveCanvasZoomCacheKey2(props)));
+    const [localZoom, setLocalZoom] = useState(null);
     const runtimeDocumentViewBounds = useMemo(
       () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
       [
@@ -38478,22 +39440,72 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       ]
     );
     const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
-    const stepCanvasZoom = useCallback((direction) => {
+    const captureRuntimeScrollSnapshot = useCallback((node = rootRef.current, viewportAnchor = null) => {
+      var _a2, _b2;
+      if (!browserRuntimeMode || !node) {
+        return;
+      }
+      const clientWidth = Number(node.clientWidth || 0);
+      const clientHeight = Number(node.clientHeight || 0);
+      let anchorX = clientWidth / 2;
+      let anchorY = clientHeight / 2;
+      if (viewportAnchor && typeof node.getBoundingClientRect === "function") {
+        const rect = node.getBoundingClientRect();
+        const clientX = Number((_a2 = viewportAnchor.clientX) != null ? _a2 : viewportAnchor.x);
+        const clientY = Number((_b2 = viewportAnchor.clientY) != null ? _b2 : viewportAnchor.y);
+        if (Number.isFinite(clientX)) {
+          anchorX = Math.max(0, Math.min(clientWidth, clientX - Number(rect.left || 0)));
+        }
+        if (Number.isFinite(clientY)) {
+          anchorY = Math.max(0, Math.min(clientHeight, clientY - Number(rect.top || 0)));
+        }
+      }
+      const metrics = runtimeCanvasMetricsRef.current || {};
+      const scrollLeft = Number(node.scrollLeft || 0);
+      const scrollTop = Number(node.scrollTop || 0);
+      const canvasWidth = Math.max(1, Number(metrics.canvasWidth || metrics.contentWidth || 0) || 1);
+      const canvasHeight = Math.max(1, Number(metrics.canvasHeight || metrics.contentHeight || 0) || 1);
+      const offsetX = Math.max(0, Number(metrics.offsetX || 0) || 0);
+      const offsetY = Math.max(0, Number(metrics.offsetY || 0) || 0);
+      runtimeScrollSnapshotRef.current = {
+        scrollLeft,
+        scrollTop,
+        clientWidth,
+        clientHeight,
+        anchorX,
+        anchorY,
+        canvasWidth,
+        canvasHeight,
+        offsetX,
+        offsetY,
+        anchorCanvasX: Math.max(0, Math.min(canvasWidth, scrollLeft + anchorX - offsetX)),
+        anchorCanvasY: Math.max(0, Math.min(canvasHeight, scrollTop + anchorY - offsetY)),
+        contentWidth: Math.max(
+          1,
+          Number(metrics.contentWidth || 0) || Number(node.scrollWidth || 0) || Number(node.clientWidth || 0) || 1
+        ),
+        contentHeight: Math.max(
+          1,
+          Number(metrics.contentHeight || 0) || Number(node.scrollHeight || 0) || Number(node.clientHeight || 0) || 1
+        ),
+        zoom: Math.max(1e-4, Number(metrics.zoom || 0) || 1)
+      };
+    }, [browserRuntimeMode]);
+    const stepCanvasZoom = useCallback((direction, viewportAnchor = null) => {
       const amount = Number(direction);
       if (!Number.isFinite(amount) || amount === 0) {
         return;
       }
+      captureRuntimeScrollSnapshot(rootRef.current, viewportAnchor);
       setLocalZoom((previous) => {
         const base = previous != null ? previous : 1;
         return normalizeLocalCanvasZoom2(base + amount * LOCAL_CANVAS_ZOOM_STEP2);
       });
-    }, []);
+    }, [captureRuntimeScrollSnapshot]);
     useEffect(() => {
-      setLocalZoom(readCachedCanvasZoom2(localZoomCacheKey));
+      setLocalZoom(null);
+      writeCachedCanvasZoom2(localZoomCacheKey, null);
     }, [localZoomCacheKey]);
-    useEffect(() => {
-      writeCachedCanvasZoom2(localZoomCacheKey, localZoom);
-    }, [localZoomCacheKey, localZoom]);
     useEffect(() => {
       const node = rootRef.current;
       if (!node || typeof node.getBoundingClientRect !== "function") {
@@ -38518,7 +39530,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       return void 0;
     }, [hostSize.height, hostSize.width]);
     useEffect(() => {
-      var _a, _b;
+      var _a2, _b2;
       if (typeof window === "undefined") {
         return void 0;
       }
@@ -38530,11 +39542,11 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       };
       updateViewportHeight();
       window.addEventListener("resize", updateViewportHeight);
-      (_b = (_a = window.visualViewport) == null ? void 0 : _a.addEventListener) == null ? void 0 : _b.call(_a, "resize", updateViewportHeight);
+      (_b2 = (_a2 = window.visualViewport) == null ? void 0 : _a2.addEventListener) == null ? void 0 : _b2.call(_a2, "resize", updateViewportHeight);
       return () => {
-        var _a2, _b2;
+        var _a3, _b3;
         window.removeEventListener("resize", updateViewportHeight);
-        (_b2 = (_a2 = window.visualViewport) == null ? void 0 : _a2.removeEventListener) == null ? void 0 : _b2.call(_a2, "resize", updateViewportHeight);
+        (_b3 = (_a3 = window.visualViewport) == null ? void 0 : _a3.removeEventListener) == null ? void 0 : _b3.call(_a3, "resize", updateViewportHeight);
       };
     }, []);
     useEffect(() => {
@@ -38545,7 +39557,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         if (!rootRef.current.contains(event.target)) return;
         event.preventDefault();
         event.stopPropagation();
-        stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
+        stepCanvasZoom(event.deltaY < 0 ? 0.5 : -0.5, event);
       };
       window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
       return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
@@ -38760,7 +39772,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       return true;
     }, [props]);
     const handleOverlayMouseDown = useCallback((event, id) => {
-      var _a, _b;
+      var _a2, _b2;
       const overlayId = id ? String(id) : "";
       const overlay = svgOverlays.find((item) => String((item == null ? void 0 : item.id) || "") === overlayId);
       if (!overlay) {
@@ -38771,8 +39783,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         setSelectedIds([]);
         return;
       }
-      (_a = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a.call(event);
-      (_b = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b.call(event);
+      (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
+      (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
       openOverlayPopup(overlay);
     }, [editorVisible, openOverlayPopup, setSelectedIds, setSelectedOverlayIds, svgOverlays]);
     const zoom = Number(getModelValue2(props, "zoom", 1)) || 1;
@@ -38977,6 +39989,90 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         liveCanvasZoom * (localZoom !== null ? normalizeLocalCanvasZoom2(localZoom) : 1)
       )
     ) : 1;
+    const runtimeCanvasWidth = Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom;
+    const runtimeCanvasHeight = Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom;
+    const runtimeRootClientWidth = browserRuntimeMode ? Math.max(0, Number(((_a = rootRef.current) == null ? void 0 : _a.clientWidth) || 0) || 0) : 0;
+    const runtimeRootClientHeight = browserRuntimeMode ? Math.max(0, Number(((_b = rootRef.current) == null ? void 0 : _b.clientHeight) || 0) || 0) : 0;
+    const runtimeViewportWidth = browserRuntimeMode ? Math.max(
+      1,
+      runtimeRootClientWidth || Number((rootSize == null ? void 0 : rootSize.width) || 0) || Number(browserViewportWidth || 0) || Number((defaultHostSize == null ? void 0 : defaultHostSize.width) || 0) || Number((hostSize == null ? void 0 : hostSize.width) || 0) || runtimeCanvasWidth
+    ) : runtimeCanvasWidth;
+    const runtimeViewportHeight = browserRuntimeMode ? Math.max(
+      1,
+      runtimeRootClientHeight || Number((rootSize == null ? void 0 : rootSize.height) || 0) || Number(browserViewportHeight || 0) || Number((defaultHostSize == null ? void 0 : defaultHostSize.height) || 0) || Number((hostSize == null ? void 0 : hostSize.height) || 0) || runtimeCanvasHeight
+    ) : runtimeCanvasHeight;
+    const runtimeHorizontalScrollNeeded = browserRuntimeMode && runtimeCanvasWidth > runtimeViewportWidth + RUNTIME_SCROLL_TOLERANCE_PX2;
+    const runtimeVerticalScrollNeeded = browserRuntimeMode && runtimeCanvasHeight > runtimeViewportHeight + RUNTIME_SCROLL_TOLERANCE_PX2;
+    const runtimeScrollContentWidth = runtimeHorizontalScrollNeeded ? runtimeCanvasWidth : runtimeViewportWidth;
+    const runtimeScrollContentHeight = runtimeVerticalScrollNeeded ? runtimeCanvasHeight : runtimeViewportHeight;
+    const runtimeCanvasOffsetX = browserRuntimeMode ? Math.max(0, (runtimeScrollContentWidth - runtimeCanvasWidth) / 2) : 0;
+    const runtimeCanvasOffsetY = browserRuntimeMode ? Math.max(0, (runtimeScrollContentHeight - runtimeCanvasHeight) / 2) : 0;
+    runtimeCanvasMetricsRef.current = {
+      contentWidth: runtimeScrollContentWidth,
+      contentHeight: runtimeScrollContentHeight,
+      canvasWidth: runtimeCanvasWidth,
+      canvasHeight: runtimeCanvasHeight,
+      offsetX: runtimeCanvasOffsetX,
+      offsetY: runtimeCanvasOffsetY,
+      zoom: runtimeCanvasZoom
+    };
+    const rememberRuntimeScrollSnapshot = useCallback((node = rootRef.current) => {
+      captureRuntimeScrollSnapshot(node);
+    }, [captureRuntimeScrollSnapshot]);
+    useLayoutEffect(() => {
+      var _a2, _b2;
+      if (!browserRuntimeMode) {
+        return;
+      }
+      const node = rootRef.current;
+      if (!node) {
+        return;
+      }
+      const previous = runtimeScrollSnapshotRef.current || {};
+      const previousWidth = Math.max(1, Number(previous.contentWidth) || runtimeScrollContentWidth);
+      const previousHeight = Math.max(1, Number(previous.contentHeight) || runtimeScrollContentHeight);
+      const previousCanvasWidth = Math.max(1, Number(previous.canvasWidth) || previousWidth);
+      const previousCanvasHeight = Math.max(1, Number(previous.canvasHeight) || previousHeight);
+      const previousClientWidth = Math.max(1, Number(previous.clientWidth) || Number(node.clientWidth) || 1);
+      const previousClientHeight = Math.max(1, Number(previous.clientHeight) || Number(node.clientHeight) || 1);
+      const previousAnchorX = Math.max(0, Math.min(previousClientWidth, Number((_a2 = previous.anchorX) != null ? _a2 : previousClientWidth / 2)));
+      const previousAnchorY = Math.max(0, Math.min(previousClientHeight, Number((_b2 = previous.anchorY) != null ? _b2 : previousClientHeight / 2)));
+      const currentAnchorX = Math.max(0, Math.min(Number(node.clientWidth || previousClientWidth), previousAnchorX));
+      const currentAnchorY = Math.max(0, Math.min(Number(node.clientHeight || previousClientHeight), previousAnchorY));
+      const oldAnchorCanvasX = Math.max(0, Math.min(
+        previousCanvasWidth,
+        Number.isFinite(Number(previous.anchorCanvasX)) ? Number(previous.anchorCanvasX) : Math.max(0, Number(previous.scrollLeft || 0)) + previousAnchorX - Math.max(0, Number(previous.offsetX || 0))
+      ));
+      const oldAnchorCanvasY = Math.max(0, Math.min(
+        previousCanvasHeight,
+        Number.isFinite(Number(previous.anchorCanvasY)) ? Number(previous.anchorCanvasY) : Math.max(0, Number(previous.scrollTop || 0)) + previousAnchorY - Math.max(0, Number(previous.offsetY || 0))
+      ));
+      const widthChanged = Math.abs(previousWidth - runtimeScrollContentWidth) > 0.5 || Math.abs(previousCanvasWidth - runtimeCanvasWidth) > 0.5 || Math.abs(Number(previous.zoom || 1) - runtimeCanvasZoom) > 1e-4;
+      const heightChanged = Math.abs(previousHeight - runtimeScrollContentHeight) > 0.5 || Math.abs(previousCanvasHeight - runtimeCanvasHeight) > 0.5;
+      const maxLeft = Math.max(0, Number(node.scrollWidth || runtimeScrollContentWidth) - Number(node.clientWidth || 0));
+      const maxTop = Math.max(0, Number(node.scrollHeight || runtimeScrollContentHeight) - Number(node.clientHeight || 0));
+      let nextLeft = Number(node.scrollLeft || 0);
+      let nextTop = Number(node.scrollTop || 0);
+      if (widthChanged) {
+        nextLeft = runtimeCanvasOffsetX + oldAnchorCanvasX / previousCanvasWidth * runtimeCanvasWidth - currentAnchorX;
+      } else if (Math.abs(nextLeft - Number(previous.scrollLeft || 0)) > 1 && Number(previous.scrollLeft || 0) > 0) {
+        nextLeft = Number(previous.scrollLeft || 0);
+      }
+      if (heightChanged) {
+        nextTop = runtimeCanvasOffsetY + oldAnchorCanvasY / previousCanvasHeight * runtimeCanvasHeight - currentAnchorY;
+      } else if (Math.abs(nextTop - Number(previous.scrollTop || 0)) > 1 && Number(previous.scrollTop || 0) > 0) {
+        nextTop = Number(previous.scrollTop || 0);
+      }
+      nextLeft = Math.max(0, Math.min(maxLeft, nextLeft));
+      nextTop = Math.max(0, Math.min(maxTop, nextTop));
+      if (Math.abs(Number(node.scrollLeft || 0) - nextLeft) > 0.5) {
+        node.scrollLeft = nextLeft;
+      }
+      if (Math.abs(Number(node.scrollTop || 0) - nextTop) > 0.5) {
+        node.scrollTop = nextTop;
+      }
+      rememberRuntimeScrollSnapshot(node);
+    });
     const canvasContent = /* @__PURE__ */ jsx(
       CanvasSvg_default,
       {
@@ -39058,7 +40154,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         viewportLeftOffset: 0,
         viewportScrollTarget: null,
         onViewportScroll: NOOP2,
-        absoluteViewportLayout: false
+        absoluteViewportLayout: false,
+        internalScrollEnabled: !browserRuntimeMode
       }
     );
     return /* @__PURE__ */ jsxs(
@@ -39067,6 +40164,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         ref: rootRef,
         "data-vizi-theme": theme,
         "data-vizi-canvas-background": canvasBackgroundColor,
+        onScroll: browserRuntimeMode ? (event) => rememberRuntimeScrollSnapshot(event.currentTarget) : void 0,
         style: {
           position: "relative",
           display: "flex",
@@ -39078,10 +40176,10 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           alignSelf: "stretch",
           overflow: "hidden",
           ...browserRuntimeMode ? {
-            alignItems: "flex-start",
-            justifyContent: "flex-start",
-            overflowX: "auto",
-            overflowY: "hidden"
+            display: "block",
+            overflowX: runtimeHorizontalScrollNeeded ? "auto" : "hidden",
+            overflowY: runtimeVerticalScrollNeeded ? "auto" : "hidden",
+            scrollbarGutter: runtimeVerticalScrollNeeded ? "stable" : "auto"
           } : {}
         },
         children: [
@@ -39089,13 +40187,25 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
             "div",
             {
               style: {
-                width: Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom,
-                height: Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom,
+                width: runtimeScrollContentWidth,
+                height: runtimeScrollContentHeight,
                 flexShrink: 0,
-                position: "relative",
-                transformOrigin: "top left"
+                position: "relative"
               },
-              children: canvasContent
+              children: /* @__PURE__ */ jsx(
+                "div",
+                {
+                  style: {
+                    position: "absolute",
+                    left: runtimeCanvasOffsetX,
+                    top: runtimeCanvasOffsetY,
+                    width: runtimeCanvasWidth,
+                    height: runtimeCanvasHeight,
+                    transformOrigin: "top left"
+                  },
+                  children: canvasContent
+                }
+              )
             }
           ) : canvasContent,
           editorVisible && svgLibraryEnabled ? /* @__PURE__ */ jsxs(
@@ -39177,7 +40287,9 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const overlays = getPersistedArrayValue2(props, "svgOverlays", EMPTY_ARRAY2);
     const forceViziCanvas = Boolean(getModelValue2(props, "forceViziCanvas", false));
     const svgLibraryEnabled = Boolean(getModelValue2(props, "svgLibraryEnabled", true));
-    return forceViziCanvas || svgLibraryEnabled || Array.isArray(shapes) && shapes.length > 0 || Array.isArray(overlays) && overlays.length > 0;
+    const drawingStorageEnabled = Boolean(getModelValue2(props, "drawingStorageEnabled", false));
+    const browserEditEnabled = Boolean(getModelValue2(props, "browserEditEnabled", false));
+    return forceViziCanvas || svgLibraryEnabled || drawingStorageEnabled || browserEditEnabled || Array.isArray(shapes) && shapes.length > 0 || Array.isArray(overlays) && overlays.length > 0;
   }
   function MesoraDrawingTool(props) {
     var _a, _b;
@@ -39273,6 +40385,10 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       };
     }
     getPropsReducer(tree) {
+      const gatewayStorage = readTreeValue(tree, "gatewayStorage", readTreeValue(tree, "model.gatewayStorage", {}));
+      const gatewayStorageEnabled = Boolean(gatewayStorage == null ? void 0 : gatewayStorage.enabled);
+      const gatewayStorageBrowserEditEnabled = Boolean(gatewayStorage == null ? void 0 : gatewayStorage.browserEditEnabled);
+      const gatewayStorageKey = String((gatewayStorage == null ? void 0 : gatewayStorage.key) || "").trim();
       return {
         document: readTreeValue(tree, "document", { viewBox: `0 0 ${DEFAULT_CANVAS_WIDTH2} ${DEFAULT_CANVAS_HEIGHT2}`, elements: [] }),
         data: readTreeValue(tree, "data", {}),
@@ -39284,6 +40400,24 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         tool: readTreeValue(tree, "tool", "select"),
         forceViziCanvas: readTreeValue(tree, "forceViziCanvas", false),
         svgLibraryEnabled: readTreeValue(tree, "svgLibraryEnabled", true),
+        gatewayStorage,
+        drawingStorageEnabled: Boolean(
+          readTreeValue(tree, "drawingStorageEnabled", false) || readTreeValue(tree, "model.drawingStorageEnabled", false) || gatewayStorageEnabled
+        ),
+        drawingStorageKey: String(
+          readTreeValue(tree, "drawingStorageKey", "") || readTreeValue(tree, "model.drawingStorageKey", "") || readTreeValue(tree, "gatewayStorageKey", "") || readTreeValue(tree, "model.gatewayStorageKey", "") || gatewayStorageKey
+        ).trim(),
+        gatewayStorageKey: String(
+          readTreeValue(tree, "gatewayStorageKey", "") || readTreeValue(tree, "model.gatewayStorageKey", "") || gatewayStorageKey
+        ).trim(),
+        drawingStorageAutoLoad: readTreeValue(
+          tree,
+          "drawingStorageAutoLoad",
+          readTreeValue(tree, "model.drawingStorageAutoLoad", (gatewayStorage == null ? void 0 : gatewayStorage.autoLoad) !== false)
+        ),
+        browserEditEnabled: Boolean(
+          readTreeValue(tree, "browserEditEnabled", false) || readTreeValue(tree, "model.browserEditEnabled", false) || gatewayStorageBrowserEditEnabled
+        ),
         backgroundColor: readTreeValue(tree, "backgroundColor", ""),
         canvasBackgroundColor: readTreeValue(tree, "canvasBackgroundColor", "theme"),
         sessionTheme: readTreeValue(tree, "sessionTheme", ""),

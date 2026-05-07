@@ -10,8 +10,8 @@
       <stop offset="100%" stop-color="#b8bdc4" />
     </linearGradient>
     <linearGradient id="binLevelFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e7e9ec" />
-      <stop offset="100%" stop-color="#b8bdc4" />
+      <stop offset="0%" stop-color="#b6cff2" />
+      <stop offset="100%" stop-color="#4f77a5" />
     </linearGradient>
     <linearGradient id="binStripeFill" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%" stop-color="#e7e9ec" />
@@ -52,7 +52,7 @@
 
     <g id="Level" transform="matrix(0.99122423,0,0,1.2084452,0.15524492,-3.9421802)">
       <rect id="BarGraphFrame" width="0.43131301" height="7.1140532" x="19.296278" y="-22.200907" transform="scale(1,-1)" style="fill:url(#binPanelFill);fill-rule:nonzero;stroke:#808080;stroke-width:0.0599;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1" />
-      <rect id="BarGraph" width="0.43131301" height="7.1140532" x="19.296276" y="-22.200907" transform="scale(1,-1)" style="fill:url(#binLevelFill);fill-opacity:1;fill-rule:nonzero;stroke:#808080;stroke-width:0.0599;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1" />
+      <rect id="BarGraph" width="0.43131301" height="7.1140532" x="19.296276" y="-22.200907" transform="scale(1,-1)" style="fill:url(#binLevelFill);fill-opacity:1;fill-rule:nonzero;stroke:#3f3f3f;stroke-width:0;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1" />
     </g>
   </g>
 </svg>

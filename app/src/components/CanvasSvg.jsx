@@ -311,6 +311,7 @@ function CanvasSvg({
   viewportScrollTarget = null,
   onViewportScroll = null,
   absoluteViewportLayout = true,
+  internalScrollEnabled = true,
 }) {
   const renderLiveVisuals = Boolean(isLiveMode && !forceStaticVisuals);
   const liveCanvasEnabled = Boolean(liveUpdatesEnabled && renderLiveVisuals);
@@ -397,7 +398,12 @@ function CanvasSvg({
   const isCrosshair = isLineMode || marquee;
   const themeStrokeDefault = "#808080";
   const themeFillDefault = "#D7DADE";
-  const isDarkTheme = String(theme || "").toLowerCase() === "dark";
+  const themeMode = String(theme || "").trim().toLowerCase().includes("dark")
+    ? "dark"
+    : String(theme || "").trim().toLowerCase().includes("light")
+    ? "light"
+    : "light";
+  const isDarkTheme = themeMode === "dark";
   const normalizePaintForDefaultCompare = (value) => (
     String(value || "").replace(/\s+/g, "").trim().toLowerCase()
   );
@@ -2000,9 +2006,6 @@ function CanvasSvg({
     };
     const requestedWidth = readExplicitDimension(["popupWidth", "viewPopupWidth", "openViewWidth"]);
     const requestedHeight = readExplicitDimension(["popupHeight", "viewPopupHeight", "openViewHeight"]);
-    if (!requestedWidth && !requestedHeight) {
-      return null;
-    }
 
     const viewportSource = typeof globalThis !== "undefined" ? globalThis : {};
     const docElement = viewportSource.document?.documentElement;
@@ -2027,13 +2030,15 @@ function CanvasSvg({
     );
     const maxWidth = Math.max(280, viewportWidth - 48);
     const maxHeight = Math.max(220, viewportHeight - 48);
+    const defaultWidth = Math.min(920, Math.max(520, Math.round(viewportWidth * 0.62)));
+    const defaultHeight = Math.min(620, Math.max(360, Math.round(viewportHeight * 0.7)));
     const width = Math.min(
       maxWidth,
-      Math.max(320, requestedWidth || 640)
+      Math.max(320, requestedWidth || defaultWidth)
     );
     const height = Math.min(
       maxHeight,
-      Math.max(240, requestedHeight || 480)
+      Math.max(240, requestedHeight || defaultHeight)
     );
     return {
       left: Math.max(12, Math.round((viewportWidth - width) / 2)),
@@ -3075,13 +3080,21 @@ function CanvasSvg({
     const valueSize = scaledFont(dense ? 12 : compact ? 16 : 19, 9, 36);
     const widgetRootStyle =
       typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
-    const themedTextColor =
-      widgetRootStyle?.getPropertyValue("--text")?.trim() ||
-      (isDarkTheme ? "#e2e8f0" : "#111827");
-    const valueColor = widgetTextColor || "var(--text)";
+    const readThemeVar = (name, fallback) => {
+      const value = widgetRootStyle?.getPropertyValue(name)?.trim();
+      return value && !value.toLowerCase().startsWith("var(") ? value : fallback;
+    };
+    const widgetPrimaryText = readThemeVar("--text", isDarkTheme ? "#f8fafc" : "#111827");
+    const widgetMutedText = readThemeVar("--text-muted", isDarkTheme ? "#a7b4c7" : "#475569");
+    const widgetElevatedFill = readThemeVar("--bg-elev", isDarkTheme ? "#141b25" : "#ffffff");
+    const widgetBorderColor = readThemeVar(
+      "--border",
+      isDarkTheme ? "rgba(148, 163, 184, 0.35)" : "rgba(15, 23, 42, 0.15)"
+    );
+    const valueColor = widgetTextColor || widgetPrimaryText;
     const accent = "#2b8cff";
-    const subdued = widgetTextColor || "var(--text-muted)";
-    const widgetHtmlTextColor = widgetTextColor || themedTextColor;
+    const subdued = widgetTextColor || widgetMutedText;
+    const widgetHtmlTextColor = widgetTextColor || widgetPrimaryText;
     const widgetButtonTextColor = normalizeWidgetTextColor(
       cfg?.buttonTextColor ?? cfg?.buttonFontColor ?? cfg?.buttonLabelColor
     ) || widgetTextColor || "rgba(255,255,255,0.98)";
@@ -3164,7 +3177,7 @@ function CanvasSvg({
           : "--";
       return (
         <g pointerEvents="none">
-          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill={widgetElevatedFill} />
           <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
             {cardTitle}
           </text>
@@ -3176,7 +3189,7 @@ function CanvasSvg({
               {`Updated ${latestTime}`}
             </text>
           ) : null}
-          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
+          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke={widgetBorderColor} />
         </g>
       );
     }
@@ -3223,7 +3236,7 @@ function CanvasSvg({
       };
       return (
         <g pointerEvents="none">
-          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill={widgetElevatedFill} />
           <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
             {cardTitle}
           </text>
@@ -3291,7 +3304,7 @@ function CanvasSvg({
       const sunColor = "#fbbf24";
       return (
         <g pointerEvents="none">
-          <rect x={x + 1} y={y + 1} width={w - 2} height={h - 2} rx={12} fill={isDarkTheme ? "#0f172a" : "#f8fafc"} stroke="var(--border)" />
+          <rect x={x + 1} y={y + 1} width={w - 2} height={h - 2} rx={12} fill={isDarkTheme ? "#0f172a" : "#f8fafc"} stroke={widgetBorderColor} />
           <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
             {locationText}
           </text>
@@ -3341,11 +3354,11 @@ function CanvasSvg({
       const rowStep = dense ? 11 : 13;
       return (
         <g pointerEvents="none">
-          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill={widgetElevatedFill} />
           <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
             {cardTitle}
           </text>
-          <line x1={x + pad} y1={startY - 8} x2={x + w - pad} y2={startY - 8} stroke="var(--border)" />
+          <line x1={x + pad} y1={startY - 8} x2={x + w - pad} y2={startY - 8} stroke={widgetBorderColor} />
           <text x={x + pad} y={startY} fill={valueColor} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>Source</text>
           <text x={x + Math.max(108, w * 0.43)} y={startY} fill={valueColor} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700}>Value</text>
           <text x={x + w - pad} y={startY} fill={valueColor} fontSize={scaledFont(dense ? 8 : 9, 7, 16)} fontFamily="system-ui" fontWeight={700} textAnchor="end">Time</text>
@@ -3439,12 +3452,12 @@ function CanvasSvg({
               {labelText}
             </text>
           ) : null}
-          <rect x={barX} y={barY} width={barW} height={barH} rx={barR} fill="transparent" stroke="var(--border)" />
+          <rect x={barX} y={barY} width={barW} height={barH} rx={barR} fill="transparent" stroke={widgetBorderColor} />
           <rect x={barX} y={barY} width={fillW} height={barH} rx={barR} fill={remainingMs === 0 ? "#16a34a" : accent} />
           <text
             x={barX + barW / 2}
             y={barY + barH / 2 + Math.max(2, Math.round(barH * 0.16))}
-            fill={widgetTextColor || (theme === "dark" ? "#ffffff" : "#111827")}
+            fill={widgetTextColor || widgetPrimaryText}
             fontSize={valueFont}
             fontFamily="system-ui"
             fontWeight={800}
@@ -3483,7 +3496,7 @@ function CanvasSvg({
       const showControls = h >= (dense ? 96 : 108);
       return (
         <g>
-          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+          <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill={widgetElevatedFill} />
           <text
             x={x + w / 2}
             y={y + headH - 7}
@@ -3556,8 +3569,8 @@ function CanvasSvg({
                   style={{
                     width: "100%",
                     height: "100%",
-                    border: "1px solid var(--border)",
-                    background: "var(--bg-elev)",
+                    border: `1px solid ${widgetBorderColor}`,
+                    background: widgetElevatedFill,
                     color: widgetHtmlTextColor,
                     borderRadius: 7,
                     padding: "0 8px",
@@ -3603,7 +3616,7 @@ function CanvasSvg({
               {writeError}
             </text>
           ) : null}
-          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke="var(--border)" />
+          <line x1={x + pad} y1={y + headH + 4} x2={x + w - pad} y2={y + headH + 4} stroke={widgetBorderColor} />
         </g>
       );
     }
@@ -3644,7 +3657,7 @@ function CanvasSvg({
             <text
               x={buttonX + buttonW / 2}
               y={titleY}
-              fill={widgetTextColor || "rgba(248, 250, 252, 0.96)"}
+              fill={widgetTextColor || widgetPrimaryText}
               fontSize={titleFont}
               fontFamily="system-ui"
               fontWeight={800}
@@ -3847,7 +3860,7 @@ function CanvasSvg({
             <text
               x={buttonX + buttonW / 2}
               y={titleY}
-              fill={widgetTextColor || "rgba(248, 250, 252, 0.96)"}
+              fill={widgetTextColor || widgetPrimaryText}
               fontSize={titleFont}
               fontFamily="system-ui"
               fontWeight={800}
@@ -4272,17 +4285,25 @@ function CanvasSvg({
     const chartKey = `c-${overlay.id}-${kind}-${chartW}x${chartH}-z${viewScale.toFixed(3)}-s${overlayScale.toFixed(3)}-vp${viewportDprBoost.toFixed(3)}`;
     const rootStyle =
       typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
-    const isDark = String(theme || "").toLowerCase() === "dark";
-    const textColor = widgetTextColor || rootStyle?.getPropertyValue("--text-muted")?.trim() || (isDark ? "#b7c4d8" : "#5d6b82");
+    const isDark = isDarkTheme;
+    const chartPrimaryText =
+      widgetTextColor ||
+      rootStyle?.getPropertyValue("--text")?.trim() ||
+      (isDark ? "#f8fafc" : "#111827");
+    const chartMutedText =
+      widgetTextColor ||
+      rootStyle?.getPropertyValue("--text-muted")?.trim() ||
+      (isDark ? "#b7c4d8" : "#5d6b82");
+    const textColor = chartMutedText;
     const chartPanelFill = isDark ? "#0b1220" : "#ffffff";
     const gridColor = isDark ? "rgba(148,163,184,0.24)" : "rgba(100,116,139,0.22)";
-    const axisColor = widgetTextColor || (isDark ? "#d4deee" : "#334155");
+    const axisColor = chartPrimaryText;
     const accentLine = isDark ? "#22d3ee" : "#2563eb";
     const accentFillTop = isDark ? "rgba(34,211,238,0.42)" : "rgba(37,99,235,0.32)";
     const accentFillBottom = isDark ? "rgba(34,211,238,0.06)" : "rgba(37,99,235,0.05)";
     const barFill = isDark ? "rgba(45,212,191,0.9)" : "rgba(59,130,246,0.9)";
     const tooltipBg = isDark ? "rgba(8,14,24,0.96)" : "rgba(255,255,255,0.96)";
-    const tooltipText = widgetTextColor || (isDark ? "#e6eefc" : "#1b2a41");
+    const tooltipText = chartPrimaryText;
     const tooltipBorder = isDark ? "rgba(118,149,195,0.32)" : "rgba(54,96,163,0.22)";
     const trimTick = (nVal, maxFractionDigits) => {
       const safeDigits = Math.max(0, Math.min(3, Number(maxFractionDigits) || 0));
@@ -4636,7 +4657,7 @@ function CanvasSvg({
     }
     return (
       <g>
-        <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill="var(--bg-elev)" />
+        <rect x={x + 1} y={y + 1} width={w - 2} height={headH} rx={10} fill={widgetElevatedFill} />
         <text x={x + pad} y={y + headH - 7} fill={subdued} fontSize={titleSize} fontFamily="system-ui" fontWeight={700}>
           {cardTitle}
         </text>
@@ -4706,8 +4727,8 @@ function CanvasSvg({
                           width: "100%",
                           height: "100%",
                           borderRadius: 6,
-                          border: "1px solid var(--border)",
-                          background: "var(--bg-elev)",
+                          border: `1px solid ${widgetBorderColor}`,
+                          background: widgetElevatedFill,
                           color: widgetHtmlTextColor,
                           fontSize: 9,
                           padding: "0 4px",
@@ -4724,8 +4745,8 @@ function CanvasSvg({
                           width: "100%",
                           height: "100%",
                           borderRadius: 6,
-                          border: "1px solid var(--border)",
-                          background: "var(--bg-elev)",
+                          border: `1px solid ${widgetBorderColor}`,
+                          background: widgetElevatedFill,
                           color: widgetHtmlTextColor,
                           fontSize: 9,
                           padding: "0 4px",
@@ -4761,8 +4782,8 @@ function CanvasSvg({
                       width={cw}
                       height={chipH}
                       rx={6}
-                      fill="var(--bg-elev)"
-                      stroke="var(--border)"
+                      fill={widgetElevatedFill}
+                      stroke={widgetBorderColor}
                     />
                     <text
                       x={cx + cw / 2}
@@ -5141,8 +5162,55 @@ function CanvasSvg({
         "image/svg+xml"
       );
       if (doc.querySelector("parsererror")) return source;
+      const setStylePaint = (node, name, value) => {
+        if (!node) return;
+        node.setAttribute(name, value);
+        const style = String(node.getAttribute("style") || "");
+        if (!style) return;
+        if (new RegExp(`${name}\\s*:`, "i").test(style)) {
+          node.setAttribute(
+            "style",
+            style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+          );
+        }
+      };
+      const ensureBinLevelGradient = () => {
+        const ns = "http://www.w3.org/2000/svg";
+        let gradient = doc.getElementById("binLevelFill");
+        if (!gradient) {
+          let defs = doc.querySelector("defs");
+          if (!defs) {
+            defs = doc.createElementNS(ns, "defs");
+            doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+          }
+          gradient = doc.createElementNS(ns, "linearGradient");
+          gradient.setAttribute("id", "binLevelFill");
+          defs.appendChild(gradient);
+        }
+        gradient.setAttribute("x1", "0");
+        gradient.setAttribute("y1", "0");
+        gradient.setAttribute("x2", "0");
+        gradient.setAttribute("y2", "1");
+        while (gradient.firstChild) {
+          gradient.removeChild(gradient.firstChild);
+        }
+        [
+          ["0%", "#b6cff2"],
+          ["100%", "#4f77a5"],
+        ].forEach(([offset, color]) => {
+          const stop = doc.createElementNS(ns, "stop");
+          stop.setAttribute("offset", offset);
+          stop.setAttribute("stop-color", color);
+          gradient.appendChild(stop);
+        });
+        return "binLevelFill";
+      };
       const bar = doc.getElementById("BarGraph");
       if (bar) {
+        const levelGradientId = ensureBinLevelGradient();
+        setStylePaint(bar, "fill", `url(#${levelGradientId})`);
+        setStylePaint(bar, "stroke", "#3f3f3f");
+        setStylePaint(bar, "stroke-width", "0");
         const rawY = Number(bar.getAttribute("y"));
         const rawHeight = Number(bar.getAttribute("height"));
         if (Number.isFinite(rawY) && Number.isFinite(rawHeight) && rawHeight > 0) {
@@ -7770,7 +7838,7 @@ function CanvasSvg({
   };
 
   const viewportShiftX = Math.max(0, Number(viewportLeftOffset) || 0);
-  const rightEdgeReserve = showRulers ? SCROLLBAR_RESERVE : 0;
+  const rightEdgeReserve = showRulers && internalScrollEnabled ? SCROLLBAR_RESERVE : 0;
   const bottomEdgeReserve = 0;
   const viewportW = Math.max(1, Number(size.w || 0));
   const viewportH = Math.max(1, Number(size.h || 0));
@@ -8278,16 +8346,16 @@ function CanvasSvg({
 
   const renderTagBubble = ({ key, bubbleId, x, anchorY, lines, anchor = "middle", highlight = false, title = "" }) => {
     if (!Array.isArray(lines) || lines.length === 0) return null;
-    const fontSize = 9 * inv;
-    const lineH = 10.5 * inv;
-    const padX = 5 * inv;
-    const padY = 4 * inv;
-    const radius = 8 * inv;
+    const fontSize = 11 * inv;
+    const lineH = 13.2 * inv;
+    const padX = 7 * inv;
+    const padY = 5.25 * inv;
+    const radius = 10.5 * inv;
     const maxChars = lines.reduce((m, line) => Math.max(m, String(line || "").length), 0);
-    const textW = Math.max(26 * inv, maxChars * 6.1 * inv);
+    const textW = Math.max(34 * inv, maxChars * 7.3 * inv);
     const w = textW + padX * 2;
     const h = lineH * lines.length + padY * 2;
-    const top = anchorY - h - 8 * inv;
+    const top = anchorY - h - 10 * inv;
     const left = anchor === "start" ? x : x - w / 2;
     const textX = anchor === "start" ? x + padX : x;
     const textAnchor = anchor === "start" ? "start" : "middle";
@@ -8305,7 +8373,7 @@ function CanvasSvg({
           x2={x}
           y2={anchorY}
           stroke={lineStroke}
-          strokeWidth={1.2 * inv}
+          strokeWidth={1.35 * inv}
           strokeLinecap="round"
           vectorEffect="non-scaling-stroke"
         />
@@ -8318,7 +8386,7 @@ function CanvasSvg({
           ry={radius}
           fill={bubbleFill}
           stroke={bubbleStroke}
-          strokeWidth={1 * inv}
+          strokeWidth={1.15 * inv}
           vectorEffect="non-scaling-stroke"
           style={{ cursor: onHideTagBubble ? "pointer" : "default" }}
           onClick={
@@ -9709,9 +9777,9 @@ function CanvasSvg({
             : isMaintenance
             ? "rgba(255,247,237,0.98)"
             : "rgba(255,255,255,0.95)";
-          const bubbleR = 10.5 * inv;
-          const bubbleCx = wr.x + wr.w + 14 * inv;
-          const bubbleCy = wr.y + 12 * inv;
+          const bubbleR = 13.5 * inv;
+          const bubbleCx = wr.x + wr.w + 17.5 * inv;
+          const bubbleCy = wr.y + 15 * inv;
           const anchorX = wr.x + wr.w / 2;
           const anchorY = wr.y + wr.h / 2;
           const dx = bubbleCx - anchorX;
@@ -9732,7 +9800,7 @@ function CanvasSvg({
                 x2={lineEndX}
                 y2={lineEndY}
                 stroke={modeLineStroke}
-                strokeWidth={1.45 * inv}
+                strokeWidth={1.6 * inv}
                 strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
               />
@@ -9756,7 +9824,7 @@ function CanvasSvg({
                   r={bubbleR}
                   fill={modeFill}
                   stroke={modeStroke}
-                  strokeWidth={1.35 * inv}
+                  strokeWidth={1.5 * inv}
                   vectorEffect="non-scaling-stroke"
                 />
                 {isForce ? (
@@ -9766,7 +9834,7 @@ function CanvasSvg({
                     textAnchor="middle"
                     dominantBaseline="middle"
                     fill={modeLineStroke}
-                    fontSize={12 * inv}
+                    fontSize={15 * inv}
                     fontWeight={900}
                     pointerEvents="none"
                   >
@@ -9774,7 +9842,7 @@ function CanvasSvg({
                   </text>
                 ) : (
                   <g
-                    transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.68 * inv}) translate(-12 -12)`}
+                    transform={`translate(${bubbleCx} ${bubbleCy}) scale(${0.86 * inv}) translate(-12 -12)`}
                     fill="none"
                     stroke={modeLineStroke}
                     strokeWidth={1.9}
@@ -9885,9 +9953,9 @@ function CanvasSvg({
                 connectionError ? `Error: ${connectionError}` : "",
               ].filter(Boolean).join(" | ")
             : "";
-          const r = 10 * inv;
-          const cx = wr.x + wr.w + 14 * inv;
-          const cy = wr.y + Math.max(12 * inv, r + 1.5 * inv);
+          const r = 13 * inv;
+          const cx = wr.x + wr.w + 17.5 * inv;
+          const cy = wr.y + Math.max(15.5 * inv, r + 1.5 * inv);
           const anchorX = wr.x + wr.w / 2;
           const anchorY = wr.y + wr.h / 2;
           const dx = cx - anchorX;
@@ -9907,7 +9975,7 @@ function CanvasSvg({
                 x2={lineEndX}
                 y2={lineEndY}
                 stroke={badgeStroke}
-                strokeWidth={1.3 * inv}
+                strokeWidth={1.45 * inv}
                 strokeLinecap="round"
                 vectorEffect="non-scaling-stroke"
               />
@@ -9931,7 +9999,7 @@ function CanvasSvg({
                   r={r}
                   fill={badgeFill}
                   stroke={badgeStroke}
-                  strokeWidth={1.35 * inv}
+                  strokeWidth={1.5 * inv}
                   vectorEffect="non-scaling-stroke"
                 />
                 <text
@@ -9940,7 +10008,7 @@ function CanvasSvg({
                   textAnchor="middle"
                   dominantBaseline="middle"
                   fill="#b91c1c"
-                  fontSize={12 * inv}
+                  fontSize={15 * inv}
                   fontWeight={900}
                   pointerEvents="none"
                 >
@@ -10029,7 +10097,7 @@ function CanvasSvg({
                 y={s.y}
                 fill={
                   dynamicColor ||
-                  (theme === "dark" && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase()))
+                  (isDarkTheme && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase()))
                     ? "#ffffff"
                     : s.fill || "#D7DADE")
                 }
@@ -10672,11 +10740,11 @@ function CanvasSvg({
         style={{
           position: "absolute",
           inset: 0,
-          overflowX: "auto",
-          overflowY: "hidden",
-          scrollbarGutter: "stable",
-          paddingRight: rightEdgeReserve,
-          paddingBottom: bottomEdgeReserve,
+          overflowX: internalScrollEnabled ? "auto" : "hidden",
+          overflowY: internalScrollEnabled ? "auto" : "hidden",
+          scrollbarGutter: internalScrollEnabled ? "stable" : "auto",
+          paddingRight: internalScrollEnabled ? rightEdgeReserve : 0,
+          paddingBottom: internalScrollEnabled ? bottomEdgeReserve : 0,
           boxSizing: "border-box",
         }}
       >
@@ -10861,7 +10929,7 @@ function CanvasSvg({
                       y={s.y}
                       fill={
                         dynamicColor ||
-                        (theme === "dark" && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase()))
+                        (isDarkTheme && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase()))
                           ? "#ffffff"
                           : s.fill || "#D7DADE")
                       }

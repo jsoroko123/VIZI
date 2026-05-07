@@ -31,6 +31,8 @@ const DEFAULT_CANVAS_HEIGHT = 1401;
 const LOCAL_CANVAS_ZOOM_MIN = 0.1;
 const LOCAL_CANVAS_ZOOM_MAX = 4;
 const LOCAL_CANVAS_ZOOM_STEP = 0.1;
+const RUNTIME_SCROLL_TOLERANCE_PX = 3;
+const RUNTIME_HEIGHT_FIT_RESERVE_PX = 18;
 const LOCAL_CANVAS_ZOOM_CACHE_PREFIX = "mesora-drawing:canvas-zoom:v1:";
 
 function readTreeValue(tree, path, fallback) {
@@ -1013,8 +1015,9 @@ function resolveBrowserHeightCanvasZoom(
         : null;
     const rootLeft = Math.max(0, Number(rect?.left || 0));
     const rootTop = Math.max(0, Number(rect?.top || 0));
-    const hostWidth = toPositiveNumber(fallbackWidth) || toPositiveNumber(rect?.width) || 0;
-    const hostHeight = toPositiveNumber(fallbackHeight) || toPositiveNumber(rect?.height) || 0;
+    const hostWidth = toPositiveNumber(rect?.width) || toPositiveNumber(fallbackWidth) || 0;
+    const measuredHostHeight = toPositiveNumber(rect?.height) || 0;
+    const fallbackHostHeight = toPositiveNumber(fallbackHeight) || 0;
     const viewportWidth = toPositiveNumber(browserViewportWidth) || 0;
     const viewportHeight = toPositiveNumber(browserViewportHeight) || 0;
     const availableBrowserWidth = viewportWidth > 0
@@ -1024,7 +1027,12 @@ function resolveBrowserHeightCanvasZoom(
         ? Math.max(1, viewportHeight - rootTop)
         : 0;
     const targetWidth = toPositiveNumber(hostWidth || availableBrowserWidth) || targetViewWidth;
-    const targetHeight = toPositiveNumber(hostHeight || availableBrowserHeight) || targetViewHeight;
+    const heightCandidates = [measuredHostHeight, availableBrowserHeight]
+        .filter((value) => toPositiveNumber(value) > 0);
+    const targetHeightBase = heightCandidates.length
+        ? Math.min(...heightCandidates)
+        : fallbackHostHeight || targetViewHeight;
+    const targetHeight = Math.max(1, targetHeightBase - RUNTIME_HEIGHT_FIT_RESERVE_PX);
     const scaleByWidth = targetWidth / targetViewWidth;
     const scaleByHeight = targetHeight / targetViewHeight;
     return Math.max(0.05, Math.min(8, scaleByHeight));
@@ -1212,17 +1220,21 @@ function expandIndexViewBoundsToFitContent(baseViewBounds, shapes, overlays, pad
         maxY = Math.max(maxY, y + height);
     });
 
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+        return fallback;
+    }
+
     const extraPadding = Math.max(0, Number(padding || 0));
     const nextX = Math.min(fallback.x, minX - extraPadding);
-    const nextY = Math.min(fallback.y, minY - extraPadding);
+    const nextY = minY - extraPadding;
     const nextRight = Math.max(fallback.x + fallback.width, maxX + extraPadding);
-    const nextBottom = Math.max(fallback.y + fallback.height, maxY + extraPadding);
+    const nextBottom = maxY + extraPadding;
 
     return {
         x: nextX,
         y: nextY,
-        width: Math.max(1, nextRight - nextX),
-        height: Math.max(1, nextBottom - nextY)
+        width: Math.max(100, nextRight - nextX),
+        height: Math.max(100, nextBottom - nextY)
     };
 }
 
@@ -1365,8 +1377,61 @@ function LegacyDocumentRenderer({
     );
 }
 
+const GATEWAY_STORAGE_PROP_ALIASES = Object.freeze({
+    drawingStorageEnabled: "enabled",
+    drawingStorageKey: "key",
+    gatewayStorageKey: "key",
+    drawingStorageAutoLoad: "autoLoad",
+    browserEditEnabled: "browserEditEnabled"
+});
+
+function hasOwnValue(source, key) {
+    return isPlainObject(source) && Object.prototype.hasOwnProperty.call(source, key);
+}
+
+function collectGatewayStorageAliasValues(source, key) {
+    const storageKey = GATEWAY_STORAGE_PROP_ALIASES[key];
+    if (!storageKey) {
+        return [];
+    }
+    const values = [];
+    if (hasOwnValue(source, key)) {
+        values.push(source[key]);
+    }
+    if (hasOwnValue(source?.model, key)) {
+        values.push(source.model[key]);
+    }
+    if (hasOwnValue(source?.gatewayStorage, storageKey)) {
+        values.push(source.gatewayStorage[storageKey]);
+    }
+    if (hasOwnValue(source?.model?.gatewayStorage, storageKey)) {
+        values.push(source.model.gatewayStorage[storageKey]);
+    }
+    return values.filter((value) => value !== undefined);
+}
+
 function getModelValue(props, key, fallback) {
     const source = getComponentPropSource(props);
+    const gatewayStorageValues = collectGatewayStorageAliasValues(source, key);
+    if (key === "drawingStorageEnabled" || key === "browserEditEnabled") {
+        return gatewayStorageValues.some(Boolean) || fallback;
+    }
+    if (key === "drawingStorageKey" || key === "gatewayStorageKey") {
+        const firstNonEmpty = gatewayStorageValues
+            .map((value) => String(value || "").trim())
+            .find(Boolean);
+        if (firstNonEmpty) {
+            return firstNonEmpty;
+        }
+    }
+    if (key === "drawingStorageAutoLoad" && gatewayStorageValues.length > 0) {
+        if (gatewayStorageValues.some((value) => value === false)) {
+            return false;
+        }
+        if (gatewayStorageValues.some((value) => value === true)) {
+            return true;
+        }
+    }
     const direct = source[key];
     if (direct !== undefined) {
         return direct;
@@ -1896,6 +1961,20 @@ function writeComponentProp(props, path, value) {
 function ViziCanvasBridge(props) {
     usePerspectiveThemeVersion(props);
     const rootRef = useRef(null);
+    const runtimeScrollSnapshotRef = useRef({
+        scrollLeft: 0,
+        scrollTop: 0,
+        clientWidth: 0,
+        clientHeight: 0,
+        contentWidth: 0,
+        contentHeight: 0,
+        zoom: 1
+    });
+    const runtimeCanvasMetricsRef = useRef({
+        contentWidth: 0,
+        contentHeight: 0,
+        zoom: 1
+    });
     const svgRef = useRef(null);
     const svgRawCacheRef = useRef(new Map());
     const sourceDocument = isPlainObject(props.document) ? props.document : {};
@@ -1936,7 +2015,7 @@ function ViziCanvasBridge(props) {
     const [importOpen, setImportOpen] = useState(false);
     const svgCatalogRequestIdRef = useRef(0);
     const localZoomCacheKey = resolveCanvasZoomCacheKey(props);
-    const [localZoom, setLocalZoom] = useState(() => readCachedCanvasZoom(resolveCanvasZoomCacheKey(props)));
+    const [localZoom, setLocalZoom] = useState(null);
     const runtimeDocumentViewBounds = useMemo(
         () => expandIndexViewBoundsToFitContent(documentViewBounds, externalShapes, svgOverlays),
         [
@@ -1949,24 +2028,78 @@ function ViziCanvasBridge(props) {
         ]
     );
     const viewBox = browserRuntimeMode ? runtimeDocumentViewBounds : responsiveViewBox;
-    const stepCanvasZoom = useCallback((direction) => {
+    const captureRuntimeScrollSnapshot = useCallback((node = rootRef.current, viewportAnchor = null) => {
+        if (!browserRuntimeMode || !node) {
+            return;
+        }
+        const clientWidth = Number(node.clientWidth || 0);
+        const clientHeight = Number(node.clientHeight || 0);
+        let anchorX = clientWidth / 2;
+        let anchorY = clientHeight / 2;
+        if (viewportAnchor && typeof node.getBoundingClientRect === "function") {
+            const rect = node.getBoundingClientRect();
+            const clientX = Number(viewportAnchor.clientX ?? viewportAnchor.x);
+            const clientY = Number(viewportAnchor.clientY ?? viewportAnchor.y);
+            if (Number.isFinite(clientX)) {
+                anchorX = Math.max(0, Math.min(clientWidth, clientX - Number(rect.left || 0)));
+            }
+            if (Number.isFinite(clientY)) {
+                anchorY = Math.max(0, Math.min(clientHeight, clientY - Number(rect.top || 0)));
+            }
+        }
+        const metrics = runtimeCanvasMetricsRef.current || {};
+        const scrollLeft = Number(node.scrollLeft || 0);
+        const scrollTop = Number(node.scrollTop || 0);
+        const canvasWidth = Math.max(1, Number(metrics.canvasWidth || metrics.contentWidth || 0) || 1);
+        const canvasHeight = Math.max(1, Number(metrics.canvasHeight || metrics.contentHeight || 0) || 1);
+        const offsetX = Math.max(0, Number(metrics.offsetX || 0) || 0);
+        const offsetY = Math.max(0, Number(metrics.offsetY || 0) || 0);
+        runtimeScrollSnapshotRef.current = {
+            scrollLeft,
+            scrollTop,
+            clientWidth,
+            clientHeight,
+            anchorX,
+            anchorY,
+            canvasWidth,
+            canvasHeight,
+            offsetX,
+            offsetY,
+            anchorCanvasX: Math.max(0, Math.min(canvasWidth, scrollLeft + anchorX - offsetX)),
+            anchorCanvasY: Math.max(0, Math.min(canvasHeight, scrollTop + anchorY - offsetY)),
+            contentWidth: Math.max(
+                1,
+                Number(metrics.contentWidth || 0) ||
+                    Number(node.scrollWidth || 0) ||
+                    Number(node.clientWidth || 0) ||
+                    1
+            ),
+            contentHeight: Math.max(
+                1,
+                Number(metrics.contentHeight || 0) ||
+                    Number(node.scrollHeight || 0) ||
+                    Number(node.clientHeight || 0) ||
+                    1
+            ),
+            zoom: Math.max(0.0001, Number(metrics.zoom || 0) || 1)
+        };
+    }, [browserRuntimeMode]);
+    const stepCanvasZoom = useCallback((direction, viewportAnchor = null) => {
         const amount = Number(direction);
         if (!Number.isFinite(amount) || amount === 0) {
             return;
         }
+        captureRuntimeScrollSnapshot(rootRef.current, viewportAnchor);
         setLocalZoom((previous) => {
             const base = previous != null ? previous : 1;
             return normalizeLocalCanvasZoom(base + (amount * LOCAL_CANVAS_ZOOM_STEP));
         });
-    }, []);
+    }, [captureRuntimeScrollSnapshot]);
 
     useEffect(() => {
-        setLocalZoom(readCachedCanvasZoom(localZoomCacheKey));
+        setLocalZoom(null);
+        writeCachedCanvasZoom(localZoomCacheKey, null);
     }, [localZoomCacheKey]);
-
-    useEffect(() => {
-        writeCachedCanvasZoom(localZoomCacheKey, localZoom);
-    }, [localZoomCacheKey, localZoom]);
 
     useEffect(() => {
         const node = rootRef.current;
@@ -2030,7 +2163,7 @@ function ViziCanvasBridge(props) {
             if (!rootRef.current.contains(event.target)) return;
             event.preventDefault();
             event.stopPropagation();
-            stepCanvasZoom(event.deltaY < 0 ? 1 : -1);
+            stepCanvasZoom(event.deltaY < 0 ? 0.5 : -0.5, event);
         };
         window.addEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
         return () => window.removeEventListener("wheel", onWheelNonPassive, { passive: false, capture: true });
@@ -2549,6 +2682,121 @@ function ViziCanvasBridge(props) {
             )
         )
         : 1;
+    const runtimeCanvasWidth = Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom;
+    const runtimeCanvasHeight = Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom;
+    const runtimeRootClientWidth = browserRuntimeMode
+        ? Math.max(0, Number(rootRef.current?.clientWidth || 0) || 0)
+        : 0;
+    const runtimeRootClientHeight = browserRuntimeMode
+        ? Math.max(0, Number(rootRef.current?.clientHeight || 0) || 0)
+        : 0;
+    const runtimeViewportWidth = browserRuntimeMode
+        ? Math.max(
+            1,
+            runtimeRootClientWidth ||
+                Number(rootSize?.width || 0) ||
+                Number(browserViewportWidth || 0) ||
+                Number(defaultHostSize?.width || 0) ||
+                Number(hostSize?.width || 0) ||
+                runtimeCanvasWidth
+        )
+        : runtimeCanvasWidth;
+    const runtimeViewportHeight = browserRuntimeMode
+        ? Math.max(
+            1,
+            runtimeRootClientHeight ||
+                Number(rootSize?.height || 0) ||
+                Number(browserViewportHeight || 0) ||
+                Number(defaultHostSize?.height || 0) ||
+                Number(hostSize?.height || 0) ||
+                runtimeCanvasHeight
+        )
+        : runtimeCanvasHeight;
+    const runtimeHorizontalScrollNeeded = browserRuntimeMode && runtimeCanvasWidth > runtimeViewportWidth + RUNTIME_SCROLL_TOLERANCE_PX;
+    const runtimeVerticalScrollNeeded = browserRuntimeMode && runtimeCanvasHeight > runtimeViewportHeight + RUNTIME_SCROLL_TOLERANCE_PX;
+    const runtimeScrollContentWidth = runtimeHorizontalScrollNeeded ? runtimeCanvasWidth : runtimeViewportWidth;
+    const runtimeScrollContentHeight = runtimeVerticalScrollNeeded ? runtimeCanvasHeight : runtimeViewportHeight;
+    const runtimeCanvasOffsetX = browserRuntimeMode ? Math.max(0, (runtimeScrollContentWidth - runtimeCanvasWidth) / 2) : 0;
+    const runtimeCanvasOffsetY = browserRuntimeMode ? Math.max(0, (runtimeScrollContentHeight - runtimeCanvasHeight) / 2) : 0;
+    runtimeCanvasMetricsRef.current = {
+        contentWidth: runtimeScrollContentWidth,
+        contentHeight: runtimeScrollContentHeight,
+        canvasWidth: runtimeCanvasWidth,
+        canvasHeight: runtimeCanvasHeight,
+        offsetX: runtimeCanvasOffsetX,
+        offsetY: runtimeCanvasOffsetY,
+        zoom: runtimeCanvasZoom
+    };
+    const rememberRuntimeScrollSnapshot = useCallback((node = rootRef.current) => {
+        captureRuntimeScrollSnapshot(node);
+    }, [captureRuntimeScrollSnapshot]);
+    useLayoutEffect(() => {
+        if (!browserRuntimeMode) {
+            return;
+        }
+        const node = rootRef.current;
+        if (!node) {
+            return;
+        }
+        const previous = runtimeScrollSnapshotRef.current || {};
+        const previousWidth = Math.max(1, Number(previous.contentWidth) || runtimeScrollContentWidth);
+        const previousHeight = Math.max(1, Number(previous.contentHeight) || runtimeScrollContentHeight);
+        const previousCanvasWidth = Math.max(1, Number(previous.canvasWidth) || previousWidth);
+        const previousCanvasHeight = Math.max(1, Number(previous.canvasHeight) || previousHeight);
+        const previousClientWidth = Math.max(1, Number(previous.clientWidth) || Number(node.clientWidth) || 1);
+        const previousClientHeight = Math.max(1, Number(previous.clientHeight) || Number(node.clientHeight) || 1);
+        const previousAnchorX = Math.max(0, Math.min(previousClientWidth, Number(previous.anchorX ?? (previousClientWidth / 2))));
+        const previousAnchorY = Math.max(0, Math.min(previousClientHeight, Number(previous.anchorY ?? (previousClientHeight / 2))));
+        const currentAnchorX = Math.max(0, Math.min(Number(node.clientWidth || previousClientWidth), previousAnchorX));
+        const currentAnchorY = Math.max(0, Math.min(Number(node.clientHeight || previousClientHeight), previousAnchorY));
+        const oldAnchorCanvasX = Math.max(0, Math.min(
+            previousCanvasWidth,
+            Number.isFinite(Number(previous.anchorCanvasX))
+                ? Number(previous.anchorCanvasX)
+                : Math.max(0, Number(previous.scrollLeft || 0)) + previousAnchorX - Math.max(0, Number(previous.offsetX || 0))
+        ));
+        const oldAnchorCanvasY = Math.max(0, Math.min(
+            previousCanvasHeight,
+            Number.isFinite(Number(previous.anchorCanvasY))
+                ? Number(previous.anchorCanvasY)
+                : Math.max(0, Number(previous.scrollTop || 0)) + previousAnchorY - Math.max(0, Number(previous.offsetY || 0))
+        ));
+        const widthChanged =
+            Math.abs(previousWidth - runtimeScrollContentWidth) > 0.5 ||
+            Math.abs(previousCanvasWidth - runtimeCanvasWidth) > 0.5 ||
+            Math.abs(Number(previous.zoom || 1) - runtimeCanvasZoom) > 0.0001;
+        const heightChanged =
+            Math.abs(previousHeight - runtimeScrollContentHeight) > 0.5 ||
+            Math.abs(previousCanvasHeight - runtimeCanvasHeight) > 0.5;
+        const maxLeft = Math.max(0, Number(node.scrollWidth || runtimeScrollContentWidth) - Number(node.clientWidth || 0));
+        const maxTop = Math.max(0, Number(node.scrollHeight || runtimeScrollContentHeight) - Number(node.clientHeight || 0));
+
+        let nextLeft = Number(node.scrollLeft || 0);
+        let nextTop = Number(node.scrollTop || 0);
+
+        if (widthChanged) {
+            nextLeft = runtimeCanvasOffsetX + (oldAnchorCanvasX / previousCanvasWidth) * runtimeCanvasWidth - currentAnchorX;
+        } else if (Math.abs(nextLeft - Number(previous.scrollLeft || 0)) > 1 && Number(previous.scrollLeft || 0) > 0) {
+            nextLeft = Number(previous.scrollLeft || 0);
+        }
+
+        if (heightChanged) {
+            nextTop = runtimeCanvasOffsetY + (oldAnchorCanvasY / previousCanvasHeight) * runtimeCanvasHeight - currentAnchorY;
+        } else if (Math.abs(nextTop - Number(previous.scrollTop || 0)) > 1 && Number(previous.scrollTop || 0) > 0) {
+            nextTop = Number(previous.scrollTop || 0);
+        }
+
+        nextLeft = Math.max(0, Math.min(maxLeft, nextLeft));
+        nextTop = Math.max(0, Math.min(maxTop, nextTop));
+
+        if (Math.abs(Number(node.scrollLeft || 0) - nextLeft) > 0.5) {
+            node.scrollLeft = nextLeft;
+        }
+        if (Math.abs(Number(node.scrollTop || 0) - nextTop) > 0.5) {
+            node.scrollTop = nextTop;
+        }
+        rememberRuntimeScrollSnapshot(node);
+    });
     const canvasContent = (
         <CanvasSvg
             svgRef={svgRef}
@@ -2630,6 +2878,7 @@ function ViziCanvasBridge(props) {
             viewportScrollTarget={null}
             onViewportScroll={NOOP}
             absoluteViewportLayout={false}
+            internalScrollEnabled={!browserRuntimeMode}
         />
     );
 
@@ -2638,6 +2887,7 @@ function ViziCanvasBridge(props) {
             ref={rootRef}
             data-vizi-theme={theme}
             data-vizi-canvas-background={canvasBackgroundColor}
+            onScroll={browserRuntimeMode ? (event) => rememberRuntimeScrollSnapshot(event.currentTarget) : undefined}
             style={{
                 position: "relative",
                 display: "flex",
@@ -2649,24 +2899,34 @@ function ViziCanvasBridge(props) {
                 alignSelf: "stretch",
                 overflow: "hidden",
                 ...(browserRuntimeMode ? {
-                    alignItems: "flex-start",
-                    justifyContent: "flex-start",
-                    overflowX: "auto",
-                    overflowY: "hidden"
+                    display: "block",
+                    overflowX: runtimeHorizontalScrollNeeded ? "auto" : "hidden",
+                    overflowY: runtimeVerticalScrollNeeded ? "auto" : "hidden",
+                    scrollbarGutter: runtimeVerticalScrollNeeded ? "stable" : "auto"
                 } : {})
             }}
         >
             {browserRuntimeMode ? (
                 <div
                     style={{
-                        width: Math.max(1, Number(viewBox.width) || 1) * runtimeCanvasZoom,
-                        height: Math.max(1, Number(viewBox.height) || 1) * runtimeCanvasZoom,
+                        width: runtimeScrollContentWidth,
+                        height: runtimeScrollContentHeight,
                         flexShrink: 0,
-                        position: "relative",
-                        transformOrigin: "top left"
+                        position: "relative"
                     }}
                 >
-                    {canvasContent}
+                    <div
+                        style={{
+                            position: "absolute",
+                            left: runtimeCanvasOffsetX,
+                            top: runtimeCanvasOffsetY,
+                            width: runtimeCanvasWidth,
+                            height: runtimeCanvasHeight,
+                            transformOrigin: "top left"
+                        }}
+                    >
+                        {canvasContent}
+                    </div>
                 </div>
             ) : canvasContent}
 
@@ -2746,8 +3006,12 @@ function hasViziCanvasModel(props) {
     const overlays = getPersistedArrayValue(props, "svgOverlays", EMPTY_ARRAY);
     const forceViziCanvas = Boolean(getModelValue(props, "forceViziCanvas", false));
     const svgLibraryEnabled = Boolean(getModelValue(props, "svgLibraryEnabled", true));
+    const drawingStorageEnabled = Boolean(getModelValue(props, "drawingStorageEnabled", false));
+    const browserEditEnabled = Boolean(getModelValue(props, "browserEditEnabled", false));
     return forceViziCanvas
         || svgLibraryEnabled
+        || drawingStorageEnabled
+        || browserEditEnabled
         || (Array.isArray(shapes) && shapes.length > 0)
         || (Array.isArray(overlays) && overlays.length > 0);
 }
@@ -2857,6 +3121,10 @@ class DrawingToolMeta {
     }
 
     getPropsReducer(tree) {
+        const gatewayStorage = readTreeValue(tree, "gatewayStorage", readTreeValue(tree, "model.gatewayStorage", {}));
+        const gatewayStorageEnabled = Boolean(gatewayStorage?.enabled);
+        const gatewayStorageBrowserEditEnabled = Boolean(gatewayStorage?.browserEditEnabled);
+        const gatewayStorageKey = String(gatewayStorage?.key || "").trim();
         return {
             document: readTreeValue(tree, "document", { viewBox: `0 0 ${DEFAULT_CANVAS_WIDTH} ${DEFAULT_CANVAS_HEIGHT}`, elements: [] }),
             data: readTreeValue(tree, "data", {}),
@@ -2868,6 +3136,34 @@ class DrawingToolMeta {
             tool: readTreeValue(tree, "tool", "select"),
             forceViziCanvas: readTreeValue(tree, "forceViziCanvas", false),
             svgLibraryEnabled: readTreeValue(tree, "svgLibraryEnabled", true),
+            gatewayStorage,
+            drawingStorageEnabled: Boolean(
+                readTreeValue(tree, "drawingStorageEnabled", false)
+                || readTreeValue(tree, "model.drawingStorageEnabled", false)
+                || gatewayStorageEnabled
+            ),
+            drawingStorageKey: String(
+                readTreeValue(tree, "drawingStorageKey", "")
+                || readTreeValue(tree, "model.drawingStorageKey", "")
+                || readTreeValue(tree, "gatewayStorageKey", "")
+                || readTreeValue(tree, "model.gatewayStorageKey", "")
+                || gatewayStorageKey
+            ).trim(),
+            gatewayStorageKey: String(
+                readTreeValue(tree, "gatewayStorageKey", "")
+                || readTreeValue(tree, "model.gatewayStorageKey", "")
+                || gatewayStorageKey
+            ).trim(),
+            drawingStorageAutoLoad: readTreeValue(
+                tree,
+                "drawingStorageAutoLoad",
+                readTreeValue(tree, "model.drawingStorageAutoLoad", gatewayStorage?.autoLoad !== false)
+            ),
+            browserEditEnabled: Boolean(
+                readTreeValue(tree, "browserEditEnabled", false)
+                || readTreeValue(tree, "model.browserEditEnabled", false)
+                || gatewayStorageBrowserEditEnabled
+            ),
             backgroundColor: readTreeValue(tree, "backgroundColor", ""),
             canvasBackgroundColor: readTreeValue(tree, "canvasBackgroundColor", "theme"),
             sessionTheme: readTreeValue(tree, "sessionTheme", ""),

@@ -61,12 +61,14 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
     private ComponentRegistry componentRegistry;
     private SvgLibraryGatewayService svgLibraryGatewayService;
     private HmiStateStyleMapGatewayService hmiStateStyleMapGatewayService;
+    private DrawingDocumentGatewayService drawingDocumentGatewayService;
 
     @Override
     public void setup(GatewayContext context) {
         this.gatewayContext = context;
         this.svgLibraryGatewayService = new SvgLibraryGatewayService(context, logger);
         this.hmiStateStyleMapGatewayService = new HmiStateStyleMapGatewayService(context, logger);
+        this.drawingDocumentGatewayService = new DrawingDocumentGatewayService(context, logger);
         logger.info("Setting up Mesora Perspective Drawing module.");
     }
 
@@ -166,6 +168,26 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
             .nocache()
             .mount();
 
+        routes.newRoute("/drawing-document")
+            .handler((request, response) -> readDrawingDocument(
+                request == null ? null : request.getParameter("key"),
+                response
+            ))
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
+        routes.newRoute("/drawing-document-save")
+            .method(HttpMethod.POST)
+            .handler((request, response) -> saveDrawingDocument(request, response))
+            .renderer(gson::toJson)
+            .type(RouteGroup.TYPE_JSON)
+            .accessControl(AccessControlStrategy.OPEN_ROUTE)
+            .nocache()
+            .mount();
+
         routes.newRoute("/svg-library-file")
             .handler((request, response) -> readExternalSvg(
                 request == null ? null : request.getParameter("path"),
@@ -195,6 +217,63 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
             );
         }
         return hmiStateStyleMapGatewayService.getStyleMaps();
+    }
+
+    private DrawingDocumentGatewayService.DrawingDocumentResponse readDrawingDocument(
+        String key,
+        HttpServletResponse response
+    ) {
+        if (drawingDocumentGatewayService == null) {
+            response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+            return DrawingDocumentGatewayService.DrawingDocumentResponse.error(
+                "Drawing document service was unavailable.",
+                "",
+                ""
+            );
+        }
+
+        DrawingDocumentGatewayService.DrawingDocumentResponse result =
+            drawingDocumentGatewayService.readDocument(key);
+        if (!result.ok()) {
+            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+        }
+        return result;
+    }
+
+    private DrawingDocumentGatewayService.DrawingDocumentResponse saveDrawingDocument(
+        RequestContext request,
+        HttpServletResponse response
+    ) {
+        if (drawingDocumentGatewayService == null) {
+            response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+            return DrawingDocumentGatewayService.DrawingDocumentResponse.error(
+                "Drawing document service was unavailable.",
+                "",
+                ""
+            );
+        }
+
+        try {
+            String body = request == null ? "" : request.readBody();
+            DrawingDocumentSaveRequest saveRequest = gson.fromJson(body, DrawingDocumentSaveRequest.class);
+            DrawingDocumentGatewayService.DrawingDocumentResponse result =
+                drawingDocumentGatewayService.saveDocument(
+                    saveRequest == null ? null : saveRequest.key(),
+                    saveRequest == null ? null : saveRequest.document()
+                );
+            if (!result.ok()) {
+                response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            }
+            return result;
+        } catch (Exception e) {
+            logger.warnf("Failed to save drawing document: %s", String.valueOf(e.getMessage()));
+            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            return DrawingDocumentGatewayService.DrawingDocumentResponse.error(
+                "Failed to save drawing document: " + String.valueOf(e.getMessage()),
+                "",
+                drawingDocumentGatewayService.displayDirectory()
+            );
+        }
     }
 
     private SvgLibraryGatewayService.SvgLibraryCatalogResponse svgLibraryCatalog() {
@@ -912,6 +991,12 @@ public class MesoraPerspectiveDrawingGatewayHook extends AbstractGatewayModuleHo
         String fileName,
         String folder,
         String content
+    ) {
+    }
+
+    private record DrawingDocumentSaveRequest(
+        String key,
+        Object document
     ) {
     }
 }

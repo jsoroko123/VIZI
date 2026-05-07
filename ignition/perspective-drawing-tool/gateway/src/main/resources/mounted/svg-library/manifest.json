@@ -525,6 +525,11 @@
     "url": "/res/mesora-drawing/svg-library/Gate/SmallGate.svg"
   },
   {
+    "key": "./assets/SVG_Files/General/Anchor.svg",
+    "name": "Anchor.svg",
+    "url": "/res/mesora-drawing/svg-library/General/Anchor.svg"
+  },
+  {
     "key": "./assets/SVG_Files/General/AutoMan.svg",
     "name": "AutoMan.svg",
     "url": "/res/mesora-drawing/svg-library/General/AutoMan.svg"
