@@ -19454,6 +19454,58 @@ var MesoraDrawingToolBundle = (() => {
         }
         return hash.toString(36);
       };
+      const isDefaultRecolorFill = (value) => {
+        const fill2 = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+        return fill2 === "#d7dade" || fill2 === "#e7e9ec" || fill2 === "rgb(231,233,236)" || fill2 === "rgba(231,233,236,1)" || fill2 === "#b8bdc4" || fill2 === "rgb(184,189,196)" || fill2 === "rgba(184,189,196,1)" || fill2 === "#cfd6d6" || fill2 === "#eef2f2" || fill2 === "#d6dddd" || fill2 === "#bfc8c8" || fill2 === "#f6f8f8" || fill2 === "#aeb8b8" || fill2 === "rgb(215,218,222)" || fill2 === "rgba(215,218,222,1)" || fill2 === "#808080" || fill2 === "#888" || fill2 === "gray" || fill2 === "grey" || fill2 === "rgb(128,128,128)" || fill2 === "rgba(128,128,128,1)" || fill2 === "#cccccc" || fill2 === "#ccc" || fill2 === "rgb(204,204,204)" || fill2 === "rgba(204,204,204,1)";
+      };
+      const isRecolorableFill = (value) => {
+        const fill2 = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+        return isDefaultRecolorFill(fill2) || fill2.startsWith("url(");
+      };
+      const PRIMARY_FILL_TARGET_ID_RE = /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|hopper|tank|silo|bin|chute|rect5|path4|vent|vent_open|vent_closed|body[-_].*|.*[-_]body)$/i;
+      const EXCLUDED_FILL_TARGET_ID_RE = /(arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator)/i;
+      const FILLABLE_TAG_RE = /^(path|rect|circle|ellipse|polygon)$/i;
+      const STROKE_ONLY_FILLABLE_TAG_RE = /^(rect|circle|ellipse|polygon)$/i;
+      const canUseStrokeOnlyFillTarget = (elementStart, tagName) => {
+        if (!allowStrokeOnlyFillTargets || !STROKE_ONLY_FILLABLE_TAG_RE.test(String(tagName || ""))) {
+          return false;
+        }
+        const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+        const elementId = String((idMatch == null ? void 0 : idMatch[2]) || "").trim();
+        return !(elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId));
+      };
+      const shouldRecolorPrimaryElement = (elementStart, tagName) => {
+        if (startTagHasStrokeDetail(elementStart)) {
+          return false;
+        }
+        if (/\bdata-vizi-fill-target\s*=\s*(["'])true\1/i.test(String(elementStart || ""))) {
+          return true;
+        }
+        const fillAttrMatch = String(elementStart || "").match(/\bfill\s*=\s*(["'])([^"']*)\1/i);
+        if (isRecolorableFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2])) {
+          return true;
+        }
+        if (isProtectedFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
+          return true;
+        }
+        const styleMatch = String(elementStart || "").match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
+        const styleFillMatch = String((styleMatch == null ? void 0 : styleMatch[2]) || "").match(/(?:^|;)\s*fill\s*:\s*([^;]+)/i);
+        if (isRecolorableFill(styleFillMatch == null ? void 0 : styleFillMatch[1])) {
+          return true;
+        }
+        if (isProtectedFill(styleFillMatch == null ? void 0 : styleFillMatch[1]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
+          return true;
+        }
+        const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+        const elementId = String((idMatch == null ? void 0 : idMatch[2]) || "").trim().toLowerCase();
+        if (!elementId) {
+          return false;
+        }
+        if (PRIMARY_FILL_TARGET_ID_RE.test(elementId)) {
+          return true;
+        }
+        return FILLABLE_TAG_RE.test(String(tagName || "")) && !EXCLUDED_FILL_TARGET_ID_RE.test(elementId);
+      };
       const applyGradientAwareFillOverride = (svgText) => {
         if (!nextFill || !parseCssRgbChannels(nextFill)) return null;
         if (typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") return null;
@@ -19579,67 +19631,15 @@ var MesoraDrawingToolBundle = (() => {
         }
       }
       if (nextFill && !fillHandledWithGradient) {
-        const isDefaultRecolorFill = (value) => {
-          const fill2 = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
-          return fill2 === "#d7dade" || fill2 === "rgb(215,218,222)" || fill2 === "rgba(215,218,222,1)" || fill2 === "#808080" || fill2 === "#888" || fill2 === "gray" || fill2 === "grey" || fill2 === "rgb(128,128,128)" || fill2 === "rgba(128,128,128,1)" || fill2 === "#cccccc" || fill2 === "#ccc" || fill2 === "rgb(204,204,204)" || fill2 === "rgba(204,204,204,1)";
-        };
-        const isRecolorableFill = (value) => {
-          const fill2 = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
-          return isDefaultRecolorFill(fill2) || fill2.startsWith("url(");
-        };
-        const PRIMARY_FILL_TARGET_ID_RE = /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|hopper|tank|silo|bin|chute|rect5|path4|vent|vent_open|vent_closed|body[-_].*|.*[-_]body)$/i;
-        const EXCLUDED_FILL_TARGET_ID_RE = /(arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator)/i;
-        const FILLABLE_TAG_RE = /^(path|rect|circle|ellipse|polygon)$/i;
-        const STROKE_ONLY_FILLABLE_TAG_RE = /^(rect|circle|ellipse|polygon)$/i;
-        const canUseStrokeOnlyFillTarget2 = (elementStart, tagName) => {
-          if (!allowStrokeOnlyFillTargets || !STROKE_ONLY_FILLABLE_TAG_RE.test(String(tagName || ""))) {
-            return false;
-          }
-          const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
-          const elementId = String((idMatch == null ? void 0 : idMatch[2]) || "").trim();
-          return !(elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId));
-        };
-        const shouldRecolorPrimaryElement2 = (elementStart, tagName) => {
-          if (startTagHasStrokeDetail(elementStart)) {
-            return false;
-          }
-          if (/\bdata-vizi-fill-target\s*=\s*(["'])true\1/i.test(String(elementStart || ""))) {
-            return true;
-          }
-          const fillAttrMatch = String(elementStart || "").match(/\bfill\s*=\s*(["'])([^"']*)\1/i);
-          if (isRecolorableFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2])) {
-            return true;
-          }
-          if (isProtectedFill(fillAttrMatch == null ? void 0 : fillAttrMatch[2]) && canUseStrokeOnlyFillTarget2(elementStart, tagName)) {
-            return true;
-          }
-          const styleMatch = String(elementStart || "").match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
-          const styleFillMatch = String((styleMatch == null ? void 0 : styleMatch[2]) || "").match(/(?:^|;)\s*fill\s*:\s*([^;]+)/i);
-          if (isRecolorableFill(styleFillMatch == null ? void 0 : styleFillMatch[1])) {
-            return true;
-          }
-          if (isProtectedFill(styleFillMatch == null ? void 0 : styleFillMatch[1]) && canUseStrokeOnlyFillTarget2(elementStart, tagName)) {
-            return true;
-          }
-          const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
-          const elementId = String((idMatch == null ? void 0 : idMatch[2]) || "").trim().toLowerCase();
-          if (!elementId) {
-            return false;
-          }
-          if (PRIMARY_FILL_TARGET_ID_RE.test(elementId)) {
-            return true;
-          }
-          return FILLABLE_TAG_RE.test(String(tagName || "")) && !EXCLUDED_FILL_TARGET_ID_RE.test(elementId);
-        };
         let fillChanged = false;
         out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, tag, end) => {
-          if (!shouldRecolorPrimaryElement2(start, tag)) {
+          if (!shouldRecolorPrimaryElement(start, tag)) {
             return match;
           }
           let next = String(start || "");
           let changedThisElement = false;
           if (/\bfill\s*=/.test(next)) {
-            next = next.replace(/\bfill\s*=\s*(["'])([^"']*)\1/gi, (fillMatch, quote, fillValue) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget2(start, tag) ? fillMatch : (() => {
+            next = next.replace(/\bfill\s*=\s*(["'])([^"']*)\1/gi, (fillMatch, quote, fillValue) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget(start, tag) ? fillMatch : (() => {
               changedThisElement = true;
               return `fill=${quote}${nextFill}${quote}`;
             })());
@@ -19650,7 +19650,7 @@ var MesoraDrawingToolBundle = (() => {
           next = next.replace(/style\s*=\s*(["'])([^"']*)\1/gi, (styleMatch, quote, styleBody) => {
             let cleaned = String(styleBody || "").replace(
               /fill\s*:\s*([^;]+)(;?)/gi,
-              (fillStyleMatch, fillValue, suffix) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget2(start, tag) ? fillStyleMatch : (() => {
+              (fillStyleMatch, fillValue, suffix) => isProtectedFill(fillValue) && !canUseStrokeOnlyFillTarget(start, tag) ? fillStyleMatch : (() => {
                 changedThisElement = true;
                 return `fill:${nextFill}${suffix || ";"}`;
               })()

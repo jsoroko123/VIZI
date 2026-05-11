@@ -6646,6 +6646,82 @@ function CanvasSvg({
       }
       return hash.toString(36);
     };
+    const isDefaultRecolorFill = (value) => {
+      const fill = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+      return fill === "#d7dade" ||
+        fill === "#e7e9ec" ||
+        fill === "rgb(231,233,236)" ||
+        fill === "rgba(231,233,236,1)" ||
+        fill === "#b8bdc4" ||
+        fill === "rgb(184,189,196)" ||
+        fill === "rgba(184,189,196,1)" ||
+        fill === "#cfd6d6" ||
+        fill === "#eef2f2" ||
+        fill === "#d6dddd" ||
+        fill === "#bfc8c8" ||
+        fill === "#f6f8f8" ||
+        fill === "#aeb8b8" ||
+        fill === "rgb(215,218,222)" ||
+        fill === "rgba(215,218,222,1)" ||
+        fill === "#808080" ||
+        fill === "#888" ||
+        fill === "gray" ||
+        fill === "grey" ||
+        fill === "rgb(128,128,128)" ||
+        fill === "rgba(128,128,128,1)" ||
+        fill === "#cccccc" ||
+        fill === "#ccc" ||
+        fill === "rgb(204,204,204)" ||
+        fill === "rgba(204,204,204,1)";
+    };
+    const isRecolorableFill = (value) => {
+      const fill = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
+      return isDefaultRecolorFill(fill) || fill.startsWith("url(");
+    };
+    const PRIMARY_FILL_TARGET_ID_RE = /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|hopper|tank|silo|bin|chute|rect5|path4|vent|vent_open|vent_closed|body[-_].*|.*[-_]body)$/i;
+    const EXCLUDED_FILL_TARGET_ID_RE = /(arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator)/i;
+    const FILLABLE_TAG_RE = /^(path|rect|circle|ellipse|polygon)$/i;
+    const STROKE_ONLY_FILLABLE_TAG_RE = /^(rect|circle|ellipse|polygon)$/i;
+    const canUseStrokeOnlyFillTarget = (elementStart, tagName) => {
+      if (!allowStrokeOnlyFillTargets || !STROKE_ONLY_FILLABLE_TAG_RE.test(String(tagName || ""))) {
+        return false;
+      }
+      const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+      const elementId = String(idMatch?.[2] || "").trim();
+      return !(elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId));
+    };
+    const shouldRecolorPrimaryElement = (elementStart, tagName) => {
+      if (startTagHasStrokeDetail(elementStart)) {
+        return false;
+      }
+      if (/\bdata-vizi-fill-target\s*=\s*(["'])true\1/i.test(String(elementStart || ""))) {
+        return true;
+      }
+      const fillAttrMatch = String(elementStart || "").match(/\bfill\s*=\s*(["'])([^"']*)\1/i);
+      if (isRecolorableFill(fillAttrMatch?.[2])) {
+        return true;
+      }
+      if (isProtectedFill(fillAttrMatch?.[2]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
+        return true;
+      }
+      const styleMatch = String(elementStart || "").match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
+      const styleFillMatch = String(styleMatch?.[2] || "").match(/(?:^|;)\s*fill\s*:\s*([^;]+)/i);
+      if (isRecolorableFill(styleFillMatch?.[1])) {
+        return true;
+      }
+      if (isProtectedFill(styleFillMatch?.[1]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
+        return true;
+      }
+      const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+      const elementId = String(idMatch?.[2] || "").trim().toLowerCase();
+      if (!elementId) {
+        return false;
+      }
+      if (PRIMARY_FILL_TARGET_ID_RE.test(elementId)) {
+        return true;
+      }
+      return FILLABLE_TAG_RE.test(String(tagName || "")) && !EXCLUDED_FILL_TARGET_ID_RE.test(elementId);
+    };
     const applyGradientAwareFillOverride = (svgText) => {
       if (!nextFill || !parseCssRgbChannels(nextFill)) return null;
       if (typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") return null;
@@ -6780,70 +6856,6 @@ function CanvasSvg({
     }
 
     if (nextFill && !fillHandledWithGradient) {
-      const isDefaultRecolorFill = (value) => {
-        const fill = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
-        return fill === "#d7dade" ||
-          fill === "rgb(215,218,222)" ||
-          fill === "rgba(215,218,222,1)" ||
-          fill === "#808080" ||
-          fill === "#888" ||
-          fill === "gray" ||
-          fill === "grey" ||
-          fill === "rgb(128,128,128)" ||
-          fill === "rgba(128,128,128,1)" ||
-          fill === "#cccccc" ||
-          fill === "#ccc" ||
-          fill === "rgb(204,204,204)" ||
-          fill === "rgba(204,204,204,1)";
-      };
-      const isRecolorableFill = (value) => {
-        const fill = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
-        return isDefaultRecolorFill(fill) || fill.startsWith("url(");
-      };
-      const PRIMARY_FILL_TARGET_ID_RE = /^(body|bodyouter|bodyinner|cyclone|shell|housing|vessel|casing|main|machine|hopper|tank|silo|bin|chute|rect5|path4|vent|vent_open|vent_closed|body[-_].*|.*[-_]body)$/i;
-      const EXCLUDED_FILL_TARGET_ID_RE = /(arrow|screen|deck|inside|label|text|bargraph|lock|line|stroke|outline|indicator)/i;
-      const FILLABLE_TAG_RE = /^(path|rect|circle|ellipse|polygon)$/i;
-      const STROKE_ONLY_FILLABLE_TAG_RE = /^(rect|circle|ellipse|polygon)$/i;
-      const canUseStrokeOnlyFillTarget = (elementStart, tagName) => {
-        if (!allowStrokeOnlyFillTargets || !STROKE_ONLY_FILLABLE_TAG_RE.test(String(tagName || ""))) {
-          return false;
-        }
-        const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
-        const elementId = String(idMatch?.[2] || "").trim();
-        return !(elementId && EXCLUDED_FILL_TARGET_ID_RE.test(elementId) && !PRIMARY_FILL_TARGET_ID_RE.test(elementId));
-      };
-      const shouldRecolorPrimaryElement = (elementStart, tagName) => {
-        if (startTagHasStrokeDetail(elementStart)) {
-          return false;
-        }
-        if (/\bdata-vizi-fill-target\s*=\s*(["'])true\1/i.test(String(elementStart || ""))) {
-          return true;
-        }
-        const fillAttrMatch = String(elementStart || "").match(/\bfill\s*=\s*(["'])([^"']*)\1/i);
-        if (isRecolorableFill(fillAttrMatch?.[2])) {
-          return true;
-        }
-        if (isProtectedFill(fillAttrMatch?.[2]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
-          return true;
-        }
-        const styleMatch = String(elementStart || "").match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
-        const styleFillMatch = String(styleMatch?.[2] || "").match(/(?:^|;)\s*fill\s*:\s*([^;]+)/i);
-        if (isRecolorableFill(styleFillMatch?.[1])) {
-          return true;
-        }
-        if (isProtectedFill(styleFillMatch?.[1]) && canUseStrokeOnlyFillTarget(elementStart, tagName)) {
-          return true;
-        }
-        const idMatch = String(elementStart || "").match(/\bid\s*=\s*(["'])([^"']+)\1/i);
-        const elementId = String(idMatch?.[2] || "").trim().toLowerCase();
-        if (!elementId) {
-          return false;
-        }
-        if (PRIMARY_FILL_TARGET_ID_RE.test(elementId)) {
-          return true;
-        }
-        return FILLABLE_TAG_RE.test(String(tagName || "")) && !EXCLUDED_FILL_TARGET_ID_RE.test(elementId);
-      };
       let fillChanged = false;
       out = out.replace(/(<(path|rect|circle|ellipse|polygon|polyline)[^>]*)(\/?>)/gi, (match, start, tag, end) => {
         if (!shouldRecolorPrimaryElement(start, tag)) {
