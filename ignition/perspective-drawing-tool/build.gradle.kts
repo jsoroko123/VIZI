@@ -8,7 +8,7 @@ plugins {
 }
 
 allprojects {
-version = "0.1.317"
+version = "0.1.323"
     group = "com.mesora.perspective.drawing"
 }
 

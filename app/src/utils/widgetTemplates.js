@@ -61,6 +61,14 @@ export function widgetTemplate(widgetKey) {
       name: "Widget-DisplayBox.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Display Box</text><text x="20" y="92" fill="#22c55e" font-size="40" font-family="system-ui" font-weight="700">123.4</text><text x="214" y="92" fill="#93c5fd" font-size="16" font-family="system-ui" font-weight="700">psi</text><rect x="20" y="122" width="194" height="30" rx="8" fill="#111827" stroke="#334155"/><rect x="222" y="122" width="78" height="30" rx="8" fill="#2b6cff"/><text x="242" y="141" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="700">Write</text></svg>`,
     },
+    routeDisplay: {
+      name: "Widget-RouteDisplay.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 132"><rect x="1" y="1" width="318" height="130" rx="14" fill="#0f172a" stroke="#334155" stroke-width="2"/><rect x="10" y="10" width="300" height="28" rx="9" fill="#2563eb"/><text x="160" y="29" text-anchor="middle" fill="#ffffff" font-size="13" font-family="system-ui" font-weight="800">Route Display</text><text x="18" y="62" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Job Number</text><text x="302" y="62" text-anchor="end" fill="#e2e8f0" font-size="12" font-family="system-ui" font-weight="800">120</text><text x="18" y="84" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Job Step</text><text x="302" y="84" text-anchor="end" fill="#e2e8f0" font-size="12" font-family="system-ui" font-weight="800">3</text><text x="18" y="106" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Route State</text><text x="302" y="106" text-anchor="end" fill="#22c55e" font-size="12" font-family="system-ui" font-weight="800">Active</text></svg>`,
+    },
+    scaleAdapter: {
+      name: "Widget-ScaleAdapter.svg",
+      raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 126"><rect x="1" y="1" width="318" height="124" rx="14" fill="#0f172a" stroke="#334155" stroke-width="2"/><rect x="10" y="10" width="300" height="26" rx="9" fill="#0f2b5f"/><rect x="10" y="10" width="7" height="26" rx="4" fill="#22c55e"/><text x="25" y="28" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="800">Scale Adapter</text><rect x="16" y="44" width="288" height="22" rx="7" fill="#064e3b" stroke="#22c55e"/><text x="160" y="59" text-anchor="middle" fill="#22c55e" font-size="12" font-family="system-ui" font-weight="900">Dosing</text><text x="26" y="86" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="800">Flowrate</text><text x="294" y="86" text-anchor="end" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="900">0 lb/h</text><text x="26" y="108" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="800">Job Weight</text><text x="294" y="108" text-anchor="end" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="900">812283 lb</text></svg>`,
+    },
     countdownBar: {
       name: "Widget-CountdownBar.svg",
       raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72"><rect x="12" y="8" width="296" height="14" rx="7" fill="#111827" stroke="#334155"/><rect x="12" y="8" width="168" height="14" rx="7" fill="#2b6cff"/><text x="12" y="40" fill="#94a3b8" font-size="12" font-family="system-ui" font-weight="700">Countdown</text><text x="160" y="20" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">4.0s</text></svg>`,
@@ -134,6 +142,8 @@ export function defaultWidgetSettings(widgetKey) {
   if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
   if (kind === "kpi") return { ...base, historyPoints: 10 };
   if (kind === "displayBox") return { ...base, historyPoints: 10 };
+  if (kind === "routeDisplay") return { ...base, title: "Route Display", historyPoints: 10 };
+  if (kind === "scaleAdapter" || kind === "scaleAdaptor") return { ...base, kind: "scaleAdapter", title: "Scale Adapter", historyPoints: 10, decimals: 4 };
   if (kind === "weather") return { ...base, historyPoints: 10, decimals: 1, unit: "F" };
   if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
   if (kind === "openViewButton") {

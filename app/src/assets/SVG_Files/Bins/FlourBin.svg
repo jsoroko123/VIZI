@@ -1,0 +1,330 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="800"
+   height="1200"
+   viewBox="0 0 800 1200"
+   version="1.1"
+   id="flour_bin_svg"
+   eType="Bin"
+   sodipodi:docname="FlourBin.svg"
+   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview15"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.9725"
+     inkscape:cx="399.48586"
+     inkscape:cy="600"
+     inkscape:window-width="3440"
+     inkscape:window-height="1369"
+     inkscape:window-x="1912"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="flour_bin" />
+  <defs
+     id="defs8">
+    <linearGradient
+       id="metal"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="0">
+      <stop
+         offset="0"
+         stop-color="#cfd6d6"
+         id="stop1" />
+      <stop
+         offset="0.28"
+         stop-color="#eef2f2"
+         id="stop2" />
+      <stop
+         offset="0.5"
+         stop-color="#ffffff"
+         id="stop3" />
+      <stop
+         offset="0.72"
+         stop-color="#d6dddd"
+         id="stop4" />
+      <stop
+         offset="1"
+         stop-color="#bfc8c8"
+         id="stop5" />
+    </linearGradient>
+    <linearGradient
+       id="darkMetal"
+       x1="153.90062"
+       y1="1052.4475"
+       x2="447.52863"
+       y2="1052.4475"
+       gradientTransform="matrix(1.3447005,0,0,0.42273042,-1.281374,433.97755)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#b8c0c0"
+         id="stop6" />
+      <stop
+         offset="0.5"
+         stop-color="#f6f8f8"
+         id="stop7" />
+      <stop
+         offset="1"
+         stop-color="#aeb8b8"
+         id="stop8" />
+    </linearGradient>
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#metal"
+       id="linearGradient15"
+       x1="409.71339"
+       y1="33.819373"
+       x2="477.35214"
+       y2="33.819373"
+       gradientTransform="matrix(0.92439061,0,0,0.56090955,-9.9975316,55.05564)"
+       gradientUnits="userSpaceOnUse" />
+  </defs>
+  <g
+     id="flour_bin"
+     inkscape:label="Flour Bin"
+     fill="none"
+     stroke="#1f1f1f"
+     stroke-width="5"
+     stroke-linejoin="round"
+     stroke-linecap="round">
+    <g
+       id="support_structure"
+       fill="#d6dddd">
+      <rect
+         id="left_leg_outer"
+         x="178"
+         y="740"
+         width="18"
+         height="395" />
+      <rect
+         id="left_leg_inner"
+         x="210"
+         y="740"
+         width="18"
+         height="395" />
+      <rect
+         id="right_leg_inner"
+         x="572"
+         y="740"
+         width="18"
+         height="395" />
+      <rect
+         id="right_leg_outer"
+         x="604"
+         y="740"
+         width="18"
+         height="395" />
+      <rect
+         id="left_foot"
+         x="162"
+         y="1135"
+         width="86"
+         height="14" />
+      <rect
+         id="right_foot"
+         x="552"
+         y="1135"
+         width="86"
+         height="14" />
+    </g>
+    <!-- top cone -->
+    <path
+       id="top_cone"
+       d="M145 240 L400 92 L655 240 Z"
+       fill="url(#metal)" />
+    <ellipse
+       id="top_rim_outer"
+       cx="400"
+       cy="240"
+       rx="255"
+       ry="25"
+       fill="#cfd6d6" />
+    <path
+       id="top_rim_inner"
+       d="M148 240 C250 258 550 258 652 240"
+       stroke-width="3" />
+    <!-- vent stack -->
+    <rect
+       id="vent_stack"
+       x="371.30017"
+       y="75.289886"
+       width="57.399654"
+       height="35.409939"
+       fill="url(#metal)"
+       style="fill:url(#linearGradient15);stroke-width:3.60035" />
+    <ellipse
+       id="vent_top"
+       cx="400"
+       cy="80"
+       rx="35"
+       ry="12"
+       fill="#eef2f2" />
+    <ellipse
+       id="vent_bottom"
+       cx="400"
+       cy="110"
+       rx="35"
+       ry="12"
+       fill="#cfd6d6" />
+    <!-- manway hatch -->
+    <!-- cylindrical shell -->
+    <rect
+       id="bin_shell"
+       x="145"
+       y="240"
+       width="510"
+       height="500"
+       fill="url(#metal)" />
+    <line
+       id="shell_band_1"
+       x1="145"
+       y1="410"
+       x2="655"
+       y2="410"
+       stroke-width="3" />
+    <line
+       id="shell_band_2"
+       x1="145"
+       y1="580"
+       x2="655"
+       y2="580"
+       stroke-width="3" />
+    <!-- product name / bin label -->
+    <g
+       id="product_name_label"
+       inkscape:label="Product Name Bin Label">
+      <text
+         id="product_name_vertical"
+         x="184"
+         y="292"
+         font-family="Arial, Helvetica, sans-serif"
+         font-size="34"
+         font-weight="700"
+         fill="#222"
+         stroke="none"
+         writing-mode="tb"
+         glyph-orientation-vertical="0">PRODUCT NAME</text>
+      <rect
+         id="bin_label_outer"
+         x="265"
+         y="360"
+         width="245"
+         height="110"
+         rx="34"
+         ry="34"
+         fill="#f9f9f9"
+         stroke="#333"
+         stroke-width="5" />
+      <rect
+         id="bin_label_inner"
+         x="285"
+         y="380"
+         width="205"
+         height="70"
+         rx="22"
+         ry="22"
+         fill="none"
+         stroke="#333"
+         stroke-width="4" />
+      <text
+         id="bin_label_text"
+         x="388"
+         y="428"
+         text-anchor="middle"
+         font-family="Arial, Helvetica, sans-serif"
+         font-size="42"
+         font-weight="700"
+         fill="#222"
+         stroke="none">BIN</text>
+    </g>
+    <!-- hopper -->
+    <path
+       id="hopper"
+       d="M 208.17668,883.209 594.90815,882.56225 480.25037,1000.6152 H 319.73978 Z"
+       fill="url(#metal)"
+       sodipodi:nodetypes="ccccc"
+       style="fill:url(#metal);stroke-width:3.76977" />
+    <!-- outlet slide gate -->
+    <g
+       id="outlet_slide_gate">
+      <ellipse
+         cx="400"
+         cy="1000"
+         rx="72"
+         ry="16"
+         fill="#d9dfdf"
+         id="ellipse10" />
+      <rect
+         x="340"
+         y="1000"
+         width="120"
+         height="34"
+         fill="#d9dfdf"
+         id="rect11" />
+      <rect
+         x="325"
+         y="1034"
+         width="150"
+         height="20"
+         fill="#c8d0d0"
+         id="rect12" />
+      <rect
+         x="350"
+         y="1054"
+         width="100"
+         height="70"
+         fill="url(#metal)"
+         id="rect13" />
+      <ellipse
+         cx="400"
+         cy="1124"
+         rx="62"
+         ry="12"
+         fill="#d9dfdf"
+         id="ellipse13" />
+      <rect
+         x="315"
+         y="1110"
+         width="28"
+         height="18"
+         fill="#d9dfdf"
+         id="rect14" />
+      <rect
+         x="457"
+         y="1110"
+         width="28"
+         height="18"
+         fill="#d9dfdf"
+         id="rect15" />
+    </g>
+    <!-- support legs -->
+    <!-- cross bracing -->
+    <line
+       id="brace_low_left"
+       x1="210"
+       y1="1100"
+       x2="340"
+       y2="1000"
+       stroke-width="4" />
+    <line
+       id="brace_low_right"
+       x1="590"
+       y1="1100"
+       x2="460"
+       y2="1000"
+       stroke-width="4" />
+  </g>
+</svg>

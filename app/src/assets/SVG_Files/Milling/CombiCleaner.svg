@@ -18,6 +18,14 @@
       <stop offset="0%" stop-color="#e7e9ec" />
       <stop offset="100%" stop-color="#b8bdc4" />
     </linearGradient>
+    <linearGradient id="combiDeckFill" x1="0" y1="1.08" x2="0" y2="2.96" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f0f2f4" />
+      <stop offset="100%" stop-color="#c1c7ce" />
+    </linearGradient>
+    <linearGradient id="combiOutletFill" x1="0" y1="5.56" x2="0" y2="6.06" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#e5e8eb" />
+      <stop offset="100%" stop-color="#b7bec6" />
+    </linearGradient>
   </defs>
 
   <g stroke="#808080" stroke-linecap="round" stroke-linejoin="round">
@@ -31,12 +39,13 @@
     <path
       id="ScreenDeck"
       d="M0.64 1.08H4.88V2.18L4.10 2.96H1.42L0.64 2.18Z"
-      fill="#D7DADE"
+      fill="url(#combiDeckFill)"
       stroke-width="0.10"
     />
 
     <path d="M0.86 1.40H4.66" fill="none" stroke="#808080" stroke-width="0.08" />
     <path d="M0.86 1.74H4.66" fill="none" stroke="#808080" stroke-width="0.08" />
+    <path d="M1.02 2.22H4.50" fill="none" stroke="#808080" stroke-width="0.07" opacity="0.58" />
 
     <path
       id="BodyInner"
@@ -48,13 +57,13 @@
     <path d="M1.46 4.84H4.02" fill="none" stroke="#808080" stroke-width="0.10" />
     <path d="M1.60 5.10H3.88" fill="none" stroke="#808080" stroke-width="0.10" />
 
-    <rect x="0.10" y="2.34" width="0.54" height="0.44" rx="0.08" fill="#D7DADE" stroke-width="0.10" />
-    <rect x="0.10" y="4.26" width="0.54" height="0.44" rx="0.08" fill="#D7DADE" stroke-width="0.10" />
+    <rect x="0.10" y="2.34" width="0.54" height="0.44" rx="0.08" fill="url(#combiDeckFill)" stroke-width="0.10" />
+    <rect x="0.10" y="4.26" width="0.54" height="0.44" rx="0.08" fill="url(#combiDeckFill)" stroke-width="0.10" />
 
     <path
       id="Outlet"
       d="M1.56 5.56H4.14V5.96L3.50 6.06H2.20L1.56 5.96Z"
-      fill="#D7DADE"
+      fill="url(#combiOutletFill)"
       stroke-width="0.10"
     />
   </g>

@@ -1,18 +1,37 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 42 92" preserveAspectRatio="none" kewidth="45.652" keheight="100" eType="Scale" stroke="#808080" stroke-width="1.38" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
-  <defs id="defs1" />
+  <defs id="defs1">
+    <linearGradient id="scaleShellFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e7e9ec" />
+      <stop offset="100%" stop-color="#b8bdc4" />
+    </linearGradient>
+    <linearGradient id="scaleConeFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e3e6e9" />
+      <stop offset="100%" stop-color="#aeb5bd" />
+    </linearGradient>
+    <linearGradient id="scaleBandFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0f2f4" />
+      <stop offset="100%" stop-color="#c1c7ce" />
+    </linearGradient>
+  </defs>
   <g id="Scale_Top">
-    <rect height="20" id="body" width="30" x="6" y="1" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
-    <polygon id="Scale_Top_Funnel" points="26 31 16 31 6 21 36 21 26 31" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <rect height="20" id="body" width="30" x="6" y="1" fill="url(#scaleShellFill)" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <path id="Scale_Top_Lip" d="M8 5H34" fill="none" stroke="#808080" stroke-width="0.72" stroke-linecap="round" opacity="0.72" />
+    <polygon id="Scale_Top_Funnel" points="26 31 16 31 6 21 36 21 26 31" fill="url(#scaleConeFill)" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <path id="Scale_Top_Cone_Seam" d="M21 22L21 30" fill="none" stroke="#808080" stroke-width="0.68" opacity="0.55" />
   </g>
   <g id="Scale_Middle">
-    <rect height="5" id="Scale_Middle_Small_Rectangle" width="20" x="11" y="31" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
-    <rect height="10" id="Scale_Middle_Large_Rectangle" width="40" x="1" y="36" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
-    <polygon id="Scale_Middle_Funnel" points="26 56 16 56 1 46 41 46 26 56" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <rect height="5" id="Scale_Middle_Small_Rectangle" width="20" x="11" y="31" fill="url(#scaleShellFill)" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <rect height="10" id="Scale_Middle_Large_Rectangle" width="40" x="1" y="36" fill="url(#scaleBandFill)" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <path id="Scale_Middle_Lip" d="M4 39H38" fill="none" stroke="#808080" stroke-width="0.72" stroke-linecap="round" opacity="0.68" />
+    <polygon id="Scale_Middle_Funnel" points="26 56 16 56 1 46 41 46 26 56" fill="url(#scaleConeFill)" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <path id="Scale_Middle_Cone_Seam" d="M21 47L21 55" fill="none" stroke="#808080" stroke-width="0.68" opacity="0.55" />
   </g>
   <g id="Scale_Bottom">
-    <rect height="5" id="Scale_Bottom_Small_Rectangle" width="20" x="11" y="56" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
-    <rect height="20" id="Scale_Bottom_Large_Rectangle" width="30" x="6" y="61" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
-    <polygon id="Scale_Bottom_Funnel" points="26 91 16 91 6 81 36 81 26 91" fill="#D7DADE" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <rect height="5" id="Scale_Bottom_Small_Rectangle" width="20" x="11" y="56" fill="url(#scaleShellFill)" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <rect height="20" id="Scale_Bottom_Large_Rectangle" width="30" x="6" y="61" fill="url(#scaleShellFill)" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <path id="Scale_Bottom_Lip" d="M8 65H34" fill="none" stroke="#808080" stroke-width="0.72" stroke-linecap="round" opacity="0.72" />
+    <polygon id="Scale_Bottom_Funnel" points="26 91 16 91 6 81 36 81 26 91" fill="url(#scaleConeFill)" stroke="#808080" stroke-width="1.38" stroke-linecap="round" stroke-linejoin="round" />
+    <path id="Scale_Bottom_Cone_Seam" d="M21 82L21 90" fill="none" stroke="#808080" stroke-width="0.68" opacity="0.55" />
   </g>
 </svg>

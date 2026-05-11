@@ -147,6 +147,29 @@ import {
   MaterialKeyboardArrowDownRoundedIcon,
 } from "./utils/materialIconsRuntime";
 
+const isPassiveReadoutWidgetKind = (value) => {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return key === "routedisplay" || key === "scaleadapter" || key === "scaleadaptor";
+};
+
+const normalizeBinProductLabelSource = (value) => {
+  const key = String(value || "").trim().toLowerCase();
+  if (key === "name" || key === "auto") return key;
+  return "id";
+};
+
+const normalizeBinLevelFillSource = (value) => {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (key === "product" || key === "assignedproductcolor") return "product";
+  if (key === "auto" || key === "productcolorfallback" || key === "assignedproductcolorfallback") return "auto";
+  return "fill";
+};
+
+const normalizeBinLevelFillStyle = (value) => {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return key === "solid" ? "solid" : "gradient";
+};
+
 const LIVE_MENU_PAGE_OPTIONS = Object.freeze(Object.values(LIVE_MENU_PAGE_DEFINITIONS));
 
 const HelpPanel = lazy(() => import("./components/HelpPanel"));
@@ -4659,7 +4682,16 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       row?.id ?? row?.tbl_index ?? row?.bin_id ?? row?.binId ?? row?.bin_index ?? row?.binIndex ?? ""
     ).trim();
   const getProjectBinName = (row) =>
-    normalizeTagValue(row?.bin_name ?? row?.binName ?? row?.name ?? row?.Name ?? "");
+    normalizeTagValue(
+      row?.FriendlyName ??
+        row?.friendlyName ??
+        row?.friendly_name ??
+        row?.bin_name ??
+        row?.binName ??
+        row?.name ??
+        row?.Name ??
+        ""
+    );
   const getProjectBinPath = (row) =>
     normalizeTagValue(row?.tag_path ?? row?.tagPath ?? row?.svg_tag_path ?? row?.svgTagPath ?? row?.path ?? row?.Path ?? "");
   const normalizeLooseBinKey = (value) =>
@@ -4832,6 +4864,24 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     getProjectBinBooleanValue(row, ["locked_in", "lockedIn", "Locked_In", "LockedIn"]);
   const getProjectBinLockedOut = (row) =>
     getProjectBinBooleanValue(row, ["locked_out", "lockedOut", "Locked_Out", "LockedOut"]);
+  const getProjectBinActiveFillingRoute = (row) =>
+    getProjectBinBooleanValue(row, [
+      "o_ActiveFillingRouteID",
+      "ActiveFillingRouteID",
+      "activeFillingRouteId",
+      "active_filling_route_id",
+      "o_ActiveFilling",
+      "activeFilling",
+    ]);
+  const getProjectBinActiveDischargingRoute = (row) =>
+    getProjectBinBooleanValue(row, [
+      "o_ActiveDischargingRouteID",
+      "ActiveDischargingRouteID",
+      "activeDischargingRouteId",
+      "active_discharging_route_id",
+      "o_ActiveDischarging",
+      "activeDischarging",
+    ]);
   const getProjectBinBindingCandidates = (raw) => {
     const text = String(raw || "").trim();
     if (!text) return [];
@@ -4984,6 +5034,20 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     ).trim();
   const getProjectProductName = (row) =>
     normalizeTagValue(row?.name ?? row?.product_name ?? row?.productName ?? row?.Name ?? "") || "(Unnamed)";
+  const getProjectProductColor = (row) =>
+    normalizeTagValue(
+      row?.AssignedProductColor ??
+        row?.assignedProductColor ??
+        row?.assigned_product_color ??
+        row?.product_color ??
+        row?.productColor ??
+        row?.ProductColor ??
+        row?.hex_color ??
+        row?.hexColor ??
+        row?.color ??
+        row?.Color ??
+        ""
+    );
   const productNameById = useMemo(() => {
     const map = new Map();
     const rows = Array.isArray(projectProductRows) ? projectProductRows : [];
@@ -4992,6 +5056,17 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       if (!id) return;
       const name = getProjectProductName(row);
       map.set(id, name);
+    });
+    return map;
+  }, [projectProductRows]);
+  const productColorById = useMemo(() => {
+    const map = new Map();
+    const rows = Array.isArray(projectProductRows) ? projectProductRows : [];
+    rows.forEach((row) => {
+      const id = getProjectRowId(row);
+      if (!id) return;
+      const color = getProjectProductColor(row);
+      if (color) map.set(id, color);
     });
     return map;
   }, [projectProductRows]);
@@ -5263,19 +5338,68 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     }
     return resolveProjectBinRowForOverlayIndexed(overlay);
   };
+  const getOverlayBinProductId = (overlay) => {
+    const row = findProjectBinRowForOverlay(overlay);
+    if (!row) return "";
+    return normalizeTagValue(
+      row?.AssignedProductId ??
+        row?.assignedProductId ??
+        row?.assigned_product_id ??
+        row?.product_id ??
+        row?.productId ??
+        row?.product_index ??
+        row?.productIndex ??
+        ""
+    );
+  };
   const getOverlayBinProductName = (overlay) => {
     const row = findProjectBinRowForOverlay(overlay);
     if (!row) return "";
-    const productId = normalizeTagValue(
-      row?.product_id ?? row?.productId ?? row?.product_index ?? row?.productIndex ?? ""
-    );
+    const productId = getOverlayBinProductId(overlay);
     if (productId) {
       const fromMap = String(productNameById.get(productId) || "").trim();
       if (fromMap) return fromMap;
     }
     return normalizeTagValue(
-      row?.product_name ?? row?.productName ?? row?.product ?? row?.Product ?? row?.material ?? row?.Material ?? ""
+      row?.AssignedProductName ??
+        row?.assignedProductName ??
+        row?.assigned_product_name ??
+        row?.product_name ??
+        row?.productName ??
+        row?.product ??
+        row?.Product ??
+        row?.material ??
+        row?.Material ??
+        ""
     );
+  };
+  const getOverlayBinAssignedProductColor = (overlay) => {
+    const row = findProjectBinRowForOverlay(overlay);
+    if (!row) return "";
+    const direct = normalizeTagValue(
+      row?.AssignedProductColor ??
+        row?.assignedProductColor ??
+        row?.assigned_product_color ??
+        row?.product_color ??
+        row?.productColor ??
+        row?.ProductColor ??
+        row?.hex_color ??
+        row?.hexColor ??
+        row?.color ??
+        row?.Color ??
+        ""
+    );
+    if (direct) return direct;
+    const productId = getOverlayBinProductId(overlay);
+    return productId ? String(productColorById.get(productId) || "").trim() : "";
+  };
+  const getOverlayBinProductLabel = (overlay) => {
+    const source = normalizeBinProductLabelSource(overlay?.binProductLabelSource);
+    const productId = String(getOverlayBinProductId(overlay) || "").trim();
+    const productName = String(getOverlayBinProductName(overlay) || "").trim();
+    if (source === "name") return productName || productId;
+    if (source === "auto") return productName || productId;
+    return productId || productName;
   };
   const getOverlayPopupTitle = (overlay) => {
     const eType = String(resolveOverlayEType(overlay) || "").trim();
@@ -5397,9 +5521,7 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
     const productOptions = (Array.isArray(projectProductRows) ? projectProductRows : [])
       .map((p) => ({ id: getProjectRowId(p), name: getProjectProductName(p) }))
       .filter((p) => p.id);
-    const currentProductId = normalizeTagValue(
-      row?.product_id ?? row?.productId ?? row?.product_index ?? row?.productIndex ?? ""
-    );
+    const currentProductId = getOverlayBinProductId(overlay);
     const draftProductId = String(liveBinProductDraftByOverlay?.[overlayId] ?? currentProductId ?? "").trim();
     const saveBusy = liveBinProductSaveBusyByOverlay?.[overlayId] === true;
     const saveError = String(liveBinProductSaveErrorByOverlay?.[overlayId] || "").trim();
@@ -5591,11 +5713,23 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       if (!id) return;
       const eType = String(resolveOverlayEType(overlay) || "").trim();
       if (!isBinEType(eType)) return;
-      const label = String(getOverlayBinProductName(overlay) || "").trim();
+      const label = String(getOverlayBinProductLabel(overlay) || "").trim();
       if (label) out[id] = label;
     });
     return out;
   }, [svgOverlays, projectBinRows, productNameById]);
+  const binLevelFillColorByOverlayId = useMemo(() => {
+    const out = {};
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      const eType = String(resolveOverlayEType(overlay) || "").trim();
+      if (!isBinEType(eType)) return;
+      const color = String(getOverlayBinAssignedProductColor(overlay) || "").trim();
+      if (color) out[id] = color;
+    });
+    return out;
+  }, [svgOverlays, projectBinRows, productColorById]);
   const binNameLabelByOverlayId = useMemo(() => {
     const out = {};
     (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
@@ -5666,6 +5800,30 @@ const LOGIN_HOME_MARKER_KEY = "vizi_login_home_applied_user";
       if (!isBinEType(eType)) return;
       const row = findProjectBinRowForOverlay(overlay);
       if (getProjectBinLockedOut(row)) out[id] = true;
+    });
+    return out;
+  }, [svgOverlays, projectBinRows]);
+  const binActiveFillingByOverlayId = useMemo(() => {
+    const out = {};
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      const eType = String(resolveOverlayEType(overlay) || "").trim();
+      if (!isBinEType(eType)) return;
+      const row = findProjectBinRowForOverlay(overlay);
+      if (getProjectBinActiveFillingRoute(row)) out[id] = true;
+    });
+    return out;
+  }, [svgOverlays, projectBinRows]);
+  const binActiveDischargingByOverlayId = useMemo(() => {
+    const out = {};
+    (Array.isArray(svgOverlays) ? svgOverlays : []).forEach((overlay) => {
+      const id = String(overlay?.id || "").trim();
+      if (!id) return;
+      const eType = String(resolveOverlayEType(overlay) || "").trim();
+      if (!isBinEType(eType)) return;
+      const row = findProjectBinRowForOverlay(overlay);
+      if (getProjectBinActiveDischargingRoute(row)) out[id] = true;
     });
     return out;
   }, [svgOverlays, projectBinRows]);
@@ -8607,8 +8765,29 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
   const applySingleTextAlign = (v) => {
     if (!isSingle || singleKind !== "Text" || !singleId) return;
-    const a = v === "middle" || v === "end" ? v : "start";
+    const a = v === "middle" || v === "end" || v === "unitRight" ? v : "start";
     setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, anchor: a } : s)));
+  };
+
+  const applySingleTextStrokeWidth = (v) => {
+    if (!isSingle || singleKind !== "Text" || !singleId) return;
+    const n = Number.parseFloat(v);
+    if (!Number.isFinite(n) || n < 0) return;
+    const strokeWidth = Math.max(0, Math.min(48, Number(n.toFixed(2))));
+    setShapes((prev) =>
+      prev.map((s) =>
+        s.id === singleId
+          ? {
+              ...s,
+              strokeWidth,
+              stroke: strokeWidth > 0 && !String(s.stroke || "").trim()
+                ? (theme === "dark" ? "#0f172a" : "#ffffff")
+                : s.stroke,
+            }
+          : s
+      )
+    );
+    scheduleProjectAutoSave();
   };
 
   function lineStyleToStrokeProps(style, strokeWidth) {
@@ -8697,10 +8876,19 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (s.type === "text") {
         const fontSize = Number(s.fontSize ?? 24);
         const text = String(s.text ?? "");
-        const estW = Math.max(10, text.length * fontSize * 0.6);
+        const anchor = s.anchor === "middle" || s.anchor === "end" || s.anchor === "unitRight" ? s.anchor : "start";
+        const unit = getTextUnitForShape(s, anchor);
+        const trimmedText = text.trim();
+        const valueText =
+          anchor === "unitRight" && unit && trimmedText.toLowerCase().endsWith(unit.toLowerCase())
+            ? trimmedText.slice(0, Math.max(0, trimmedText.length - unit.length)).trimEnd()
+            : text;
+        const unitGap = anchor === "unitRight" && unit ? getTextUnitGap(fontSize, unit) : 0;
+        const valueW = Math.max(0, String(valueText || "").length * fontSize * 0.6);
+        const unitW = Math.max(0, unit.length * fontSize * 0.6);
+        const estW = Math.max(10, anchor === "unitRight" ? valueW + (unit ? unitGap + unitW : 0) : text.length * fontSize * 0.6);
         const estH = Math.max(10, fontSize * 1.2);
-        const anchor = s.anchor || "start";
-        const ax = anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
+        const ax = anchor === "unitRight" ? -estW : anchor === "middle" ? -estW / 2 : anchor === "end" ? -estW : 0;
 
         minX = Math.min(minX, Number(s.x ?? 0) + ax);
         minY = Math.min(minY, Number(s.y ?? 0));
@@ -8767,13 +8955,24 @@ const CONTENT_FIT_HEADROOM = 0.94;
         const x = Number(t.x ?? 0) - minX;
         const y = Number(t.y ?? 0) - minY;
         const fill = t.fill || "#D7DADE";
+        const stroke = String(t.stroke || "").trim();
+        const strokeWidth = Math.max(0, Number(t.strokeWidth) || 0);
+        const strokeAttrs =
+          stroke && strokeWidth > 0 && !["none", "transparent"].includes(stroke.toLowerCase())
+            ? ` stroke="${escapeXml(stroke)}" stroke-width="${strokeWidth}" paint-order="stroke fill" stroke-linejoin="round"`
+            : "";
         const fontSize = Number(t.fontSize ?? 24);
         const fontFamily = t.fontFamily || "system-ui";
         const fontWeight = t.fontWeight || "400";
-        const textAnchor = t._anchor || "start";
-        const text = escapeXml(t.text ?? "");
+        const textAnchor = t._anchor === "unitRight" ? "end" : t._anchor || "start";
+        const rawText = String(t.text ?? "");
+        const unit = getTextUnitForShape(t, t._anchor);
+        const text =
+          t._anchor === "unitRight" && unit && !rawText.trim().toLowerCase().endsWith(unit.toLowerCase())
+            ? escapeXml(`${rawText} ${unit}`)
+            : escapeXml(rawText);
 
-        return `<text x="${x}" y="${y}" fill="${fill}" font-size="${fontSize}" font-family="${fontFamily}" font-weight="${fontWeight}" text-anchor="${textAnchor}" dominant-baseline="text-before-edge">${text}</text>`;
+        return `<text x="${x}" y="${y}" fill="${fill}"${strokeAttrs} font-size="${fontSize}" font-family="${fontFamily}" font-weight="${fontWeight}" text-anchor="${textAnchor}" dominant-baseline="text-before-edge">${text}</text>`;
       })
       .join("");
 
@@ -9381,17 +9580,59 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
 
 
+  function inferFixedTextUnit(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return "";
+    const unitTokens = [
+      "%", "\u00b0F", "\u00b0C", "F", "C", "lbs", "lb", "kg", "g", "t", "ton", "tons",
+      "rpm", "hz", "psi", "gpm", "cfm", "ppm", "ph", "ft", "in", "m", "mm",
+      "gal", "min", "sec", "s", "A", "V", "kW", "HP",
+    ];
+    const normalizedText = text.replace(/\u00b0/g, "deg").toLowerCase();
+    const sorted = unitTokens.slice().sort((left, right) => right.length - left.length);
+    for (const token of sorted) {
+      const normalizedToken = token.replace(/\u00b0/g, "deg").toLowerCase();
+      if (normalizedText === normalizedToken) return text;
+      if (!normalizedText.endsWith(normalizedToken)) continue;
+      const before = text.slice(0, Math.max(0, text.length - token.length)).trimEnd();
+      if (!before || /[-+]?\d[\d,]*(?:\.\d+)?$/.test(before)) {
+        return text.slice(Math.max(0, text.length - token.length)).trim();
+      }
+    }
+    return "";
+  }
+
+  function getTextUnitForShape(shape, anchor) {
+    const explicitUnit = String(shape?.unit || "").trim();
+    if (explicitUnit || anchor !== "unitRight") return explicitUnit;
+    return inferFixedTextUnit(shape?.text || "");
+  }
+
+  function getTextUnitGap() {
+    return 0;
+  }
+
   function textBoxFromShape(shape, options = {}) {
     if (!shape) return null;
     const minW = Number.isFinite(Number(options.minW)) ? Number(options.minW) : 10;
     const minH = Number.isFinite(Number(options.minH)) ? Number(options.minH) : 10;
     const charWidth = Number.isFinite(Number(options.charWidth)) ? Number(options.charWidth) : 0.6;
     const fontSize = Math.max(8, Number(shape.fontSize ?? 24) || 24);
-    const text = String(shape.text ?? "");
-    const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
-    const w = Math.max(minW, text.length * fontSize * charWidth);
+    const anchor = shape.anchor === "middle" || shape.anchor === "end" || shape.anchor === "unitRight" ? shape.anchor : "start";
+    const unit = getTextUnitForShape(shape, anchor);
+    const rawText = String(shape.text ?? "");
+    const trimmedText = rawText.trim();
+    const valueText =
+      anchor === "unitRight" && unit && trimmedText.toLowerCase().endsWith(unit.toLowerCase())
+        ? trimmedText.slice(0, Math.max(0, trimmedText.length - unit.length)).trimEnd()
+        : rawText;
+    const unitGap = anchor === "unitRight" && unit ? getTextUnitGap(fontSize, unit) : 0;
+    const valueW = Math.max(0, String(valueText || "").length * fontSize * charWidth);
+    const unitW = Math.max(0, unit.length * fontSize * charWidth);
+    const text = anchor === "unitRight" ? `${valueText}${unit ? ` ${unit}` : ""}` : rawText;
+    const w = Math.max(minW, anchor === "unitRight" ? valueW + (unit ? unitGap + unitW : 0) : text.length * fontSize * charWidth);
     const h = Math.max(minH, fontSize * 1.2);
-    const ax = anchor === "middle" ? -w / 2 : anchor === "end" ? -w : 0;
+    const ax = anchor === "unitRight" ? -w : anchor === "middle" ? -w / 2 : anchor === "end" ? -w : 0;
     return {
       x: Number(shape.x ?? 0) + ax,
       y: Number(shape.y ?? 0),
@@ -10146,7 +10387,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
       y: p.y,
       text: "Text",
       fontSize: 24,
-      fill: theme === "dark" ? "#ffffff" : "#D7DADE",
+      fill: theme === "dark" ? "#ffffff" : "#111827",
+      stroke: theme === "dark" ? "#0f172a" : "#ffffff",
+      strokeWidth: 0,
       fontFamily: "system-ui",
       fontWeight: "400",
       anchor: "start", // start | middle | end
@@ -11678,6 +11921,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
       eType,
       eTypeAuto: true,
       sourceHadEType,
+      ...(isBinEType(eType) ? { binProductLabelSource: "id", binLevelFillSource: "fill", binLevelFillStyle: "gradient" } : {}),
       popupParamsJson: "{}",
       bbox,
       sourceScaleX,
@@ -12900,6 +13144,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         eType: String(overlayExtras?.eType || parsedEType || "").trim(),
         eTypeAuto: overlayExtras?.eType != null ? false : true,
         sourceHadEType,
+        ...(isBinEType(overlayExtras?.eType || parsedEType) ? { binProductLabelSource: "id", binLevelFillSource: "fill", binLevelFillStyle: "gradient" } : {}),
         popupParamsJson: "{}",
         bbox,
         sourceScaleX,
@@ -13077,6 +13322,13 @@ const CONTENT_FIT_HEADROOM = 0.94;
             name: (binBinding?.canonicalName || item.label || overlay.name),
             tagPath: item.tagPath || overlay.tagPath || "",
             binBindingKey: binBinding?.binBindingKey || "",
+            ...(isBinEType(resolveOverlayEType(overlay))
+              ? {
+                  binProductLabelSource: normalizeBinProductLabelSource(overlay.binProductLabelSource),
+                  binLevelFillSource: normalizeBinLevelFillSource(overlay.binLevelFillSource),
+                  binLevelFillStyle: normalizeBinLevelFillStyle(overlay.binLevelFillStyle),
+                }
+              : {}),
           };
         })
       )
@@ -13257,9 +13509,17 @@ const CONTENT_FIT_HEADROOM = 0.94;
   async function onPickWidget(widgetKey, anchorOverride) {
     const tmpl = widgetTemplate(widgetKey);
     const key = addGeneratedSvg(tmpl.name, tmpl.raw);
+    const widgetSettings = defaultWidgetSettings(widgetKey);
+    const normalizedWidgetKey = String(widgetKey || "").trim();
+    const defaultTagPath =
+      normalizedWidgetKey === "routeDisplay"
+        ? "Perspective/Route/Route"
+        : normalizedWidgetKey === "scaleAdapter" || normalizedWidgetKey === "scaleAdaptor"
+        ? "Perspective/Equipment/ScaleAdaptor"
+        : "";
     await onPickSvg(key, anchorOverride, {
-      tagPath: "",
-      widget: defaultWidgetSettings(widgetKey),
+      tagPath: defaultTagPath,
+      widget: widgetSettings,
     }, tmpl.raw);
     setWidgetOpen(false);
     setContextMenu(null);
@@ -13388,6 +13648,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
     id: "",
     tagPath: "",
     binBindingKey: "",
+    binProductLabelSource: "id",
+    binLevelFillSource: "fill",
+    binLevelFillStyle: "gradient",
     eType: "",
     popupParamsJson: "{}",
     diverterMode: "straight",
@@ -13470,6 +13733,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
         id: "",
         tagPath: "",
         binBindingKey: "",
+        binProductLabelSource: "id",
+        binLevelFillSource: "fill",
+        binLevelFillStyle: "gradient",
         eType: "",
         popupParamsJson: "{}",
         diverterMode: "straight",
@@ -13579,6 +13845,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
           id: idText,
           tagPath,
           binBindingKey: String(o.binBindingKey || ""),
+          binProductLabelSource: normalizeBinProductLabelSource(o.binProductLabelSource),
+          binLevelFillSource: normalizeBinLevelFillSource(o.binLevelFillSource),
+          binLevelFillStyle: normalizeBinLevelFillStyle(o.binLevelFillStyle),
           eType: String(o.eType || resolveOverlayEType(o) || ""),
           popupParamsJson: String(
             o.popupParamsJson ||
@@ -13659,19 +13928,23 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (t) {
         idText = t.id;
         tagPath = t.tagPath || "";
-        fill = t.fill ?? "#D7DADE";
-        stroke = t.stroke ?? "#808080"; // optional if you support stroke on text
+        fill = t.fill ?? (theme === "dark" ? "#ffffff" : "#111827");
+        stroke = t.stroke ?? (theme === "dark" ? "#0f172a" : "#ffffff");
+        strokeWidth = String(Math.max(0, Number(t.strokeWidth) || 0));
 
         commitHudFields({
           id: idText,
           tagPath,
           binBindingKey: "",
+          binProductLabelSource: "id",
+          binLevelFillSource: "fill",
+          binLevelFillStyle: "gradient",
           eType: "",
           popupParamsJson: "{}",
           diverterMode: "straight",
           fill,
           stroke,
-          strokeWidth: "",
+          strokeWidth,
           static: false,
           flipX: false,
           flipY: false,
@@ -13750,6 +14023,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
       id: idText,
       tagPath,
       binBindingKey: "",
+      binProductLabelSource: "id",
+      binLevelFillSource: "fill",
+      binLevelFillStyle: "gradient",
       eType: "",
       popupParamsJson: "{}",
       diverterMode: "straight",
@@ -13833,6 +14109,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     marquee,
     canvasPanDrag,
     drawing,
+    theme,
   ]);
 
 
@@ -14720,6 +14997,18 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (isSingle && singleKind === "Polyline" && singleId) {
       setShapes((prev) => prev.map((s) => (s.id === singleId ? { ...s, stroke: c } : s)));
+      scheduleProjectAutoSave();
+      return;
+    }
+
+    if (isSingle && singleKind === "Text" && singleId) {
+      setShapes((prev) =>
+        prev.map((s) =>
+          s.id === singleId
+            ? { ...s, stroke: c, strokeWidth: Number(s.strokeWidth) > 0 ? s.strokeWidth : 1 }
+            : s
+        )
+      );
       scheduleProjectAutoSave();
       return;
     }
@@ -15881,7 +16170,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
 
     if (tool === "select") {
       const panModifier = !!(e.altKey || e.metaKey || e.ctrlKey);
-      if (panModifier) {
+      const target = e.target;
+      const isEmptyCanvasHit = target === svgRef.current;
+      const isZoomedCanvas = Math.max(0.0001, Number(zoomRef.current) || Number(zoom) || 1) > 1.0001;
+      const shouldPanCanvas = panModifier || (isZoomedCanvas && isEmptyCanvasHit && !e.shiftKey);
+      if (shouldPanCanvas) {
         setMarquee(null);
         setCanvasPanDrag({
           startClient: { x: Number(e.clientX) || 0, y: Number(e.clientY) || 0 },
@@ -16518,9 +16811,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
         anchorWorld,
         anchorLocal,
         baseBbox,
+        corner,
         origScaleX,
         origScaleY,
         startDist,
+        startBounds,
         startWorld,
         startPointerWorld,
       } = overlayResize;
@@ -16536,12 +16831,28 @@ const CONTENT_FIT_HEADROOM = 0.94;
       if (isWidget) {
         const minW = 80;
         const minH = 60;
-        const leftRaw = Math.min(anchorWorld.x, resizePoint.x);
-        const rightRaw = Math.max(anchorWorld.x, resizePoint.x);
-        const topRaw = Math.min(anchorWorld.y, resizePoint.y);
-        const bottomRaw = Math.max(anchorWorld.y, resizePoint.y);
-        const width = Math.max(minW, rightRaw - leftRaw);
-        const height = Math.max(minH, bottomRaw - topRaw);
+        const startW = Number(startBounds?.width || startBounds?.w || baseBbox?.width || o?.bbox?.width || 320);
+        const startH = Number(startBounds?.height || startBounds?.h || baseBbox?.height || o?.bbox?.height || 180);
+        const aspect = Math.max(0.0001, startW / Math.max(1, startH));
+        const rawW = Math.max(1, Math.abs(Number(resizePoint.x || 0) - Number(anchorWorld.x || 0)));
+        const rawH = Math.max(1, Math.abs(Number(resizePoint.y || 0) - Number(anchorWorld.y || 0)));
+        let width = Math.max(minW, rawW);
+        let height = width / aspect;
+        if (height < rawH) {
+          height = Math.max(minH, rawH);
+          width = height * aspect;
+        }
+        if (height < minH) {
+          height = minH;
+          width = height * aspect;
+        }
+        if (width < minW) {
+          width = minW;
+          height = width / aspect;
+        }
+        const handle = String(corner || "").toUpperCase();
+        const leftRaw = handle.includes("L") ? Number(anchorWorld.x || 0) - width : Number(anchorWorld.x || 0);
+        const topRaw = handle.includes("T") ? Number(anchorWorld.y || 0) - height : Number(anchorWorld.y || 0);
         enqueueCanvasUpdate("overlays", () => setSvgOverlays((prev) => {
           const next = prev.map((x) =>
             x.id === id
@@ -17014,6 +17325,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
     const bb = overlayLocalBBox(o.id);
     if (!bb) return null;
     const wr = overlayWorldRect(o, bb);
+    const moveCursor = isPassiveReadoutWidgetKind(o?.widget?.kind) ? "default" : "move";
 
     const x = wr.x;
     const y = wr.y;
@@ -17041,7 +17353,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
           height={Math.max(1, h)}
           fill="transparent"
           pointerEvents="all"
-          style={{ cursor: "move" }}
+          style={{ cursor: moveCursor }}
           onMouseDown={(e) => onOverlayMouseDown(e, o.id)}
           onDoubleClick={(e) => onOverlayDoubleClick(e, o.id)}
         />
@@ -18456,6 +18768,27 @@ const CONTENT_FIT_HEADROOM = 0.94;
     scheduleProjectAutoSave();
   }
 
+  function applySingleBinProductLabelSource(nextRaw) {
+    if (!isSingle || !singleId || singleKind !== "SVG") return;
+    const v = normalizeBinProductLabelSource(nextRaw);
+    setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, binProductLabelSource: v } : o)));
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleBinLevelFillSource(nextRaw) {
+    if (!isSingle || !singleId || singleKind !== "SVG") return;
+    const v = normalizeBinLevelFillSource(nextRaw);
+    setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, binLevelFillSource: v } : o)));
+    scheduleProjectAutoSave();
+  }
+
+  function applySingleBinLevelFillStyle(nextRaw) {
+    if (!isSingle || !singleId || singleKind !== "SVG") return;
+    const v = normalizeBinLevelFillStyle(nextRaw);
+    setSvgOverlays((prev) => prev.map((o) => (o.id === singleId ? { ...o, binLevelFillStyle: v } : o)));
+    scheduleProjectAutoSave();
+  }
+
   function finishCircleDrawing(circleId) {
     if (!circleId) return;
     const latest = shapesRef.current?.find((s) => s.id === circleId);
@@ -19643,6 +19976,9 @@ const CONTENT_FIT_HEADROOM = 0.94;
         applySingleTagPath={applySingleTagPath}
         applyOverlayGroupTagPath={applyOverlayGroupTagPath}
         applySingleBinBinding={applySingleBinBinding}
+        applySingleBinProductLabelSource={applySingleBinProductLabelSource}
+        applySingleBinLevelFillSource={applySingleBinLevelFillSource}
+        applySingleBinLevelFillStyle={applySingleBinLevelFillStyle}
         applySingleEType={applySingleEType}
         applySinglePopupParamsJson={applySinglePopupParamsJson}
         applySingleDiverterMode={applySingleDiverterMode}
@@ -19665,6 +20001,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         applySingleFontFamily={applySingleFontFamily}
         applySingleFontWeight={applySingleFontWeight}
         applySingleTextAlign={applySingleTextAlign}
+        applySingleTextStrokeWidth={applySingleTextStrokeWidth}
         applySingleWidgetSettings={applySingleWidgetSettings}
         opcTags={opcTags}
         svgETypeOptions={svgETypeOptions}
@@ -19739,6 +20076,7 @@ const CONTENT_FIT_HEADROOM = 0.94;
         isLiveMode={isLiveMode}
           zoom={zoom}          // ? NEW
           onWheel={onCanvasWheel} // ? NEW
+          canvasPanActive={Boolean(canvasPanDrag)}
           vbW={vbW}
           vbH={vbH}
           tool={isLiveMode ? "select" : tool}
@@ -19794,8 +20132,11 @@ const CONTENT_FIT_HEADROOM = 0.94;
         binProductLabelByOverlayId={binProductLabelByOverlayId}
         binNameLabelByOverlayId={binNameLabelByOverlayId}
         binLevelRatioByOverlayId={binLevelRatioByOverlayId}
+        binLevelFillColorByOverlayId={binLevelFillColorByOverlayId}
         binLockedInByOverlayId={binLockedInByOverlayId}
         binLockedOutByOverlayId={binLockedOutByOverlayId}
+        binActiveFillingByOverlayId={binActiveFillingByOverlayId}
+        binActiveDischargingByOverlayId={binActiveDischargingByOverlayId}
         onWidgetDurationPresetChange={onCanvasWidgetDurationPresetChange}
         hiddenTagBubbleIds={hiddenTagBubbleIds}
         onHideTagBubble={onCanvasHideTagBubble}

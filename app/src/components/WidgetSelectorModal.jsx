@@ -8,6 +8,8 @@ const WIDGETS = [
   { key: "weather", name: "Weather", group: "Indicators", desc: "Current weather card." },
   { key: "kpi", name: "KPI Card", group: "Indicators", desc: "Large single metric." },
   { key: "displayBox", name: "Display Box", group: "Indicators", desc: "Live tag read/write with units." },
+  { key: "routeDisplay", name: "Route Display", group: "Operations", desc: "Job and route state summary from a parent route tag." },
+  { key: "scaleAdapter", name: "Scale Adapter", group: "Operations", desc: "Scale state, flowrate, and job weight from a ScaleAdaptor tag." },
   { key: "countdownBar", name: "Countdown Bar", group: "Indicators", desc: "PLC timer PRE/ACC countdown progress." },
   { key: "pushButton", name: "Push Button", group: "Controls", desc: "Momentary PLC write while pressed." },
   { key: "openViewButton", name: "Open View Button", group: "Controls", desc: "Button that opens a Perspective view path." },

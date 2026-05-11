@@ -109,7 +109,7 @@ export function isMotorEType(value) {
 
 export function isBinEType(value) {
   const key = normalizeRouteTagKey(value);
-  return key === "bin" || key.startsWith("bin");
+  return key === "bin" || key.startsWith("bin") || key.includes("silo");
 }
 
 export function isDiverterEType(value) {

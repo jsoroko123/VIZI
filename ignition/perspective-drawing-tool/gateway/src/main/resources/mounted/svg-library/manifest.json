@@ -100,6 +100,21 @@
     "url": "/res/mesora-drawing/svg-library/Aspiration/MANB.svg"
   },
   {
+    "key": "./assets/SVG_Files/Bins/FlourBin.svg",
+    "name": "FlourBin.svg",
+    "url": "/res/mesora-drawing/svg-library/Bins/FlourBin.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Bins/Silo1.svg",
+    "name": "Silo1.svg",
+    "url": "/res/mesora-drawing/svg-library/Bins/Silo1.svg"
+  },
+  {
+    "key": "./assets/SVG_Files/Bins/SiloFlatBottom.svg",
+    "name": "SiloFlatBottom.svg",
+    "url": "/res/mesora-drawing/svg-library/Bins/SiloFlatBottom.svg"
+  },
+  {
     "key": "./assets/SVG_Files/Bins/Terra_Bin_Skinny.svg",
     "name": "Terra_Bin_Skinny.svg",
     "url": "/res/mesora-drawing/svg-library/Bins/Terra_Bin_Skinny.svg"

@@ -916,7 +916,9 @@ function resolveLiveVisualState(index, scene) {
   const overlayFlowColorFor = (overlay, entryColor = "") => {
     const overlayType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
     const incomingEntryColor = normalizeActiveColor(entryColor);
-    if (isDiverterEType(overlayType)) return incomingEntryColor;
+    if (isDiverterEType(overlayType)) {
+      return normalizeActiveColor(routeColorForOverlay(overlay) || routeStrokeForOverlay(overlay)) || incomingEntryColor;
+    }
     return normalizeActiveColor(routeColorForOverlay(overlay) || tagColorFor(overlay?.tagPath) || routeStrokeForOverlay(overlay));
   };
 
@@ -1032,8 +1034,8 @@ function resolveLiveVisualState(index, scene) {
         diverterEntryColorFor(overlay, { ...options, excludeOverlayId: String(overlay?.id || "") })
       );
       const activeBranch = overlayStateFor(overlay);
-      const active = !!incomingEntryColor && !!activeBranch && branch === activeBranch;
       const color = overlayFlowColorFor(overlay, incomingEntryColor);
+      const active = !!(incomingEntryColor || color) && !!activeBranch && branch === activeBranch;
       best = { matched: true, active, color: color || incomingEntryColor || "", dist };
     }
     return { matched: best.matched, active: best.active, color: best.color };
@@ -1062,7 +1064,6 @@ function resolveLiveVisualState(index, scene) {
         : "";
       const incomingEntryColor = normalizeActiveColor(entryColor);
       const color = overlayFlowColorFor(overlay, entryColor);
-      if (isDiverterOverlay && !incomingEntryColor) continue;
       if (!color) continue;
       bestDistance = dist;
       bestColor = color;

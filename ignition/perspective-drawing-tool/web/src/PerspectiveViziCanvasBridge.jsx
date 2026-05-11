@@ -97,8 +97,8 @@ const PROPERTY_PANEL_WIDTH = 300;
 const PROPERTY_PANEL_MIN_WIDTH = 280;
 const PROPERTY_PANEL_MAX_WIDTH = 560;
 const PROPERTY_PANEL_WIDTH_STORAGE_KEY = "mesora-drawing:property-panel-width:v1";
-const PROPERTY_PANEL_HEIGHT = 520;
-const PROPERTY_PANEL_MIN_HEIGHT = 240;
+const PROPERTY_PANEL_HEIGHT = 640;
+const PROPERTY_PANEL_MIN_HEIGHT = 420;
 const PROPERTY_PANEL_HEIGHT_STORAGE_KEY = "mesora-drawing:property-panel-height:v1";
 const PROPERTY_PANEL_INSET = 12;
 const QUICK_TAG_PANEL_WIDTH = 360;
@@ -677,6 +677,67 @@ function getThemeCanvasBackground(theme) {
     return normalizePerspectiveThemeName(theme) === "dark"
         ? "#0f172a"
         : "#D5D5D5";
+}
+
+function parseCssColorToRgb(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+        return null;
+    }
+    const named = {
+        black: [0, 0, 0],
+        white: [255, 255, 255],
+        transparent: [255, 255, 255]
+    };
+    if (named[raw]) {
+        return named[raw];
+    }
+    const hex = raw.match(/^#([0-9a-f]{3,8})$/i);
+    if (hex) {
+        const body = hex[1];
+        if (body.length === 3 || body.length === 4) {
+            return body.slice(0, 3).split("").map((ch) => Number.parseInt(`${ch}${ch}`, 16));
+        }
+        if (body.length === 6 || body.length === 8) {
+            return [
+                Number.parseInt(body.slice(0, 2), 16),
+                Number.parseInt(body.slice(2, 4), 16),
+                Number.parseInt(body.slice(4, 6), 16)
+            ];
+        }
+    }
+    const rgb = raw.match(/^rgba?\(\s*([0-9.]+%?)\s*,\s*([0-9.]+%?)\s*,\s*([0-9.]+%?)/i);
+    if (rgb) {
+        return [rgb[1], rgb[2], rgb[3]].map((part) => {
+            const text = String(part || "").trim();
+            if (text.endsWith("%")) {
+                return Math.max(0, Math.min(255, Number.parseFloat(text) * 2.55));
+            }
+            return Math.max(0, Math.min(255, Number.parseFloat(text)));
+        });
+    }
+    return null;
+}
+
+function isDarkCssColor(value) {
+    const rgb = parseCssColorToRgb(value);
+    if (!rgb) {
+        return false;
+    }
+    const [r, g, b] = rgb.map((channel) => {
+        const normalized = Math.max(0, Math.min(255, Number(channel) || 0)) / 255;
+        return normalized <= 0.03928
+            ? normalized / 12.92
+            : Math.pow((normalized + 0.055) / 1.055, 2.4);
+    });
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) < 0.42;
+}
+
+function resolvePopupThemeName(theme, canvasBackgroundColor) {
+    if (isDarkCssColor(canvasBackgroundColor)) {
+        return "dark";
+    }
+    return normalizePerspectiveThemeName(theme) || "light";
 }
 
 function isThemeDrivenCanvasBackgroundRequest(value) {
@@ -2302,6 +2363,14 @@ function chunkIgnitionTagValuePaths(paths, maxEncodedChars = 6000) {
     return chunks;
 }
 
+const BIN_PRODUCT_COLOR_MEMBERS = [
+    "AssignedProductColor",
+    "Assigned Product Color",
+    "assignedProductColor",
+    "assigned_product_color",
+    "ProductColor",
+    "Product Color"
+];
 const BIN_UDT_MEMBERS = [
     "FriendlyName",
     "CurrentLevel",
@@ -2309,9 +2378,24 @@ const BIN_UDT_MEMBERS = [
     "MaxLevel",
     "i_LockFilling",
     "i_LockDischarging",
+    "o_ActiveFillingRouteID",
+    "o_ActiveDischargingRouteID",
+    "AssignedProductId",
     "AssignedProductName",
+    ...BIN_PRODUCT_COLOR_MEMBERS,
     "BinNo"
 ];
+function isTruthyBinRouteActivityValue(value) {
+    if (value === true) return true;
+    if (value === false || value == null) return false;
+    const text = String(value).trim().toLowerCase();
+    if (!text) return false;
+    if (["false", "f", "0", "0.0", "no", "n", "off", "none", "null"].includes(text)) return false;
+    if (["true", "t", "1", "yes", "y", "on"].includes(text)) return true;
+    const numeric = Number(text);
+    if (Number.isFinite(numeric)) return numeric !== 0;
+    return false;
+}
 const IGNITION_FILL_STATE_MEMBERS = [
     "HMI State",
     "HMI_State",
@@ -2420,8 +2504,26 @@ const DOC_DIC_UDT_MEMBERS = Array.from(
 const DOC_DIC_UDT_CONNECTION_MEMBERS = DOC_DIC_UDT_STATE_MEMBERS;
 
 function isBinOverlay(overlay) {
-    const eType = String(overlay?.eType || overlay?.name || "").trim().toLowerCase();
-    return eType === "bin" || eType.startsWith("bin");
+    const key = String(overlay?.eType || overlay?.name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    return key === "bin" || key.startsWith("bin") || key.includes("silo");
+}
+
+function normalizeBinProductLabelSource(value) {
+    const key = String(value || "").trim().toLowerCase();
+    if (key === "name" || key === "auto") return key;
+    return "id";
+}
+
+function normalizeBinLevelFillSource(value) {
+    const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (key === "product" || key === "assignedproductcolor") return "product";
+    if (key === "auto" || key === "productcolorfallback" || key === "assignedproductcolorfallback") return "auto";
+    return "fill";
+}
+
+function normalizeBinLevelFillStyle(value) {
+    const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+    return key === "solid" ? "solid" : "gradient";
 }
 
 function isMotorOverlay(overlay) {
@@ -3701,20 +3803,40 @@ function normalizeOverlayPopupViewName(value) {
         .replace(/^\/+|\/+$/g, "");
 }
 
+function resolveOverlayPopupLeafName(value) {
+    const normalized = normalizeOverlayPopupViewName(value);
+    return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
+}
+
+function resolveCanonicalOverlayPopupLeafName(value) {
+    const leaf = resolveOverlayPopupLeafName(value);
+    const token = normalizeTagTypeMatchToken(leaf);
+    if (!token) {
+        return "";
+    }
+    if (token.includes("twoway") || token.includes("diverter") || token === "gate") {
+        return "TwoWay";
+    }
+    return leaf;
+}
+
 function resolveOverlayPopupViewName(overlay) {
-    const popupViewName = normalizeOverlayPopupViewName(
+    const rawPopupViewName = normalizeOverlayPopupViewName(
         overlay?.eType
         || overlay?.name
         || overlay?.sourceKey
     );
+    const canonicalLeaf = resolveCanonicalOverlayPopupLeafName(rawPopupViewName);
+    const popupViewName = canonicalLeaf || rawPopupViewName;
     if (!popupViewName) {
         return "";
     }
 
-    const eTypeToken = String(overlay?.eType || "").trim();
-    const popupLeaf = popupViewName.split(/[\\/]/).pop() || popupViewName;
-    if (usesTwoWayUdtTypeToken(eTypeToken) || usesTwoWayUdtTypeToken(popupLeaf)) {
-        return "TwoWay_DiscreteV2";
+    if (/^Terra\/Popups\//i.test(rawPopupViewName)) {
+        return `Terra/Popups/${canonicalLeaf || resolveOverlayPopupLeafName(rawPopupViewName)}`;
+    }
+    if (/^Popups\//i.test(rawPopupViewName)) {
+        return `Popups/${canonicalLeaf || resolveOverlayPopupLeafName(rawPopupViewName)}`;
     }
     return popupViewName;
 }
@@ -3776,6 +3898,306 @@ function resolveOverlayPopupParams(overlay, baseParams) {
         ?? overlay?.popupParameters
         ?? {};
     return applyPopupParamPlaceholders(parsePopupParamsObject(rawParams), baseParams);
+}
+
+function resolvePopupViewportSize() {
+    const viewport = typeof window !== "undefined" ? window : {};
+    const docElement = typeof document !== "undefined" ? document.documentElement : null;
+    const docBody = typeof document !== "undefined" ? document.body : null;
+    return {
+        width: Math.max(
+            1,
+            Math.ceil(
+                Number(viewport.innerWidth)
+                || Number(docElement?.clientWidth)
+                || Number(docBody?.clientWidth)
+                || 1280
+            )
+        ),
+        height: Math.max(
+            1,
+            Math.ceil(
+                Number(viewport.innerHeight)
+                || Number(docElement?.clientHeight)
+                || Number(docBody?.clientHeight)
+                || 720
+            )
+        )
+    };
+}
+
+function readPopupDimension(sources, keys) {
+    for (const source of sources) {
+        if (!source || typeof source !== "object") {
+            continue;
+        }
+        for (const key of keys) {
+            const value = Number(source[key]);
+            if (Number.isFinite(value) && value > 0) {
+                return value;
+            }
+        }
+    }
+    return null;
+}
+
+function resolveOverlayPopupPosition(overlay, viewParams = {}) {
+    const sources = [overlay, overlay?.popup, overlay?.popupConfig, viewParams];
+    const requestedWidth = readPopupDimension(sources, [
+        "popupWidth",
+        "viewPopupWidth",
+        "openViewWidth"
+    ]);
+    const requestedHeight = readPopupDimension(sources, [
+        "popupHeight",
+        "viewPopupHeight",
+        "openViewHeight"
+    ]);
+    const viewport = resolvePopupViewportSize();
+    const maxWidth = Math.max(280, viewport.width - 48);
+    const maxHeight = Math.max(220, viewport.height - 48);
+    const width = Math.round(Math.min(maxWidth, Math.max(300, requestedWidth || 340)));
+    const height = Math.round(Math.min(maxHeight, Math.max(220, requestedHeight || 288)));
+
+    return {
+        width,
+        height,
+        left: Math.max(12, Math.round((viewport.width - width) / 2)),
+        top: Math.max(12, Math.round((viewport.height - height) / 2))
+    };
+}
+
+const VIZI_POPUP_RUNTIME_STYLE = `
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) {
+        --vizi-popup-text: #101820;
+        --vizi-popup-muted-text: rgba(15, 23, 42, 0.68);
+        --vizi-popup-bg: #f8fafc;
+    }
+    html[data-vizi-popup-theme="dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    body[data-vizi-popup-theme="dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) {
+        --vizi-popup-text: #e5eefb;
+        --vizi-popup-muted-text: rgba(226, 232, 240, 0.72);
+        --vizi-popup-bg: #0f172a;
+    }
+    [data-theme*="dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [theme*="dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [class*="terra-dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [class*="theme-dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [class*="theme--dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [class*="ia_theme--dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) {
+        --vizi-popup-text: #e5eefb;
+        --vizi-popup-muted-text: rgba(226, 232, 240, 0.72);
+        --vizi-popup-bg: #0f172a;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .body-wrapper,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-parent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-root,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="view"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="View"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .ia_containerComponent {
+        box-sizing: border-box;
+        max-width: 100%;
+        max-height: 100%;
+        min-width: 0;
+        min-height: 0;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .body-wrapper,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-parent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-root {
+        overflow: hidden !important;
+        overflow-x: hidden !important;
+        overflow-y: hidden !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-parent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-root {
+        width: 100% !important;
+        height: 100% !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) ::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .view,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .view-root,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_containerComponent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] {
+        background-color: var(--vizi-popup-bg) !important;
+        color: var(--vizi-popup-text) !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_labelComponent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_labelComponent *,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_labelComponent__text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_labelComponent__text *,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="Label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [data-component*="Label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [data-component*="label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body span,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body p,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [style*="color"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] .ia_labelComponent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] .ia_labelComponent *,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] .ia_labelComponent__text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] [class*="Label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] [class*="label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] .ia_labelComponent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] .ia_labelComponent *,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] .ia_labelComponent__text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] [class*="Label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] [class*="label"] {
+        color: var(--vizi-popup-text) !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body svg text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body svg tspan,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] svg text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] svg tspan,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] svg text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] svg tspan {
+        fill: var(--vizi-popup-text) !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="secondary"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="Secondary"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="muted"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="Muted"] {
+        color: var(--vizi-popup-muted-text) !important;
+    }
+`;
+
+function cssEscapeValue(value) {
+    const text = String(value || "");
+    try {
+        if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+            return CSS.escape(text);
+        }
+    } catch (_error) {
+    }
+    return text.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function applyViziPopupDomFixes({ popupId = "", title = "", theme = "light" } = {}) {
+    if (typeof document === "undefined") {
+        return;
+    }
+    const resolvedTheme = normalizePerspectiveThemeName(theme) || "light";
+    const textColor = resolvedTheme === "dark" ? "#e5eefb" : "#101820";
+    const mutedColor = resolvedTheme === "dark" ? "rgba(226, 232, 240, 0.72)" : "rgba(15, 23, 42, 0.68)";
+    const bgColor = resolvedTheme === "dark" ? "#0f172a" : "#f8fafc";
+    const escapedPopupId = cssEscapeValue(popupId);
+    const titleText = String(title || "").trim().toLowerCase();
+    const selectors = [
+        escapedPopupId ? `[id*="${escapedPopupId}"]` : "",
+        escapedPopupId ? `[data-popup-id*="${escapedPopupId}"]` : "",
+        escapedPopupId ? `[data-id*="${escapedPopupId}"]` : "",
+        '[id*="svg-popup-"]',
+        '[data-popup-id*="svg-popup-"]',
+        ".vizi-managed-popup"
+    ].filter(Boolean);
+    const candidates = new Set();
+    selectors.forEach((selector) => {
+        try {
+            Array.from(document.querySelectorAll(selector)).forEach((node) => candidates.add(node));
+        } catch (_error) {
+        }
+    });
+    if (titleText) {
+        try {
+            Array.from(document.querySelectorAll('[role="dialog"], [id*="popup"], [class*="popup"], [class*="Popup"]'))
+                .filter((node) => String(node?.textContent || "").toLowerCase().includes(titleText))
+                .forEach((node) => candidates.add(node));
+        } catch (_error) {
+        }
+    }
+    const roots = new Set();
+    candidates.forEach((node) => {
+        if (!(node instanceof Element)) {
+            return;
+        }
+        const popupRoot = node.closest('[role="dialog"], [id*="popup"], [class*="popup"], [class*="Popup"]') || node;
+        roots.add(popupRoot);
+        roots.add(node);
+    });
+    roots.forEach((root) => {
+        if (!(root instanceof HTMLElement || root instanceof SVGElement)) {
+            return;
+        }
+        root.classList?.add("vizi-managed-popup");
+        root.style?.setProperty("--vizi-popup-text", textColor);
+        root.style?.setProperty("--vizi-popup-muted-text", mutedColor);
+        root.style?.setProperty("--vizi-popup-bg", bgColor);
+        if (root instanceof HTMLElement) {
+            root.style.boxSizing = "border-box";
+        }
+        const clampTargets = Array.from(root.querySelectorAll?.([
+                ".body-wrapper",
+                ".popup-body",
+                ".view-parent",
+                ".view",
+                ".view-root",
+                ".ia_containerComponent",
+                '[class*="body"]',
+                '[class*="Body"]',
+                '[class*="view"]',
+                '[class*="View"]'
+            ].join(", ")) || []);
+        clampTargets.forEach((element) => {
+            if (!(element instanceof HTMLElement || element instanceof SVGElement)) {
+                return;
+            }
+            element.classList?.add("vizi-managed-popup");
+            element.style?.setProperty("--vizi-popup-text", textColor);
+            element.style?.setProperty("--vizi-popup-muted-text", mutedColor);
+            element.style?.setProperty("--vizi-popup-bg", bgColor);
+            if (element instanceof HTMLElement) {
+                element.style.boxSizing = "border-box";
+                element.style.maxWidth = "100%";
+                element.style.minWidth = "0";
+                element.style.overflowX = "hidden";
+                element.style.overflowY = "hidden";
+            }
+        });
+        const textTargets = Array.from(root.querySelectorAll?.([
+            ".ia_labelComponent",
+            ".ia_labelComponent *",
+            ".ia_labelComponent__text",
+            '[class*="Label"]',
+            '[class*="label"]',
+            '[data-component*="Label"]',
+            '[data-component*="label"]',
+            "span",
+            "p"
+        ].join(", ")) || []);
+        textTargets.forEach((element) => {
+            if (element instanceof HTMLElement) {
+                element.style.color = textColor;
+            }
+        });
+        Array.from(root.querySelectorAll?.("svg text, svg tspan") || []).forEach((element) => {
+            element.setAttribute("fill", textColor);
+            element.style.fill = textColor;
+        });
+    });
+}
+
+function scheduleViziPopupDomFixes(options = {}) {
+    if (typeof window === "undefined") {
+        return;
+    }
+    const run = () => applyViziPopupDomFixes(options);
+    run();
+    window.requestAnimationFrame?.(run);
+    [40, 160, 420, 900].forEach((delay) => {
+        window.setTimeout(run, delay);
+    });
 }
 
 function pointsEqual(left, right) {
@@ -5513,17 +5935,67 @@ function parsePanelNumber(value) {
     return Number.isFinite(next) ? next : null;
 }
 
+function inferFixedTextUnit(value) {
+    const text = String(value ?? "").trim();
+    if (!text) {
+        return "";
+    }
+    const unitTokens = [
+        "%", "\u00b0F", "\u00b0C", "F", "C", "lbs", "lb", "kg", "g", "t", "ton", "tons",
+        "rpm", "hz", "psi", "gpm", "cfm", "ppm", "ph", "ft", "in", "m", "mm",
+        "gal", "min", "sec", "s", "A", "V", "kW", "HP"
+    ];
+    const normalizedText = text.replace(/\u00b0/g, "deg").toLowerCase();
+    const sorted = unitTokens.slice().sort((left, right) => right.length - left.length);
+    for (const token of sorted) {
+        const normalizedToken = token.replace(/\u00b0/g, "deg").toLowerCase();
+        if (normalizedText === normalizedToken) {
+            return text;
+        }
+        if (!normalizedText.endsWith(normalizedToken)) {
+            continue;
+        }
+        const before = text.slice(0, Math.max(0, text.length - token.length)).trimEnd();
+        if (!before || /[-+]?\d[\d,]*(?:\.\d+)?$/.test(before)) {
+            return text.slice(Math.max(0, text.length - token.length)).trim();
+        }
+    }
+    return "";
+}
+
+function getTextUnitForShape(shape, anchor) {
+    const explicitUnit = String(shape?.unit || "").trim();
+    if (explicitUnit || anchor !== "unitRight") {
+        return explicitUnit;
+    }
+    return inferFixedTextUnit(shape?.text || "");
+}
+
+function getTextUnitGap() {
+    return 0;
+}
+
 function getShapeBounds(shape) {
     if (!shape || typeof shape !== "object") {
         return null;
     }
     if (shape.type === "text") {
         const fontSize = Math.max(8, Number(shape.fontSize || 24));
-        const text = String(shape.text || "");
-        const width = Math.max(40, text.length * fontSize * 0.6);
+        const anchor = shape.anchor === "middle" || shape.anchor === "end" || shape.anchor === "unitRight" ? shape.anchor : "start";
+        const unit = getTextUnitForShape(shape, anchor);
+        const rawText = String(shape.text || "");
+        const trimmedText = rawText.trim();
+        const valueText =
+            anchor === "unitRight" && unit && trimmedText.toLowerCase().endsWith(unit.toLowerCase())
+                ? trimmedText.slice(0, Math.max(0, trimmedText.length - unit.length)).trimEnd()
+                : rawText;
+        const unitGap = anchor === "unitRight" && unit ? getTextUnitGap(fontSize, unit) : 0;
+        const valueWidth = Math.max(0, String(valueText || "").length * fontSize * 0.6);
+        const unitWidth = Math.max(0, unit.length * fontSize * 0.6);
+        const text = anchor === "unitRight" ? `${valueText}${unit ? ` ${unit}` : ""}` : rawText;
+        const width = Math.max(40, anchor === "unitRight" ? valueWidth + (unit ? unitGap + unitWidth : 0) : text.length * fontSize * 0.6);
         const height = Math.max(24, fontSize * 1.2);
-        const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
-        const anchorOffsetX = anchor === "middle" ? -width / 2 : anchor === "end" ? -width : 0;
+        const anchorOffsetX = anchor === "unitRight" ? -width : anchor === "middle" ? -width / 2 : anchor === "end" ? -width : 0;
         return {
             x: Number(shape.x || 0) + anchorOffsetX,
             y: Number(shape.y || 0),
@@ -6053,12 +6525,17 @@ export default function PerspectiveViziCanvasBridge(props) {
     const [drawing, setDrawing] = useState(null);
     const [dragState, setDragState] = useState(null);
     const [marquee, setMarquee] = useState(null);
+    const [canvasPanDrag, setCanvasPanDrag] = useState(null);
     const [editingId, setEditingId] = useState(null);
     const [selectedSegment, setSelectedSegment] = useState(null);
     const [dragSegment, setDragSegment] = useState(null);
     const [dragHandle, setDragHandle] = useState(null);
     const [shapeResize, setShapeResize] = useState(null);
     const [overlayResize, setOverlayResize] = useState(null);
+    const [editorPanOverride, setEditorPanOverride] = useState(null);
+    const editorPanDragCurrentRef = useRef(null);
+    const runtimePanDragRef = useRef(null);
+    const [runtimePanDragActive, setRuntimePanDragActive] = useState(false);
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY);
     const [svgLibraryError, setSvgLibraryError] = useState("");
     const [svgLibraryExternalDirectory, setSvgLibraryExternalDirectory] = useState("");
@@ -7741,9 +8218,47 @@ export default function PerspectiveViziCanvasBridge(props) {
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
     const editorZoom = isLiveMode ? 1 : Math.max(1e-9, Number(effectiveZoom) || 1);
-    const editorPanX = isLiveMode || !isPlainObject(pan) ? 0 : (Number(pan.x) || 0);
-    const editorPanY = isLiveMode || !isPlainObject(pan) ? 0 : (Number(pan.y) || 0);
+    const editorPanSource = editorPanOverride && isPlainObject(editorPanOverride) ? editorPanOverride : pan;
+    const editorPanX = isLiveMode || !isPlainObject(editorPanSource) ? 0 : (Number(editorPanSource.x) || 0);
+    const editorPanY = isLiveMode || !isPlainObject(editorPanSource) ? 0 : (Number(editorPanSource.y) || 0);
     const editorPan = useMemo(() => ({ x: editorPanX, y: editorPanY }), [editorPanX, editorPanY]);
+    const clampEditorPanToViewport = useCallback((nextPanRaw, zoomValue = editorZoom) => {
+        const z = Math.max(0.0001, Number(zoomValue) || 1);
+        const worldW = Math.max(1, Number(viewBox.width) || 1);
+        const worldH = Math.max(1, Number(viewBox.height) || 1);
+        const scaledW = worldW * z;
+        const scaledH = worldH * z;
+        const nextPan = {
+            x: Number(nextPanRaw?.x) || 0,
+            y: Number(nextPanRaw?.y) || 0
+        };
+
+        if (scaledW <= worldW) {
+            nextPan.x = 0;
+        } else {
+            nextPan.x = clamp(nextPan.x, worldW - scaledW, 0);
+        }
+
+        if (scaledH <= worldH) {
+            nextPan.y = 0;
+        } else {
+            nextPan.y = clamp(nextPan.y, worldH - scaledH, 0);
+        }
+
+        return nextPan;
+    }, [editorZoom, viewBox.height, viewBox.width]);
+    const screenDeltaToEditorPanDelta = useCallback((dx, dy) => {
+        const rect = svgRef.current?.getBoundingClientRect?.();
+        const rectW = Math.max(1e-9, Number(rect?.width) || 0);
+        const rectH = Math.max(1e-9, Number(rect?.height) || 0);
+        const worldW = Math.max(1, Number(viewBox.width) || 1);
+        const worldH = Math.max(1, Number(viewBox.height) || 1);
+        const scale = Math.max(1e-9, Math.min(rectW / worldW, rectH / worldH) || 1);
+        return {
+            x: (Number(dx) || 0) / scale,
+            y: (Number(dy) || 0) / scale
+        };
+    }, [viewBox.height, viewBox.width]);
 
     const binNameLabelByOverlayId = useMemo(() => {
         const out = {};
@@ -7764,9 +8279,27 @@ export default function PerspectiveViziCanvasBridge(props) {
             const id = String(overlay?.id || "").trim();
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             if (!id || !basePath || !isBinOverlay(overlay)) return;
-            const product = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "AssignedProductName");
-            const label = String(product ?? "").trim();
+            const source = normalizeBinProductLabelSource(overlay?.binProductLabelSource);
+            const productId = String(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "AssignedProductId") ?? "").trim();
+            const productName = String(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "AssignedProductName") ?? "").trim();
+            const label = source === "name" || source === "auto"
+                ? (productName || productId)
+                : (productId || productName);
             if (label) out[id] = label;
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
+    const binLevelFillColorByOverlayId = useMemo(() => {
+        const out = {};
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const id = String(overlay?.id || "").trim();
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!id || !basePath || !isBinOverlay(overlay)) return;
+            const color = BIN_PRODUCT_COLOR_MEMBERS
+                .map((member) => String(getIgnitionTagValue(ignitionTagValuesByPath, basePath, member) ?? "").trim())
+                .find(Boolean) || "";
+            if (color) out[id] = color;
         });
         return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
@@ -7809,6 +8342,32 @@ export default function PerspectiveViziCanvasBridge(props) {
             const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
             if (!id || !basePath || !isBinOverlay(overlay)) return;
             if (getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging")) out[id] = true;
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
+    const binActiveFillingByOverlayId = useMemo(() => {
+        const out = {};
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const id = String(overlay?.id || "").trim();
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!id || !basePath || !isBinOverlay(overlay)) return;
+            if (isTruthyBinRouteActivityValue(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "o_ActiveFillingRouteID"))) {
+                out[id] = true;
+            }
+        });
+        return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+
+    const binActiveDischargingByOverlayId = useMemo(() => {
+        const out = {};
+        coerceArray(svgOverlays).forEach((overlay) => {
+            const id = String(overlay?.id || "").trim();
+            const basePath = String(overlay?.tagPath || getOverlayFillBindingTagPath(overlay) || "").trim();
+            if (!id || !basePath || !isBinOverlay(overlay)) return;
+            if (isTruthyBinRouteActivityValue(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "o_ActiveDischargingRouteID"))) {
+                out[id] = true;
+            }
         });
         return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
@@ -8079,6 +8638,25 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const theme = getPerspectiveThemeName(props, rootRef.current);
     const canvasBackgroundColor = getPerspectiveCanvasBackground(props, theme);
+    const popupTheme = resolvePopupThemeName(theme, canvasBackgroundColor);
+
+    useEffect(() => {
+        if (typeof document === "undefined") {
+            return undefined;
+        }
+        document.documentElement?.setAttribute("data-vizi-popup-theme", popupTheme);
+        document.body?.setAttribute("data-vizi-popup-theme", popupTheme);
+        let styleNode = document.getElementById("vizi-popup-runtime-style");
+        if (!styleNode) {
+            styleNode = document.createElement("style");
+            styleNode.id = "vizi-popup-runtime-style";
+            document.head?.appendChild(styleNode);
+        }
+        if (styleNode && styleNode.textContent !== VIZI_POPUP_RUNTIME_STYLE) {
+            styleNode.textContent = VIZI_POPUP_RUNTIME_STYLE;
+        }
+        return undefined;
+    }, [popupTheme]);
 
     const pointFromEvent = useCallback((event) => {
         const svg = svgRef.current;
@@ -9544,6 +10122,9 @@ export default function PerspectiveViziCanvasBridge(props) {
             eType: parsedEType,
             eTypeAuto: true,
             sourceHadEType,
+            ...(isBinOverlay({ eType: parsedEType, name: overlayName })
+                ? { binProductLabelSource: "id", binLevelFillSource: "fill", binLevelFillStyle: "gradient" }
+                : {}),
             popupParamsJson: "{}",
             bbox: {
                 x: localViewBox.x,
@@ -9682,11 +10263,18 @@ export default function PerspectiveViziCanvasBridge(props) {
 
     const onPickWidget = useCallback((widgetKey, anchorPoint = null) => {
         const template = widgetTemplate(widgetKey);
+        const normalizedWidgetKey = String(widgetKey || "").trim();
+        const defaultTagPath =
+            normalizedWidgetKey === "routeDisplay"
+                ? "Perspective/Route/Route"
+                : normalizedWidgetKey === "scaleAdapter" || normalizedWidgetKey === "scaleAdaptor"
+                    ? "Perspective/Equipment/ScaleAdaptor"
+                    : "";
         let nextOverlay = createOverlayFromRawMarkup(template?.raw, {
             fileKey: template?.name || String(widgetKey || ""),
             name: template?.name || String(widgetKey || "Widget"),
             extraOverlay: {
-                tagPath: "",
+                tagPath: defaultTagPath,
                 widget: defaultWidgetSettings(widgetKey),
                 eType: "Widget",
                 eTypeAuto: false
@@ -9787,6 +10375,27 @@ export default function PerspectiveViziCanvasBridge(props) {
             setDragHandle(null);
             setShapeResize(null);
             setOverlayResize(null);
+            const panModifier = Boolean(event?.altKey || event?.metaKey || event?.ctrlKey);
+            const isEmptyCanvasHit = event?.target === svgRef.current;
+            const isZoomedCanvas = Math.max(0.0001, Number(editorZoom) || 1) > 1.0001;
+            const shouldPanCanvas = panModifier || (isZoomedCanvas && isEmptyCanvasHit && !event?.shiftKey);
+            if (shouldPanCanvas) {
+                setMarquee(null);
+                const startPan = {
+                    x: Number(editorPanX) || 0,
+                    y: Number(editorPanY) || 0
+                };
+                editorPanDragCurrentRef.current = startPan;
+                setCanvasPanDrag({
+                    startClient: {
+                        x: Number(event?.clientX) || 0,
+                        y: Number(event?.clientY) || 0
+                    },
+                    startPan,
+                    moved: false
+                });
+                return;
+            }
             if (!event?.shiftKey) {
                 clearSelection();
             }
@@ -9825,6 +10434,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             setSelectedOverlayIds([]);
             setEditingId(null);
             setSelectedSegment(null);
+            setTool("select");
             return;
         }
 
@@ -9857,7 +10467,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         if (tool === "trunkconn" || tool === "polyline" || tool === "trunkconn") {
             startOrAppendPolylineAt(point, event);
         }
-    }, [clearSelection, drawing, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool, updateShapes]);
+    }, [clearSelection, drawing, editorPanX, editorPanY, editorZoom, pointFromEvent, selectedIds, selectedOverlayIds, setTool, startOrAppendPolylineAt, tool, updateShapes]);
 
     const handleShapeMouseDown = useCallback((event, id) => {
         event?.preventDefault?.();
@@ -10063,6 +10673,7 @@ export default function PerspectiveViziCanvasBridge(props) {
 
         const overlayId = String(overlay?.id || "").trim();
         const popupViewName = resolveOverlayPopupViewName(overlay);
+        const popupTypeName = resolveCanonicalOverlayPopupLeafName(popupViewName) || resolveOverlayPopupLeafName(popupViewName);
         const popupTitle = String(overlay?.name || popupViewName || "Popup")
             .trim()
             .replace(/\.svg$/i, "");
@@ -10070,18 +10681,46 @@ export default function PerspectiveViziCanvasBridge(props) {
             ? `svg-popup-${overlayId}`
             : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
         const tagPath = String(overlay?.tagPath || "").trim();
+        const tagLeaf = getIgnitionTagLeafName(tagPath);
+        const popupTextColor = popupTheme === "dark" ? "#e5eefb" : "#101820";
+        const popupMutedTextColor = popupTheme === "dark"
+            ? "rgba(226, 232, 240, 0.72)"
+            : "rgba(15, 23, 42, 0.68)";
         const baseViewParams = {
             overlayId,
-            eType: popupViewName,
+            eType: popupTypeName,
+            type: popupTypeName,
+            popupType: popupTypeName,
+            viewName: popupTypeName,
             name: popupTitle,
             tagName: tagPath,
-            tagPath
+            tagPath,
+            tag: tagPath,
+            tagLeaf,
+            equipmentPath: tagPath,
+            equipmentName: tagLeaf || popupTitle,
+            theme: popupTheme,
+            perspectiveTheme: popupTheme,
+            viziTheme: popupTheme,
+            isDarkTheme: popupTheme === "dark",
+            popupTextColor,
+            popupMutedTextColor,
+            textColor: popupTextColor,
+            labelColor: popupTextColor,
+            foregroundColor: popupTextColor,
+            mutedTextColor: popupMutedTextColor,
+            popupBackgroundColor: popupTheme === "dark" ? "#0f172a" : "#f8fafc",
+            popupOverflow: "hidden",
+            overflow: "hidden",
+            disableScroll: true,
+            popupNoScroll: true
         };
         const extraViewParams = resolveOverlayPopupParams(overlay, baseViewParams);
 
         const popupConfig = {
             id: popupId,
             viewPath,
+            position: resolveOverlayPopupPosition(overlay, extraViewParams),
             viewParams: {
                 ...extraViewParams,
                 ...baseViewParams
@@ -10091,7 +10730,25 @@ export default function PerspectiveViziCanvasBridge(props) {
             draggable: true,
             resizable: true,
             modal: false,
-            overlayDismiss: false
+            overlayDismiss: false,
+            style: {
+                overflow: "hidden",
+                overflowX: "hidden",
+                overflowY: "hidden",
+                color: popupTextColor,
+                backgroundColor: popupTheme === "dark" ? "#0f172a" : "#f8fafc"
+            },
+            bodyStyle: {
+                overflow: "hidden",
+                overflowX: "hidden",
+                overflowY: "hidden"
+            },
+            viewStyle: {
+                overflow: "hidden",
+                overflowX: "hidden",
+                overflowY: "hidden",
+                color: popupTextColor
+            }
         };
 
         if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => popup?.id === popupId)) {
@@ -10101,11 +10758,12 @@ export default function PerspectiveViziCanvasBridge(props) {
         }
 
         mounts.activatePopup(popupConfig);
+        scheduleViziPopupDomFixes({ popupId, title: popupTitle, theme: popupTheme });
         if (typeof mounts.focusPopup === "function") {
             mounts.focusPopup(popupId);
         }
         return true;
-    }, [props]);
+    }, [popupTheme, props]);
 
     const handleLiveOverlayMouseDown = useCallback((event, id) => {
         const overlayId = String(id || "").trim();
@@ -10390,6 +11048,22 @@ export default function PerspectiveViziCanvasBridge(props) {
         const point = pointFromEvent(event);
         const isAltDown = Boolean(event?.altKey);
 
+        if (canvasPanDrag?.startClient) {
+            const dx = (Number(event?.clientX) || 0) - Number(canvasPanDrag.startClient.x || 0);
+            const dy = (Number(event?.clientY) || 0) - Number(canvasPanDrag.startClient.y || 0);
+            const panDelta = screenDeltaToEditorPanDelta(dx, dy);
+            const nextPan = clampEditorPanToViewport({
+                x: Number(canvasPanDrag.startPan?.x || 0) + panDelta.x,
+                y: Number(canvasPanDrag.startPan?.y || 0) + panDelta.y
+            }, editorZoom);
+            editorPanDragCurrentRef.current = nextPan;
+            if ((Math.abs(dx) > 1 || Math.abs(dy) > 1) && !canvasPanDrag.moved) {
+                setCanvasPanDrag((current) => current ? { ...current, moved: true } : current);
+            }
+            setEditorPanOverride(nextPan);
+            return;
+        }
+
         if (dragSegment?.id) {
             updateShapes((previous) => previous.map((shape) => {
                 if (String(shape?.id || "") !== String(dragSegment.id || "") || !Array.isArray(shape?.points)) {
@@ -10532,6 +11206,44 @@ export default function PerspectiveViziCanvasBridge(props) {
                 const originalScaleY = Math.max(0.0001, Number(overlayResize.originalScaleY || overlayScaleY(overlay)));
                 const localSpanX = Number(handleLocal.x || 0) - Number(anchorLocal.x || 0);
                 const localSpanY = Number(handleLocal.y || 0) - Number(anchorLocal.y || 0);
+                if (axes.x && axes.y && overlay?.widget) {
+                    const startBounds = overlayResize.startBounds || getOverlayBounds(overlay) || {};
+                    const startW = Number(startBounds.width || startBounds.w || overlayResize.bbox?.width || overlay?.bbox?.width || 320);
+                    const startH = Number(startBounds.height || startBounds.h || overlayResize.bbox?.height || overlay?.bbox?.height || 180);
+                    const aspect = Math.max(0.0001, startW / Math.max(1, startH));
+                    const rawW = Math.max(1, Math.abs(Number(resizePoint.x || 0) - Number(anchorWorld.x || 0)));
+                    const rawH = Math.max(1, Math.abs(Number(resizePoint.y || 0) - Number(anchorWorld.y || 0)));
+                    const minW = 80;
+                    const minH = 60;
+                    let width = Math.max(minW, rawW);
+                    let height = width / aspect;
+                    if (height < rawH) {
+                        height = Math.max(minH, rawH);
+                        width = height * aspect;
+                    }
+                    if (height < minH) {
+                        height = minH;
+                        width = height * aspect;
+                    }
+                    if (width < minW) {
+                        width = minW;
+                        height = width / aspect;
+                    }
+                    return {
+                        ...overlay,
+                        scale: 1,
+                        scaleX: 1,
+                        scaleY: 1,
+                        tx: handle.includes("L") ? Number(anchorWorld.x || 0) - width : Number(anchorWorld.x || 0),
+                        ty: handle.includes("T") ? Number(anchorWorld.y || 0) - height : Number(anchorWorld.y || 0),
+                        bbox: {
+                            x: 0,
+                            y: 0,
+                            width,
+                            height
+                        }
+                    };
+                }
                 if (axes.x && axes.y && !overlay?.widget && !overlay?.embeddedView) {
                     const ratio = clamp(
                         distance(resizePoint, anchorWorld) / Math.max(1, Number(overlayResize.startDist || 1)),
@@ -10681,9 +11393,29 @@ export default function PerspectiveViziCanvasBridge(props) {
                 return { ...shape, points };
             }), { persist: false });
         }
-    }, [constrainPolylineHandleMove, dragHandle, dragSegment, dragState, drawing, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, shapeResize, updateShapes, updateSvgOverlays, viewBox.height, viewBox.width]);
+    }, [canvasPanDrag, clampEditorPanToViewport, constrainPolylineHandleMove, dragHandle, dragSegment, dragState, drawing, editorZoom, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, screenDeltaToEditorPanDelta, shapeResize, updateShapes, updateSvgOverlays, viewBox.height, viewBox.width]);
 
     const handleMouseUp = useCallback(() => {
+        if (canvasPanDrag?.startClient) {
+            const moved = Boolean(canvasPanDrag.moved);
+            const nextPan = editorPanDragCurrentRef.current || {
+                x: Number(editorPanX) || 0,
+                y: Number(editorPanY) || 0
+            };
+            setCanvasPanDrag(null);
+            editorPanDragCurrentRef.current = null;
+            if (moved) {
+                setEditorPanOverride(nextPan);
+                persistValue("pan", nextPan);
+            } else {
+                setEditorPanOverride(null);
+                if (!canvasPanDrag?.additive) {
+                    clearSelection();
+                }
+            }
+            return;
+        }
+
         if (dragSegment?.id) {
             const segmentIndex = Number(dragSegment.index || 0);
             const shape = shapesRef.current.find((item) => String(item?.id || "") === String(dragSegment.id || ""));
@@ -10769,7 +11501,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             persistShapes(shapesRef.current);
             setDrawing(null);
         }
-    }, [dragHandle, dragSegment, dragState, drawing, isShapeSelectableByMode, marquee, overlayResize, overlaysSelectable, persistShapes, persistSvgOverlays, shapeResize]);
+    }, [canvasPanDrag, clearSelection, dragHandle, dragSegment, dragState, drawing, editorPanX, editorPanY, isShapeSelectableByMode, marquee, overlayResize, overlaysSelectable, persistShapes, persistSvgOverlays, persistValue, shapeResize]);
 
     const useWindowPointerTracking =
         editorVisible && (
@@ -10778,6 +11510,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             Boolean(dragHandle) ||
             Boolean(shapeResize) ||
             Boolean(overlayResize) ||
+            Boolean(canvasPanDrag) ||
             Boolean(marquee) ||
             String(drawing?.kind || "") === "rect" ||
             String(drawing?.kind || "") === "circle"
@@ -10911,6 +11644,10 @@ export default function PerspectiveViziCanvasBridge(props) {
         () => isStaticSvgOverlay(selectedOverlay),
         [selectedOverlay]
     );
+    const selectedOverlayIsBin = useMemo(
+        () => isBinOverlay(selectedOverlay),
+        [selectedOverlay]
+    );
     const selectedOverlayTemplateKey = useMemo(() => {
         if (!selectedOverlay || selectedOverlay?.widget || selectedOverlay?.embeddedView) {
             return "";
@@ -11042,10 +11779,6 @@ export default function PerspectiveViziCanvasBridge(props) {
             return String(error?.message || "Invalid JSON.");
         }
     }, [selectedOverlay, selectedOverlayIsEmbeddedView]);
-    const selectedOverlayIsBin = useMemo(
-        () => String(selectedOverlay?.eType || "").trim().toLowerCase().startsWith("bin"),
-        [selectedOverlay]
-    );
     const ignitionTagOptionsForOverlay = useMemo(
         () => selectedOverlayIsBin
             ? ignitionTagOptions.filter((opt) => {
@@ -11057,7 +11790,7 @@ export default function PerspectiveViziCanvasBridge(props) {
         [ignitionTagOptions, selectedOverlayIsBin]
     );
     const selectedOverlayGroupIsBin = useMemo(
-        () => String(selectedOverlayGroupCommonEType || "").trim().toLowerCase().startsWith("bin"),
+        () => isBinOverlay({ eType: selectedOverlayGroupCommonEType }),
         [selectedOverlayGroupCommonEType]
     );
     const ignitionTagOptionsForOverlayGroup = useMemo(
@@ -12734,6 +13467,83 @@ export default function PerspectiveViziCanvasBridge(props) {
         clearSelection();
     }, [clearSelection, closeQuickSvgPicker, editorVisible]);
 
+    const handleRuntimePanMouseDown = useCallback((event) => {
+        if (!browserRuntimeMode || editorVisible || Number(event?.button || 0) !== 0) {
+            return;
+        }
+        if (!(runtimeHorizontalScrollNeeded || runtimeVerticalScrollNeeded)) {
+            return;
+        }
+        if (isInteractiveEditorTarget(event?.target)) {
+            return;
+        }
+        const target = event?.target;
+        if (
+            target instanceof Element &&
+            target.closest(
+                [
+                    "[data-overlay-id]",
+                    "[data-shape-id]",
+                    "[data-overlay-selection-ui]",
+                    "[data-overlay-selection-move-hit]",
+                    "[data-overlay-selection-hit]",
+                    "[data-shape-selection-ui]",
+                    "[data-shape-selection-hit]",
+                    "[data-mixed-selection-ui]",
+                    "[data-widget-control='true']"
+                ].join(", ")
+            )
+        ) {
+            return;
+        }
+        const root = rootRef.current;
+        if (!root) {
+            return;
+        }
+        event.preventDefault?.();
+        runtimePanDragRef.current = {
+            startClientX: Number(event.clientX) || 0,
+            startClientY: Number(event.clientY) || 0,
+            startScrollLeft: Number(root.scrollLeft || 0),
+            startScrollTop: Number(root.scrollTop || 0)
+        };
+        setRuntimePanDragActive(true);
+    }, [browserRuntimeMode, editorVisible, runtimeHorizontalScrollNeeded, runtimeVerticalScrollNeeded]);
+
+    useEffect(() => {
+        if (!runtimePanDragActive) {
+            return undefined;
+        }
+        const handleMove = (event) => {
+            const drag = runtimePanDragRef.current;
+            const root = rootRef.current;
+            if (!drag || !root) {
+                return;
+            }
+            const dx = (Number(event?.clientX) || 0) - Number(drag.startClientX || 0);
+            const dy = (Number(event?.clientY) || 0) - Number(drag.startClientY || 0);
+            root.scrollLeft = Number(drag.startScrollLeft || 0) - dx;
+            root.scrollTop = Number(drag.startScrollTop || 0) - dy;
+            rememberRuntimeScrollSnapshot(root);
+        };
+        const handleRelease = () => {
+            runtimePanDragRef.current = null;
+            setRuntimePanDragActive(false);
+        };
+        window.addEventListener("mousemove", handleMove, true);
+        window.addEventListener("mouseup", handleRelease, true);
+        window.addEventListener("pointerup", handleRelease, true);
+        window.addEventListener("pointercancel", handleRelease, true);
+        window.addEventListener("blur", handleRelease, true);
+        return () => {
+            window.removeEventListener("mousemove", handleMove, true);
+            window.removeEventListener("mouseup", handleRelease, true);
+            window.removeEventListener("pointerup", handleRelease, true);
+            window.removeEventListener("pointercancel", handleRelease, true);
+            window.removeEventListener("blur", handleRelease, true);
+        };
+    }, [rememberRuntimeScrollSnapshot, runtimePanDragActive]);
+
     return (
         <div
             ref={rootRef}
@@ -12741,6 +13551,7 @@ export default function PerspectiveViziCanvasBridge(props) {
             data-vizi-theme={theme}
             data-vizi-canvas-background={canvasBackgroundColor}
             onScroll={browserRuntimeMode ? (event) => rememberRuntimeScrollSnapshot(event.currentTarget) : undefined}
+            onMouseDown={handleRuntimePanMouseDown}
             onMouseDownCapture={(event) => {
                 if (!editorVisible || !propertiesSelectionKey || Number(event?.button || 0) !== 0) {
                     return;
@@ -12775,6 +13586,11 @@ export default function PerspectiveViziCanvasBridge(props) {
                 minWidth: 0,
                 minHeight: 0,
                 background: canvasBackgroundColor,
+                cursor: runtimePanDragActive
+                    ? "grabbing"
+                    : browserRuntimeMode && (runtimeHorizontalScrollNeeded || runtimeVerticalScrollNeeded)
+                    ? "grab"
+                    : undefined,
                 ...(browserRuntimeMode ? {
                     display: "block",
                     overflowX: runtimeHorizontalScrollNeeded ? "auto" : "hidden",
@@ -12783,6 +13599,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 } : {})
             }}
         >
+            <style>{VIZI_POPUP_RUNTIME_STYLE}</style>
             <div style={browserRuntimeMode ? {
                 width: runtimeScrollContentWidth,
                 height: runtimeScrollContentHeight,
@@ -12812,6 +13629,7 @@ export default function PerspectiveViziCanvasBridge(props) {
                 zoom={editorZoom}
                 pan={editorPan}
                 onWheel={NOOP}
+                canvasPanActive={Boolean(canvasPanDrag) || runtimePanDragActive}
                 marquee={editorVisible ? marquee : null}
                 tool={editorVisible ? tool : "select"}
                 shapes={shapes}
@@ -12870,8 +13688,11 @@ export default function PerspectiveViziCanvasBridge(props) {
                 binProductLabelByOverlayId={binProductLabelByOverlayId}
                 binNameLabelByOverlayId={binNameLabelByOverlayId}
                 binLevelRatioByOverlayId={binLevelRatioByOverlayId}
+                binLevelFillColorByOverlayId={binLevelFillColorByOverlayId}
                 binLockedInByOverlayId={binLockedInByOverlayId}
                 binLockedOutByOverlayId={binLockedOutByOverlayId}
+                binActiveFillingByOverlayId={binActiveFillingByOverlayId}
+                binActiveDischargingByOverlayId={binActiveDischargingByOverlayId}
                 overlayHmiStateColorByOverlayId={overlayHmiStateColorByOverlayId}
                 overlayConnectionIssueByOverlayId={overlayConnectionIssueByOverlayId}
                 onWidgetDurationPresetChange={NOOP}
@@ -13995,6 +14816,60 @@ export default function PerspectiveViziCanvasBridge(props) {
                                         ) : null}
                                     </>
                                 ) : null}
+                                {!selectedOverlayIsEmbeddedView && !selectedOverlay.widget && selectedOverlayIsBin ? (
+                                    <>
+                                        <EditorDropdownField
+                                            label="Product Text"
+                                            value={normalizeBinProductLabelSource(selectedOverlay.binProductLabelSource)}
+                                            sections={[
+                                                {
+                                                    label: "Bin Product",
+                                                    items: [
+                                                        { value: "id", label: "AssignedProductId" },
+                                                        { value: "name", label: "AssignedProductName" },
+                                                        { value: "auto", label: "Auto (Name then ID)" }
+                                                    ]
+                                                }
+                                            ]}
+                                            onChange={(value) => {
+                                                commitSelectedOverlayText("binProductLabelSource", normalizeBinProductLabelSource(value));
+                                            }}
+                                        />
+                                        <EditorDropdownField
+                                            label="Level Fill"
+                                            value={normalizeBinLevelFillSource(selectedOverlay.binLevelFillSource)}
+                                            sections={[
+                                                {
+                                                    label: "Current Level",
+                                                    items: [
+                                                        { value: "fill", label: "SVG Fill" },
+                                                        { value: "product", label: "AssignedProductColor" },
+                                                        { value: "auto", label: "Auto (Color then Fill)" }
+                                                    ]
+                                                }
+                                            ]}
+                                            onChange={(value) => {
+                                                commitSelectedOverlayText("binLevelFillSource", normalizeBinLevelFillSource(value));
+                                            }}
+                                        />
+                                        <EditorDropdownField
+                                            label="Level Style"
+                                            value={normalizeBinLevelFillStyle(selectedOverlay.binLevelFillStyle)}
+                                            sections={[
+                                                {
+                                                    label: "Current Level",
+                                                    items: [
+                                                        { value: "gradient", label: "Gradient" },
+                                                        { value: "solid", label: "Solid" }
+                                                    ]
+                                                }
+                                            ]}
+                                            onChange={(value) => {
+                                                commitSelectedOverlayText("binLevelFillStyle", normalizeBinLevelFillStyle(value));
+                                            }}
+                                        />
+                                    </>
+                                ) : null}
                                 {selectedOverlay.widget ? (
                                     <>
                                         <PropertyField
@@ -14321,6 +15196,51 @@ export default function PerspectiveViziCanvasBridge(props) {
                                                 commitSelectedShapeText("unit", value);
                                             }}
                                         />
+                                        <label
+                                            style={{ display: "grid", gap: 5 }}
+                                            onMouseDown={stopInteractivePropagation}
+                                            onClick={stopInteractivePropagation}
+                                            onDoubleClick={stopInteractivePropagation}
+                                        >
+                                            <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }}>
+                                                Align
+                                            </span>
+                                            <select
+                                                value={
+                                                    selectedShape.anchor === "middle" ||
+                                                    selectedShape.anchor === "end" ||
+                                                    selectedShape.anchor === "unitRight"
+                                                        ? selectedShape.anchor
+                                                        : "start"
+                                                }
+                                                onChange={(event) => {
+                                                    commitSelectedShapeText("anchor", event.target.value);
+                                                }}
+                                                onFocus={stopInteractivePropagation}
+                                                onPointerDown={stopInteractivePropagation}
+                                                onMouseDown={stopInteractivePropagation}
+                                                onMouseUp={stopInteractivePropagation}
+                                                onClick={stopInteractivePropagation}
+                                                onDoubleClick={stopInteractivePropagation}
+                                                style={{
+                                                    width: "100%",
+                                                    height: 36,
+                                                    boxSizing: "border-box",
+                                                    borderRadius: 10,
+                                                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                                                    background: "rgba(15, 23, 42, 0.92)",
+                                                    color: "#f8fafc",
+                                                    padding: "0 10px",
+                                                    fontSize: 12,
+                                                    fontWeight: 600
+                                                }}
+                                            >
+                                                <option value="start">Left</option>
+                                                <option value="middle">Center</option>
+                                                <option value="end">Right</option>
+                                                <option value="unitRight">Unit Right</option>
+                                            </select>
+                                        </label>
                                     </>
                                 ) : Array.isArray(selectedShape?.points) ? (
                                     <>

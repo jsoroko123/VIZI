@@ -26,8 +26,87 @@ import { Line, Bar, Doughnut } from "react-chartjs-2";
 
 const RULER = 24; // ruler thickness (px)
 const SCROLLBAR_RESERVE = 14; // keep native scrollbars visible (not under rulers)
+const toFiniteCanvasNumber = (value, fallback = 0) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+};
 const LIVE_ROUTE_ID_MEMBER_ALIASES = ["RouteID", "RouteNumber", "RouteNo", "Route"];
 const LIVE_ROUTE_COLOR_MEMBER_ALIASES = ["RouteColor", "Route Color", "routeColor", "route_color"];
+const LIVE_ROUTE_JOB_NUMBER_MEMBER_ALIASES = [
+  "Job.JobNo",
+  "Job/JobNo",
+  "Job.JobNumber",
+  "Job/JobNumber",
+  "JobNo",
+  "JobNumber",
+  "Job Number",
+  "JobID",
+  "JobId",
+];
+const LIVE_ROUTE_JOB_STEP_MEMBER_ALIASES = [
+  "HMI_JobStateText",
+  "HMI Job State Text",
+  "Job.HMI_JobStateText",
+  "Job/HMI_JobStateText",
+  "Job.JobStep",
+  "Job/JobStep",
+  "JobStep",
+  "Job Step",
+  "Step",
+  "CurrentStep",
+];
+const LIVE_ROUTE_STATE_TEXT_MEMBER_ALIASES = [
+  "HMI_RouteStateText",
+  "HMI Route State Text",
+  "RouteStateText",
+  "Route State Text",
+  "RouteState",
+  "Route State",
+  "HMI_RouteState",
+  "HMI RouteState",
+  "State",
+];
+const LIVE_ROUTE_DESTINATION_MEMBER_ALIASES = [
+  "RouteName",
+  "Route Name",
+  "Destination",
+  "Dest",
+  "DestinationName",
+  "DestName",
+  "Job.Destination",
+  "Job/Destination",
+  "TargetDestination",
+];
+const LIVE_SCALE_DESCRIPTION_MEMBER_ALIASES = [
+  "Description",
+  "Desc",
+  "HMI_Description",
+  "HMIDescription",
+];
+const LIVE_SCALE_STATE_MEMBER_ALIASES = [
+  "HMI_State",
+  "HMIState",
+  "HMI State",
+  "State",
+  "i_HMIState",
+  "o_HMIState",
+];
+const LIVE_SCALE_FLOWRATE_MEMBER_ALIASES = [
+  "OutFlowrate",
+  "OutFlowRate",
+  "Out Flowrate",
+  "Flowrate",
+  "FlowRate",
+];
+const LIVE_SCALE_JOB_WEIGHT_MEMBER_ALIASES = [
+  "OutJobWeight",
+  "Out Job Weight",
+  "OutJobWt",
+  "JobWeight",
+  "Job Weight",
+  "OutScaleWeight",
+  "ScaleWeight",
+];
 const LIVE_STATE_MEMBER_ALIASES = [
   "HMI State",
   "HMI_State",
@@ -104,6 +183,7 @@ const LIVE_DESCRIPTION_MEMBER_ALIASES = [
 ];
 const BIN_LOCK_FILL_GROUP_IDS = ["Lock_Filling", "LockFill"];
 const BIN_LOCK_DISCHARGE_GROUP_IDS = ["Lock_Discharge", "LockDischarge"];
+const BIN_ROUTE_ACTIVITY_COLOR = "#93DB9F";
 
 const getTagPathLeaf = (value) => {
   const raw = normalizeTagValue(value);
@@ -189,6 +269,31 @@ const isDocOrDicStatePaintEType = (value) => {
   return key.startsWith("doc") || key.startsWith("dic");
 };
 
+const isScaleLikeEType = (value) => {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return key.includes("scale");
+};
+
+const isBinLikeEType = (value) => {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return key === "bin" || key.startsWith("bin") || key.includes("silo");
+};
+
+const normalizeWidgetKindKey = (value) =>
+  String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+const isPassiveReadoutWidgetKind = (value) => {
+  const key = normalizeWidgetKindKey(value);
+  return key === "routedisplay" || key === "scaleadapter" || key === "scaleadaptor";
+};
+
+const formatWidgetSourceLabel = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withoutBindingPrefix = raw.replace(/^(dbq?:|opc:)/i, "").trim();
+  return getTagPathLeaf(withoutBindingPrefix) || withoutBindingPrefix;
+};
+
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -227,6 +332,7 @@ function CanvasSvg({
   svgRef,
   zoom, // ✅ already passed from App.jsx
   pan,
+  canvasPanActive = false,
   onWheel, // ✅ already passed from App.jsx
   marquee, // ✅ NEW: drag-select rectangle
 
@@ -287,8 +393,11 @@ function CanvasSvg({
   binProductLabelByOverlayId,
   binNameLabelByOverlayId,
   binLevelRatioByOverlayId,
+  binLevelFillColorByOverlayId,
   binLockedInByOverlayId,
   binLockedOutByOverlayId,
+  binActiveFillingByOverlayId,
+  binActiveDischargingByOverlayId,
   overlayHmiStateColorByOverlayId,
   overlayConnectionIssueByOverlayId = {},
   onWidgetDurationPresetChange,
@@ -433,17 +542,71 @@ function CanvasSvg({
   const nudgeSelectedOverlayIdsRef = useRef(Array.isArray(selectedOverlayIds) ? selectedOverlayIds : []);
   const nudgeSelectedSegmentRef = useRef(selectedSegment || null);
   const nudgeZoomRef = useRef(Number(zoom) || 1);
+  const normalizeTextAnchorMode = (value) =>
+    value === "middle" || value === "end" || value === "unitRight" ? value : "start";
+  const svgTextAnchorForMode = (value) => {
+    const mode = normalizeTextAnchorMode(value);
+    return mode === "unitRight" ? "end" : mode;
+  };
+  const fixedTextUnitTokens = [
+    "%", "\u00b0F", "\u00b0C", "F", "C", "lbs", "lb", "kg", "g", "t", "ton", "tons",
+    "rpm", "hz", "psi", "gpm", "cfm", "ppm", "ph", "ft", "in", "m", "mm",
+    "gal", "min", "sec", "s", "A", "V", "kW", "HP"
+  ];
+  const inferFixedTextUnit = (value) => {
+    const text = String(value ?? "").trim();
+    if (!text) return "";
+    const normalizedText = text.replace(/\u00b0/g, "deg").toLowerCase();
+    const sorted = fixedTextUnitTokens.slice().sort((left, right) => right.length - left.length);
+    for (const token of sorted) {
+      const normalizedToken = token.replace(/\u00b0/g, "deg").toLowerCase();
+      if (normalizedText === normalizedToken) return text;
+      if (!normalizedText.endsWith(normalizedToken)) continue;
+      const before = text.slice(0, Math.max(0, text.length - token.length)).trimEnd();
+      if (!before || /[-+]?\d[\d,]*(?:\.\d+)?$/.test(before)) {
+        return text.slice(Math.max(0, text.length - token.length)).trim();
+      }
+    }
+    return "";
+  };
+  const getTextUnitForShape = (shape, anchor = normalizeTextAnchorMode(shape?.anchor)) => {
+    const explicitUnit = String(shape?.unit || "").trim();
+    if (explicitUnit || anchor !== "unitRight") return explicitUnit;
+    return inferFixedTextUnit(shape?.text || "");
+  };
+  const getTextUnitGap = () => 0;
+  const splitTextUnit = (value, unit) => {
+    const text = String(value ?? "");
+    const unitText = String(unit || "").trim();
+    if (!unitText) return { valueText: text, unitText: "", displayText: text };
+    const trimmed = text.trim();
+    if (!trimmed) return { valueText: "", unitText, displayText: unitText };
+    if (trimmed.toLowerCase().endsWith(unitText.toLowerCase())) {
+      const valueText = trimmed.slice(0, Math.max(0, trimmed.length - unitText.length)).trimEnd();
+      return {
+        valueText,
+        unitText,
+        displayText: valueText ? `${valueText} ${unitText}` : unitText,
+      };
+    }
+    return { valueText: text, unitText, displayText: `${text} ${unitText}` };
+  };
   const getTextBounds = (shape, options = {}) => {
     if (!shape) return null;
     const minW = Number.isFinite(Number(options.minW)) ? Number(options.minW) : 40;
     const minH = Number.isFinite(Number(options.minH)) ? Number(options.minH) : 24;
     const charWidth = Number.isFinite(Number(options.charWidth)) ? Number(options.charWidth) : 0.6;
     const fontSize = Math.max(8, Number(shape.fontSize || 24));
-    const text = String(shape.text || "");
-    const w = Math.max(minW, text.length * fontSize * charWidth);
+    const anchor = normalizeTextAnchorMode(shape.anchor);
+    const unitParts = splitTextUnit(shape.text || "", getTextUnitForShape(shape, anchor));
+    const text = anchor === "unitRight" ? unitParts.displayText : String(shape.text || "");
+    const unitGap = anchor === "unitRight" && unitParts.unitText ? getTextUnitGap(fontSize, unitParts.unitText) : 0;
+    const valueW = Math.max(0, String(unitParts.valueText || "").length * fontSize * charWidth);
+    const unitW = Math.max(0, String(unitParts.unitText || "").length * fontSize * charWidth);
+    const unitRightW = valueW + (unitParts.unitText ? unitGap + unitW : 0);
+    const w = Math.max(minW, anchor === "unitRight" ? unitRightW : text.length * fontSize * charWidth);
     const h = Math.max(minH, fontSize * 1.2);
-    const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
-    const ax = anchor === "middle" ? -w / 2 : anchor === "end" ? -w : 0;
+    const ax = anchor === "unitRight" ? -w : anchor === "middle" ? -w / 2 : anchor === "end" ? -w : 0;
     return {
       x: Number(shape.x || 0) + ax,
       y: Number(shape.y || 0),
@@ -473,10 +636,77 @@ function CanvasSvg({
       if (doc.querySelector("parsererror")) return source;
       const nodes = Array.from(doc.querySelectorAll("text"));
       let changed = 0;
+      const setTextValue = (node, value) => {
+        if (!node) return false;
+        const next = String(value || "").trim();
+        node.textContent = next;
+        return true;
+      };
+      const setVerticalTextValue = (node, value) => {
+        if (!node) return false;
+        const next = String(value || "").trim();
+        while (node.firstChild) node.removeChild(node.firstChild);
+        if (!next) return true;
+        const ns = "http://www.w3.org/2000/svg";
+        const baseX = String(node.getAttribute("x") || "0");
+        const baseY = Number(node.getAttribute("y"));
+        const style = String(node.getAttribute("style") || "");
+        const fontSizeMatch = style.match(/font-size\s*:\s*([0-9.]+)/i);
+        const fontSizeAttr = Number.parseFloat(String(node.getAttribute("font-size") || ""));
+        const fontSize = Number.isFinite(fontSizeAttr)
+          ? fontSizeAttr
+          : Number.isFinite(Number.parseFloat(fontSizeMatch?.[1]))
+          ? Number.parseFloat(fontSizeMatch[1])
+          : 26;
+        const lineStep = Math.max(10, fontSize * 0.9);
+        Array.from(next.toUpperCase()).forEach((char, index) => {
+          const tspan = doc.createElementNS(ns, "tspan");
+          tspan.setAttribute("x", baseX);
+          tspan.setAttribute("y", String((Number.isFinite(baseY) ? baseY : 0) + lineStep * index));
+          tspan.textContent = char === " " ? "" : char;
+          node.appendChild(tspan);
+        });
+        return true;
+      };
+      const splitBinNameLines = (value) => {
+        const text = String(value || "").replace(/\s+/g, " ").trim();
+        if (!text) return ["", ""];
+        const words = text.split(" ");
+        if (words.length === 1) return [words[0], ""];
+        let bestIndex = 1;
+        let bestScore = Number.POSITIVE_INFINITY;
+        for (let i = 1; i < words.length; i += 1) {
+          const left = words.slice(0, i).join(" ");
+          const right = words.slice(i).join(" ");
+          const score = Math.abs(left.length - right.length);
+          if (score < bestScore) {
+            bestScore = score;
+            bestIndex = i;
+          }
+        }
+        return [words.slice(0, bestIndex).join(" "), words.slice(bestIndex).join(" ")];
+      };
+      const siloNameLines = splitBinNameLines(binNoLabel);
+      const wheatText = doc.getElementById("wheat-text");
+      if (wheatText && binNoLabel) {
+        const receivingText = doc.getElementById("receiving-text");
+        const nextBinText = receivingText ? siloNameLines[0] : binNoLabel;
+        if (setTextValue(wheatText, nextBinText)) changed += 1;
+      }
+      const receivingText = doc.getElementById("receiving-text");
+      if (receivingText && binNoLabel) {
+        if (setTextValue(receivingText, siloNameLines[1])) changed += 1;
+      }
+      const siloProductText =
+        doc.getElementById("wheat-text-8") ||
+        doc.getElementById("product_name_vertical");
+      if (siloProductText && productLabel) {
+        if (setVerticalTextValue(siloProductText, productLabel)) changed += 1;
+      }
       nodes.forEach((node) => {
         const current = String(node?.textContent || "").trim();
         if (!current) return;
-        if (/^product$/i.test(current) || /^\{\{?\s*product\s*\}?\}$/i.test(current)) {
+        if (/^product(?:\s+name)?$/i.test(current) || /^\{\{?\s*product\s*(?:name)?\s*\}?\}$/i.test(current)) {
           if (productLabel) {
             node.textContent = productLabel;
           } else {
@@ -487,7 +717,7 @@ function CanvasSvg({
         }
         if (
           binNoLabel &&
-          (/^bin\s*no$/i.test(current) || /^\{\{?\s*bin\s*no\s*\}?\}$/i.test(current))
+          (/^bin$/i.test(current) || /^bin\s*no$/i.test(current) || /^\{\{?\s*bin\s*no\s*\}?\}$/i.test(current))
         ) {
           node.textContent = binNoLabel;
           changed += 1;
@@ -1801,22 +2031,22 @@ function CanvasSvg({
     return getLiveValueForTagPath(tagPath);
   };
   const getTextShapeValueForShape = (shape) => {
-    const appendTextUnit = (value) => {
-      const text = String(value ?? "");
-      const unit = String(shape?.unit || "").trim();
-      if (!unit) return text;
-      const trimmed = text.trim();
-      if (!trimmed) return unit;
-      if (trimmed.toLowerCase().endsWith(unit.toLowerCase())) return text;
-      return `${text} ${unit}`;
-    };
+    return getTextShapeDisplayParts(shape).displayText;
+  };
+  const getTextShapeDisplayParts = (shape) => {
+    const anchor = normalizeTextAnchorMode(shape?.anchor);
+    const appendTextUnitParts = (value) => splitTextUnit(value, getTextUnitForShape(shape, anchor));
     const tagPath = String(shape?.tagPath || "").trim();
-    if (!tagPath) return appendTextUnit(shape?.text || "");
+    if (!tagPath) {
+      const parts = appendTextUnitParts(shape?.text || "");
+      return { ...parts, unitAlignRight: anchor === "unitRight" };
+    }
 
     const ignitionValue = readIgnitionTagValueForPath(tagPath);
     const rawValue = ignitionValue !== undefined ? ignitionValue : getLiveValueForTagPath(tagPath);
     if (rawValue == null || rawValue === "") {
-      return appendTextUnit(shape?.text || "");
+      const parts = appendTextUnitParts(shape?.text || "");
+      return { ...parts, unitAlignRight: anchor === "unitRight" };
     }
 
     const rawText =
@@ -1832,7 +2062,8 @@ function CanvasSvg({
           ).trim()
         : String(rawValue).trim();
     if (!rawText) {
-      return appendTextUnit(shape?.text || "");
+      const parts = appendTextUnitParts(shape?.text || "");
+      return { ...parts, unitAlignRight: anchor === "unitRight" };
     }
 
     const scaleFactorRaw = Number.parseFloat(String(shape?.scaleFactor ?? "").trim());
@@ -1850,7 +2081,8 @@ function CanvasSvg({
           : scaledValue.toFixed(decimals);
     }
 
-    return appendTextUnit(displayValue);
+    const parts = appendTextUnitParts(displayValue);
+    return { ...parts, unitAlignRight: anchor === "unitRight" };
   };
   const toNumberOrNull = (value) => {
     if (value == null) return null;
@@ -2007,6 +2239,10 @@ function CanvasSvg({
     const requestedWidth = readExplicitDimension(["popupWidth", "viewPopupWidth", "openViewWidth"]);
     const requestedHeight = readExplicitDimension(["popupHeight", "viewPopupHeight", "openViewHeight"]);
 
+    if (!requestedWidth && !requestedHeight) {
+      return null;
+    }
+
     const viewportSource = typeof globalThis !== "undefined" ? globalThis : {};
     const docElement = viewportSource.document?.documentElement;
     const docBody = viewportSource.document?.body;
@@ -2030,22 +2266,18 @@ function CanvasSvg({
     );
     const maxWidth = Math.max(280, viewportWidth - 48);
     const maxHeight = Math.max(220, viewportHeight - 48);
-    const defaultWidth = Math.min(920, Math.max(520, Math.round(viewportWidth * 0.62)));
-    const defaultHeight = Math.min(620, Math.max(360, Math.round(viewportHeight * 0.7)));
-    const width = Math.min(
-      maxWidth,
-      Math.max(320, requestedWidth || defaultWidth)
-    );
-    const height = Math.min(
-      maxHeight,
-      Math.max(240, requestedHeight || defaultHeight)
-    );
-    return {
-      left: Math.max(12, Math.round((viewportWidth - width) / 2)),
-      top: Math.max(12, Math.round((viewportHeight - height) / 2)),
-      width: Math.round(width),
-      height: Math.round(height)
-    };
+    const position = {};
+    if (requestedWidth) {
+      position.width = Math.round(Math.min(maxWidth, Math.max(120, requestedWidth)));
+    }
+    if (requestedHeight) {
+      position.height = Math.round(Math.min(maxHeight, Math.max(80, requestedHeight)));
+    }
+    const widthForCenter = position.width || Math.min(920, Math.max(520, Math.round(viewportWidth * 0.62)));
+    const heightForCenter = position.height || Math.min(620, Math.max(360, Math.round(viewportHeight * 0.7)));
+    position.left = Math.max(12, Math.round((viewportWidth - widthForCenter) / 2));
+    position.top = Math.max(12, Math.round((viewportHeight - heightForCenter) / 2));
+    return position;
   };
   const getMissingWidgetWriteTargetMessage = (overlay) => {
     const writeMode = resolveWidgetWriteMode(overlay?.widget, overlay?.tagPath);
@@ -2923,6 +3155,7 @@ function CanvasSvg({
     const decimals = Math.max(0, Math.min(6, Number(cfg?.decimals) || 0));
     const unit = String(cfg?.unit || "").trim();
     const title = String(cfg?.title || "").trim();
+    const isPassiveReadoutWidget = isPassiveReadoutWidgetKind(kind);
     const normalizeWidgetTextColor = (value) => {
       const text = String(value ?? "").trim();
       if (!text || text.toLowerCase() === "auto" || text.toLowerCase() === "theme") return "";
@@ -2938,7 +3171,7 @@ function CanvasSvg({
       Number.isFinite(Number(v)) ? `${Number(v).toFixed(decimals)}${unit ? ` ${unit}` : ""}` : "";
     const seriesTags = parseWidgetSeriesTags(overlay);
     const primaryTagPath = String(seriesTags[0] || "").trim();
-    const label = primaryTagPath || String(overlay?.tagPath || "").trim() || "Unbound";
+    const label = formatWidgetSourceLabel(primaryTagPath || String(overlay?.tagPath || "").trim()) || "Unbound";
     const bb = overlay?.bbox || { x: 0, y: 0, width: 320, height: 180 };
     const x = Number(bb.x) || 0;
     const y = Number(bb.y) || 0;
@@ -3070,7 +3303,9 @@ function CanvasSvg({
       event?.stopPropagation?.();
       handleOverlayDoubleClick(event, overlay, { force: true });
     };
-    const widgetSurfaceCursor = isLiveMode
+    const widgetSurfaceCursor = isPassiveReadoutWidget
+      ? "default"
+      : isLiveMode
       ? (widgetInteractionEnabled ? "pointer" : "default")
       : (tool === "select" ? "move" : "crosshair");
     const headH = dense ? 20 : compact ? 24 : 28;
@@ -3167,6 +3402,348 @@ function CanvasSvg({
       if (abs >= 10000) return `${(abs / 1000).toFixed(Math.max(0, precision))} s`;
       return `${Math.max(0, Math.round(abs)).toFixed(0)} ms`;
     };
+
+    const unboxRouteValue = (value) => {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        if (Object.prototype.hasOwnProperty.call(value, "value")) return value.value;
+        if (Object.prototype.hasOwnProperty.call(value, "v")) return value.v;
+        if (Object.prototype.hasOwnProperty.call(value, "tagValue")) return value.tagValue;
+      }
+      return value;
+    };
+    const isRouteValuePresent = (value) => {
+      const unboxed = unboxRouteValue(value);
+      return unboxed != null && String(unboxed).trim() !== "";
+    };
+    const normalizeRouteObjectKey = (value) =>
+      String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const parseRouteDocument = (value) => {
+      const unboxed = unboxRouteValue(value);
+      if (unboxed && typeof unboxed === "object" && !Array.isArray(unboxed)) return unboxed;
+      const text = String(unboxed ?? "").trim();
+      if (!text || !(text.startsWith("{") || text.startsWith("["))) return null;
+      try {
+        const parsed = JSON.parse(text);
+        const next = unboxRouteValue(parsed);
+        return next && typeof next === "object" && !Array.isArray(next) ? next : null;
+      } catch {
+        return null;
+      }
+    };
+    const getRouteObjectMember = (source, alias) => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) return undefined;
+      const normalizedAlias = normalizeRouteObjectKey(alias);
+      const flatKey = Object.keys(source).find((key) => key === alias || normalizeRouteObjectKey(key) === normalizedAlias);
+      if (flatKey) return unboxRouteValue(source[flatKey]);
+      const parts = String(alias || "").split(/[/.]/).map((part) => part.trim()).filter(Boolean);
+      if (!parts.length) return undefined;
+      let cursor = source;
+      for (const part of parts) {
+        const node = unboxRouteValue(cursor);
+        if (!node || typeof node !== "object" || Array.isArray(node)) return undefined;
+        const directKey = Object.keys(node).find((key) => key === part);
+        const normalizedPart = normalizeRouteObjectKey(part);
+        const looseKey = directKey || Object.keys(node).find((key) => normalizeRouteObjectKey(key) === normalizedPart);
+        if (!looseKey) return undefined;
+        cursor = node[looseKey];
+      }
+      return unboxRouteValue(cursor);
+    };
+    const readRouteDisplayField = (tagPath, aliases = [], routeDocument = null) => {
+      const list = Array.isArray(aliases) ? aliases : [];
+      for (const alias of list) {
+        const docValue = getRouteObjectMember(routeDocument, alias);
+        if (isRouteValuePresent(docValue)) return docValue;
+      }
+      const ignitionValue = readIgnitionMemberValueForPath(tagPath, list);
+      if (isRouteValuePresent(ignitionValue)) return ignitionValue;
+      const liveValue = getLiveMemberValueForTagPath(tagPath, list);
+      if (isRouteValuePresent(liveValue)) return liveValue;
+      return null;
+    };
+    const formatRouteDisplayValue = (value) => {
+      const unboxed = unboxRouteValue(value);
+      if (unboxed == null || String(unboxed).trim() === "") return "null";
+      if (typeof unboxed === "object") {
+        try {
+          return JSON.stringify(unboxed);
+        } catch {
+          return String(unboxed);
+        }
+      }
+      return String(unboxed);
+    };
+    const truncateRouteDisplayText = (value, maxChars) => {
+      const text = String(value ?? "");
+      const limit = Math.max(4, Number(maxChars) || 4);
+      return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1))}...` : text;
+    };
+    const formatScaleNumber = (value, precision = 0) => {
+      const raw = unboxRouteValue(value);
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return "null";
+      try {
+        return new Intl.NumberFormat(undefined, {
+          minimumFractionDigits: Math.max(0, precision),
+          maximumFractionDigits: Math.max(0, precision),
+        }).format(n);
+      } catch {
+        return n.toFixed(Math.max(0, precision));
+      }
+    };
+    const resolveScaleState = (value) => {
+      const raw = unboxRouteValue(value);
+      const text = String(raw ?? "").trim();
+      const n = Number(text);
+      const byNumber = {
+        1: "Stopped",
+        2: "Starting",
+        3: "Dosing",
+        4: "Stopping",
+        5: "Emptying",
+        6: "Emptied",
+        7: "Measuring",
+        16: "Faulted",
+      };
+      if (Number.isFinite(n) && Object.prototype.hasOwnProperty.call(byNumber, n)) {
+        return byNumber[n];
+      }
+      return text || "No State";
+    };
+
+    if (kind === "routeDisplay") {
+      const routeTagPath = String(overlay?.tagPath || "").trim();
+      const routeDocument = parseRouteDocument(
+        routeTagPath
+          ? readIgnitionTagValueForPath(routeTagPath)
+            ?? readLiveValue(routeTagPath)
+            ?? readLiveValue(routeTagPath.toLowerCase())
+          : null
+      );
+      const jobNumber = formatRouteDisplayValue(
+        readRouteDisplayField(routeTagPath, LIVE_ROUTE_JOB_NUMBER_MEMBER_ALIASES, routeDocument)
+      );
+      const jobStep = formatRouteDisplayValue(
+        readRouteDisplayField(routeTagPath, LIVE_ROUTE_JOB_STEP_MEMBER_ALIASES, routeDocument)
+      );
+      const routeState = formatRouteDisplayValue(
+        readRouteDisplayField(routeTagPath, LIVE_ROUTE_STATE_TEXT_MEMBER_ALIASES, routeDocument)
+      );
+      const routeTitle =
+        cardTitle && cardTitle !== "Route Display"
+          ? cardTitle
+          : routeTagPath
+          ? getTagPathLeaf(routeTagPath)
+          : "Route Display";
+      const stateText = routeState.toLowerCase();
+      const stateTone = /fault|fail|error|alarm/.test(stateText)
+        ? "#ef4444"
+        : /active|run|running|start|started|intake/.test(stateText)
+        ? "#22c55e"
+        : /stop|stopped|idle|idling|hold|paused/.test(stateText)
+        ? "#f59e0b"
+        : accent;
+      const rows = [
+        ["Job Number", jobNumber],
+        ["Job Step", jobStep],
+        ["Route State", routeState],
+      ];
+      const cardFill = isDarkTheme ? "#08111f" : "#f8fafc";
+      const panelFill = isDarkTheme ? "rgba(15, 23, 42, 0.72)" : "rgba(255, 255, 255, 0.82)";
+      const headerFill = isDarkTheme ? "rgba(37, 99, 235, 0.30)" : "rgba(37, 99, 235, 0.12)";
+      const headerStroke = isDarkTheme ? "rgba(96, 165, 250, 0.32)" : "rgba(37, 99, 235, 0.22)";
+      const routePad = Math.max(7, Math.min(12, Math.round(Math.min(w, h) * 0.065)));
+      const innerGap = Math.max(4, Math.min(7, Math.round(routePad * 0.6)));
+      const footerH = 0;
+      const usableH = Math.max(48, h - routePad * 2 - innerGap - footerH);
+      const routeHeadH = Math.max(22, Math.min(30, Math.round(usableH * 0.28)));
+      const headerX = x + routePad;
+      const headerY = y + routePad;
+      const headerW = Math.max(20, w - routePad * 2);
+      const bodyX = headerX;
+      const bodyY = headerY + routeHeadH + innerGap;
+      const bodyW = Math.max(20, w - routePad * 2);
+      const bodyBottom = y + h - routePad - footerH;
+      const bodyAvailableH = Math.max(42, bodyBottom - bodyY);
+      const rowStep = Math.max(16, Math.min(22, bodyAvailableH / Math.max(1, rows.length)));
+      const bodyH = Math.max(42, Math.min(bodyAvailableH, rowStep * rows.length));
+      const bodyTop = bodyY + rowStep * 0.5;
+      const routeCardH = Math.max(1, Math.min(h - 2, routePad * 2 + routeHeadH + innerGap + bodyH));
+      const labelFont = Math.max(8, Math.min(12, Math.round(w / 28)));
+      const valueFont = Math.max(9, Math.min(14, Math.round(w / 25)));
+      const maxTitleChars = Math.max(8, Math.floor((headerW - routePad * 2 - 10) / 7));
+      const maxValueChars = Math.max(6, Math.floor((w * 0.48) / Math.max(6, valueFont * 0.58)));
+      const rowBaselineOffset = Math.max(3, Math.min(5, valueFont * 0.34));
+      return (
+        <g pointerEvents="none">
+          <rect x={x + 1} y={y + 1} width={w - 2} height={routeCardH} rx={14} fill={cardFill} stroke={widgetBorderColor} />
+          <rect x={headerX} y={headerY} width={headerW} height={routeHeadH} rx={10} fill={headerFill} stroke={headerStroke} />
+          <rect x={headerX} y={headerY} width={Math.max(5, Math.min(9, routePad - 2))} height={routeHeadH} rx={5} fill={stateTone} />
+          <text
+            x={headerX + routePad + 2}
+            y={headerY + routeHeadH / 2 + titleSize / 2 - 2}
+            fill={widgetTextColor || widgetPrimaryText}
+            fontSize={Math.max(titleSize, 10)}
+            fontFamily="system-ui"
+            fontWeight={850}
+          >
+            {truncateRouteDisplayText(routeTitle, maxTitleChars)}
+          </text>
+          <rect x={bodyX} y={bodyY} width={bodyW} height={bodyH} rx={10} fill={panelFill} stroke={widgetBorderColor} opacity={0.96} />
+          {rows.map(([labelText, valueText], index) => {
+            const rowY = bodyTop + rowStep * index;
+            return (
+              <g key={`route-display-${overlayId}-${labelText}`}>
+                {index > 0 ? (
+                  <line x1={bodyX + 8} y1={bodyY + rowStep * index} x2={bodyX + bodyW - 8} y2={bodyY + rowStep * index} stroke={widgetBorderColor} opacity={0.55} />
+                ) : null}
+                <text x={bodyX + 10} y={rowY + rowBaselineOffset} fill={subdued} fontSize={labelFont} fontFamily="system-ui" fontWeight={750}>
+                  {labelText}
+                </text>
+                <text
+                  x={bodyX + bodyW - 12}
+                  y={rowY + rowBaselineOffset}
+                  fill={labelText === "Route State" && valueText !== "null" ? stateTone : valueColor}
+                  fontSize={valueFont}
+                  fontFamily="system-ui"
+                  fontWeight={850}
+                  textAnchor="end"
+                >
+                  {truncateRouteDisplayText(valueText, maxValueChars)}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      );
+    };
+
+    if (kind === "scaleAdapter" || kind === "scaleAdaptor") {
+      const scaleTagPath = String(overlay?.tagPath || "").trim();
+      const scaleDocument = parseRouteDocument(
+        scaleTagPath
+          ? readIgnitionTagValueForPath(scaleTagPath)
+            ?? readLiveValue(scaleTagPath)
+            ?? readLiveValue(scaleTagPath.toLowerCase())
+          : null
+      );
+      const description = formatRouteDisplayValue(
+        readRouteDisplayField(scaleTagPath, LIVE_SCALE_DESCRIPTION_MEMBER_ALIASES, scaleDocument)
+      );
+      const state = resolveScaleState(
+        readRouteDisplayField(scaleTagPath, LIVE_SCALE_STATE_MEMBER_ALIASES, scaleDocument)
+      );
+      const flowrate = `${formatScaleNumber(
+        readRouteDisplayField(scaleTagPath, LIVE_SCALE_FLOWRATE_MEMBER_ALIASES, scaleDocument),
+        0
+      )} lb/h`;
+      const jobWeight = `${formatScaleNumber(
+        readRouteDisplayField(scaleTagPath, LIVE_SCALE_JOB_WEIGHT_MEMBER_ALIASES, scaleDocument),
+        0
+      )} lb`;
+      const scaleTitle =
+        cardTitle && cardTitle !== "Scale Adapter"
+          ? cardTitle
+          : description !== "null"
+          ? description
+          : scaleTagPath
+          ? getTagPathLeaf(scaleTagPath)
+          : "Scale Adapter";
+      const stateKey = state.toLowerCase();
+      const scaleTone = /fault|fail|error|alarm/.test(stateKey)
+        ? "#ef4444"
+        : /dosing|measuring|started|running/.test(stateKey)
+        ? "#22c55e"
+        : /starting|stopping|emptying/.test(stateKey)
+        ? "#f59e0b"
+        : /stopped|emptied|no state/.test(stateKey)
+        ? (isDarkTheme ? "#94a3b8" : "#64748b")
+        : accent;
+      const scaleCardFill = isDarkTheme ? "#08111f" : "#f8fafc";
+      const scalePanelFill = isDarkTheme ? "rgba(15, 23, 42, 0.76)" : "rgba(255, 255, 255, 0.86)";
+      const scaleHeaderFill = isDarkTheme ? "rgba(15, 44, 95, 0.82)" : "rgba(219, 234, 254, 0.96)";
+      const scaleHeaderStroke = isDarkTheme ? "rgba(96, 165, 250, 0.34)" : "rgba(37, 99, 235, 0.22)";
+      const scalePad = Math.max(7, Math.min(12, Math.round(Math.min(w, h) * 0.065)));
+      const scaleGap = Math.max(4, Math.min(7, Math.round(scalePad * 0.6)));
+      const scaleUsableH = Math.max(48, h - scalePad * 2 - scaleGap);
+      const scaleHeadH = Math.max(22, Math.min(30, Math.round(scaleUsableH * 0.28)));
+      const headerX = x + scalePad;
+      const headerY = y + scalePad;
+      const headerW = Math.max(20, w - scalePad * 2);
+      const bodyX = x + scalePad;
+      const bodyY = headerY + scaleHeadH + scaleGap;
+      const bodyW = Math.max(20, w - scalePad * 2);
+      const scaleBodyAvailableH = Math.max(48, y + h - scalePad - bodyY);
+      const scaleRowStep = Math.max(16, Math.min(22, scaleBodyAvailableH / 3));
+      const bodyH = Math.max(48, Math.min(scaleBodyAvailableH, scaleRowStep * 3));
+      const scaleCardH = Math.max(1, Math.min(h - 2, scalePad * 2 + scaleHeadH + scaleGap + bodyH));
+      const bodyInnerPad = Math.max(5, Math.min(8, Math.round(scalePad * 0.65)));
+      const stateH = Math.max(15, Math.min(20, scaleRowStep - bodyInnerPad));
+      const stateY = bodyY + scaleRowStep * 0.5 - stateH / 2;
+      const titleFont = Math.max(titleSize, 10);
+      const labelFont = Math.max(8, Math.min(12, Math.round(w / 28)));
+      const valueFont = Math.max(9, Math.min(14, Math.round(w / 25)));
+      const maxTitleChars = Math.max(8, Math.floor((headerW - scalePad * 2 - 10) / 7));
+      const maxValueChars = Math.max(8, Math.floor((w * 0.48) / Math.max(6, valueFont * 0.58)));
+      const metricBaselineOffset = Math.max(3, Math.min(5, valueFont * 0.34));
+      const metricRows = [
+        ["Flowrate", flowrate],
+        ["Job Weight", jobWeight],
+      ];
+      return (
+        <g pointerEvents="none">
+          <rect x={x + 1} y={y + 1} width={w - 2} height={scaleCardH} rx={14} fill={scaleCardFill} stroke={widgetBorderColor} />
+          <rect x={headerX} y={headerY} width={headerW} height={scaleHeadH} rx={10} fill={scaleHeaderFill} stroke={scaleHeaderStroke} />
+          <rect x={headerX} y={headerY} width={Math.max(5, Math.min(9, scalePad - 2))} height={scaleHeadH} rx={5} fill={scaleTone} />
+          <text
+            x={headerX + scalePad + 2}
+            y={headerY + scaleHeadH / 2 + titleFont / 2 - 2}
+            fill={widgetTextColor || widgetPrimaryText}
+            fontSize={titleFont}
+            fontFamily="system-ui"
+            fontWeight={850}
+          >
+            {truncateRouteDisplayText(scaleTitle, maxTitleChars)}
+          </text>
+          <rect x={bodyX} y={bodyY} width={bodyW} height={bodyH} rx={10} fill={scalePanelFill} stroke={widgetBorderColor} opacity={0.96} />
+          <rect x={bodyX + bodyInnerPad} y={stateY} width={bodyW - bodyInnerPad * 2} height={stateH} rx={8} fill={scaleTone} opacity={isDarkTheme ? 0.20 : 0.13} stroke={scaleTone} />
+          <text
+            x={bodyX + bodyW / 2}
+            y={stateY + stateH / 2 + valueFont / 2 - 2}
+            fill={scaleTone}
+            fontSize={Math.max(valueFont, 10)}
+            fontFamily="system-ui"
+            fontWeight={900}
+            textAnchor="middle"
+          >
+            {truncateRouteDisplayText(state, Math.max(8, Math.floor(bodyW / 8)))}
+          </text>
+          {metricRows.map(([labelText, valueText], index) => {
+            const rowIndex = index + 1;
+            const rowY = bodyY + scaleRowStep * rowIndex + scaleRowStep / 2;
+            return (
+              <g key={`scale-adapter-${overlayId}-${labelText}`}>
+                <line x1={bodyX + 8} y1={bodyY + scaleRowStep * rowIndex} x2={bodyX + bodyW - 8} y2={bodyY + scaleRowStep * rowIndex} stroke={widgetBorderColor} opacity={0.55} />
+                <text x={bodyX + 10} y={rowY + metricBaselineOffset} fill={subdued} fontSize={labelFont} fontFamily="system-ui" fontWeight={750}>
+                  {labelText}
+                </text>
+                <text
+                  x={bodyX + bodyW - 12}
+                  y={rowY + metricBaselineOffset}
+                  fill={valueColor}
+                  fontSize={valueFont}
+                  fontFamily="system-ui"
+                  fontWeight={850}
+                  textAnchor="end"
+                >
+                  {truncateRouteDisplayText(valueText, maxValueChars)}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      );
+    }
 
     if (kind === "kpi") {
       const display =
@@ -5142,19 +5719,42 @@ function CanvasSvg({
       ""
     );
   };
+  const clampColorChannel = (value) => Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
+  const rgbToCssColor = ([r, g, b]) => `rgb(${clampColorChannel(r)}, ${clampColorChannel(g)}, ${clampColorChannel(b)})`;
+  const mixCssColor = (baseColor, targetColor, amount) => {
+    const base = parseCssRgbChannels(baseColor);
+    const target = parseCssRgbChannels(targetColor);
+    if (!base || !target) return String(baseColor || "");
+    const ratio = Math.max(0, Math.min(1, Number(amount) || 0));
+    return rgbToCssColor(base.map((channel, index) => channel + (target[index] - channel) * ratio));
+  };
   const applyBinVisualStateToSvg = (innerSvg, options = {}) => {
     const source = String(innerSvg || "");
     if (!source.trim()) return source;
     const ratio = Math.max(0, Math.min(1, Number(options?.ratio) || 0));
     const showFillLock = options?.showFillLock === true;
     const showDischargeLock = options?.showDischargeLock === true;
+    const rawFillColor = String(options?.fillColor || "").trim();
+    const fillColor =
+      rawFillColor && !["none", "transparent"].includes(rawFillColor.toLowerCase())
+        ? rawFillColor
+        : "#4f77a5";
+    const fillStyleKey = String(options?.fillStyle || "gradient")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+    const useLevelGradient = fillStyleKey !== "solid";
+    const activeFillingRoute = options?.activeFillingRoute === true;
+    const activeDischargingRoute = options?.activeDischargingRoute === true;
+    const routeActivityColor = String(options?.routeActivityColor || BIN_ROUTE_ACTIVITY_COLOR).trim() || BIN_ROUTE_ACTIVITY_COLOR;
     const hasBarGraph = /id=["']BarGraph["']/i.test(source);
+    const hasSiloBody = /id=["'](?:main-tall-bin|bin_shell)["']/i.test(source);
     const hasLockGroup =
       /id=["']Lock_Filling["']/i.test(source) ||
       /id=["']Lock_Discharge["']/i.test(source) ||
       /id=["']LockFill["']/i.test(source) ||
       /id=["']LockDischarge["']/i.test(source);
-    if (!hasBarGraph && !hasLockGroup) return source;
+    if (!hasBarGraph && !hasSiloBody && !hasLockGroup) return source;
     try {
       const parser = new DOMParser();
       const doc = parser.parseFromString(
@@ -5176,7 +5776,9 @@ function CanvasSvg({
       };
       const ensureBinLevelGradient = () => {
         const ns = "http://www.w3.org/2000/svg";
-        let gradient = doc.getElementById("binLevelFill");
+        const suffix = String(options?.overlayId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+        const gradientId = suffix ? `binLevelFill-${suffix}` : "binLevelFill";
+        let gradient = doc.getElementById(gradientId);
         if (!gradient) {
           let defs = doc.querySelector("defs");
           if (!defs) {
@@ -5184,7 +5786,86 @@ function CanvasSvg({
             doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
           }
           gradient = doc.createElementNS(ns, "linearGradient");
-          gradient.setAttribute("id", "binLevelFill");
+          gradient.setAttribute("id", gradientId);
+          defs.appendChild(gradient);
+        }
+        gradient.setAttribute("x1", "0");
+        gradient.setAttribute("y1", "0");
+        gradient.setAttribute("x2", "0");
+        gradient.setAttribute("y2", "1");
+        while (gradient.firstChild) {
+          gradient.removeChild(gradient.firstChild);
+        }
+        const topColor = mixCssColor(fillColor, "#ffffff", 0.46) || fillColor;
+        const upperColor = mixCssColor(fillColor, "#ffffff", 0.24) || fillColor;
+        const lowerColor = mixCssColor(fillColor, "#000000", 0.18) || fillColor;
+        const bottomColor = mixCssColor(fillColor, "#000000", 0.34) || fillColor;
+        [
+          ["0%", topColor, "0.68"],
+          ["12%", upperColor, "0.88"],
+          ["42%", fillColor, "0.98"],
+          ["72%", lowerColor, "0.98"],
+          ["100%", bottomColor, "0.94"],
+        ].forEach(([offset, color, opacity]) => {
+          const stop = doc.createElementNS(ns, "stop");
+          stop.setAttribute("offset", offset);
+          stop.setAttribute("stop-color", color);
+          stop.setAttribute("stop-opacity", opacity);
+          gradient.appendChild(stop);
+        });
+        return gradientId;
+      };
+      const ensureSiloLevelSideShadeGradient = () => {
+        const ns = "http://www.w3.org/2000/svg";
+        const suffix = String(options?.overlayId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+        const gradientId = suffix ? `siloLevelSideShade-${suffix}` : "siloLevelSideShade";
+        let gradient = doc.getElementById(gradientId);
+        if (!gradient) {
+          let defs = doc.querySelector("defs");
+          if (!defs) {
+            defs = doc.createElementNS(ns, "defs");
+            doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+          }
+          gradient = doc.createElementNS(ns, "linearGradient");
+          gradient.setAttribute("id", gradientId);
+          defs.appendChild(gradient);
+        }
+        gradient.setAttribute("x1", "0");
+        gradient.setAttribute("y1", "0");
+        gradient.setAttribute("x2", "1");
+        gradient.setAttribute("y2", "0");
+        while (gradient.firstChild) {
+          gradient.removeChild(gradient.firstChild);
+        }
+        [
+          ["0%", "#000000", "0.26"],
+          ["16%", "#000000", "0.08"],
+          ["42%", "#ffffff", "0.20"],
+          ["58%", "#ffffff", "0.08"],
+          ["84%", "#000000", "0.08"],
+          ["100%", "#000000", "0.24"],
+        ].forEach(([offset, color, opacity]) => {
+          const stop = doc.createElementNS(ns, "stop");
+          stop.setAttribute("offset", offset);
+          stop.setAttribute("stop-color", color);
+          stop.setAttribute("stop-opacity", opacity);
+          gradient.appendChild(stop);
+        });
+        return gradientId;
+      };
+      const ensureSiloLevelSurfaceGradient = () => {
+        const ns = "http://www.w3.org/2000/svg";
+        const suffix = String(options?.overlayId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+        const gradientId = suffix ? `siloLevelSurfaceSheen-${suffix}` : "siloLevelSurfaceSheen";
+        let gradient = doc.getElementById(gradientId);
+        if (!gradient) {
+          let defs = doc.querySelector("defs");
+          if (!defs) {
+            defs = doc.createElementNS(ns, "defs");
+            doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+          }
+          gradient = doc.createElementNS(ns, "linearGradient");
+          gradient.setAttribute("id", gradientId);
           defs.appendChild(gradient);
         }
         gradient.setAttribute("x1", "0");
@@ -5195,20 +5876,84 @@ function CanvasSvg({
           gradient.removeChild(gradient.firstChild);
         }
         [
-          ["0%", "#b6cff2"],
-          ["100%", "#4f77a5"],
-        ].forEach(([offset, color]) => {
+          ["0%", "#ffffff", "0.38"],
+          ["45%", mixCssColor(fillColor, "#ffffff", 0.32) || fillColor, "0.24"],
+          ["100%", fillColor, "0.00"],
+        ].forEach(([offset, color, opacity]) => {
           const stop = doc.createElementNS(ns, "stop");
           stop.setAttribute("offset", offset);
           stop.setAttribute("stop-color", color);
+          stop.setAttribute("stop-opacity", opacity);
           gradient.appendChild(stop);
         });
-        return "binLevelFill";
+        return gradientId;
       };
+      const ensureBinRouteActivityGradient = () => {
+        const ns = "http://www.w3.org/2000/svg";
+        const suffix = String(options?.overlayId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+        const gradientId = suffix ? `binRouteActivityFill-${suffix}` : "binRouteActivityFill";
+        let gradient = doc.getElementById(gradientId);
+        if (!gradient) {
+          let defs = doc.querySelector("defs");
+          if (!defs) {
+            defs = doc.createElementNS(ns, "defs");
+            doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+          }
+          gradient = doc.createElementNS(ns, "linearGradient");
+          gradient.setAttribute("id", gradientId);
+          defs.appendChild(gradient);
+        }
+        gradient.setAttribute("x1", "0");
+        gradient.setAttribute("y1", "0");
+        gradient.setAttribute("x2", "0");
+        gradient.setAttribute("y2", "1");
+        while (gradient.firstChild) {
+          gradient.removeChild(gradient.firstChild);
+        }
+        [
+          ["0%", mixCssColor(routeActivityColor, "#ffffff", 0.42) || routeActivityColor, "1"],
+          ["48%", routeActivityColor, "1"],
+          ["100%", mixCssColor(routeActivityColor, "#000000", 0.16) || routeActivityColor, "1"],
+        ].forEach(([offset, color, opacity]) => {
+          const stop = doc.createElementNS(ns, "stop");
+          stop.setAttribute("offset", offset);
+          stop.setAttribute("stop-color", color);
+          stop.setAttribute("stop-opacity", opacity);
+          gradient.appendChild(stop);
+        });
+        return gradientId;
+      };
+      const paintRouteActivityTarget = (node) => {
+        if (!node) return false;
+        const gradientId = ensureBinRouteActivityGradient();
+        setStylePaint(node, "fill", `url(#${gradientId})`);
+        node.setAttribute("fill-opacity", "1");
+        if (!node.getAttribute("stroke")) {
+          node.setAttribute("stroke", "#2e2e2e");
+        }
+        return true;
+      };
+      const paintRouteActivityTargets = (ids) => {
+        let painted = false;
+        (Array.isArray(ids) ? ids : []).forEach((id) => {
+          painted = paintRouteActivityTarget(doc.getElementById(id)) || painted;
+        });
+        return painted;
+      };
+      if (activeFillingRoute) {
+        paintRouteActivityTargets(["roof", "top_cone"]);
+      }
+      if (activeDischargingRoute) {
+        paintRouteActivityTargets(["short-hopper-cone", "hopper"]);
+      }
       const bar = doc.getElementById("BarGraph");
       if (bar) {
-        const levelGradientId = ensureBinLevelGradient();
-        setStylePaint(bar, "fill", `url(#${levelGradientId})`);
+        if (useLevelGradient) {
+          const levelGradientId = ensureBinLevelGradient();
+          setStylePaint(bar, "fill", `url(#${levelGradientId})`);
+        } else {
+          setStylePaint(bar, "fill", fillColor);
+        }
         setStylePaint(bar, "stroke", "#3f3f3f");
         setStylePaint(bar, "stroke-width", "0");
         const rawY = Number(bar.getAttribute("y"));
@@ -5217,6 +5962,163 @@ function CanvasSvg({
           const nextHeight = rawHeight * ratio;
           bar.setAttribute("height", String(nextHeight));
           bar.setAttribute("y", String(rawY));
+        }
+      }
+      const siloBody =
+        doc.getElementById("main-tall-bin") ||
+        doc.getElementById("bin_shell");
+      if (siloBody) {
+        const ns = "http://www.w3.org/2000/svg";
+        const suffix = String(options?.overlayId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+        const clipId = suffix ? `siloLevelClip-${suffix}` : "siloLevelClip";
+        let defs = doc.querySelector("defs");
+        if (!defs) {
+          defs = doc.createElementNS(ns, "defs");
+          doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+        }
+        let clip = doc.getElementById(clipId);
+        if (!clip) {
+          clip = doc.createElementNS(ns, "clipPath");
+          clip.setAttribute("id", clipId);
+          defs.appendChild(clip);
+        }
+        while (clip.firstChild) clip.removeChild(clip.firstChild);
+        const clipShape = siloBody.cloneNode(true);
+        clipShape.removeAttribute("id");
+        clipShape.removeAttribute("fill");
+        clipShape.removeAttribute("stroke");
+        clipShape.removeAttribute("style");
+        clip.appendChild(clipShape);
+
+        let minX = 0;
+        let minY = 0;
+        let width = 500;
+        let height = 800;
+        try {
+          const box = typeof siloBody.getBBox === "function" ? siloBody.getBBox() : null;
+          if (box && Number.isFinite(box.x) && Number.isFinite(box.y) && box.width > 0 && box.height > 0) {
+            minX = box.x;
+            minY = box.y;
+            width = box.width;
+            height = box.height;
+          }
+        } catch {
+          // Detached SVG nodes may not expose getBBox; path parsing below covers the silo template.
+        }
+        if (!(width > 0 && height > 0) || width === 500) {
+          const rectX = Number.parseFloat(String(siloBody.getAttribute("x") || ""));
+          const rectY = Number.parseFloat(String(siloBody.getAttribute("y") || ""));
+          const rectW = Number.parseFloat(String(siloBody.getAttribute("width") || ""));
+          const rectH = Number.parseFloat(String(siloBody.getAttribute("height") || ""));
+          if (
+            Number.isFinite(rectX) &&
+            Number.isFinite(rectY) &&
+            Number.isFinite(rectW) &&
+            Number.isFinite(rectH) &&
+            rectW > 0 &&
+            rectH > 0
+          ) {
+            minX = rectX;
+            minY = rectY;
+            width = rectW;
+            height = rectH;
+          }
+        }
+        if (!(width > 0 && height > 0) || width === 500) {
+          const d = String(siloBody.getAttribute("d") || "");
+          const move = d.match(/[mM]\s*([-0-9.]+)[,\s]+([-0-9.]+)/);
+          const vertical = d.match(/\bv\s*([-0-9.]+)/i);
+          const cubicWidth = d.match(/\bc\s*0\s*,\s*[-0-9.]+\s+([-0-9.]+)\s*,/i);
+          if (move) {
+            minX = Number.parseFloat(move[1]);
+            minY = Number.parseFloat(move[2]);
+          }
+          const parsedHeight = Math.abs(Number.parseFloat(vertical?.[1] || ""));
+          const parsedWidth = Math.abs(Number.parseFloat(cubicWidth?.[1] || ""));
+          height = Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : 457;
+          width = Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : 244;
+        }
+        const existing = doc.getElementById("SiloLevelFill");
+        if (existing?.parentNode) existing.parentNode.removeChild(existing);
+        const fillHeight = height * ratio;
+        if (fillHeight > 0.1) {
+          const levelGradientId = useLevelGradient ? ensureBinLevelGradient() : "";
+          const sideShadeGradientId = useLevelGradient ? ensureSiloLevelSideShadeGradient() : "";
+          const surfaceGradientId = useLevelGradient ? ensureSiloLevelSurfaceGradient() : "";
+          const overrun = Math.max(3, width * 0.012);
+          const left = minX - overrun;
+          const right = minX + width + overrun;
+          const fillTopY = minY + height - fillHeight;
+          const bottomY = minY + height + Math.max(18, height * 0.04);
+          const curveDepth = Math.max(
+            2,
+            Math.min(height * 0.052, width * 0.105, fillHeight * 0.55)
+          );
+          const curvePath = [
+            `M ${left} ${fillTopY}`,
+            `C ${minX + width * 0.2} ${fillTopY + curveDepth} ${minX + width * 0.8} ${fillTopY + curveDepth} ${right} ${fillTopY}`,
+          ].join(" ");
+          const fillPath = doc.createElementNS(ns, "path");
+          fillPath.setAttribute("id", "SiloLevelFillBody");
+          fillPath.setAttribute(
+            "d",
+            `${curvePath} L ${right} ${bottomY} L ${left} ${bottomY} Z`
+          );
+          fillPath.setAttribute("fill", useLevelGradient ? `url(#${levelGradientId})` : fillColor);
+          fillPath.setAttribute("opacity", useLevelGradient ? "0.90" : "0.82");
+
+          const shadePath = doc.createElementNS(ns, "path");
+          shadePath.setAttribute("id", "SiloLevelSideShade");
+          shadePath.setAttribute("d", fillPath.getAttribute("d") || "");
+          shadePath.setAttribute("fill", useLevelGradient ? `url(#${sideShadeGradientId})` : "none");
+          shadePath.setAttribute("opacity", useLevelGradient ? "0.62" : "0");
+          shadePath.setAttribute("pointer-events", "none");
+
+          const capDepth = Math.max(
+            4,
+            Math.min(height * 0.035, width * 0.075, fillHeight * 0.7)
+          );
+          const surfaceCapPath = [
+            curvePath,
+            `C ${minX + width * 0.78} ${fillTopY + capDepth} ${minX + width * 0.22} ${fillTopY + capDepth} ${left} ${fillTopY}`,
+            "Z",
+          ].join(" ");
+          const surfaceCap = doc.createElementNS(ns, "path");
+          surfaceCap.setAttribute("id", "SiloLevelSurfaceSheen");
+          surfaceCap.setAttribute("d", surfaceCapPath);
+          surfaceCap.setAttribute("fill", useLevelGradient ? `url(#${surfaceGradientId})` : "none");
+          surfaceCap.setAttribute("opacity", useLevelGradient ? "0.72" : "0");
+          surfaceCap.setAttribute("pointer-events", "none");
+
+          const surfaceShadow = doc.createElementNS(ns, "path");
+          surfaceShadow.setAttribute("id", "SiloLevelSurfaceShadow");
+          surfaceShadow.setAttribute("d", curvePath);
+          surfaceShadow.setAttribute("fill", "none");
+          surfaceShadow.setAttribute("stroke", "#1f2937");
+          surfaceShadow.setAttribute("stroke-width", String(Math.max(1.2, width * 0.008)));
+          surfaceShadow.setAttribute("stroke-linecap", "round");
+          surfaceShadow.setAttribute("opacity", "0.22");
+
+          const surfaceHighlight = doc.createElementNS(ns, "path");
+          surfaceHighlight.setAttribute("id", "SiloLevelSurfaceHighlight");
+          surfaceHighlight.setAttribute("d", curvePath);
+          surfaceHighlight.setAttribute("fill", "none");
+          surfaceHighlight.setAttribute("stroke", "#ffffff");
+          surfaceHighlight.setAttribute("stroke-width", String(Math.max(0.8, width * 0.004)));
+          surfaceHighlight.setAttribute("stroke-linecap", "round");
+          surfaceHighlight.setAttribute("opacity", "0.32");
+
+          const levelGroup = doc.createElementNS(ns, "g");
+          levelGroup.setAttribute("id", "SiloLevelFill");
+          levelGroup.setAttribute("clip-path", `url(#${clipId})`);
+          levelGroup.appendChild(fillPath);
+          if (useLevelGradient) {
+            levelGroup.appendChild(shadePath);
+            levelGroup.appendChild(surfaceCap);
+          }
+          levelGroup.appendChild(surfaceShadow);
+          levelGroup.appendChild(surfaceHighlight);
+          siloBody.parentNode?.insertBefore(levelGroup, siloBody.nextSibling);
         }
       }
       const setGroupVisible = (ids, visible) => {
@@ -6183,10 +7085,105 @@ function CanvasSvg({
   const DIVERTER_STRAIGHT_ELEMENT_IDS = ["straightPath", "StraightPath", "Straight_Path", "Left_Valve", "Straight_Valve"];
   const DIVERTER_DIVERT_ELEMENT_IDS = ["divertPath", "DivertPath", "Divert_Path", "Right_Valve", "Divert_Valve"];
 
+  const applyRouteStrokeToDiverterSvg = (inner, color) => {
+    const routeColor = normalizeActiveLineColor(color);
+    if (!inner || !routeColor || typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") {
+      return inner;
+    }
+    const SHAPE_SELECTOR = "path,rect,circle,ellipse,polygon,polyline,line";
+    const BODY_ID_RE = /^(body|bodyouter|bodyinner|housing|shell|main|casing)$/i;
+    const ROUTE_PART_RE = /(entry|straight|divert|valve|route|flow|path|blade|flap|gate)/i;
+    const readStylePaint = (node, name) => {
+      const style = String(node?.getAttribute?.("style") || "");
+      if (!style) return "";
+      const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+      return String(match?.[1] || "").trim();
+    };
+    const readPaint = (node, name) => {
+      const attrValue = String(node?.getAttribute?.(name) || "").trim();
+      if (attrValue) return attrValue;
+      return readStylePaint(node, name);
+    };
+    const setPaint = (node, name, value) => {
+      if (!node) return;
+      node.setAttribute(name, value);
+      const style = String(node.getAttribute("style") || "");
+      if (!style || !new RegExp(`${name}\\s*:`, "i").test(style)) return;
+      node.setAttribute(
+        "style",
+        style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+      );
+    };
+    const isTransparentPaint = (value) => {
+      const paint = String(value || "").trim().toLowerCase();
+      return !paint || paint === "none" || paint === "transparent";
+    };
+    const tokenTextForNode = (node) => [
+      node?.getAttribute?.("id"),
+      node?.getAttribute?.("class"),
+      node?.getAttribute?.("data-name"),
+    ].map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+
+    try {
+      const doc = new DOMParser().parseFromString(
+        `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`,
+        "image/svg+xml"
+      );
+      if (doc.querySelector("parsererror")) return inner;
+      const root = doc.documentElement;
+      const shapes = Array.from(root.querySelectorAll(SHAPE_SELECTOR));
+      if (!shapes.length) return inner;
+
+      const bodyNodes = new Set(
+        shapes.filter((node) => BODY_ID_RE.test(String(node.getAttribute("id") || "").trim()))
+      );
+      const tokenTargets = shapes.filter((node) => {
+        const tokenText = tokenTextForNode(node);
+        return ROUTE_PART_RE.test(tokenText) && !bodyNodes.has(node);
+      });
+      const strokeTargets = shapes.filter((node) => {
+        if (bodyNodes.has(node)) return false;
+        const tagName = String(node.tagName || "").toLowerCase();
+        if (["line", "polyline"].includes(tagName)) return true;
+        return !isTransparentPaint(readPaint(node, "stroke")) || isTransparentPaint(readPaint(node, "fill"));
+      });
+      const targets = tokenTargets.length
+        ? tokenTargets
+        : strokeTargets.length
+        ? strokeTargets
+        : shapes.length === 1
+        ? shapes
+        : [];
+
+      targets.forEach((node) => {
+        const tagName = String(node.tagName || "").toLowerCase();
+        const fill = readPaint(node, "fill");
+        if (["line", "polyline"].includes(tagName) || isTransparentPaint(fill)) {
+          setPaint(node, "fill", "transparent");
+        }
+        setPaint(node, "stroke", routeColor);
+      });
+
+      const serializer = new XMLSerializer();
+      return Array.from(root.childNodes)
+        .map((node) => serializer.serializeToString(node))
+        .join("");
+    } catch {
+      return inner;
+    }
+  };
+
+  const getDiverterRouteColorForOverlay = (overlay) => {
+    return normalizeActiveLineColor(
+      getRouteColorForOverlay(overlay) ||
+      getRouteStrokeColorForOverlay(overlay)
+    );
+  };
+
   const getEffectiveOverlayFlowColor = (overlay, overlayEType, entryColor = "") => {
     const incomingEntryColor = normalizeActiveLineColor(entryColor);
     if (isDiverterEType(overlayEType)) {
-      return incomingEntryColor;
+      return getDiverterRouteColorForOverlay(overlay) || incomingEntryColor;
     }
     return normalizeActiveLineColor(
       getRouteColorForOverlay(overlay) ||
@@ -6234,6 +7231,7 @@ function CanvasSvg({
         ...DIVERTER_STRAIGHT_ELEMENT_IDS,
         ...DIVERTER_DIVERT_ELEMENT_IDS,
       ].map((id) => String(id || "").trim().toLowerCase()));
+      let paintedActiveBranchStroke = false;
 
       const getNodesByIds = (ids) =>
         (Array.isArray(ids) ? ids : [])
@@ -6243,6 +7241,31 @@ function CanvasSvg({
         const id = String(node?.getAttribute?.("id") || "").trim();
         if (!id) return false;
         return branchIdSet.has(id.toLowerCase()) || /(entry|straight|divert|valve)/i.test(id);
+      };
+      const readStylePaint = (node, name) => {
+        const style = String(node?.getAttribute?.("style") || "");
+        if (!style) return "";
+        const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+        return String(match?.[1] || "").trim();
+      };
+      const readPaint = (node, name) => {
+        const attrValue = String(node?.getAttribute?.(name) || "").trim();
+        if (attrValue) return attrValue;
+        return readStylePaint(node, name);
+      };
+      const setPaint = (node, name, value) => {
+        if (!node) return;
+        node.setAttribute(name, value);
+        const style = String(node.getAttribute("style") || "");
+        if (!style || !new RegExp(`${name}\\s*:`, "i").test(style)) return;
+        node.setAttribute(
+          "style",
+          style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+        );
+      };
+      const isTransparentPaint = (value) => {
+        const paint = String(value || "").trim().toLowerCase();
+        return !paint || paint === "none" || paint === "transparent";
       };
       const findBodyNodes = () => {
         const explicit = [
@@ -6283,7 +7306,7 @@ function CanvasSvg({
         node.setAttribute("stroke", outlineStrokeColor);
       };
       const paintBranchNode = (node, nextColor = "", nextClassName = "") => {
-        if (!node) return;
+        if (!node) return false;
         const className = String(nextClassName || "").trim();
         if (className) {
           appendSvgClassName(node, className);
@@ -6296,19 +7319,54 @@ function CanvasSvg({
             if (nextStyle) node.setAttribute("style", nextStyle);
             else node.removeAttribute("style");
           }
-          return;
+          return true;
         }
         const id = String(node.getAttribute("id") || "");
+        const tagName = String(node.tagName || "").toLowerCase();
+        const nextStrokeColor = nextColor || DIVERTER_NEUTRAL_STROKE;
         const lineLike =
           /valve/i.test(id) ||
-          ["line", "polyline"].includes(String(node.tagName || "").toLowerCase());
+          ["line", "polyline"].includes(tagName) ||
+          isTransparentPaint(readPaint(node, "fill"));
         if (lineLike) {
-          node.setAttribute("fill", "transparent");
-          node.setAttribute("stroke", nextColor || DIVERTER_NEUTRAL_STROKE);
-          return;
+          setPaint(node, "fill", "transparent");
+          setPaint(node, "stroke", nextStrokeColor);
+        } else {
+          setPaint(node, "fill", nextColor || DIVERTER_NEUTRAL_FILL);
+          setPaint(node, "stroke", nextStrokeColor);
         }
-        node.setAttribute("fill", nextColor || DIVERTER_NEUTRAL_FILL);
-        node.setAttribute("stroke", "none");
+        if (nextColor) paintedActiveBranchStroke = true;
+        return true;
+      };
+      const paintFallbackRouteStrokes = (nextColor) => {
+        const routeColor = normalizeActiveLineColor(nextColor);
+        if (!routeColor) return;
+        const shapes = Array.from(root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline,line"));
+        if (!shapes.length) return;
+        const bodyNodes = new Set(findBodyNodes());
+        const tokenTargetNodes = shapes.filter((node) => {
+          const tokenText = [
+            node.getAttribute?.("id"),
+            node.getAttribute?.("class"),
+            node.getAttribute?.("data-name"),
+          ].map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+          return /(entry|straight|divert|valve|route|flow|path)/i.test(tokenText);
+        });
+        const strokeLikeNodes = shapes.filter((node) => {
+          const tagName = String(node.tagName || "").toLowerCase();
+          if (["line", "polyline"].includes(tagName)) return true;
+          return !isTransparentPaint(readPaint(node, "stroke")) || isTransparentPaint(readPaint(node, "fill"));
+        });
+        const targets = (tokenTargetNodes.length ? tokenTargetNodes : strokeLikeNodes)
+          .filter((node) => !bodyNodes.has(node));
+        const finalTargets = targets.length ? targets : (tokenTargetNodes.length ? tokenTargetNodes : strokeLikeNodes);
+        finalTargets.forEach((node) => {
+          const tagName = String(node.tagName || "").toLowerCase();
+          if (["line", "polyline"].includes(tagName) || isTransparentPaint(readPaint(node, "fill"))) {
+            setPaint(node, "fill", "transparent");
+          }
+          setPaint(node, "stroke", routeColor);
+        });
       };
       const setNodesVisible = (ids, visible) => {
         getNodesByIds(ids).forEach((node) => {
@@ -6348,6 +7406,10 @@ function CanvasSvg({
         getNodesByIds(activeBranchIds).forEach((node) =>
           paintBranchNode(node, activeBranchColor, activeBranchStyleClass)
         );
+      }
+
+      if ((flowColor || activeBranchStateColor) && !paintedActiveBranchStroke) {
+        paintFallbackRouteStrokes(activeBranchStateColor || flowColor);
       }
 
       const serializer = new XMLSerializer();
@@ -6828,7 +7890,6 @@ function CanvasSvg({
         : "";
       const incomingEntryColor = normalizeActiveLineColor(entryColor);
       const color = getEffectiveOverlayFlowColor(o, overlayEType, entryColor);
-      if (isDiverterEType(overlayEType) && !incomingEntryColor) continue;
       if (!color) continue;
       const bb = overlayLocalBBox(o.id);
       if (!bb) continue;
@@ -6882,7 +7943,6 @@ function CanvasSvg({
         : "";
       const incomingEntryColor = normalizeActiveLineColor(entryColor);
       const color = getEffectiveOverlayFlowColor(o, overlayEType, entryColor);
-      if (isDiverterEType(overlayEType) && !incomingEntryColor) continue;
       if (!color) continue;
       if (isDiverterEType(overlayEType)) {
         const local = overlaySourceLocalPointFromWorld(o, bb, pt);
@@ -6917,7 +7977,8 @@ function CanvasSvg({
           excludeOverlayId: String(o?.id || ""),
         })
       );
-      if (!incomingEntryColor) continue;
+      const color = getEffectiveOverlayFlowColor(o, overlayEType, incomingEntryColor);
+      if (!incomingEntryColor && !color) continue;
 
       const local = overlaySourceLocalPointFromWorld(o, bb, pt);
       const localX = local.x;
@@ -6930,7 +7991,6 @@ function CanvasSvg({
       const activeBranch = getEffectiveDiverterState(o);
       if (!(branch && branch !== "entry" && activeBranch && branch === activeBranch)) continue;
 
-      const color = getEffectiveOverlayFlowColor(o, overlayEType, incomingEntryColor);
       if (!color) continue;
       bestDistance = dist;
       bestColor = color;
@@ -6969,8 +8029,8 @@ function CanvasSvg({
         })
       );
       const activeBranch = getEffectiveDiverterState(o);
-      const active = !!incomingEntryColor && !!activeBranch && branch === activeBranch;
       const color = getEffectiveOverlayFlowColor(o, overlayEType, incomingEntryColor);
+      const active = !!(incomingEntryColor || color) && !!activeBranch && branch === activeBranch;
       best = { matched: true, active, color: color || incomingEntryColor || "", dist };
     }
     return { matched: best.matched, active: best.active, color: best.color };
@@ -7996,7 +9056,10 @@ function CanvasSvg({
               if (!Array.isArray(s.points)) return s;
               if (ptIndex < 0 || ptIndex >= s.points.length) return s;
               const pts = s.points.map((pt) => ({ ...pt }));
-              pts[ptIndex] = { x: pts[ptIndex].x + dx, y: pts[ptIndex].y + dy };
+              pts[ptIndex] = {
+                x: toFiniteCanvasNumber(pts[ptIndex].x) + dx,
+                y: toFiniteCanvasNumber(pts[ptIndex].y) + dy,
+              };
               return { ...s, points: pts };
             })
           );
@@ -8017,7 +9080,11 @@ function CanvasSvg({
             if (Array.isArray(s.points)) {
               return {
                 ...s,
-                points: s.points.map((pt) => ({ ...pt, x: pt.x + dx, y: pt.y + dy })),
+                points: s.points.map((pt) => ({
+                  ...pt,
+                  x: toFiniteCanvasNumber(pt.x) + dx,
+                  y: toFiniteCanvasNumber(pt.y) + dy,
+                })),
               };
             }
             return s;
@@ -8030,7 +9097,11 @@ function CanvasSvg({
         setSvgOverlays((prev) =>
           prev.map((o) => {
             if (!overlaySet.has(o.id)) return o;
-            return { ...o, tx: o.tx + dx, ty: o.ty + dy };
+            return {
+              ...o,
+              tx: toFiniteCanvasNumber(o.tx) + dx,
+              ty: toFiniteCanvasNumber(o.ty) + dy,
+            };
           })
         );
       }
@@ -8073,6 +9144,8 @@ function CanvasSvg({
       }
 
       e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation?.();
       nudgePendingRef.current = {
         dx: Number(nudgePendingRef.current?.dx || 0) + dx,
         dy: Number(nudgePendingRef.current?.dy || 0) + dy,
@@ -8082,9 +9155,9 @@ function CanvasSvg({
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", handleKeyDown, true);
       if (nudgeRafRef.current) {
         window.cancelAnimationFrame(nudgeRafRef.current);
         nudgeRafRef.current = 0;
@@ -8691,7 +9764,10 @@ function CanvasSvg({
       if (overlay?.widget) {
         const bb = overlay?.bbox || { x: 0, y: 0, width: 320, height: 180 };
         const widgetKind = String(overlay?.widget?.kind || "").trim();
-        const suppressFrame = widgetKind === "pushButton" || widgetKind === "onOffButton";
+        const suppressFrame =
+          widgetKind === "pushButton" ||
+          widgetKind === "onOffButton" ||
+          isPassiveReadoutWidgetKind(widgetKind);
         out.set(id, {
           widgetFrame: suppressFrame
             ? null
@@ -8722,7 +9798,8 @@ function CanvasSvg({
       const overlayEType = String(overlay?.eType || "").trim().toLowerCase();
       const isStaticOverlay = isStaticSvgOverlay(overlay);
       const isDiverterOverlay = isDiverterEType(overlayEType);
-      const isBinOverlay = overlayEType === "bin" || overlayEType.startsWith("bin");
+      const isBinOverlay = isBinLikeEType(overlayEType);
+      const isScaleOverlay = isScaleLikeEType(overlayEType);
       const statePaintsStroke = isDocOrDicStatePaintEType(overlayEType);
       const dynamicBinProductLabel = String(
         binProductLabelByOverlayId?.[id] || ""
@@ -8734,8 +9811,22 @@ function CanvasSvg({
         0,
         Math.min(1, Number(binLevelRatioByOverlayId?.[id]) || 0)
       );
+      const dynamicBinLevelFillColor = String(binLevelFillColorByOverlayId?.[id] || "").trim();
+      const binLevelFillSourceKey = String(overlay?.binLevelFillSource || "fill")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "");
+      const shouldUseProductLevelFill =
+        binLevelFillSourceKey === "product" ||
+        binLevelFillSourceKey === "assignedproductcolor" ||
+        binLevelFillSourceKey === "auto";
+      const binLevelFillColor = shouldUseProductLevelFill
+        ? (dynamicBinLevelFillColor || overlay?.fill)
+        : overlay?.fill;
       const binLockedIn = binLockedInByOverlayId?.[id] === true;
       const binLockedOut = binLockedOutByOverlayId?.[id] === true;
+      const binActiveFillingRoute = binActiveFillingByOverlayId?.[id] === true;
+      const binActiveDischargingRoute = binActiveDischargingByOverlayId?.[id] === true;
       const shouldReplaceBinText =
         isBinOverlay && (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
       const overlayStatePaint = String(overlayHmiStateColorByOverlayId?.[id] || "").trim();
@@ -8753,6 +9844,7 @@ function CanvasSvg({
         : normalizeOverlayActiveFillColor(overlayStatePaint);
       const routeOutlineStroke = isBinOverlay
         || isDiverterOverlay
+        || isScaleOverlay
         ? ""
         : normalizeActiveLineColor(
             getRouteColorForOverlay(overlay) || getRouteStrokeColorForOverlay(overlay)
@@ -8779,8 +9871,10 @@ function CanvasSvg({
       const cachedBoundActiveFillPaint = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
       const cachedBoundFillPaint = String(getOverlayBoundFillColor(overlay) || "").trim();
       const cachedDiverterMode = isDiverterOverlay ? getEffectiveDiverterState(overlay) : "";
+      const cachedDiverterRouteColor = isDiverterOverlay ? getDiverterRouteColorForOverlay(overlay) : "";
       const cachedDiverterFlowColor = isDiverterOverlay
         ? normalizeActiveLineColor(
+            cachedDiverterRouteColor ||
             getDirectEntryActiveColorForDiverter(overlay, {
               excludedOverlayIds: [id],
             })
@@ -8792,6 +9886,7 @@ function CanvasSvg({
         isStaticOverlay ? 1 : 0,
         isDiverterOverlay ? 1 : 0,
         isBinOverlay ? 1 : 0,
+        isScaleOverlay ? 1 : 0,
         overlayEType,
         String(overlay?.sourceKey || ""),
         String(overlay?.sourceHadEType ?? ""),
@@ -8810,8 +9905,14 @@ function CanvasSvg({
         String(dynamicBinProductLabel || ""),
         String(dynamicBinNameLabel || ""),
         String(binLevelRatio || 0),
+        String(overlay?.binLevelFillSource || ""),
+        String(overlay?.binLevelFillStyle || ""),
+        String(dynamicBinLevelFillColor || ""),
+        String(binLevelFillColor || ""),
         String(binLockedIn ? 1 : 0),
         String(binLockedOut ? 1 : 0),
+        String(binActiveFillingRoute ? 1 : 0),
+        String(binActiveDischargingRoute ? 1 : 0),
         themeFillDefault,
         themeStrokeDefault,
       ].join("\u001f");
@@ -8896,6 +9997,8 @@ function CanvasSvg({
           isBinOverlay &&
           (
             /id=["']BarGraph["']/i.test(String(inner || "")) ||
+            /id=["']main-tall-bin["']/i.test(String(inner || "")) ||
+            /id=["']bin_shell["']/i.test(String(inner || "")) ||
             /id=["']Lock_Filling["']/i.test(String(inner || "")) ||
             /id=["']Lock_Discharge["']/i.test(String(inner || "")) ||
             /id=["']LockFill["']/i.test(String(inner || "")) ||
@@ -8906,6 +10009,11 @@ function CanvasSvg({
             ratio: binLevelRatio,
             showFillLock: binLockedIn,
             showDischargeLock: binLockedOut,
+            fillColor: binLevelFillColor,
+            fillStyle: overlay?.binLevelFillStyle,
+            overlayId: id,
+            activeFillingRoute: binActiveFillingRoute,
+            activeDischargingRoute: binActiveDischargingRoute,
           });
         }
         if (isDiverterOverlay) {
@@ -8913,6 +10021,7 @@ function CanvasSvg({
           const diverterFlowColor = cachedDiverterFlowColor;
           inner = applyDiverterModeToSvg(inner, diverterMode);
           inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, diverterMode, diverterStatePaintOptions);
+          inner = applyRouteStrokeToDiverterSvg(inner, cachedDiverterRouteColor || diverterFlowColor);
           setCachedVisual({
             inner,
             className: undefined,
@@ -9048,6 +10157,8 @@ function CanvasSvg({
         isBinOverlay &&
         (
           /id=["']BarGraph["']/i.test(String(inner || "")) ||
+          /id=["']main-tall-bin["']/i.test(String(inner || "")) ||
+          /id=["']bin_shell["']/i.test(String(inner || "")) ||
           /id=["']Lock_Filling["']/i.test(String(inner || "")) ||
           /id=["']Lock_Discharge["']/i.test(String(inner || "")) ||
           /id=["']LockFill["']/i.test(String(inner || "")) ||
@@ -9058,6 +10169,11 @@ function CanvasSvg({
           ratio: binLevelRatio,
           showFillLock: binLockedIn,
           showDischargeLock: binLockedOut,
+          fillColor: binLevelFillColor,
+          fillStyle: overlay?.binLevelFillStyle,
+          overlayId: id,
+          activeFillingRoute: binActiveFillingRoute,
+          activeDischargingRoute: binActiveDischargingRoute,
         });
       }
       if (isDiverterOverlay) {
@@ -9087,6 +10203,7 @@ function CanvasSvg({
       }
       if (isDiverterOverlay) {
         inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode, diverterStatePaintOptions);
+        inner = applyRouteStrokeToDiverterSvg(inner, cachedDiverterRouteColor || diverterFlowColor);
       }
 
       setCachedVisual({
@@ -9124,8 +10241,11 @@ function CanvasSvg({
     binProductLabelByOverlayId,
     binNameLabelByOverlayId,
     binLevelRatioByOverlayId,
+    binLevelFillColorByOverlayId,
     binLockedInByOverlayId,
     binLockedOutByOverlayId,
+    binActiveFillingByOverlayId,
+    binActiveDischargingByOverlayId,
     overlayHmiStateColorByOverlayId,
     themeFillDefault,
     themeStrokeDefault,
@@ -9268,7 +10388,10 @@ function CanvasSvg({
     const renderWidget = renderWidgetOverlayRef.current;
     return widgetOverlayRenderOverlays.map((o) => {
       const overlayVisual = overlayVisualById.get(String(o?.id || "").trim());
-      const overlayCursor = isLiveMode
+      const overlayWidgetKind = String(o?.widget?.kind || "");
+      const overlayCursor = isPassiveReadoutWidgetKind(overlayWidgetKind)
+        ? "default"
+        : isLiveMode
         ? (widgetInteractionEnabled ? "pointer" : "default")
         : (tool === "select" ? "move" : "crosshair");
       const widgetBounds = o?.bbox || { x: 0, y: 0, width: 320, height: 180 };
@@ -9917,7 +11040,7 @@ function CanvasSvg({
           const widgetSeriesTags = widgetUsesSeriesTags
             ? parseWidgetSeriesTags(o).filter((tp) => !String(tp || "").toLowerCase().startsWith("db:"))
             : [];
-          const isBinOverlay = String(overlayEType || "").trim().toLowerCase().startsWith("bin");
+          const isBinOverlay = isBinLikeEType(overlayEType);
           const hasBinDbBinding =
             !!String(o?.binBindingKey || "").trim() ||
             !!String(binNameLabelByOverlayId?.[String(o?.id || "")] || "").trim() ||
@@ -10069,12 +11192,40 @@ function CanvasSvg({
 
         if (s.type === "text") {
           const isInline = inlineEditId === s.id;
-          const displayText = getTextShapeValueForShape(s);
+          const textParts = getTextShapeDisplayParts(s);
+          const displayText = textParts.displayText;
+          const fontSize = Math.max(8, Number(s.fontSize || 24));
+          const unitGap = textParts.unitAlignRight && textParts.unitText ? getTextUnitGap(fontSize, textParts.unitText) : 0;
+          const unitWidth = textParts.unitAlignRight && textParts.unitText
+            ? Math.max(0, String(textParts.unitText || "").length * fontSize * 0.6)
+            : 0;
           const textCursor = isLiveMode
             ? "default"
             : tool === "select"
             ? "move"
             : "crosshair";
+          const rawTextFill = String(s.fill || "").trim();
+          const isLegacyTextFill = !rawTextFill || ["#808080", "#d7dade"].includes(rawTextFill.toLowerCase());
+          const textFill = dynamicColor || (isLegacyTextFill ? (isDarkTheme ? "#ffffff" : "#111827") : rawTextFill);
+          const rawTextStroke = String(s.stroke || "").trim();
+          const textStrokeWidth = Math.max(0, Number(s.strokeWidth) || 0);
+          const textStroke =
+            rawTextStroke && textStrokeWidth > 0 && !["none", "transparent"].includes(rawTextStroke.toLowerCase())
+              ? rawTextStroke
+              : "none";
+          const commonTextProps = {
+            y: s.y,
+            fill: textFill,
+            stroke: textStroke,
+            strokeWidth: textStroke === "none" ? undefined : textStrokeWidth,
+            paintOrder: textStroke === "none" ? undefined : "stroke fill",
+            strokeLinejoin: textStroke === "none" ? undefined : "round",
+            fontSize,
+            fontFamily: s.fontFamily || "system-ui",
+            fontWeight: s.fontWeight || "400",
+            dominantBaseline: "text-before-edge",
+            style: { userSelect: "none", visibility: isInline ? "hidden" : "visible", cursor: textCursor },
+          };
           return (
             <g key={s.id} data-shape-id={s.id} style={{ cursor: textCursor }}>
               {(() => {
@@ -10092,24 +11243,26 @@ function CanvasSvg({
                   />
                 );
               })()}
-              <text
-                x={s.x}
-                y={s.y}
-                fill={
-                  dynamicColor ||
-                  (isDarkTheme && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase()))
-                    ? "#ffffff"
-                    : s.fill || "#D7DADE")
-                }
-                fontSize={s.fontSize || 24}
-                fontFamily={s.fontFamily || "system-ui"}
-                fontWeight={s.fontWeight || "400"}
-                textAnchor={s.anchor || "start"}
-                dominantBaseline="text-before-edge"
-                style={{ userSelect: "none", visibility: isInline ? "hidden" : "visible", cursor: textCursor }}
-              >
-                {displayText}
-              </text>
+              {textParts.unitAlignRight ? (
+                <>
+                  <text
+                    {...commonTextProps}
+                    x={textParts.unitText ? Number(s.x || 0) - unitWidth - unitGap : Number(s.x || 0)}
+                    textAnchor="end"
+                  >
+                    {textParts.valueText || ""}
+                  </text>
+                  {textParts.unitText ? (
+                    <text {...commonTextProps} x={Number(s.x || 0)} textAnchor="end">
+                      {textParts.unitText}
+                    </text>
+                  ) : null}
+                </>
+              ) : (
+                <text {...commonTextProps} x={s.x} textAnchor={svgTextAnchorForMode(s.anchor)}>
+                  {displayText}
+                </text>
+              )}
             </g>
           );
         }
@@ -10784,7 +11937,13 @@ function CanvasSvg({
             minWidth: "100%",
             minHeight: "100%",
             outline: "none",
-            cursor: isCrosshair ? "crosshair" : "default",
+            cursor: canvasPanActive
+              ? "grabbing"
+              : isCrosshair
+              ? "crosshair"
+              : tool === "select" && Number(zoom || 1) > 1.0001
+              ? "grab"
+              : "default",
           }}
           onWheel={onWheel}
           onMouseDown={onSvgMouseDown}

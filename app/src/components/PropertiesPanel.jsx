@@ -46,8 +46,8 @@ const btnStyle = {
   minHeight: 30,
   whiteSpace: "nowrap",
 };
-const MIN_PANEL_HEIGHT = 280;
-const MAX_PANEL_HEIGHT = 500;
+const MIN_PANEL_HEIGHT = 420;
+const MAX_PANEL_HEIGHT = 720;
 
 function Row({
   label,
@@ -343,6 +343,29 @@ function tagMatchesEType(tag, eType) {
   return false;
 }
 
+function isBinTypeToken(value) {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return key === "bin" || key.startsWith("bin") || key.includes("silo");
+}
+
+function normalizeBinProductLabelSource(value) {
+  const key = String(value || "").trim().toLowerCase();
+  if (key === "name" || key === "auto") return key;
+  return "id";
+}
+
+function normalizeBinLevelFillSource(value) {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (key === "product" || key === "assignedproductcolor") return "product";
+  if (key === "auto" || key === "productcolorfallback" || key === "assignedproductcolorfallback") return "auto";
+  return "fill";
+}
+
+function normalizeBinLevelFillStyle(value) {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return key === "solid" ? "solid" : "gradient";
+}
+
 export default function PropertiesPanel({
   showHUD,
   setShowHUD,
@@ -370,6 +393,9 @@ export default function PropertiesPanel({
   applySingleTagPath,
   applyOverlayGroupTagPath,
   applySingleBinBinding,
+  applySingleBinProductLabelSource,
+  applySingleBinLevelFillSource,
+  applySingleBinLevelFillStyle,
   applySingleEType,
   applySinglePopupParamsJson,
   applySingleDiverterMode,
@@ -396,6 +422,7 @@ export default function PropertiesPanel({
   applySingleFontFamily,
   applySingleFontWeight,
   applySingleTextAlign,
+  applySingleTextStrokeWidth,
   applySingleWidgetSettings,
 
   opcTags,
@@ -536,6 +563,9 @@ export default function PropertiesPanel({
     applySingleTagPath,
     applyOverlayGroupTagPath,
     applySingleBinBinding,
+    applySingleBinProductLabelSource,
+    applySingleBinLevelFillSource,
+    applySingleBinLevelFillStyle,
     applySingleEType,
     applySinglePopupParamsJson,
     applySingleDiverterMode,
@@ -557,6 +587,7 @@ export default function PropertiesPanel({
     applySingleFontFamily,
     applySingleFontWeight,
     applySingleTextAlign,
+    applySingleTextStrokeWidth,
     applySingleWidgetSettings,
   };
 
@@ -796,7 +827,7 @@ export default function PropertiesPanel({
   const isPoly = isSingle && singleKind === "Polyline";
   const isText = isSingle && singleKind === "Text";
   const isStaticSvg = isSvg && Boolean(hudFields?.static || hudFields?.isStatic || hudFields?.staticSvg);
-  const isBinSvg = isSvg && String(hudFields?.eType || "").trim().toLowerCase().startsWith("bin");
+  const isBinSvg = isSvg && isBinTypeToken(hudFields?.eType);
   const isDiverterSvg = isSvg && isDiverterTypeToken(hudFields?.eType);
   const isShapeGroup = !isSingle && (Array.isArray(selectedIds) ? selectedIds.length : 0) > 0;
   const isOverlayGroup = !isSingle && (Array.isArray(selectedOverlayIds) ? selectedOverlayIds.length : 0) > 0;
@@ -819,6 +850,7 @@ export default function PropertiesPanel({
     { value: "start", label: "Left" },
     { value: "middle", label: "Center" },
     { value: "end", label: "Right" },
+    { value: "unitRight", label: "Unit Right" },
   ];
 
   const textWeightOptions = [
@@ -838,7 +870,12 @@ export default function PropertiesPanel({
   const fontFamilyVal = hudFields?.fontFamily ?? "system-ui";
   const fontWeightVal = hudFields?.fontWeight ?? "400";
   const textVal = hudFields?.text ?? "Text";
-  const textFillVal = hudFields?.fill ?? "#808080"; // ✅ text uses fill
+  const textFillVal = hudFields?.fill ?? "#111827";
+  const textBorderVal = hudFields?.stroke ?? "#ffffff";
+  const textBorderWidthVal = hudFields?.strokeWidth ?? "0";
+  const binProductLabelSourceVal = normalizeBinProductLabelSource(hudFields?.binProductLabelSource);
+  const binLevelFillSourceVal = normalizeBinLevelFillSource(hudFields?.binLevelFillSource);
+  const binLevelFillStyleVal = normalizeBinLevelFillStyle(hudFields?.binLevelFillStyle);
   const widgetKindVal = String(hudFields?.widgetKind || "");
   const widgetTitleVal = String(hudFields?.widgetTitle || "");
   const widgetTextColorVal = String(hudFields?.widgetTextColor || "");
@@ -952,6 +989,8 @@ export default function PropertiesPanel({
     isWidget &&
     (widgetKindVal === "lineChart" ||
       (widgetKindVal === "barChart" && widgetBarSourceModeVal === "tags"));
+  const isRouteDisplayWidget = isWidget && widgetKindVal === "routeDisplay";
+  const isScaleAdapterWidget = isWidget && (widgetKindVal === "scaleAdapter" || widgetKindVal === "scaleAdaptor");
   const chartMinMaxDisabled = isTrendChartKind && widgetAxisModeVal !== "manual";
   const svgBinSelectOptions = useMemo(() => {
     const base = Array.isArray(svgBinOptions) ? [...svgBinOptions] : [];
@@ -1050,6 +1089,9 @@ export default function PropertiesPanel({
         a.applySinglePopupParamsJson?.(next.popupParamsJson);
         a.applySingleDiverterMode?.(next.diverterMode);
         a.applySingleBinBinding?.(next.binBindingKey);
+        a.applySingleBinProductLabelSource?.(next.binProductLabelSource);
+        a.applySingleBinLevelFillSource?.(next.binLevelFillSource);
+        a.applySingleBinLevelFillStyle?.(next.binLevelFillStyle);
         a.applySingleSvgStrokeWidth?.(next.strokeWidth);
         a.applySingleSvgFlip?.("x", Boolean(next.flipX));
         a.applySingleSvgFlip?.("y", Boolean(next.flipY));
@@ -1082,6 +1124,8 @@ export default function PropertiesPanel({
         a.applySingleFontFamily?.(next.fontFamily);
         a.applySingleFontWeight?.(next.fontWeight);
         a.applySingleFill?.(next.fill); // ✅ text color
+        a.applySingleStroke?.(next.stroke);
+        a.applySingleTextStrokeWidth?.(next.strokeWidth);
         a.applySingleTextAlign?.(next.textAlign ?? "start");
       }
     }, 0);
@@ -1332,7 +1376,11 @@ export default function PropertiesPanel({
             )}
             {isWidget ? (
               <div style={{ gridColumn: "2 / 3", fontSize: 10, color: "var(--text-muted)", marginTop: -2 }}>
-                {widgetUsesSeriesTagBinding
+                {isRouteDisplayWidget
+                  ? "Bind the parent route tag, for example `Perspective/Route/Route`. Reads Job/JobNo, HMI_JobStateText, HMI_RouteStateText, and RouteName."
+                  : isScaleAdapterWidget
+                  ? "Bind the parent ScaleAdaptor tag. Reads Description, HMI_State, OutFlowrate, and OutJobWeight."
+                  : widgetUsesSeriesTagBinding
                   ? "This widget uses Series Tags below for binding."
                   : "Use tag path for OPC binding or `db:table.column` for database binding."}
               </div>
@@ -1408,19 +1456,65 @@ export default function PropertiesPanel({
                   </>
                 )}
                 {isBinSvg && (
-                  <SelectRow
-                    label="Bin Row"
-                    value={String(hudFields?.binBindingKey || "")}
-                    onChange={(v) => {
-                      const nextValue = String(v || "");
-                      setHudFields((p) => ({ ...p, binBindingKey: nextValue }));
-                      applySingleBinBinding?.(nextValue);
-                    }}
-                    onBlur={() => {}}
-                    options={svgBinSelectOptions}
-                    searchable
-                    searchPlaceholder="Search bins..."
-                  />
+                  <>
+                    <SelectRow
+                      label="Bin Row"
+                      value={String(hudFields?.binBindingKey || "")}
+                      onChange={(v) => {
+                        const nextValue = String(v || "");
+                        setHudFields((p) => ({ ...p, binBindingKey: nextValue }));
+                        applySingleBinBinding?.(nextValue);
+                      }}
+                      onBlur={() => {}}
+                      options={svgBinSelectOptions}
+                      searchable
+                      searchPlaceholder="Search bins..."
+                    />
+                    <SelectRow
+                      label="Product Text"
+                      value={binProductLabelSourceVal}
+                      onChange={(v) => {
+                        const nextValue = normalizeBinProductLabelSource(v);
+                        setHudFields((p) => ({ ...p, binProductLabelSource: nextValue }));
+                        applySingleBinProductLabelSource?.(nextValue);
+                      }}
+                      onBlur={() => {}}
+                      options={[
+                        { value: "id", label: "AssignedProductId" },
+                        { value: "name", label: "AssignedProductName" },
+                        { value: "auto", label: "Auto (Name then ID)" },
+                      ]}
+                    />
+                    <SelectRow
+                      label="Level Fill"
+                      value={binLevelFillSourceVal}
+                      onChange={(v) => {
+                        const nextValue = normalizeBinLevelFillSource(v);
+                        setHudFields((p) => ({ ...p, binLevelFillSource: nextValue }));
+                        applySingleBinLevelFillSource?.(nextValue);
+                      }}
+                      onBlur={() => {}}
+                      options={[
+                        { value: "fill", label: "SVG Fill" },
+                        { value: "product", label: "AssignedProductColor" },
+                        { value: "auto", label: "Auto (Color then Fill)" },
+                      ]}
+                    />
+                    <SelectRow
+                      label="Level Style"
+                      value={binLevelFillStyleVal}
+                      onChange={(v) => {
+                        const nextValue = normalizeBinLevelFillStyle(v);
+                        setHudFields((p) => ({ ...p, binLevelFillStyle: nextValue }));
+                        applySingleBinLevelFillStyle?.(nextValue);
+                      }}
+                      onBlur={() => {}}
+                      options={[
+                        { value: "gradient", label: "Gradient" },
+                        { value: "solid", label: "Solid" },
+                      ]}
+                    />
+                  </>
                 )}
                 <SelectRow
                   label="SVG"
@@ -2206,21 +2300,40 @@ export default function PropertiesPanel({
                 />
 
                 <Row
-                  label="Font Size"
-                  value={String(fontSizeVal ?? "")}
-                  onChange={(v) => setHudFields((p) => ({ ...p, fontSize: v }))}
-                  onBlur={() => applySingleFontSize?.(hudFields.fontSize)}
-                  placeholder="24"
-                />
-
-                <Row
-                  label="Color"
+                  label="Text Fill"
                   type="color"
                   showHex
                   value={textFillVal}
                   onChange={(v) => setHudFields((p) => ({ ...p, fill: v }))}
                   onBlur={() => applySingleFill?.(hudFields.fill)}
                   placeholder="#111111"
+                />
+
+                <Row
+                  label="Text Border"
+                  type="color"
+                  showHex
+                  value={textBorderVal}
+                  onChange={(v) => setHudFields((p) => ({ ...p, stroke: v }))}
+                  onBlur={() => applySingleStroke?.(hudFields.stroke)}
+                  placeholder="#ffffff"
+                />
+
+                <Row
+                  label="Border Width"
+                  type="number"
+                  value={String(textBorderWidthVal ?? "")}
+                  onChange={(v) => setHudFields((p) => ({ ...p, strokeWidth: v }))}
+                  onBlur={() => applySingleTextStrokeWidth?.(hudFields.strokeWidth)}
+                  placeholder="0"
+                />
+
+                <Row
+                  label="Font Size"
+                  value={String(fontSizeVal ?? "")}
+                  onChange={(v) => setHudFields((p) => ({ ...p, fontSize: v }))}
+                  onBlur={() => applySingleFontSize?.(hudFields.fontSize)}
+                  placeholder="24"
                 />
 
                 <Row

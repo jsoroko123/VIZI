@@ -1,14 +1,28 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 5.3339998 6.1467998" preserveAspectRatio="xMidYMid meet" kewidth="86.777" keheight="100" eType="CombiCleaner2" stroke="#808080" stroke-width="0.0922" stroke-linejoin="round" stroke-linecap="round" fill="#D7DADE">
   <defs id="defs1">
-    <linearGradient id="swatch1">
-      <stop id="stop1" offset="0" stop-color="#e7e9ec" stop-opacity="1" style="stop-color:#e7e9ec;stop-opacity:1" />
+    <linearGradient id="combiCleaner2ShellFill" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f0f2f4" />
+      <stop offset="48%" stop-color="#d8dce1" />
+      <stop offset="100%" stop-color="#b6bdc5" />
+    </linearGradient>
+    <linearGradient id="combiCleaner2DeckFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f5f6f7" />
+      <stop offset="100%" stop-color="#c5ccd3" />
+    </linearGradient>
+    <linearGradient id="combiCleaner2FrameFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#e3e7eb" />
+      <stop offset="100%" stop-color="#aeb6bf" />
     </linearGradient>
   </defs>
   <g id="layer1" transform="translate(-16.119254,-14.719355)">
     <g id="g11619-4-6" transform="matrix(-0.12472538,0,0,0.12472538,254.77491,-21.428926)">
       <g id="g11598-8-4" stroke-width="0.0922" stroke-linejoin="miter">
-        <path d="m 1897.5,290.5 v 8 l -25,7 v 21 h -1 v 4 h 2 v -2 h 2 v 10 h 2 v -1 h 10 v 1 h 25 v -44 h -7 v -2 h 1 v -2 z" id="body" stroke-width="0.0922" style="enable-background:accumulate" fill="#D7DADE" />
+        <path d="m 1897.5,290.5 v 8 l -25,7 v 21 h -1 v 4 h 2 v -2 h 2 v 10 h 2 v -1 h 10 v 1 h 25 v -44 h -7 v -2 h 1 v -2 z" id="body" stroke-width="0.0922" style="enable-background:accumulate" fill="url(#combiCleaner2ShellFill)" />
+        <path d="m 1897.5,291.2 v 7.3 l -25,7 v 3.6 l 36,-10 v -4.6 h -3 v -2 h 1 v -1.3 z" id="combiCleaner2TopDeckShade" fill="url(#combiCleaner2DeckFill)" stroke="none" opacity="0.78" style="enable-background:accumulate" />
+        <path d="m 1872.5,322.5 h 27 l 4,7 v 9 h -6 v -8.6 l -25,-5.8 z" id="combiCleaner2LowerFrameShade" fill="url(#combiCleaner2FrameFill)" stroke="none" opacity="0.48" style="enable-background:accumulate" />
+        <path d="m 1897.8,293.1 h 7.4" id="combiCleaner2TopLip" fill="none" stroke="#f7f8f9" stroke-width="0.42" stroke-linecap="round" opacity="0.72" style="enable-background:accumulate" />
+        <path d="m 1874.1,326.6 23.9,5.6" id="combiCleaner2BottomLip" fill="none" stroke="#7b858d" stroke-width="0.38" stroke-linecap="round" opacity="0.55" style="enable-background:accumulate" />
         <path d="m 1912.5,308.5 v 1 l -5,5 v 17" id="path10952-4-3" fill="transparent" stroke-width="0.0922" stroke-dasharray="none" stroke-linecap="square" style="enable-background:accumulate" />
         <path d="m 1872.5,308.5 36,-10" id="path10978-5-2" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />
         <path d="m 1908.5,300.5 -36,10" id="path10976-5-2" stroke-width="0.0922" stroke-dasharray="none" style="enable-background:accumulate" fill="#D7DADE" />

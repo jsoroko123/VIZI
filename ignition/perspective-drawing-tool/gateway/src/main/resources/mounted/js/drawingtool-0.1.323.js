@@ -375,6 +375,14 @@ var MesoraDrawingToolBundle = (() => {
         name: "Widget-DisplayBox.svg",
         raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect x="1" y="1" width="318" height="178" rx="12" fill="#0f172a" stroke="#334155" stroke-width="2"/><text x="16" y="26" fill="#e2e8f0" font-size="14" font-family="system-ui" font-weight="700">Display Box</text><text x="20" y="92" fill="#22c55e" font-size="40" font-family="system-ui" font-weight="700">123.4</text><text x="214" y="92" fill="#93c5fd" font-size="16" font-family="system-ui" font-weight="700">psi</text><rect x="20" y="122" width="194" height="30" rx="8" fill="#111827" stroke="#334155"/><rect x="222" y="122" width="78" height="30" rx="8" fill="#2b6cff"/><text x="242" y="141" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="700">Write</text></svg>`
       },
+      routeDisplay: {
+        name: "Widget-RouteDisplay.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 132"><rect x="1" y="1" width="318" height="130" rx="14" fill="#0f172a" stroke="#334155" stroke-width="2"/><rect x="10" y="10" width="300" height="28" rx="9" fill="#2563eb"/><text x="160" y="29" text-anchor="middle" fill="#ffffff" font-size="13" font-family="system-ui" font-weight="800">Route Display</text><text x="18" y="62" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Job Number</text><text x="302" y="62" text-anchor="end" fill="#e2e8f0" font-size="12" font-family="system-ui" font-weight="800">120</text><text x="18" y="84" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Job Step</text><text x="302" y="84" text-anchor="end" fill="#e2e8f0" font-size="12" font-family="system-ui" font-weight="800">3</text><text x="18" y="106" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="700">Route State</text><text x="302" y="106" text-anchor="end" fill="#22c55e" font-size="12" font-family="system-ui" font-weight="800">Active</text></svg>`
+      },
+      scaleAdapter: {
+        name: "Widget-ScaleAdapter.svg",
+        raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 126"><rect x="1" y="1" width="318" height="124" rx="14" fill="#0f172a" stroke="#334155" stroke-width="2"/><rect x="10" y="10" width="300" height="26" rx="9" fill="#0f2b5f"/><rect x="10" y="10" width="7" height="26" rx="4" fill="#22c55e"/><text x="25" y="28" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="800">Scale Adapter</text><rect x="16" y="44" width="288" height="22" rx="7" fill="#064e3b" stroke="#22c55e"/><text x="160" y="59" text-anchor="middle" fill="#22c55e" font-size="12" font-family="system-ui" font-weight="900">Dosing</text><text x="26" y="86" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="800">Flowrate</text><text x="294" y="86" text-anchor="end" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="900">0 lb/h</text><text x="26" y="108" fill="#94a3b8" font-size="11" font-family="system-ui" font-weight="800">Job Weight</text><text x="294" y="108" text-anchor="end" fill="#ffffff" font-size="12" font-family="system-ui" font-weight="900">812283 lb</text></svg>`
+      },
       countdownBar: {
         name: "Widget-CountdownBar.svg",
         raw: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 72"><rect x="12" y="8" width="296" height="14" rx="7" fill="#111827" stroke="#334155"/><rect x="12" y="8" width="168" height="14" rx="7" fill="#2b6cff"/><text x="12" y="40" fill="#94a3b8" font-size="12" font-family="system-ui" font-weight="700">Countdown</text><text x="160" y="20" text-anchor="middle" fill="#ffffff" font-size="10" font-family="system-ui" font-weight="800">4.0s</text></svg>`
@@ -447,6 +455,8 @@ var MesoraDrawingToolBundle = (() => {
     if (kind === "statusTable") return { ...base, historyPoints: 12, rowCount: 6 };
     if (kind === "kpi") return { ...base, historyPoints: 10 };
     if (kind === "displayBox") return { ...base, historyPoints: 10 };
+    if (kind === "routeDisplay") return { ...base, title: "Route Display", historyPoints: 10 };
+    if (kind === "scaleAdapter" || kind === "scaleAdaptor") return { ...base, kind: "scaleAdapter", title: "Scale Adapter", historyPoints: 10, decimals: 4 };
     if (kind === "weather") return { ...base, historyPoints: 10, decimals: 1, unit: "F" };
     if (kind === "countdownBar") return { ...base, historyPoints: 10, decimals: 1 };
     if (kind === "openViewButton") {
@@ -13516,8 +13526,76 @@ var MesoraDrawingToolBundle = (() => {
   var import_meta = {};
   var RULER = 24;
   var SCROLLBAR_RESERVE = 14;
+  var toFiniteCanvasNumber = (value, fallback = 0) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  };
   var LIVE_ROUTE_ID_MEMBER_ALIASES = ["RouteID", "RouteNumber", "RouteNo", "Route"];
   var LIVE_ROUTE_COLOR_MEMBER_ALIASES = ["RouteColor", "Route Color", "routeColor", "route_color"];
+  var LIVE_ROUTE_JOB_NUMBER_MEMBER_ALIASES = [
+    "Job.JobNo",
+    "Job/JobNo",
+    "Job.JobNumber",
+    "Job/JobNumber",
+    "JobNo",
+    "JobNumber",
+    "Job Number",
+    "JobID",
+    "JobId"
+  ];
+  var LIVE_ROUTE_JOB_STEP_MEMBER_ALIASES = [
+    "HMI_JobStateText",
+    "HMI Job State Text",
+    "Job.HMI_JobStateText",
+    "Job/HMI_JobStateText",
+    "Job.JobStep",
+    "Job/JobStep",
+    "JobStep",
+    "Job Step",
+    "Step",
+    "CurrentStep"
+  ];
+  var LIVE_ROUTE_STATE_TEXT_MEMBER_ALIASES = [
+    "HMI_RouteStateText",
+    "HMI Route State Text",
+    "RouteStateText",
+    "Route State Text",
+    "RouteState",
+    "Route State",
+    "HMI_RouteState",
+    "HMI RouteState",
+    "State"
+  ];
+  var LIVE_SCALE_DESCRIPTION_MEMBER_ALIASES = [
+    "Description",
+    "Desc",
+    "HMI_Description",
+    "HMIDescription"
+  ];
+  var LIVE_SCALE_STATE_MEMBER_ALIASES = [
+    "HMI_State",
+    "HMIState",
+    "HMI State",
+    "State",
+    "i_HMIState",
+    "o_HMIState"
+  ];
+  var LIVE_SCALE_FLOWRATE_MEMBER_ALIASES = [
+    "OutFlowrate",
+    "OutFlowRate",
+    "Out Flowrate",
+    "Flowrate",
+    "FlowRate"
+  ];
+  var LIVE_SCALE_JOB_WEIGHT_MEMBER_ALIASES = [
+    "OutJobWeight",
+    "Out Job Weight",
+    "OutJobWt",
+    "JobWeight",
+    "Job Weight",
+    "OutScaleWeight",
+    "ScaleWeight"
+  ];
   var LIVE_STATE_MEMBER_ALIASES = [
     "HMI State",
     "HMI_State",
@@ -13594,6 +13672,7 @@ var MesoraDrawingToolBundle = (() => {
   ];
   var BIN_LOCK_FILL_GROUP_IDS = ["Lock_Filling", "LockFill"];
   var BIN_LOCK_DISCHARGE_GROUP_IDS = ["Lock_Discharge", "LockDischarge"];
+  var BIN_ROUTE_ACTIVITY_COLOR = "#93DB9F";
   var getTagPathLeaf = (value) => {
     const raw = normalizeTagValue(value);
     if (!raw) return "";
@@ -13659,6 +13738,25 @@ var MesoraDrawingToolBundle = (() => {
     const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
     return key.startsWith("doc") || key.startsWith("dic");
   };
+  var isScaleLikeEType = (value) => {
+    const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    return key.includes("scale");
+  };
+  var isBinLikeEType = (value) => {
+    const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    return key === "bin" || key.startsWith("bin") || key.includes("silo");
+  };
+  var normalizeWidgetKindKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  var isPassiveReadoutWidgetKind = (value) => {
+    const key = normalizeWidgetKindKey(value);
+    return key === "routedisplay" || key === "scaleadapter" || key === "scaleadaptor";
+  };
+  var formatWidgetSourceLabel = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const withoutBindingPrefix = raw.replace(/^(dbq?:|opc:)/i, "").trim();
+    return getTagPathLeaf(withoutBindingPrefix) || withoutBindingPrefix;
+  };
   Chart.register(
     CategoryScale,
     LinearScale,
@@ -13697,6 +13795,7 @@ var MesoraDrawingToolBundle = (() => {
     zoom,
     // ✅ already passed from App.jsx
     pan,
+    canvasPanActive = false,
     onWheel,
     // ✅ already passed from App.jsx
     marquee,
@@ -13760,8 +13859,11 @@ var MesoraDrawingToolBundle = (() => {
     binProductLabelByOverlayId,
     binNameLabelByOverlayId,
     binLevelRatioByOverlayId,
+    binLevelFillColorByOverlayId,
     binLockedInByOverlayId,
     binLockedOutByOverlayId,
+    binActiveFillingByOverlayId,
+    binActiveDischargingByOverlayId,
     overlayHmiStateColorByOverlayId,
     overlayConnectionIssueByOverlayId = {},
     onWidgetDurationPresetChange,
@@ -13895,17 +13997,98 @@ var MesoraDrawingToolBundle = (() => {
     const nudgeSelectedOverlayIdsRef = useRef(Array.isArray(selectedOverlayIds) ? selectedOverlayIds : []);
     const nudgeSelectedSegmentRef = useRef(selectedSegment || null);
     const nudgeZoomRef = useRef(Number(zoom) || 1);
+    const normalizeTextAnchorMode = (value) => value === "middle" || value === "end" || value === "unitRight" ? value : "start";
+    const svgTextAnchorForMode = (value) => {
+      const mode = normalizeTextAnchorMode(value);
+      return mode === "unitRight" ? "end" : mode;
+    };
+    const fixedTextUnitTokens = [
+      "%",
+      "\xB0F",
+      "\xB0C",
+      "F",
+      "C",
+      "lbs",
+      "lb",
+      "kg",
+      "g",
+      "t",
+      "ton",
+      "tons",
+      "rpm",
+      "hz",
+      "psi",
+      "gpm",
+      "cfm",
+      "ppm",
+      "ph",
+      "ft",
+      "in",
+      "m",
+      "mm",
+      "gal",
+      "min",
+      "sec",
+      "s",
+      "A",
+      "V",
+      "kW",
+      "HP"
+    ];
+    const inferFixedTextUnit2 = (value) => {
+      const text = String(value != null ? value : "").trim();
+      if (!text) return "";
+      const normalizedText = text.replace(/\u00b0/g, "deg").toLowerCase();
+      const sorted = fixedTextUnitTokens.slice().sort((left, right) => right.length - left.length);
+      for (const token of sorted) {
+        const normalizedToken = token.replace(/\u00b0/g, "deg").toLowerCase();
+        if (normalizedText === normalizedToken) return text;
+        if (!normalizedText.endsWith(normalizedToken)) continue;
+        const before = text.slice(0, Math.max(0, text.length - token.length)).trimEnd();
+        if (!before || /[-+]?\d[\d,]*(?:\.\d+)?$/.test(before)) {
+          return text.slice(Math.max(0, text.length - token.length)).trim();
+        }
+      }
+      return "";
+    };
+    const getTextUnitForShape2 = (shape, anchor = normalizeTextAnchorMode(shape == null ? void 0 : shape.anchor)) => {
+      const explicitUnit = String((shape == null ? void 0 : shape.unit) || "").trim();
+      if (explicitUnit || anchor !== "unitRight") return explicitUnit;
+      return inferFixedTextUnit2((shape == null ? void 0 : shape.text) || "");
+    };
+    const getTextUnitGap2 = () => 0;
+    const splitTextUnit = (value, unit) => {
+      const text = String(value != null ? value : "");
+      const unitText = String(unit || "").trim();
+      if (!unitText) return { valueText: text, unitText: "", displayText: text };
+      const trimmed = text.trim();
+      if (!trimmed) return { valueText: "", unitText, displayText: unitText };
+      if (trimmed.toLowerCase().endsWith(unitText.toLowerCase())) {
+        const valueText = trimmed.slice(0, Math.max(0, trimmed.length - unitText.length)).trimEnd();
+        return {
+          valueText,
+          unitText,
+          displayText: valueText ? `${valueText} ${unitText}` : unitText
+        };
+      }
+      return { valueText: text, unitText, displayText: `${text} ${unitText}` };
+    };
     const getTextBounds = (shape, options = {}) => {
       if (!shape) return null;
       const minW = Number.isFinite(Number(options.minW)) ? Number(options.minW) : 40;
       const minH = Number.isFinite(Number(options.minH)) ? Number(options.minH) : 24;
       const charWidth = Number.isFinite(Number(options.charWidth)) ? Number(options.charWidth) : 0.6;
       const fontSize = Math.max(8, Number(shape.fontSize || 24));
-      const text = String(shape.text || "");
-      const w = Math.max(minW, text.length * fontSize * charWidth);
+      const anchor = normalizeTextAnchorMode(shape.anchor);
+      const unitParts = splitTextUnit(shape.text || "", getTextUnitForShape2(shape, anchor));
+      const text = anchor === "unitRight" ? unitParts.displayText : String(shape.text || "");
+      const unitGap = anchor === "unitRight" && unitParts.unitText ? getTextUnitGap2(fontSize, unitParts.unitText) : 0;
+      const valueW = Math.max(0, String(unitParts.valueText || "").length * fontSize * charWidth);
+      const unitW = Math.max(0, String(unitParts.unitText || "").length * fontSize * charWidth);
+      const unitRightW = valueW + (unitParts.unitText ? unitGap + unitW : 0);
+      const w = Math.max(minW, anchor === "unitRight" ? unitRightW : text.length * fontSize * charWidth);
       const h = Math.max(minH, fontSize * 1.2);
-      const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
-      const ax = anchor === "middle" ? -w / 2 : anchor === "end" ? -w : 0;
+      const ax = anchor === "unitRight" ? -w : anchor === "middle" ? -w / 2 : anchor === "end" ? -w : 0;
       return {
         x: Number(shape.x || 0) + ax,
         y: Number(shape.y || 0),
@@ -13935,10 +14118,71 @@ var MesoraDrawingToolBundle = (() => {
         if (doc.querySelector("parsererror")) return source;
         const nodes = Array.from(doc.querySelectorAll("text"));
         let changed = 0;
+        const setTextValue = (node, value) => {
+          if (!node) return false;
+          const next = String(value || "").trim();
+          node.textContent = next;
+          return true;
+        };
+        const setVerticalTextValue = (node, value) => {
+          if (!node) return false;
+          const next = String(value || "").trim();
+          while (node.firstChild) node.removeChild(node.firstChild);
+          if (!next) return true;
+          const ns = "http://www.w3.org/2000/svg";
+          const baseX = String(node.getAttribute("x") || "0");
+          const baseY = Number(node.getAttribute("y"));
+          const style = String(node.getAttribute("style") || "");
+          const fontSizeMatch = style.match(/font-size\s*:\s*([0-9.]+)/i);
+          const fontSizeAttr = Number.parseFloat(String(node.getAttribute("font-size") || ""));
+          const fontSize = Number.isFinite(fontSizeAttr) ? fontSizeAttr : Number.isFinite(Number.parseFloat(fontSizeMatch == null ? void 0 : fontSizeMatch[1])) ? Number.parseFloat(fontSizeMatch[1]) : 26;
+          const lineStep = Math.max(10, fontSize * 0.9);
+          Array.from(next.toUpperCase()).forEach((char, index2) => {
+            const tspan = doc.createElementNS(ns, "tspan");
+            tspan.setAttribute("x", baseX);
+            tspan.setAttribute("y", String((Number.isFinite(baseY) ? baseY : 0) + lineStep * index2));
+            tspan.textContent = char === " " ? "" : char;
+            node.appendChild(tspan);
+          });
+          return true;
+        };
+        const splitBinNameLines = (value) => {
+          const text = String(value || "").replace(/\s+/g, " ").trim();
+          if (!text) return ["", ""];
+          const words = text.split(" ");
+          if (words.length === 1) return [words[0], ""];
+          let bestIndex = 1;
+          let bestScore = Number.POSITIVE_INFINITY;
+          for (let i = 1; i < words.length; i += 1) {
+            const left = words.slice(0, i).join(" ");
+            const right = words.slice(i).join(" ");
+            const score = Math.abs(left.length - right.length);
+            if (score < bestScore) {
+              bestScore = score;
+              bestIndex = i;
+            }
+          }
+          return [words.slice(0, bestIndex).join(" "), words.slice(bestIndex).join(" ")];
+        };
+        const siloNameLines = splitBinNameLines(binNoLabel);
+        const wheatText = doc.getElementById("wheat-text");
+        if (wheatText && binNoLabel) {
+          const receivingText2 = doc.getElementById("receiving-text");
+          const nextBinText = receivingText2 ? siloNameLines[0] : binNoLabel;
+          if (setTextValue(wheatText, nextBinText)) changed += 1;
+        }
+        const receivingText = doc.getElementById("receiving-text");
+        if (receivingText && binNoLabel) {
+          if (setTextValue(receivingText, siloNameLines[1])) changed += 1;
+        }
+        const siloProductText = doc.getElementById("wheat-text-8") || doc.getElementById("product_name_vertical");
+        if (siloProductText && productLabel) {
+          if (setVerticalTextValue(siloProductText, productLabel)) changed += 1;
+        }
         nodes.forEach((node) => {
           const current = String((node == null ? void 0 : node.textContent) || "").trim();
           if (!current) return;
-          if (/^product$/i.test(current) || /^\{\{?\s*product\s*\}?\}$/i.test(current)) {
+          if (/^product(?:\s+name)?$/i.test(current) || /^\{\{?\s*product\s*(?:name)?\s*\}?\}$/i.test(current)) {
             if (productLabel) {
               node.textContent = productLabel;
             } else {
@@ -13947,7 +14191,7 @@ var MesoraDrawingToolBundle = (() => {
             changed += 1;
             return;
           }
-          if (binNoLabel && (/^bin\s*no$/i.test(current) || /^\{\{?\s*bin\s*no\s*\}?\}$/i.test(current))) {
+          if (binNoLabel && (/^bin$/i.test(current) || /^bin\s*no$/i.test(current) || /^\{\{?\s*bin\s*no\s*\}?\}$/i.test(current))) {
             node.textContent = binNoLabel;
             changed += 1;
           }
@@ -15070,28 +15314,29 @@ var MesoraDrawingToolBundle = (() => {
       return getLiveValueForTagPath(tagPath);
     };
     const getTextShapeValueForShape = (shape) => {
+      return getTextShapeDisplayParts(shape).displayText;
+    };
+    const getTextShapeDisplayParts = (shape) => {
       var _a2, _b, _c, _d, _e, _f, _g, _h;
-      const appendTextUnit = (value) => {
-        const text = String(value != null ? value : "");
-        const unit = String((shape == null ? void 0 : shape.unit) || "").trim();
-        if (!unit) return text;
-        const trimmed = text.trim();
-        if (!trimmed) return unit;
-        if (trimmed.toLowerCase().endsWith(unit.toLowerCase())) return text;
-        return `${text} ${unit}`;
-      };
+      const anchor = normalizeTextAnchorMode(shape == null ? void 0 : shape.anchor);
+      const appendTextUnitParts = (value) => splitTextUnit(value, getTextUnitForShape2(shape, anchor));
       const tagPath = String((shape == null ? void 0 : shape.tagPath) || "").trim();
-      if (!tagPath) return appendTextUnit((shape == null ? void 0 : shape.text) || "");
+      if (!tagPath) {
+        const parts2 = appendTextUnitParts((shape == null ? void 0 : shape.text) || "");
+        return { ...parts2, unitAlignRight: anchor === "unitRight" };
+      }
       const ignitionValue = readIgnitionTagValueForPath(tagPath);
       const rawValue = ignitionValue !== void 0 ? ignitionValue : getLiveValueForTagPath(tagPath);
       if (rawValue == null || rawValue === "") {
-        return appendTextUnit((shape == null ? void 0 : shape.text) || "");
+        const parts2 = appendTextUnitParts((shape == null ? void 0 : shape.text) || "");
+        return { ...parts2, unitAlignRight: anchor === "unitRight" };
       }
       const rawText = rawValue != null && typeof rawValue === "object" ? String(
         (_f = (_e = (_d = (_c = (_b = (_a2 = rawValue == null ? void 0 : rawValue.value) != null ? _a2 : rawValue == null ? void 0 : rawValue.v) != null ? _b : rawValue == null ? void 0 : rawValue.state) != null ? _c : rawValue == null ? void 0 : rawValue.State) != null ? _d : rawValue == null ? void 0 : rawValue.rawValue) != null ? _e : rawValue == null ? void 0 : rawValue.raw) != null ? _f : ""
       ).trim() : String(rawValue).trim();
       if (!rawText) {
-        return appendTextUnit((shape == null ? void 0 : shape.text) || "");
+        const parts2 = appendTextUnitParts((shape == null ? void 0 : shape.text) || "");
+        return { ...parts2, unitAlignRight: anchor === "unitRight" };
       }
       const scaleFactorRaw = Number.parseFloat(String((_g = shape == null ? void 0 : shape.scaleFactor) != null ? _g : "").trim());
       const scaleFactor = Number.isFinite(scaleFactorRaw) ? scaleFactorRaw : 1;
@@ -15103,7 +15348,8 @@ var MesoraDrawingToolBundle = (() => {
         const scaledValue = numericValue * scaleFactor;
         displayValue = decimals == null ? String(scaledValue) : scaledValue.toFixed(decimals);
       }
-      return appendTextUnit(displayValue);
+      const parts = appendTextUnitParts(displayValue);
+      return { ...parts, unitAlignRight: anchor === "unitRight" };
     };
     const toNumberOrNull = (value) => {
       if (value == null) return null;
@@ -15252,6 +15498,9 @@ var MesoraDrawingToolBundle = (() => {
       };
       const requestedWidth = readExplicitDimension(["popupWidth", "viewPopupWidth", "openViewWidth"]);
       const requestedHeight = readExplicitDimension(["popupHeight", "viewPopupHeight", "openViewHeight"]);
+      if (!requestedWidth && !requestedHeight) {
+        return null;
+      }
       const viewportSource = typeof globalThis !== "undefined" ? globalThis : {};
       const docElement = (_a2 = viewportSource.document) == null ? void 0 : _a2.documentElement;
       const docBody = (_b = viewportSource.document) == null ? void 0 : _b.body;
@@ -15269,22 +15518,18 @@ var MesoraDrawingToolBundle = (() => {
       );
       const maxWidth = Math.max(280, viewportWidth - 48);
       const maxHeight = Math.max(220, viewportHeight - 48);
-      const defaultWidth = Math.min(920, Math.max(520, Math.round(viewportWidth * 0.62)));
-      const defaultHeight = Math.min(620, Math.max(360, Math.round(viewportHeight * 0.7)));
-      const width = Math.min(
-        maxWidth,
-        Math.max(320, requestedWidth || defaultWidth)
-      );
-      const height = Math.min(
-        maxHeight,
-        Math.max(240, requestedHeight || defaultHeight)
-      );
-      return {
-        left: Math.max(12, Math.round((viewportWidth - width) / 2)),
-        top: Math.max(12, Math.round((viewportHeight - height) / 2)),
-        width: Math.round(width),
-        height: Math.round(height)
-      };
+      const position = {};
+      if (requestedWidth) {
+        position.width = Math.round(Math.min(maxWidth, Math.max(120, requestedWidth)));
+      }
+      if (requestedHeight) {
+        position.height = Math.round(Math.min(maxHeight, Math.max(80, requestedHeight)));
+      }
+      const widthForCenter = position.width || Math.min(920, Math.max(520, Math.round(viewportWidth * 0.62)));
+      const heightForCenter = position.height || Math.min(620, Math.max(360, Math.round(viewportHeight * 0.7)));
+      position.left = Math.max(12, Math.round((viewportWidth - widthForCenter) / 2));
+      position.top = Math.max(12, Math.round((viewportHeight - heightForCenter) / 2));
+      return position;
     };
     const getMissingWidgetWriteTargetMessage = (overlay) => {
       const writeMode = resolveWidgetWriteMode(overlay == null ? void 0 : overlay.widget, overlay == null ? void 0 : overlay.tagPath);
@@ -16088,7 +16333,7 @@ var MesoraDrawingToolBundle = (() => {
       };
     }, [svgOverlays, liveUpdatesEnabled, disableWidgetBackgroundWork]);
     const renderWidgetOverlay = (overlay) => {
-      var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+      var _a2, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
       if (!(overlay == null ? void 0 : overlay.widget)) return null;
       const kind = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.kind) || "").trim();
       const cfg = (overlay == null ? void 0 : overlay.widget) || {};
@@ -16097,6 +16342,7 @@ var MesoraDrawingToolBundle = (() => {
       const decimals = Math.max(0, Math.min(6, Number(cfg == null ? void 0 : cfg.decimals) || 0));
       const unit = String((cfg == null ? void 0 : cfg.unit) || "").trim();
       const title = String((cfg == null ? void 0 : cfg.title) || "").trim();
+      const isPassiveReadoutWidget = isPassiveReadoutWidgetKind(kind);
       const normalizeWidgetTextColor = (value) => {
         const text = String(value != null ? value : "").trim();
         if (!text || text.toLowerCase() === "auto" || text.toLowerCase() === "theme") return "";
@@ -16111,7 +16357,7 @@ var MesoraDrawingToolBundle = (() => {
       const formatNum = (v) => Number.isFinite(Number(v)) ? `${Number(v).toFixed(decimals)}${unit ? ` ${unit}` : ""}` : "";
       const seriesTags = parseWidgetSeriesTags(overlay);
       const primaryTagPath = String(seriesTags[0] || "").trim();
-      const label = primaryTagPath || String((overlay == null ? void 0 : overlay.tagPath) || "").trim() || "Unbound";
+      const label = formatWidgetSourceLabel(primaryTagPath || String((overlay == null ? void 0 : overlay.tagPath) || "").trim()) || "Unbound";
       const bb = (overlay == null ? void 0 : overlay.bbox) || { x: 0, y: 0, width: 320, height: 180 };
       const x = Number(bb.x) || 0;
       const y = Number(bb.y) || 0;
@@ -16229,7 +16475,7 @@ var MesoraDrawingToolBundle = (() => {
         (_b2 = event == null ? void 0 : event.stopPropagation) == null ? void 0 : _b2.call(event);
         handleOverlayDoubleClick(event, overlay, { force: true });
       };
-      const widgetSurfaceCursor = isLiveMode ? widgetInteractionEnabled ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
+      const widgetSurfaceCursor = isPassiveReadoutWidget ? "default" : isLiveMode ? widgetInteractionEnabled ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
       const headH = dense ? 20 : compact ? 24 : 28;
       const pad = dense ? 6 : compact ? 8 : 10;
       const cardTitle = title || "";
@@ -16322,6 +16568,307 @@ var MesoraDrawingToolBundle = (() => {
         if (abs >= 1e4) return `${(abs / 1e3).toFixed(Math.max(0, precision))} s`;
         return `${Math.max(0, Math.round(abs)).toFixed(0)} ms`;
       };
+      const unboxRouteValue = (value) => {
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          if (Object.prototype.hasOwnProperty.call(value, "value")) return value.value;
+          if (Object.prototype.hasOwnProperty.call(value, "v")) return value.v;
+          if (Object.prototype.hasOwnProperty.call(value, "tagValue")) return value.tagValue;
+        }
+        return value;
+      };
+      const isRouteValuePresent = (value) => {
+        const unboxed = unboxRouteValue(value);
+        return unboxed != null && String(unboxed).trim() !== "";
+      };
+      const normalizeRouteObjectKey = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const parseRouteDocument = (value) => {
+        const unboxed = unboxRouteValue(value);
+        if (unboxed && typeof unboxed === "object" && !Array.isArray(unboxed)) return unboxed;
+        const text = String(unboxed != null ? unboxed : "").trim();
+        if (!text || !(text.startsWith("{") || text.startsWith("["))) return null;
+        try {
+          const parsed = JSON.parse(text);
+          const next = unboxRouteValue(parsed);
+          return next && typeof next === "object" && !Array.isArray(next) ? next : null;
+        } catch {
+          return null;
+        }
+      };
+      const getRouteObjectMember = (source, alias) => {
+        if (!source || typeof source !== "object" || Array.isArray(source)) return void 0;
+        const normalizedAlias = normalizeRouteObjectKey(alias);
+        const flatKey = Object.keys(source).find((key) => key === alias || normalizeRouteObjectKey(key) === normalizedAlias);
+        if (flatKey) return unboxRouteValue(source[flatKey]);
+        const parts = String(alias || "").split(/[/.]/).map((part) => part.trim()).filter(Boolean);
+        if (!parts.length) return void 0;
+        let cursor = source;
+        for (const part of parts) {
+          const node = unboxRouteValue(cursor);
+          if (!node || typeof node !== "object" || Array.isArray(node)) return void 0;
+          const directKey = Object.keys(node).find((key) => key === part);
+          const normalizedPart = normalizeRouteObjectKey(part);
+          const looseKey = directKey || Object.keys(node).find((key) => normalizeRouteObjectKey(key) === normalizedPart);
+          if (!looseKey) return void 0;
+          cursor = node[looseKey];
+        }
+        return unboxRouteValue(cursor);
+      };
+      const readRouteDisplayField = (tagPath, aliases = [], routeDocument = null) => {
+        const list = Array.isArray(aliases) ? aliases : [];
+        for (const alias of list) {
+          const docValue = getRouteObjectMember(routeDocument, alias);
+          if (isRouteValuePresent(docValue)) return docValue;
+        }
+        const ignitionValue = readIgnitionMemberValueForPath(tagPath, list);
+        if (isRouteValuePresent(ignitionValue)) return ignitionValue;
+        const liveValue = getLiveMemberValueForTagPath(tagPath, list);
+        if (isRouteValuePresent(liveValue)) return liveValue;
+        return null;
+      };
+      const formatRouteDisplayValue = (value) => {
+        const unboxed = unboxRouteValue(value);
+        if (unboxed == null || String(unboxed).trim() === "") return "null";
+        if (typeof unboxed === "object") {
+          try {
+            return JSON.stringify(unboxed);
+          } catch {
+            return String(unboxed);
+          }
+        }
+        return String(unboxed);
+      };
+      const truncateRouteDisplayText = (value, maxChars) => {
+        const text = String(value != null ? value : "");
+        const limit = Math.max(4, Number(maxChars) || 4);
+        return text.length > limit ? `${text.slice(0, Math.max(1, limit - 1))}...` : text;
+      };
+      const formatScaleNumber = (value, precision = 0) => {
+        const raw = unboxRouteValue(value);
+        const n2 = Number(raw);
+        if (!Number.isFinite(n2)) return "null";
+        try {
+          return new Intl.NumberFormat(void 0, {
+            minimumFractionDigits: Math.max(0, precision),
+            maximumFractionDigits: Math.max(0, precision)
+          }).format(n2);
+        } catch {
+          return n2.toFixed(Math.max(0, precision));
+        }
+      };
+      const resolveScaleState = (value) => {
+        const raw = unboxRouteValue(value);
+        const text = String(raw != null ? raw : "").trim();
+        const n2 = Number(text);
+        const byNumber = {
+          1: "Stopped",
+          2: "Starting",
+          3: "Dosing",
+          4: "Stopping",
+          5: "Emptying",
+          6: "Emptied",
+          7: "Measuring",
+          16: "Faulted"
+        };
+        if (Number.isFinite(n2) && Object.prototype.hasOwnProperty.call(byNumber, n2)) {
+          return byNumber[n2];
+        }
+        return text || "No State";
+      };
+      if (kind === "routeDisplay") {
+        const routeTagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
+        const routeDocument = parseRouteDocument(
+          routeTagPath ? (_h = (_g = readIgnitionTagValueForPath(routeTagPath)) != null ? _g : readLiveValue(routeTagPath)) != null ? _h : readLiveValue(routeTagPath.toLowerCase()) : null
+        );
+        const jobNumber = formatRouteDisplayValue(
+          readRouteDisplayField(routeTagPath, LIVE_ROUTE_JOB_NUMBER_MEMBER_ALIASES, routeDocument)
+        );
+        const jobStep = formatRouteDisplayValue(
+          readRouteDisplayField(routeTagPath, LIVE_ROUTE_JOB_STEP_MEMBER_ALIASES, routeDocument)
+        );
+        const routeState = formatRouteDisplayValue(
+          readRouteDisplayField(routeTagPath, LIVE_ROUTE_STATE_TEXT_MEMBER_ALIASES, routeDocument)
+        );
+        const routeTitle = cardTitle && cardTitle !== "Route Display" ? cardTitle : routeTagPath ? getTagPathLeaf(routeTagPath) : "Route Display";
+        const stateText = routeState.toLowerCase();
+        const stateTone = /fault|fail|error|alarm/.test(stateText) ? "#ef4444" : /active|run|running|start|started|intake/.test(stateText) ? "#22c55e" : /stop|stopped|idle|idling|hold|paused/.test(stateText) ? "#f59e0b" : accent;
+        const rows = [
+          ["Job Number", jobNumber],
+          ["Job Step", jobStep],
+          ["Route State", routeState]
+        ];
+        const cardFill = isDarkTheme ? "#08111f" : "#f8fafc";
+        const panelFill = isDarkTheme ? "rgba(15, 23, 42, 0.72)" : "rgba(255, 255, 255, 0.82)";
+        const headerFill = isDarkTheme ? "rgba(37, 99, 235, 0.30)" : "rgba(37, 99, 235, 0.12)";
+        const headerStroke = isDarkTheme ? "rgba(96, 165, 250, 0.32)" : "rgba(37, 99, 235, 0.22)";
+        const routePad = Math.max(7, Math.min(12, Math.round(Math.min(w, h) * 0.065)));
+        const innerGap = Math.max(4, Math.min(7, Math.round(routePad * 0.6)));
+        const footerH2 = 0;
+        const usableH = Math.max(48, h - routePad * 2 - innerGap - footerH2);
+        const routeHeadH = Math.max(22, Math.min(30, Math.round(usableH * 0.28)));
+        const headerX = x + routePad;
+        const headerY = y + routePad;
+        const headerW = Math.max(20, w - routePad * 2);
+        const bodyX = headerX;
+        const bodyY = headerY + routeHeadH + innerGap;
+        const bodyW = Math.max(20, w - routePad * 2);
+        const bodyBottom = y + h - routePad - footerH2;
+        const bodyAvailableH = Math.max(42, bodyBottom - bodyY);
+        const rowStep = Math.max(16, Math.min(22, bodyAvailableH / Math.max(1, rows.length)));
+        const bodyH = Math.max(42, Math.min(bodyAvailableH, rowStep * rows.length));
+        const bodyTop = bodyY + rowStep * 0.5;
+        const routeCardH = Math.max(1, Math.min(h - 2, routePad * 2 + routeHeadH + innerGap + bodyH));
+        const labelFont = Math.max(8, Math.min(12, Math.round(w / 28)));
+        const valueFont = Math.max(9, Math.min(14, Math.round(w / 25)));
+        const maxTitleChars = Math.max(8, Math.floor((headerW - routePad * 2 - 10) / 7));
+        const maxValueChars = Math.max(6, Math.floor(w * 0.48 / Math.max(6, valueFont * 0.58)));
+        const rowBaselineOffset = Math.max(3, Math.min(5, valueFont * 0.34));
+        return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
+          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: routeCardH, rx: 14, fill: cardFill, stroke: widgetBorderColor }),
+          /* @__PURE__ */ jsx("rect", { x: headerX, y: headerY, width: headerW, height: routeHeadH, rx: 10, fill: headerFill, stroke: headerStroke }),
+          /* @__PURE__ */ jsx("rect", { x: headerX, y: headerY, width: Math.max(5, Math.min(9, routePad - 2)), height: routeHeadH, rx: 5, fill: stateTone }),
+          /* @__PURE__ */ jsx(
+            "text",
+            {
+              x: headerX + routePad + 2,
+              y: headerY + routeHeadH / 2 + titleSize / 2 - 2,
+              fill: widgetTextColor || widgetPrimaryText,
+              fontSize: Math.max(titleSize, 10),
+              fontFamily: "system-ui",
+              fontWeight: 850,
+              children: truncateRouteDisplayText(routeTitle, maxTitleChars)
+            }
+          ),
+          /* @__PURE__ */ jsx("rect", { x: bodyX, y: bodyY, width: bodyW, height: bodyH, rx: 10, fill: panelFill, stroke: widgetBorderColor, opacity: 0.96 }),
+          rows.map(([labelText, valueText], index2) => {
+            const rowY = bodyTop + rowStep * index2;
+            return /* @__PURE__ */ jsxs("g", { children: [
+              index2 > 0 ? /* @__PURE__ */ jsx("line", { x1: bodyX + 8, y1: bodyY + rowStep * index2, x2: bodyX + bodyW - 8, y2: bodyY + rowStep * index2, stroke: widgetBorderColor, opacity: 0.55 }) : null,
+              /* @__PURE__ */ jsx("text", { x: bodyX + 10, y: rowY + rowBaselineOffset, fill: subdued, fontSize: labelFont, fontFamily: "system-ui", fontWeight: 750, children: labelText }),
+              /* @__PURE__ */ jsx(
+                "text",
+                {
+                  x: bodyX + bodyW - 12,
+                  y: rowY + rowBaselineOffset,
+                  fill: labelText === "Route State" && valueText !== "null" ? stateTone : valueColor,
+                  fontSize: valueFont,
+                  fontFamily: "system-ui",
+                  fontWeight: 850,
+                  textAnchor: "end",
+                  children: truncateRouteDisplayText(valueText, maxValueChars)
+                }
+              )
+            ] }, `route-display-${overlayId}-${labelText}`);
+          })
+        ] });
+      }
+      ;
+      if (kind === "scaleAdapter" || kind === "scaleAdaptor") {
+        const scaleTagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
+        const scaleDocument = parseRouteDocument(
+          scaleTagPath ? (_j = (_i = readIgnitionTagValueForPath(scaleTagPath)) != null ? _i : readLiveValue(scaleTagPath)) != null ? _j : readLiveValue(scaleTagPath.toLowerCase()) : null
+        );
+        const description = formatRouteDisplayValue(
+          readRouteDisplayField(scaleTagPath, LIVE_SCALE_DESCRIPTION_MEMBER_ALIASES, scaleDocument)
+        );
+        const state = resolveScaleState(
+          readRouteDisplayField(scaleTagPath, LIVE_SCALE_STATE_MEMBER_ALIASES, scaleDocument)
+        );
+        const flowrate = `${formatScaleNumber(
+          readRouteDisplayField(scaleTagPath, LIVE_SCALE_FLOWRATE_MEMBER_ALIASES, scaleDocument),
+          0
+        )} lb/h`;
+        const jobWeight = `${formatScaleNumber(
+          readRouteDisplayField(scaleTagPath, LIVE_SCALE_JOB_WEIGHT_MEMBER_ALIASES, scaleDocument),
+          0
+        )} lb`;
+        const scaleTitle = cardTitle && cardTitle !== "Scale Adapter" ? cardTitle : description !== "null" ? description : scaleTagPath ? getTagPathLeaf(scaleTagPath) : "Scale Adapter";
+        const stateKey = state.toLowerCase();
+        const scaleTone = /fault|fail|error|alarm/.test(stateKey) ? "#ef4444" : /dosing|measuring|started|running/.test(stateKey) ? "#22c55e" : /starting|stopping|emptying/.test(stateKey) ? "#f59e0b" : /stopped|emptied|no state/.test(stateKey) ? isDarkTheme ? "#94a3b8" : "#64748b" : accent;
+        const scaleCardFill = isDarkTheme ? "#08111f" : "#f8fafc";
+        const scalePanelFill = isDarkTheme ? "rgba(15, 23, 42, 0.76)" : "rgba(255, 255, 255, 0.86)";
+        const scaleHeaderFill = isDarkTheme ? "rgba(15, 44, 95, 0.82)" : "rgba(219, 234, 254, 0.96)";
+        const scaleHeaderStroke = isDarkTheme ? "rgba(96, 165, 250, 0.34)" : "rgba(37, 99, 235, 0.22)";
+        const scalePad = Math.max(7, Math.min(12, Math.round(Math.min(w, h) * 0.065)));
+        const scaleGap = Math.max(4, Math.min(7, Math.round(scalePad * 0.6)));
+        const scaleUsableH = Math.max(48, h - scalePad * 2 - scaleGap);
+        const scaleHeadH = Math.max(22, Math.min(30, Math.round(scaleUsableH * 0.28)));
+        const headerX = x + scalePad;
+        const headerY = y + scalePad;
+        const headerW = Math.max(20, w - scalePad * 2);
+        const bodyX = x + scalePad;
+        const bodyY = headerY + scaleHeadH + scaleGap;
+        const bodyW = Math.max(20, w - scalePad * 2);
+        const scaleBodyAvailableH = Math.max(48, y + h - scalePad - bodyY);
+        const scaleRowStep = Math.max(16, Math.min(22, scaleBodyAvailableH / 3));
+        const bodyH = Math.max(48, Math.min(scaleBodyAvailableH, scaleRowStep * 3));
+        const scaleCardH = Math.max(1, Math.min(h - 2, scalePad * 2 + scaleHeadH + scaleGap + bodyH));
+        const bodyInnerPad = Math.max(5, Math.min(8, Math.round(scalePad * 0.65)));
+        const stateH = Math.max(15, Math.min(20, scaleRowStep - bodyInnerPad));
+        const stateY = bodyY + scaleRowStep * 0.5 - stateH / 2;
+        const titleFont = Math.max(titleSize, 10);
+        const labelFont = Math.max(8, Math.min(12, Math.round(w / 28)));
+        const valueFont = Math.max(9, Math.min(14, Math.round(w / 25)));
+        const maxTitleChars = Math.max(8, Math.floor((headerW - scalePad * 2 - 10) / 7));
+        const maxValueChars = Math.max(8, Math.floor(w * 0.48 / Math.max(6, valueFont * 0.58)));
+        const metricBaselineOffset = Math.max(3, Math.min(5, valueFont * 0.34));
+        const metricRows = [
+          ["Flowrate", flowrate],
+          ["Job Weight", jobWeight]
+        ];
+        return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
+          /* @__PURE__ */ jsx("rect", { x: x + 1, y: y + 1, width: w - 2, height: scaleCardH, rx: 14, fill: scaleCardFill, stroke: widgetBorderColor }),
+          /* @__PURE__ */ jsx("rect", { x: headerX, y: headerY, width: headerW, height: scaleHeadH, rx: 10, fill: scaleHeaderFill, stroke: scaleHeaderStroke }),
+          /* @__PURE__ */ jsx("rect", { x: headerX, y: headerY, width: Math.max(5, Math.min(9, scalePad - 2)), height: scaleHeadH, rx: 5, fill: scaleTone }),
+          /* @__PURE__ */ jsx(
+            "text",
+            {
+              x: headerX + scalePad + 2,
+              y: headerY + scaleHeadH / 2 + titleFont / 2 - 2,
+              fill: widgetTextColor || widgetPrimaryText,
+              fontSize: titleFont,
+              fontFamily: "system-ui",
+              fontWeight: 850,
+              children: truncateRouteDisplayText(scaleTitle, maxTitleChars)
+            }
+          ),
+          /* @__PURE__ */ jsx("rect", { x: bodyX, y: bodyY, width: bodyW, height: bodyH, rx: 10, fill: scalePanelFill, stroke: widgetBorderColor, opacity: 0.96 }),
+          /* @__PURE__ */ jsx("rect", { x: bodyX + bodyInnerPad, y: stateY, width: bodyW - bodyInnerPad * 2, height: stateH, rx: 8, fill: scaleTone, opacity: isDarkTheme ? 0.2 : 0.13, stroke: scaleTone }),
+          /* @__PURE__ */ jsx(
+            "text",
+            {
+              x: bodyX + bodyW / 2,
+              y: stateY + stateH / 2 + valueFont / 2 - 2,
+              fill: scaleTone,
+              fontSize: Math.max(valueFont, 10),
+              fontFamily: "system-ui",
+              fontWeight: 900,
+              textAnchor: "middle",
+              children: truncateRouteDisplayText(state, Math.max(8, Math.floor(bodyW / 8)))
+            }
+          ),
+          metricRows.map(([labelText, valueText], index2) => {
+            const rowIndex = index2 + 1;
+            const rowY = bodyY + scaleRowStep * rowIndex + scaleRowStep / 2;
+            return /* @__PURE__ */ jsxs("g", { children: [
+              /* @__PURE__ */ jsx("line", { x1: bodyX + 8, y1: bodyY + scaleRowStep * rowIndex, x2: bodyX + bodyW - 8, y2: bodyY + scaleRowStep * rowIndex, stroke: widgetBorderColor, opacity: 0.55 }),
+              /* @__PURE__ */ jsx("text", { x: bodyX + 10, y: rowY + metricBaselineOffset, fill: subdued, fontSize: labelFont, fontFamily: "system-ui", fontWeight: 750, children: labelText }),
+              /* @__PURE__ */ jsx(
+                "text",
+                {
+                  x: bodyX + bodyW - 12,
+                  y: rowY + metricBaselineOffset,
+                  fill: valueColor,
+                  fontSize: valueFont,
+                  fontFamily: "system-ui",
+                  fontWeight: 850,
+                  textAnchor: "end",
+                  children: truncateRouteDisplayText(valueText, maxValueChars)
+                }
+              )
+            ] }, `scale-adapter-${overlayId}-${labelText}`);
+          })
+        ] });
+      }
       if (kind === "kpi") {
         const display = displayN != null ? formatNum(displayN) : rawVal !== "" ? String(rawVal) : "--";
         return /* @__PURE__ */ jsxs("g", { pointerEvents: "none", children: [
@@ -16347,7 +16894,7 @@ var MesoraDrawingToolBundle = (() => {
           Math.min(8, (window.devicePixelRatio || 1) * viewScale2 * overlayScale3 * viewportDprBoost2)
         ) : 1;
         const gaugeKey = `g-${overlay.id}-${kind}-${gaugeW}x${gaugeH}-z${viewScale2.toFixed(3)}-s${overlayScale3.toFixed(3)}-vp${viewportDprBoost2.toFixed(3)}`;
-        const borderColor = ((_g = widgetRootStyle == null ? void 0 : widgetRootStyle.getPropertyValue("--border")) == null ? void 0 : _g.trim()) || "#334155";
+        const borderColor = ((_k = widgetRootStyle == null ? void 0 : widgetRootStyle.getPropertyValue("--border")) == null ? void 0 : _k.trim()) || "#334155";
         const textColor2 = widgetHtmlTextColor;
         const gaugeData = {
           datasets: [
@@ -16557,7 +17104,7 @@ var MesoraDrawingToolBundle = (() => {
         const tagPath = getWritableWidgetTagPath(overlay);
         const canWrite = Boolean(tagPath);
         const initialDraft = displayN != null ? String(Number(displayN)) : rawVal !== "" ? String(rawVal) : "";
-        const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId) ? String((_h = widgetWriteDraftByOverlay[overlayId]) != null ? _h : "") : initialDraft;
+        const writeDraft = Object.prototype.hasOwnProperty.call(widgetWriteDraftByOverlay, overlayId) ? String((_l = widgetWriteDraftByOverlay[overlayId]) != null ? _l : "") : initialDraft;
         const writeBusy = (widgetWriteBusyByOverlay == null ? void 0 : widgetWriteBusyByOverlay[overlayId]) === true;
         const writeError = String((widgetWriteErrorByOverlay == null ? void 0 : widgetWriteErrorByOverlay[overlayId]) || "");
         const inputH = dense ? 22 : 26;
@@ -17295,8 +17842,8 @@ var MesoraDrawingToolBundle = (() => {
       const chartKey = `c-${overlay.id}-${kind}-${chartW}x${chartH}-z${viewScale.toFixed(3)}-s${overlayScale2.toFixed(3)}-vp${viewportDprBoost.toFixed(3)}`;
       const rootStyle = typeof window !== "undefined" ? window.getComputedStyle(document.documentElement) : null;
       const isDark = isDarkTheme;
-      const chartPrimaryText = widgetTextColor || ((_i = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text")) == null ? void 0 : _i.trim()) || (isDark ? "#f8fafc" : "#111827");
-      const chartMutedText = widgetTextColor || ((_j = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text-muted")) == null ? void 0 : _j.trim()) || (isDark ? "#b7c4d8" : "#5d6b82");
+      const chartPrimaryText = widgetTextColor || ((_m = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text")) == null ? void 0 : _m.trim()) || (isDark ? "#f8fafc" : "#111827");
+      const chartMutedText = widgetTextColor || ((_n = rootStyle == null ? void 0 : rootStyle.getPropertyValue("--text-muted")) == null ? void 0 : _n.trim()) || (isDark ? "#b7c4d8" : "#5d6b82");
       const textColor = chartMutedText;
       const chartPanelFill = isDark ? "#0b1220" : "#ffffff";
       const gridColor = isDark ? "rgba(148,163,184,0.24)" : "rgba(100,116,139,0.22)";
@@ -18068,15 +18615,33 @@ var MesoraDrawingToolBundle = (() => {
         (_c = (_b = (_a2 = overlay == null ? void 0 : overlay.description) != null ? _a2 : overlay == null ? void 0 : overlay.tooltip) != null ? _b : overlay == null ? void 0 : overlay.label) != null ? _c : ""
       );
     };
+    const clampColorChannel = (value) => Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
+    const rgbToCssColor = ([r, g, b]) => `rgb(${clampColorChannel(r)}, ${clampColorChannel(g)}, ${clampColorChannel(b)})`;
+    const mixCssColor = (baseColor, targetColor, amount) => {
+      const base = parseCssRgbChannels(baseColor);
+      const target = parseCssRgbChannels(targetColor);
+      if (!base || !target) return String(baseColor || "");
+      const ratio = Math.max(0, Math.min(1, Number(amount) || 0));
+      return rgbToCssColor(base.map((channel, index2) => channel + (target[index2] - channel) * ratio));
+    };
     const applyBinVisualStateToSvg = (innerSvg, options = {}) => {
+      var _a2;
       const source = String(innerSvg || "");
       if (!source.trim()) return source;
       const ratio = Math.max(0, Math.min(1, Number(options == null ? void 0 : options.ratio) || 0));
       const showFillLock = (options == null ? void 0 : options.showFillLock) === true;
       const showDischargeLock = (options == null ? void 0 : options.showDischargeLock) === true;
+      const rawFillColor = String((options == null ? void 0 : options.fillColor) || "").trim();
+      const fillColor = rawFillColor && !["none", "transparent"].includes(rawFillColor.toLowerCase()) ? rawFillColor : "#4f77a5";
+      const fillStyleKey = String((options == null ? void 0 : options.fillStyle) || "gradient").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+      const useLevelGradient = fillStyleKey !== "solid";
+      const activeFillingRoute = (options == null ? void 0 : options.activeFillingRoute) === true;
+      const activeDischargingRoute = (options == null ? void 0 : options.activeDischargingRoute) === true;
+      const routeActivityColor = String((options == null ? void 0 : options.routeActivityColor) || BIN_ROUTE_ACTIVITY_COLOR).trim() || BIN_ROUTE_ACTIVITY_COLOR;
       const hasBarGraph = /id=["']BarGraph["']/i.test(source);
+      const hasSiloBody = /id=["'](?:main-tall-bin|bin_shell)["']/i.test(source);
       const hasLockGroup = /id=["']Lock_Filling["']/i.test(source) || /id=["']Lock_Discharge["']/i.test(source) || /id=["']LockFill["']/i.test(source) || /id=["']LockDischarge["']/i.test(source);
-      if (!hasBarGraph && !hasLockGroup) return source;
+      if (!hasBarGraph && !hasSiloBody && !hasLockGroup) return source;
       try {
         const parser = new DOMParser();
         const doc = parser.parseFromString(
@@ -18098,7 +18663,9 @@ var MesoraDrawingToolBundle = (() => {
         };
         const ensureBinLevelGradient = () => {
           const ns = "http://www.w3.org/2000/svg";
-          let gradient = doc.getElementById("binLevelFill");
+          const suffix = String((options == null ? void 0 : options.overlayId) || "").replace(/[^a-zA-Z0-9_-]/g, "");
+          const gradientId = suffix ? `binLevelFill-${suffix}` : "binLevelFill";
+          let gradient = doc.getElementById(gradientId);
           if (!gradient) {
             let defs = doc.querySelector("defs");
             if (!defs) {
@@ -18106,7 +18673,86 @@ var MesoraDrawingToolBundle = (() => {
               doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
             }
             gradient = doc.createElementNS(ns, "linearGradient");
-            gradient.setAttribute("id", "binLevelFill");
+            gradient.setAttribute("id", gradientId);
+            defs.appendChild(gradient);
+          }
+          gradient.setAttribute("x1", "0");
+          gradient.setAttribute("y1", "0");
+          gradient.setAttribute("x2", "0");
+          gradient.setAttribute("y2", "1");
+          while (gradient.firstChild) {
+            gradient.removeChild(gradient.firstChild);
+          }
+          const topColor = mixCssColor(fillColor, "#ffffff", 0.46) || fillColor;
+          const upperColor = mixCssColor(fillColor, "#ffffff", 0.24) || fillColor;
+          const lowerColor = mixCssColor(fillColor, "#000000", 0.18) || fillColor;
+          const bottomColor = mixCssColor(fillColor, "#000000", 0.34) || fillColor;
+          [
+            ["0%", topColor, "0.68"],
+            ["12%", upperColor, "0.88"],
+            ["42%", fillColor, "0.98"],
+            ["72%", lowerColor, "0.98"],
+            ["100%", bottomColor, "0.94"]
+          ].forEach(([offset, color2, opacity]) => {
+            const stop = doc.createElementNS(ns, "stop");
+            stop.setAttribute("offset", offset);
+            stop.setAttribute("stop-color", color2);
+            stop.setAttribute("stop-opacity", opacity);
+            gradient.appendChild(stop);
+          });
+          return gradientId;
+        };
+        const ensureSiloLevelSideShadeGradient = () => {
+          const ns = "http://www.w3.org/2000/svg";
+          const suffix = String((options == null ? void 0 : options.overlayId) || "").replace(/[^a-zA-Z0-9_-]/g, "");
+          const gradientId = suffix ? `siloLevelSideShade-${suffix}` : "siloLevelSideShade";
+          let gradient = doc.getElementById(gradientId);
+          if (!gradient) {
+            let defs = doc.querySelector("defs");
+            if (!defs) {
+              defs = doc.createElementNS(ns, "defs");
+              doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+            }
+            gradient = doc.createElementNS(ns, "linearGradient");
+            gradient.setAttribute("id", gradientId);
+            defs.appendChild(gradient);
+          }
+          gradient.setAttribute("x1", "0");
+          gradient.setAttribute("y1", "0");
+          gradient.setAttribute("x2", "1");
+          gradient.setAttribute("y2", "0");
+          while (gradient.firstChild) {
+            gradient.removeChild(gradient.firstChild);
+          }
+          [
+            ["0%", "#000000", "0.26"],
+            ["16%", "#000000", "0.08"],
+            ["42%", "#ffffff", "0.20"],
+            ["58%", "#ffffff", "0.08"],
+            ["84%", "#000000", "0.08"],
+            ["100%", "#000000", "0.24"]
+          ].forEach(([offset, color2, opacity]) => {
+            const stop = doc.createElementNS(ns, "stop");
+            stop.setAttribute("offset", offset);
+            stop.setAttribute("stop-color", color2);
+            stop.setAttribute("stop-opacity", opacity);
+            gradient.appendChild(stop);
+          });
+          return gradientId;
+        };
+        const ensureSiloLevelSurfaceGradient = () => {
+          const ns = "http://www.w3.org/2000/svg";
+          const suffix = String((options == null ? void 0 : options.overlayId) || "").replace(/[^a-zA-Z0-9_-]/g, "");
+          const gradientId = suffix ? `siloLevelSurfaceSheen-${suffix}` : "siloLevelSurfaceSheen";
+          let gradient = doc.getElementById(gradientId);
+          if (!gradient) {
+            let defs = doc.querySelector("defs");
+            if (!defs) {
+              defs = doc.createElementNS(ns, "defs");
+              doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+            }
+            gradient = doc.createElementNS(ns, "linearGradient");
+            gradient.setAttribute("id", gradientId);
             defs.appendChild(gradient);
           }
           gradient.setAttribute("x1", "0");
@@ -18117,20 +18763,84 @@ var MesoraDrawingToolBundle = (() => {
             gradient.removeChild(gradient.firstChild);
           }
           [
-            ["0%", "#b6cff2"],
-            ["100%", "#4f77a5"]
-          ].forEach(([offset, color2]) => {
+            ["0%", "#ffffff", "0.38"],
+            ["45%", mixCssColor(fillColor, "#ffffff", 0.32) || fillColor, "0.24"],
+            ["100%", fillColor, "0.00"]
+          ].forEach(([offset, color2, opacity]) => {
             const stop = doc.createElementNS(ns, "stop");
             stop.setAttribute("offset", offset);
             stop.setAttribute("stop-color", color2);
+            stop.setAttribute("stop-opacity", opacity);
             gradient.appendChild(stop);
           });
-          return "binLevelFill";
+          return gradientId;
         };
+        const ensureBinRouteActivityGradient = () => {
+          const ns = "http://www.w3.org/2000/svg";
+          const suffix = String((options == null ? void 0 : options.overlayId) || "").replace(/[^a-zA-Z0-9_-]/g, "");
+          const gradientId = suffix ? `binRouteActivityFill-${suffix}` : "binRouteActivityFill";
+          let gradient = doc.getElementById(gradientId);
+          if (!gradient) {
+            let defs = doc.querySelector("defs");
+            if (!defs) {
+              defs = doc.createElementNS(ns, "defs");
+              doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+            }
+            gradient = doc.createElementNS(ns, "linearGradient");
+            gradient.setAttribute("id", gradientId);
+            defs.appendChild(gradient);
+          }
+          gradient.setAttribute("x1", "0");
+          gradient.setAttribute("y1", "0");
+          gradient.setAttribute("x2", "0");
+          gradient.setAttribute("y2", "1");
+          while (gradient.firstChild) {
+            gradient.removeChild(gradient.firstChild);
+          }
+          [
+            ["0%", mixCssColor(routeActivityColor, "#ffffff", 0.42) || routeActivityColor, "1"],
+            ["48%", routeActivityColor, "1"],
+            ["100%", mixCssColor(routeActivityColor, "#000000", 0.16) || routeActivityColor, "1"]
+          ].forEach(([offset, color2, opacity]) => {
+            const stop = doc.createElementNS(ns, "stop");
+            stop.setAttribute("offset", offset);
+            stop.setAttribute("stop-color", color2);
+            stop.setAttribute("stop-opacity", opacity);
+            gradient.appendChild(stop);
+          });
+          return gradientId;
+        };
+        const paintRouteActivityTarget = (node) => {
+          if (!node) return false;
+          const gradientId = ensureBinRouteActivityGradient();
+          setStylePaint(node, "fill", `url(#${gradientId})`);
+          node.setAttribute("fill-opacity", "1");
+          if (!node.getAttribute("stroke")) {
+            node.setAttribute("stroke", "#2e2e2e");
+          }
+          return true;
+        };
+        const paintRouteActivityTargets = (ids) => {
+          let painted = false;
+          (Array.isArray(ids) ? ids : []).forEach((id) => {
+            painted = paintRouteActivityTarget(doc.getElementById(id)) || painted;
+          });
+          return painted;
+        };
+        if (activeFillingRoute) {
+          paintRouteActivityTargets(["roof", "top_cone"]);
+        }
+        if (activeDischargingRoute) {
+          paintRouteActivityTargets(["short-hopper-cone", "hopper"]);
+        }
         const bar = doc.getElementById("BarGraph");
         if (bar) {
-          const levelGradientId = ensureBinLevelGradient();
-          setStylePaint(bar, "fill", `url(#${levelGradientId})`);
+          if (useLevelGradient) {
+            const levelGradientId = ensureBinLevelGradient();
+            setStylePaint(bar, "fill", `url(#${levelGradientId})`);
+          } else {
+            setStylePaint(bar, "fill", fillColor);
+          }
           setStylePaint(bar, "stroke", "#3f3f3f");
           setStylePaint(bar, "stroke-width", "0");
           const rawY = Number(bar.getAttribute("y"));
@@ -18139,6 +18849,147 @@ var MesoraDrawingToolBundle = (() => {
             const nextHeight = rawHeight * ratio;
             bar.setAttribute("height", String(nextHeight));
             bar.setAttribute("y", String(rawY));
+          }
+        }
+        const siloBody = doc.getElementById("main-tall-bin") || doc.getElementById("bin_shell");
+        if (siloBody) {
+          const ns = "http://www.w3.org/2000/svg";
+          const suffix = String((options == null ? void 0 : options.overlayId) || "").replace(/[^a-zA-Z0-9_-]/g, "");
+          const clipId = suffix ? `siloLevelClip-${suffix}` : "siloLevelClip";
+          let defs = doc.querySelector("defs");
+          if (!defs) {
+            defs = doc.createElementNS(ns, "defs");
+            doc.documentElement.insertBefore(defs, doc.documentElement.firstChild);
+          }
+          let clip = doc.getElementById(clipId);
+          if (!clip) {
+            clip = doc.createElementNS(ns, "clipPath");
+            clip.setAttribute("id", clipId);
+            defs.appendChild(clip);
+          }
+          while (clip.firstChild) clip.removeChild(clip.firstChild);
+          const clipShape = siloBody.cloneNode(true);
+          clipShape.removeAttribute("id");
+          clipShape.removeAttribute("fill");
+          clipShape.removeAttribute("stroke");
+          clipShape.removeAttribute("style");
+          clip.appendChild(clipShape);
+          let minX = 0;
+          let minY = 0;
+          let width = 500;
+          let height = 800;
+          try {
+            const box = typeof siloBody.getBBox === "function" ? siloBody.getBBox() : null;
+            if (box && Number.isFinite(box.x) && Number.isFinite(box.y) && box.width > 0 && box.height > 0) {
+              minX = box.x;
+              minY = box.y;
+              width = box.width;
+              height = box.height;
+            }
+          } catch {
+          }
+          if (!(width > 0 && height > 0) || width === 500) {
+            const rectX = Number.parseFloat(String(siloBody.getAttribute("x") || ""));
+            const rectY = Number.parseFloat(String(siloBody.getAttribute("y") || ""));
+            const rectW = Number.parseFloat(String(siloBody.getAttribute("width") || ""));
+            const rectH = Number.parseFloat(String(siloBody.getAttribute("height") || ""));
+            if (Number.isFinite(rectX) && Number.isFinite(rectY) && Number.isFinite(rectW) && Number.isFinite(rectH) && rectW > 0 && rectH > 0) {
+              minX = rectX;
+              minY = rectY;
+              width = rectW;
+              height = rectH;
+            }
+          }
+          if (!(width > 0 && height > 0) || width === 500) {
+            const d = String(siloBody.getAttribute("d") || "");
+            const move = d.match(/[mM]\s*([-0-9.]+)[,\s]+([-0-9.]+)/);
+            const vertical = d.match(/\bv\s*([-0-9.]+)/i);
+            const cubicWidth = d.match(/\bc\s*0\s*,\s*[-0-9.]+\s+([-0-9.]+)\s*,/i);
+            if (move) {
+              minX = Number.parseFloat(move[1]);
+              minY = Number.parseFloat(move[2]);
+            }
+            const parsedHeight = Math.abs(Number.parseFloat((vertical == null ? void 0 : vertical[1]) || ""));
+            const parsedWidth = Math.abs(Number.parseFloat((cubicWidth == null ? void 0 : cubicWidth[1]) || ""));
+            height = Number.isFinite(parsedHeight) && parsedHeight > 0 ? parsedHeight : 457;
+            width = Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : 244;
+          }
+          const existing = doc.getElementById("SiloLevelFill");
+          if (existing == null ? void 0 : existing.parentNode) existing.parentNode.removeChild(existing);
+          const fillHeight = height * ratio;
+          if (fillHeight > 0.1) {
+            const levelGradientId = useLevelGradient ? ensureBinLevelGradient() : "";
+            const sideShadeGradientId = useLevelGradient ? ensureSiloLevelSideShadeGradient() : "";
+            const surfaceGradientId = useLevelGradient ? ensureSiloLevelSurfaceGradient() : "";
+            const overrun = Math.max(3, width * 0.012);
+            const left = minX - overrun;
+            const right = minX + width + overrun;
+            const fillTopY = minY + height - fillHeight;
+            const bottomY = minY + height + Math.max(18, height * 0.04);
+            const curveDepth = Math.max(
+              2,
+              Math.min(height * 0.052, width * 0.105, fillHeight * 0.55)
+            );
+            const curvePath = [
+              `M ${left} ${fillTopY}`,
+              `C ${minX + width * 0.2} ${fillTopY + curveDepth} ${minX + width * 0.8} ${fillTopY + curveDepth} ${right} ${fillTopY}`
+            ].join(" ");
+            const fillPath = doc.createElementNS(ns, "path");
+            fillPath.setAttribute("id", "SiloLevelFillBody");
+            fillPath.setAttribute(
+              "d",
+              `${curvePath} L ${right} ${bottomY} L ${left} ${bottomY} Z`
+            );
+            fillPath.setAttribute("fill", useLevelGradient ? `url(#${levelGradientId})` : fillColor);
+            fillPath.setAttribute("opacity", useLevelGradient ? "0.90" : "0.82");
+            const shadePath = doc.createElementNS(ns, "path");
+            shadePath.setAttribute("id", "SiloLevelSideShade");
+            shadePath.setAttribute("d", fillPath.getAttribute("d") || "");
+            shadePath.setAttribute("fill", useLevelGradient ? `url(#${sideShadeGradientId})` : "none");
+            shadePath.setAttribute("opacity", useLevelGradient ? "0.62" : "0");
+            shadePath.setAttribute("pointer-events", "none");
+            const capDepth = Math.max(
+              4,
+              Math.min(height * 0.035, width * 0.075, fillHeight * 0.7)
+            );
+            const surfaceCapPath = [
+              curvePath,
+              `C ${minX + width * 0.78} ${fillTopY + capDepth} ${minX + width * 0.22} ${fillTopY + capDepth} ${left} ${fillTopY}`,
+              "Z"
+            ].join(" ");
+            const surfaceCap = doc.createElementNS(ns, "path");
+            surfaceCap.setAttribute("id", "SiloLevelSurfaceSheen");
+            surfaceCap.setAttribute("d", surfaceCapPath);
+            surfaceCap.setAttribute("fill", useLevelGradient ? `url(#${surfaceGradientId})` : "none");
+            surfaceCap.setAttribute("opacity", useLevelGradient ? "0.72" : "0");
+            surfaceCap.setAttribute("pointer-events", "none");
+            const surfaceShadow = doc.createElementNS(ns, "path");
+            surfaceShadow.setAttribute("id", "SiloLevelSurfaceShadow");
+            surfaceShadow.setAttribute("d", curvePath);
+            surfaceShadow.setAttribute("fill", "none");
+            surfaceShadow.setAttribute("stroke", "#1f2937");
+            surfaceShadow.setAttribute("stroke-width", String(Math.max(1.2, width * 8e-3)));
+            surfaceShadow.setAttribute("stroke-linecap", "round");
+            surfaceShadow.setAttribute("opacity", "0.22");
+            const surfaceHighlight = doc.createElementNS(ns, "path");
+            surfaceHighlight.setAttribute("id", "SiloLevelSurfaceHighlight");
+            surfaceHighlight.setAttribute("d", curvePath);
+            surfaceHighlight.setAttribute("fill", "none");
+            surfaceHighlight.setAttribute("stroke", "#ffffff");
+            surfaceHighlight.setAttribute("stroke-width", String(Math.max(0.8, width * 4e-3)));
+            surfaceHighlight.setAttribute("stroke-linecap", "round");
+            surfaceHighlight.setAttribute("opacity", "0.32");
+            const levelGroup = doc.createElementNS(ns, "g");
+            levelGroup.setAttribute("id", "SiloLevelFill");
+            levelGroup.setAttribute("clip-path", `url(#${clipId})`);
+            levelGroup.appendChild(fillPath);
+            if (useLevelGradient) {
+              levelGroup.appendChild(shadePath);
+              levelGroup.appendChild(surfaceCap);
+            }
+            levelGroup.appendChild(surfaceShadow);
+            levelGroup.appendChild(surfaceHighlight);
+            (_a2 = siloBody.parentNode) == null ? void 0 : _a2.insertBefore(levelGroup, siloBody.nextSibling);
           }
         }
         const setGroupVisible = (ids, visible) => {
@@ -18962,10 +19813,95 @@ var MesoraDrawingToolBundle = (() => {
     const DIVERTER_ENTRY_ELEMENT_IDS = ["entryPath", "EntryPath", "entry", "Entry"];
     const DIVERTER_STRAIGHT_ELEMENT_IDS = ["straightPath", "StraightPath", "Straight_Path", "Left_Valve", "Straight_Valve"];
     const DIVERTER_DIVERT_ELEMENT_IDS = ["divertPath", "DivertPath", "Divert_Path", "Right_Valve", "Divert_Valve"];
+    const applyRouteStrokeToDiverterSvg = (inner, color2) => {
+      const routeColor = normalizeActiveLineColor(color2);
+      if (!inner || !routeColor || typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") {
+        return inner;
+      }
+      const SHAPE_SELECTOR = "path,rect,circle,ellipse,polygon,polyline,line";
+      const BODY_ID_RE = /^(body|bodyouter|bodyinner|housing|shell|main|casing)$/i;
+      const ROUTE_PART_RE = /(entry|straight|divert|valve|route|flow|path|blade|flap|gate)/i;
+      const readStylePaint = (node, name) => {
+        var _a2;
+        const style = String(((_a2 = node == null ? void 0 : node.getAttribute) == null ? void 0 : _a2.call(node, "style")) || "");
+        if (!style) return "";
+        const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+        return String((match == null ? void 0 : match[1]) || "").trim();
+      };
+      const readPaint = (node, name) => {
+        var _a2;
+        const attrValue = String(((_a2 = node == null ? void 0 : node.getAttribute) == null ? void 0 : _a2.call(node, name)) || "").trim();
+        if (attrValue) return attrValue;
+        return readStylePaint(node, name);
+      };
+      const setPaint = (node, name, value) => {
+        if (!node) return;
+        node.setAttribute(name, value);
+        const style = String(node.getAttribute("style") || "");
+        if (!style || !new RegExp(`${name}\\s*:`, "i").test(style)) return;
+        node.setAttribute(
+          "style",
+          style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+        );
+      };
+      const isTransparentPaint = (value) => {
+        const paint = String(value || "").trim().toLowerCase();
+        return !paint || paint === "none" || paint === "transparent";
+      };
+      const tokenTextForNode = (node) => {
+        var _a2, _b, _c;
+        return [
+          (_a2 = node == null ? void 0 : node.getAttribute) == null ? void 0 : _a2.call(node, "id"),
+          (_b = node == null ? void 0 : node.getAttribute) == null ? void 0 : _b.call(node, "class"),
+          (_c = node == null ? void 0 : node.getAttribute) == null ? void 0 : _c.call(node, "data-name")
+        ].map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+      };
+      try {
+        const doc = new DOMParser().parseFromString(
+          `<svg xmlns="http://www.w3.org/2000/svg">${String(inner || "")}</svg>`,
+          "image/svg+xml"
+        );
+        if (doc.querySelector("parsererror")) return inner;
+        const root = doc.documentElement;
+        const shapes2 = Array.from(root.querySelectorAll(SHAPE_SELECTOR));
+        if (!shapes2.length) return inner;
+        const bodyNodes = new Set(
+          shapes2.filter((node) => BODY_ID_RE.test(String(node.getAttribute("id") || "").trim()))
+        );
+        const tokenTargets = shapes2.filter((node) => {
+          const tokenText = tokenTextForNode(node);
+          return ROUTE_PART_RE.test(tokenText) && !bodyNodes.has(node);
+        });
+        const strokeTargets = shapes2.filter((node) => {
+          if (bodyNodes.has(node)) return false;
+          const tagName = String(node.tagName || "").toLowerCase();
+          if (["line", "polyline"].includes(tagName)) return true;
+          return !isTransparentPaint(readPaint(node, "stroke")) || isTransparentPaint(readPaint(node, "fill"));
+        });
+        const targets = tokenTargets.length ? tokenTargets : strokeTargets.length ? strokeTargets : shapes2.length === 1 ? shapes2 : [];
+        targets.forEach((node) => {
+          const tagName = String(node.tagName || "").toLowerCase();
+          const fill2 = readPaint(node, "fill");
+          if (["line", "polyline"].includes(tagName) || isTransparentPaint(fill2)) {
+            setPaint(node, "fill", "transparent");
+          }
+          setPaint(node, "stroke", routeColor);
+        });
+        const serializer = new XMLSerializer();
+        return Array.from(root.childNodes).map((node) => serializer.serializeToString(node)).join("");
+      } catch {
+        return inner;
+      }
+    };
+    const getDiverterRouteColorForOverlay = (overlay) => {
+      return normalizeActiveLineColor(
+        getRouteColorForOverlay(overlay) || getRouteStrokeColorForOverlay(overlay)
+      );
+    };
     const getEffectiveOverlayFlowColor = (overlay, overlayEType, entryColor = "") => {
       const incomingEntryColor = normalizeActiveLineColor(entryColor);
       if (isDiverterEType(overlayEType)) {
-        return incomingEntryColor;
+        return getDiverterRouteColorForOverlay(overlay) || incomingEntryColor;
       }
       return normalizeActiveLineColor(
         getRouteColorForOverlay(overlay) || getTagColor(overlay == null ? void 0 : overlay.tagPath) || getOverlayBoundActiveFillColor(overlay) || getOverlayDisplayedFlowFillColor(overlay) || getRouteStrokeColorForOverlay(overlay)
@@ -19003,12 +19939,40 @@ var MesoraDrawingToolBundle = (() => {
           ...DIVERTER_STRAIGHT_ELEMENT_IDS,
           ...DIVERTER_DIVERT_ELEMENT_IDS
         ].map((id) => String(id || "").trim().toLowerCase()));
+        let paintedActiveBranchStroke = false;
         const getNodesByIds = (ids) => (Array.isArray(ids) ? ids : []).map((id) => doc.getElementById(id)).filter(Boolean);
         const isDiverterBranchNode = (node) => {
           var _a2;
           const id = String(((_a2 = node == null ? void 0 : node.getAttribute) == null ? void 0 : _a2.call(node, "id")) || "").trim();
           if (!id) return false;
           return branchIdSet.has(id.toLowerCase()) || /(entry|straight|divert|valve)/i.test(id);
+        };
+        const readStylePaint = (node, name) => {
+          var _a2;
+          const style = String(((_a2 = node == null ? void 0 : node.getAttribute) == null ? void 0 : _a2.call(node, "style")) || "");
+          if (!style) return "";
+          const match = style.match(new RegExp(`${name}\\s*:\\s*([^;]+)`, "i"));
+          return String((match == null ? void 0 : match[1]) || "").trim();
+        };
+        const readPaint = (node, name) => {
+          var _a2;
+          const attrValue = String(((_a2 = node == null ? void 0 : node.getAttribute) == null ? void 0 : _a2.call(node, name)) || "").trim();
+          if (attrValue) return attrValue;
+          return readStylePaint(node, name);
+        };
+        const setPaint = (node, name, value) => {
+          if (!node) return;
+          node.setAttribute(name, value);
+          const style = String(node.getAttribute("style") || "");
+          if (!style || !new RegExp(`${name}\\s*:`, "i").test(style)) return;
+          node.setAttribute(
+            "style",
+            style.replace(new RegExp(`${name}\\s*:\\s*([^;]+)(;?)`, "gi"), `${name}:${value}$2`)
+          );
+        };
+        const isTransparentPaint = (value) => {
+          const paint = String(value || "").trim().toLowerCase();
+          return !paint || paint === "none" || paint === "transparent";
         };
         const findBodyNodes = () => {
           const explicit = [
@@ -19046,7 +20010,7 @@ var MesoraDrawingToolBundle = (() => {
           node.setAttribute("stroke", outlineStrokeColor);
         };
         const paintBranchNode = (node, nextColor = "", nextClassName = "") => {
-          if (!node) return;
+          if (!node) return false;
           const className = String(nextClassName || "").trim();
           if (className) {
             appendSvgClassName(node, className);
@@ -19059,17 +20023,51 @@ var MesoraDrawingToolBundle = (() => {
               if (nextStyle) node.setAttribute("style", nextStyle);
               else node.removeAttribute("style");
             }
-            return;
+            return true;
           }
           const id = String(node.getAttribute("id") || "");
-          const lineLike = /valve/i.test(id) || ["line", "polyline"].includes(String(node.tagName || "").toLowerCase());
+          const tagName = String(node.tagName || "").toLowerCase();
+          const nextStrokeColor = nextColor || DIVERTER_NEUTRAL_STROKE;
+          const lineLike = /valve/i.test(id) || ["line", "polyline"].includes(tagName) || isTransparentPaint(readPaint(node, "fill"));
           if (lineLike) {
-            node.setAttribute("fill", "transparent");
-            node.setAttribute("stroke", nextColor || DIVERTER_NEUTRAL_STROKE);
-            return;
+            setPaint(node, "fill", "transparent");
+            setPaint(node, "stroke", nextStrokeColor);
+          } else {
+            setPaint(node, "fill", nextColor || DIVERTER_NEUTRAL_FILL);
+            setPaint(node, "stroke", nextStrokeColor);
           }
-          node.setAttribute("fill", nextColor || DIVERTER_NEUTRAL_FILL);
-          node.setAttribute("stroke", "none");
+          if (nextColor) paintedActiveBranchStroke = true;
+          return true;
+        };
+        const paintFallbackRouteStrokes = (nextColor) => {
+          const routeColor = normalizeActiveLineColor(nextColor);
+          if (!routeColor) return;
+          const shapes2 = Array.from(root.querySelectorAll("path,rect,circle,ellipse,polygon,polyline,line"));
+          if (!shapes2.length) return;
+          const bodyNodes = new Set(findBodyNodes());
+          const tokenTargetNodes = shapes2.filter((node) => {
+            var _a2, _b, _c;
+            const tokenText = [
+              (_a2 = node.getAttribute) == null ? void 0 : _a2.call(node, "id"),
+              (_b = node.getAttribute) == null ? void 0 : _b.call(node, "class"),
+              (_c = node.getAttribute) == null ? void 0 : _c.call(node, "data-name")
+            ].map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+            return /(entry|straight|divert|valve|route|flow|path)/i.test(tokenText);
+          });
+          const strokeLikeNodes = shapes2.filter((node) => {
+            const tagName = String(node.tagName || "").toLowerCase();
+            if (["line", "polyline"].includes(tagName)) return true;
+            return !isTransparentPaint(readPaint(node, "stroke")) || isTransparentPaint(readPaint(node, "fill"));
+          });
+          const targets = (tokenTargetNodes.length ? tokenTargetNodes : strokeLikeNodes).filter((node) => !bodyNodes.has(node));
+          const finalTargets = targets.length ? targets : tokenTargetNodes.length ? tokenTargetNodes : strokeLikeNodes;
+          finalTargets.forEach((node) => {
+            const tagName = String(node.tagName || "").toLowerCase();
+            if (["line", "polyline"].includes(tagName) || isTransparentPaint(readPaint(node, "fill"))) {
+              setPaint(node, "fill", "transparent");
+            }
+            setPaint(node, "stroke", routeColor);
+          });
         };
         const setNodesVisible = (ids, visible) => {
           getNodesByIds(ids).forEach((node) => {
@@ -19104,6 +20102,9 @@ var MesoraDrawingToolBundle = (() => {
           getNodesByIds(activeBranchIds).forEach(
             (node) => paintBranchNode(node, activeBranchColor, activeBranchStyleClass)
           );
+        }
+        if ((flowColor || activeBranchStateColor) && !paintedActiveBranchStroke) {
+          paintFallbackRouteStrokes(activeBranchStateColor || flowColor);
         }
         const serializer = new XMLSerializer();
         return Array.from(root.childNodes).map((node) => serializer.serializeToString(node)).join("");
@@ -19522,7 +20523,6 @@ var MesoraDrawingToolBundle = (() => {
         }) : "";
         const incomingEntryColor = normalizeActiveLineColor(entryColor);
         const color2 = getEffectiveOverlayFlowColor(o, overlayEType, entryColor);
-        if (isDiverterEType(overlayEType) && !incomingEntryColor) continue;
         if (!color2) continue;
         const bb = overlayLocalBBox(o.id);
         if (!bb) continue;
@@ -19571,7 +20571,6 @@ var MesoraDrawingToolBundle = (() => {
         }) : "";
         const incomingEntryColor = normalizeActiveLineColor(entryColor);
         const color2 = getEffectiveOverlayFlowColor(o, overlayEType, entryColor);
-        if (isDiverterEType(overlayEType) && !incomingEntryColor) continue;
         if (!color2) continue;
         if (isDiverterEType(overlayEType)) {
           const local = overlaySourceLocalPointFromWorld(o, bb, pt);
@@ -19604,7 +20603,8 @@ var MesoraDrawingToolBundle = (() => {
             excludeOverlayId: String((o == null ? void 0 : o.id) || "")
           })
         );
-        if (!incomingEntryColor) continue;
+        const color2 = getEffectiveOverlayFlowColor(o, overlayEType, incomingEntryColor);
+        if (!incomingEntryColor && !color2) continue;
         const local = overlaySourceLocalPointFromWorld(o, bb, pt);
         const localX = local.x;
         const localY = local.y;
@@ -19613,7 +20613,6 @@ var MesoraDrawingToolBundle = (() => {
         const branch = connectorOutputBranch || (localBranch === "straight" || localBranch === "divert" ? localBranch : "");
         const activeBranch = getEffectiveDiverterState(o);
         if (!(branch && branch !== "entry" && activeBranch && branch === activeBranch)) continue;
-        const color2 = getEffectiveOverlayFlowColor(o, overlayEType, incomingEntryColor);
         if (!color2) continue;
         bestDistance = dist;
         bestColor = color2;
@@ -19645,8 +20644,8 @@ var MesoraDrawingToolBundle = (() => {
           })
         );
         const activeBranch = getEffectiveDiverterState(o);
-        const active = !!incomingEntryColor && !!activeBranch && branch === activeBranch;
         const color2 = getEffectiveOverlayFlowColor(o, overlayEType, incomingEntryColor);
+        const active = !!(incomingEntryColor || color2) && !!activeBranch && branch === activeBranch;
         best = { matched: true, active, color: color2 || incomingEntryColor || "", dist };
       }
       return { matched: best.matched, active: best.active, color: best.color };
@@ -20535,7 +21534,10 @@ var MesoraDrawingToolBundle = (() => {
                 if (!Array.isArray(s.points)) return s;
                 if (ptIndex < 0 || ptIndex >= s.points.length) return s;
                 const pts = s.points.map((pt) => ({ ...pt }));
-                pts[ptIndex] = { x: pts[ptIndex].x + dx, y: pts[ptIndex].y + dy };
+                pts[ptIndex] = {
+                  x: toFiniteCanvasNumber(pts[ptIndex].x) + dx,
+                  y: toFiniteCanvasNumber(pts[ptIndex].y) + dy
+                };
                 return { ...s, points: pts };
               })
             );
@@ -20556,7 +21558,11 @@ var MesoraDrawingToolBundle = (() => {
               if (Array.isArray(s.points)) {
                 return {
                   ...s,
-                  points: s.points.map((pt) => ({ ...pt, x: pt.x + dx, y: pt.y + dy }))
+                  points: s.points.map((pt) => ({
+                    ...pt,
+                    x: toFiniteCanvasNumber(pt.x) + dx,
+                    y: toFiniteCanvasNumber(pt.y) + dy
+                  }))
                 };
               }
               return s;
@@ -20568,13 +21574,17 @@ var MesoraDrawingToolBundle = (() => {
           setSvgOverlays(
             (prev) => prev.map((o) => {
               if (!overlaySet.has(o.id)) return o;
-              return { ...o, tx: o.tx + dx, ty: o.ty + dy };
+              return {
+                ...o,
+                tx: toFiniteCanvasNumber(o.tx) + dx,
+                ty: toFiniteCanvasNumber(o.ty) + dy
+              };
             })
           );
         }
       };
       const handleKeyDown = (e) => {
-        var _a2, _b, _c, _d;
+        var _a2, _b, _c, _d, _e;
         const selectedShapeIds = Array.isArray(nudgeSelectedIdsRef.current) ? nudgeSelectedIdsRef.current : [];
         const selectedOverlayIdsNow = Array.isArray(nudgeSelectedOverlayIdsRef.current) ? nudgeSelectedOverlayIdsRef.current : [];
         const hasShapeSel = selectedShapeIds.length > 0;
@@ -20603,17 +21613,19 @@ var MesoraDrawingToolBundle = (() => {
             return;
         }
         e.preventDefault();
+        e.stopPropagation();
+        (_c = e.stopImmediatePropagation) == null ? void 0 : _c.call(e);
         nudgePendingRef.current = {
-          dx: Number(((_c = nudgePendingRef.current) == null ? void 0 : _c.dx) || 0) + dx,
-          dy: Number(((_d = nudgePendingRef.current) == null ? void 0 : _d.dy) || 0) + dy
+          dx: Number(((_d = nudgePendingRef.current) == null ? void 0 : _d.dx) || 0) + dx,
+          dy: Number(((_e = nudgePendingRef.current) == null ? void 0 : _e.dy) || 0) + dy
         };
         if (!nudgeRafRef.current) {
           nudgeRafRef.current = window.requestAnimationFrame(flushNudge);
         }
       };
-      window.addEventListener("keydown", handleKeyDown);
+      window.addEventListener("keydown", handleKeyDown, true);
       return () => {
-        window.removeEventListener("keydown", handleKeyDown);
+        window.removeEventListener("keydown", handleKeyDown, true);
         if (nudgeRafRef.current) {
           window.cancelAnimationFrame(nudgeRafRef.current);
           nudgeRafRef.current = 0;
@@ -21180,7 +22192,7 @@ var MesoraDrawingToolBundle = (() => {
         if (overlay == null ? void 0 : overlay.widget) {
           const bb = (overlay == null ? void 0 : overlay.bbox) || { x: 0, y: 0, width: 320, height: 180 };
           const widgetKind = String(((_a2 = overlay == null ? void 0 : overlay.widget) == null ? void 0 : _a2.kind) || "").trim();
-          const suppressFrame = widgetKind === "pushButton" || widgetKind === "onOffButton";
+          const suppressFrame = widgetKind === "pushButton" || widgetKind === "onOffButton" || isPassiveReadoutWidgetKind(widgetKind);
           out.set(id, {
             widgetFrame: suppressFrame ? null : {
               x: Number(bb.x) || 0,
@@ -21207,7 +22219,8 @@ var MesoraDrawingToolBundle = (() => {
         const overlayEType = String((overlay == null ? void 0 : overlay.eType) || "").trim().toLowerCase();
         const isStaticOverlay = isStaticSvgOverlay2(overlay);
         const isDiverterOverlay2 = isDiverterEType(overlayEType);
-        const isBinOverlay2 = overlayEType === "bin" || overlayEType.startsWith("bin");
+        const isBinOverlay2 = isBinLikeEType(overlayEType);
+        const isScaleOverlay = isScaleLikeEType(overlayEType);
         const statePaintsStroke = isDocOrDicStatePaintEType(overlayEType);
         const dynamicBinProductLabel = String(
           (binProductLabelByOverlayId == null ? void 0 : binProductLabelByOverlayId[id]) || ""
@@ -21219,15 +22232,21 @@ var MesoraDrawingToolBundle = (() => {
           0,
           Math.min(1, Number(binLevelRatioByOverlayId == null ? void 0 : binLevelRatioByOverlayId[id]) || 0)
         );
+        const dynamicBinLevelFillColor = String((binLevelFillColorByOverlayId == null ? void 0 : binLevelFillColorByOverlayId[id]) || "").trim();
+        const binLevelFillSourceKey = String((overlay == null ? void 0 : overlay.binLevelFillSource) || "fill").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const shouldUseProductLevelFill = binLevelFillSourceKey === "product" || binLevelFillSourceKey === "assignedproductcolor" || binLevelFillSourceKey === "auto";
+        const binLevelFillColor = shouldUseProductLevelFill ? dynamicBinLevelFillColor || (overlay == null ? void 0 : overlay.fill) : overlay == null ? void 0 : overlay.fill;
         const binLockedIn = (binLockedInByOverlayId == null ? void 0 : binLockedInByOverlayId[id]) === true;
         const binLockedOut = (binLockedOutByOverlayId == null ? void 0 : binLockedOutByOverlayId[id]) === true;
+        const binActiveFillingRoute = (binActiveFillingByOverlayId == null ? void 0 : binActiveFillingByOverlayId[id]) === true;
+        const binActiveDischargingRoute = (binActiveDischargingByOverlayId == null ? void 0 : binActiveDischargingByOverlayId[id]) === true;
         const shouldReplaceBinText = isBinOverlay2 && (!!dynamicBinProductLabel || !!dynamicBinNameLabel);
         const overlayStatePaint = String((overlayHmiStateColorByOverlayId == null ? void 0 : overlayHmiStateColorByOverlayId[id]) || "").trim();
         const overlayStateStyleClass = isDiverterOverlay2 || isBinOverlay2 ? "" : normalizeIgnitionStyleClassName(overlayStatePaint);
         const diverterStateStyleClass = isDiverterOverlay2 ? normalizeIgnitionStyleClassName(overlayStatePaint) : "";
         const diverterStateColor = isDiverterOverlay2 && !diverterStateStyleClass ? normalizeOverlayActiveFillColor(overlayStatePaint) : "";
         const overlayStateColor = overlayStateStyleClass ? "" : normalizeOverlayActiveFillColor(overlayStatePaint);
-        const routeOutlineStroke = isBinOverlay2 || isDiverterOverlay2 ? "" : normalizeActiveLineColor(
+        const routeOutlineStroke = isBinOverlay2 || isDiverterOverlay2 || isScaleOverlay ? "" : normalizeActiveLineColor(
           getRouteColorForOverlay(overlay) || getRouteStrokeColorForOverlay(overlay)
         );
         const diverterStatePaintOptions = isDiverterOverlay2 ? {
@@ -21248,8 +22267,9 @@ var MesoraDrawingToolBundle = (() => {
         const cachedBoundActiveFillPaint = String(getOverlayBoundActiveFillColor(overlay) || "").trim();
         const cachedBoundFillPaint = String(getOverlayBoundFillColor(overlay) || "").trim();
         const cachedDiverterMode = isDiverterOverlay2 ? getEffectiveDiverterState(overlay) : "";
+        const cachedDiverterRouteColor = isDiverterOverlay2 ? getDiverterRouteColorForOverlay(overlay) : "";
         const cachedDiverterFlowColor = isDiverterOverlay2 ? normalizeActiveLineColor(
-          getDirectEntryActiveColorForDiverter(overlay, {
+          cachedDiverterRouteColor || getDirectEntryActiveColorForDiverter(overlay, {
             excludedOverlayIds: [id]
           })
         ) : "";
@@ -21259,6 +22279,7 @@ var MesoraDrawingToolBundle = (() => {
           isStaticOverlay ? 1 : 0,
           isDiverterOverlay2 ? 1 : 0,
           isBinOverlay2 ? 1 : 0,
+          isScaleOverlay ? 1 : 0,
           overlayEType,
           String((overlay == null ? void 0 : overlay.sourceKey) || ""),
           String((_b = overlay == null ? void 0 : overlay.sourceHadEType) != null ? _b : ""),
@@ -21277,8 +22298,14 @@ var MesoraDrawingToolBundle = (() => {
           String(dynamicBinProductLabel || ""),
           String(dynamicBinNameLabel || ""),
           String(binLevelRatio || 0),
+          String((overlay == null ? void 0 : overlay.binLevelFillSource) || ""),
+          String((overlay == null ? void 0 : overlay.binLevelFillStyle) || ""),
+          String(dynamicBinLevelFillColor || ""),
+          String(binLevelFillColor || ""),
           String(binLockedIn ? 1 : 0),
           String(binLockedOut ? 1 : 0),
+          String(binActiveFillingRoute ? 1 : 0),
+          String(binActiveDischargingRoute ? 1 : 0),
           themeFillDefault,
           themeStrokeDefault
         ].join("");
@@ -21337,11 +22364,16 @@ var MesoraDrawingToolBundle = (() => {
               binNo: dynamicBinNameLabel
             });
           }
-          if (isBinOverlay2 && (/id=["']BarGraph["']/i.test(String(inner2 || "")) || /id=["']Lock_Filling["']/i.test(String(inner2 || "")) || /id=["']Lock_Discharge["']/i.test(String(inner2 || "")) || /id=["']LockFill["']/i.test(String(inner2 || "")) || /id=["']LockDischarge["']/i.test(String(inner2 || "")))) {
+          if (isBinOverlay2 && (/id=["']BarGraph["']/i.test(String(inner2 || "")) || /id=["']main-tall-bin["']/i.test(String(inner2 || "")) || /id=["']bin_shell["']/i.test(String(inner2 || "")) || /id=["']Lock_Filling["']/i.test(String(inner2 || "")) || /id=["']Lock_Discharge["']/i.test(String(inner2 || "")) || /id=["']LockFill["']/i.test(String(inner2 || "")) || /id=["']LockDischarge["']/i.test(String(inner2 || "")))) {
             inner2 = applyBinVisualStateToSvg(inner2, {
               ratio: binLevelRatio,
               showFillLock: binLockedIn,
-              showDischargeLock: binLockedOut
+              showDischargeLock: binLockedOut,
+              fillColor: binLevelFillColor,
+              fillStyle: overlay == null ? void 0 : overlay.binLevelFillStyle,
+              overlayId: id,
+              activeFillingRoute: binActiveFillingRoute,
+              activeDischargingRoute: binActiveDischargingRoute
             });
           }
           if (isDiverterOverlay2) {
@@ -21349,6 +22381,7 @@ var MesoraDrawingToolBundle = (() => {
             const diverterFlowColor2 = cachedDiverterFlowColor;
             inner2 = applyDiverterModeToSvg(inner2, diverterMode);
             inner2 = applyDiverterFlowColorToSvg(inner2, diverterFlowColor2, diverterMode, diverterStatePaintOptions);
+            inner2 = applyRouteStrokeToDiverterSvg(inner2, cachedDiverterRouteColor || diverterFlowColor2);
             setCachedVisual({
               inner: inner2,
               className: void 0,
@@ -21432,11 +22465,16 @@ var MesoraDrawingToolBundle = (() => {
             binNo: dynamicBinNameLabel
           });
         }
-        if (isBinOverlay2 && (/id=["']BarGraph["']/i.test(String(inner || "")) || /id=["']Lock_Filling["']/i.test(String(inner || "")) || /id=["']Lock_Discharge["']/i.test(String(inner || "")) || /id=["']LockFill["']/i.test(String(inner || "")) || /id=["']LockDischarge["']/i.test(String(inner || "")))) {
+        if (isBinOverlay2 && (/id=["']BarGraph["']/i.test(String(inner || "")) || /id=["']main-tall-bin["']/i.test(String(inner || "")) || /id=["']bin_shell["']/i.test(String(inner || "")) || /id=["']Lock_Filling["']/i.test(String(inner || "")) || /id=["']Lock_Discharge["']/i.test(String(inner || "")) || /id=["']LockFill["']/i.test(String(inner || "")) || /id=["']LockDischarge["']/i.test(String(inner || "")))) {
           inner = applyBinVisualStateToSvg(inner, {
             ratio: binLevelRatio,
             showFillLock: binLockedIn,
-            showDischargeLock: binLockedOut
+            showDischargeLock: binLockedOut,
+            fillColor: binLevelFillColor,
+            fillStyle: overlay == null ? void 0 : overlay.binLevelFillStyle,
+            overlayId: id,
+            activeFillingRoute: binActiveFillingRoute,
+            activeDischargingRoute: binActiveDischargingRoute
           });
         }
         if (isDiverterOverlay2) {
@@ -21464,6 +22502,7 @@ var MesoraDrawingToolBundle = (() => {
         }
         if (isDiverterOverlay2) {
           inner = applyDiverterFlowColorToSvg(inner, diverterFlowColor, liveDiverterMode, diverterStatePaintOptions);
+          inner = applyRouteStrokeToDiverterSvg(inner, cachedDiverterRouteColor || diverterFlowColor);
         }
         setCachedVisual({
           inner,
@@ -21496,8 +22535,11 @@ var MesoraDrawingToolBundle = (() => {
       binProductLabelByOverlayId,
       binNameLabelByOverlayId,
       binLevelRatioByOverlayId,
+      binLevelFillColorByOverlayId,
       binLockedInByOverlayId,
       binLockedOutByOverlayId,
+      binActiveFillingByOverlayId,
+      binActiveDischargingByOverlayId,
       overlayHmiStateColorByOverlayId,
       themeFillDefault,
       themeStrokeDefault
@@ -21632,8 +22674,10 @@ var MesoraDrawingToolBundle = (() => {
     const widgetOverlayNodes = useMemo(() => {
       const renderWidget = renderWidgetOverlayRef.current;
       return widgetOverlayRenderOverlays.map((o) => {
+        var _a2;
         const overlayVisual = overlayVisualById.get(String((o == null ? void 0 : o.id) || "").trim());
-        const overlayCursor = isLiveMode ? widgetInteractionEnabled ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
+        const overlayWidgetKind = String(((_a2 = o == null ? void 0 : o.widget) == null ? void 0 : _a2.kind) || "");
+        const overlayCursor = isPassiveReadoutWidgetKind(overlayWidgetKind) ? "default" : isLiveMode ? widgetInteractionEnabled ? "pointer" : "default" : tool === "select" ? "move" : "crosshair";
         const widgetBounds = (o == null ? void 0 : o.bbox) || { x: 0, y: 0, width: 320, height: 180 };
         const showDesignWidgetHitbox = !isLiveMode;
         return /* @__PURE__ */ jsx(
@@ -22239,7 +23283,7 @@ var MesoraDrawingToolBundle = (() => {
         const widgetBarMode = String(((_b = o == null ? void 0 : o.widget) == null ? void 0 : _b.barSourceMode) || "table").trim().toLowerCase();
         const widgetUsesSeriesTags = widgetKind === "linechart" || widgetKind === "line_chart" || widgetKind === "line-chart" || (widgetKind === "barchart" || widgetKind === "bar_chart" || widgetKind === "bar-chart") && widgetBarMode === "tags";
         const widgetSeriesTags = widgetUsesSeriesTags ? parseWidgetSeriesTags(o).filter((tp) => !String(tp || "").toLowerCase().startsWith("db:")) : [];
-        const isBinOverlay2 = String(overlayEType || "").trim().toLowerCase().startsWith("bin");
+        const isBinOverlay2 = isBinLikeEType(overlayEType);
         const hasBinDbBinding = !!String((o == null ? void 0 : o.binBindingKey) || "").trim() || !!String((binNameLabelByOverlayId == null ? void 0 : binNameLabelByOverlayId[String((o == null ? void 0 : o.id) || "")]) || "").trim() || !!String((binProductLabelByOverlayId == null ? void 0 : binProductLabelByOverlayId[String((o == null ? void 0 : o.id) || "")]) || "").trim();
         const designTagWarning = renderLiveVisuals ? "" : isBinOverlay2 ? hasBinDbBinding ? "" : "Bin not bound to database row" : widgetUsesSeriesTags ? !widgetSeriesTags.length ? "Widget series tags missing" : "" : !overlayTagPath ? "SVG not tagged" : !hasKnownOverlayTagPath(overlayTagPath) ? "Bad tag mapping" : "";
         const overlayTagWarning = connectionWarning || designTagWarning;
@@ -22375,8 +23419,31 @@ var MesoraDrawingToolBundle = (() => {
         const dynamicColor = getTagColor(s.tagPath);
         if (s.type === "text") {
           const isInline = inlineEditId === s.id;
-          const displayText = getTextShapeValueForShape(s);
+          const textParts = getTextShapeDisplayParts(s);
+          const displayText = textParts.displayText;
+          const fontSize = Math.max(8, Number(s.fontSize || 24));
+          const unitGap = textParts.unitAlignRight && textParts.unitText ? getTextUnitGap2(fontSize, textParts.unitText) : 0;
+          const unitWidth = textParts.unitAlignRight && textParts.unitText ? Math.max(0, String(textParts.unitText || "").length * fontSize * 0.6) : 0;
           const textCursor = isLiveMode ? "default" : tool === "select" ? "move" : "crosshair";
+          const rawTextFill = String(s.fill || "").trim();
+          const isLegacyTextFill = !rawTextFill || ["#808080", "#d7dade"].includes(rawTextFill.toLowerCase());
+          const textFill = dynamicColor || (isLegacyTextFill ? isDarkTheme ? "#ffffff" : "#111827" : rawTextFill);
+          const rawTextStroke = String(s.stroke || "").trim();
+          const textStrokeWidth = Math.max(0, Number(s.strokeWidth) || 0);
+          const textStroke = rawTextStroke && textStrokeWidth > 0 && !["none", "transparent"].includes(rawTextStroke.toLowerCase()) ? rawTextStroke : "none";
+          const commonTextProps = {
+            y: s.y,
+            fill: textFill,
+            stroke: textStroke,
+            strokeWidth: textStroke === "none" ? void 0 : textStrokeWidth,
+            paintOrder: textStroke === "none" ? void 0 : "stroke fill",
+            strokeLinejoin: textStroke === "none" ? void 0 : "round",
+            fontSize,
+            fontFamily: s.fontFamily || "system-ui",
+            fontWeight: s.fontWeight || "400",
+            dominantBaseline: "text-before-edge",
+            style: { userSelect: "none", visibility: isInline ? "hidden" : "visible", cursor: textCursor }
+          };
           return /* @__PURE__ */ jsxs("g", { "data-shape-id": s.id, style: { cursor: textCursor }, children: [
             (() => {
               const tb = getTextBounds(s);
@@ -22394,21 +23461,18 @@ var MesoraDrawingToolBundle = (() => {
                 }
               );
             })(),
-            /* @__PURE__ */ jsx(
-              "text",
-              {
-                x: s.x,
-                y: s.y,
-                fill: dynamicColor || (isDarkTheme && (!s.fill || ["#808080", "#d7dade"].includes(String(s.fill).toLowerCase())) ? "#ffffff" : s.fill || "#D7DADE"),
-                fontSize: s.fontSize || 24,
-                fontFamily: s.fontFamily || "system-ui",
-                fontWeight: s.fontWeight || "400",
-                textAnchor: s.anchor || "start",
-                dominantBaseline: "text-before-edge",
-                style: { userSelect: "none", visibility: isInline ? "hidden" : "visible", cursor: textCursor },
-                children: displayText
-              }
-            )
+            textParts.unitAlignRight ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+              /* @__PURE__ */ jsx(
+                "text",
+                {
+                  ...commonTextProps,
+                  x: textParts.unitText ? Number(s.x || 0) - unitWidth - unitGap : Number(s.x || 0),
+                  textAnchor: "end",
+                  children: textParts.valueText || ""
+                }
+              ),
+              textParts.unitText ? /* @__PURE__ */ jsx("text", { ...commonTextProps, x: Number(s.x || 0), textAnchor: "end", children: textParts.unitText }) : null
+            ] }) : /* @__PURE__ */ jsx("text", { ...commonTextProps, x: s.x, textAnchor: svgTextAnchorForMode(s.anchor), children: displayText })
           ] }, s.id);
         }
         if (s.type === "rect") {
@@ -23064,7 +24128,7 @@ var MesoraDrawingToolBundle = (() => {
                               minWidth: "100%",
                               minHeight: "100%",
                               outline: "none",
-                              cursor: isCrosshair ? "crosshair" : "default"
+                              cursor: canvasPanActive ? "grabbing" : isCrosshair ? "crosshair" : tool === "select" && Number(zoom || 1) > 1.0001 ? "grab" : "default"
                             },
                             onWheel,
                             onMouseDown: onSvgMouseDown,
@@ -24223,6 +25287,8 @@ var MesoraDrawingToolBundle = (() => {
     { key: "weather", name: "Weather", group: "Indicators", desc: "Current weather card." },
     { key: "kpi", name: "KPI Card", group: "Indicators", desc: "Large single metric." },
     { key: "displayBox", name: "Display Box", group: "Indicators", desc: "Live tag read/write with units." },
+    { key: "routeDisplay", name: "Route Display", group: "Operations", desc: "Job and route state summary from a parent route tag." },
+    { key: "scaleAdapter", name: "Scale Adapter", group: "Operations", desc: "Scale state, flowrate, and job weight from a ScaleAdaptor tag." },
     { key: "countdownBar", name: "Countdown Bar", group: "Indicators", desc: "PLC timer PRE/ACC countdown progress." },
     { key: "pushButton", name: "Push Button", group: "Controls", desc: "Momentary PLC write while pressed." },
     { key: "openViewButton", name: "Open View Button", group: "Controls", desc: "Button that opens a Perspective view path." },
@@ -24476,8 +25542,8 @@ var MesoraDrawingToolBundle = (() => {
   var PROPERTY_PANEL_MIN_WIDTH = 280;
   var PROPERTY_PANEL_MAX_WIDTH = 560;
   var PROPERTY_PANEL_WIDTH_STORAGE_KEY = "mesora-drawing:property-panel-width:v1";
-  var PROPERTY_PANEL_HEIGHT = 520;
-  var PROPERTY_PANEL_MIN_HEIGHT = 240;
+  var PROPERTY_PANEL_HEIGHT = 640;
+  var PROPERTY_PANEL_MIN_HEIGHT = 420;
   var PROPERTY_PANEL_HEIGHT_STORAGE_KEY = "mesora-drawing:property-panel-height:v1";
   var PROPERTY_PANEL_INSET = 12;
   var QUICK_TAG_PANEL_WIDTH = 360;
@@ -25012,6 +26078,62 @@ var MesoraDrawingToolBundle = (() => {
   }
   function getThemeCanvasBackground(theme) {
     return normalizePerspectiveThemeName(theme) === "dark" ? "#0f172a" : "#D5D5D5";
+  }
+  function parseCssColorToRgb(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) {
+      return null;
+    }
+    const named = {
+      black: [0, 0, 0],
+      white: [255, 255, 255],
+      transparent: [255, 255, 255]
+    };
+    if (named[raw]) {
+      return named[raw];
+    }
+    const hex2 = raw.match(/^#([0-9a-f]{3,8})$/i);
+    if (hex2) {
+      const body = hex2[1];
+      if (body.length === 3 || body.length === 4) {
+        return body.slice(0, 3).split("").map((ch) => Number.parseInt(`${ch}${ch}`, 16));
+      }
+      if (body.length === 6 || body.length === 8) {
+        return [
+          Number.parseInt(body.slice(0, 2), 16),
+          Number.parseInt(body.slice(2, 4), 16),
+          Number.parseInt(body.slice(4, 6), 16)
+        ];
+      }
+    }
+    const rgb = raw.match(/^rgba?\(\s*([0-9.]+%?)\s*,\s*([0-9.]+%?)\s*,\s*([0-9.]+%?)/i);
+    if (rgb) {
+      return [rgb[1], rgb[2], rgb[3]].map((part) => {
+        const text = String(part || "").trim();
+        if (text.endsWith("%")) {
+          return Math.max(0, Math.min(255, Number.parseFloat(text) * 2.55));
+        }
+        return Math.max(0, Math.min(255, Number.parseFloat(text)));
+      });
+    }
+    return null;
+  }
+  function isDarkCssColor(value) {
+    const rgb = parseCssColorToRgb(value);
+    if (!rgb) {
+      return false;
+    }
+    const [r, g, b] = rgb.map((channel) => {
+      const normalized = Math.max(0, Math.min(255, Number(channel) || 0)) / 255;
+      return normalized <= 0.03928 ? normalized / 12.92 : Math.pow((normalized + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.42;
+  }
+  function resolvePopupThemeName(theme, canvasBackgroundColor) {
+    if (isDarkCssColor(canvasBackgroundColor)) {
+      return "dark";
+    }
+    return normalizePerspectiveThemeName(theme) || "light";
   }
   function isThemeDrivenCanvasBackgroundRequest(value) {
     const normalized = String(value || "").replace(/\s+/g, "").trim().toLowerCase();
@@ -26270,6 +27392,14 @@ var MesoraDrawingToolBundle = (() => {
     }
     return chunks;
   }
+  var BIN_PRODUCT_COLOR_MEMBERS = [
+    "AssignedProductColor",
+    "Assigned Product Color",
+    "assignedProductColor",
+    "assigned_product_color",
+    "ProductColor",
+    "Product Color"
+  ];
   var BIN_UDT_MEMBERS = [
     "FriendlyName",
     "CurrentLevel",
@@ -26277,9 +27407,24 @@ var MesoraDrawingToolBundle = (() => {
     "MaxLevel",
     "i_LockFilling",
     "i_LockDischarging",
+    "o_ActiveFillingRouteID",
+    "o_ActiveDischargingRouteID",
+    "AssignedProductId",
     "AssignedProductName",
+    ...BIN_PRODUCT_COLOR_MEMBERS,
     "BinNo"
   ];
+  function isTruthyBinRouteActivityValue(value) {
+    if (value === true) return true;
+    if (value === false || value == null) return false;
+    const text = String(value).trim().toLowerCase();
+    if (!text) return false;
+    if (["false", "f", "0", "0.0", "no", "n", "off", "none", "null"].includes(text)) return false;
+    if (["true", "t", "1", "yes", "y", "on"].includes(text)) return true;
+    const numeric = Number(text);
+    if (Number.isFinite(numeric)) return numeric !== 0;
+    return false;
+  }
   var IGNITION_FILL_STATE_MEMBERS = [
     "HMI State",
     "HMI_State",
@@ -26387,8 +27532,23 @@ var MesoraDrawingToolBundle = (() => {
   );
   var DOC_DIC_UDT_CONNECTION_MEMBERS = DOC_DIC_UDT_STATE_MEMBERS;
   function isBinOverlay(overlay) {
-    const eType = String((overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || "").trim().toLowerCase();
-    return eType === "bin" || eType.startsWith("bin");
+    const key = String((overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    return key === "bin" || key.startsWith("bin") || key.includes("silo");
+  }
+  function normalizeBinProductLabelSource(value) {
+    const key = String(value || "").trim().toLowerCase();
+    if (key === "name" || key === "auto") return key;
+    return "id";
+  }
+  function normalizeBinLevelFillSource(value) {
+    const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (key === "product" || key === "assignedproductcolor") return "product";
+    if (key === "auto" || key === "productcolorfallback" || key === "assignedproductcolorfallback") return "auto";
+    return "fill";
+  }
+  function normalizeBinLevelFillStyle(value) {
+    const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+    return key === "solid" ? "solid" : "gradient";
   }
   function isMotorOverlay(overlay) {
     const eType = String((overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || "").trim().toLowerCase();
@@ -27391,17 +28551,35 @@ var MesoraDrawingToolBundle = (() => {
   function normalizeOverlayPopupViewName(value) {
     return String(value || "").trim().replace(/\.svg$/i, "").replace(/^\/+|\/+$/g, "");
   }
+  function resolveOverlayPopupLeafName(value) {
+    const normalized = normalizeOverlayPopupViewName(value);
+    return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
+  }
+  function resolveCanonicalOverlayPopupLeafName(value) {
+    const leaf = resolveOverlayPopupLeafName(value);
+    const token = normalizeTagTypeMatchToken(leaf);
+    if (!token) {
+      return "";
+    }
+    if (token.includes("twoway") || token.includes("diverter") || token === "gate") {
+      return "TwoWay";
+    }
+    return leaf;
+  }
   function resolveOverlayPopupViewName(overlay) {
-    const popupViewName = normalizeOverlayPopupViewName(
+    const rawPopupViewName = normalizeOverlayPopupViewName(
       (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
     );
+    const canonicalLeaf = resolveCanonicalOverlayPopupLeafName(rawPopupViewName);
+    const popupViewName = canonicalLeaf || rawPopupViewName;
     if (!popupViewName) {
       return "";
     }
-    const eTypeToken = String((overlay == null ? void 0 : overlay.eType) || "").trim();
-    const popupLeaf = popupViewName.split(/[\\/]/).pop() || popupViewName;
-    if (usesTwoWayUdtTypeToken(eTypeToken) || usesTwoWayUdtTypeToken(popupLeaf)) {
-      return "TwoWay_DiscreteV2";
+    if (/^Terra\/Popups\//i.test(rawPopupViewName)) {
+      return `Terra/Popups/${canonicalLeaf || resolveOverlayPopupLeafName(rawPopupViewName)}`;
+    }
+    if (/^Popups\//i.test(rawPopupViewName)) {
+      return `Popups/${canonicalLeaf || resolveOverlayPopupLeafName(rawPopupViewName)}`;
     }
     return popupViewName;
   }
@@ -27454,6 +28632,293 @@ var MesoraDrawingToolBundle = (() => {
     var _a, _b, _c, _d;
     const rawParams = (_d = (_c = (_b = (_a = overlay == null ? void 0 : overlay.popupParamsJson) != null ? _a : overlay == null ? void 0 : overlay.popupParams) != null ? _b : overlay == null ? void 0 : overlay.popupParametersJson) != null ? _c : overlay == null ? void 0 : overlay.popupParameters) != null ? _d : {};
     return applyPopupParamPlaceholders(parsePopupParamsObject(rawParams), baseParams);
+  }
+  function resolvePopupViewportSize() {
+    const viewport = typeof window !== "undefined" ? window : {};
+    const docElement = typeof document !== "undefined" ? document.documentElement : null;
+    const docBody = typeof document !== "undefined" ? document.body : null;
+    return {
+      width: Math.max(
+        1,
+        Math.ceil(
+          Number(viewport.innerWidth) || Number(docElement == null ? void 0 : docElement.clientWidth) || Number(docBody == null ? void 0 : docBody.clientWidth) || 1280
+        )
+      ),
+      height: Math.max(
+        1,
+        Math.ceil(
+          Number(viewport.innerHeight) || Number(docElement == null ? void 0 : docElement.clientHeight) || Number(docBody == null ? void 0 : docBody.clientHeight) || 720
+        )
+      )
+    };
+  }
+  function readPopupDimension(sources, keys) {
+    for (const source of sources) {
+      if (!source || typeof source !== "object") {
+        continue;
+      }
+      for (const key of keys) {
+        const value = Number(source[key]);
+        if (Number.isFinite(value) && value > 0) {
+          return value;
+        }
+      }
+    }
+    return null;
+  }
+  function resolveOverlayPopupPosition(overlay, viewParams = {}) {
+    const sources = [overlay, overlay == null ? void 0 : overlay.popup, overlay == null ? void 0 : overlay.popupConfig, viewParams];
+    const requestedWidth = readPopupDimension(sources, [
+      "popupWidth",
+      "viewPopupWidth",
+      "openViewWidth"
+    ]);
+    const requestedHeight = readPopupDimension(sources, [
+      "popupHeight",
+      "viewPopupHeight",
+      "openViewHeight"
+    ]);
+    const viewport = resolvePopupViewportSize();
+    const maxWidth = Math.max(280, viewport.width - 48);
+    const maxHeight = Math.max(220, viewport.height - 48);
+    const width = Math.round(Math.min(maxWidth, Math.max(300, requestedWidth || 340)));
+    const height = Math.round(Math.min(maxHeight, Math.max(220, requestedHeight || 288)));
+    return {
+      width,
+      height,
+      left: Math.max(12, Math.round((viewport.width - width) / 2)),
+      top: Math.max(12, Math.round((viewport.height - height) / 2))
+    };
+  }
+  var VIZI_POPUP_RUNTIME_STYLE = `
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) {
+        --vizi-popup-text: #101820;
+        --vizi-popup-muted-text: rgba(15, 23, 42, 0.68);
+        --vizi-popup-bg: #f8fafc;
+    }
+    html[data-vizi-popup-theme="dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    body[data-vizi-popup-theme="dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) {
+        --vizi-popup-text: #e5eefb;
+        --vizi-popup-muted-text: rgba(226, 232, 240, 0.72);
+        --vizi-popup-bg: #0f172a;
+    }
+    [data-theme*="dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [theme*="dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [class*="terra-dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [class*="theme-dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [class*="theme--dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup),
+    [class*="ia_theme--dark"] :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) {
+        --vizi-popup-text: #e5eefb;
+        --vizi-popup-muted-text: rgba(226, 232, 240, 0.72);
+        --vizi-popup-bg: #0f172a;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .body-wrapper,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-parent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-root,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="view"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="View"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .ia_containerComponent {
+        box-sizing: border-box;
+        max-width: 100%;
+        max-height: 100%;
+        min-width: 0;
+        min-height: 0;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .body-wrapper,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-parent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-root {
+        overflow: hidden !important;
+        overflow-x: hidden !important;
+        overflow-y: hidden !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-parent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-root {
+        width: 100% !important;
+        height: 100% !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) ::-webkit-scrollbar {
+        width: 0 !important;
+        height: 0 !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .view,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .view-root,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_containerComponent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] {
+        background-color: var(--vizi-popup-bg) !important;
+        color: var(--vizi-popup-text) !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_labelComponent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_labelComponent *,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_labelComponent__text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .ia_labelComponent__text *,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="Label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [data-component*="Label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [data-component*="label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body span,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body p,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [style*="color"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] .ia_labelComponent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] .ia_labelComponent *,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] .ia_labelComponent__text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] [class*="Label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] [class*="label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] .ia_labelComponent,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] .ia_labelComponent *,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] .ia_labelComponent__text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] [class*="Label"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] [class*="label"] {
+        color: var(--vizi-popup-text) !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body svg text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body svg tspan,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] svg text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="body"] svg tspan,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] svg text,
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) [class*="Body"] svg tspan {
+        fill: var(--vizi-popup-text) !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="secondary"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="Secondary"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="muted"],
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body [class*="Muted"] {
+        color: var(--vizi-popup-muted-text) !important;
+    }
+`;
+  function cssEscapeValue(value) {
+    const text = String(value || "");
+    try {
+      if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+        return CSS.escape(text);
+      }
+    } catch (_error) {
+    }
+    return text.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  }
+  function applyViziPopupDomFixes({ popupId = "", title = "", theme = "light" } = {}) {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const resolvedTheme = normalizePerspectiveThemeName(theme) || "light";
+    const textColor = resolvedTheme === "dark" ? "#e5eefb" : "#101820";
+    const mutedColor = resolvedTheme === "dark" ? "rgba(226, 232, 240, 0.72)" : "rgba(15, 23, 42, 0.68)";
+    const bgColor = resolvedTheme === "dark" ? "#0f172a" : "#f8fafc";
+    const escapedPopupId = cssEscapeValue(popupId);
+    const titleText = String(title || "").trim().toLowerCase();
+    const selectors = [
+      escapedPopupId ? `[id*="${escapedPopupId}"]` : "",
+      escapedPopupId ? `[data-popup-id*="${escapedPopupId}"]` : "",
+      escapedPopupId ? `[data-id*="${escapedPopupId}"]` : "",
+      '[id*="svg-popup-"]',
+      '[data-popup-id*="svg-popup-"]',
+      ".vizi-managed-popup"
+    ].filter(Boolean);
+    const candidates = /* @__PURE__ */ new Set();
+    selectors.forEach((selector) => {
+      try {
+        Array.from(document.querySelectorAll(selector)).forEach((node) => candidates.add(node));
+      } catch (_error) {
+      }
+    });
+    if (titleText) {
+      try {
+        Array.from(document.querySelectorAll('[role="dialog"], [id*="popup"], [class*="popup"], [class*="Popup"]')).filter((node) => String((node == null ? void 0 : node.textContent) || "").toLowerCase().includes(titleText)).forEach((node) => candidates.add(node));
+      } catch (_error) {
+      }
+    }
+    const roots = /* @__PURE__ */ new Set();
+    candidates.forEach((node) => {
+      if (!(node instanceof Element)) {
+        return;
+      }
+      const popupRoot = node.closest('[role="dialog"], [id*="popup"], [class*="popup"], [class*="Popup"]') || node;
+      roots.add(popupRoot);
+      roots.add(node);
+    });
+    roots.forEach((root) => {
+      var _a, _b, _c, _d, _e, _f, _g;
+      if (!(root instanceof HTMLElement || root instanceof SVGElement)) {
+        return;
+      }
+      (_a = root.classList) == null ? void 0 : _a.add("vizi-managed-popup");
+      (_b = root.style) == null ? void 0 : _b.setProperty("--vizi-popup-text", textColor);
+      (_c = root.style) == null ? void 0 : _c.setProperty("--vizi-popup-muted-text", mutedColor);
+      (_d = root.style) == null ? void 0 : _d.setProperty("--vizi-popup-bg", bgColor);
+      if (root instanceof HTMLElement) {
+        root.style.boxSizing = "border-box";
+      }
+      const clampTargets = Array.from(((_e = root.querySelectorAll) == null ? void 0 : _e.call(root, [
+        ".body-wrapper",
+        ".popup-body",
+        ".view-parent",
+        ".view",
+        ".view-root",
+        ".ia_containerComponent",
+        '[class*="body"]',
+        '[class*="Body"]',
+        '[class*="view"]',
+        '[class*="View"]'
+      ].join(", "))) || []);
+      clampTargets.forEach((element) => {
+        var _a2, _b2, _c2, _d2;
+        if (!(element instanceof HTMLElement || element instanceof SVGElement)) {
+          return;
+        }
+        (_a2 = element.classList) == null ? void 0 : _a2.add("vizi-managed-popup");
+        (_b2 = element.style) == null ? void 0 : _b2.setProperty("--vizi-popup-text", textColor);
+        (_c2 = element.style) == null ? void 0 : _c2.setProperty("--vizi-popup-muted-text", mutedColor);
+        (_d2 = element.style) == null ? void 0 : _d2.setProperty("--vizi-popup-bg", bgColor);
+        if (element instanceof HTMLElement) {
+          element.style.boxSizing = "border-box";
+          element.style.maxWidth = "100%";
+          element.style.minWidth = "0";
+          element.style.overflowX = "hidden";
+          element.style.overflowY = "hidden";
+        }
+      });
+      const textTargets = Array.from(((_f = root.querySelectorAll) == null ? void 0 : _f.call(root, [
+        ".ia_labelComponent",
+        ".ia_labelComponent *",
+        ".ia_labelComponent__text",
+        '[class*="Label"]',
+        '[class*="label"]',
+        '[data-component*="Label"]',
+        '[data-component*="label"]',
+        "span",
+        "p"
+      ].join(", "))) || []);
+      textTargets.forEach((element) => {
+        if (element instanceof HTMLElement) {
+          element.style.color = textColor;
+        }
+      });
+      Array.from(((_g = root.querySelectorAll) == null ? void 0 : _g.call(root, "svg text, svg tspan")) || []).forEach((element) => {
+        element.setAttribute("fill", textColor);
+        element.style.fill = textColor;
+      });
+    });
+  }
+  function scheduleViziPopupDomFixes(options = {}) {
+    var _a;
+    if (typeof window === "undefined") {
+      return;
+    }
+    const run = () => applyViziPopupDomFixes(options);
+    run();
+    (_a = window.requestAnimationFrame) == null ? void 0 : _a.call(window, run);
+    [40, 160, 420, 900].forEach((delay) => {
+      window.setTimeout(run, delay);
+    });
   }
   function pointsEqual(left, right) {
     return Math.abs(Number((left == null ? void 0 : left.x) || 0) - Number((right == null ? void 0 : right.x) || 0)) < 1e-3 && Math.abs(Number((left == null ? void 0 : left.y) || 0) - Number((right == null ? void 0 : right.y) || 0)) < 1e-3;
@@ -29116,17 +30581,89 @@ var MesoraDrawingToolBundle = (() => {
     const next = Number.parseFloat(String(value != null ? value : "").trim());
     return Number.isFinite(next) ? next : null;
   }
+  function inferFixedTextUnit(value) {
+    const text = String(value != null ? value : "").trim();
+    if (!text) {
+      return "";
+    }
+    const unitTokens = [
+      "%",
+      "\xB0F",
+      "\xB0C",
+      "F",
+      "C",
+      "lbs",
+      "lb",
+      "kg",
+      "g",
+      "t",
+      "ton",
+      "tons",
+      "rpm",
+      "hz",
+      "psi",
+      "gpm",
+      "cfm",
+      "ppm",
+      "ph",
+      "ft",
+      "in",
+      "m",
+      "mm",
+      "gal",
+      "min",
+      "sec",
+      "s",
+      "A",
+      "V",
+      "kW",
+      "HP"
+    ];
+    const normalizedText = text.replace(/\u00b0/g, "deg").toLowerCase();
+    const sorted = unitTokens.slice().sort((left, right) => right.length - left.length);
+    for (const token of sorted) {
+      const normalizedToken = token.replace(/\u00b0/g, "deg").toLowerCase();
+      if (normalizedText === normalizedToken) {
+        return text;
+      }
+      if (!normalizedText.endsWith(normalizedToken)) {
+        continue;
+      }
+      const before = text.slice(0, Math.max(0, text.length - token.length)).trimEnd();
+      if (!before || /[-+]?\d[\d,]*(?:\.\d+)?$/.test(before)) {
+        return text.slice(Math.max(0, text.length - token.length)).trim();
+      }
+    }
+    return "";
+  }
+  function getTextUnitForShape(shape, anchor) {
+    const explicitUnit = String((shape == null ? void 0 : shape.unit) || "").trim();
+    if (explicitUnit || anchor !== "unitRight") {
+      return explicitUnit;
+    }
+    return inferFixedTextUnit((shape == null ? void 0 : shape.text) || "");
+  }
+  function getTextUnitGap() {
+    return 0;
+  }
   function getShapeBounds(shape) {
     if (!shape || typeof shape !== "object") {
       return null;
     }
     if (shape.type === "text") {
       const fontSize = Math.max(8, Number(shape.fontSize || 24));
-      const text = String(shape.text || "");
-      const width = Math.max(40, text.length * fontSize * 0.6);
+      const anchor = shape.anchor === "middle" || shape.anchor === "end" || shape.anchor === "unitRight" ? shape.anchor : "start";
+      const unit = getTextUnitForShape(shape, anchor);
+      const rawText = String(shape.text || "");
+      const trimmedText = rawText.trim();
+      const valueText = anchor === "unitRight" && unit && trimmedText.toLowerCase().endsWith(unit.toLowerCase()) ? trimmedText.slice(0, Math.max(0, trimmedText.length - unit.length)).trimEnd() : rawText;
+      const unitGap = anchor === "unitRight" && unit ? getTextUnitGap(fontSize, unit) : 0;
+      const valueWidth = Math.max(0, String(valueText || "").length * fontSize * 0.6);
+      const unitWidth = Math.max(0, unit.length * fontSize * 0.6);
+      const text = anchor === "unitRight" ? `${valueText}${unit ? ` ${unit}` : ""}` : rawText;
+      const width = Math.max(40, anchor === "unitRight" ? valueWidth + (unit ? unitGap + unitWidth : 0) : text.length * fontSize * 0.6);
       const height = Math.max(24, fontSize * 1.2);
-      const anchor = shape.anchor === "middle" || shape.anchor === "end" ? shape.anchor : "start";
-      const anchorOffsetX = anchor === "middle" ? -width / 2 : anchor === "end" ? -width : 0;
+      const anchorOffsetX = anchor === "unitRight" ? -width : anchor === "middle" ? -width / 2 : anchor === "end" ? -width : 0;
       return {
         x: Number(shape.x || 0) + anchorOffsetX,
         y: Number(shape.y || 0),
@@ -29570,12 +31107,17 @@ var MesoraDrawingToolBundle = (() => {
     const [drawing, setDrawing] = useState(null);
     const [dragState, setDragState] = useState(null);
     const [marquee, setMarquee] = useState(null);
+    const [canvasPanDrag, setCanvasPanDrag] = useState(null);
     const [editingId, setEditingId] = useState(null);
     const [selectedSegment, setSelectedSegment] = useState(null);
     const [dragSegment, setDragSegment] = useState(null);
     const [dragHandle, setDragHandle] = useState(null);
     const [shapeResize, setShapeResize] = useState(null);
     const [overlayResize, setOverlayResize] = useState(null);
+    const [editorPanOverride, setEditorPanOverride] = useState(null);
+    const editorPanDragCurrentRef = useRef(null);
+    const runtimePanDragRef = useRef(null);
+    const [runtimePanDragActive, setRuntimePanDragActive] = useState(false);
     const [svgCatalogFiles, setSvgCatalogFiles] = useState(EMPTY_ARRAY);
     const [svgLibraryError, setSvgLibraryError] = useState("");
     const [svgLibraryExternalDirectory, setSvgLibraryExternalDirectory] = useState("");
@@ -31040,9 +32582,45 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const liveUpdatesEnabled = Boolean(getModelValue(props, "liveUpdatesEnabled", true));
     const liveClickable = Boolean(getModelValue(props, "liveClickable", false));
     const editorZoom = isLiveMode ? 1 : Math.max(1e-9, Number(effectiveZoom) || 1);
-    const editorPanX = isLiveMode || !isPlainObject(pan) ? 0 : Number(pan.x) || 0;
-    const editorPanY = isLiveMode || !isPlainObject(pan) ? 0 : Number(pan.y) || 0;
+    const editorPanSource = editorPanOverride && isPlainObject(editorPanOverride) ? editorPanOverride : pan;
+    const editorPanX = isLiveMode || !isPlainObject(editorPanSource) ? 0 : Number(editorPanSource.x) || 0;
+    const editorPanY = isLiveMode || !isPlainObject(editorPanSource) ? 0 : Number(editorPanSource.y) || 0;
     const editorPan = useMemo(() => ({ x: editorPanX, y: editorPanY }), [editorPanX, editorPanY]);
+    const clampEditorPanToViewport = useCallback((nextPanRaw, zoomValue = editorZoom) => {
+      const z = Math.max(1e-4, Number(zoomValue) || 1);
+      const worldW = Math.max(1, Number(viewBox.width) || 1);
+      const worldH = Math.max(1, Number(viewBox.height) || 1);
+      const scaledW = worldW * z;
+      const scaledH = worldH * z;
+      const nextPan = {
+        x: Number(nextPanRaw == null ? void 0 : nextPanRaw.x) || 0,
+        y: Number(nextPanRaw == null ? void 0 : nextPanRaw.y) || 0
+      };
+      if (scaledW <= worldW) {
+        nextPan.x = 0;
+      } else {
+        nextPan.x = clamp(nextPan.x, worldW - scaledW, 0);
+      }
+      if (scaledH <= worldH) {
+        nextPan.y = 0;
+      } else {
+        nextPan.y = clamp(nextPan.y, worldH - scaledH, 0);
+      }
+      return nextPan;
+    }, [editorZoom, viewBox.height, viewBox.width]);
+    const screenDeltaToEditorPanDelta = useCallback((dx, dy) => {
+      var _a2, _b2;
+      const rect = (_b2 = (_a2 = svgRef.current) == null ? void 0 : _a2.getBoundingClientRect) == null ? void 0 : _b2.call(_a2);
+      const rectW = Math.max(1e-9, Number(rect == null ? void 0 : rect.width) || 0);
+      const rectH = Math.max(1e-9, Number(rect == null ? void 0 : rect.height) || 0);
+      const worldW = Math.max(1, Number(viewBox.width) || 1);
+      const worldH = Math.max(1, Number(viewBox.height) || 1);
+      const scale = Math.max(1e-9, Math.min(rectW / worldW, rectH / worldH) || 1);
+      return {
+        x: (Number(dx) || 0) / scale,
+        y: (Number(dy) || 0) / scale
+      };
+    }, [viewBox.height, viewBox.width]);
     const binNameLabelByOverlayId = useMemo(() => {
       const out = {};
       coerceArray(svgOverlays).forEach((overlay) => {
@@ -31058,12 +32636,29 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     const binProductLabelByOverlayId = useMemo(() => {
       const out = {};
       coerceArray(svgOverlays).forEach((overlay) => {
+        var _a2, _b2;
         const id = String((overlay == null ? void 0 : overlay.id) || "").trim();
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!id || !basePath || !isBinOverlay(overlay)) return;
-        const product = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "AssignedProductName");
-        const label = String(product != null ? product : "").trim();
+        const source = normalizeBinProductLabelSource(overlay == null ? void 0 : overlay.binProductLabelSource);
+        const productId = String((_a2 = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "AssignedProductId")) != null ? _a2 : "").trim();
+        const productName = String((_b2 = getIgnitionTagValue(ignitionTagValuesByPath, basePath, "AssignedProductName")) != null ? _b2 : "").trim();
+        const label = source === "name" || source === "auto" ? productName || productId : productId || productName;
         if (label) out[id] = label;
+      });
+      return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+    const binLevelFillColorByOverlayId = useMemo(() => {
+      const out = {};
+      coerceArray(svgOverlays).forEach((overlay) => {
+        const id = String((overlay == null ? void 0 : overlay.id) || "").trim();
+        const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
+        if (!id || !basePath || !isBinOverlay(overlay)) return;
+        const color2 = BIN_PRODUCT_COLOR_MEMBERS.map((member) => {
+          var _a2;
+          return String((_a2 = getIgnitionTagValue(ignitionTagValuesByPath, basePath, member)) != null ? _a2 : "").trim();
+        }).find(Boolean) || "";
+        if (color2) out[id] = color2;
       });
       return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
@@ -31103,6 +32698,30 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
         if (!id || !basePath || !isBinOverlay(overlay)) return;
         if (getIgnitionTagValue(ignitionTagValuesByPath, basePath, "i_LockDischarging")) out[id] = true;
+      });
+      return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+    const binActiveFillingByOverlayId = useMemo(() => {
+      const out = {};
+      coerceArray(svgOverlays).forEach((overlay) => {
+        const id = String((overlay == null ? void 0 : overlay.id) || "").trim();
+        const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
+        if (!id || !basePath || !isBinOverlay(overlay)) return;
+        if (isTruthyBinRouteActivityValue(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "o_ActiveFillingRouteID"))) {
+          out[id] = true;
+        }
+      });
+      return out;
+    }, [svgOverlays, ignitionTagValuesByPath]);
+    const binActiveDischargingByOverlayId = useMemo(() => {
+      const out = {};
+      coerceArray(svgOverlays).forEach((overlay) => {
+        const id = String((overlay == null ? void 0 : overlay.id) || "").trim();
+        const basePath = String((overlay == null ? void 0 : overlay.tagPath) || getOverlayFillBindingTagPath(overlay) || "").trim();
+        if (!id || !basePath || !isBinOverlay(overlay)) return;
+        if (isTruthyBinRouteActivityValue(getIgnitionTagValue(ignitionTagValuesByPath, basePath, "o_ActiveDischargingRouteID"))) {
+          out[id] = true;
+        }
       });
       return out;
     }, [svgOverlays, ignitionTagValuesByPath]);
@@ -31347,6 +32966,25 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     }, [svgOverlays, ignitionTagMetaByPath]);
     const theme = getPerspectiveThemeName(props, rootRef.current);
     const canvasBackgroundColor = getPerspectiveCanvasBackground(props, theme);
+    const popupTheme = resolvePopupThemeName(theme, canvasBackgroundColor);
+    useEffect(() => {
+      var _a2, _b2, _c2;
+      if (typeof document === "undefined") {
+        return void 0;
+      }
+      (_a2 = document.documentElement) == null ? void 0 : _a2.setAttribute("data-vizi-popup-theme", popupTheme);
+      (_b2 = document.body) == null ? void 0 : _b2.setAttribute("data-vizi-popup-theme", popupTheme);
+      let styleNode = document.getElementById("vizi-popup-runtime-style");
+      if (!styleNode) {
+        styleNode = document.createElement("style");
+        styleNode.id = "vizi-popup-runtime-style";
+        (_c2 = document.head) == null ? void 0 : _c2.appendChild(styleNode);
+      }
+      if (styleNode && styleNode.textContent !== VIZI_POPUP_RUNTIME_STYLE) {
+        styleNode.textContent = VIZI_POPUP_RUNTIME_STYLE;
+      }
+      return void 0;
+    }, [popupTheme]);
     const pointFromEvent = useCallback((event) => {
       var _a2, _b2;
       const svg = svgRef.current;
@@ -32615,6 +34253,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         eType: parsedEType,
         eTypeAuto: true,
         sourceHadEType,
+        ...isBinOverlay({ eType: parsedEType, name: overlayName }) ? { binProductLabelSource: "id", binLevelFillSource: "fill", binLevelFillStyle: "gradient" } : {},
         popupParamsJson: "{}",
         bbox: {
           x: localViewBox.x,
@@ -32730,11 +34369,13 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     }, []);
     const onPickWidget = useCallback((widgetKey, anchorPoint = null) => {
       const template = widgetTemplate(widgetKey);
+      const normalizedWidgetKey = String(widgetKey || "").trim();
+      const defaultTagPath = normalizedWidgetKey === "routeDisplay" ? "Perspective/Route/Route" : normalizedWidgetKey === "scaleAdapter" || normalizedWidgetKey === "scaleAdaptor" ? "Perspective/Equipment/ScaleAdaptor" : "";
       let nextOverlay = createOverlayFromRawMarkup(template == null ? void 0 : template.raw, {
         fileKey: (template == null ? void 0 : template.name) || String(widgetKey || ""),
         name: (template == null ? void 0 : template.name) || String(widgetKey || "Widget"),
         extraOverlay: {
-          tagPath: "",
+          tagPath: defaultTagPath,
           widget: defaultWidgetSettings(widgetKey),
           eType: "Widget",
           eTypeAuto: false
@@ -32819,6 +34460,27 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         setDragHandle(null);
         setShapeResize(null);
         setOverlayResize(null);
+        const panModifier = Boolean((event == null ? void 0 : event.altKey) || (event == null ? void 0 : event.metaKey) || (event == null ? void 0 : event.ctrlKey));
+        const isEmptyCanvasHit = (event == null ? void 0 : event.target) === svgRef.current;
+        const isZoomedCanvas = Math.max(1e-4, Number(editorZoom) || 1) > 1.0001;
+        const shouldPanCanvas = panModifier || isZoomedCanvas && isEmptyCanvasHit && !(event == null ? void 0 : event.shiftKey);
+        if (shouldPanCanvas) {
+          setMarquee(null);
+          const startPan = {
+            x: Number(editorPanX) || 0,
+            y: Number(editorPanY) || 0
+          };
+          editorPanDragCurrentRef.current = startPan;
+          setCanvasPanDrag({
+            startClient: {
+              x: Number(event == null ? void 0 : event.clientX) || 0,
+              y: Number(event == null ? void 0 : event.clientY) || 0
+            },
+            startPan,
+            moved: false
+          });
+          return;
+        }
         if (!(event == null ? void 0 : event.shiftKey)) {
           clearSelection();
         }
@@ -32856,6 +34518,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         setSelectedOverlayIds([]);
         setEditingId(null);
         setSelectedSegment(null);
+        setTool("select");
         return;
       }
       if (tool === "rect" || tool === "circle") {
@@ -32886,7 +34549,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       if (tool === "trunkconn" || tool === "polyline" || tool === "trunkconn") {
         startOrAppendPolylineAt(point, event);
       }
-    }, [clearSelection, drawing, pointFromEvent, selectedIds, selectedOverlayIds, startOrAppendPolylineAt, tool, updateShapes]);
+    }, [clearSelection, drawing, editorPanX, editorPanY, editorZoom, pointFromEvent, selectedIds, selectedOverlayIds, setTool, startOrAppendPolylineAt, tool, updateShapes]);
     const handleShapeMouseDown = useCallback((event, id) => {
       var _a2, _b2;
       (_a2 = event == null ? void 0 : event.preventDefault) == null ? void 0 : _a2.call(event);
@@ -33066,20 +34729,47 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       }
       const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
       const popupViewName = resolveOverlayPopupViewName(overlay);
+      const popupTypeName = resolveCanonicalOverlayPopupLeafName(popupViewName) || resolveOverlayPopupLeafName(popupViewName);
       const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
       const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
       const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
+      const tagLeaf = getIgnitionTagLeafName(tagPath);
+      const popupTextColor = popupTheme === "dark" ? "#e5eefb" : "#101820";
+      const popupMutedTextColor = popupTheme === "dark" ? "rgba(226, 232, 240, 0.72)" : "rgba(15, 23, 42, 0.68)";
       const baseViewParams = {
         overlayId,
-        eType: popupViewName,
+        eType: popupTypeName,
+        type: popupTypeName,
+        popupType: popupTypeName,
+        viewName: popupTypeName,
         name: popupTitle,
         tagName: tagPath,
-        tagPath
+        tagPath,
+        tag: tagPath,
+        tagLeaf,
+        equipmentPath: tagPath,
+        equipmentName: tagLeaf || popupTitle,
+        theme: popupTheme,
+        perspectiveTheme: popupTheme,
+        viziTheme: popupTheme,
+        isDarkTheme: popupTheme === "dark",
+        popupTextColor,
+        popupMutedTextColor,
+        textColor: popupTextColor,
+        labelColor: popupTextColor,
+        foregroundColor: popupTextColor,
+        mutedTextColor: popupMutedTextColor,
+        popupBackgroundColor: popupTheme === "dark" ? "#0f172a" : "#f8fafc",
+        popupOverflow: "hidden",
+        overflow: "hidden",
+        disableScroll: true,
+        popupNoScroll: true
       };
       const extraViewParams = resolveOverlayPopupParams(overlay, baseViewParams);
       const popupConfig = {
         id: popupId,
         viewPath,
+        position: resolveOverlayPopupPosition(overlay, extraViewParams),
         viewParams: {
           ...extraViewParams,
           ...baseViewParams
@@ -33089,7 +34779,25 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         draggable: true,
         resizable: true,
         modal: false,
-        overlayDismiss: false
+        overlayDismiss: false,
+        style: {
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden",
+          color: popupTextColor,
+          backgroundColor: popupTheme === "dark" ? "#0f172a" : "#f8fafc"
+        },
+        bodyStyle: {
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden"
+        },
+        viewStyle: {
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden",
+          color: popupTextColor
+        }
       };
       if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => (popup == null ? void 0 : popup.id) === popupId)) {
         if (typeof mounts.closePopup === "function") {
@@ -33097,11 +34805,12 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         }
       }
       mounts.activatePopup(popupConfig);
+      scheduleViziPopupDomFixes({ popupId, title: popupTitle, theme: popupTheme });
       if (typeof mounts.focusPopup === "function") {
         mounts.focusPopup(popupId);
       }
       return true;
-    }, [props]);
+    }, [popupTheme, props]);
     const handleLiveOverlayMouseDown = useCallback((event, id) => {
       var _a2, _b2;
       const overlayId = String(id || "").trim();
@@ -33367,9 +35076,24 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       setMarquee(null);
     }, [overlayLocalBBox, pointFromEvent, selectedBBox, selectedIds.length, selectedOverlayIds, tool]);
     const handleMouseMove = useCallback((event) => {
-      var _a2, _b2;
+      var _a2, _b2, _c2, _d2;
       const point = pointFromEvent(event);
       const isAltDown = Boolean(event == null ? void 0 : event.altKey);
+      if (canvasPanDrag == null ? void 0 : canvasPanDrag.startClient) {
+        const dx = (Number(event == null ? void 0 : event.clientX) || 0) - Number(canvasPanDrag.startClient.x || 0);
+        const dy = (Number(event == null ? void 0 : event.clientY) || 0) - Number(canvasPanDrag.startClient.y || 0);
+        const panDelta = screenDeltaToEditorPanDelta(dx, dy);
+        const nextPan = clampEditorPanToViewport({
+          x: Number(((_a2 = canvasPanDrag.startPan) == null ? void 0 : _a2.x) || 0) + panDelta.x,
+          y: Number(((_b2 = canvasPanDrag.startPan) == null ? void 0 : _b2.y) || 0) + panDelta.y
+        }, editorZoom);
+        editorPanDragCurrentRef.current = nextPan;
+        if ((Math.abs(dx) > 1 || Math.abs(dy) > 1) && !canvasPanDrag.moved) {
+          setCanvasPanDrag((current) => current ? { ...current, moved: true } : current);
+        }
+        setEditorPanOverride(nextPan);
+        return;
+      }
       if (dragSegment == null ? void 0 : dragSegment.id) {
         updateShapes((previous) => previous.map((shape) => {
           var _a3, _b3;
@@ -33485,6 +35209,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       }
       if ((overlayResize == null ? void 0 : overlayResize.kind) === "single") {
         updateSvgOverlays((previous) => previous.map((overlay) => {
+          var _a3, _b3, _c3, _d3;
           if (String((overlay == null ? void 0 : overlay.id) || "") !== String(overlayResize.id || "")) {
             return overlay;
           }
@@ -33503,6 +35228,44 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           const originalScaleY = Math.max(1e-4, Number(overlayResize.originalScaleY || overlayScaleY(overlay)));
           const localSpanX = Number(handleLocal.x || 0) - Number(anchorLocal.x || 0);
           const localSpanY = Number(handleLocal.y || 0) - Number(anchorLocal.y || 0);
+          if (axes.x && axes.y && (overlay == null ? void 0 : overlay.widget)) {
+            const startBounds = overlayResize.startBounds || getOverlayBounds(overlay) || {};
+            const startW = Number(startBounds.width || startBounds.w || ((_a3 = overlayResize.bbox) == null ? void 0 : _a3.width) || ((_b3 = overlay == null ? void 0 : overlay.bbox) == null ? void 0 : _b3.width) || 320);
+            const startH = Number(startBounds.height || startBounds.h || ((_c3 = overlayResize.bbox) == null ? void 0 : _c3.height) || ((_d3 = overlay == null ? void 0 : overlay.bbox) == null ? void 0 : _d3.height) || 180);
+            const aspect = Math.max(1e-4, startW / Math.max(1, startH));
+            const rawW = Math.max(1, Math.abs(Number(resizePoint.x || 0) - Number(anchorWorld.x || 0)));
+            const rawH = Math.max(1, Math.abs(Number(resizePoint.y || 0) - Number(anchorWorld.y || 0)));
+            const minW = 80;
+            const minH = 60;
+            let width = Math.max(minW, rawW);
+            let height = width / aspect;
+            if (height < rawH) {
+              height = Math.max(minH, rawH);
+              width = height * aspect;
+            }
+            if (height < minH) {
+              height = minH;
+              width = height * aspect;
+            }
+            if (width < minW) {
+              width = minW;
+              height = width / aspect;
+            }
+            return {
+              ...overlay,
+              scale: 1,
+              scaleX: 1,
+              scaleY: 1,
+              tx: handle.includes("L") ? Number(anchorWorld.x || 0) - width : Number(anchorWorld.x || 0),
+              ty: handle.includes("T") ? Number(anchorWorld.y || 0) - height : Number(anchorWorld.y || 0),
+              bbox: {
+                x: 0,
+                y: 0,
+                width,
+                height
+              }
+            };
+          }
           if (axes.x && axes.y && !(overlay == null ? void 0 : overlay.widget) && !(overlay == null ? void 0 : overlay.embeddedView)) {
             const ratio = clamp(
               distance(resizePoint, anchorWorld) / Math.max(1, Number(overlayResize.startDist || 1)),
@@ -33549,7 +35312,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         } : point;
         const ratio = clamp(distance(resizePoint, overlayResize.anchorWorld) / Math.max(1, overlayResize.startDist), 0.05, 100);
         updateSvgOverlays((previous) => previous.map((overlay) => {
-          var _a3, _b3, _c2, _d2;
+          var _a3, _b3, _c3, _d3;
           const snapshot2 = overlayResize.originalsById[String((overlay == null ? void 0 : overlay.id) || "")];
           if (!(snapshot2 == null ? void 0 : snapshot2.bbox)) {
             return overlay;
@@ -33564,7 +35327,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           };
           const nextTopLeft = {
             x: Number(((_a3 = overlayResize.anchorWorld) == null ? void 0 : _a3.x) || 0) + (startTopLeft.x - Number(((_b3 = overlayResize.anchorWorld) == null ? void 0 : _b3.x) || 0)) * ratio,
-            y: Number(((_c2 = overlayResize.anchorWorld) == null ? void 0 : _c2.y) || 0) + (startTopLeft.y - Number(((_d2 = overlayResize.anchorWorld) == null ? void 0 : _d2.y) || 0)) * ratio
+            y: Number(((_c3 = overlayResize.anchorWorld) == null ? void 0 : _c3.y) || 0) + (startTopLeft.y - Number(((_d3 = overlayResize.anchorWorld) == null ? void 0 : _d3.y) || 0)) * ratio
           };
           return {
             ...overlay,
@@ -33578,8 +35341,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         return;
       }
       if (dragState == null ? void 0 : dragState.start) {
-        const dx = point.x - Number(((_a2 = dragState.start) == null ? void 0 : _a2.x) || 0);
-        const dy = point.y - Number(((_b2 = dragState.start) == null ? void 0 : _b2.y) || 0);
+        const dx = point.x - Number(((_c2 = dragState.start) == null ? void 0 : _c2.x) || 0);
+        const dy = point.y - Number(((_d2 = dragState.start) == null ? void 0 : _d2.y) || 0);
         if (Object.keys(dragState.shapeSnapshotsById || {}).length) {
           updateShapes((previous) => previous.map((shape) => {
             const snapshot2 = dragState.shapeSnapshotsById[String((shape == null ? void 0 : shape.id) || "")];
@@ -33605,7 +35368,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       }
       if ((drawing == null ? void 0 : drawing.kind) === "rect" || (drawing == null ? void 0 : drawing.kind) === "circle") {
         updateShapes((previous) => previous.map((shape) => {
-          var _a3, _b3, _c2, _d2;
+          var _a3, _b3, _c3, _d3;
           if (String((shape == null ? void 0 : shape.id) || "") !== String(drawing.id || "")) {
             return shape;
           }
@@ -33613,8 +35376,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
             ...shape,
             x: Math.min(Number(((_a3 = drawing.start) == null ? void 0 : _a3.x) || 0), point.x),
             y: Math.min(Number(((_b3 = drawing.start) == null ? void 0 : _b3.y) || 0), point.y),
-            width: Math.abs(point.x - Number(((_c2 = drawing.start) == null ? void 0 : _c2.x) || 0)),
-            height: Math.abs(point.y - Number(((_d2 = drawing.start) == null ? void 0 : _d2.y) || 0))
+            width: Math.abs(point.x - Number(((_c3 = drawing.start) == null ? void 0 : _c3.x) || 0)),
+            height: Math.abs(point.y - Number(((_d3 = drawing.start) == null ? void 0 : _d3.y) || 0))
           };
         }), { persist: false });
         return;
@@ -33638,9 +35401,28 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           return { ...shape, points };
         }), { persist: false });
       }
-    }, [constrainPolylineHandleMove, dragHandle, dragSegment, dragState, drawing, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, shapeResize, updateShapes, updateSvgOverlays, viewBox.height, viewBox.width]);
+    }, [canvasPanDrag, clampEditorPanToViewport, constrainPolylineHandleMove, dragHandle, dragSegment, dragState, drawing, editorZoom, marquee, maybeConstrainPolylinePoint, overlayResize, pointFromEvent, screenDeltaToEditorPanDelta, shapeResize, updateShapes, updateSvgOverlays, viewBox.height, viewBox.width]);
     const handleMouseUp = useCallback(() => {
       var _a2, _b2;
+      if (canvasPanDrag == null ? void 0 : canvasPanDrag.startClient) {
+        const moved = Boolean(canvasPanDrag.moved);
+        const nextPan = editorPanDragCurrentRef.current || {
+          x: Number(editorPanX) || 0,
+          y: Number(editorPanY) || 0
+        };
+        setCanvasPanDrag(null);
+        editorPanDragCurrentRef.current = null;
+        if (moved) {
+          setEditorPanOverride(nextPan);
+          persistValue("pan", nextPan);
+        } else {
+          setEditorPanOverride(null);
+          if (!(canvasPanDrag == null ? void 0 : canvasPanDrag.additive)) {
+            clearSelection();
+          }
+        }
+        return;
+      }
       if (dragSegment == null ? void 0 : dragSegment.id) {
         const segmentIndex = Number(dragSegment.index || 0);
         const shape = shapesRef.current.find((item) => String((item == null ? void 0 : item.id) || "") === String(dragSegment.id || ""));
@@ -33708,8 +35490,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         persistShapes(shapesRef.current);
         setDrawing(null);
       }
-    }, [dragHandle, dragSegment, dragState, drawing, isShapeSelectableByMode, marquee, overlayResize, overlaysSelectable, persistShapes, persistSvgOverlays, shapeResize]);
-    const useWindowPointerTracking = editorVisible && (Boolean(dragState) || Boolean(dragSegment) || Boolean(dragHandle) || Boolean(shapeResize) || Boolean(overlayResize) || Boolean(marquee) || String((drawing == null ? void 0 : drawing.kind) || "") === "rect" || String((drawing == null ? void 0 : drawing.kind) || "") === "circle");
+    }, [canvasPanDrag, clearSelection, dragHandle, dragSegment, dragState, drawing, editorPanX, editorPanY, isShapeSelectableByMode, marquee, overlayResize, overlaysSelectable, persistShapes, persistSvgOverlays, persistValue, shapeResize]);
+    const useWindowPointerTracking = editorVisible && (Boolean(dragState) || Boolean(dragSegment) || Boolean(dragHandle) || Boolean(shapeResize) || Boolean(overlayResize) || Boolean(canvasPanDrag) || Boolean(marquee) || String((drawing == null ? void 0 : drawing.kind) || "") === "rect" || String((drawing == null ? void 0 : drawing.kind) || "") === "circle");
     useEffect(() => {
       if (!useWindowPointerTracking || typeof window === "undefined") {
         return void 0;
@@ -33835,6 +35617,10 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     );
     const selectedOverlayIsStatic = useMemo(
       () => isStaticSvgOverlay(selectedOverlay),
+      [selectedOverlay]
+    );
+    const selectedOverlayIsBin = useMemo(
+      () => isBinOverlay(selectedOverlay),
       [selectedOverlay]
     );
     const selectedOverlayTemplateKey = useMemo(() => {
@@ -33964,10 +35750,6 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         return String((error == null ? void 0 : error.message) || "Invalid JSON.");
       }
     }, [selectedOverlay, selectedOverlayIsEmbeddedView]);
-    const selectedOverlayIsBin = useMemo(
-      () => String((selectedOverlay == null ? void 0 : selectedOverlay.eType) || "").trim().toLowerCase().startsWith("bin"),
-      [selectedOverlay]
-    );
     const ignitionTagOptionsForOverlay = useMemo(
       () => selectedOverlayIsBin ? ignitionTagOptions.filter((opt) => {
         const objectType = String((opt == null ? void 0 : opt.objectType) || "").toLowerCase();
@@ -33977,7 +35759,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       [ignitionTagOptions, selectedOverlayIsBin]
     );
     const selectedOverlayGroupIsBin = useMemo(
-      () => String(selectedOverlayGroupCommonEType || "").trim().toLowerCase().startsWith("bin"),
+      () => isBinOverlay({ eType: selectedOverlayGroupCommonEType }),
       [selectedOverlayGroupCommonEType]
     );
     const ignitionTagOptionsForOverlayGroup = useMemo(
@@ -35451,6 +37233,79 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       setImportAnchor(null);
       clearSelection();
     }, [clearSelection, closeQuickSvgPicker, editorVisible]);
+    const handleRuntimePanMouseDown = useCallback((event) => {
+      var _a2;
+      if (!browserRuntimeMode || editorVisible || Number((event == null ? void 0 : event.button) || 0) !== 0) {
+        return;
+      }
+      if (!(runtimeHorizontalScrollNeeded || runtimeVerticalScrollNeeded)) {
+        return;
+      }
+      if (isInteractiveEditorTarget(event == null ? void 0 : event.target)) {
+        return;
+      }
+      const target = event == null ? void 0 : event.target;
+      if (target instanceof Element && target.closest(
+        [
+          "[data-overlay-id]",
+          "[data-shape-id]",
+          "[data-overlay-selection-ui]",
+          "[data-overlay-selection-move-hit]",
+          "[data-overlay-selection-hit]",
+          "[data-shape-selection-ui]",
+          "[data-shape-selection-hit]",
+          "[data-mixed-selection-ui]",
+          "[data-widget-control='true']"
+        ].join(", ")
+      )) {
+        return;
+      }
+      const root = rootRef.current;
+      if (!root) {
+        return;
+      }
+      (_a2 = event.preventDefault) == null ? void 0 : _a2.call(event);
+      runtimePanDragRef.current = {
+        startClientX: Number(event.clientX) || 0,
+        startClientY: Number(event.clientY) || 0,
+        startScrollLeft: Number(root.scrollLeft || 0),
+        startScrollTop: Number(root.scrollTop || 0)
+      };
+      setRuntimePanDragActive(true);
+    }, [browserRuntimeMode, editorVisible, runtimeHorizontalScrollNeeded, runtimeVerticalScrollNeeded]);
+    useEffect(() => {
+      if (!runtimePanDragActive) {
+        return void 0;
+      }
+      const handleMove = (event) => {
+        const drag = runtimePanDragRef.current;
+        const root = rootRef.current;
+        if (!drag || !root) {
+          return;
+        }
+        const dx = (Number(event == null ? void 0 : event.clientX) || 0) - Number(drag.startClientX || 0);
+        const dy = (Number(event == null ? void 0 : event.clientY) || 0) - Number(drag.startClientY || 0);
+        root.scrollLeft = Number(drag.startScrollLeft || 0) - dx;
+        root.scrollTop = Number(drag.startScrollTop || 0) - dy;
+        rememberRuntimeScrollSnapshot(root);
+      };
+      const handleRelease = () => {
+        runtimePanDragRef.current = null;
+        setRuntimePanDragActive(false);
+      };
+      window.addEventListener("mousemove", handleMove, true);
+      window.addEventListener("mouseup", handleRelease, true);
+      window.addEventListener("pointerup", handleRelease, true);
+      window.addEventListener("pointercancel", handleRelease, true);
+      window.addEventListener("blur", handleRelease, true);
+      return () => {
+        window.removeEventListener("mousemove", handleMove, true);
+        window.removeEventListener("mouseup", handleRelease, true);
+        window.removeEventListener("pointerup", handleRelease, true);
+        window.removeEventListener("pointercancel", handleRelease, true);
+        window.removeEventListener("blur", handleRelease, true);
+      };
+    }, [rememberRuntimeScrollSnapshot, runtimePanDragActive]);
     return /* @__PURE__ */ jsxs(
       "div",
       {
@@ -35459,6 +37314,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         "data-vizi-theme": theme,
         "data-vizi-canvas-background": canvasBackgroundColor,
         onScroll: browserRuntimeMode ? (event) => rememberRuntimeScrollSnapshot(event.currentTarget) : void 0,
+        onMouseDown: handleRuntimePanMouseDown,
         onMouseDownCapture: (event) => {
           if (!editorVisible || !propertiesSelectionKey || Number((event == null ? void 0 : event.button) || 0) !== 0) {
             return;
@@ -35490,6 +37346,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           minWidth: 0,
           minHeight: 0,
           background: canvasBackgroundColor,
+          cursor: runtimePanDragActive ? "grabbing" : browserRuntimeMode && (runtimeHorizontalScrollNeeded || runtimeVerticalScrollNeeded) ? "grab" : void 0,
           ...browserRuntimeMode ? {
             display: "block",
             overflowX: runtimeHorizontalScrollNeeded ? "auto" : "hidden",
@@ -35498,6 +37355,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           } : {}
         },
         children: [
+          /* @__PURE__ */ jsx("style", { children: VIZI_POPUP_RUNTIME_STYLE }),
           /* @__PURE__ */ jsx("div", { style: browserRuntimeMode ? {
             width: runtimeScrollContentWidth,
             height: runtimeScrollContentHeight,
@@ -35527,6 +37385,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
               zoom: editorZoom,
               pan: editorPan,
               onWheel: NOOP,
+              canvasPanActive: Boolean(canvasPanDrag) || runtimePanDragActive,
               marquee: editorVisible ? marquee : null,
               tool: editorVisible ? tool : "select",
               shapes,
@@ -35585,8 +37444,11 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
               binProductLabelByOverlayId,
               binNameLabelByOverlayId,
               binLevelRatioByOverlayId,
+              binLevelFillColorByOverlayId,
               binLockedInByOverlayId,
               binLockedOutByOverlayId,
+              binActiveFillingByOverlayId,
+              binActiveDischargingByOverlayId,
               overlayHmiStateColorByOverlayId,
               overlayConnectionIssueByOverlayId,
               onWidgetDurationPresetChange: NOOP,
@@ -36788,6 +38650,67 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                           }
                         ) : null
                       ] }) : null,
+                      !selectedOverlayIsEmbeddedView && !selectedOverlay.widget && selectedOverlayIsBin ? /* @__PURE__ */ jsxs(Fragment2, { children: [
+                        /* @__PURE__ */ jsx(
+                          EditorDropdownField,
+                          {
+                            label: "Product Text",
+                            value: normalizeBinProductLabelSource(selectedOverlay.binProductLabelSource),
+                            sections: [
+                              {
+                                label: "Bin Product",
+                                items: [
+                                  { value: "id", label: "AssignedProductId" },
+                                  { value: "name", label: "AssignedProductName" },
+                                  { value: "auto", label: "Auto (Name then ID)" }
+                                ]
+                              }
+                            ],
+                            onChange: (value) => {
+                              commitSelectedOverlayText("binProductLabelSource", normalizeBinProductLabelSource(value));
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          EditorDropdownField,
+                          {
+                            label: "Level Fill",
+                            value: normalizeBinLevelFillSource(selectedOverlay.binLevelFillSource),
+                            sections: [
+                              {
+                                label: "Current Level",
+                                items: [
+                                  { value: "fill", label: "SVG Fill" },
+                                  { value: "product", label: "AssignedProductColor" },
+                                  { value: "auto", label: "Auto (Color then Fill)" }
+                                ]
+                              }
+                            ],
+                            onChange: (value) => {
+                              commitSelectedOverlayText("binLevelFillSource", normalizeBinLevelFillSource(value));
+                            }
+                          }
+                        ),
+                        /* @__PURE__ */ jsx(
+                          EditorDropdownField,
+                          {
+                            label: "Level Style",
+                            value: normalizeBinLevelFillStyle(selectedOverlay.binLevelFillStyle),
+                            sections: [
+                              {
+                                label: "Current Level",
+                                items: [
+                                  { value: "gradient", label: "Gradient" },
+                                  { value: "solid", label: "Solid" }
+                                ]
+                              }
+                            ],
+                            onChange: (value) => {
+                              commitSelectedOverlayText("binLevelFillStyle", normalizeBinLevelFillStyle(value));
+                            }
+                          }
+                        )
+                      ] }) : null,
                       selectedOverlay.widget ? /* @__PURE__ */ jsxs(Fragment2, { children: [
                         /* @__PURE__ */ jsx(
                           PropertyField,
@@ -37182,6 +39105,51 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
                             onCommit: (value) => {
                               commitSelectedShapeText("unit", value);
                             }
+                          }
+                        ),
+                        /* @__PURE__ */ jsxs(
+                          "label",
+                          {
+                            style: { display: "grid", gap: 5 },
+                            onMouseDown: stopInteractivePropagation,
+                            onClick: stopInteractivePropagation,
+                            onDoubleClick: stopInteractivePropagation,
+                            children: [
+                              /* @__PURE__ */ jsx("span", { style: { fontSize: 11, fontWeight: 700, color: "rgba(226, 232, 240, 0.88)" }, children: "Align" }),
+                              /* @__PURE__ */ jsxs(
+                                "select",
+                                {
+                                  value: selectedShape.anchor === "middle" || selectedShape.anchor === "end" || selectedShape.anchor === "unitRight" ? selectedShape.anchor : "start",
+                                  onChange: (event) => {
+                                    commitSelectedShapeText("anchor", event.target.value);
+                                  },
+                                  onFocus: stopInteractivePropagation,
+                                  onPointerDown: stopInteractivePropagation,
+                                  onMouseDown: stopInteractivePropagation,
+                                  onMouseUp: stopInteractivePropagation,
+                                  onClick: stopInteractivePropagation,
+                                  onDoubleClick: stopInteractivePropagation,
+                                  style: {
+                                    width: "100%",
+                                    height: 36,
+                                    boxSizing: "border-box",
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(71, 85, 105, 0.9)",
+                                    background: "rgba(15, 23, 42, 0.92)",
+                                    color: "#f8fafc",
+                                    padding: "0 10px",
+                                    fontSize: 12,
+                                    fontWeight: 600
+                                  },
+                                  children: [
+                                    /* @__PURE__ */ jsx("option", { value: "start", children: "Left" }),
+                                    /* @__PURE__ */ jsx("option", { value: "middle", children: "Center" }),
+                                    /* @__PURE__ */ jsx("option", { value: "end", children: "Right" }),
+                                    /* @__PURE__ */ jsx("option", { value: "unitRight", children: "Unit Right" })
+                                  ]
+                                }
+                              )
+                            ]
                           }
                         )
                       ] }) : Array.isArray(selectedShape == null ? void 0 : selectedShape.points) ? /* @__PURE__ */ jsxs(Fragment2, { children: [

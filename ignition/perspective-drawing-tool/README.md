@@ -211,6 +211,8 @@ Or use the helper:
 .\scripts\docker-dev-up.ps1
 ```
 
+The helper forces a fresh module build before rebuilding and starting Docker, so the container always bakes in the latest `.modl`.
+
 Default dev gateway URL:
 
 - `http://localhost:9088`
