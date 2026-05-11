@@ -1058,12 +1058,46 @@ function normalizeOverlayPopupViewName(value) {
         .replace(/^\/+|\/+$/g, "");
 }
 
-function resolveOverlayPopupViewPath(overlay) {
-    const popupViewName = normalizeOverlayPopupViewName(
+function resolveOverlayPopupLeafName(value) {
+    const normalized = normalizeOverlayPopupViewName(value);
+    return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
+}
+
+function resolveCanonicalOverlayPopupLeafName(value) {
+    const leaf = resolveOverlayPopupLeafName(value);
+    const token = leaf.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (!token) {
+        return "";
+    }
+    if (token.includes("twoway") || token.includes("diverter") || token === "gate") {
+        return "TwoWay";
+    }
+    return leaf;
+}
+
+function resolveOverlayPopupViewName(overlay) {
+    const rawPopupViewName = normalizeOverlayPopupViewName(
         overlay?.eType
         || overlay?.name
         || overlay?.sourceKey
     );
+    const canonicalLeaf = resolveCanonicalOverlayPopupLeafName(rawPopupViewName);
+    const popupViewName = canonicalLeaf || rawPopupViewName;
+    if (!popupViewName) {
+        return "";
+    }
+
+    if (/^Terra\/Popups\//i.test(rawPopupViewName)) {
+        return `Terra/Popups/${canonicalLeaf || resolveOverlayPopupLeafName(rawPopupViewName)}`;
+    }
+    if (/^Popups\//i.test(rawPopupViewName)) {
+        return `Popups/${canonicalLeaf || resolveOverlayPopupLeafName(rawPopupViewName)}`;
+    }
+    return popupViewName;
+}
+
+function resolveOverlayPopupViewPath(overlay) {
+    const popupViewName = resolveOverlayPopupViewName(overlay);
     if (!popupViewName) {
         return "";
     }
@@ -1119,6 +1153,214 @@ function resolveOverlayPopupParams(overlay, baseParams) {
         ?? overlay?.popupParameters
         ?? {};
     return applyPopupParamPlaceholders(parsePopupParamsObject(rawParams), baseParams);
+}
+
+const EQUIPMENT_POPUP_WIDTH = 720;
+const EQUIPMENT_POPUP_HEIGHT = 450;
+const EQUIPMENT_POPUP_VIEWPORT_MARGIN = 48;
+const EQUIPMENT_POPUP_MIN_WIDTH = 280;
+const EQUIPMENT_POPUP_MIN_HEIGHT = 220;
+const EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY = "vizi.equipmentPopupGeometry.v1";
+const EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS = 120;
+const equipmentPopupGeometryTrackers = new WeakMap();
+
+function normalizePopupGeometryKey(value) {
+    return String(value || "Equipment")
+        .trim()
+        .replace(/\.svg$/i, "")
+        .replace(/^Terra\/Popups\//i, "")
+        .replace(/^Popups\//i, "")
+        .replace(/[^a-z0-9_-]+/gi, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase() || "equipment";
+}
+
+function readPopupGeometryStore() {
+    try {
+        if (typeof window === "undefined" || !window.localStorage) {
+            return {};
+        }
+        const parsed = JSON.parse(window.localStorage.getItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY) || "{}");
+        return isPlainObject(parsed) ? parsed : {};
+    } catch (_error) {
+        return {};
+    }
+}
+
+function writePopupGeometryStore(store) {
+    try {
+        if (typeof window === "undefined" || !window.localStorage) {
+            return;
+        }
+        window.localStorage.setItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY, JSON.stringify(store || {}));
+    } catch (_error) {
+    }
+}
+
+function readStoredPopupGeometry(geometryKey) {
+    const key = normalizePopupGeometryKey(geometryKey);
+    const store = readPopupGeometryStore();
+    return isPlainObject(store?.[key]) ? store[key] : null;
+}
+
+function resolvePopupViewportSize() {
+    const viewport = typeof window !== "undefined" ? window : {};
+    const docElement = typeof document !== "undefined" ? document.documentElement : null;
+    const docBody = typeof document !== "undefined" ? document.body : null;
+    return {
+        width: Math.max(
+            1,
+            Math.ceil(
+                Number(viewport.innerWidth)
+                || Number(docElement?.clientWidth)
+                || Number(docBody?.clientWidth)
+                || 1280
+            )
+        ),
+        height: Math.max(
+            1,
+            Math.ceil(
+                Number(viewport.innerHeight)
+                || Number(docElement?.clientHeight)
+                || Number(docBody?.clientHeight)
+                || 720
+            )
+        )
+    };
+}
+
+function clampPopupGeometry(rawGeometry = {}) {
+    const viewport = resolvePopupViewportSize();
+    const maxWidth = Math.max(EQUIPMENT_POPUP_MIN_WIDTH, viewport.width - EQUIPMENT_POPUP_VIEWPORT_MARGIN);
+    const maxHeight = Math.max(EQUIPMENT_POPUP_MIN_HEIGHT, viewport.height - EQUIPMENT_POPUP_VIEWPORT_MARGIN);
+    const width = Math.round(Math.min(maxWidth, Math.max(EQUIPMENT_POPUP_MIN_WIDTH, Number(rawGeometry?.width) || EQUIPMENT_POPUP_WIDTH)));
+    const height = Math.round(Math.min(maxHeight, Math.max(EQUIPMENT_POPUP_MIN_HEIGHT, Number(rawGeometry?.height) || EQUIPMENT_POPUP_HEIGHT)));
+    const fallbackLeft = Math.max(12, Math.round((viewport.width - width) / 2));
+    const fallbackTop = Math.max(12, Math.round((viewport.height - height) / 2));
+    const left = Math.round(Math.min(
+        Math.max(12, Number(rawGeometry?.left) || fallbackLeft),
+        Math.max(12, viewport.width - width - 12)
+    ));
+    const top = Math.round(Math.min(
+        Math.max(12, Number(rawGeometry?.top) || fallbackTop),
+        Math.max(12, viewport.height - height - 12)
+    ));
+
+    return {
+        width,
+        height,
+        left,
+        top
+    };
+}
+
+function resolveOverlayPopupPosition(geometryKey = "") {
+    return clampPopupGeometry(readStoredPopupGeometry(geometryKey) || {});
+}
+
+function writeStoredPopupGeometry(geometryKey, geometry) {
+    const key = normalizePopupGeometryKey(geometryKey);
+    const nextGeometry = clampPopupGeometry(geometry);
+    const store = readPopupGeometryStore();
+    store[key] = {
+        width: nextGeometry.width,
+        height: nextGeometry.height,
+        left: nextGeometry.left,
+        top: nextGeometry.top
+    };
+    writePopupGeometryStore(store);
+}
+
+function isPopupGeometryRoot(element) {
+    if (!(element instanceof HTMLElement)) {
+        return false;
+    }
+    if (element.classList?.contains("popup-body")) {
+        return false;
+    }
+    return element.matches?.('[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]') === true;
+}
+
+function attachPopupGeometryCache(root, geometryKey) {
+    if (!(root instanceof HTMLElement) || !geometryKey || !isPopupGeometryRoot(root)) {
+        return;
+    }
+    const key = normalizePopupGeometryKey(geometryKey);
+    const previous = equipmentPopupGeometryTrackers.get(root);
+    if (previous?.key === key) {
+        return;
+    }
+    previous?.cleanup?.();
+
+    let saveTimer = 0;
+    const save = () => {
+        window.clearTimeout(saveTimer);
+        saveTimer = window.setTimeout(() => {
+            const rect = root.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                writeStoredPopupGeometry(key, {
+                    width: rect.width,
+                    height: rect.height,
+                    left: rect.left,
+                    top: rect.top
+                });
+            }
+        }, EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS);
+    };
+    const endEvents = ["mouseup", "pointerup", "touchend", "transitionend"];
+    endEvents.forEach((eventName) => root.addEventListener(eventName, save, true));
+    const armWindowSave = () => {
+        const onEnd = () => {
+            save();
+            window.removeEventListener("mouseup", onEnd, true);
+            window.removeEventListener("pointerup", onEnd, true);
+            window.removeEventListener("touchend", onEnd, true);
+        };
+        window.addEventListener("mouseup", onEnd, true);
+        window.addEventListener("pointerup", onEnd, true);
+        window.addEventListener("touchend", onEnd, true);
+    };
+    ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.addEventListener(eventName, armWindowSave, true));
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+        resizeObserver = new ResizeObserver(save);
+        resizeObserver.observe(root);
+    }
+    const cleanup = () => {
+        window.clearTimeout(saveTimer);
+        endEvents.forEach((eventName) => root.removeEventListener(eventName, save, true));
+        ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.removeEventListener(eventName, armWindowSave, true));
+        resizeObserver?.disconnect?.();
+    };
+    equipmentPopupGeometryTrackers.set(root, { key, cleanup });
+    save();
+}
+
+function schedulePopupGeometryCache({ geometryKey = "", popupId = "" } = {}) {
+    if (typeof window === "undefined" || typeof document === "undefined" || !geometryKey) {
+        return;
+    }
+    const escapedPopupId = String(popupId || "").replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+    const run = () => {
+        const selectors = [
+            escapedPopupId ? `[id*="${escapedPopupId}"]` : "",
+            escapedPopupId ? `[data-popup-id*="${escapedPopupId}"]` : "",
+            '[id*="svg-popup-"]',
+            '[data-popup-id*="svg-popup-"]'
+        ].filter(Boolean);
+        selectors.forEach((selector) => {
+            try {
+                Array.from(document.querySelectorAll(selector)).forEach((node) => {
+                    const root = node.closest?.('[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]') || node;
+                    attachPopupGeometryCache(root, geometryKey);
+                });
+            } catch (_error) {
+            }
+        });
+    };
+    run();
+    window.requestAnimationFrame?.(run);
+    [40, 160, 420, 900].forEach((delay) => window.setTimeout(run, delay));
 }
 
 function coerceArray(value) {
@@ -2374,11 +2616,9 @@ function ViziCanvasBridge(props) {
         }
 
         const overlayId = String(overlay?.id || "").trim();
-        const popupViewName = normalizeOverlayPopupViewName(
-            overlay?.eType
-            || overlay?.name
-            || overlay?.sourceKey
-        );
+        const popupViewName = resolveOverlayPopupViewName(overlay);
+        const popupGeometryKey = normalizePopupGeometryKey(popupViewName || viewPath);
+        const popupPosition = resolveOverlayPopupPosition(popupGeometryKey);
         const popupTitle = String(overlay?.name || popupViewName || "Popup")
             .trim()
             .replace(/\.svg$/i, "");
@@ -2386,12 +2626,31 @@ function ViziCanvasBridge(props) {
             ? `svg-popup-${overlayId}`
             : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
         const tagPath = String(overlay?.tagPath || "").trim();
+        const tagLeaf = tagPath.split(/[\\/.\]]/).filter(Boolean).pop() || "";
         const baseViewParams = {
             overlayId,
             eType: popupViewName,
+            type: popupViewName,
+            popupType: popupViewName,
+            viewName: popupViewName,
+            viewPath,
+            view_path: viewPath,
             name: popupTitle,
             tagName: tagPath,
-            tagPath
+            tagPath,
+            tag_path: tagPath,
+            tag: tagPath,
+            tagLeaf,
+            equipmentPath: tagPath,
+            equipment_path: tagPath,
+            equipmentName: tagLeaf || popupTitle,
+            equipment_name: tagLeaf || popupTitle,
+            popupWidth: popupPosition.width,
+            popupHeight: popupPosition.height,
+            popupOverflow: "auto",
+            overflow: "auto",
+            disableScroll: false,
+            popupNoScroll: false
         };
         const extraViewParams = resolveOverlayPopupParams(overlay, baseViewParams);
 
@@ -2404,6 +2663,7 @@ function ViziCanvasBridge(props) {
         mounts.activatePopup({
             id: popupId,
             viewPath,
+            position: popupPosition,
             viewParams: {
                 ...extraViewParams,
                 ...baseViewParams
@@ -2413,8 +2673,26 @@ function ViziCanvasBridge(props) {
             draggable: true,
             resizable: true,
             modal: false,
-            overlayDismiss: false
+            overlayDismiss: false,
+            style: {
+                width: popupPosition.width,
+                height: popupPosition.height,
+                overflow: "hidden",
+                overflowX: "hidden",
+                overflowY: "hidden"
+            },
+            bodyStyle: {
+                overflow: "auto",
+                overflowX: "hidden",
+                overflowY: "auto"
+            },
+            viewStyle: {
+                overflow: "auto",
+                overflowX: "hidden",
+                overflowY: "auto"
+            }
         });
+        schedulePopupGeometryCache({ geometryKey: popupGeometryKey, popupId });
         if (typeof mounts.focusPopup === "function") {
             mounts.focusPopup(popupId);
         }

@@ -28791,6 +28791,42 @@ var MesoraDrawingToolBundle = (() => {
     const rawParams = (_d = (_c = (_b = (_a = overlay == null ? void 0 : overlay.popupParamsJson) != null ? _a : overlay == null ? void 0 : overlay.popupParams) != null ? _b : overlay == null ? void 0 : overlay.popupParametersJson) != null ? _c : overlay == null ? void 0 : overlay.popupParameters) != null ? _d : {};
     return applyPopupParamPlaceholders(parsePopupParamsObject(rawParams), baseParams);
   }
+  var EQUIPMENT_POPUP_WIDTH = 720;
+  var EQUIPMENT_POPUP_HEIGHT = 450;
+  var EQUIPMENT_POPUP_VIEWPORT_MARGIN = 48;
+  var EQUIPMENT_POPUP_MIN_WIDTH = 280;
+  var EQUIPMENT_POPUP_MIN_HEIGHT = 220;
+  var EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY = "vizi.equipmentPopupGeometry.v1";
+  var EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS = 120;
+  var equipmentPopupGeometryTrackers = /* @__PURE__ */ new WeakMap();
+  function normalizePopupGeometryKey(value) {
+    return String(value || "Equipment").trim().replace(/\.svg$/i, "").replace(/^Terra\/Popups\//i, "").replace(/^Popups\//i, "").replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "equipment";
+  }
+  function readPopupGeometryStore() {
+    try {
+      if (typeof window === "undefined" || !window.localStorage) {
+        return {};
+      }
+      const parsed = JSON.parse(window.localStorage.getItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY) || "{}");
+      return isPlainObject(parsed) ? parsed : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+  function writePopupGeometryStore(store) {
+    try {
+      if (typeof window === "undefined" || !window.localStorage) {
+        return;
+      }
+      window.localStorage.setItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY, JSON.stringify(store || {}));
+    } catch (_error) {
+    }
+  }
+  function readStoredPopupGeometry(geometryKey) {
+    const key = normalizePopupGeometryKey(geometryKey);
+    const store = readPopupGeometryStore();
+    return isPlainObject(store == null ? void 0 : store[key]) ? store[key] : null;
+  }
   function resolvePopupViewportSize() {
     const viewport = typeof window !== "undefined" ? window : {};
     const docElement = typeof document !== "undefined" ? document.documentElement : null;
@@ -28810,43 +28846,108 @@ var MesoraDrawingToolBundle = (() => {
       )
     };
   }
-  function readPopupDimension(sources, keys) {
-    for (const source of sources) {
-      if (!source || typeof source !== "object") {
-        continue;
-      }
-      for (const key of keys) {
-        const value = Number(source[key]);
-        if (Number.isFinite(value) && value > 0) {
-          return value;
-        }
-      }
-    }
-    return null;
-  }
-  function resolveOverlayPopupPosition(overlay, viewParams = {}) {
-    const sources = [overlay, overlay == null ? void 0 : overlay.popup, overlay == null ? void 0 : overlay.popupConfig, viewParams];
-    const requestedWidth = readPopupDimension(sources, [
-      "popupWidth",
-      "viewPopupWidth",
-      "openViewWidth"
-    ]);
-    const requestedHeight = readPopupDimension(sources, [
-      "popupHeight",
-      "viewPopupHeight",
-      "openViewHeight"
-    ]);
+  function clampPopupGeometry(rawGeometry = {}) {
     const viewport = resolvePopupViewportSize();
-    const maxWidth = Math.max(280, viewport.width - 48);
-    const maxHeight = Math.max(220, viewport.height - 48);
-    const width = Math.round(Math.min(maxWidth, Math.max(300, requestedWidth || 340)));
-    const height = Math.round(Math.min(maxHeight, Math.max(220, requestedHeight || 288)));
+    const maxWidth = Math.max(EQUIPMENT_POPUP_MIN_WIDTH, viewport.width - EQUIPMENT_POPUP_VIEWPORT_MARGIN);
+    const maxHeight = Math.max(EQUIPMENT_POPUP_MIN_HEIGHT, viewport.height - EQUIPMENT_POPUP_VIEWPORT_MARGIN);
+    const width = Math.round(Math.min(maxWidth, Math.max(EQUIPMENT_POPUP_MIN_WIDTH, Number(rawGeometry == null ? void 0 : rawGeometry.width) || EQUIPMENT_POPUP_WIDTH)));
+    const height = Math.round(Math.min(maxHeight, Math.max(EQUIPMENT_POPUP_MIN_HEIGHT, Number(rawGeometry == null ? void 0 : rawGeometry.height) || EQUIPMENT_POPUP_HEIGHT)));
+    const fallbackLeft = Math.max(12, Math.round((viewport.width - width) / 2));
+    const fallbackTop = Math.max(12, Math.round((viewport.height - height) / 2));
+    const left = Math.round(Math.min(
+      Math.max(12, Number(rawGeometry == null ? void 0 : rawGeometry.left) || fallbackLeft),
+      Math.max(12, viewport.width - width - 12)
+    ));
+    const top = Math.round(Math.min(
+      Math.max(12, Number(rawGeometry == null ? void 0 : rawGeometry.top) || fallbackTop),
+      Math.max(12, viewport.height - height - 12)
+    ));
     return {
       width,
       height,
-      left: Math.max(12, Math.round((viewport.width - width) / 2)),
-      top: Math.max(12, Math.round((viewport.height - height) / 2))
+      left,
+      top
     };
+  }
+  function resolveOverlayPopupPosition(geometryKey = "") {
+    return clampPopupGeometry(readStoredPopupGeometry(geometryKey) || {});
+  }
+  function writeStoredPopupGeometry(geometryKey, geometry) {
+    const key = normalizePopupGeometryKey(geometryKey);
+    const nextGeometry = clampPopupGeometry(geometry);
+    const store = readPopupGeometryStore();
+    store[key] = {
+      width: nextGeometry.width,
+      height: nextGeometry.height,
+      left: nextGeometry.left,
+      top: nextGeometry.top
+    };
+    writePopupGeometryStore(store);
+  }
+  function isPopupGeometryRoot(element) {
+    var _a, _b;
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+    if ((_a = element.classList) == null ? void 0 : _a.contains("popup-body")) {
+      return false;
+    }
+    return ((_b = element.matches) == null ? void 0 : _b.call(element, '[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]')) === true;
+  }
+  function attachPopupGeometryCache(root, geometryKey) {
+    var _a;
+    if (!(root instanceof HTMLElement) || !geometryKey || !isPopupGeometryRoot(root)) {
+      return;
+    }
+    const key = normalizePopupGeometryKey(geometryKey);
+    const previous = equipmentPopupGeometryTrackers.get(root);
+    if ((previous == null ? void 0 : previous.key) === key) {
+      return;
+    }
+    (_a = previous == null ? void 0 : previous.cleanup) == null ? void 0 : _a.call(previous);
+    let saveTimer = 0;
+    const save = () => {
+      window.clearTimeout(saveTimer);
+      saveTimer = window.setTimeout(() => {
+        const rect = root.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          writeStoredPopupGeometry(key, {
+            width: rect.width,
+            height: rect.height,
+            left: rect.left,
+            top: rect.top
+          });
+        }
+      }, EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS);
+    };
+    const endEvents = ["mouseup", "pointerup", "touchend", "transitionend"];
+    endEvents.forEach((eventName) => root.addEventListener(eventName, save, true));
+    const armWindowSave = () => {
+      const onEnd = () => {
+        save();
+        window.removeEventListener("mouseup", onEnd, true);
+        window.removeEventListener("pointerup", onEnd, true);
+        window.removeEventListener("touchend", onEnd, true);
+      };
+      window.addEventListener("mouseup", onEnd, true);
+      window.addEventListener("pointerup", onEnd, true);
+      window.addEventListener("touchend", onEnd, true);
+    };
+    ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.addEventListener(eventName, armWindowSave, true));
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(save);
+      resizeObserver.observe(root);
+    }
+    const cleanup = () => {
+      var _a2;
+      window.clearTimeout(saveTimer);
+      endEvents.forEach((eventName) => root.removeEventListener(eventName, save, true));
+      ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.removeEventListener(eventName, armWindowSave, true));
+      (_a2 = resizeObserver == null ? void 0 : resizeObserver.disconnect) == null ? void 0 : _a2.call(resizeObserver);
+    };
+    equipmentPopupGeometryTrackers.set(root, { key, cleanup });
+    save();
   }
   var VIZI_POPUP_RUNTIME_STYLE = `
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) {
@@ -28891,9 +28992,9 @@ var MesoraDrawingToolBundle = (() => {
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-parent,
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view,
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-root {
-        overflow: hidden !important;
+        overflow: auto !important;
         overflow-x: hidden !important;
-        overflow-y: hidden !important;
+        overflow-y: auto !important;
     }
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .view-parent,
@@ -28903,8 +29004,15 @@ var MesoraDrawingToolBundle = (() => {
         height: 100% !important;
     }
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) ::-webkit-scrollbar {
-        width: 0 !important;
-        height: 0 !important;
+        width: 8px !important;
+        height: 8px !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) ::-webkit-scrollbar-track {
+        background: transparent !important;
+    }
+    :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) ::-webkit-scrollbar-thumb {
+        background: rgba(148, 163, 184, 0.48) !important;
+        border-radius: 999px !important;
     }
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body,
     :where([id^="popup-svg-popup-"], [id*="svg-popup-"], [data-popup-id*="svg-popup-"], .vizi-managed-popup) .popup-body .view,
@@ -28963,7 +29071,7 @@ var MesoraDrawingToolBundle = (() => {
     }
     return text.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
   }
-  function applyViziPopupDomFixes({ popupId = "", title = "", theme = "light" } = {}) {
+  function applyViziPopupDomFixes({ geometryKey = "", popupId = "", title = "", theme = "light" } = {}) {
     if (typeof document === "undefined") {
       return;
     }
@@ -29014,6 +29122,7 @@ var MesoraDrawingToolBundle = (() => {
       (_d = root.style) == null ? void 0 : _d.setProperty("--vizi-popup-bg", bgColor);
       if (root instanceof HTMLElement) {
         root.style.boxSizing = "border-box";
+        attachPopupGeometryCache(root, geometryKey);
       }
       const clampTargets = Array.from(((_e = root.querySelectorAll) == null ? void 0 : _e.call(root, [
         ".body-wrapper",
@@ -29041,7 +29150,7 @@ var MesoraDrawingToolBundle = (() => {
           element.style.maxWidth = "100%";
           element.style.minWidth = "0";
           element.style.overflowX = "hidden";
-          element.style.overflowY = "hidden";
+          element.style.overflowY = "auto";
         }
       });
       const textTargets = Array.from(((_f = root.querySelectorAll) == null ? void 0 : _f.call(root, [
@@ -34888,6 +34997,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
       const popupViewName = resolveOverlayPopupViewName(overlay);
       const popupTypeName = resolveCanonicalOverlayPopupLeafName(popupViewName) || resolveOverlayPopupLeafName(popupViewName);
+      const popupGeometryKey = normalizePopupGeometryKey(popupTypeName || popupViewName || viewPath);
+      const popupPosition = resolveOverlayPopupPosition(popupGeometryKey);
       const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
       const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
       const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
@@ -34900,13 +35011,18 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         type: popupTypeName,
         popupType: popupTypeName,
         viewName: popupTypeName,
+        viewPath,
+        view_path: viewPath,
         name: popupTitle,
         tagName: tagPath,
         tagPath,
+        tag_path: tagPath,
         tag: tagPath,
         tagLeaf,
         equipmentPath: tagPath,
+        equipment_path: tagPath,
         equipmentName: tagLeaf || popupTitle,
+        equipment_name: tagLeaf || popupTitle,
         theme: popupTheme,
         perspectiveTheme: popupTheme,
         viziTheme: popupTheme,
@@ -34918,16 +35034,18 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         foregroundColor: popupTextColor,
         mutedTextColor: popupMutedTextColor,
         popupBackgroundColor: popupTheme === "dark" ? "#0f172a" : "#f8fafc",
-        popupOverflow: "hidden",
-        overflow: "hidden",
-        disableScroll: true,
-        popupNoScroll: true
+        popupWidth: popupPosition.width,
+        popupHeight: popupPosition.height,
+        popupOverflow: "auto",
+        overflow: "auto",
+        disableScroll: false,
+        popupNoScroll: false
       };
       const extraViewParams = resolveOverlayPopupParams(overlay, baseViewParams);
       const popupConfig = {
         id: popupId,
         viewPath,
-        position: resolveOverlayPopupPosition(overlay, extraViewParams),
+        position: popupPosition,
         viewParams: {
           ...extraViewParams,
           ...baseViewParams
@@ -34939,6 +35057,8 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         modal: false,
         overlayDismiss: false,
         style: {
+          width: popupPosition.width,
+          height: popupPosition.height,
           overflow: "hidden",
           overflowX: "hidden",
           overflowY: "hidden",
@@ -34946,14 +35066,14 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
           backgroundColor: popupTheme === "dark" ? "#0f172a" : "#f8fafc"
         },
         bodyStyle: {
-          overflow: "hidden",
+          overflow: "auto",
           overflowX: "hidden",
-          overflowY: "hidden"
+          overflowY: "auto"
         },
         viewStyle: {
-          overflow: "hidden",
+          overflow: "auto",
           overflowX: "hidden",
-          overflowY: "hidden",
+          overflowY: "auto",
           color: popupTextColor
         }
       };
@@ -34963,7 +35083,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         }
       }
       mounts.activatePopup(popupConfig);
-      scheduleViziPopupDomFixes({ popupId, title: popupTitle, theme: popupTheme });
+      scheduleViziPopupDomFixes({ geometryKey: popupGeometryKey, popupId, title: popupTitle, theme: popupTheme });
       if (typeof mounts.focusPopup === "function") {
         mounts.focusPopup(popupId);
       }
@@ -40755,10 +40875,40 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
   function normalizeOverlayPopupViewName2(value) {
     return String(value || "").trim().replace(/\.svg$/i, "").replace(/^\/+|\/+$/g, "");
   }
-  function resolveOverlayPopupViewPath2(overlay) {
-    const popupViewName = normalizeOverlayPopupViewName2(
+  function resolveOverlayPopupLeafName2(value) {
+    const normalized = normalizeOverlayPopupViewName2(value);
+    return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized;
+  }
+  function resolveCanonicalOverlayPopupLeafName2(value) {
+    const leaf = resolveOverlayPopupLeafName2(value);
+    const token = leaf.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (!token) {
+      return "";
+    }
+    if (token.includes("twoway") || token.includes("diverter") || token === "gate") {
+      return "TwoWay";
+    }
+    return leaf;
+  }
+  function resolveOverlayPopupViewName2(overlay) {
+    const rawPopupViewName = normalizeOverlayPopupViewName2(
       (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
     );
+    const canonicalLeaf = resolveCanonicalOverlayPopupLeafName2(rawPopupViewName);
+    const popupViewName = canonicalLeaf || rawPopupViewName;
+    if (!popupViewName) {
+      return "";
+    }
+    if (/^Terra\/Popups\//i.test(rawPopupViewName)) {
+      return `Terra/Popups/${canonicalLeaf || resolveOverlayPopupLeafName2(rawPopupViewName)}`;
+    }
+    if (/^Popups\//i.test(rawPopupViewName)) {
+      return `Popups/${canonicalLeaf || resolveOverlayPopupLeafName2(rawPopupViewName)}`;
+    }
+    return popupViewName;
+  }
+  function resolveOverlayPopupViewPath2(overlay) {
+    const popupViewName = resolveOverlayPopupViewName2(overlay);
     if (!popupViewName) {
       return "";
     }
@@ -40806,6 +40956,192 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
     var _a, _b, _c, _d;
     const rawParams = (_d = (_c = (_b = (_a = overlay == null ? void 0 : overlay.popupParamsJson) != null ? _a : overlay == null ? void 0 : overlay.popupParams) != null ? _b : overlay == null ? void 0 : overlay.popupParametersJson) != null ? _c : overlay == null ? void 0 : overlay.popupParameters) != null ? _d : {};
     return applyPopupParamPlaceholders2(parsePopupParamsObject2(rawParams), baseParams);
+  }
+  var EQUIPMENT_POPUP_WIDTH2 = 720;
+  var EQUIPMENT_POPUP_HEIGHT2 = 450;
+  var EQUIPMENT_POPUP_VIEWPORT_MARGIN2 = 48;
+  var EQUIPMENT_POPUP_MIN_WIDTH2 = 280;
+  var EQUIPMENT_POPUP_MIN_HEIGHT2 = 220;
+  var EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY2 = "vizi.equipmentPopupGeometry.v1";
+  var EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS2 = 120;
+  var equipmentPopupGeometryTrackers2 = /* @__PURE__ */ new WeakMap();
+  function normalizePopupGeometryKey2(value) {
+    return String(value || "Equipment").trim().replace(/\.svg$/i, "").replace(/^Terra\/Popups\//i, "").replace(/^Popups\//i, "").replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "equipment";
+  }
+  function readPopupGeometryStore2() {
+    try {
+      if (typeof window === "undefined" || !window.localStorage) {
+        return {};
+      }
+      const parsed = JSON.parse(window.localStorage.getItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY2) || "{}");
+      return isPlainObject2(parsed) ? parsed : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+  function writePopupGeometryStore2(store) {
+    try {
+      if (typeof window === "undefined" || !window.localStorage) {
+        return;
+      }
+      window.localStorage.setItem(EQUIPMENT_POPUP_GEOMETRY_STORAGE_KEY2, JSON.stringify(store || {}));
+    } catch (_error) {
+    }
+  }
+  function readStoredPopupGeometry2(geometryKey) {
+    const key = normalizePopupGeometryKey2(geometryKey);
+    const store = readPopupGeometryStore2();
+    return isPlainObject2(store == null ? void 0 : store[key]) ? store[key] : null;
+  }
+  function resolvePopupViewportSize2() {
+    const viewport = typeof window !== "undefined" ? window : {};
+    const docElement = typeof document !== "undefined" ? document.documentElement : null;
+    const docBody = typeof document !== "undefined" ? document.body : null;
+    return {
+      width: Math.max(
+        1,
+        Math.ceil(
+          Number(viewport.innerWidth) || Number(docElement == null ? void 0 : docElement.clientWidth) || Number(docBody == null ? void 0 : docBody.clientWidth) || 1280
+        )
+      ),
+      height: Math.max(
+        1,
+        Math.ceil(
+          Number(viewport.innerHeight) || Number(docElement == null ? void 0 : docElement.clientHeight) || Number(docBody == null ? void 0 : docBody.clientHeight) || 720
+        )
+      )
+    };
+  }
+  function clampPopupGeometry2(rawGeometry = {}) {
+    const viewport = resolvePopupViewportSize2();
+    const maxWidth = Math.max(EQUIPMENT_POPUP_MIN_WIDTH2, viewport.width - EQUIPMENT_POPUP_VIEWPORT_MARGIN2);
+    const maxHeight = Math.max(EQUIPMENT_POPUP_MIN_HEIGHT2, viewport.height - EQUIPMENT_POPUP_VIEWPORT_MARGIN2);
+    const width = Math.round(Math.min(maxWidth, Math.max(EQUIPMENT_POPUP_MIN_WIDTH2, Number(rawGeometry == null ? void 0 : rawGeometry.width) || EQUIPMENT_POPUP_WIDTH2)));
+    const height = Math.round(Math.min(maxHeight, Math.max(EQUIPMENT_POPUP_MIN_HEIGHT2, Number(rawGeometry == null ? void 0 : rawGeometry.height) || EQUIPMENT_POPUP_HEIGHT2)));
+    const fallbackLeft = Math.max(12, Math.round((viewport.width - width) / 2));
+    const fallbackTop = Math.max(12, Math.round((viewport.height - height) / 2));
+    const left = Math.round(Math.min(
+      Math.max(12, Number(rawGeometry == null ? void 0 : rawGeometry.left) || fallbackLeft),
+      Math.max(12, viewport.width - width - 12)
+    ));
+    const top = Math.round(Math.min(
+      Math.max(12, Number(rawGeometry == null ? void 0 : rawGeometry.top) || fallbackTop),
+      Math.max(12, viewport.height - height - 12)
+    ));
+    return {
+      width,
+      height,
+      left,
+      top
+    };
+  }
+  function resolveOverlayPopupPosition2(geometryKey = "") {
+    return clampPopupGeometry2(readStoredPopupGeometry2(geometryKey) || {});
+  }
+  function writeStoredPopupGeometry2(geometryKey, geometry) {
+    const key = normalizePopupGeometryKey2(geometryKey);
+    const nextGeometry = clampPopupGeometry2(geometry);
+    const store = readPopupGeometryStore2();
+    store[key] = {
+      width: nextGeometry.width,
+      height: nextGeometry.height,
+      left: nextGeometry.left,
+      top: nextGeometry.top
+    };
+    writePopupGeometryStore2(store);
+  }
+  function isPopupGeometryRoot2(element) {
+    var _a, _b;
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+    if ((_a = element.classList) == null ? void 0 : _a.contains("popup-body")) {
+      return false;
+    }
+    return ((_b = element.matches) == null ? void 0 : _b.call(element, '[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]')) === true;
+  }
+  function attachPopupGeometryCache2(root, geometryKey) {
+    var _a;
+    if (!(root instanceof HTMLElement) || !geometryKey || !isPopupGeometryRoot2(root)) {
+      return;
+    }
+    const key = normalizePopupGeometryKey2(geometryKey);
+    const previous = equipmentPopupGeometryTrackers2.get(root);
+    if ((previous == null ? void 0 : previous.key) === key) {
+      return;
+    }
+    (_a = previous == null ? void 0 : previous.cleanup) == null ? void 0 : _a.call(previous);
+    let saveTimer = 0;
+    const save = () => {
+      window.clearTimeout(saveTimer);
+      saveTimer = window.setTimeout(() => {
+        const rect = root.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          writeStoredPopupGeometry2(key, {
+            width: rect.width,
+            height: rect.height,
+            left: rect.left,
+            top: rect.top
+          });
+        }
+      }, EQUIPMENT_POPUP_GEOMETRY_SAVE_DELAY_MS2);
+    };
+    const endEvents = ["mouseup", "pointerup", "touchend", "transitionend"];
+    endEvents.forEach((eventName) => root.addEventListener(eventName, save, true));
+    const armWindowSave = () => {
+      const onEnd = () => {
+        save();
+        window.removeEventListener("mouseup", onEnd, true);
+        window.removeEventListener("pointerup", onEnd, true);
+        window.removeEventListener("touchend", onEnd, true);
+      };
+      window.addEventListener("mouseup", onEnd, true);
+      window.addEventListener("pointerup", onEnd, true);
+      window.addEventListener("touchend", onEnd, true);
+    };
+    ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.addEventListener(eventName, armWindowSave, true));
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(save);
+      resizeObserver.observe(root);
+    }
+    const cleanup = () => {
+      var _a2;
+      window.clearTimeout(saveTimer);
+      endEvents.forEach((eventName) => root.removeEventListener(eventName, save, true));
+      ["mousedown", "pointerdown", "touchstart"].forEach((eventName) => root.removeEventListener(eventName, armWindowSave, true));
+      (_a2 = resizeObserver == null ? void 0 : resizeObserver.disconnect) == null ? void 0 : _a2.call(resizeObserver);
+    };
+    equipmentPopupGeometryTrackers2.set(root, { key, cleanup });
+    save();
+  }
+  function schedulePopupGeometryCache({ geometryKey = "", popupId = "" } = {}) {
+    var _a;
+    if (typeof window === "undefined" || typeof document === "undefined" || !geometryKey) {
+      return;
+    }
+    const escapedPopupId = String(popupId || "").replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+    const run = () => {
+      const selectors = [
+        escapedPopupId ? `[id*="${escapedPopupId}"]` : "",
+        escapedPopupId ? `[data-popup-id*="${escapedPopupId}"]` : "",
+        '[id*="svg-popup-"]',
+        '[data-popup-id*="svg-popup-"]'
+      ].filter(Boolean);
+      selectors.forEach((selector) => {
+        try {
+          Array.from(document.querySelectorAll(selector)).forEach((node) => {
+            var _a2;
+            const root = ((_a2 = node.closest) == null ? void 0 : _a2.call(node, '[role="dialog"], [id*="popup"], [data-popup-id*="svg-popup-"]')) || node;
+            attachPopupGeometryCache2(root, geometryKey);
+          });
+        } catch (_error) {
+        }
+      });
+    };
+    run();
+    (_a = window.requestAnimationFrame) == null ? void 0 : _a.call(window, run);
+    [40, 160, 420, 900].forEach((delay) => window.setTimeout(run, delay));
   }
   function coerceArray2(value) {
     return Array.isArray(value) ? value : [];
@@ -41859,18 +42195,37 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         return false;
       }
       const overlayId = String((overlay == null ? void 0 : overlay.id) || "").trim();
-      const popupViewName = normalizeOverlayPopupViewName2(
-        (overlay == null ? void 0 : overlay.eType) || (overlay == null ? void 0 : overlay.name) || (overlay == null ? void 0 : overlay.sourceKey)
-      );
+      const popupViewName = resolveOverlayPopupViewName2(overlay);
+      const popupGeometryKey = normalizePopupGeometryKey2(popupViewName || viewPath);
+      const popupPosition = resolveOverlayPopupPosition2(popupGeometryKey);
       const popupTitle = String((overlay == null ? void 0 : overlay.name) || popupViewName || "Popup").trim().replace(/\.svg$/i, "");
       const popupId = overlayId ? `svg-popup-${overlayId}` : `svg-popup-${String(viewPath).replace(/[^a-z0-9/_-]+/gi, "-").toLowerCase()}`;
       const tagPath = String((overlay == null ? void 0 : overlay.tagPath) || "").trim();
+      const tagLeaf = tagPath.split(/[\\/.\]]/).filter(Boolean).pop() || "";
       const baseViewParams = {
         overlayId,
         eType: popupViewName,
+        type: popupViewName,
+        popupType: popupViewName,
+        viewName: popupViewName,
+        viewPath,
+        view_path: viewPath,
         name: popupTitle,
         tagName: tagPath,
-        tagPath
+        tagPath,
+        tag_path: tagPath,
+        tag: tagPath,
+        tagLeaf,
+        equipmentPath: tagPath,
+        equipment_path: tagPath,
+        equipmentName: tagLeaf || popupTitle,
+        equipment_name: tagLeaf || popupTitle,
+        popupWidth: popupPosition.width,
+        popupHeight: popupPosition.height,
+        popupOverflow: "auto",
+        overflow: "auto",
+        disableScroll: false,
+        popupNoScroll: false
       };
       const extraViewParams = resolveOverlayPopupParams2(overlay, baseViewParams);
       if (Array.isArray(mounts.activePopups) && mounts.activePopups.some((popup) => (popup == null ? void 0 : popup.id) === popupId)) {
@@ -41881,6 +42236,7 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
       mounts.activatePopup({
         id: popupId,
         viewPath,
+        position: popupPosition,
         viewParams: {
           ...extraViewParams,
           ...baseViewParams
@@ -41890,8 +42246,26 @@ ${svgLibraryExternalDirectory}` : "Import an SVG here; the external folder path 
         draggable: true,
         resizable: true,
         modal: false,
-        overlayDismiss: false
+        overlayDismiss: false,
+        style: {
+          width: popupPosition.width,
+          height: popupPosition.height,
+          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "hidden"
+        },
+        bodyStyle: {
+          overflow: "auto",
+          overflowX: "hidden",
+          overflowY: "auto"
+        },
+        viewStyle: {
+          overflow: "auto",
+          overflowX: "hidden",
+          overflowY: "auto"
+        }
       });
+      schedulePopupGeometryCache({ geometryKey: popupGeometryKey, popupId });
       if (typeof mounts.focusPopup === "function") {
         mounts.focusPopup(popupId);
       }
